@@ -54,10 +54,13 @@ Every commit message and pull request title follows
   commands you actually ran. Leave a checklist item unchecked if you did not run it.
 - Always open a pull request as a draft: `gh pr create --draft --body-file -`. Run the
   checks below, wait for the checks it needs with `tools/wait-checks.sh`, then mark it
-  ready with `gh pr ready`. That script waits for the required checks, and for macOS
-  only when the diff touches macOS code; don't wait for the rest. Marking it
-  ready starts CodeRabbit, and the reviewers are asked once it finishes without
-  approving or with a review thread still open, so don't do it before then.
+  ready with `gh pr ready`, never before. That script waits for the required checks, and
+  for macOS only when the diff touches macOS code; don't wait for the rest. The required
+  **Human approval** status is a merge gate, not part of this wait: it only resolves once
+  a person approves, and marking ready is what asks for the review. CodeRabbit reviews
+  drafts too, so its review is often done before the checks. Once the pull request is
+  ready and CodeRabbit has finished, the reviewers are asked unless CodeRabbit approved
+  and every review thread is resolved.
 - Answer every CodeRabbit comment: fix it and push, or reply with the reason you
   won't. Don't resolve its threads or post `@coderabbitai resolve` or `approve`
   yourself; the reviewer resolves what is left and approves. A workflow dismisses

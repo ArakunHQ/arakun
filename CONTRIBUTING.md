@@ -55,7 +55,8 @@ powershell -ExecutionPolicy Bypass -File tools\setup-dev.ps1 -Hooks
 `--hooks` (`-Hooks`) runs `lefthook install`; on Windows it installs lefthook with winget
 first, and elsewhere it says how to install it if it is missing.
 `--relay` (`-Relay`) adds Node 24 and the relay's npm packages, `--display` adds Xvfb and
-tesseract for `arakun dev`, `--build` (`-Build`) builds the tests once, and `--yes`
+tesseract for `arakun dev`, `--browser` fetches the CEF SDK a macOS build with the browser
+needs and links it at `.cef-sdk`, `--build` (`-Build`) builds the tests once, and `--yes`
 (`-Yes`) never asks. `--help` (`-Help`) lists them all. To do it by hand instead,
 follow [Build from source](README.md#build-from-source) in the README.
 
@@ -270,13 +271,18 @@ which git ignores. Turn the hooks off with `lefthook uninstall`.
   Commits inside the pull request are not checked, because they do not reach `main`. To
   check them as you write them, turn on the [Git hooks](#git-hooks).
 - **Open it as a draft** (`gh pr create --draft`, or "Create draft pull request" on
-  GitHub). Nobody is asked to review a draft, and CodeRabbit skips it, so you can push
-  while CI runs. Once the required checks pass, mark it ready with `gh pr ready` or the
+  GitHub). Nobody is asked to review a draft, so you can push while CI and CodeRabbit
+  run: CodeRabbit reviews drafts too, so its comments are usually waiting when the
+  checks are. Once the required checks pass, mark it ready with `gh pr ready` or the
   button on GitHub. `tools/wait-checks.sh` waits for them, and for the macOS job only
-  when the diff touches macOS code. The other checks can still be running. Marking it
-  ready starts CodeRabbit's review. When it finishes, people are asked to review unless
-  CodeRabbit approved and every review thread is resolved. A pull request from outside
-  the team always needs a maintainer's approval: a workflow dismisses CodeRabbit's, and the **Human approval**
+  when the diff touches macOS code. Don't wait for the other checks (macOS for other
+  changes, CodeQL), which can queue for a long time. Don't wait for the **Human approval**
+  status either: for a pull request from outside the team it is required, but it only
+  resolves after a person approves, and marking ready is what asks for the review. It
+  stays a merge gate, not a pre-ready one. When CodeRabbit finishes, people are asked to review
+  unless CodeRabbit approved and every review thread is resolved. A pull request from
+  outside the team always needs a
+  maintainer's approval: a workflow dismisses CodeRabbit's, and the **Human approval**
   status waits for a person.
 - **Answer every CodeRabbit comment.** Fix it and push, or reply with the reason you
   won't. CodeRabbit reviews each push and resolves the comments it sees fixed. It
@@ -287,8 +293,8 @@ which git ignores. Turn the hooks off with `lefthook uninstall`.
   `@coderabbitai approve` don't work on your own pull request. Its review rules are in
   [.coderabbit.yaml](.coderabbit.yaml). If you change a rule in this guide, check the
   instructions there too.
-- **Keep the branch up to date** with `main`, and make sure CI passes before you ask for
-  a review. If a check fails and you think it is not your change, say so in the pull
+- **Keep the branch up to date** with `main`, and make sure the required checks pass before you
+  ask for a review. If a check fails and you think it is not your change, say so in the pull
   request.
 - **Stack pull requests** when one step needs another that is not merged yet. See
   [Stacked pull requests](#stacked-pull-requests).

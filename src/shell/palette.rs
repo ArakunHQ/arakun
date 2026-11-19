@@ -93,6 +93,8 @@ impl Shell {
         self.read_repo_slugs(cx);
         let seed = self.palette_seed(cx);
         let palette = cx.new(|cx| Palette::new(seed, window, cx));
+        // The palette reads its pins, to-dos and frecency as it opens.
+        self.report_unreadable(cx);
         let sub = cx.subscribe_in(&palette, window, Self::on_palette_event);
         // What GitHub brings in while it is open shows up in it.
         let weak = palette.downgrade();

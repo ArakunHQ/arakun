@@ -84,15 +84,12 @@ impl Pins {
     }
 
     fn read(path: &std::path::Path) -> Self {
-        std::fs::read(path)
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or_default()
+        crate::stored::load(path).unwrap_or_default()
     }
 
     fn write(&self, path: &std::path::Path) {
         if let Ok(bytes) = serde_json::to_vec_pretty(self) {
-            let _ = crate::durable::write(path, &bytes);
+            let _ = crate::stored::write(path, &bytes);
         }
     }
 }
@@ -169,9 +166,13 @@ mod tests {
         p.toggle(pin("notes"));
         p.write(&path);
         assert_eq!(Pins::read(&path), p);
-        // A missing or broken file reads as no pins.
+        // A missing or broken file reads as no pins, and a broken one is
+        // kept beside the next save.
         std::fs::write(&path, b"{nope").unwrap();
         assert_eq!(Pins::read(&path), Pins::default());
+        p.write(&path);
+        assert_eq!(Pins::read(&path), p);
+        assert_eq!(crate::stored::tests::kept(&path).as_deref(), Some("{nope"));
         let _ = std::fs::remove_dir_all(dir);
     }
 }

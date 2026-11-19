@@ -159,13 +159,31 @@ impl Shell {
         name: String,
         cx: &mut Context<Self>,
     ) {
-        self.rename_notes.insert(
-            dir.to_path_buf(),
-            format!(
-                "(Arakun renamed this environment's branch from `{old}` to `{name}`; \
-                 use the new name for pushes and pull requests.)"
-            ),
+        let note = format!(
+            "(Arakun renamed this environment's branch from `{old}` to `{name}`; \
+             use the new name for pushes and pull requests.)"
         );
+        // The namer usually finishes while the first prompt still waits for its
+        // agent to start. Given to the sessions running here, the note goes out
+        // with that prompt, not a turn late with the next one.
+        let threads: Vec<_> = self
+            .find_env(dir)
+            .map(|e| {
+                e.sessions
+                    .iter()
+                    .filter_map(|s| s.live.as_ref().map(|l| l.thread.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if threads.is_empty() {
+            self.rename_notes.insert(dir.to_path_buf(), note);
+        } else {
+            for thread in threads {
+                thread.update(cx, |t, _| t.add_note(note.clone()));
+            }
+            // An older rename's note would say the wrong name.
+            self.rename_notes.remove(dir);
+        }
         if let Some(env) = self.find_env_mut(dir) {
             env.placeholder = None;
             env.set_branch(Some(name));

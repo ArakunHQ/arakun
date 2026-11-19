@@ -611,6 +611,22 @@ impl Shell {
             ui::segment(id, None, label, on == light)
                 .on_click(cx.listener(move |this, _, _, cx| this.onboarding_set_light(on, cx)))
         };
+        let current = crate::cleanup::days().unwrap_or(0);
+        let mut cleanup = ui::segmented();
+        for (i, d) in crate::cleanup::CHOICES.into_iter().enumerate() {
+            cleanup = cleanup.child(
+                ui::segment(
+                    ("onboarding-cleanup", i),
+                    None,
+                    crate::cleanup::label(d),
+                    d == current,
+                )
+                .on_click(cx.listener(move |_, _, _, cx| {
+                    crate::cleanup::set_days(d);
+                    cx.notify();
+                })),
+            );
+        }
         const KEYS: [(&[&str], &str); 5] = [
             (&["Ctrl", "K"], "Find anything: sessions, files, commands"),
             (&["Ctrl", "T"], "New agent session"),
@@ -656,6 +672,22 @@ impl Shell {
                                 .child(mode("onboarding-dark", "Dark", false))
                                 .child(mode("onboarding-light", "Light", true)),
                         ),
+                ),
+            )
+            .child(
+                ui::surface_card().child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(ui::sp(10.))
+                        .py(ui::sp(12.))
+                        .pl(ui::sp(16.))
+                        .pr(ui::sp(12.))
+                        .child(titled(
+                            "Remove old environments",
+                            "Once a pull request is merged or closed and its environment sat unused this long. Nothing uncommitted or unpushed goes, and the branch stays.",
+                        ))
+                        .child(cleanup),
                 ),
             )
             .child(

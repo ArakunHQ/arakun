@@ -113,10 +113,13 @@ diff touches macOS code (`cfg(target_os = "macos")`, a file named `*mac*`,
 `Cargo.toml`, `Cargo.lock`, `build.rs` or the toolchain). Don't wait for the
 other checks, such as the macOS job for other changes or CodeQL: macOS runners
 are few, and waiting for them held pull requests up to 100 minutes. A person
-still sees them before merging.
+still sees them before merging. The required **Human approval** status is not
+part of the wait either: it is a merge gate that only resolves after a person
+approves, and marking ready is what asks for the review.
 
 - Exit 1 (a check failed): use the `triage-ci` skill, push the fix, wait again.
-- Exit 0: `gh pr ready`. That requests reviewers and starts CodeRabbit, so never
+- Exit 0: `gh pr ready`. CodeRabbit reviews drafts too, so its review is often
+  done before the checks; marking ready asks for the reviewers, so never
   before the required checks pass.
 - The first pull request of a new contributor needs the CLA signed; only the
   person can do that.

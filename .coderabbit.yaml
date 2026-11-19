@@ -17,8 +17,9 @@ reviews:
   # (AGENTS.md), so a minor one costs as much as a real bug.
   profile: quiet
 
-  # Requests changes on blocking findings. Approves only pull requests it rates
-  # minimal risk, once those findings are resolved. Merging still takes a
+  # Requests changes on blocking findings (major and critical only). Approves
+  # only pull requests it rates low risk or less, once those findings are
+  # resolved. Merging still takes a
   # person with write access. CodeRabbit also rates security risk, but no
   # limit is set on it: the merge-risk limit already covers the sensitive paths.
   # The Reviewers workflow dismisses an approval of a pull request from
@@ -28,11 +29,58 @@ reviews:
   # with threads still open, and asks a person.
   auto_approvals:
     enabled: true
-    max_merge_risk: minimal
+    max_merge_risk: low
+    # Minor and trivial findings stay in the review as advice and do not hold
+    # back the approval. The schema accepts only `major` and `critical` here.
+    min_blocking_severity: major
     # An author could otherwise clear CodeRabbit's blocking findings on their
     # own pull request with `@coderabbitai resolve` and get it approved.
     # Someone else has to run `approve` or `resolve` now.
     allow_author_approval: false
+    # Never approve a pull request that touches one of these paths, whatever
+    # its risk rating: a person approves them. A matching file applies to the
+    # whole pull request. Keep the list in step with the Moderate or higher
+    # paths in merge_risk_instructions below.
+    overrides:
+      - enabled: false
+        paths:
+          - ".github/**"
+          - "AGENTS.md"
+          - "CLAUDE.md"
+          - "CONTRIBUTING.md"
+          - ".claude/**"
+          - ".coderabbit.yaml"
+          - "lefthook.yml"
+          - "src/headless*"
+          - "src/headless*/**"
+          - "src/control.rs"
+          - "src/account.rs"
+          - "src/fetch.rs"
+          - "src/voice.rs"
+          - "src/cloudflare/**"
+          - "src/posthog/**"
+          - "src/github/**"
+          - "src/phone/**"
+          - "relay/**"
+          - "phone/**"
+          - "Cargo.toml"
+          - "Cargo.lock"
+          - "deny.toml"
+          - "build.rs"
+          - "rust-toolchain.toml"
+          - "tools/setup-dev.*"
+          - "tools/install*"
+          - "src/platform.rs"
+          - "src/git.rs"
+          - "src/agent/launch.rs"
+          - "src/agent/rpc.rs"
+          - "src/state.rs"
+          - "src/memory.rs"
+          - "src/stored.rs"
+          - "src/durable.rs"
+          - "src/update.rs"
+          - "src/server/**"
+          - "src/server.rs"
   merge_risk_instructions: >-
     Minimal risk: changes only to docs or Markdown that people read (README.md,
     docs/, CONTRIBUTING.md), comments, tests, iso/*.rhai scenes or screenshots,
@@ -50,9 +98,11 @@ reviews:
     lefthook.yml; Cargo.toml, Cargo.lock, deny.toml, build.rs or
     rust-toolchain.toml; tools/setup-dev.* or tools/install* (they run on
     users' machines, often with sudo); src/platform.rs; git operations in
-    src/git.rs; how agents and shells are launched; and any format stored on
-    disk (state.json, memory, transcripts) or a CLI flag that other tools rely
-    on. A change for one platform that the other platforms build without
+    src/git.rs; how agents and shells are launched (src/agent/launch.rs and
+    src/agent/rpc.rs); release signature checks in src/update.rs; the daemon
+    in src/server.rs and src/server/; and any format stored on disk (including
+    src/state.rs, src/memory.rs, src/stored.rs and src/durable.rs) or a CLI
+    flag that other tools rely on. A change for one platform that the other platforms build without
     testing also raises the risk. Code behind the `browser` feature is only
     built on Linux in CI, so a change there that touches Windows or macOS
     paths raises it too.
@@ -83,9 +133,11 @@ reviews:
 
   auto_review:
     enabled: true
-    # Agents open pull requests as drafts and mark them ready once the required
-    # checks pass (tools/wait-checks.sh).
-    drafts: false
+    # Review drafts too, so the review runs next to CI instead of after it.
+    # Agents open a pull request when its content is final and mark it ready
+    # once the required checks pass (tools/wait-checks.sh); waiting for that
+    # cost ~5-7 minutes a PR.
+    drafts: true
     # Stacked pull requests target the branch below them, not main. Without
     # this, CodeRabbit reviews only the bottom one of a stack.
     base_branches: [".*"]

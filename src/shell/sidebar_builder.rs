@@ -310,7 +310,7 @@ impl Shell {
     }
 
     /// A change typed in a field: saved, but not one undo step per key.
-    fn quiet_edit(&mut self, cx: &mut Context<Self>, f: impl FnOnce(&mut Sidebar)) {
+    pub(super) fn quiet_edit(&mut self, cx: &mut Context<Self>, f: impl FnOnce(&mut Sidebar)) {
         f(&mut self.sidebar);
         self.sidebar.save();
         cx.notify();
@@ -1634,6 +1634,12 @@ impl Shell {
                     sec.collapsed,
                     |s| s.collapsed = !s.collapsed,
                 ))
+                .child(toggle(
+                    "sb-sec-peek",
+                    "Show what is inside when folded",
+                    sec.peek,
+                    |s| s.peek = !s.peek,
+                ))
             })
             .child(toggle("sb-sec-row", "Icons in a row", sec.row, |s| {
                 s.row = !s.row
@@ -1649,6 +1655,25 @@ impl Shell {
             ))
             .child(field_label("Button on its title"))
             .child(action)
+            .when(self.sidebar.sections.len() > 1, |d| {
+                d.child(
+                    div().pt(crate::ui::sp(12.)).child(
+                        ui::button_with(
+                            "sb-sec-ungroup",
+                            Some("ungroup-items"),
+                            "Ungroup",
+                            ui::ButtonKind::Ghost,
+                            true,
+                        )
+                        .tooltip(ui::tip("Remove the segment and keep its pieces"))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.change_sidebar(cx, |s| {
+                                s.ungroup_section(si);
+                            })
+                        })),
+                    ),
+                )
+            })
             .child(
                 div().pt(crate::ui::sp(12.)).child(
                     ui::button_with(

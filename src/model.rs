@@ -494,6 +494,8 @@ pub struct Environment {
     /// A push, pull or PR running from the Changes panel.
     pub git_busy: Option<GitOp>,
     pub git_error: Option<SharedString>,
+    /// Unix seconds it was last on screen, for the cleanup of old environments.
+    pub used: u64,
     /// A folder on a paired server, not here. Its sessions run there; nothing
     /// of it is saved, the server's inbox brings it back each time.
     pub remote: Option<Remote>,
@@ -888,6 +890,7 @@ impl Environment {
             pr_checked: None,
             git_busy: None,
             git_error: None,
+            used: unix_now(),
             remote: None,
         };
         env.set_branch(branch);
@@ -932,6 +935,14 @@ impl Environment {
         } else {
             Status::Idle
         }
+    }
+
+    /// When it was last opened or one of its sessions last moved.
+    pub fn last_used(&self) -> u64 {
+        self.sessions
+            .iter()
+            .map(|s| s.updated)
+            .fold(self.used, u64::max)
     }
 
     pub fn diff_totals(&self) -> (u32, u32) {

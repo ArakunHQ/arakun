@@ -928,6 +928,7 @@ impl Shell {
             self.account.read(cx),
             seats.as_ref(),
             crate::agent::opencode_plan::latest().as_ref(),
+            crate::agent::devin_plan::latest().as_ref(),
             cx.listener(|this, _, window, cx| this.open_usage_tab(window, cx)),
             {
                 let shell = cx.entity().downgrade();

@@ -134,6 +134,11 @@ impl Shell {
         {
             readings.extend(plan_readings(&go, "OpenCode Go", now));
         }
+        if account_view::rail_shows(AgentKind::Devin)
+            && let Some(devin) = crate::agent::devin_plan::latest()
+        {
+            readings.extend(plan_readings(&devin, "Devin", now));
+        }
         let first = !self.limits_seen;
         self.limits_seen = true;
         for (title, body, critical) in alerts(readings, &mut self.limit_alerts, first) {

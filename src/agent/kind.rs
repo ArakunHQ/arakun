@@ -22,7 +22,12 @@ pub enum AgentKind {
 impl AgentKind {
     /// The agent CLIs whose plans the sidebar's usage card can show. Codex is
     /// left out until its ChatGPT limits are read.
-    pub const ALL: [AgentKind; 3] = [AgentKind::Claude, AgentKind::Droid, AgentKind::OpenCode];
+    pub const ALL: [AgentKind; 4] = [
+        AgentKind::Claude,
+        AgentKind::Droid,
+        AgentKind::OpenCode,
+        AgentKind::Devin,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {

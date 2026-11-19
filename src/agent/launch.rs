@@ -485,9 +485,13 @@ pub fn devin_bin() -> Result<PathBuf> {
 }
 
 /// Whether `devin auth login` has signed in: its credentials file exists.
-/// Only checks that it is there, never reads it.
+/// Only checks that it is there; `devin_plan` is the one reader of the file.
 pub fn devin_signed_in() -> bool {
-    devin_credentials(std::env::var_os("XDG_DATA_HOME"), &home()).is_file()
+    devin_credentials_path().is_file()
+}
+
+pub(crate) fn devin_credentials_path() -> PathBuf {
+    devin_credentials(std::env::var_os("XDG_DATA_HOME"), &home())
 }
 
 /// Where Devin keeps its sign-in: `$XDG_DATA_HOME/devin/credentials.toml`,

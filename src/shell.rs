@@ -42,6 +42,7 @@ mod island;
 mod limits;
 mod menus;
 mod naming;
+mod new_dialog;
 mod notes;
 mod onboarding;
 pub(crate) mod pages;
@@ -186,6 +187,8 @@ enum Modal {
     Session(gpui::AnyView),
     /// The first-launch question about crash reports and usage counts.
     Telemetry(Entity<crate::telemetry_dialog::TelemetryDialog>),
+    /// A session or a project, from the + on the rail's Projects heading.
+    New(Entity<new_dialog::NewDialog>),
 }
 
 #[derive(Clone, Copy)]
@@ -2774,6 +2777,8 @@ impl Shell {
         self.bring_split(self.strip.tab_back.last().copied());
         let strip = &mut self.strip;
         strip.settle_split(strip.tab_back.last().copied());
+        self.mark_on_screen_read(cx);
+        let strip = &mut self.strip;
         let Some(id) = strip.active().map(|t| t.id) else {
             return;
         };
@@ -3288,6 +3293,7 @@ impl Render for Shell {
             Modal::Automations(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),
             Modal::Session(v) => (v.clone().into_any_element(), v.entity_id().as_u64()),
             Modal::Telemetry(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),
+            Modal::New(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),
         });
         let viewport_h = window.viewport_size().height.as_f32();
         let floating_sheet = self.render_floating_sheet(cx);

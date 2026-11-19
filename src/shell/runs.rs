@@ -109,14 +109,6 @@ impl Shell {
         });
     }
 
-    /// The CI state of an environment's branch, when GitHub has runs for it.
-    pub(super) fn env_ci(&self, pi: usize, ei: usize, cx: &App) -> Option<(State, ci::Run)> {
-        let p = self.projects.get(pi)?;
-        let env = p.environments.get(ei)?;
-        let repo = self.ci.read(cx).repo(&p.path)?;
-        repo.branch_state(&env.branch).map(|(s, r)| (s, r.clone()))
-    }
-
     /// The rail badge: environments of the visible project whose CI fails (plus a
     /// failed latest deploy); otherwise how many runs are going.
     pub(super) fn runs_badge(&self, cx: &App) -> Option<(usize, bool)> {

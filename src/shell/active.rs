@@ -65,7 +65,7 @@ impl Shell {
             .iter()
             .flat_map(|p| &p.environments)
             .flat_map(|e| &e.sessions)
-            .any(|s| is_active(s.status))
+            .any(|s| is_active(s.shown_status()))
     }
 
     /// Nothing while no session waits or runs.
@@ -84,7 +84,7 @@ impl Shell {
         }
         let keys: Vec<_> = rows
             .iter()
-            .map(|r| (r.session.status, r.session.updated))
+            .map(|r| (r.session.shown_status(), r.session.updated))
             .collect();
         let groups = arrange(&keys);
         if groups.is_empty() {
@@ -136,7 +136,7 @@ impl Shell {
         let project = &self.projects[row.project];
         let env = &project.environments[row.env];
         let s = row.session;
-        let needs_you = s.status == Status::NeedsInput;
+        let needs_you = s.shown_status() == Status::NeedsInput;
         let title: SharedString = if s.title.is_empty() {
             "New session".into()
         } else {
@@ -183,7 +183,7 @@ impl Shell {
                     .when(picked, |d| {
                         d.child(icon("tick02", 14.).text_color(theme::content()))
                     })
-                    .when(!picked, |d| d.child(status_dot(s.status))),
+                    .when(!picked, |d| d.child(status_dot(s.shown_status()))),
             )
             .child(div().flex_1().min_w_0().truncate().child(title))
             .child(

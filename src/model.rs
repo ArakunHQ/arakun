@@ -347,6 +347,9 @@ pub struct Session {
     /// Its pull request merged (`crate::settle`): the sessions list leaves it
     /// out until it is used again.
     pub settled: bool,
+    /// It finished a turn while the user looked elsewhere. Until they open
+    /// it, it waits on them like a question would.
+    pub unread: bool,
     pub live: Option<LiveSession>,
 }
 
@@ -384,7 +387,18 @@ impl Session {
             auto_allow: false,
             continues: Vec::new(),
             settled: false,
+            unread: false,
             live: None,
+        }
+    }
+
+    /// Its state as the sidebar and the Inbox show it: a finished turn not
+    /// yet read needs the user.
+    pub fn shown_status(&self) -> Status {
+        if self.unread && self.status == Status::Idle {
+            Status::NeedsInput
+        } else {
+            self.status
         }
     }
 }
@@ -924,7 +938,7 @@ impl Environment {
 
     /// The most urgent state of any session, for the sidebar dot.
     pub fn aggregate_status(&self) -> Status {
-        let any = |st: Status| self.sessions.iter().any(|s| s.status == st);
+        let any = |st: Status| self.sessions.iter().any(|s| s.shown_status() == st);
         if any(Status::NeedsInput) {
             Status::NeedsInput
         } else if any(Status::Working) {

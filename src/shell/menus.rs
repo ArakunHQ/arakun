@@ -106,7 +106,7 @@ impl Shell {
                                     plural(env.terminals.len(), "terminal")
                                 )),
                         )
-                        .child(status_dot(env.aggregate_status()))
+                        .child(status_dot(self.env_status(pi, ei, cx)))
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.select_env(pi, ei, window, cx)
                         }))

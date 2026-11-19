@@ -165,7 +165,7 @@ impl Section {
         match self {
             Section::General => "How Arakun behaves when nothing is going on.",
             Section::Appearance => {
-                "Colors and shape are edited beside the app, not in this dialog."
+                "Colors, shape and the sidebar are edited beside the app, not in this dialog."
             }
             Section::Branches => {
                 "A new environment starts on a random branch name; an agent can rename it after the task. A merged pull request settles its threads."
@@ -1547,6 +1547,7 @@ impl SettingsDialog {
             group(vec![
                 row("Colors", "", value(self.look.colors.clone())).into_any_element(),
                 row("Shape", "", value(self.look.shape.clone())).into_any_element(),
+                row("Sidebar", "", value(self.look.sidebar.clone())).into_any_element(),
             ]),
             open,
         ])

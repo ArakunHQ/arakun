@@ -1059,7 +1059,7 @@ impl Shell {
                 )
                 .on_click(cx.listener(|this, _, window, cx| {
                     this.menu = None;
-                    this.open_sidebar_builder(window, cx)
+                    this.open_customize(CustomizeTab::Sidebar, window, cx)
                 })),
             )
             .into_any_element()
@@ -1128,7 +1128,7 @@ impl Shell {
                 )
                 .on_click(cx.listener(|this, _, window, cx| {
                     this.menu = None;
-                    this.open_sidebar_builder(window, cx)
+                    this.open_customize(CustomizeTab::Sidebar, window, cx)
                 })),
             )
             .into_any_element()

@@ -2319,10 +2319,13 @@ impl Shell {
                 }
             })
         };
-        let look = crate::customize_view::Summary::of(&match &self.customize {
-            Some((view, _)) => view.read(cx).saved().clone(),
-            None => crate::palettes::load(),
-        });
+        let look = crate::customize_view::Summary::of(
+            &match &self.customize {
+                Some((view, _)) => view.read(cx).saved().clone(),
+                None => crate::palettes::load(),
+            },
+            &self.sidebar,
+        );
         let dialog = cx.new(|cx| {
             SettingsDialog::new(
                 arcade,
@@ -2513,6 +2516,30 @@ impl Shell {
                             this.save(cx);
                             cx.refresh_windows();
                         }
+                        CustomizeEvent::SidebarStyle(style) => {
+                            let style = *style;
+                            this.change_sidebar(cx, |s| s.style = style);
+                        }
+                        CustomizeEvent::SidebarPreset(p) => {
+                            // A preset lays out the pieces; the look stays as chosen.
+                            let p = *p;
+                            this.change_sidebar(cx, |s| {
+                                let style = s.style;
+                                *s = p.layout();
+                                s.style = style;
+                            });
+                        }
+                        CustomizeEvent::RailWidth(w) => {
+                            this.rail_w = *w;
+                            this.save(cx);
+                            cx.notify();
+                        }
+                        CustomizeEvent::ResetSidebar => {
+                            this.change_sidebar(cx, |s| *s = crate::sidebar::Sidebar::default());
+                            this.rail_w = crate::state::RAIL_W;
+                            this.save(cx);
+                        }
+                        CustomizeEvent::ArrangeSidebar => this.open_sidebar_builder(window, cx),
                     },
                 );
             self.customize = Some((view, sub));
@@ -3484,7 +3511,7 @@ impl Render for Shell {
             })
             .on_action(cx.listener(|this, _: &ToggleDock, window, cx| this.toggle_dock(window, cx)))
             .on_action(cx.listener(|this, _: &CustomizeSidebar, window, cx| {
-                this.open_sidebar_builder(window, cx)
+                this.open_customize(CustomizeTab::Sidebar, window, cx)
             }))
             .on_action(cx.listener(|this, _: &OpenCustomize, window, cx| {
                 this.open_customize(CustomizeTab::Colors, window, cx)

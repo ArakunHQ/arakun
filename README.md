@@ -422,6 +422,12 @@ only sums up what is chosen. It opens without a project too.
   None, Default, Wide). The defaults (100%, 100%, 8 px) look as before and are kept in
   `palettes.json` too. Text size and Glass are here as well. Reset shape goes back to
   the defaults.
+- **Sidebar.** Start from a preset (Switcher, Focused, Developer, Notion, Icons,
+  Everything); it lays out the pieces and keeps the style you chose. Style (Card, Flush,
+  Floating), Rows, Width, Side, what Ctrl+B does, Counters and Shortcuts change the whole
+  sidebar. Arrange pieces opens the editor that adds, moves and groups them, and
+  "Customize sidebar…" in the sidebar's right-click menu opens this tab. Reset sidebar
+  goes back to the default layout and width. The layout is kept in `sidebar.json`.
 - **Design system.** The card at the foot of the panel opens the Design system tab:
   every color, type style and component, live, so a change can be judged on all of
   them at once.

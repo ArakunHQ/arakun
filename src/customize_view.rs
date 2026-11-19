@@ -11,6 +11,7 @@ use gpui::{
 };
 
 use crate::input::{InputEvent, TextInput};
+use crate::sidebar::{Collapse, Density, Preset, Side, Style, Variant};
 use crate::theme::{self, DiffPalette, Grays};
 use crate::ui::{self, ButtonKind, TypeScale, icon};
 
@@ -41,21 +42,47 @@ pub enum CustomizeEvent {
     TypeScale(TypeScale),
     DiffPalette(DiffPalette),
     Glass(bool),
+    /// The sidebar is the window's: these ask it to change and save it.
+    SidebarStyle(Style),
+    SidebarPreset(Preset),
+    RailWidth(f32),
+    ResetSidebar,
+    /// Open the editor that moves, adds and removes the sidebar's pieces.
+    ArrangeSidebar,
 }
+
+/// What the Sidebar tab shows of the window's sidebar, handed over by the
+/// window as it draws the panel.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RailLook {
+    pub style: Style,
+    pub width: f32,
+    /// The preset the pieces are laid out as, if they still are.
+    pub preset: Option<Preset>,
+}
+
+/// The widths the Sidebar tab offers.
+const RAIL_WIDTHS: [f32; 4] = [180., 200., 240., 280.];
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum CustomizeTab {
     Colors,
     Shape,
+    Sidebar,
 }
 
 impl CustomizeTab {
-    const ALL: [CustomizeTab; 2] = [CustomizeTab::Colors, CustomizeTab::Shape];
+    const ALL: [CustomizeTab; 3] = [
+        CustomizeTab::Colors,
+        CustomizeTab::Shape,
+        CustomizeTab::Sidebar,
+    ];
 
     fn label(self) -> &'static str {
         match self {
             CustomizeTab::Colors => "Colors",
             CustomizeTab::Shape => "Shape",
+            CustomizeTab::Sidebar => "Sidebar",
         }
     }
 
@@ -63,6 +90,7 @@ impl CustomizeTab {
         match self {
             CustomizeTab::Colors => "color-picker",
             CustomizeTab::Shape => "square",
+            CustomizeTab::Sidebar => "sidebar-left",
         }
     }
 }
@@ -90,6 +118,8 @@ pub struct CustomizeView {
     /// The panel's scroll, so a slider that moves the layout can stay under
     /// the pointer.
     scroll: gpui::ScrollHandle,
+    /// The window's sidebar, as last handed over.
+    rail: Option<RailLook>,
     _subs: [Subscription; 4],
 }
 
@@ -138,6 +168,7 @@ impl CustomizeView {
             palette_dirty: false,
             palette_writing: None,
             scroll: gpui::ScrollHandle::new(),
+            rail: None,
             _subs: [
                 share_sub,
                 name_sub,
@@ -149,6 +180,14 @@ impl CustomizeView {
                     async {}
                 }),
             ],
+        }
+    }
+
+    /// The window's sidebar as it is now; redraws only when it changed.
+    pub fn sync_rail(&mut self, look: RailLook, cx: &mut Context<Self>) {
+        if self.rail != Some(look) {
+            self.rail = Some(look);
+            cx.notify();
         }
     }
 
@@ -935,6 +974,185 @@ impl CustomizeView {
         ]
     }
 
+    fn render_sidebar(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let Some(look) = self.rail else {
+            return Vec::new();
+        };
+        let style = look.style;
+        fn choices<T: Copy + PartialEq + 'static>(
+            id: &'static str,
+            current: T,
+            opts: &[(T, &'static str)],
+            set: fn(&mut Style, T),
+            style: Style,
+            cx: &mut Context<CustomizeView>,
+        ) -> AnyElement {
+            let mut seg = ui::segmented().w_full();
+            for (i, (v, label)) in opts.iter().copied().enumerate() {
+                seg = seg.child(
+                    wide(ui::segment((id, i), None, label, current == v)).on_click(cx.listener(
+                        move |_, _, _, cx| {
+                            let mut s = style;
+                            set(&mut s, v);
+                            cx.emit(CustomizeEvent::SidebarStyle(s));
+                        },
+                    )),
+                );
+            }
+            seg.into_any_element()
+        }
+        let presets = div()
+            .flex()
+            .flex_wrap()
+            .gap(crate::ui::sp(4.))
+            .children(Preset::ALL.into_iter().enumerate().map(|(i, p)| {
+                ui::segment(("cz-preset", i), None, p.label(), look.preset == Some(p))
+                    .border_1()
+                    .border_color(theme::border_subtle())
+                    .tooltip(ui::tip_text(p.blurb()))
+                    .on_click(
+                        cx.listener(move |_, _, _, cx| cx.emit(CustomizeEvent::SidebarPreset(p))),
+                    )
+            }))
+            .into_any_element();
+        let width = {
+            let mut seg = ui::segmented().w_full();
+            for (i, w) in RAIL_WIDTHS.into_iter().enumerate() {
+                seg = seg.child(
+                    wide(ui::segment(
+                        ("cz-rail-width", i),
+                        None,
+                        format!("{w:.0}"),
+                        (look.width - w).abs() < 1.,
+                    ))
+                    .on_click(
+                        cx.listener(move |_, _, _, cx| cx.emit(CustomizeEvent::RailWidth(w))),
+                    ),
+                );
+            }
+            seg.into_any_element()
+        };
+        let switch = |id: &'static str, title: &'static str, on: bool, flip: fn(&mut Style)| {
+            div()
+                .id(id)
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap(crate::ui::sp(12.))
+                .cursor_pointer()
+                .child(name_label(title))
+                .child(ui::switch(on))
+                .on_click(cx.listener(move |_, _, _, cx| {
+                    let mut s = style;
+                    flip(&mut s);
+                    cx.emit(CustomizeEvent::SidebarStyle(s));
+                }))
+                .into_any_element()
+        };
+        let arrange = div()
+            .flex()
+            .flex_col()
+            .gap(crate::ui::sp(8.))
+            .child(heading("Pieces", None))
+            .child(hint_label(
+                "Add, move and group what the sidebar holds. Right-click a group's title to fold, ungroup or remove it.",
+            ))
+            .child(
+                ui::button_with(
+                    "cz-arrange",
+                    Some("dashboard-square01"),
+                    "Arrange pieces",
+                    ButtonKind::Outline,
+                    true,
+                )
+                .w_full()
+                .justify_center()
+                .on_click(cx.listener(|_, _, _, cx| cx.emit(CustomizeEvent::ArrangeSidebar))),
+            )
+            .into_any_element();
+        let switches = div()
+            .flex()
+            .flex_col()
+            .gap(crate::ui::sp(12.))
+            .child(switch("cz-badges", "Counters", style.badges, |s| {
+                s.badges = !s.badges
+            }))
+            .child(switch("cz-shortcuts", "Shortcuts", style.shortcuts, |s| {
+                s.shortcuts = !s.shortcuts
+            }))
+            .into_any_element();
+        vec![
+            stacked(
+                "Start from",
+                look.preset.is_none().then_some("Arranged by you"),
+                presets,
+            ),
+            arrange,
+            stacked(
+                "Style",
+                None,
+                choices(
+                    "cz-variant",
+                    style.variant,
+                    &[
+                        (Variant::Card, "Card"),
+                        (Variant::Flush, "Flush"),
+                        (Variant::Floating, "Floating"),
+                    ],
+                    |s, v| s.variant = v,
+                    style,
+                    cx,
+                ),
+            ),
+            stacked(
+                "Rows",
+                None,
+                choices(
+                    "cz-density",
+                    style.density,
+                    &[
+                        (Density::Compact, "Compact"),
+                        (Density::Normal, "Normal"),
+                        (Density::Roomy, "Roomy"),
+                    ],
+                    |s, v| s.density = v,
+                    style,
+                    cx,
+                ),
+            ),
+            stacked("Width", None, width),
+            stacked(
+                "Side",
+                None,
+                choices(
+                    "cz-side",
+                    style.side,
+                    &[(Side::Left, "Left"), (Side::Right, "Right")],
+                    |s, v| s.side = v,
+                    style,
+                    cx,
+                ),
+            ),
+            stacked(
+                "When hidden",
+                Some("Ctrl+B"),
+                choices(
+                    "cz-collapse",
+                    style.collapse,
+                    &[
+                        (Collapse::Hide, "Hides"),
+                        (Collapse::Icons, "Icons"),
+                        (Collapse::Never, "Never"),
+                    ],
+                    |s, v| s.collapse = v,
+                    style,
+                    cx,
+                ),
+            ),
+            switches,
+        ]
+    }
+
     /// The card at the foot of Colors and Shape: the colors in use, live, and
     /// the way into the Design system tab, which shows every component.
     fn render_preview(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -993,6 +1211,7 @@ impl CustomizeView {
 
     fn render_footer(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = self.tab == CustomizeTab::Colors;
+        let tab = self.tab;
         let code = self.palettes.active().share_code();
         div()
             .flex()
@@ -1007,20 +1226,18 @@ impl CustomizeView {
                 ui::button_with(
                     "customize-reset",
                     Some("refresh01"),
-                    if colors {
-                        "Reset colors"
-                    } else {
-                        "Reset shape"
+                    match tab {
+                        CustomizeTab::Colors => "Reset colors",
+                        CustomizeTab::Shape => "Reset shape",
+                        CustomizeTab::Sidebar => "Reset sidebar",
                     },
                     ButtonKind::Ghost,
                     true,
                 )
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    if colors {
-                        this.reset_colors(cx);
-                    } else {
-                        this.reset_shape(cx);
-                    }
+                .on_click(cx.listener(move |this, _, _, cx| match tab {
+                    CustomizeTab::Colors => this.reset_colors(cx),
+                    CustomizeTab::Shape => this.reset_shape(cx),
+                    CustomizeTab::Sidebar => cx.emit(CustomizeEvent::ResetSidebar),
                 })),
             )
             .child(div().flex_1())
@@ -1059,7 +1276,10 @@ impl Render for CustomizeView {
         let parts = match self.tab {
             CustomizeTab::Colors => self.render_colors(cx),
             CustomizeTab::Shape => self.render_shape(cx),
+            CustomizeTab::Sidebar => self.render_sidebar(cx),
         };
+        // The sidebar is beside the panel already; the card shows colors.
+        let preview = self.tab != CustomizeTab::Sidebar;
         div()
             .flex()
             .flex_col()
@@ -1091,8 +1311,10 @@ impl Render for CustomizeView {
                             })),
                     ),
             )
-            .child(self.render_preview(cx))
-            .child(div().h(px(8.)).flex_none())
+            .when(preview, |d| {
+                d.child(self.render_preview(cx))
+                    .child(div().h(px(8.)).flex_none())
+            })
             .child(self.render_footer(cx))
     }
 }
@@ -1193,10 +1415,11 @@ fn hue_at(t: f32) -> f32 {
 pub struct Summary {
     pub colors: String,
     pub shape: String,
+    pub sidebar: String,
 }
 
 impl Summary {
-    pub fn of(saved: &crate::palettes::Saved) -> Summary {
+    pub fn of(saved: &crate::palettes::Saved, sidebar: &crate::sidebar::Sidebar) -> Summary {
         let mode = if saved.light { "Light" } else { "Dark" };
         let colors = format!(
             "{mode} · {} · {} grays",
@@ -1216,7 +1439,30 @@ impl Summary {
         .map(|n| format!("{n} spacing"))
         .unwrap_or_else(|| format!("{:.0}% spacing", saved.space * 100.));
         let shape = format!("{corners} · {spacing} · {:.0} px gap", saved.window_gap);
-        Summary { colors, shape }
+        let style = match sidebar.style.variant {
+            Variant::Card => "Card",
+            Variant::Flush => "Flush",
+            Variant::Floating => "Floating",
+        };
+        let side = match sidebar.style.side {
+            Side::Left => "left",
+            Side::Right => "right",
+        };
+        let pieces = sidebar
+            .sections
+            .iter()
+            .flat_map(|s| &s.items)
+            .filter(|i| !i.piece.is_decoration())
+            .count();
+        let sidebar = format!(
+            "{style}, {side} · {pieces} {}",
+            if pieces == 1 { "piece" } else { "pieces" }
+        );
+        Summary {
+            colors,
+            shape,
+            sidebar,
+        }
     }
 }
 
@@ -1242,7 +1488,8 @@ mod tests {
     #[test]
     fn the_summary_names_presets_and_falls_back_to_numbers() {
         let mut saved = crate::palettes::Saved::default();
-        let s = Summary::of(&saved);
+        let mut sidebar = crate::sidebar::Preset::Focused.layout();
+        let s = Summary::of(&saved, &sidebar);
         assert!(s.colors.starts_with("Dark · "), "{}", s.colors);
         assert_eq!(s.shape, "Default corners · Default spacing · 8 px gap");
 
@@ -1250,7 +1497,18 @@ mod tests {
         saved.radius = 1.5;
         saved.space = 0.9;
         saved.window_gap = 0.;
-        let s = Summary::of(&saved);
+        sidebar.style.variant = Variant::Card;
+        sidebar.style.side = Side::Right;
+        sidebar.sections = vec![crate::sidebar::Section::new(
+            "A",
+            crate::sidebar::Mode::Fixed,
+            vec![
+                crate::sidebar::Piece::Search,
+                crate::sidebar::Piece::Separator,
+            ],
+        )];
+        let s = Summary::of(&saved, &sidebar);
+        assert_eq!(s.sidebar, "Card, right · 1 piece");
         assert!(s.colors.starts_with("Light · "), "{}", s.colors);
         assert_eq!(s.shape, "Round corners · 90% spacing · 0 px gap");
     }

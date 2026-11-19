@@ -4,8 +4,21 @@
 use super::*;
 
 impl Shell {
+    /// The sidebar as Customize's Sidebar tab shows it.
+    fn rail_look(&self) -> crate::customize_view::RailLook {
+        crate::customize_view::RailLook {
+            style: self.sidebar.style,
+            width: self.rail_w,
+            preset: crate::sidebar::Preset::ALL
+                .into_iter()
+                .find(|p| p.layout().sections == self.sidebar.sections),
+        }
+    }
+
     pub(super) fn render_panel(&self, cx: &mut Context<Self>) -> AnyElement {
         if let Some((view, _)) = &self.customize {
+            let look = self.rail_look();
+            view.update(cx, |v, cx| v.sync_rail(look, cx));
             return self
                 .side_card()
                 .id("customize-card")

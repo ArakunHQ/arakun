@@ -53,7 +53,12 @@ Every commit message and pull request title follows
 - Fill in `.github/pull_request_template.md`. Under "How did you test this?", list the
   commands you actually ran. Leave a checklist item unchecked if you did not run it.
 - Always open a pull request as a draft: `gh pr create --draft --body-file -`. Run the
-  checks below, wait for CI to pass, then mark it ready with `gh pr ready`. Marking it
+  checks below, wait for the required checks to pass (`gh pr checks --watch --required
+  --fail-fast`; also the macOS jobs if the diff touches macOS-only code, such as
+  `cfg(target_os = "macos")`, a path with `macos` in its name or the macOS build config), then mark
+  it ready with `gh pr ready`. The required **Human approval** status is a merge
+  gate, not part of this wait: it only resolves once a person approves, and marking
+  ready is what asks for the review. Marking it
   ready starts CodeRabbit, and the reviewers are asked once it finishes without
   approving or with a review thread still open, so don't do it before then.
 - Answer every CodeRabbit comment: fix it and push, or reply with the reason you

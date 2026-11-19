@@ -819,11 +819,18 @@ impl Shell {
             reach,
             in_the_clear: in_the_clear(s),
         };
+        // A server left out at start has no connection yet; picking it connects it.
         match &self.servers {
             Some(link) => link
                 .saved
                 .iter()
-                .filter_map(|s| Some(target(s, link.conns.get(&s.id)?.reach.clone())))
+                .map(|s| {
+                    let reach = link
+                        .conns
+                        .get(&s.id)
+                        .map_or(Reach::Connecting, |c| c.reach.clone());
+                    target(s, reach)
+                })
                 .collect(),
             None => servers::load()
                 .iter()

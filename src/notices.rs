@@ -425,6 +425,10 @@ pub fn cli(args: &[String]) -> i32 {
     let unseen_only = match args {
         [] => false,
         [flag] if flag == "--unseen" => true,
+        [flag] if crate::control::is_help(flag) => {
+            println!("usage: arakun notices [--unseen]");
+            return 0;
+        }
         _ => {
             eprintln!("usage: arakun notices [--unseen]");
             return 2;
@@ -768,5 +772,10 @@ mod tests {
         assert!(kept.chars().count() <= PREVIEW_CHARS + 1);
         assert!(kept.ends_with('…'));
         assert_eq!(preview("short"), "short");
+    }
+
+    #[test]
+    fn help_prints_the_usage() {
+        assert_eq!(cli(&["--help".to_string()]), 0);
     }
 }

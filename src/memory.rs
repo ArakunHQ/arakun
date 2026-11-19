@@ -946,6 +946,9 @@ pub fn run(args: &[String], cwd: &Path, root: &Path, at: u64) -> Result<String, 
     let rest = &args[1.min(args.len())..];
     match args.first().map(String::as_str) {
         None | Some("help" | "-h" | "--help") => Ok(USAGE.into()),
+        // Before a subcommand's arguments: `mem save --help` saved a memory
+        // titled `--help`.
+        Some(_) if rest.first().is_some_and(|a| crate::control::is_help(a)) => Ok(USAGE.into()),
         Some("save") => {
             let (mut title, mut words) = (None::<String>, Vec::new());
             let (mut kind, mut body, mut files, mut topic, mut scope) = (
@@ -1289,6 +1292,7 @@ mod tests {
         );
         assert!(run(&["save", "x", "--kind", "nope"]).is_err());
         assert!(run(&["save"]).unwrap_err().starts_with("usage"));
+        assert_eq!(run(&["save", "--help"]), Ok(USAGE.into()));
         let found = run(&["search", "ci", "polls"]).unwrap();
         assert!(
             found.starts_with("#1 [gotcha] Tests need ARAKUN_CI=off"),

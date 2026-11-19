@@ -869,6 +869,12 @@ Only `arakun` alone and `arakun <dir>` start the app. A word or flag it doesn't 
 such as a typo, prints an error and exits with code 2 (`arakun --help` lists the
 commands).
 
+`-h` or `--help` after a command prints its usage and runs nothing. A flag the command
+doesn't take prints an error and exits with code 2. Both count only before the
+payload, the prompt, message or command line a command passes on, so
+`arakun run make --help` runs `make --help`. A payload that starts with a dash needs
+`--` before it: `arakun notify -- -1 test failed`.
+
 To open the palette from any app, bind `arakun palette` to a global key in your
 desktop. On Hyprland, for example: `bind = SUPER, K, exec, arakun palette`.
 

@@ -783,7 +783,7 @@ impl Link {
                         let paired = self.access.lock().unwrap().pair_relay(secret, name, now);
                         match paired {
                             Some((device, token, ticket)) => {
-                                let told = json!({ "paired": { "id": device.id, "name": device.name, "token": token, "ticket": ticket, "host": host } });
+                                let told = json!({ "paired": { "id": device.id, "name": device.name, "token": token, "ticket": ticket, "host": host, "acks": true } });
                                 say(ws, channel, &mut session, &told.to_string())?;
                                 // The relay admits the phone by ticket from its next socket on.
                                 self.tickets = self.access.lock().unwrap().ticket_hashes();
@@ -811,7 +811,7 @@ impl Link {
                         let device = self.access.lock().unwrap().device_for(&token, now);
                         match device {
                             Some(device) => {
-                                let told = json!({ "ok": { "id": device.id, "name": device.name, "host": host } });
+                                let told = json!({ "ok": { "id": device.id, "name": device.name, "host": host, "acks": true } });
                                 say(ws, channel, &mut session, &told.to_string())?;
                                 self.ready(channel, &device.id);
                                 Ok(Peer::Ready {
@@ -851,21 +851,27 @@ impl Link {
                             respond(ws, channel, &mut session, &req["id"], reply)?;
                             outcome = self.apply(ws, channel, effect)?;
                         }
-                        Ok(msg) => match serde_json::from_value::<ClientMsg>(msg) {
-                            Ok(ClientMsg::Ping) => {}
-                            Ok(msg) => {
-                                let _ = self.tx.unbounded_send(Incoming::Message(
-                                    ClientId::from(channel),
-                                    msg,
-                                ));
+                        Ok(msg) => {
+                            let seq = wire::seq(&msg);
+                            match serde_json::from_value::<ClientMsg>(msg) {
+                                Ok(ClientMsg::Ping) => {}
+                                Ok(msg) => {
+                                    let _ = self.tx.unbounded_send(Incoming::Message(
+                                        ClientId::from(channel),
+                                        msg,
+                                    ));
+                                }
+                                Err(e) => say(
+                                    ws,
+                                    channel,
+                                    &mut session,
+                                    &wire::error(&format!("bad message: {e}")),
+                                )?,
                             }
-                            Err(e) => say(
-                                ws,
-                                channel,
-                                &mut session,
-                                &wire::error(&format!("bad message: {e}")),
-                            )?,
-                        },
+                            if let Some(seq) = seq {
+                                say(ws, channel, &mut session, &wire::ack(seq))?;
+                            }
+                        }
                     }
                     outcome.map(|()| Peer::Ready {
                         session,

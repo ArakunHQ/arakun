@@ -71,8 +71,10 @@ pub enum Event {
     Paired(Saved),
     /// A message from the server, whole (`wire`'s `part`s put back together).
     Message(Value),
-    /// A message [`Client::send`] was given that never went out: the
-    /// connection dropped first. What the user typed in it can go back.
+    /// A message [`Client::send`] was given that the server did not get:
+    /// the connection dropped first, before it went out or, with a server
+    /// that acknowledges what it reads, before the server said it read it.
+    /// What the user typed in it can go back.
     Undelivered(Value),
 }
 
@@ -132,6 +134,9 @@ impl Client {
             parts: wire::Parts::default(),
             timing,
             torn: false,
+            acks: false,
+            seq: 0,
+            unacked: Vec::new(),
         };
         let _ = std::thread::Builder::new()
             .name("arakun-server-link".into())
@@ -147,8 +152,10 @@ impl Client {
 
     /// A message to the server (the phone's `ClientMsg`, as JSON). Dropped
     /// while there is no connection, and told back as [`Event::Undelivered`]:
-    /// the server says where things stand again when there is one. After the
-    /// connection gave up for good, it is told back at once.
+    /// the server says where things stand again when there is one. So is one
+    /// that went out but was not acknowledged before the connection dropped,
+    /// when the server acknowledges. After the connection gave up for good,
+    /// it is told back at once.
     pub fn send(&self, msg: &Value) {
         let closed = self.closed.lock().unwrap_or_else(|e| e.into_inner());
         if *closed || self.out.send(Out::Say(msg.to_string())).is_err() {
@@ -208,6 +215,14 @@ struct Link {
     /// dropped without a close or a flush, so what was told back as
     /// undelivered does not go out after all.
     torn: bool,
+    /// This connection's server acknowledges each message by its `seq`
+    /// (`wire::ack`). An older one does not; what went out counts as got.
+    acks: bool,
+    /// The last `seq` given.
+    seq: u64,
+    /// What went out with a `seq` and was not acknowledged yet, oldest
+    /// first: the number and the message as the shell gave it.
+    unacked: Vec<(u64, String)>,
 }
 
 impl Link {
@@ -296,6 +311,35 @@ impl Link {
         }
     }
 
+    /// `text` as it goes to the server: numbered when the server acknowledges,
+    /// and then kept until it does.
+    fn numbered(&mut self, text: &str) -> String {
+        if !self.acks {
+            return text.to_string();
+        }
+        let Ok(Value::Object(mut msg)) = serde_json::from_str::<Value>(text) else {
+            return text.to_string();
+        };
+        self.seq += 1;
+        msg.insert("seq".into(), self.seq.into());
+        self.unacked.push((self.seq, text.to_string()));
+        Value::Object(msg).to_string()
+    }
+
+    /// The server read message `seq`.
+    fn acked(&mut self, seq: u64) {
+        self.unacked.retain(|(s, _)| *s != seq);
+    }
+
+    /// The server that was asked is gone: what it did not acknowledge is told
+    /// back, oldest first, and the next server is asked whether it acknowledges.
+    fn lost_unacked(&mut self) {
+        self.acks = false;
+        for (_, text) in std::mem::take(&mut self.unacked) {
+            self.undelivered(&text);
+        }
+    }
+
     /// `text` did not go out: the shell hears what it was.
     fn undelivered(&self, text: &str) {
         if let Ok(msg) = serde_json::from_str(text) {
@@ -311,6 +355,12 @@ impl Link {
 
     /// A message from the server, once all of it is here.
     fn heard(&mut self, msg: Value) {
+        if msg["type"] == "ack" {
+            if let Some(seq) = wire::seq(&msg) {
+                self.acked(seq);
+            }
+            return;
+        }
         if let Some(whole) = self.parts.take(msg) {
             self.tell(Event::Message(whole));
         }
@@ -337,13 +387,15 @@ impl Link {
         };
         let url = format!("{}/ws?t={}", socket_origin(&saved.origin), saved.token);
         let unpair = (format!("{}/unpair", saved.origin), saved.token.clone());
-        let mut ws = match connect(&url) {
+        let (mut ws, acks) = match connect(&url) {
             Ok(ws) => ws,
             Err(ended) => return ended,
         };
+        self.acks = acks;
         self.connected(wait);
         let ended = self.talk_direct(&mut ws, &unpair);
         self.hang_up(&mut ws);
+        self.lost_unacked();
         ended
     }
 
@@ -372,9 +424,13 @@ impl Link {
             while let Ok(out) = self.queued.try_recv() {
                 match out {
                     Out::Say(text) => {
-                        if let Err(e) = write_alone(ws, Message::text(text.as_str())) {
+                        let said = self.numbered(&text);
+                        if let Err(e) = write_alone(ws, Message::text(said)) {
                             self.torn = true;
-                            self.undelivered(&text);
+                            // Told back with the rest, in the order they went.
+                            if !self.acks {
+                                self.undelivered(&text);
+                            }
                             return Ended::Retry(format!("Could not write to the server: {e}"));
                         }
                     }
@@ -417,12 +473,13 @@ impl Link {
             }
         };
         let url = format!("{}/ws?{query}", socket_origin(&origin));
-        let mut ws = match connect(&url) {
+        let (mut ws, _) = match connect(&url) {
             Ok(ws) => ws,
             Err(ended) => return ended,
         };
         let ended = self.talk_relay(&mut ws, &origin, &label, wait);
         self.hang_up(&mut ws);
+        self.lost_unacked();
         ended
     }
 
@@ -466,6 +523,7 @@ impl Link {
                                     // first, but what the old one was asked
                                     // gets no answer, so it went away all the same.
                                     if ready {
+                                        self.lost_unacked();
                                         self.set_status(Status::ServerAway);
                                     }
                                     (session, ready) = (None, false);
@@ -477,6 +535,7 @@ impl Link {
                                 }
                                 "pc_offline" => {
                                     (handshake, session, ready) = (None, None, false);
+                                    self.lost_unacked();
                                     self.set_status(Status::ServerAway);
                                 }
                                 "bye" => {
@@ -555,9 +614,11 @@ impl Link {
                                     device: text("id"),
                                     token: text("token"),
                                 });
+                                self.acks = p["acks"] == true;
                                 ready = true;
                                 self.connected(wait);
-                            } else if msg.get("ok").is_some() {
+                            } else if let Some(ok) = msg.get("ok") {
+                                self.acks = ok["acks"] == true;
                                 ready = true;
                                 self.connected(wait);
                             } else if msg.get("res").is_none() {
@@ -582,9 +643,13 @@ impl Link {
             }
             while let Ok(out) = self.queued.try_recv() {
                 // Inside the channel, what would be an HTTP request is a `req`.
-                let (text, last) = match out {
-                    Out::Say(text) => (text, false),
+                let (text, said, last) = match out {
+                    Out::Say(text) => {
+                        let said = if ready { self.numbered(&text) } else { text.clone() };
+                        (text, said, false)
+                    }
                     Out::Unpair => (
+                        String::new(),
                         json!({ "req": { "id": 1, "method": "POST", "path": "/unpair", "body": null } })
                             .to_string(),
                         true,
@@ -592,10 +657,11 @@ impl Link {
                 };
                 // Before the server knows who this is, it would not listen.
                 if let (true, Some(seal)) = (ready, session.as_mut()) {
-                    let sealed = seal.seal(text.as_bytes());
+                    let sealed = seal.seal(said.as_bytes());
                     if let Err(ended) = send_frame(ws, DATA, &sealed) {
                         self.torn = true;
-                        if !last {
+                        // Numbered, it is told back with the rest.
+                        if !last && !self.acks {
                             self.undelivered(&text);
                         }
                         return ended;
@@ -883,7 +949,8 @@ fn relay_label(origin: &str) -> Result<String, Ended> {
 }
 
 /// TCP, TLS when the address asks for it, and the WebSocket handshake.
-fn connect(url: &str) -> Result<Socket, Ended> {
+/// The socket, and whether the server acknowledges what it reads.
+fn connect(url: &str) -> Result<(Socket, bool), Ended> {
     let (host, port) =
         host_port(url).ok_or_else(|| Ended::Refused(format!("Bad address: {url}")))?;
     let addrs = (host.as_str(), port)
@@ -901,7 +968,7 @@ fn connect(url: &str) -> Result<Socket, Ended> {
     let _ = stream.set_read_timeout(Some(CONNECT_TIMEOUT));
     let _ = stream.set_write_timeout(Some(CONNECT_TIMEOUT));
     // A `ws://` address comes back as a plain stream in the same wrapper.
-    let (ws, _) = tungstenite::client_tls(url, stream).map_err(|e| match e {
+    let (ws, res) = tungstenite::client_tls(url, stream).map_err(|e| match e {
         tungstenite::HandshakeError::Failure(tungstenite::Error::Http(res)) => {
             match res.status().as_u16() {
                 // The door itself said no: the token or the ticket is no longer good.
@@ -921,7 +988,7 @@ fn connect(url: &str) -> Result<Socket, Ended> {
     if let MaybeTlsStream::Rustls(s) = ws.get_ref() {
         let _ = s.get_ref().set_read_timeout(Some(READ_TICK));
     }
-    Ok(ws)
+    Ok((ws, res.headers().contains_key(wire::ACKS_HEADER)))
 }
 
 /// Host and port out of a `ws://` or `wss://` address.
@@ -1214,6 +1281,132 @@ mod tests {
         }
     }
 
+    /// A server's own socket, answered by hand: says it acknowledges when
+    /// `acks`, and returns what the app sent first.
+    // The callback's error type is tungstenite's to choose.
+    #[allow(clippy::result_large_err)]
+    fn accept_direct(listener: &TcpListener, acks: bool) -> WebSocket<TcpStream> {
+        let (stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        tungstenite::accept_hdr(
+            stream,
+            |_: &tungstenite::handshake::server::Request,
+             mut res: tungstenite::handshake::server::Response| {
+                if acks {
+                    res.headers_mut().insert(
+                        wire::ACKS_HEADER,
+                        tungstenite::http::HeaderValue::from_static("1"),
+                    );
+                }
+                Ok(res)
+            },
+        )
+        .unwrap()
+    }
+
+    fn next_text(ws: &mut WebSocket<TcpStream>) -> Value {
+        loop {
+            match ws.read().unwrap() {
+                Message::Text(t) => return serde_json::from_str(t.as_str()).unwrap(),
+                Message::Ping(_) | Message::Pong(_) => continue,
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+    }
+
+    fn direct_saved(listener: &TcpListener) -> Saved {
+        Saved {
+            id: "srv".into(),
+            name: "box".into(),
+            origin: format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port()),
+            way: Way::Direct,
+            device: "d".into(),
+            token: "t".into(),
+        }
+    }
+
+    #[test]
+    fn what_went_out_and_was_not_acknowledged_is_told_back() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let (tx, mut rx) = mpsc::unbounded();
+        let saved = direct_saved(&listener);
+        let client = Client::start("srv".into(), Who::Saved(saved), String::new(), tx, QUICK);
+        assert_eq!(status(&mut rx), Status::Connecting);
+        let mut ws = accept_direct(&listener, true);
+        assert_eq!(status(&mut rx), Status::Connected);
+
+        let got = json!({ "type": "answer", "session": "s1", "answers": [] });
+        let lost = json!({ "type": "send", "session": "s1", "text": "hi" });
+        client.send(&got);
+        let first = next_text(&mut ws);
+        assert_eq!(first["type"], "answer");
+        ws.send(Message::text(wire::ack(wire::seq(&first).unwrap())))
+            .unwrap();
+        client.send(&lost);
+        let second = next_text(&mut ws);
+        assert_eq!(second["type"], "send");
+        assert!(wire::seq(&second) > wire::seq(&first));
+
+        // The server read the second, but hangs up before it says so.
+        drop(ws);
+        match next(&mut rx) {
+            Event::Undelivered(msg) => assert_eq!(msg, lost),
+            _ => panic!("the unacknowledged message comes back before the drop"),
+        }
+        assert!(matches!(status(&mut rx), Status::Waiting { .. }));
+    }
+
+    #[test]
+    fn a_server_that_does_not_acknowledge_gets_plain_messages() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let (tx, mut rx) = mpsc::unbounded();
+        let saved = direct_saved(&listener);
+        let client = Client::start("srv".into(), Who::Saved(saved), String::new(), tx, QUICK);
+        assert_eq!(status(&mut rx), Status::Connecting);
+        let mut ws = accept_direct(&listener, false);
+        assert_eq!(status(&mut rx), Status::Connected);
+        let msg = json!({ "type": "cancel", "session": "s1" });
+        client.send(&msg);
+        assert_eq!(next_text(&mut ws), msg);
+        // Written whole, it counts as got, as before servers acknowledged.
+        drop(ws);
+        assert!(matches!(status(&mut rx), Status::Waiting { .. }));
+    }
+
+    #[test]
+    fn the_server_acknowledges_what_it_reads() {
+        let access = Access::new(Vec::new(), String::new());
+        let (server, mut incoming) = Server::start(Ipv4Addr::LOCALHOST, 0, access.clone()).unwrap();
+        let code = access.lock().unwrap().begin_pairing();
+        let (_, token) = access.lock().unwrap().pair(&code, "pc", 0).unwrap();
+        let url = format!("ws://127.0.0.1:{}/ws?t={token}", server.port());
+        let (mut ws, res) = tungstenite::connect(url).unwrap();
+        assert!(res.headers().contains_key(wire::ACKS_HEADER));
+        assert!(matches!(
+            from_server(&mut incoming),
+            Incoming::Connected(..)
+        ));
+        ws.send(Message::text(r#"{"type":"usage","seq":4}"#))
+            .unwrap();
+        ws.send(Message::text(r#"{"type":"nonsense","seq":5}"#))
+            .unwrap();
+        ws.send(Message::text(r#"{"type":"usage"}"#)).unwrap();
+        let mut acks = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while acks.len() < 2 && Instant::now() < deadline {
+            if let Ok(Message::Text(t)) = ws.read() {
+                let msg: Value = serde_json::from_str(t.as_str()).unwrap();
+                if msg["type"] == "ack" {
+                    acks.push(msg["seq"].as_u64().unwrap());
+                }
+            }
+        }
+        // A message it could not make sense of was read all the same.
+        assert_eq!(acks, [4, 5]);
+    }
+
     #[test]
     fn forgetting_a_server_has_it_forget_this_app() {
         let access = Access::new(Vec::new(), String::new());
@@ -1446,12 +1639,31 @@ mod tests {
             sealed(&mut ws, &mut session),
             json!({ "auth": { "token": "tok" } })
         );
-        seal(&mut ws, &mut session, json!({ "ok": { "id": "dev1" } }));
+        // This one acknowledges: what it read and did not say so for is
+        // told back when it goes, before the app hears it went.
+        seal(
+            &mut ws,
+            &mut session,
+            json!({ "ok": { "id": "dev1", "acks": true } }),
+        );
         assert_eq!(status(&mut rx), Status::Connected);
+        let got = json!({ "type": "cancel", "session": "s1" });
+        let lost = json!({ "type": "skip_question", "session": "s1" });
+        client.send(&got);
+        let said = sealed(&mut ws, &mut session);
+        assert_eq!(said["type"], "cancel");
+        seal(
+            &mut ws,
+            &mut session,
+            json!({ "type": "ack", "seq": said["seq"] }),
+        );
+        client.send(&lost);
+        assert_eq!(sealed(&mut ws, &mut session)["type"], "skip_question");
 
         // Another server process takes its place at the relay, which says
         // only that one is online: this one is gone, then back.
         ws.send(phone_frame(CONTROL, back.as_bytes())).unwrap();
+        assert!(matches!(next(&mut rx), Event::Undelivered(m) if m == lost));
         assert_eq!(status(&mut rx), Status::ServerAway);
         let (kind, hello) = next_frame(&mut ws);
         assert_eq!(kind, HELLO);

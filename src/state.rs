@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::agent::{SessionMeta, Setting};
 use crate::model::{
     Agent, Automation, Environment, Project, Session, Snippet, Split, SplitDir, Status, Tab,
-    TabKind,
+    TabKind, TabStrip,
 };
 
 #[derive(Serialize, Deserialize, Default)]
@@ -59,6 +59,9 @@ pub struct State {
     /// The Dynamic Island was turned off in Settings (`island`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub island_off: bool,
+    /// Closing the window hides it instead of quitting (`background`, Linux).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub background: bool,
     /// Where the window was when the app last saved, so it opens there again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window: Option<WindowState>,
@@ -262,8 +265,8 @@ pub struct Layout {
     pub glass: bool,
     pub grays: crate::theme::Grays,
     pub type_scale: crate::ui::TypeScale,
-    /// Whether the rail's usage card shows Claude, Droid and OpenCode.
-    pub rail_usage: [bool; 3],
+    /// Whether the rail's usage card shows Claude, Droid, OpenCode and Devin.
+    pub rail_usage: [bool; 4],
     pub ui_zoom: u32,
     pub window: Option<WindowState>,
 }
@@ -324,6 +327,9 @@ pub struct EnvState {
     /// Codex settings for the next session, as (key, value).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub codex_settings: Vec<(String, String)>,
+    /// Devin settings for the next session, as (key, value).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub devin_settings: Vec<(String, String)>,
     /// Workers AI settings for the next session, as (key, value).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub workers_ai_settings: Vec<(String, String)>,
@@ -346,6 +352,13 @@ pub struct EnvState {
     pub caret: usize,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub images: Vec<PathBuf>,
+    /// Unix seconds it was last on screen; 0 in files from before it was kept.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub used: u64,
+}
+
+fn is_zero_u64(n: &u64) -> bool {
+    *n == 0
 }
 
 fn is_zero(n: &usize) -> bool {
@@ -393,55 +406,179 @@ pub struct SessionState {
     pub auto_allow: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub continues: Vec<crate::model::Earlier>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub settled: bool,
 }
 
 fn is_session(t: &Tab) -> bool {
     matches!(t.kind, TabKind::Session { .. })
 }
 
-/// Position of the active tab among the session tabs (0 when another tab is active).
-fn active_session_tab(e: &Environment) -> usize {
-    match e.tabs.get(e.active_tab) {
-        Some(t) if is_session(t) => e.tabs[..e.active_tab]
-            .iter()
-            .filter(|t| is_session(t))
-            .count(),
-        _ => 0,
-    }
-}
-
 fn is_saved_browser(t: &Tab) -> bool {
     matches!(&t.kind, TabKind::Browser { url } if !matches!(url.as_ref(), "" | "about:blank"))
 }
 
-/// Position of a tab among the tabs that reopen after a restart, in their reopened order.
-fn reopened_index(e: &Environment, id: u64) -> Option<usize> {
-    let tab = e.tabs.iter().position(|t| t.id == id)?;
-    let before = &e.tabs[..tab];
-    if is_session(&e.tabs[tab]) {
+/// The tabs of one environment, in the order the strip shows them. The file
+/// keeps them per environment, as it did when every environment had its own tabs.
+fn tabs_of<'a>(strip: &'a TabStrip, e: &Environment) -> Vec<&'a Tab> {
+    strip.tabs.iter().filter(|t| t.is_in(&e.path)).collect()
+}
+
+/// Position of the environment's front tab among its session tabs (0 when it
+/// is another tab). With a split put aside, the tab of its focused pane counts:
+/// the split is saved against it.
+fn active_session_tab(strip: &TabStrip, e: &Environment) -> usize {
+    let tabs = tabs_of(strip, e);
+    let parked = strip
+        .parked
+        .get(&e.path)
+        .filter(|_| strip.split_env.as_deref() != Some(&e.path));
+    let front = match parked {
+        Some((_, focus)) => Some(*focus),
+        None => strip.front_of(&e.path).map(|i| strip.tabs[i].id),
+    };
+    match tabs.iter().position(|t| Some(t.id) == front) {
+        Some(i) if is_session(tabs[i]) => tabs[..i].iter().filter(|t| is_session(t)).count(),
+        _ => 0,
+    }
+}
+
+/// Position of a tab among its environment's tabs that reopen after a restart,
+/// in their reopened order.
+fn reopened_index(strip: &TabStrip, e: &Environment, id: u64) -> Option<usize> {
+    let tabs = tabs_of(strip, e);
+    let tab = tabs.iter().position(|t| t.id == id)?;
+    let before = &tabs[..tab];
+    if is_session(tabs[tab]) {
         Some(before.iter().filter(|t| is_session(t)).count())
-    } else if is_saved_browser(&e.tabs[tab]) {
-        let sessions = e.tabs.iter().filter(|t| is_session(t)).count();
+    } else if is_saved_browser(tabs[tab]) {
+        let sessions = tabs.iter().filter(|t| is_session(t)).count();
         Some(sessions + before.iter().filter(|t| is_saved_browser(t)).count())
     } else {
         None
     }
 }
 
-fn split_state(e: &Environment) -> Option<SplitState> {
-    let split = e.split.as_ref()?;
-    e.split_other()?;
+/// The split, kept with the environment whose two tabs it shows.
+fn split_state(strip: &TabStrip, e: &Environment) -> Option<SplitState> {
+    let split = if strip.split_env.as_deref() == Some(&e.path) {
+        strip.split_other(&e.path)?;
+        strip.split?
+    } else {
+        // Not on screen: its split waits with the strip.
+        strip.parked.get(&e.path)?.0
+    };
     Some(SplitState {
-        tab: reopened_index(e, split.other)?,
+        tab: reopened_index(strip, e, split.other)?,
         down: split.dir == SplitDir::Down,
         ratio: split.ratio,
         focus_first: split.focus_first,
     })
 }
 
-/// Where a session's transcript is saved.
 pub fn transcript_path(id: &str) -> PathBuf {
     data_dir().join("sessions").join(format!("{id}.json"))
+}
+
+/// Where a session is written out as markdown for another agent to read: when
+/// it is linked into a draft, or when another agent continues it.
+pub fn linked_path(id: &str) -> PathBuf {
+    data_dir().join("linked").join(format!("{id}.md"))
+}
+
+/// The files a session leaves in the data dir.
+pub fn session_files(id: &str) -> [PathBuf; 2] {
+    [transcript_path(id), linked_path(id)]
+}
+
+/// How long the files of a session its state stopped listing are kept,
+/// counted from the first startup that found it gone. Removing the session
+/// deletes them at once; the sweep is for the few that missed it, such as a
+/// worktree removed outside Arakun.
+const ORPHAN_AGE: u64 = 7 * 24 * 60 * 60;
+
+/// The sessions a state was seen listing, kept next to it: None while it
+/// still lists one, else when (Unix seconds) a startup first found it gone.
+type Seen = std::collections::BTreeMap<String, Option<u64>>;
+
+/// Where the sessions a state was seen listing are kept: next to it, named
+/// after its whole file name, so `work.json` and `work.backup` don't share.
+fn seen_path() -> PathBuf {
+    let state = file();
+    let name = state.file_name().unwrap_or_default().to_string_lossy();
+    state.with_file_name(format!("{name}.seen"))
+}
+
+/// Deletes the transcripts and linked notes of sessions this state listed
+/// before and has not listed for `ORPHAN_AGE`, such as those of an
+/// environment whose worktree was removed outside Arakun.
+///
+/// Only sessions this state was seen listing count. Another Arakun with its
+/// own state (`ARAKUN_STATE`), of any version, keeps its sessions in the same
+/// folder, and a file whose owner was never seen is never deleted. `listed`
+/// is what the state held when Arakun loaded it. Skipped when the state or
+/// the seen list can't be read, since every file would look unlisted.
+pub fn sweep_orphans(listed: std::collections::HashSet<String>) {
+    let parses = std::fs::read(file())
+        .ok()
+        .is_some_and(|b| serde_json::from_slice::<State>(&b).is_ok());
+    if !parses {
+        return;
+    }
+    let seen_path = seen_path();
+    let seen: Seen = match std::fs::read(&seen_path) {
+        Ok(bytes) => match serde_json::from_slice(&bytes) {
+            Ok(seen) => seen,
+            Err(_) => return,
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Seen::new(),
+        Err(_) => return,
+    };
+    let dirs = [
+        (data_dir().join("sessions"), "json"),
+        (data_dir().join("linked"), "md"),
+    ];
+    let seen = sweep(&dirs, seen, &listed, crate::model::unix_now());
+    if let Ok(bytes) = serde_json::to_vec(&seen) {
+        let _ = crate::durable::write(&seen_path, &bytes);
+    }
+}
+
+/// Deletes the files in `dirs` (`<id>.<ext>`) of the sessions `seen` holds
+/// that `listed` has not held for `ORPHAN_AGE`, and returns the seen list for
+/// next time. A session whose files can't be checked or deleted, or whose
+/// headless folder may still be there, stays for the next startup to retry.
+fn sweep(
+    dirs: &[(PathBuf, &str)],
+    mut seen: Seen,
+    listed: &std::collections::HashSet<String>,
+    now: u64,
+) -> Seen {
+    for id in listed {
+        seen.insert(id.clone(), None);
+    }
+    seen.retain(|id, gone| {
+        if listed.contains(id) {
+            return true;
+        }
+        let since = *gone.get_or_insert(now);
+        if now.saturating_sub(since) <= ORPHAN_AGE {
+            return true;
+        }
+        // A headless session's own folder keeps it, listed or not.
+        if !matches!(crate::headless::dir(id).try_exists(), Ok(false)) {
+            return true;
+        }
+        let mut kept = false;
+        for (dir, ext) in dirs {
+            match std::fs::remove_file(dir.join(format!("{id}.{ext}"))) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => kept = true,
+                _ => {}
+            }
+        }
+        kept
+    });
+    seen
 }
 
 /// Sessions `arakun restart` cut off mid-turn, for the next arakun to reopen.
@@ -453,6 +590,19 @@ pub fn resume_path() -> PathBuf {
 /// has its own first launch too.
 pub fn onboarding_path() -> PathBuf {
     file().with_extension("onboarding.json")
+}
+
+/// Held by the one Arakun that loads and saves this state; next to it, so a
+/// second Arakun with its own state (`ARAKUN_STATE`) runs beside it.
+pub fn lock_path() -> PathBuf {
+    lock_for(&file())
+}
+
+/// `state.json.lock`: the whole name, so `a.json` and `a.alt` get two locks.
+fn lock_for(state: &Path) -> PathBuf {
+    let mut name = state.as_os_str().to_owned();
+    name.push(".lock");
+    PathBuf::from(name)
 }
 
 /// Whether Arakun saved its state here before: not a first launch.
@@ -471,39 +621,121 @@ fn file() -> PathBuf {
 }
 
 pub fn load() -> State {
-    std::fs::read(file())
-        .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or(State {
-            dock_open: true,
-            dock_height: DOCK_HEIGHT,
-            rail_open: true,
-            panel_open: true,
-            rail_w: RAIL_W,
-            panel_w: PANEL_W,
-            subagents_w: SUBAGENTS_W,
-            arcade: true,
-            ..Default::default()
-        })
+    load_from(&file())
 }
 
-pub fn write(bytes: &[u8]) -> std::io::Result<()> {
-    crate::durable::write(&file(), bytes)
+/// A file this build can't read (say, from a newer Arakun that knows more
+/// agents) is set aside, not saved over on quit.
+fn load_from(path: &Path) -> State {
+    crate::stored::load(path).unwrap_or(State {
+        dock_open: true,
+        dock_height: DOCK_HEIGHT,
+        rail_open: true,
+        panel_open: true,
+        rail_w: RAIL_W,
+        panel_w: PANEL_W,
+        subagents_w: SUBAGENTS_W,
+        arcade: true,
+        ..Default::default()
+    })
 }
 
+/// The newest state snapshot not yet on disk. Saves are written off the UI
+/// thread, on whichever thread is free; each takes the newest snapshot when
+/// its turn comes, so an older one can never be renamed over a newer one.
+static SAVES: Saves = Saves::new();
+
+/// Queues `bytes` (on the UI thread, where the state changes) in place of
+/// any older snapshot not written yet.
+pub fn queue(bytes: Vec<u8>) {
+    SAVES.queue(bytes);
+}
+
+/// Writes the newest queued snapshot, if a save before this one has not.
+/// A state.json that could not be read on launch is set aside first, or
+/// kept and the save fails.
+pub fn write_queued() -> std::io::Result<()> {
+    SAVES.write(|bytes| crate::stored::write(&file(), bytes))
+}
+
+struct Saves {
+    pending: std::sync::Mutex<Option<Vec<u8>>>,
+    writing: std::sync::Mutex<()>,
+}
+
+impl Saves {
+    const fn new() -> Self {
+        Saves {
+            pending: std::sync::Mutex::new(None),
+            writing: std::sync::Mutex::new(()),
+        }
+    }
+
+    fn pending(&self) -> std::sync::MutexGuard<'_, Option<Vec<u8>>> {
+        self.pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn queue(&self, bytes: Vec<u8>) {
+        *self.pending() = Some(bytes);
+    }
+
+    fn write(&self, write: impl FnOnce(&[u8]) -> std::io::Result<()>) -> std::io::Result<()> {
+        // One write at a time: the snapshot taken here is the newest, and
+        // a newer one queued meanwhile waits and is written after it.
+        let _one_at_a_time = self
+            .writing
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(bytes) = self.pending().take() else {
+            return Ok(());
+        };
+        let written = write(&bytes);
+        if written.is_err() {
+            // Kept for the next save to try, unless a newer one came.
+            self.pending().get_or_insert(bytes);
+        }
+        written
+    }
+}
+
+/// [`snapshot_with`] for projects that have no tabs open.
+#[cfg(test)]
 pub fn snapshot(projects: &[Project], active_project: usize, layout: Layout) -> Vec<u8> {
+    snapshot_with(projects, &TabStrip::default(), active_project, layout)
+}
+
+pub fn snapshot_with(
+    projects: &[Project],
+    strip: &TabStrip,
+    active_project: usize,
+    layout: Layout,
+) -> Vec<u8> {
+    // Headless sessions are listed from their own folder, not saved here;
+    // their project stays once it holds sessions the app took over.
+    // A server's projects and folders come from the server each time.
+    let saved = |p: &&Project| {
+        !p.is_remote()
+            && (p.path != crate::headless::root()
+                || p.environments
+                    .iter()
+                    .flat_map(|e| &e.sessions)
+                    .any(|s| !crate::headless::shown(&s.id)))
+    };
+    let kept = projects.iter().filter(saved).count();
+    // The index is into the saved list, so skipped projects before the active
+    // one must not count. Local projects added later sit behind remote ones.
+    let active_saved = projects
+        .iter()
+        .take(active_project)
+        .filter(saved)
+        .count()
+        .min(kept.saturating_sub(1));
     let state = State {
         projects: projects
             .iter()
-            // Headless sessions are listed from their own folder, not saved here;
-            // their project stays once it holds sessions the app took over.
-            .filter(|p| {
-                p.path != crate::headless::root()
-                    || p.environments
-                        .iter()
-                        .flat_map(|e| &e.sessions)
-                        .any(|s| !crate::headless::shown(&s.id))
-            })
+            .filter(saved)
             .map(|p| ProjectState {
                 path: p.path.clone(),
                 logo: p.logo,
@@ -516,16 +748,22 @@ pub fn snapshot(projects: &[Project], active_project: usize, layout: Layout) -> 
                 automations: p.automations.clone(),
                 #[cfg(feature = "coderlabs")]
                 coderspace: p.coderspace.clone(),
-                active_env: p.environments.get(p.active_env).map(|e| e.path.clone()),
+                active_env: p
+                    .environments
+                    .get(p.active_env)
+                    .filter(|e| e.remote.is_none())
+                    .map(|e| e.path.clone()),
                 envs: p
                     .environments
                     .iter()
+                    .filter(|e| e.remote.is_none())
                     .map(|e| EnvState {
                         path: e.path.clone(),
                         branch: Some(e.branch.to_string()),
                         is_main: e.is_checkout,
                         placeholder: e.placeholder.clone(),
                         follow_branch: e.follow_branch,
+                        used: e.used,
                         agent: Some(e.agent.key().into()),
                         settings: e
                             .draft_settings
@@ -544,6 +782,11 @@ pub fn snapshot(projects: &[Project], active_project: usize, layout: Layout) -> 
                             .collect(),
                         codex_settings: e
                             .codex_settings
+                            .iter()
+                            .map(|(s, v)| (s.key().to_string(), v.clone()))
+                            .collect(),
+                        devin_settings: e
+                            .devin_settings
                             .iter()
                             .map(|(s, v)| (s.key().to_string(), v.clone()))
                             .collect(),
@@ -570,20 +813,19 @@ pub fn snapshot(projects: &[Project], active_project: usize, layout: Layout) -> 
                                 cli_model: s.cli_model.clone(),
                                 auto_allow: s.auto_allow,
                                 continues: s.continues.clone(),
+                                settled: s.settled,
                             })
                             .collect(),
-                        open: e
-                            .tabs
-                            .iter()
+                        open: tabs_of(strip, e)
+                            .into_iter()
                             .filter_map(|t| match &t.kind {
                                 TabKind::Session { id, .. } => Some(id.to_string()),
                                 _ => None,
                             })
                             .collect(),
-                        active_tab: active_session_tab(e),
-                        browsers: e
-                            .tabs
-                            .iter()
+                        active_tab: active_session_tab(strip, e),
+                        browsers: tabs_of(strip, e)
+                            .into_iter()
                             .filter_map(|t| match &t.kind {
                                 // Blank tabs are not worth reopening.
                                 TabKind::Browser { url } if is_saved_browser(t) => {
@@ -592,7 +834,7 @@ pub fn snapshot(projects: &[Project], active_project: usize, layout: Layout) -> 
                                 _ => None,
                             })
                             .collect(),
-                        split: split_state(e),
+                        split: split_state(strip, e),
                         draft: e.draft.to_string(),
                         caret: e.draft.head(),
                         images: e.draft_images.clone(),
@@ -600,7 +842,7 @@ pub fn snapshot(projects: &[Project], active_project: usize, layout: Layout) -> 
                     .collect(),
             })
             .collect(),
-        active_project,
+        active_project: active_saved,
         dock_open: layout.dock_open,
         dock_height: layout.dock_height,
         rail_open: layout.rail_open,
@@ -618,6 +860,7 @@ pub fn snapshot(projects: &[Project], active_project: usize, layout: Layout) -> 
             ("claude", layout.rail_usage[0]),
             ("droid", layout.rail_usage[1]),
             ("opencode", layout.rail_usage[2]),
+            ("devin", layout.rail_usage[3]),
         ]
         .into_iter()
         .filter(|(_, shown)| !shown)
@@ -626,14 +869,20 @@ pub fn snapshot(projects: &[Project], active_project: usize, layout: Layout) -> 
         ui_zoom: layout.ui_zoom,
         last_agent: crate::model::default_agent().key().to_string(),
         island_off: !crate::island::enabled(),
+        background: crate::background::enabled(),
         window: layout.window,
     };
     serde_json::to_vec_pretty(&state).unwrap_or_default()
 }
 
-pub fn restore(state: State) -> (Vec<Project>, usize, Layout) {
+pub fn restore(state: State) -> (Vec<Project>, usize, Layout, TabStrip) {
+    let mut strip = TabStrip::default();
+    // The split each environment was saved with, and the tab of its focused
+    // pane; the one on screen gets its own back, the others wait.
+    let mut splits: Vec<(PathBuf, Split, u64)> = Vec::new();
     let last_agent = state.last_agent.clone();
     crate::island::set_enabled(!state.island_off);
+    crate::background::set_enabled(state.background);
     let projects: Vec<Project> = state
         .projects
         .into_iter()
@@ -645,6 +894,11 @@ pub fn restore(state: State) -> (Vec<Project>, usize, Layout) {
                     let mut env = Environment::new(e.path, None, e.is_main);
                     env.placeholder = e.placeholder;
                     env.follow_branch = e.follow_branch;
+                    // Unknown in an older file: counted from now, so nothing
+                    // looks old the first time the cleanup runs.
+                    if e.used > 0 {
+                        env.used = e.used;
+                    }
                     env.set_branch(e.branch);
                     if let Some(agent) = e.agent {
                         env.agent = Agent::from_key(&agent);
@@ -666,6 +920,11 @@ pub fn restore(state: State) -> (Vec<Project>, usize, Layout) {
                         .collect();
                     env.codex_settings = e
                         .codex_settings
+                        .into_iter()
+                        .filter_map(|(k, v)| Setting::from_key(&k).map(|s| (s, v)))
+                        .collect();
+                    env.devin_settings = e
+                        .devin_settings
                         .into_iter()
                         .filter_map(|(k, v)| Setting::from_key(&k).map(|s| (s, v)))
                         .collect();
@@ -697,16 +956,18 @@ pub fn restore(state: State) -> (Vec<Project>, usize, Layout) {
                             session.cli_model = s.cli_model;
                             session.auto_allow = s.auto_allow;
                             session.continues = s.continues;
+                            session.settled = s.settled;
                             session.status = Status::Idle;
                             session
                         })
                         .collect();
-                    let tabs: Vec<Tab> = e
+                    let mut tabs: Vec<Tab> = e
                         .open
                         .iter()
                         .filter_map(|id| {
                             let s = &env.sessions[env.session_index(id)?];
-                            Some(Tab::new(
+                            Some(Tab::of(
+                                &env.path,
                                 s.title.clone(),
                                 TabKind::Session {
                                     agent: s.agent,
@@ -715,7 +976,6 @@ pub fn restore(state: State) -> (Vec<Project>, usize, Layout) {
                             ))
                         })
                         .collect();
-                    let mut tabs = tabs;
                     let sessions_open = tabs.len();
                     tabs.extend(e.browsers.into_iter().map(|url| {
                         let title = if url.is_empty() {
@@ -723,29 +983,36 @@ pub fn restore(state: State) -> (Vec<Project>, usize, Layout) {
                         } else {
                             url.clone()
                         };
-                        Tab::new(title, TabKind::Browser { url: url.into() })
+                        Tab::of(&env.path, title, TabKind::Browser { url: url.into() })
                     }));
-                    if !tabs.is_empty() {
-                        env.active_tab = if sessions_open > 0 {
-                            e.active_tab.min(sessions_open - 1)
-                        } else {
-                            0
-                        };
-                        env.tabs = tabs;
+                    let front = if sessions_open > 0 {
+                        e.active_tab.min(sessions_open - 1)
+                    } else {
+                        0
+                    };
+                    if let Some(tab) = tabs.get(front) {
+                        strip.front.insert(env.path.clone(), tab.id);
                     }
-                    env.split = e.split.and_then(|s| {
-                        let other = env.tabs.get(s.tab).filter(|_| s.tab != env.active_tab)?;
-                        Some(Split {
-                            other: other.id,
-                            dir: if s.down {
-                                SplitDir::Down
-                            } else {
-                                SplitDir::Right
+                    if let Some(s) = e.split
+                        && let Some(other) = tabs.get(s.tab).filter(|_| s.tab != front)
+                        && let Some(focus) = tabs.get(front)
+                    {
+                        splits.push((
+                            env.path.clone(),
+                            Split {
+                                other: other.id,
+                                dir: if s.down {
+                                    SplitDir::Down
+                                } else {
+                                    SplitDir::Right
+                                },
+                                ratio: s.ratio.clamp(Split::MIN_RATIO, Split::MAX_RATIO),
+                                focus_first: s.focus_first,
                             },
-                            ratio: s.ratio.clamp(Split::MIN_RATIO, Split::MAX_RATIO),
-                            focus_first: s.focus_first,
-                        })
-                    });
+                            focus.id,
+                        ));
+                    }
+                    strip.tabs.extend(tabs);
                     env
                 })
                 .collect();
@@ -775,6 +1042,24 @@ pub fn restore(state: State) -> (Vec<Project>, usize, Layout) {
         })
         .collect();
     let active = state.active_project.min(projects.len().saturating_sub(1));
+    // The strip opens on the tab of the environment that was on screen.
+    if let Some(shown) = projects
+        .get(active)
+        .and_then(|p| p.environments.get(p.active_env))
+    {
+        strip.active_tab = strip
+            .front_of(&shown.path)
+            .unwrap_or_else(|| strip.add(Tab::new_session(&shown.path)));
+        for (path, split, focus) in splits {
+            if path == shown.path {
+                strip.split = Some(split);
+            } else {
+                strip.parked.insert(path, (split, focus));
+            }
+        }
+        strip.split_env = Some(shown.path.clone());
+        strip.seed_tab_history();
+    }
     let layout = Layout {
         dock_open: state.dock_open,
         dock_height: state.dock_height,
@@ -789,7 +1074,7 @@ pub fn restore(state: State) -> (Vec<Project>, usize, Layout) {
         glass: state.glass,
         grays: crate::theme::Grays::from_id(&state.grays),
         type_scale: crate::ui::TypeScale::from_id(&state.type_scale),
-        rail_usage: ["claude", "droid", "opencode"]
+        rail_usage: ["claude", "droid", "opencode", "devin"]
             .map(|k| !state.rail_hidden.iter().any(|h| h == k)),
         // 0 only comes from `State::default()`, when there is no state file.
         ui_zoom: if state.ui_zoom == 0 {
@@ -811,7 +1096,7 @@ pub fn restore(state: State) -> (Vec<Project>, usize, Layout) {
         (true, Some(agent)) => crate::model::set_default_agent(agent),
         (true, None) => {}
     }
-    (projects, active, layout)
+    (projects, active, layout, strip)
 }
 
 pub fn new_project(path: &Path) -> Project {
@@ -837,6 +1122,76 @@ pub fn new_project(path: &Path) -> Project {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn record(
+        disk: &std::sync::Mutex<Vec<Vec<u8>>>,
+        fail: bool,
+    ) -> impl FnOnce(&[u8]) -> std::io::Result<()> + '_ {
+        move |bytes| {
+            if fail {
+                return Err(std::io::Error::other("disk full"));
+            }
+            disk.lock().unwrap().push(bytes.to_vec());
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn only_the_newest_queued_snapshot_is_written() {
+        let saves = Saves::new();
+        let disk = std::sync::Mutex::new(Vec::new());
+        saves.queue(b"older".to_vec());
+        saves.queue(b"newer".to_vec());
+        // Two save tasks ran; the first takes the newest, the second finds
+        // nothing left.
+        saves.write(record(&disk, false)).unwrap();
+        saves.write(record(&disk, false)).unwrap();
+        assert_eq!(*disk.lock().unwrap(), [b"newer".to_vec()]);
+    }
+
+    #[test]
+    fn a_failed_save_is_kept_for_the_next_one() {
+        let saves = Saves::new();
+        let disk = std::sync::Mutex::new(Vec::new());
+        saves.queue(b"state".to_vec());
+        assert!(saves.write(record(&disk, true)).is_err());
+        saves.write(record(&disk, false)).unwrap();
+        assert_eq!(*disk.lock().unwrap(), [b"state".to_vec()]);
+        // A newer snapshot queued after a failure replaces the failed one.
+        saves.queue(b"old".to_vec());
+        assert!(saves.write(record(&disk, true)).is_err());
+        saves.queue(b"new".to_vec());
+        saves.write(record(&disk, false)).unwrap();
+        assert_eq!(disk.lock().unwrap().last().unwrap(), b"new");
+    }
+
+    #[test]
+    fn saves_from_many_threads_end_with_the_newest() {
+        let saves = Saves::new();
+        let disk = std::sync::Mutex::new(Vec::new());
+        std::thread::scope(|scope| {
+            for n in 0..32u8 {
+                saves.queue(vec![n]);
+                let (saves, disk) = (&saves, &disk);
+                scope.spawn(move || saves.write(record(disk, false)).unwrap());
+            }
+        });
+        let disk = disk.into_inner().unwrap();
+        assert_eq!(disk.last().unwrap(), &[31]);
+        assert!(disk.windows(2).all(|w| w[0] < w[1]), "{disk:?}");
+    }
+
+    #[test]
+    fn a_settled_session_stays_settled() {
+        let old: SessionState =
+            serde_json::from_str(r#"{"id":"s1","title":"T","agent":"droid","updated":1}"#).unwrap();
+        assert!(!old.settled, "older state files have nothing settled");
+        assert!(serde_json::to_value(&old).unwrap().get("settled").is_none());
+        let json = r#"{"id":"s1","title":"T","agent":"droid","updated":1,"settled":true}"#;
+        let s: SessionState = serde_json::from_str(json).unwrap();
+        assert!(s.settled);
+        assert_eq!(serde_json::to_value(&s).unwrap()["settled"], true);
+    }
 
     #[test]
     fn continued_sessions_keep_what_they_took_over() {
@@ -875,6 +1230,72 @@ mod tests {
     }
 
     #[test]
+    fn only_sessions_unlisted_for_a_week_are_swept() {
+        let dir = std::env::temp_dir().join(format!("arakun-sweep-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (sessions, linked) = (dir.join("sessions"), dir.join("linked"));
+        for d in [&sessions, &linked] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        for name in [
+            "listed.json",
+            "removed.json",
+            "recent.json",
+            "headless-run.json",
+            "theirs.json",
+        ] {
+            std::fs::write(sessions.join(name), "{}").unwrap();
+        }
+        std::fs::write(linked.join("removed.md"), "").unwrap();
+        let headless = dir.join("headless");
+        std::fs::create_dir_all(headless.join("headless-run")).unwrap();
+        crate::headless::TEST_ROOT.with(|r| *r.borrow_mut() = Some(headless));
+
+        let now = 100 * ORPHAN_AGE;
+        let long_ago = Some(now - ORPHAN_AGE - 1);
+        let seen = Seen::from([
+            ("listed".into(), None),
+            ("removed".into(), long_ago),
+            ("recent".into(), Some(now - 60)),
+            ("headless-run".into(), long_ago),
+            // Listed at the last startup: gone from now on, kept a week.
+            ("dropped".into(), None),
+        ]);
+        let listed = ["listed", "new"].map(String::from).into();
+        let dirs = [(sessions.clone(), "json"), (linked.clone(), "md")];
+        let kept = sweep(&dirs, seen, &listed, now);
+        crate::headless::TEST_ROOT.with(|r| *r.borrow_mut() = None);
+
+        assert_eq!(
+            kept,
+            Seen::from([
+                ("listed".into(), None),
+                ("new".into(), None),
+                ("recent".into(), Some(now - 60)),
+                ("headless-run".into(), long_ago),
+                ("dropped".into(), Some(now)),
+            ])
+        );
+        let mut left: Vec<_> = [&sessions, &linked]
+            .iter()
+            .flat_map(|d| std::fs::read_dir(d).unwrap())
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        left.sort();
+        // Another state's session, never seen here, stays whatever its age.
+        assert_eq!(
+            left,
+            [
+                "headless-run.json",
+                "listed.json",
+                "recent.json",
+                "theirs.json"
+            ]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn old_automations_load_as_manual_commands() {
         let json = r#"{"path":"/tmp/p","logo":1,"art":0,"automations":[{"name":"Tests","body":"cargo test"}]}"#;
         let p: ProjectState = serde_json::from_str(json).unwrap();
@@ -907,12 +1328,50 @@ mod tests {
             glass: false,
             grays: crate::theme::Grays::Crisp,
             type_scale: crate::ui::TypeScale::Compact,
-            rail_usage: [true, true, true],
+            rail_usage: [true, true, true, true],
             ui_zoom: 100,
             window: None,
         };
-        let (_, _, layout) = restore(serde_json::from_slice(&snapshot(&[], 0, layout)).unwrap());
+        let (_, _, layout, _) = restore(serde_json::from_slice(&snapshot(&[], 0, layout)).unwrap());
         assert!(!layout.rail_open && !layout.panel_open);
+    }
+
+    #[test]
+    fn active_project_counts_only_saved_projects() {
+        let local = |n: &str| new_project(Path::new(&format!("/tmp/arakun-active-{n}")));
+        let remote = |k: &str| new_project(&crate::model::Remote::project_path(k));
+        // A local project added after the servers' ones sits behind them.
+        let projects = [
+            local("l0"),
+            remote("r1"),
+            remote("r2"),
+            local("l3"),
+            local("l4"),
+        ];
+        let layout = Layout {
+            dock_open: false,
+            dock_height: DOCK_HEIGHT,
+            rail_open: true,
+            panel_open: true,
+            rail_w: RAIL_W,
+            panel_w: PANEL_W,
+            subagents_open: false,
+            subagents_w: SUBAGENTS_W,
+            arcade: false,
+            diff_palette: crate::theme::DiffPalette::Default,
+            glass: false,
+            grays: crate::theme::Grays::Crisp,
+            type_scale: crate::ui::TypeScale::Compact,
+            rail_usage: [true, true, true, true],
+            ui_zoom: 100,
+            window: None,
+        };
+        let state: State = serde_json::from_slice(&snapshot(&projects, 3, layout)).unwrap();
+        assert_eq!(state.projects.len(), 3);
+        assert_eq!(
+            state.projects[state.active_project].path,
+            Path::new("/tmp/arakun-active-l3")
+        );
     }
 
     #[test]
@@ -936,12 +1395,12 @@ mod tests {
             glass: false,
             grays: crate::theme::Grays::Soft,
             type_scale: crate::ui::TypeScale::Comfortable,
-            rail_usage: [true, false, true],
+            rail_usage: [true, false, true, false],
             ui_zoom: 100,
             window: None,
         };
-        let (_, _, layout) = restore(serde_json::from_slice(&snapshot(&[], 0, layout)).unwrap());
-        assert_eq!(layout.rail_usage, [true, false, true]);
+        let (_, _, layout, _) = restore(serde_json::from_slice(&snapshot(&[], 0, layout)).unwrap());
+        assert_eq!(layout.rail_usage, [true, false, true, false]);
         assert_eq!(
             (layout.grays, layout.type_scale),
             (crate::theme::Grays::Soft, crate::ui::TypeScale::Comfortable)
@@ -972,7 +1431,7 @@ mod tests {
             glass: false,
             grays: crate::theme::Grays::Crisp,
             type_scale: crate::ui::TypeScale::Compact,
-            rail_usage: [true, true, true],
+            rail_usage: [true, true, true, true],
             ui_zoom: 100,
             window: None,
         };
@@ -1005,12 +1464,12 @@ mod tests {
             glass: false,
             grays: crate::theme::Grays::Crisp,
             type_scale: crate::ui::TypeScale::Compact,
-            rail_usage: [true, true, true],
+            rail_usage: [true, true, true, true],
             ui_zoom: 100,
             window: None,
         };
         let bytes = snapshot(std::slice::from_ref(&project), 0, layout);
-        let (mut projects, _, _) = restore(serde_json::from_slice(&bytes).unwrap());
+        let (mut projects, _, _, _) = restore(serde_json::from_slice(&bytes).unwrap());
         let env = &mut projects[0].environments[1];
         assert!(env.awaits_name());
         // Renamed by hand while arakun was closed: the refresh after the restart reads it.
@@ -1042,12 +1501,12 @@ mod tests {
             glass: false,
             grays: crate::theme::Grays::Crisp,
             type_scale: crate::ui::TypeScale::Compact,
-            rail_usage: [true, true, true],
+            rail_usage: [true, true, true, true],
             ui_zoom: 100,
             window: None,
         };
         let bytes = snapshot(std::slice::from_ref(&project), 0, layout);
-        let (projects, _, _) = restore(serde_json::from_slice(&bytes).unwrap());
+        let (projects, _, _, _) = restore(serde_json::from_slice(&bytes).unwrap());
         let draft = &projects[0].environments[0].draft;
         assert_eq!((&**draft, draft.head()), ("fix the tests\nplease", 3));
         assert!(projects[0].environments[1].draft.is_empty());
@@ -1064,29 +1523,35 @@ mod tests {
         let mut project = new_project(Path::new("/tmp/arakun-split-test"));
         let env = &mut project.environments[0];
         env.sessions = vec![Session::new("s1".into(), "One".into(), Agent::Droid)];
-        env.tabs = vec![
-            Tab::new(
-                "One",
-                TabKind::Session {
-                    agent: Agent::Droid,
-                    id: "s1".into(),
-                },
-            ),
-            Tab::new("New tab", TabKind::Browser { url: "".into() }),
-            Tab::new(
-                "Docs",
-                TabKind::Browser {
-                    url: "https://example.com".into(),
-                },
-            ),
-        ];
-        env.active_tab = 0;
-        env.split = Some(Split {
-            other: env.tabs[2].id,
+        let here = env.path.clone();
+        let mut strip = TabStrip {
+            tabs: vec![
+                Tab::of(
+                    &here,
+                    "One",
+                    TabKind::Session {
+                        agent: Agent::Droid,
+                        id: "s1".into(),
+                    },
+                ),
+                Tab::of(&here, "New tab", TabKind::Browser { url: "".into() }),
+                Tab::of(
+                    &here,
+                    "Docs",
+                    TabKind::Browser {
+                        url: "https://example.com".into(),
+                    },
+                ),
+            ],
+            ..Default::default()
+        };
+        strip.split = Some(Split {
+            other: strip.tabs[2].id,
             dir: SplitDir::Down,
             ratio: 0.35,
             focus_first: true,
         });
+        strip.split_env = Some(here.clone());
 
         let layout = Layout {
             dock_open: false,
@@ -1102,20 +1567,38 @@ mod tests {
             glass: false,
             grays: crate::theme::Grays::Crisp,
             type_scale: crate::ui::TypeScale::Compact,
-            rail_usage: [true, true, true],
+            rail_usage: [true, true, true, true],
             ui_zoom: 100,
             window: None,
         };
-        let bytes = snapshot(std::slice::from_ref(&project), 0, layout);
-        let (projects, _, _) = restore(serde_json::from_slice(&bytes).unwrap());
-        let env = &projects[0].environments[0];
+        let bytes = snapshot_with(std::slice::from_ref(&project), &strip, 0, layout.clone());
+        let (_, _, _, strip) = restore(serde_json::from_slice(&bytes).unwrap());
         // The blank browser tab is not reopened, so the docs tab lands at index 1.
-        assert_eq!(env.tabs.len(), 2);
-        let split = env.split.expect("split restored");
-        assert_eq!(env.split_other(), Some(1));
+        assert_eq!(strip.tabs.len(), 2);
+        let split = strip.split.expect("split restored");
+        assert_eq!(strip.split_other(&here), Some(1));
         assert_eq!(split.dir, SplitDir::Down);
         assert!(split.focus_first);
         assert!((split.ratio - 0.35).abs() < 1e-6);
+
+        // Saved while another environment is on screen, it waits for its own.
+        let mut strip = strip;
+        let elsewhere = PathBuf::from("/tmp/arakun-split-elsewhere");
+        project
+            .environments
+            .push(Environment::new(elsewhere.clone(), None, false));
+        project.active_env = 1;
+        let (focus, other) = (strip.tabs[0].id, strip.tabs[1].id);
+        strip.bring_split(&elsewhere, Some(focus));
+        assert!(strip.split.is_none());
+        // The environment's front tab moved on since; the split keeps its own.
+        strip.front.insert(here.clone(), other);
+        let bytes = snapshot_with(std::slice::from_ref(&project), &strip, 0, layout);
+        let (_, _, _, mut strip) = restore(serde_json::from_slice(&bytes).unwrap());
+        assert!(strip.split.is_none(), "it is not the one on screen");
+        strip.active_tab = strip.front_of(&here).unwrap();
+        strip.bring_split(&here, None);
+        assert_eq!((strip.active_tab, strip.split_other(&here)), (0, Some(1)));
     }
 
     #[test]
@@ -1300,5 +1783,41 @@ mod tests {
             uuid(),
         );
         assert_eq!(back.to_bounds(), gpui::WindowBounds::Windowed(plain));
+    }
+
+    #[test]
+    fn each_state_file_has_its_own_lock() {
+        assert_eq!(
+            lock_for(Path::new("/w/state.json")),
+            PathBuf::from("/w/state.json.lock")
+        );
+        assert_ne!(
+            lock_for(Path::new("/w/state.json")),
+            lock_for(Path::new("/w/state.alt"))
+        );
+    }
+
+    #[test]
+    fn a_state_from_a_newer_arakun_is_kept_not_saved_over() {
+        let dir = crate::stored::tests::scratch("state-newer");
+        let path = dir.join("state.json");
+        // A session whose agent this build doesn't know.
+        let newer = r#"{"projects":[{"path":"/p","logo":0,"art":0,"envs":[{"path":"/p",
+            "sessions":[{"id":"s1","title":"T","agent":"future","updated":1,
+            "meta":{"agent":"future","session_id":null,"title":"T","cwd":"/p",
+            "created":1,"updated":1}}]}]}]}"#;
+        std::fs::write(&path, newer).unwrap();
+        let state = load_from(&path);
+        assert!(state.projects.is_empty());
+        assert!(state.dock_open, "the defaults of a first launch");
+        // The queued save on quit writes a new file; the old one is still there.
+        let saves = Saves::new();
+        saves.queue(b"{}".to_vec());
+        saves
+            .write(|bytes| crate::stored::write(&path, bytes))
+            .unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"{}");
+        assert_eq!(crate::stored::tests::kept(&path).as_deref(), Some(newer));
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

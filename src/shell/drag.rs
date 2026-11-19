@@ -366,8 +366,8 @@ impl Shell {
     /// so the agent can read as much of it as it needs.
     fn link_session(&mut self, d: &DraggedSession, cx: &mut Context<Self>) {
         let entries = self.session_entries(&d.env, &d.id, cx);
-        let dir = state::data_dir().join("linked");
-        let path = dir.join(format!("{}.md", d.id));
+        let path = state::linked_path(&d.id);
+        let dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
         let text = crate::agent::notes::transcript_markdown(&d.title, d.agent.label(), &entries);
         if let Err(e) = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, text)) {
             self.composer_flash = Some(format!("Could not link the session: {e}").into());

@@ -5,10 +5,13 @@
 //! Every field may be missing or null, and fields a newer Worker adds are
 //! ignored: the board must never fail to read because pilot grew.
 
+use std::collections::HashSet;
+
 use serde::{Deserialize, Deserializer};
 
-use super::pilot::{Config, OPCIONES_MAX, Opcion, or_default, pull_ref};
+use super::pilot::{Config, Kind, OPCIONES_MAX, Opcion, or_default, pull_ref};
 use super::pr::ItemRef;
+use super::queue::key_of;
 
 /// A board file to read instead of the Worker (`ARAKUN_PILOT_BOARD`), for a
 /// test Arakun and screenshots before the Worker has `/board`.
@@ -439,13 +442,64 @@ pub fn card_place(b: &Board, card: &super::pilot::Item) -> CardPlace {
 
 /// Everything that waits on the user with a board, for the headline and the
 /// badge alike: what pilot says, the queue's rows on the user it doesn't
-/// follow, and pilot's cards that aren't one of its questions.
+/// follow, and pilot's cards that ask something the board doesn't count yet.
 pub fn waiting<'a>(
     b: &Board,
     q: &super::queue::Queue,
     cards: impl Iterator<Item = &'a super::pilot::Item>,
 ) -> usize {
-    needs_you(b, q) + extra_cards(b, cards)
+    // A pull request the board says needs the user, or asks about, is in
+    // `te_necesita`.
+    let mut counted: HashSet<String> = b
+        .prs
+        .iter()
+        .filter(|p| p.estado == Estado::TeNecesita || p.open_decision().is_some())
+        .filter_map(BoardPr::item_ref)
+        .map(|i| key_of(&i))
+        .collect();
+    counted.extend(on_you_keys(outside(b, q)));
+    let cards = cards.filter(|c| card_place(b, c) != CardPlace::Question);
+    needs_you(b, q) + asking_cards(cards, &counted)
+}
+
+/// Everything that waits on the user without a board: the queue's rows on
+/// the user and pilot's cards that ask something of a pull request not
+/// among them.
+pub fn waiting_without_board<'a>(
+    q: &super::queue::Queue,
+    cards: impl Iterator<Item = &'a super::pilot::Item>,
+) -> usize {
+    q.on_you + asking_cards(cards, &on_you_keys(q.rows.iter()))
+}
+
+fn on_you_keys<'a>(
+    rows: impl Iterator<Item = &'a (super::queue::Entry, super::queue::Placed)>,
+) -> HashSet<String> {
+    rows.filter(|(_, p)| p.lane == super::queue::Lane::OnYou)
+        .filter_map(|(e, _)| e.item.as_ref().map(key_of))
+        .collect()
+}
+
+/// How many cards ask something of the user, each pull request once and
+/// none in `counted`. Only a question and a pull request to review ask
+/// anything: a fix, a failure or a notice (pilot sends one per pair of
+/// pull requests that share files) shows in the tab but waits on nobody.
+fn asking_cards<'a>(
+    cards: impl Iterator<Item = &'a super::pilot::Item>,
+    counted: &HashSet<String>,
+) -> usize {
+    let mut seen: HashSet<String> = HashSet::new();
+    cards
+        .filter(|c| matches!(c.kind, Kind::NeedsYou | Kind::Brief))
+        .filter(|c| match c.item_ref() {
+            Some(i) => {
+                let key = key_of(&i);
+                !counted.contains(&key) && seen.insert(key)
+            }
+            // About no pull request: nothing to fold it into.
+            None => true,
+        })
+        .count()
 }
 
 /// The cards the tab shows with a board: those in a followed pull request's
@@ -457,14 +511,6 @@ pub fn visible_cards<'a>(
     focus: &'a [String],
 ) -> impl Iterator<Item = &'a super::pilot::Item> + 'a {
     cards.filter(move |c| card_place(b, c) != CardPlace::Loose || c.in_focus(focus))
-}
-
-/// The cards that wait on top of what the board counts: every one but its
-/// questions, which `te_necesita` already has.
-pub fn extra_cards<'a>(b: &Board, cards: impl Iterator<Item = &'a super::pilot::Item>) -> usize {
-    cards
-        .filter(|c| card_place(b, c) != CardPlace::Question)
-        .count()
 }
 
 /// What `GET /board` answered, cleaned: options without an id or words go,
@@ -495,6 +541,12 @@ pub enum BoardProblem {
     /// The Worker has no `/board` yet (404): the tab shows the plain queue.
     Missing,
     Failed(String),
+}
+
+impl From<crate::guard::Panicked> for BoardProblem {
+    fn from(panicked: crate::guard::Panicked) -> Self {
+        BoardProblem::Failed(panicked.to_string())
+    }
 }
 
 /// Reads the board: the fixture file when `ARAKUN_PILOT_BOARD` names one,
@@ -771,8 +823,6 @@ mod tests {
                 CardPlace::Loose
             ]
         );
-        // The question is already in te_necesita; the rest add to it.
-        assert_eq!(extra_cards(&b, cards.iter()), 3);
         // A question on an entry that names no pull request has no row to
         // open: its card stays in view.
         let nowhere = Board {
@@ -794,9 +844,80 @@ mod tests {
         blank.prs[0].decision.as_mut().unwrap().pregunta.clear();
         let q1 = card("q1", Kind::NeedsYou, "ArakunHQ/arakun", 7);
         assert_eq!(card_place(&blank, &q1), CardPlace::Sheet);
-        // The headline and the badge both count te_necesita and those cards.
+        // The headline and the badge both count te_necesita only: it has
+        // #7, whose question and brief are about it, and a fix or a failure
+        // asks nothing.
         let q = crate::github::queue::Queue::default();
-        assert_eq!(waiting(&b, &q, cards.iter()), 4);
+        assert_eq!(waiting(&b, &q, cards.iter()), 1);
+        // Without the question, the brief on #7 is one more to review.
+        assert_eq!(waiting(&blank, &q, cards.iter()), 2);
+    }
+
+    #[test]
+    fn only_cards_that_ask_count_and_each_pull_request_once() {
+        use super::super::pilot::{Item, Kind};
+        use crate::github::queue::{Entry, Lane, Placed, Queue};
+        let card = |id: &str, kind: Kind, number: u64| Item {
+            id: id.into(),
+            kind,
+            repo: "ArakunHQ/arakun".into(),
+            number,
+            ..Item::default()
+        };
+        let pr = |number: u64, estado: Estado| BoardPr {
+            repo: "ArakunHQ/arakun".into(),
+            number,
+            estado,
+            ..BoardPr::default()
+        };
+        let b = Board {
+            verdict: Verdict {
+                te_necesita: 1,
+                ..Verdict::default()
+            },
+            prs: vec![pr(1, Estado::TeNecesita), pr(2, Estado::Esperando)],
+            ..Board::default()
+        };
+        // pilot sends one notice per pair of pull requests that share
+        // files: hundreds of them in a busy day, none waiting on the user.
+        let mut cards: Vec<Item> = (0..200)
+            .map(|i| card(&format!("o{i}"), Kind::Other, 1 + i % 2))
+            .collect();
+        cards.extend([
+            // #1 needs the user already: te_necesita has it.
+            card("n1", Kind::NeedsYou, 1),
+            card("n2", Kind::NeedsYou, 1),
+            // Two briefs on #2 are one pull request to review.
+            card("b1", Kind::Brief, 2),
+            card("b2", Kind::Brief, 2),
+            // #9 waits on the user in the queue already.
+            card("b3", Kind::Brief, 9),
+            card("f1", Kind::Fixed, 2),
+            card("e1", Kind::Failed, 0),
+        ]);
+        let row = Entry {
+            item: ItemRef::parse("arakunhq/arakun#9"),
+            title: String::new(),
+            author: String::new(),
+            updated_at: String::new(),
+            closed_at: String::new(),
+            state: String::new(),
+            why: Vec::new(),
+            notification: None,
+        };
+        let on_you = Placed {
+            lane: Lane::OnYou,
+            ..Placed::default()
+        };
+        let q = Queue {
+            rows: vec![(row, on_you)],
+            on_you: 1,
+            ..Queue::default()
+        };
+        // te_necesita (#1), #9 from the queue, #2 from its briefs.
+        assert_eq!(waiting(&b, &q, cards.iter()), 3);
+        // Without a board: #9 from the queue, #1 and #2 from the cards.
+        assert_eq!(waiting_without_board(&q, cards.iter()), 3);
     }
 
     #[test]

@@ -15,8 +15,10 @@
 //! same messages it would send on a socket of its own (`ClientMsg`), plus
 //! `{req: {id, method, path, body}}` for what it would otherwise ask over HTTP
 //! (`route`), answered with `{res: {id, status, type, body, more}}` in pieces
-//! small enough for the relay. A channel that said who it is counts as a
-//! client to the shell, numbered as the relay numbered the channel.
+//! small enough for the relay. Any other message too big for one frame goes
+//! as `{part: {body, more}}` pieces, which the phone joins back (`say`). A
+//! channel that said who it is counts as a client to the shell, numbered as
+//! the relay numbered the channel.
 
 use std::collections::HashMap;
 use std::net::{TcpStream, ToSocketAddrs as _};
@@ -38,15 +40,26 @@ pub const HELLO: u8 = 0x01;
 pub const DATA: u8 = 0x02;
 pub const CONTROL: u8 = 0x03;
 
-/// How much of a response body goes in one `res` piece: with base64 and the
-/// envelope it stays under the relay's frame limit (256 KiB).
-const RES_CHUNK: usize = 160 * 1024;
+/// How much of a message or a response body goes in one piece: with base64
+/// and the envelope a piece stays under `WHOLE`.
+const CHUNK: usize = 160 * 1024;
+/// The longest message that goes out whole: sealed, it stays under the
+/// relay's frame limit (256 KiB). A `res` piece fits, so it is not split again.
+const WHOLE: usize = 250 * 1024;
 /// The most a `req` body may carry, like `MAX_BODY` over TCP.
 const MAX_REQ_BODY: usize = 4096;
 
 /// The first wait after a drop; each failure doubles it up to `RETRY_MAX`.
 const RETRY_MIN: Duration = Duration::from_secs(1);
 const RETRY_MAX: Duration = Duration::from_secs(60);
+/// How long to wait after the relay turned us away for a reason that may pass,
+/// such as a block the operator lifts again. Long, so a blocked computer does
+/// not knock all day; short in tests, which wait for the next dial.
+const REFUSED_WAIT: Duration = if cfg!(test) {
+    Duration::from_millis(300)
+} else {
+    Duration::from_secs(10 * 60)
+};
 /// How long dialing and the handshakes may take together.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 /// The relay hears from us this often while nothing else is said, and is
@@ -68,9 +81,16 @@ pub enum Status {
         why: String,
         retry_in: Duration,
     },
+    /// The relay turned this computer away: the operator blocked it, or
+    /// another computer with this very key took the place. That can change,
+    /// so it asks again, but only after a long wait.
+    Refused {
+        why: String,
+        retry_in: Duration,
+    },
     /// The relay will not have this computer, and asking again would not
-    /// change that: the label belongs to another key, the operator blocked it,
-    /// or another computer with this very key took the place.
+    /// change that: the label belongs to another key, or the relay does not
+    /// accept its signature.
     Rejected(String),
 }
 
@@ -135,6 +155,7 @@ impl RelayClient {
         let tickets = access.lock().unwrap().ticket_hashes();
         let link = Link {
             url: endpoint(base, &label),
+            page: page_url(base, &label),
             identity,
             access,
             tickets,
@@ -249,6 +270,17 @@ impl Drop for RelayClient {
     }
 }
 
+/// How long until the next dial, as people say it: seconds, or minutes once
+/// it is that long.
+pub fn wait_text(wait: Duration) -> String {
+    let secs = wait.as_secs().max(1);
+    if secs < 120 {
+        format!("{secs} s")
+    } else {
+        format!("{} min", secs.div_ceil(60))
+    }
+}
+
 /// The WebSocket address of this computer's place on the relay. A base at a
 /// bare address or `localhost` is a relay run by hand (`wrangler dev`), which
 /// takes the label from its configuration: no label in front, no TLS.
@@ -285,6 +317,8 @@ fn origin(base: &str, label: &str) -> (bool, String) {
 
 struct Link {
     url: String,
+    /// The page phones open, whose `_relay` says whether the label is blocked.
+    page: String,
     identity: Identity,
     access: Shared,
     tickets: Vec<String>,
@@ -318,6 +352,8 @@ enum Peer {
 enum Ended {
     /// Dial again after a wait.
     Retry(String),
+    /// Turned away; dial again after `REFUSED_WAIT`.
+    Refused(String),
     /// Do not come back until the user changes something.
     Rejected(String),
     /// The client was dropped.
@@ -355,23 +391,41 @@ impl Link {
                     self.set_status(Status::Rejected(why));
                     return;
                 }
+                Ended::Refused(why) => {
+                    self.set_status(Status::Refused {
+                        why,
+                        retry_in: REFUSED_WAIT,
+                    });
+                    if !self.pause(REFUSED_WAIT) {
+                        return;
+                    }
+                }
                 Ended::Retry(why) => {
                     self.set_status(Status::Reconnecting {
                         why,
                         retry_in: wait,
                     });
-                    let until = Instant::now() + wait;
-                    while Instant::now() < until {
-                        if self.stop.load(Ordering::Relaxed) {
-                            return;
-                        }
-                        self.drain_commands_offline();
-                        std::thread::sleep(WAIT_TICK);
+                    if !self.pause(wait) {
+                        return;
                     }
                     wait = (wait * 2).min(RETRY_MAX);
                 }
             }
         }
+    }
+
+    /// Waits between dials, keeping what the shell asks for meanwhile. False
+    /// when the client was dropped during the wait.
+    fn pause(&mut self, wait: Duration) -> bool {
+        let until = Instant::now() + wait;
+        while Instant::now() < until {
+            if self.stop.load(Ordering::Relaxed) {
+                return false;
+            }
+            self.drain_commands_offline();
+            std::thread::sleep(WAIT_TICK);
+        }
+        true
     }
 
     fn set_status(&mut self, status: Status) {
@@ -444,9 +498,14 @@ impl Link {
                 } else {
                     body
                 };
-                match res.status().as_u16() {
-                    403 => Ended::Rejected(text),
-                    _ => Ended::Retry(text),
+                // A 403 may come from a firewall in front of the relay, which
+                // can let the next attempt through. Only the relay's own word
+                // makes it a block: the body here is whatever arrived with the
+                // head, raw, so `_relay` is asked instead.
+                if res.status().as_u16() == 403 && self.blocked_at_door() {
+                    refused("blocked")
+                } else {
+                    Ended::Retry(text)
                 }
             }
             tungstenite::HandshakeError::Failure(e) => {
@@ -464,6 +523,24 @@ impl Link {
             let _ = s.get_ref().set_read_timeout(Some(READ_TICK));
         }
         Ok(ws)
+    }
+
+    /// Whether the relay itself says this label is blocked. Anything else,
+    /// including no answer, is not a block.
+    fn blocked_at_door(&self) -> bool {
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .timeout_global(Some(CONNECT_TIMEOUT))
+            .http_status_as_error(false)
+            .build()
+            .into();
+        let Ok(mut res) = agent.get(format!("{}_relay", self.page)).call() else {
+            return false;
+        };
+        let Ok(body) = res.body_mut().with_config().limit(4096).read_to_string() else {
+            return false;
+        };
+        res.status().as_u16() == 403
+            && serde_json::from_str::<Value>(&body).is_ok_and(|v| v["blocked"] == true)
     }
 
     /// Answers the challenge with the signature of `nonce ‖ label`, then tells
@@ -603,15 +680,13 @@ impl Link {
             ),
             Command::PairClose => send_control(ws, 0, &json!({ "type": "pair_close" })),
             Command::Send { channel, text } => match self.peers.get_mut(&channel) {
-                Some(Peer::Ready { session, .. }) => {
-                    send_frame(ws, DATA, channel, &session.seal(text.as_bytes()))
-                }
+                Some(Peer::Ready { session, .. }) => say(ws, channel, session, &text),
                 _ => Ok(()),
             },
             Command::Broadcast(text) => {
                 for (channel, peer) in &mut self.peers {
                     if let Peer::Ready { session, .. } = peer {
-                        send_frame(ws, DATA, *channel, &session.seal(text.as_bytes()))?;
+                        say(ws, *channel, session, &text)?;
                     }
                 }
                 Ok(())
@@ -709,12 +784,7 @@ impl Link {
                         match paired {
                             Some((device, token, ticket)) => {
                                 let told = json!({ "paired": { "id": device.id, "name": device.name, "token": token, "ticket": ticket, "host": host } });
-                                send_frame(
-                                    ws,
-                                    DATA,
-                                    channel,
-                                    &session.seal(told.to_string().as_bytes()),
-                                )?;
+                                say(ws, channel, &mut session, &told.to_string())?;
                                 // The relay admits the phone by ticket from its next socket on.
                                 self.tickets = self.access.lock().unwrap().ticket_hashes();
                                 send_control(
@@ -742,12 +812,7 @@ impl Link {
                         match device {
                             Some(device) => {
                                 let told = json!({ "ok": { "id": device.id, "name": device.name, "host": host } });
-                                send_frame(
-                                    ws,
-                                    DATA,
-                                    channel,
-                                    &session.seal(told.to_string().as_bytes()),
-                                )?;
+                                say(ws, channel, &mut session, &told.to_string())?;
                                 self.ready(channel, &device.id);
                                 Ok(Peer::Ready {
                                     session,
@@ -774,11 +839,11 @@ impl Link {
                     let msg = serde_json::from_slice::<Value>(&plain);
                     let mut outcome = Ok(());
                     match msg {
-                        Err(_) => send_frame(
+                        Err(_) => say(
                             ws,
-                            DATA,
                             channel,
-                            &session.seal(wire::error("bad message: not json").as_bytes()),
+                            &mut session,
+                            &wire::error("bad message: not json"),
                         )?,
                         Ok(msg) if msg.get("req").is_some() => {
                             let req = &msg["req"];
@@ -794,11 +859,11 @@ impl Link {
                                     msg,
                                 ));
                             }
-                            Err(e) => send_frame(
+                            Err(e) => say(
                                 ws,
-                                DATA,
                                 channel,
-                                &session.seal(wire::error(&format!("bad message: {e}")).as_bytes()),
+                                &mut session,
+                                &wire::error(&format!("bad message: {e}")),
                             )?,
                         },
                     }
@@ -926,7 +991,7 @@ fn respond(
     let pieces: Vec<&[u8]> = if reply.body.is_empty() {
         vec![&[]]
     } else {
-        reply.body.chunks(RES_CHUNK).collect()
+        reply.body.chunks(CHUNK).collect()
     };
     let last = pieces.len() - 1;
     for (i, piece) in pieces.into_iter().enumerate() {
@@ -935,14 +1000,83 @@ fn respond(
             res["status"] = json!(reply.status);
             res["type"] = json!(reply.content_type);
         }
-        send_frame(
-            ws,
-            DATA,
-            channel,
-            &session.seal(json!({ "res": res }).to_string().as_bytes()),
-        )?;
+        say(ws, channel, session, &json!({ "res": res }).to_string())?;
     }
     Ok(())
+}
+
+/// A message to a phone, sealed. One the relay would not let through in a
+/// single frame goes as `{part}` pieces of its bytes, each saying whether more
+/// follow; the phone joins them and reads the message as if it came whole.
+/// The pieces of one message go out together, so they need no name.
+///
+/// This is the relay's own split, under any message. `wire::parts`
+/// (`type: "part"`) is another one, a layer up: a server cuts a transcript
+/// there so each piece is a message the shell can use by itself.
+fn say(ws: &mut Socket, channel: u32, session: &mut Session, text: &str) -> Result<(), Ended> {
+    if text.len() <= WHOLE {
+        return send_frame(ws, DATA, channel, &session.seal(text.as_bytes()));
+    }
+    for part in parts(text, CHUNK) {
+        send_frame(ws, DATA, channel, &session.seal(part.as_bytes()))?;
+    }
+    Ok(())
+}
+
+/// Joins the `{part}` pieces of [`parts`] back into the message they carry,
+/// for the desktop app when it is the one a server talks to: arakun-server
+/// sends through this same client, so its big messages come in pieces too.
+/// The phone's page does the same in `phone/relay.js` (`joiner`).
+#[derive(Default)]
+pub struct Joiner {
+    bytes: Vec<u8>,
+}
+
+impl Joiner {
+    /// The most one joined message may be. Far over anything sent, and it
+    /// keeps a peer from growing the buffer without end.
+    const MOST: usize = 64 * 1024 * 1024;
+
+    /// A message as it came: itself when it is whole, nothing while pieces
+    /// are still due, and the joined message with the last piece.
+    pub fn take(&mut self, msg: Value) -> Result<Option<Value>, &'static str> {
+        let Some(part) = msg.get("part") else {
+            // The pieces of one message come together: a whole one between
+            // them means the rest never will.
+            self.bytes.clear();
+            return Ok(Some(msg));
+        };
+        let piece = part
+            .get("body")
+            .and_then(Value::as_str)
+            .and_then(|body| B64.decode(body).ok())
+            .ok_or("A piece of a message did not read.")?;
+        if self.bytes.len() + piece.len() > Self::MOST {
+            self.bytes = Vec::new();
+            return Err("A message in pieces was too big.");
+        }
+        self.bytes.extend(piece);
+        if part.get("more").and_then(Value::as_bool) == Some(true) {
+            return Ok(None);
+        }
+        let whole = std::mem::take(&mut self.bytes);
+        serde_json::from_slice(&whole)
+            .map(Some)
+            .map_err(|_| "A message in pieces did not read.")
+    }
+}
+
+/// `text` as `{part: {body, more}}` messages that each carry `chunk` of its
+/// bytes; `phone/relay.js` joins them (`joiner`), and [`Joiner`] does here.
+pub(crate) fn parts(text: &str, chunk: usize) -> Vec<String> {
+    let last = text.len().div_ceil(chunk).saturating_sub(1);
+    text.as_bytes()
+        .chunks(chunk)
+        .enumerate()
+        .map(|(i, piece)| {
+            json!({ "part": { "body": B64.encode(piece), "more": i < last } }).to_string()
+        })
+        .collect()
 }
 
 /// What a `bye` from the relay means for the next attempt.
@@ -954,9 +1088,11 @@ fn refused(reason: &str) -> Ended {
         "bad_signature" => {
             Ended::Rejected("The relay did not accept this computer's signature.".into())
         }
-        "blocked" => Ended::Rejected("The relay operator blocked this address.".into()),
+        // The operator may lift a block, and the other computer may go away:
+        // keep asking, slowly, so a server comes back without a restart.
+        "blocked" => Ended::Refused("The relay operator blocked this address.".into()),
         "replaced" => {
-            Ended::Rejected("Another computer with this key connected to the relay.".into())
+            Ended::Refused("Another computer with this key connected to the relay.".into())
         }
         other => Ended::Retry(format!("The relay hung up: {other}")),
     }
@@ -1106,6 +1242,11 @@ mod tests {
         );
         assert_eq!(parse_url("https://x"), None);
     }
+
+    /// The most the relay takes in one frame's payload (`relay/src/limits.ts`).
+    const RELAY_FRAME: usize = 256 * 1024;
+    // Sealing adds a counter and a tag; the relay counts those too.
+    const _: () = assert!(WHOLE + 64 <= RELAY_FRAME);
 
     /// A relay of our own on the loopback: accepts one computer at a time.
     struct FakeRelay {
@@ -1377,8 +1518,9 @@ mod tests {
                 .unwrap();
         }
 
-        /// The next sealed message from the computer on this channel.
-        fn hear(&mut self, ws: &mut WebSocket<TcpStream>) -> Value {
+        /// The next sealed message from the computer on this channel, as it
+        /// came: one frame, which must be one the relay lets through.
+        fn hear_frame(&mut self, ws: &mut WebSocket<TcpStream>) -> Value {
             let (kind, ch, payload) = next_frame(ws);
             assert_eq!(
                 (kind, ch),
@@ -1386,7 +1528,31 @@ mod tests {
                 "{}",
                 String::from_utf8_lossy(&payload)
             );
+            assert!(payload.len() <= RELAY_FRAME, "{} bytes", payload.len());
             serde_json::from_slice(&self.session.open(&payload).unwrap()).unwrap()
+        }
+
+        /// The next message from the computer on this channel, its `part`
+        /// pieces joined as the page joins them.
+        fn hear(&mut self, ws: &mut WebSocket<TcpStream>) -> Value {
+            let first = self.hear_frame(ws);
+            if first.get("part").is_none() {
+                return first;
+            }
+            let mut whole = Vec::new();
+            let mut msg = first;
+            loop {
+                let part = &msg["part"];
+                whole.extend(B64.decode(part["body"].as_str().unwrap()).unwrap());
+                if part["more"] != true {
+                    return serde_json::from_slice(&whole).unwrap();
+                }
+                msg = self.hear_frame(ws);
+                assert!(
+                    msg.get("part").is_some(),
+                    "pieces of one message stay together"
+                );
+            }
         }
 
         /// A `req` and its whole answer: status and body, pieces joined.
@@ -1404,7 +1570,8 @@ mod tests {
             let mut status = 0;
             let mut out = Vec::new();
             loop {
-                let msg = self.hear(ws);
+                // As it came: a `res` piece is small enough to go whole.
+                let msg = self.hear_frame(ws);
                 let res = &msg["res"];
                 assert_eq!(res["id"], 9);
                 if let Some(s) = res["status"].as_u64() {
@@ -1531,6 +1698,113 @@ mod tests {
     }
 
     #[test]
+    fn a_message_too_big_for_a_frame_goes_in_pieces() {
+        let me = Identity::generate();
+        let label = me.label();
+        let public = me.public_raw().to_vec();
+        let relay = FakeRelay::start(&label);
+        let access = access_with_tickets(&[]);
+        let (client, mut rx) = RelayClient::start(&relay.base(), me, access.clone());
+        let (mut ws, _) = relay.accept_and_claim(&public);
+        let (_, secret) = access.lock().unwrap().begin_pairing_relay();
+        let mut phone = FakePhone::greet(&mut ws, &label, 5, None);
+        phone.say(&mut ws, json!({"pair": {"secret": secret, "name": "x"}}));
+        assert!(phone.hear(&mut ws).get("paired").is_some());
+        let _tickets = control(&mut ws);
+        assert!(matches!(next_incoming(&mut rx), Incoming::Paired));
+        assert!(matches!(next_incoming(&mut rx), Incoming::Connected(5, _)));
+
+        // 1 MB, with letters of more than one byte so a piece may end inside one.
+        let text = "é".repeat(512 * 1024);
+        let big = json!({"type": "entries", "text": text}).to_string();
+        client.send(5, big.clone());
+        let first = phone.hear_frame(&mut ws);
+        assert_eq!(first["part"]["more"], true, "sent in pieces");
+        let mut whole = B64.decode(first["part"]["body"].as_str().unwrap()).unwrap();
+        loop {
+            let msg = phone.hear_frame(&mut ws);
+            whole.extend(B64.decode(msg["part"]["body"].as_str().unwrap()).unwrap());
+            if msg["part"]["more"] != true {
+                break;
+            }
+        }
+        assert_eq!(String::from_utf8(whole).unwrap(), big);
+
+        // To everyone too, and a small message after it still comes whole.
+        client.broadcast(&big);
+        assert_eq!(phone.hear(&mut ws)["text"], text);
+        client.send(5, r#"{"type":"usage"}"#.into());
+        assert_eq!(phone.hear_frame(&mut ws)["type"], "usage");
+    }
+
+    #[test]
+    fn the_pieces_join_back_into_the_message() {
+        let message = json!({ "type": "entries", "text": "aé€😀 ".repeat(8) });
+        let mut joiner = Joiner::default();
+        // Cut inside letters of more than one byte.
+        let pieces = parts(&message.to_string(), 7);
+        let (last, first) = pieces.split_last().unwrap();
+        for piece in first {
+            let piece: Value = serde_json::from_str(piece).unwrap();
+            assert_eq!(joiner.take(piece), Ok(None));
+        }
+        let last: Value = serde_json::from_str(last).unwrap();
+        assert_eq!(joiner.take(last), Ok(Some(message.clone())));
+        // A whole message passes as it is, and the next pieces start clean.
+        assert_eq!(
+            joiner.take(json!({"type": "usage"})),
+            Ok(Some(json!({"type": "usage"})))
+        );
+        for piece in parts(&message.to_string(), 4096) {
+            let got = joiner.take(serde_json::from_str(&piece).unwrap());
+            assert_eq!(got, Ok(Some(message.clone())));
+        }
+        assert!(
+            joiner
+                .take(json!({"part": {"body": "!", "more": false}}))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn a_piece_of_either_kind_goes_out_whole() {
+        // The largest `res` piece and the largest `part`: neither is split again.
+        let body = B64.encode(vec![0xff; CHUNK]);
+        let res = json!({ "res": { "id": u64::MAX, "body": body, "more": true, "status": 200, "type": "application/octet-stream; charset=utf-8" } });
+        assert!(res.to_string().len() <= WHOLE);
+        let text = "x".repeat(CHUNK * 2);
+        assert!(parts(&text, CHUNK).iter().all(|p| p.len() <= WHOLE));
+    }
+
+    /// What `phone/relay.js` is checked against: `WRITE_VECTORS=1 cargo test
+    /// phone::relay::tests::part_vectors` writes it; the plain run checks Rust
+    /// still splits the same way, so a change on either side shows up.
+    const PART_VECTORS: &str = "phone/test/vectors/part.json";
+
+    #[test]
+    fn part_vectors() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(PART_VECTORS);
+        // Letters of two, three and four bytes, cut where a piece ends inside one.
+        let message = json!({ "type": "entries", "text": "aé€😀 ".repeat(8) }).to_string();
+        let cases: Vec<Value> = [7, 64, 4096]
+            .into_iter()
+            .map(|chunk| json!({ "chunk": chunk, "parts": parts(&message, chunk) }))
+            .collect();
+        if std::env::var_os("WRITE_VECTORS").is_some() {
+            let v = json!({
+                "note": "Written by `WRITE_VECTORS=1 cargo test phone::relay::tests::part_vectors`; checked by phone/test/relay.test.mjs.",
+                "message": message,
+                "cases": cases,
+            });
+            std::fs::write(&path, serde_json::to_string_pretty(&v).unwrap() + "\n").unwrap();
+            return;
+        }
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(v["message"], message);
+        assert_eq!(v["cases"], json!(cases));
+    }
+
+    #[test]
     fn a_phone_that_cannot_prove_itself_is_cut_off() {
         let me = Identity::generate();
         let label = me.label();
@@ -1625,5 +1899,107 @@ mod tests {
         relay.listener.set_nonblocking(true).unwrap();
         std::thread::sleep(Duration::from_millis(300));
         assert!(relay.listener.accept().is_err());
+    }
+
+    #[test]
+    fn a_block_is_asked_about_again_after_a_long_wait() {
+        let me = Identity::generate();
+        let public = me.public_raw().to_vec();
+        let relay = FakeRelay::start(&me.label());
+        let (_client, mut rx) = RelayClient::start(&relay.base(), me, access_with_tickets(&[]));
+        let (mut ws, _) = relay.accept_and_claim(&public);
+        assert_eq!(next_status(&mut rx), Status::Connecting);
+        assert_eq!(next_status(&mut rx), Status::Connected);
+        tell(&mut ws, json!({"type": "bye", "reason": "blocked"}));
+        ws.close(Some(tungstenite::protocol::CloseFrame {
+            code: CloseCode::from(4403),
+            reason: "blocked".into(),
+        }))
+        .unwrap();
+        let _ = ws.flush();
+        assert_eq!(
+            next_status(&mut rx),
+            Status::Refused {
+                why: "The relay operator blocked this address.".into(),
+                retry_in: REFUSED_WAIT,
+            }
+        );
+        // The operator lifted the block: the next dial gets back in.
+        let (_ws, _) = relay.accept_and_claim(&public);
+        assert_eq!(next_status(&mut rx), Status::Connecting);
+        assert_eq!(next_status(&mut rx), Status::Connected);
+    }
+
+    /// Answers the next request with a plain HTTP response, the head and the
+    /// body apart, as a slow network may deliver them. Gives back the path asked.
+    fn answer_http(relay: &FakeRelay, status: &str, body: &str) -> String {
+        use std::io::{Read as _, Write as _};
+        let (mut stream, _) = relay.listener.accept().unwrap();
+        let mut request = Vec::new();
+        let mut buf = [0u8; 4096];
+        while !request.windows(4).any(|w| w == b"\r\n\r\n") {
+            let n = stream.read(&mut buf).unwrap();
+            assert!(n > 0, "the request ended early");
+            request.extend_from_slice(&buf[..n]);
+        }
+        let head = format!(
+            "HTTP/1.1 {status}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+            body.len()
+        );
+        stream.write_all(head.as_bytes()).unwrap();
+        stream.flush().unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+        stream.write_all(body.as_bytes()).unwrap();
+        let request = String::from_utf8_lossy(&request).to_string();
+        request.split(' ').nth(1).unwrap_or_default().to_string()
+    }
+
+    #[test]
+    fn a_403_from_a_firewall_is_dialed_again_soon() {
+        let me = Identity::generate();
+        let public = me.public_raw().to_vec();
+        let relay = FakeRelay::start(&me.label());
+        let (_client, mut rx) = RelayClient::start(&relay.base(), me, access_with_tickets(&[]));
+        assert_eq!(answer_http(&relay, "403 Forbidden", ""), "/pc");
+        // The relay itself does not know of a block.
+        assert_eq!(answer_http(&relay, "200 OK", r#"{"label":"x"}"#), "/_relay");
+        assert_eq!(next_status(&mut rx), Status::Connecting);
+        assert_eq!(
+            next_status(&mut rx),
+            Status::Reconnecting {
+                why: "The relay answered 403 Forbidden".into(),
+                retry_in: RETRY_MIN,
+            }
+        );
+        let (_ws, _) = relay.accept_and_claim(&public);
+        assert_eq!(next_status(&mut rx), Status::Connecting);
+        assert_eq!(next_status(&mut rx), Status::Connected);
+    }
+
+    #[test]
+    fn a_blocked_label_at_the_door_waits_long() {
+        let me = Identity::generate();
+        let relay = FakeRelay::start(&me.label());
+        let (_client, mut rx) = RelayClient::start(&relay.base(), me, access_with_tickets(&[]));
+        assert_eq!(answer_http(&relay, "403 Forbidden", "blocked"), "/pc");
+        assert_eq!(
+            answer_http(&relay, "403 Forbidden", r#"{"label":"x","blocked":true}"#),
+            "/_relay"
+        );
+        assert_eq!(next_status(&mut rx), Status::Connecting);
+        assert_eq!(
+            next_status(&mut rx),
+            Status::Refused {
+                why: "The relay operator blocked this address.".into(),
+                retry_in: REFUSED_WAIT,
+            }
+        );
+    }
+
+    #[test]
+    fn waits_read_in_seconds_then_minutes() {
+        assert_eq!(wait_text(Duration::from_millis(200)), "1 s");
+        assert_eq!(wait_text(Duration::from_secs(60)), "60 s");
+        assert_eq!(wait_text(Duration::from_secs(600)), "10 min");
     }
 }

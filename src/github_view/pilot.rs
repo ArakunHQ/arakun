@@ -763,7 +763,9 @@ impl GitHubView {
         cx.spawn(async move |this, cx| {
             let (i, a) = (id.clone(), answer.clone());
             let sent = cx
-                .background_spawn(async move { pilot::send_answer(&cfg, &i, &a) })
+                .background_spawn(crate::guard::task(async move {
+                    pilot::send_answer(&cfg, &i, &a)
+                }))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.pilot_sending.remove(&id);
@@ -839,7 +841,9 @@ impl GitHubView {
         // Asked now so the strip goes before anyone types; the review asks again.
         cx.spawn(async move |this, cx| {
             let it = r.clone();
-            let now = cx.background_spawn(async move { pr::head_sha(&it) }).await;
+            let now = cx
+                .background_spawn(crate::guard::task(async move { pr::head_sha(&it) }))
+                .await;
             let Ok(now) = now else { return };
             if pilot::same_commit(&now, &act.head) {
                 return;

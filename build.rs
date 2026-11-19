@@ -2,6 +2,8 @@ use std::path::{Path, PathBuf};
 
 fn main() {
     println!("cargo::rerun-if-changed=build.rs");
+    set_version();
+    embed_icon();
     let browser = std::env::var_os("CARGO_FEATURE_BROWSER").is_some();
     if browser && std::env::var("CARGO_CFG_TARGET_OS").is_ok_and(|os| os == "windows") {
         copy_cef_runtime();
@@ -23,6 +25,39 @@ fn main() {
             manifest.display()
         );
     }
+}
+
+/// `ARAKUN_VERSION`, what `arakun --version` says: the crate's version, or the
+/// one the release workflow gives a nightly build (`0.5.1-nightly.202611180300`).
+/// server/build.rs does the same.
+fn set_version() {
+    println!("cargo::rerun-if-env-changed=ARAKUN_VERSION");
+    let version = std::env::var("ARAKUN_VERSION")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| std::env::var("CARGO_PKG_VERSION").unwrap());
+    println!("cargo::rustc-env=ARAKUN_VERSION={}", version.trim());
+}
+
+/// Puts the app icon in arakun.exe. gpui loads icon 1 from the executable for the
+/// window and the taskbar; without it Windows shows a blank program icon. Other
+/// targets get nothing (embed_resource says it is not building for Windows).
+fn embed_icon() {
+    println!("cargo::rerun-if-changed=src/arakun.rc");
+    println!("cargo::rerun-if-changed=src/arakun.ico");
+    let result = embed_resource::compile_for(
+        "src/arakun.rc",
+        ["arakun"],
+        embed_resource::ParamsIncludeDirs(["src"]),
+    );
+    // A build for Windows from Linux or macOS without windres or llvm-rc still works, but
+    // the exe and its window get the blank icon, so say so instead of skipping it quietly.
+    // (On a Windows host a missing rc.exe is Failed, and the unwrap below stops the build.)
+    if matches!(result, embed_resource::CompilationResult::NotAttempted(_)) {
+        let why = result.to_string().replace('\n', " ");
+        println!("cargo::warning=arakun.exe gets no icon ({why})");
+    }
+    result.manifest_optional().unwrap();
 }
 
 /// Copies the CEF runtime next to arakun.exe, where src/browser/loader.rs looks for it.

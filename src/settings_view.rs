@@ -9,7 +9,7 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable,
     FontWeight, InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window, div, px,
+    StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, px,
 };
 
 use crate::agent::AgentKind;
@@ -17,7 +17,7 @@ use crate::agent::claude_auth;
 use crate::agent::plan::{self, PlanUsage};
 use crate::env_name;
 use crate::input::{InputEvent, TextInput};
-use crate::theme::{self, DiffPalette};
+use crate::theme;
 use crate::ui::{self, ButtonKind, icon};
 use crate::voice::{self, Lang, Tone};
 
@@ -30,15 +30,27 @@ pub enum SettingsEvent {
     OpenCodeSignOut,
     CodexSignIn,
     CodexSignOut,
+    DevinSignIn,
+    DevinSignOut,
     OpenUsage,
-    OpenGallery,
+    /// Close Settings and open the Customize panel.
+    OpenCustomize,
     RailUsage(crate::agent::AgentKind, bool),
-    Grays(crate::theme::Grays),
-    TypeScale(crate::ui::TypeScale),
     Arcade(bool),
-    DiffPalette(DiffPalette),
-    Glass(bool),
     Island(bool),
+    /// The whole UI's zoom, in percent.
+    Zoom(u32),
+    /// An extension view turned on or off in the sidebar.
+    SidebarView(crate::sidebar::View, bool),
+    /// A project's setup script (`check` false) or check command; `None` clears it.
+    ProjectCommand {
+        project: std::path::PathBuf,
+        check: bool,
+        command: Option<String>,
+    },
+    /// Only Linux has the switch.
+    #[cfg(target_os = "linux")]
+    Background(bool),
     /// Quit and start again, which installs the downloaded update.
     RestartToUpdate,
     OpenAccount,
@@ -48,6 +60,16 @@ pub enum SettingsEvent {
     OpenTasks,
     #[cfg(feature = "coderlabs")]
     DisconnectCoderSpace,
+}
+
+/// The project open when the dialog opened, for its Project section.
+pub struct ProjectSettings {
+    pub path: std::path::PathBuf,
+    pub name: SharedString,
+    pub setup: Option<String>,
+    pub check: Option<String>,
+    /// The project lives on a server: its commands are not saved here.
+    pub remote: bool,
 }
 
 /// Where a section sits in the list: Arakun's own settings, then the agents'.
@@ -72,6 +94,7 @@ impl Group {
 enum Section {
     General,
     Appearance,
+    Project,
     Branches,
     Voice,
     Privacy,
@@ -83,6 +106,7 @@ enum Section {
     Codex,
     Droid,
     OpenCode,
+    Devin,
 }
 
 impl Section {
@@ -90,6 +114,7 @@ impl Section {
     const ALL: &[Section] = &[
         Section::General,
         Section::Appearance,
+        Section::Project,
         Section::Branches,
         Section::Voice,
         Section::Privacy,
@@ -101,6 +126,7 @@ impl Section {
         Section::Codex,
         Section::Droid,
         Section::OpenCode,
+        Section::Devin,
     ];
 
     fn group(self) -> Group {
@@ -118,6 +144,7 @@ impl Section {
             Section::Codex => Some(AgentKind::Codex),
             Section::Droid => Some(AgentKind::Droid),
             Section::OpenCode => Some(AgentKind::OpenCode),
+            Section::Devin => Some(AgentKind::Devin),
             _ => None,
         }
     }
@@ -126,6 +153,7 @@ impl Section {
         match self {
             Section::General => "General",
             Section::Appearance => "Appearance",
+            Section::Project => "Project",
             Section::Branches => "Branches",
             Section::Voice => "Voice",
             Section::Privacy => "Privacy",
@@ -137,6 +165,7 @@ impl Section {
             Section::Codex => "Codex",
             Section::Droid => "Droid",
             Section::OpenCode => "OpenCode",
+            Section::Devin => "Devin",
         }
     }
 
@@ -145,6 +174,7 @@ impl Section {
         match self {
             Section::General => "settings01",
             Section::Appearance => "paint-board",
+            Section::Project => "folder01",
             Section::Branches => "git-branch",
             Section::Voice => "volume-high",
             Section::Privacy => "shield-alert",
@@ -152,14 +182,21 @@ impl Section {
             #[cfg(feature = "coderlabs")]
             Section::CoderSpace => "check-list",
             Section::Shortcuts => "keyboard",
-            Section::Claude | Section::Codex | Section::Droid | Section::OpenCode => "bot",
+            Section::Claude
+            | Section::Codex
+            | Section::Droid
+            | Section::OpenCode
+            | Section::Devin => "bot",
         }
     }
 
     fn description(self) -> &'static str {
         match self {
             Section::General => "How Arakun behaves when nothing is going on.",
-            Section::Appearance => "Colors and surfaces. Changes apply right away.",
+            Section::Appearance => {
+                "Zoom here. Colors and shape are edited beside the app, not in this dialog."
+            }
+            Section::Project => "The open project's commands, on this computer.",
             Section::Branches => {
                 "A new environment starts on a random branch name; an agent can rename it after the task. A merged pull request settles its threads."
             }
@@ -177,6 +214,7 @@ impl Section {
             Section::Codex => "Codex's sign-in: your ChatGPT plan or an OpenAI API key.",
             Section::Droid => "Your Factory plan, and what Droid loads in the visible environment.",
             Section::OpenCode => "The providers OpenCode signs in to, OpenCode Go among them.",
+            Section::Devin => "Devin's sign-in: your Devin account or a Windsurf API key.",
         }
     }
 
@@ -185,18 +223,22 @@ impl Section {
         match self {
             #[cfg(feature = "coderlabs")]
             Section::General => {
-                "raccoon mascot animation motion new session dynamic island notch top bar agents alerts oye arakun wake word voice microphone"
+                "raccoon mascot animation motion new session dynamic island notch top bar agents alerts background close hide tray oye arakun wake word voice microphone"
             }
             #[cfg(not(feature = "coderlabs"))]
             Section::General => {
-                "raccoon mascot animation motion new session dynamic island notch top bar agents alerts sidebar usage card plans browser web page drive click type scripts"
+                "raccoon mascot animation motion new session dynamic island notch top bar agents alerts background close hide tray sidebar usage card plans browser web page drive click type scripts"
             }
             Section::Appearance => {
-                "theme palette color colors accent tint corners radius rounded round sharp spacing gap padding compact roomy density window custom share night graphite midnight forest rose diff colors colorblind high contrast glass blur transparent translucent grays gray text size font scale design system mode dark light"
+                "theme palette color colors accent tint corners radius rounded round sharp spacing gap padding compact roomy density window custom share night graphite midnight forest rose diff colors colorblind high contrast glass blur transparent translucent grays gray text size font scale design system mode dark light zoom bigger smaller"
+            }
+            Section::Project => {
+                "setup script install new environment worktree check command test lint build verify"
             }
             Section::Branches => {
                 "branch name naming environment worktree rename model haiku agent merge merged \
-                 settle resolve threads review notifications pull request"
+                 settle resolve threads review notifications pull request cleanup clean up \
+                 remove delete old stale environments"
             }
             Section::Voice => {
                 "elevenlabs speech speak tts read aloud audio sound api key questions tone"
@@ -216,6 +258,7 @@ impl Section {
                 "factory account plan usage api key credits skills mcp servers extensions plugins"
             }
             Section::OpenCode => "opencode go zen provider api key models sign in logout",
+            Section::Devin => "devin cognition windsurf api key sign in logout",
         }
     }
 
@@ -227,8 +270,9 @@ impl Section {
         // The Updates card and the link setting are in General in every build, so
         // their words are added here rather than to each build's keyword list.
         let general = if self == Section::General {
-            "update updates automatic automatically auto version release upgrade \
-             links open system default external"
+            "update updates automatic automatically auto version release upgrade nightly channel beta testers \
+             links open system default external \
+             sidebar views extensions rail github notes memory usage cloudflare posthog isometric phone servers automations"
         } else {
             ""
         };
@@ -260,6 +304,11 @@ pub fn start_on_account() {
     start_on(Section::Account);
 }
 
+/// Makes the next dialog open on Branches, where the environment cleanup is.
+pub fn start_on_branches() {
+    start_on(Section::Branches);
+}
+
 fn start_on(section: Section) {
     let ix = Section::ALL.iter().position(|s| *s == section).unwrap_or(0);
     LAST_SECTION.store(ix as u8, Ordering::Relaxed);
@@ -275,11 +324,7 @@ const SHORTCUTS: &[Shortcut] = &[
         "Jump to a session, environment or command",
     ),
     ("Navigate", "Alt+↑ / Alt+↓", "Previous / next environment"),
-    (
-        "Navigate",
-        "Ctrl+B",
-        "Hide or show the sidebar and workspace panel",
-    ),
+    ("Navigate", "Ctrl+B", "Hide or show the sidebar"),
     ("Navigate", "Ctrl+,", "Settings"),
     (
         "Navigate",
@@ -338,9 +383,6 @@ const SHORTCUTS: &[Shortcut] = &[
 
 /// The queue key of the "Test voice" sample.
 const TEST_KEY: &str = "settings-test";
-/// How long a palette edit waits for the next before it is saved.
-const PALETTE_SAVE_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
-
 const DIALOG_W: f32 = 880.;
 /// The section list's column, search included.
 const LIST_W: f32 = 224.;
@@ -370,6 +412,10 @@ pub struct SettingsDialog {
     codex: Option<&'static str>,
     /// The variable with Codex's API key, when the environment has one.
     codex_env: Option<&'static str>,
+    /// Whether `devin auth login` has signed in.
+    devin: bool,
+    /// The variable with Devin's API key, when the environment has one.
+    devin_env: Option<&'static str>,
     input: Entity<TextInput>,
     section: Section,
     voice: voice::Settings,
@@ -380,24 +426,10 @@ pub struct SettingsDialog {
     /// What the last save or test did, and whether it failed.
     voice_note: Option<(SharedString, bool)>,
     voice_busy: bool,
-    /// The palette in use and the user's own.
-    palettes: crate::palettes::Saved,
-    /// Where a shared palette's line is pasted.
-    share_input: Entity<TextInput>,
-    /// What the last paste or copy did, and whether it failed.
-    palette_note: Option<(SharedString, bool)>,
-    /// Delete was clicked once on the palette in use.
-    confirm_delete: bool,
-    /// The name of the user's palette in use.
-    name_input: Entity<TextInput>,
-    /// Whether the field to paste a shared palette is open.
-    show_import: bool,
-    /// The save of a palette edit that waits for the slider to stop.
-    palette_save: Option<Task<()>>,
-    /// A palette edit is shown but not saved yet.
-    palette_dirty: bool,
-    /// The save being written off the UI thread, if one is.
-    palette_writing: Option<Task<()>>,
+    /// What Colors and Shape are set to, for the Appearance summary.
+    look: crate::customize_view::Summary,
+    /// The nightly switch was clicked and its warning is showing.
+    confirm_nightly: bool,
     /// The settings pane's scroll, so a slider that moves the layout can stay
     /// under the pointer.
     pane_scroll: gpui::ScrollHandle,
@@ -406,17 +438,27 @@ pub struct SettingsDialog {
     namer_input: Entity<TextInput>,
     /// Why the last crash report or usage count choice could not be saved.
     telemetry_error: Option<SharedString>,
-    _subs: [Subscription; 9],
+    /// The extension views the sidebar shows.
+    views_on: Vec<crate::sidebar::View>,
+    /// The open project, if there is one.
+    project: Option<ProjectSettings>,
+    setup_input: Entity<TextInput>,
+    check_input: Entity<TextInput>,
+    _subs: [Subscription; 7],
 }
 
 impl EventEmitter<SettingsEvent> for SettingsDialog {}
 
 impl SettingsDialog {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         arcade: bool,
         droid: bool,
         teams: Entity<crate::arakun_teams::Teams>,
+        look: crate::customize_view::Summary,
         #[cfg(feature = "coderlabs")] coderspace: Option<String>,
+        views_on: Vec<crate::sidebar::View>,
+        project: Option<ProjectSettings>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -453,39 +495,6 @@ impl SettingsDialog {
                     _ => {}
                 },
             );
-        let share_input =
-            cx.new(|cx| TextInput::new("Paste a palette: arakun:palette/v1:…", cx).mono());
-        let share_sub =
-            cx.subscribe_in(
-                &share_input,
-                window,
-                |this: &mut Self, _, ev, _, cx| match ev {
-                    InputEvent::Submit => this.import_palette(cx),
-                    InputEvent::Cancel => cx.emit(SettingsEvent::Dismissed),
-                    _ => {}
-                },
-            );
-        let palettes = crate::palettes::load();
-        let name_input = cx.new(|cx| {
-            let mut i = TextInput::new("Name this palette", cx);
-            i.set_text(palettes.active().name, cx);
-            i
-        });
-        let name_sub =
-            cx.subscribe_in(
-                &name_input,
-                window,
-                |this: &mut Self, input, ev, _, cx| match ev {
-                    InputEvent::Changed => {
-                        let name = input.read(cx).text().trim().to_string();
-                        if !name.is_empty() && name != this.palettes.active().name {
-                            this.edit_palette(|p| p.name = name, cx);
-                        }
-                    }
-                    InputEvent::Cancel => cx.emit(SettingsEvent::Dismissed),
-                    _ => {}
-                },
-            );
         let namer = env_name::namer();
         let namer_input = cx.new(|cx| {
             let mut i = TextInput::new("CLI default", cx).mono();
@@ -508,9 +517,33 @@ impl SettingsDialog {
                     _ => {}
                 },
             );
+        let setup_input = cx.new(|cx| {
+            let mut i = TextInput::new("npm install && cp .env.example .env", cx)
+                .mono()
+                .redacted();
+            if let Some(c) = project.as_ref().and_then(|p| p.setup.as_ref()) {
+                i.set_text(c.clone(), cx);
+            }
+            i
+        });
+        let check_input = cx.new(|cx| {
+            let mut i = TextInput::new("cargo test", cx).mono().redacted();
+            if let Some(c) = project.as_ref().and_then(|p| p.check.as_ref()) {
+                i.set_text(c.clone(), cx);
+            }
+            i
+        });
+        let setup_sub = cx.subscribe_in(&setup_input, window, |this: &mut Self, _, ev, _, cx| {
+            this.on_command_input(false, ev, cx)
+        });
+        let check_sub = cx.subscribe_in(&check_input, window, |this: &mut Self, _, ev, _, cx| {
+            this.on_command_input(true, ev, cx)
+        });
         cx.spawn(async move |this, cx| {
             let (plan, access) = cx
-                .background_spawn(async move { (plan::refresh(), claude_auth::access()) })
+                .background_spawn(crate::guard::task(async move {
+                    (plan::refresh(), claude_auth::access())
+                }))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.claude = plan;
@@ -521,7 +554,9 @@ impl SettingsDialog {
         .detach();
         cx.spawn(async move |this, cx| {
             let set = cx
-                .background_spawn(async move { voice::api_key().is_some() })
+                .background_spawn(crate::guard::task(
+                    async move { voice::api_key().is_some() },
+                ))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.voice_key = Some(set);
@@ -544,6 +579,8 @@ impl SettingsDialog {
             opencode: crate::agent::opencode_providers(),
             codex: crate::agent::codex_sign_in(),
             codex_env: crate::agent::codex_env_key(),
+            devin: crate::agent::devin_signed_in(),
+            devin_env: crate::agent::devin_env_key(),
             input,
             section,
             voice,
@@ -555,33 +592,51 @@ impl SettingsDialog {
             namer,
             namer_input,
             telemetry_error: None,
-            palettes,
-            share_input,
-            palette_note: None,
-            confirm_delete: false,
-            name_input,
-            show_import: false,
-            palette_save: None,
-            palette_dirty: false,
-            palette_writing: None,
+            views_on,
+            project,
+            setup_input,
+            check_input,
+            look,
+            confirm_nightly: false,
             pane_scroll: gpui::ScrollHandle::new(),
             _subs: [
-                sub,
-                key_sub,
-                voice_sub,
-                share_sub,
-                name_sub,
-                namer_sub,
-                teams_sub,
-                // An edit made just before the dialog closes or the app quits
-                // is saved then rather than lost with its wait.
-                cx.on_release(|this, _| this.flush_palette()),
-                cx.on_app_quit(|this, _| {
-                    this.flush_palette();
-                    async {}
-                }),
+                sub, key_sub, voice_sub, namer_sub, teams_sub, setup_sub, check_sub,
             ],
         }
+    }
+
+    /// Saves the project's setup script or check as it is typed, like the
+    /// naming model, so closing the dialog keeps what the field shows.
+    fn on_command_input(&mut self, check: bool, ev: &InputEvent, cx: &mut Context<Self>) {
+        match ev {
+            InputEvent::Changed => {}
+            InputEvent::Cancel => return cx.emit(SettingsEvent::Dismissed),
+            _ => return,
+        }
+        let Some(project) = self.project.as_mut().filter(|p| !p.remote) else {
+            return;
+        };
+        let input = if check {
+            &self.check_input
+        } else {
+            &self.setup_input
+        };
+        let text = input.read(cx).text().trim().to_string();
+        let command = (!text.is_empty()).then_some(text);
+        let saved = if check {
+            &mut project.check
+        } else {
+            &mut project.setup
+        };
+        if *saved == command {
+            return;
+        }
+        *saved = command.clone();
+        cx.emit(SettingsEvent::ProjectCommand {
+            project: project.path.clone(),
+            check,
+            command,
+        });
     }
 
     fn set_voice_enabled(&mut self, on: bool, cx: &mut Context<Self>) {
@@ -603,7 +658,9 @@ impl SettingsDialog {
         cx.notify();
         cx.spawn(async move |this, cx| {
             let saved = cx
-                .background_spawn(async move { voice::store_api_key(&key) })
+                .background_spawn(crate::guard::task(
+                    async move { voice::store_api_key(&key) },
+                ))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.voice_busy = false;
@@ -631,7 +688,7 @@ impl SettingsDialog {
         }
         self.voice_busy = true;
         cx.spawn(async move |this, cx| {
-            cx.background_spawn(async move { voice::clear_api_key() })
+            cx.background_spawn(crate::guard::task(async move { voice::clear_api_key() }))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.voice_busy = false;
@@ -685,11 +742,11 @@ impl SettingsDialog {
         cx.notify();
         cx.spawn(async move |this, cx| {
             let wav = cx
-                .background_spawn(async move {
+                .background_spawn(crate::guard::task(async move {
                     let key = voice::api_key()
                         .ok_or_else(|| "Save your ElevenLabs API key first.".to_string())?;
                     voice::fetch(&key, &id, tone, voice::sample(lang), lang)
-                })
+                }))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.voice_busy = false;
@@ -757,6 +814,15 @@ impl SettingsDialog {
             .collect()
     }
 
+    /// Moves an open dialog to Branches; its pending edits stay.
+    pub fn show_branches(&mut self, cx: &mut Context<Self>) {
+        // A search that leaves Branches out would show its own empty page.
+        if !Section::Branches.matches(&self.query(cx)) {
+            self.input.update(cx, |input, cx| input.set_text("", cx));
+        }
+        self.select(Section::Branches, cx);
+    }
+
     fn select(&mut self, s: Section, cx: &mut Context<Self>) {
         self.section = s;
         let ix = Section::ALL.iter().position(|x| *x == s).unwrap_or(0);
@@ -784,6 +850,16 @@ impl SettingsDialog {
         }
     }
 
+    /// Devin's own sign-in comes first; a key only in the environment is named
+    /// by its variable, never shown.
+    fn devin_status(&self) -> String {
+        match (self.devin, self.devin_env) {
+            (true, _) => "Signed in".into(),
+            (false, Some(var)) => format!("API key · {var}"),
+            (false, None) => "Not signed in".into(),
+        }
+    }
+
     /// Whether an agent's section gets the green dot: it can run, through a
     /// sign-in or a key. `false` for the other sections.
     fn signed_in(&self, s: Section) -> bool {
@@ -792,6 +868,7 @@ impl SettingsDialog {
             Section::Codex => self.codex.is_some() || self.codex_env.is_some(),
             Section::Droid => self.droid,
             Section::OpenCode => !self.opencode.is_empty(),
+            Section::Devin => self.devin || self.devin_env.is_some(),
             _ => false,
         }
     }
@@ -887,6 +964,19 @@ impl SettingsDialog {
                         cx.notify();
                     }))
                     .into_any_element(),
+                    #[cfg(target_os = "linux")]
+                    row(
+                        "Keep running in the background",
+                        "Closing the window hides it; agents, terminals and the island go on. Run arakun to bring it back, arakun quit to quit.",
+                        switch(crate::background::enabled()).into_any_element(),
+                    )
+                    .id("set-background")
+                    .cursor_pointer()
+                    .on_click(cx.listener(|_, _, _, cx| {
+                        cx.emit(SettingsEvent::Background(!crate::background::enabled()));
+                        cx.notify();
+                    }))
+                    .into_any_element(),
                     #[cfg(feature = "coderlabs")]
                     row(
                         "Oye Arakun",
@@ -911,11 +1001,32 @@ impl SettingsDialog {
                         })),
                     );
                 }
+                let mut views = div().flex().flex_wrap().items_center().gap(crate::ui::sp(6.));
+                for (i, view) in crate::sidebar::View::EXTENSIONS.iter().copied().enumerate() {
+                    let on = self.views_on.contains(&view);
+                    views = views.child(
+                        ui::chip(("set-sidebar-view", i), view.label(), on).on_click(cx.listener(move |this, _, _, cx| {
+                            if on {
+                                this.views_on.retain(|v| *v != view);
+                            } else {
+                                this.views_on.push(view);
+                            }
+                            cx.emit(SettingsEvent::SidebarView(view, !on));
+                            cx.notify();
+                        })),
+                    );
+                }
                 stack(vec![
                     titled("Raccoon", raccoon),
                     titled(
                         "Sidebar",
                         vec![
+                            stacked_row(
+                                "Views",
+                                "The extra views the sidebar shows. The Marketplace has the same switches, with what each view does.",
+                                views.into_any_element(),
+                            )
+                            .into_any_element(),
                             stacked_row(
                                 "Usage card",
                                 "The plans the card at the bottom of the sidebar shows; OpenCode's once a Go key is connected. The Usage tab always shows them all.",
@@ -961,6 +1072,7 @@ impl SettingsDialog {
                 ])
             }
             Section::Appearance => self.render_appearance(cx),
+            Section::Project => self.render_project(),
             Section::Branches => {
                 let current = self.namer.choice;
                 let mut choices = ui::segmented();
@@ -970,9 +1082,31 @@ impl SettingsDialog {
                             .on_click(cx.listener(move |this, _, _, cx| this.set_namer_choice(choice, cx))),
                     );
                 }
+                let current_days = crate::cleanup::days().unwrap_or(0);
+                let mut days = ui::segmented();
+                for (i, d) in crate::cleanup::CHOICES.into_iter().enumerate() {
+                    days = days.child(
+                        ui::segment(
+                            ("set-env-cleanup", i),
+                            None,
+                            crate::cleanup::label(d),
+                            d == current_days,
+                        )
+                        .on_click(cx.listener(move |_, _, _, cx| {
+                            crate::cleanup::set_days(d);
+                            cx.notify();
+                        })),
+                    );
+                }
+                let cleanup = stacked_row(
+                    "Remove old environments",
+                    "Removes an environment's worktree once its pull request is merged or closed and nobody opened it for this long. Environments with uncommitted files, commits that aren't in the pull request or a working agent stay. The branch is kept.",
+                    days.into_any_element(),
+                )
+                .into_any_element();
                 let settle = row(
                     "Settle threads after merge",
-                    "Once an environment's pull request is merged: its open review threads are resolved on GitHub, its notifications are marked read, and the environment's sessions stop asking for you. The GitHub tab marks read the notifications of every merged pull request.",
+                    "Once an environment's pull request is merged: its open review threads are resolved on GitHub, its notifications are marked read, and the environment's sessions stop asking for you and leave the sessions list. The GitHub tab marks read the notifications of every merged pull request.",
                     switch(crate::settle::on()).into_any_element(),
                 )
                 .id("set-settle-after-merge")
@@ -1009,7 +1143,7 @@ impl SettingsDialog {
                         .into_any_element(),
                     ],
                 ),
-                    titled("After merge", vec![settle]),
+                    titled("After merge", vec![settle, cleanup]),
                 ])
             }
             Section::Privacy => {
@@ -1128,6 +1262,35 @@ impl SettingsDialog {
                         )
                         .into_any_element(),
                         no_sign_in_row(AgentKind::Codex),
+                    ],
+                )])
+            }
+            Section::Devin => {
+                let signed_in = self.devin;
+                stack(vec![titled(
+                    "Account",
+                    vec![
+                        row(
+                            self.devin_status(),
+                            if signed_in {
+                                "The same sign-in the devin CLI uses. Arakun only checks that it is there."
+                            } else if self.devin_env.is_some() {
+                                "Sessions use the API key in the environment. Sign in to use your Devin account instead."
+                            } else {
+                                "Runs devin auth login in a terminal; approve the sign-in in the browser. WINDSURF_API_KEY works too."
+                            },
+                            if signed_in {
+                                ui::button("set-devin-out", "Sign out", ButtonKind::Danger, true)
+                                    .on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::DevinSignOut)))
+                                    .into_any_element()
+                            } else {
+                                ui::button("set-devin-in", "Sign in", ButtonKind::Outline, true)
+                                    .on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::DevinSignIn)))
+                                    .into_any_element()
+                            },
+                        )
+                        .into_any_element(),
+                        no_sign_in_row(AgentKind::Devin),
                     ],
                 )])
             }
@@ -1415,7 +1578,7 @@ impl SettingsDialog {
     /// the last check found.
     fn update_rows(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         use crate::update::{self, Status};
-        let version = format!("Arakun {}", env!("CARGO_PKG_VERSION"));
+        let version = format!("Arakun {}", env!("ARAKUN_VERSION"));
         if !update::release_build() {
             return vec![
                 row(
@@ -1441,11 +1604,12 @@ impl SettingsDialog {
             cx.notify();
         }))
         .into_any_element();
+        let nightly = self.nightly_row(cx);
         let status = update::status();
         let busy = matches!(status, Status::Checking | Status::Downloading(_));
         let action = match &status {
             // Only Linux and macOS can start Arakun again by themselves.
-            Status::Ready(_) if cfg!(unix) => ui::button(
+            Status::Ready(tag) if cfg!(unix) && update::will_install(tag) => ui::button(
                 "set-update-restart",
                 "Restart now",
                 ButtonKind::Outline,
@@ -1459,7 +1623,9 @@ impl SettingsDialog {
                     }
                     update::set_status(Status::Checking);
                     cx.spawn(async move |this, cx| {
-                        cx.background_spawn(async { update::check() }).await.ok();
+                        cx.background_spawn(crate::guard::task(async { update::check() }))
+                            .await
+                            .ok();
                         this.update(cx, |_, cx| cx.notify()).ok();
                     })
                     .detach();
@@ -1468,7 +1634,106 @@ impl SettingsDialog {
             ),
         };
         let current = row(version, status.text(), action.into_any_element()).into_any_element();
-        vec![auto, current]
+        vec![auto, nightly, current]
+    }
+
+    /// The nightly channel: a switch that shows what nightlies risk, and asks
+    /// again, before it takes them.
+    fn nightly_row(&self, cx: &mut Context<Self>) -> AnyElement {
+        use crate::update::{self, Channel};
+        let on = update::channel() == Channel::Nightly;
+        let hint = if on {
+            "Gets a build of main every night. Turn it off to go back to releases: this build stays until a release newer than it comes out."
+        } else {
+            "Builds of main from every night, before they are released. For maintainers and testers."
+        };
+        // Off the UI thread: the write waits while another Arakun installs
+        // an update (update::channel_lock).
+        let set = |to: Channel, cx: &mut Context<Self>| {
+            cx.spawn(async move |this, cx| {
+                let saved = cx
+                    .background_spawn(crate::guard::task(async move { update::set_channel(to) }))
+                    .await;
+                if let Err(e) = saved {
+                    eprintln!("arakun: the update channel will not last past a restart: {e}");
+                }
+                this.update(cx, |_, cx| cx.notify()).ok();
+            })
+            .detach();
+        };
+        let switch_row = row("Nightly builds", hint, switch(on).into_any_element())
+            .id("set-nightly")
+            .cursor_pointer()
+            .on_click(cx.listener(move |this, _, _, cx| {
+                if on {
+                    set(Channel::Stable, cx);
+                } else {
+                    this.confirm_nightly = !this.confirm_nightly;
+                    cx.notify();
+                }
+            }));
+        if on || !self.confirm_nightly {
+            return switch_row.into_any_element();
+        }
+        let warning = div()
+            .flex()
+            .flex_col()
+            .gap(crate::ui::sp(10.))
+            .mx(crate::ui::sp(14.))
+            .mb(crate::ui::sp(12.))
+            .p(crate::ui::sp(12.))
+            .rounded(crate::ui::rad(ui::RADIUS_LG))
+            .border_1()
+            .border_color(theme::warn())
+            .child(
+                div()
+                    .text_size(px(ui::TEXT_SM))
+                    .text_color(theme::warn())
+                    .font_weight(FontWeight::MEDIUM)
+                    .child("Nightly builds can break."),
+            )
+            .child(
+                div()
+                    .text_size(px(ui::TEXT_SM))
+                    .text_color(theme::text_muted())
+                    .child(
+                        "They are made from main every night and nobody tests them by hand. \
+                         One can crash, lose a session or change how your data is stored, and \
+                         a release may not read what a nightly wrote. Use them to try what is \
+                         next and report what breaks, not for work you can't redo.",
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .gap(crate::ui::sp(8.))
+                    .child(
+                        ui::button(
+                            "set-nightly-yes",
+                            "Get nightly builds",
+                            ButtonKind::Danger,
+                            true,
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.confirm_nightly = false;
+                            set(Channel::Nightly, cx);
+                        })),
+                    )
+                    .child(
+                        ui::button("set-nightly-no", "Cancel", ButtonKind::Ghost, true).on_click(
+                            cx.listener(|this, _, _, cx| {
+                                this.confirm_nightly = false;
+                                cx.notify();
+                            }),
+                        ),
+                    ),
+            );
+        div()
+            .flex()
+            .flex_col()
+            .child(switch_row)
+            .child(warning)
+            .into_any_element()
     }
 
     /// Puts `id` in use across the app and remembers it.
@@ -1529,854 +1794,136 @@ impl SettingsDialog {
             .into_any_element()
     }
 
-    fn use_palette(&mut self, id: &str, cx: &mut Context<Self>) {
-        self.palettes.current = id.to_string();
-        self.confirm_delete = false;
-        self.apply_palette(cx);
-    }
-
-    fn apply_palette(&mut self, cx: &mut Context<Self>) {
-        self.palette_save = None;
-        self.palette_dirty = true;
-        self.write_palette(cx);
-        self.show_palette(cx);
-    }
-
-    /// Shows the palette in use across the app without saving it.
-    fn show_palette(&mut self, cx: &mut Context<Self>) {
-        crate::palettes::apply(&self.palettes);
-        // The name field follows the palette in use, unless it is what changed.
-        let name = self.palettes.active().name;
-        if self.name_input.read(cx).text().trim() != name {
-            self.name_input.update(cx, |i, cx| i.set_text(name, cx));
-        }
-        cx.refresh_windows();
-        cx.notify();
-    }
-
-    /// Changes the palette in use, which is one of the user's (the editor
-    /// shows only for those).
-    fn edit_palette(&mut self, change: impl FnOnce(&mut theme::Palette), cx: &mut Context<Self>) {
-        let mut p = self.palettes.active();
-        if !self.palettes.is_custom(&p.id) {
-            return;
-        }
-        change(&mut p);
-        self.palettes.update(p);
-        self.save_palette_later(cx);
-    }
-
-    /// Shows a change now and saves it once changes settle: a slider drag or
-    /// typing a name changes the palette many times a second, and each save
-    /// is a synced write.
-    fn save_palette_later(&mut self, cx: &mut Context<Self>) {
-        self.show_palette(cx);
-        self.palette_dirty = true;
-        self.palette_save = Some(cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(PALETTE_SAVE_DELAY).await;
-            let _ = this.update(cx, |this, cx| this.write_palette(cx));
-        }));
-    }
-
-    /// Saves the palettes off the UI thread: each save is a synced write,
-    /// which can take long enough to stall typing and drawing. One save at a
-    /// time; an edit made while it writes is saved when it is done. A failed
-    /// save stays dirty, so closing Settings or quitting tries again.
-    fn write_palette(&mut self, cx: &mut Context<Self>) {
-        if !self.palette_dirty || self.palette_writing.is_some() {
-            return;
-        }
-        self.palette_dirty = false;
-        let (saved, version) = (self.palettes.clone(), crate::palettes::next_version());
-        self.palette_writing = Some(cx.spawn(async move |this, cx| {
-            let ok = cx
-                .background_executor()
-                .spawn(async move { crate::palettes::store_version(&saved, version) })
-                .await;
-            let _ = this.update(cx, |this, cx| {
-                this.palette_writing = None;
-                if !ok {
-                    this.palette_dirty = true;
-                } else if this.palette_dirty {
-                    this.write_palette(cx);
-                }
-            });
-        }));
-    }
-
-    /// Saves a palette edit that is still waiting, if there is one, right
-    /// away: Settings is closing or the app is quitting, and a save left to
-    /// a task would be dropped with it.
-    fn flush_palette(&mut self) {
-        // A save still writing may not finish once its task is dropped.
-        if self.palette_dirty || self.palette_writing.take().is_some() {
-            let version = crate::palettes::next_version();
-            self.palette_dirty = !crate::palettes::store_version(&self.palettes, version);
-        }
-    }
-
-    /// A copy of the palette in use that the user can change.
-    fn customize_palette(&mut self, cx: &mut Context<Self>) {
-        let from = self.palettes.active();
-        self.palettes.add(&from);
-        self.palette_note = None;
-        self.apply_palette(cx);
-    }
-
-    fn import_palette(&mut self, cx: &mut Context<Self>) {
-        let code = self.share_input.read(cx).text().to_string();
-        match theme::Palette::from_share_code(&code) {
-            Some(p) => {
-                self.palettes.add(&p);
-                self.share_input.update(cx, |i, cx| i.set_text("", cx));
-                self.show_import = false;
-                // A Delete armed for the old palette must not delete the new one.
-                self.confirm_delete = false;
-                self.palette_note = Some(("Added and in use.".into(), false));
-                self.apply_palette(cx);
-            }
-            None => {
-                self.palette_note = Some((
-                    "That isn't a palette line. It starts with arakun:palette/v1:".into(),
-                    true,
-                ));
-                cx.notify();
-            }
-        }
-    }
-
-    fn render_palettes(&self, cx: &mut Context<Self>) -> AnyElement {
-        let active = self.palettes.active();
-        let all = self.palettes.all();
-        let card = |i: usize, p: &theme::Palette, cx: &mut Context<Self>| {
-            let on = p.id == active.id;
-            let id = p.id.clone();
-            let bar =
-                |w: f32, c: gpui::Hsla| div().h(px(4.)).w(gpui::relative(w)).rounded_full().bg(c);
-            // 6 px (padding and border) inside the card's 12 px corner; the
-            // strip on its left rounds the same, as nothing clips it.
-            let preview = div()
-                .flex()
-                .h(px(54.))
-                .rounded(ui::nested(ui::RADIUS_LG, 6.))
-                .overflow_hidden()
-                .bg(p.background())
-                .child(
-                    div()
-                        .w(gpui::relative(0.34))
-                        .h_full()
-                        .flex()
-                        .flex_col()
-                        .gap(crate::ui::sp(5.))
-                        .p(crate::ui::sp(7.))
-                        .rounded_l(ui::nested(ui::RADIUS_LG, 6.))
-                        .bg(p.surface(0.07))
-                        .child(bar(0.6, p.accent()))
-                        .child(bar(0.85, p.content().opacity(0.22)))
-                        .child(bar(0.7, p.content().opacity(0.22))),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .flex()
-                        .flex_col()
-                        .gap(crate::ui::sp(5.))
-                        .p(crate::ui::sp(8.))
-                        .child(bar(0.8, p.content().opacity(0.8)))
-                        .child(bar(0.55, p.content().opacity(0.25)))
-                        .child(
-                            div()
-                                .mt(px(2.))
-                                .flex()
-                                .items_center()
-                                .gap(crate::ui::sp(5.))
-                                .p(crate::ui::sp(5.))
-                                .rounded(crate::ui::rad(ui::RADIUS_SM))
-                                .bg(p.surface(0.12))
-                                .child(div().size(px(7.)).rounded_full().bg(p.accent()))
-                                .child(bar(0.6, p.content().opacity(0.25))),
-                        ),
-                );
+    /// What Colors and Shape are set to, and the way to the Customize panel
+    /// where they are changed: there the app stays in view, not under a dialog.
+    fn render_appearance(&self, cx: &mut Context<Self>) -> AnyElement {
+        let value = |text: String| {
             div()
-                .id(("palette", i))
-                .flex_1()
-                .min_w_0()
-                .flex()
-                .flex_col()
-                .gap(crate::ui::sp(6.))
-                .p(crate::ui::sp(5.))
-                .rounded(crate::ui::rad(ui::RADIUS_LG))
-                .border_1()
-                .border_color(if on {
-                    theme::active().opacity(0.55)
-                } else {
-                    theme::stroke()
-                })
-                .cursor_pointer()
-                .hover(|s| s.bg(theme::fill_hover()))
-                .child(preview)
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(crate::ui::sp(6.))
-                        .px(crate::ui::sp(3.))
-                        .pb(crate::ui::sp(1.))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .truncate()
-                                .text_size(px(ui::TEXT_SM))
-                                .font_weight(FontWeight::MEDIUM)
-                                .text_color(if on {
-                                    theme::text()
-                                } else {
-                                    theme::text_muted()
-                                })
-                                .child(p.name.clone()),
-                        )
-                        .when(on, |d| {
-                            d.child(icon("tick02", 13.).text_color(theme::active()))
-                        }),
-                )
-                .on_click(cx.listener(move |this, _, _, cx| this.use_palette(&id, cx)))
+                .flex_none()
+                .max_w(px(360.))
+                .truncate()
+                .text_size(px(ui::TEXT_SM))
+                .text_color(theme::text())
+                .child(text)
+                .into_any_element()
         };
-        let mut grid = div().flex().flex_col().gap(crate::ui::sp(8.));
-        let cards: Vec<_> = all
-            .iter()
-            .enumerate()
-            .map(|(i, p)| card(i, p, cx).into_any_element())
-            .collect();
-        let mut cards = cards.into_iter();
-        loop {
-            let row: Vec<_> = cards.by_ref().take(3).collect();
-            if row.is_empty() {
-                break;
-            }
-            let pad = 3 - row.len();
-            grid = grid.child(
-                div()
-                    .flex()
-                    .gap(crate::ui::sp(8.))
-                    .children(row)
-                    .children((0..pad).map(|_| div().flex_1())),
-            );
-        }
-        let custom = self.palettes.is_custom(&active.id);
-        let head = div()
+        let open = div()
             .flex()
             .items_center()
             .gap(crate::ui::sp(12.))
-            .child(label_block(
-                "Palette",
-                "The colors of the whole app. Customize one to make it yours.",
-            ))
             .child(
-                ui::button("palette-paste", "Paste a palette", ButtonKind::Ghost, true).on_click(
-                    cx.listener(|this, _, window, cx| {
-                        this.show_import = !this.show_import;
-                        this.palette_note = None;
-                        if this.show_import {
-                            window.focus(&this.share_input.focus_handle(cx), cx);
-                        }
-                        cx.notify();
-                    }),
-                ),
+                ui::button_with(
+                    "set-customize",
+                    Some("paint-board"),
+                    "Open Customize",
+                    ButtonKind::Primary,
+                    true,
+                )
+                .on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::OpenCustomize))),
             )
-            .when(!custom, |d| {
-                d.child(
-                    ui::button("palette-customize", "Customize", ButtonKind::Outline, true)
-                        .on_click(cx.listener(|this, _, _, cx| this.customize_palette(cx))),
-                )
-            });
-        div()
-            .flex()
-            .flex_col()
-            .gap(crate::ui::sp(12.))
-            .px(crate::ui::sp(14.))
-            .py(crate::ui::sp(12.))
-            .child(head)
-            .when(self.show_import, |d| {
-                d.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(crate::ui::sp(8.))
-                        .child(field(self.share_input.clone(), 0.).flex_1())
-                        .child(
-                            ui::button("palette-import", "Add", ButtonKind::Outline, true)
-                                .on_click(cx.listener(|this, _, _, cx| this.import_palette(cx))),
-                        ),
-                )
-            })
-            .when_some(self.palette_note.clone(), |d, (note, bad)| {
-                d.child(
-                    div()
-                        .text_size(px(ui::TEXT_XS))
-                        .text_color(if bad {
-                            theme::error().into()
-                        } else {
-                            theme::text_subtle()
-                        })
-                        .child(note),
-                )
-            })
-            .child(grid)
-            .when(custom, |d| d.child(self.render_palette_editor(&active, cx)))
-            .into_any_element()
-    }
-
-    fn render_palette_editor(&self, p: &theme::Palette, cx: &mut Context<Self>) -> AnyElement {
-        const ACCENTS: [u32; 8] = [
-            theme::AMBER,
-            0xff7a59,
-            0xff8fab,
-            0xb394f5,
-            0x8b9dff,
-            0x86a6f2,
-            0x5fd4c4,
-            0x5fd38d,
-        ];
-        let this = cx.entity().downgrade();
-        let setter = move |f: fn(&mut theme::Palette, f32)| {
-            let this = this.clone();
-            move |t: f32, _: &mut Window, cx: &mut App| {
-                let _ = this.update(cx, |this, cx| this.edit_palette(|p| f(p, t), cx));
-            }
-        };
-        let line = |title: &'static str, value: String, control: AnyElement| {
-            div()
-                .flex()
-                .flex_col()
-                .gap(crate::ui::sp(6.))
-                .child(
-                    div()
-                        .flex()
-                        .justify_between()
-                        .text_size(px(ui::TEXT_SM))
-                        .text_color(theme::text_muted())
-                        .child(title)
-                        .child(
-                            div()
-                                .font_family(theme::FONT_MONO)
-                                .text_size(px(ui::TEXT_XS))
-                                .text_color(theme::text_subtle())
-                                .child(value),
-                        ),
-                )
-                .child(control)
-        };
-        let dark = theme::Palette {
-            bg: 0.03,
-            ..p.clone()
-        };
-        let light = theme::Palette {
-            bg: 0.16,
-            ..p.clone()
-        };
-        let gray = theme::Palette {
-            tint: 0.,
-            ..p.clone()
-        };
-        let full = theme::Palette {
-            tint: 0.6,
-            ..p.clone()
-        };
-        // Colors that wouldn't read are adjusted when drawn; say so, since
-        // the slider or swatch then shows something a little different.
-        let text_ok = p.readable_bg() >= p.bg;
-        let accent_ok = p.readable_accent() == p.accent;
-        let readable: (&str, gpui::Hsla) = match (text_ok, accent_ok) {
-            (true, true) => ("Text and accent read well", theme::success().into()),
-            (false, true) => (
-                "The background is drawn darker so text stays readable",
-                theme::attention().into(),
-            ),
-            (true, false) => (
-                "The accent is drawn lighter so it stays readable",
-                theme::attention().into(),
-            ),
-            (false, false) => (
-                "Drawn with a darker background and a lighter accent so text stays readable",
-                theme::attention().into(),
-            ),
-        };
-        let copied = p.share_code();
-        let id = p.id.clone();
-        let armed = self.confirm_delete;
-        div()
-            .flex()
-            .flex_col()
-            .gap(crate::ui::sp(14.))
-            .p(crate::ui::sp(14.))
-            .rounded(crate::ui::rad(ui::RADIUS_LG))
-            .bg(theme::fill_raised())
-            .border_1()
-            .border_color(theme::stroke())
             .child(
                 div()
+                    .text_size(px(ui::TEXT_SM))
+                    .text_color(theme::text_subtle())
+                    .child("Closes Settings and opens the panel at the right."),
+            )
+            .into_any_element();
+        let zoom = {
+            let pct = crate::ui_zoom::pct();
+            let step = |id: &'static str, icon: &'static str, steps: i32| {
+                let to = crate::ui_zoom::next(pct, steps);
+                ui::icon_button(id, icon, 13.)
+                    .when(to != pct, |b| {
+                        b.on_click(cx.listener(move |_, _, _, cx| {
+                            cx.emit(SettingsEvent::Zoom(to));
+                            cx.notify();
+                        }))
+                    })
+                    .when(to == pct, |b| b.opacity(0.4))
+            };
+            row(
+                "Zoom",
+                "Makes the whole interface bigger or smaller, like a browser's zoom. Ctrl+= and Ctrl+- do it too, Ctrl+0 goes back to 100%.",
+                div()
                     .flex()
-                    .flex_col()
+                    .flex_none()
+                    .items_center()
                     .gap(crate::ui::sp(6.))
+                    .child(step("set-zoom-out", "minus-sign", -1))
                     .child(
                         div()
+                            .w(px(44.))
+                            .text_center()
                             .text_size(px(ui::TEXT_SM))
-                            .text_color(theme::text_muted())
-                            .child("Name"),
+                            .child(format!("{pct}%")),
                     )
-                    .child(field(self.name_input.clone(), 0.).w_full()),
-            )
-            .child(line(
-                "Tint",
-                format!("{}°", p.hue.round()),
-                ui::slider(
-                    "pal-hue",
-                    p.hue / 360.,
-                    ui::hue_track(0.6, 0.55),
-                    gpui::hsla(p.hue / 360., 0.6, 0.55, 1.),
-                    setter(|p, t| p.hue = hue_at(t)),
-                )
-                .into_any_element(),
-            ))
-            .child(line(
-                "Background",
-                format!("{:.1}%", p.bg * 100.),
-                ui::slider(
-                    "pal-bg",
-                    (p.bg - 0.03) / 0.13,
-                    ui::blend_track(dark.background(), light.background()),
-                    p.background(),
-                    setter(|p, t| p.bg = 0.03 + t * 0.13),
-                )
-                .into_any_element(),
-            ))
-            .child(line(
-                "Tint strength",
-                format!("{}%", (p.tint / 0.6 * 100.).round()),
-                ui::slider(
-                    "pal-tint",
-                    p.tint / 0.6,
-                    ui::blend_track(gray.surface(0.2), full.surface(0.2)),
-                    p.surface(0.2),
-                    setter(|p, t| p.tint = t * 0.6),
-                )
-                .into_any_element(),
-            ))
-            .child(line(
-                "Accent",
-                format!("#{:06x}", p.accent),
-                div()
-                    .flex()
-                    .gap(crate::ui::sp(8.))
-                    .children(ACCENTS.into_iter().enumerate().map(|(i, c)| {
-                        ui::swatch(("pal-accent", i), gpui::rgb(c), p.accent == c).on_click(
-                            cx.listener(move |this, _, _, cx| {
-                                this.edit_palette(|p| p.accent = c, cx)
+                    .child(step("set-zoom-in", "add01", 1))
+                    .child(
+                        ui::button("set-zoom-reset", "Reset", ButtonKind::Ghost, pct != 100).on_click(
+                            cx.listener(move |_, _, _, cx| {
+                                if pct != 100 {
+                                    cx.emit(SettingsEvent::Zoom(100));
+                                    cx.notify();
+                                }
                             }),
-                        )
-                    }))
+                        ),
+                    )
                     .into_any_element(),
-            ))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(crate::ui::sp(6.))
-                    .text_size(px(ui::TEXT_XS))
-                    .text_color(readable.1)
-                    .child(
-                        icon(
-                            if text_ok && accent_ok {
-                                "checkmark-circle01"
-                            } else {
-                                "alert-circle"
-                            },
-                            13.,
-                        )
-                        .text_color(readable.1),
-                    )
-                    .child(readable.0),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(crate::ui::sp(8.))
-                    .child(
-                        ui::button("pal-copy", "Copy share line", ButtonKind::Outline, true)
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                cx.write_to_clipboard(gpui::ClipboardItem::new_string(
-                                    copied.clone(),
-                                ));
-                                this.palette_note = Some((
-                                    "Copied. Anyone can paste it here to get this palette.".into(),
-                                    false,
-                                ));
-                                cx.notify();
-                            })),
-                    )
-                    .child(div().flex_1())
-                    .child(
-                        ui::button(
-                            "pal-delete",
-                            if armed { "Delete it?" } else { "Delete" },
-                            ButtonKind::Danger,
-                            true,
-                        )
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            if this.confirm_delete {
-                                this.palettes.remove(&id);
-                                this.confirm_delete = false;
-                                this.apply_palette(cx);
-                            } else {
-                                this.confirm_delete = true;
-                                cx.notify();
-                            }
-                        })),
-                    ),
-            )
-            .into_any_element()
-    }
-
-    /// Changes how round, roomy or spread out the app is, everywhere at once.
-    fn set_shape(
-        &mut self,
-        change: impl FnOnce(&mut crate::palettes::Saved),
-        cx: &mut Context<Self>,
-    ) {
-        change(&mut self.palettes);
-        self.save_palette_later(cx);
-    }
-
-    /// The Corners, Spacing and Window gap rows.
-    fn render_shape(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        let s = &self.palettes;
-        let this = cx.entity().downgrade();
-        let setter = move |f: fn(&mut crate::palettes::Saved, f32)| {
-            let this = this.clone();
-            move |t: f32, _: &mut Window, cx: &mut App| {
-                let _ = this.update(cx, |this, cx| this.set_shape(|s| f(s, t), cx));
-            }
-        };
-        let presets = |id: &'static str,
-                       items: [(&'static str, f32); 3],
-                       now: f32,
-                       set: fn(&mut crate::palettes::Saved, f32),
-                       cx: &mut Context<Self>| {
-            let mut seg = ui::segmented();
-            for (i, (label, v)) in items.into_iter().enumerate() {
-                seg = seg.child(
-                    ui::segment((id, i), None, label, (now - v).abs() < 0.01).on_click(
-                        cx.listener(move |this, _, _, cx| this.set_shape(|s| set(s, v), cx)),
-                    ),
-                );
-            }
-            seg
-        };
-        let line = |title: &'static str,
-                    hint: &'static str,
-                    value: String,
-                    seg: gpui::Div,
-                    slider: gpui::Stateful<gpui::Div>| {
-            div()
-                .flex()
-                .flex_col()
-                .gap(crate::ui::sp(8.))
-                .px(crate::ui::sp(14.))
-                .py(crate::ui::sp(12.))
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(crate::ui::sp(12.))
-                        .child(label_block(title, hint))
-                        .child(
-                            div()
-                                .font_family(theme::FONT_MONO)
-                                .text_size(px(ui::TEXT_XS))
-                                .text_color(theme::text_subtle())
-                                .child(value),
-                        )
-                        .child(seg),
-                )
-                .child(slider)
-                .into_any_element()
-        };
-        let track = || ui::blend_track(theme::fill_raised(), theme::fill_selected());
-        vec![
-            line(
-                "Corners",
-                "How round cards, buttons and fields are.",
-                format!("{:.0}%", s.radius * 100.),
-                presets(
-                    "shape-radius",
-                    [("Sharp", 0.5), ("Default", 1.), ("Round", 1.5)],
-                    s.radius,
-                    |s, v| s.radius = v,
-                    cx,
-                ),
-                ui::pinned_slider(
-                    "shape-radius-slider",
-                    s.radius / 2.,
-                    track(),
-                    theme::active(),
-                    &self.pane_scroll,
-                    setter(|s, t| s.radius = (t * 2. * 20.).round() / 20.),
-                ),
-            ),
-            line(
-                "Spacing",
-                "The room inside and between things.",
-                format!("{:.0}%", s.space * 100.),
-                presets(
-                    "shape-space",
-                    [("Compact", 0.8), ("Default", 1.), ("Roomy", 1.25)],
-                    s.space,
-                    |s, v| s.space = v,
-                    cx,
-                ),
-                ui::pinned_slider(
-                    "shape-space-slider",
-                    s.space - 0.6,
-                    track(),
-                    theme::active(),
-                    &self.pane_scroll,
-                    setter(|s, t| s.space = ((0.6 + t) * 20.).round() / 20.),
-                ),
-            ),
-            line(
-                "Window gap",
-                "The space around and between the sidebar, the main area and the panel.",
-                format!("{:.0} px", s.window_gap),
-                presets(
-                    "shape-gap",
-                    [("None", 0.), ("Default", 8.), ("Wide", 14.)],
-                    s.window_gap,
-                    |s, v| s.window_gap = v,
-                    cx,
-                ),
-                ui::pinned_slider(
-                    "shape-gap-slider",
-                    s.window_gap / 20.,
-                    track(),
-                    theme::active(),
-                    &self.pane_scroll,
-                    setter(|s, t| s.window_gap = (t * 20.).round()),
-                ),
-            ),
-        ]
-    }
-
-    fn render_appearance(&self, cx: &mut Context<Self>) -> AnyElement {
-        let palette = theme::diff_palette();
-        let glass = theme::glass();
-        let segments = ui::segmented().children(DiffPalette::ALL.into_iter().map(|p| {
-            let active = p == palette;
-            let (add, del) = p.swatch();
-            div()
-                .id(p.id())
-                .flex()
-                .flex_none()
-                .items_center()
-                .gap(crate::ui::sp(4.))
-                .h(px(ui::CONTROL_H - 4.))
-                .px(crate::ui::sp(8.))
-                .rounded(crate::ui::rad(ui::RADIUS_SM))
-                .text_size(px(ui::TEXT_SM))
-                .font_weight(FontWeight::MEDIUM)
-                .cursor_pointer()
-                .when(active, |d| {
-                    d.bg(theme::fill_selected()).text_color(theme::content())
-                })
-                .when(!active, |d| {
-                    d.text_color(theme::text_subtle())
-                        .hover(|st| st.text_color(theme::content()))
-                })
-                .child(div().size(px(8.)).rounded_full().bg(add))
-                .child(div().size(px(8.)).rounded_full().bg(del))
-                .child(div().ml(px(2.)).child(p.label()))
-                .on_click(cx.listener(move |_, _, _, cx| {
-                    cx.emit(SettingsEvent::DiffPalette(p));
-                    cx.notify();
-                }))
-        }));
-        let preview_line = |mark: &'static str, text: &'static str, add: bool| {
-            let (fg, bg, bar) = if add {
-                (
-                    theme::diff_add(),
-                    theme::diff_add_bg(),
-                    theme::diff_add_bar(),
-                )
-            } else {
-                (
-                    theme::diff_del(),
-                    theme::diff_del_bg(),
-                    theme::diff_del_bar(),
-                )
-            };
-            div()
-                .flex()
-                .items_center()
-                .h(px(20.))
-                .bg(bg)
-                .border_l_2()
-                .border_color(bar)
-                .child(
-                    div()
-                        .w(px(20.))
-                        .flex()
-                        .justify_center()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(fg)
-                        .child(mark),
-                )
-                .child(div().text_color(theme::text_muted()).child(text))
-        };
-        let preview = div()
-            .flex()
-            .flex_col()
-            .py(crate::ui::sp(4.))
-            .rounded(crate::ui::rad(ui::RADIUS_LG))
-            .overflow_hidden()
-            .border_1()
-            .border_color(theme::stroke())
-            .bg(theme::background())
-            .font_family(theme::FONT_MONO)
-            .text_size(px(ui::TEXT_XS))
-            .child(
-                div()
-                    .h(px(20.))
-                    .border_l_2()
-                    .border_color(gpui::transparent_black())
-                    .pl(crate::ui::sp(20.))
-                    .flex()
-                    .items_center()
-                    .text_color(theme::text_subtle())
-                    .child("fn retry(n: u32) {"),
-            )
-            .child(preview_line("−", "    let wait = 100;", false))
-            .child(preview_line("+", "    let wait = 100 * 2u64.pow(n);", true))
-            .child(
-                div()
-                    .h(px(20.))
-                    .border_l_2()
-                    .border_color(gpui::transparent_black())
-                    .pl(crate::ui::sp(20.))
-                    .flex()
-                    .items_center()
-                    .text_color(theme::text_subtle())
-                    .child("}"),
-            );
-        let mode = {
-            let mut seg = ui::segmented();
-            for (i, m) in crate::theme::Mode::ALL.into_iter().enumerate() {
-                seg = seg.child(
-                    ui::segment(("set-mode", i), None, m.label(), crate::theme::mode() == m)
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.set_shape(|s| s.light = m == crate::theme::Mode::Light, cx);
-                        })),
-                );
-            }
-            row(
-                "Mode",
-                "Dark draws the palette on black; Light on white with dark text.",
-                seg.into_any_element(),
             )
             .into_any_element()
         };
-        let grays = {
-            let mut seg = ui::segmented();
-            for (i, g) in crate::theme::Grays::ALL.into_iter().enumerate() {
-                seg = seg.child(
-                    ui::segment(
-                        ("set-grays", i),
-                        None,
-                        g.label(),
-                        crate::theme::grays() == g,
-                    )
-                    .on_click(cx.listener(move |_, _, _, cx| {
-                        cx.emit(SettingsEvent::Grays(g));
-                        cx.notify();
-                    })),
-                );
-            }
-            row(
-                "Grays",
-                "How bright secondary text and borders are. Crisp lifts labels on the dark background; Soft quiets them.",
-                seg.into_any_element(),
-            )
-            .into_any_element()
-        };
-        let text_size = {
-            let mut seg = ui::segmented();
-            for (i, t) in crate::ui::TypeScale::ALL.into_iter().enumerate() {
-                seg = seg.child(
-                    ui::segment(
-                        ("set-type", i),
-                        None,
-                        t.label(),
-                        crate::ui::type_scale() == t,
-                    )
-                    .on_click(cx.listener(move |_, _, _, cx| {
-                        cx.emit(SettingsEvent::TypeScale(t));
-                        cx.notify();
-                    })),
-                );
-            }
-            row(
-                "Text size",
-                "Comfortable sets body text at 14 instead of 13.",
-                seg.into_any_element(),
-            )
-            .into_any_element()
-        };
-        let diffs = div()
-            .flex()
-            .flex_col()
-            .gap(crate::ui::sp(10.))
-            .px(crate::ui::sp(14.))
-            .py(crate::ui::sp(12.))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(crate::ui::sp(16.))
-                    .child(label_block(
-                        "Diff colors",
-                        "Colorblind uses blue and orange. Lines keep their + and − marks.",
-                    ))
-                    .child(segments),
-            )
-            .child(preview)
-            .into_any_element();
-        let glass_row = row(
-            "Glass",
-            "See-through window and sidebar; the compositor blurs what is behind (KDE, Hyprland).",
-            switch(glass).into_any_element(),
-        )
-        .id("set-glass")
-        .cursor_pointer()
-        .on_click(cx.listener(move |_, _, _, cx| {
-            cx.emit(SettingsEvent::Glass(!glass));
-            cx.notify();
-        }))
-        .into_any_element();
-        let gallery = row(
-            "Design system",
-            "Every color, type style and component Arakun is built from, with the gray and type choices.",
-            ui::button("set-gallery", "Open", ButtonKind::Outline, true)
-                .on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::OpenGallery)))
-                .into_any_element(),
-        )
-        .into_any_element();
         stack(vec![
-            titled("Colors", vec![self.render_palettes(cx), mode]),
-            titled("Text", vec![text_size, grays]),
-            titled("Shape", self.render_shape(cx)),
-            titled("Code", vec![diffs]),
-            titled("Window", vec![glass_row, gallery]),
+            group(vec![
+                row("Colors", "", value(self.look.colors.clone())).into_any_element(),
+                row("Shape", "", value(self.look.shape.clone())).into_any_element(),
+            ]),
+            open,
+            titled("Window", vec![zoom]),
         ])
+    }
+
+    /// The open project's setup script and check, saved as they are typed.
+    fn render_project(&self) -> AnyElement {
+        let Some(project) = &self.project else {
+            return group(vec![
+                row(
+                    "No project open",
+                    "Add or open a project, then come back to set its setup script and check command.",
+                    div().into_any_element(),
+                )
+                .into_any_element(),
+            ]);
+        };
+        if project.remote {
+            return stack(vec![titled(
+                &project.name,
+                vec![
+                    row(
+                        "On a server",
+                        "This project comes from a server, which keeps its own settings. A setup script and a check command are set on a project on this computer.",
+                        div().into_any_element(),
+                    )
+                    .into_any_element(),
+                ],
+            )]);
+        }
+        stack(vec![titled(
+            &project.name,
+            vec![
+                stacked_row(
+                    "Setup script",
+                    "Runs in a terminal of every new environment of this project on this computer, right after its worktree is created. Not on servers. Empty turns it off.",
+                    field(self.setup_input.clone(), 420.).into_any_element(),
+                )
+                .into_any_element(),
+                stacked_row(
+                    "Check command",
+                    "Runs in the environment after every agent turn that edits files. When it fails, Arakun sends the output back to the agent, up to 3 times in a row. Agents can run it themselves with arakun check. Empty turns it off.",
+                    field(self.check_input.clone(), 420.).into_any_element(),
+                )
+                .into_any_element(),
+            ],
+        )])
     }
 
     fn render_voice(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -2816,7 +2363,7 @@ impl Render for SettingsDialog {
 
         // The version, or how many sections the search leaves.
         let foot: SharedString = if q.is_empty() {
-            format!("Arakun {}", env!("CARGO_PKG_VERSION")).into()
+            format!("Arakun {}", env!("ARAKUN_VERSION")).into()
         } else {
             match shown.len() {
                 0 => "No matches".into(),
@@ -2890,22 +2437,9 @@ impl Render for SettingsDialog {
     }
 }
 
-/// The tint at slider position `t`. 360° is 0° again, which would send the
-/// thumb back to the left end, so the right end stops just short of it.
-fn hue_at(t: f32) -> f32 {
-    (t * 360.).clamp(0., 359.)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_tint_slider_stops_short_of_360() {
-        assert_eq!(hue_at(0.), 0.);
-        assert_eq!(hue_at(0.5), 180.);
-        assert_eq!(hue_at(1.), 359.);
-    }
 
     /// The link setting is in General in every build, whichever keyword list it has.
     #[test]
@@ -2965,6 +2499,10 @@ mod tests {
         assert!(found("github").contains(&Section::Account));
         assert!(found("teams").contains(&Section::Account));
         assert!(found("ctrl+w").contains(&Section::Shortcuts));
+        assert!(found("zoom").contains(&Section::Appearance));
+        assert!(found("check command").contains(&Section::Project));
+        assert!(found("setup script").contains(&Section::Project));
+        assert!(found("github").contains(&Section::General));
         assert_eq!(found("").len(), Section::ALL.len());
         assert!(found("zzz-nothing").is_empty());
     }

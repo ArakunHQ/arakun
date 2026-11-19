@@ -16,6 +16,7 @@ mod item;
 mod pilot;
 mod queue;
 mod sheet;
+mod threads;
 mod timeline;
 
 use std::cell::{Cell, RefCell};
@@ -94,6 +95,8 @@ enum Confirm {
     RequestChanges,
     Merge(MergeMethod),
     Close,
+    /// Open a closed issue again.
+    Reopen,
     /// Post the agent's draft review (`confirm_draft`).
     PostDraft,
 }
@@ -112,6 +115,13 @@ struct Diff {
     /// Which load this is: an older load that ends late is dropped.
     load: u64,
     state: DiffState,
+}
+
+/// The end of a failed check's log, read when its row opens.
+enum CheckLog {
+    Loading,
+    Failed(String),
+    Ready(Rc<Vec<crate::ci::LogLine>>),
 }
 
 /// Whether a diff read at `read_at` still shows the pull request whose
@@ -216,7 +226,12 @@ fn busy_note(what: &str) -> String {
         "request-changes" => "the change request",
         "approve" => "the approval",
         "merge" => "the merge",
+        "reopen" => "the reopen",
         "close" => "the close",
+        "rerun" => "the re-run",
+        "reply" => "the reply",
+        "resolve" => "the thread's change",
+        "line-review" => "the review comments",
         other => other,
     };
     format!("Still sending {what}: this comment wasn't sent yet. Press Enter again once it's done.")
@@ -320,6 +335,21 @@ pub struct GitHubView {
     folded: HashSet<usize>,
     /// Files of the open diff shown in full past the first lines.
     unfolded_lines: HashSet<usize>,
+    /// The answer to a thread or the comment on a line being written in
+    /// `thread_input`.
+    writing: Option<threads::Writing>,
+    /// The commit whose diff the line comment being written was started on.
+    writing_head: String,
+    /// Counts the boxes opened: a request that ends tells its own box from
+    /// a later one on the same thread.
+    writing_box: u64,
+    thread_input: Entity<TextInput>,
+    /// Comments on lines of the diff not sent yet, by `queue::key_of`.
+    pending: HashMap<String, threads::Pending>,
+    /// Failed checks whose log shows under them, by Actions job.
+    checks_open: HashSet<u64>,
+    /// The logs read so far, by Actions job.
+    check_logs: HashMap<u64, CheckLog>,
     /// Repository → the merge methods it allows; None while it is asked.
     merge_methods: HashMap<String, Option<Vec<MergeMethod>>>,
     /// Markdown already parsed, by its text.
@@ -422,7 +452,13 @@ impl GitHubView {
         let comment = cx.new(|cx| TextInput::new("Comment (Enter sends), or / for actions", cx));
         let body_input = cx.new(|cx| TextInput::new("Say why (optional)", cx));
         let pilot_input = cx.new(|cx| TextInput::new("Your answer for the agent", cx));
+        let thread_input = cx.new(|cx| TextInput::new("Reply to the thread", cx));
         let subs = vec![
+            cx.subscribe(&thread_input, |this, _, ev: &InputEvent, cx| match ev {
+                InputEvent::Submit | InputEvent::SubmitAlt => this.submit_writing(cx),
+                InputEvent::Cancel => this.stop_writing(cx),
+                _ => {}
+            }),
             cx.subscribe(&pilot_input, |this, _, ev: &InputEvent, cx| match ev {
                 InputEvent::Submit => this.pilot_send_other(cx),
                 InputEvent::Cancel => {
@@ -518,6 +554,13 @@ impl GitHubView {
             diff_loads: 0,
             folded: HashSet::new(),
             unfolded_lines: HashSet::new(),
+            writing: None,
+            writing_head: String::new(),
+            writing_box: 0,
+            thread_input,
+            pending: HashMap::new(),
+            checks_open: HashSet::new(),
+            check_logs: HashMap::new(),
             merge_methods: HashMap::new(),
             md: RefCell::new(HashMap::new()),
             md_raw: RefCell::new(HashMap::new()),
@@ -606,6 +649,8 @@ impl GitHubView {
             && let Some(item) = self.item()
         {
             self.load_diff(item, cx);
+            // Threads may have come or gone under the lines.
+            self.files_list.remeasure();
         }
         self.reload_draft();
         cx.notify();
@@ -671,6 +716,8 @@ impl GitHubView {
             self.note = None;
             self.folded.clear();
             self.unfolded_lines.clear();
+            self.checks_open.clear();
+            self.writing = None;
             self.expanded.clear();
             self.body_scroll = ScrollHandle::new();
         } else {
@@ -714,7 +761,9 @@ impl GitHubView {
         cx.spawn(async move |this, cx| {
             let r = repo.clone();
             let read = cx
-                .background_spawn(async move { pr::allowed_merge_methods(&r) })
+                .background_spawn(crate::guard::task(
+                    async move { pr::allowed_merge_methods(&r) },
+                ))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 // Unknown counts as squash allowed: GitHub refuses a wrong one with its own words.
@@ -758,9 +807,9 @@ impl GitHubView {
         cx.spawn(async move |this, cx| {
             let it = item.clone();
             let read = cx
-                .background_spawn(async move {
+                .background_spawn(crate::guard::task(async move {
                     pr::fetch_diff_at(&it).map(|(d, at)| (pr::split_diff(&d.text), d.cut, at))
-                })
+                }))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 // A newer load (a push, a refresh) replaced this one.
@@ -923,6 +972,19 @@ impl GitHubView {
         );
     }
 
+    /// "Work on it": an agent does what the issue asks, in the project open.
+    fn work_on_issue(&mut self, cx: &mut Context<Self>) {
+        let Some(item) = self.item().filter(|i| i.kind == ItemKind::Issue) else {
+            return;
+        };
+        let title = self.title(cx);
+        self.ask(
+            format!("Issue: {title}"),
+            pr::issue_prompt(&item, &title),
+            cx,
+        );
+    }
+
     fn catch_up(&mut self, cx: &mut Context<Self>) {
         let Some(item) = self.item() else { return };
         let title = self.title(cx);
@@ -985,7 +1047,9 @@ impl GitHubView {
         cx.notify();
         cx.spawn(async move |this, cx| {
             let it = item.clone();
-            let result = cx.background_spawn(async move { job(&it) }).await;
+            let result = cx
+                .background_spawn(crate::guard::task(async move { job(&it) }))
+                .await;
             let _ = this.update(cx, |this, cx| {
                 this.busy = None;
                 // Another item may be picked now: its confirmation stays, and
@@ -1123,6 +1187,8 @@ impl GitHubView {
             "request-changes" | "changes" if pull => self.ask_confirm(Confirm::RequestChanges, cx),
             "merge" if pull => self.ask_merge(cx),
             "close" if !pull => self.ask_confirm(Confirm::Close, cx),
+            "reopen" if !pull => self.ask_confirm(Confirm::Reopen, cx),
+            "work" if !pull => self.work_on_issue(cx),
             "review" if pull => self.review_with_agent(cx),
             "catchup" | "catch-up" => self.catch_up(cx),
             "summarize" | "summary" => self.summarize(cx),
@@ -1131,7 +1197,7 @@ impl GitHubView {
                 let list = if pull {
                     "/approve, /request-changes, /merge, /review, /catchup, /summarize, /open"
                 } else {
-                    "/close, /catchup, /summarize, /open"
+                    "/work, /close, /reopen, /catchup, /summarize, /open"
                 };
                 self.note = Some(Note {
                     ok: false,
@@ -1286,6 +1352,7 @@ impl GitHubView {
                 self.write("merge", done, move |i| pr::merge(i, m, &head), clear, cx)
             }
             Confirm::Close => self.write("close", "Closed.".into(), pr::close, clear, cx),
+            Confirm::Reopen => self.write("reopen", "Opened again.".into(), pr::reopen, clear, cx),
             Confirm::PostDraft => self.post_draft(cx),
         }
     }

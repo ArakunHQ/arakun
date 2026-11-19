@@ -617,7 +617,11 @@ impl ThreadView {
                             .hover(|s| s.bg(theme::mix(0.18)))
                             .child("Skip")
                             .on_click(cx.listener(|this, _, _, cx| {
-                                this.ask = None;
+                                // A server's question keeps its answers until
+                                // the server says it is gone.
+                                if !this.thread.read(cx).is_remote() {
+                                    this.ask = None;
+                                }
                                 this.thread.update(cx, |t, cx| t.skip_question(cx));
                                 this.remeasure_last();
                                 cx.notify();

@@ -3,12 +3,17 @@
 // goes through one WebSocket to it, sealed with E2E (e2e.js) so the relay only
 // passes bytes along. Inside the channel the phone speaks the same JSON it
 // would on a socket of its own, plus `{req}` for what it would ask over HTTP;
-// the computer answers `{res}` in pieces. Loaded before app.js, which uses
+// the computer answers `{res}` in pieces, and sends any other message too big
+// for one relay frame as `{part}` pieces. Loaded before app.js, which uses
 // `RELAY.detect()` and the link it gives back.
 "use strict";
 
 const RELAY = (() => {
   const CREDS_KEY = "arakun.relay";
+  /// This page's own name to the relay. It stays the same across reconnects,
+  /// so a socket left behind by a network switch can be replaced, and differs
+  /// between tabs, even duplicated ones, so live tabs never replace each other.
+  const PAGE = Array.from(crypto.getRandomValues(new Uint8Array(12)), (b) => b.toString(16).padStart(2, "0")).join("");
   const { HELLO, DATA, CONTROL, utf8, text } = E2E;
 
   /// What the computer gave this phone when it paired, kept on the phone: in
@@ -74,12 +79,36 @@ const RELAY = (() => {
     return "gone";
   }
 
+  /// Joins the `{part: {body, more}}` pieces of a message too big for one
+  /// relay frame: given each piece in turn, it gives back the whole message
+  /// with the last one and null before that.
+  function joiner() {
+    let parts = [];
+    return (part) => {
+      parts.push(E2E.fromB64url(part.body || "") || new Uint8Array());
+      if (part.more) return null;
+      const whole = join(parts);
+      parts = [];
+      return JSON.parse(text(whole));
+    };
+  }
+
+  function join(parts) {
+    const whole = new Uint8Array(parts.reduce((n, b) => n + b.length, 0));
+    let at = 0;
+    for (const b of parts) {
+      whole.set(b, at);
+      at += b.length;
+    }
+    return whole;
+  }
+
   /// One connection to the computer through the relay. `with` is either
   /// `{ creds }` or `{ pairing: { code, secret, name } }`; the handlers hear
   /// how it goes. The link sends messages, asks `req`s and closes.
   function open(label, with_, handlers) {
     const query = with_.creds
-      ? `d=${encodeURIComponent(with_.creds.id)}&t=${encodeURIComponent(with_.creds.ticket)}`
+      ? `d=${encodeURIComponent(with_.creds.id)}&t=${encodeURIComponent(with_.creds.ticket)}&s=${PAGE}`
       : `p=${encodeURIComponent(with_.pairing.code)}`;
     // Plain `ws` only ever reaches a relay run by hand (`wrangler dev`).
     const proto = location.protocol === "https:" ? "wss" : "ws";
@@ -94,6 +123,7 @@ const RELAY = (() => {
     let ready = false;
     let ended = false;
     let nextReq = 1;
+    let joined = joiner();
     const pending = new Map(); // req id → { resolve, reject, status, type, parts }
     // Frames must be opened and sealed in the order they come and go: the
     // counters say so. Each direction waits its turn.
@@ -125,6 +155,8 @@ const RELAY = (() => {
     const greet = async () => {
       session = null;
       ready = false;
+      // Pieces from before belong to a message that will not be finished.
+      joined = joiner();
       handshake = await E2E.begin();
       ws.send(E2E.encodeFrame(HELLO, handshake.hello));
     };
@@ -161,9 +193,11 @@ const RELAY = (() => {
       let msg;
       try {
         msg = JSON.parse(text(await session.open(payload)));
+        if (msg.part) msg = joined(msg.part);
       } catch (e) {
         return end("untrusted", e.message);
       }
+      if (!msg) return; // more pieces to come
       if (msg.paired) {
         creds = { id: msg.paired.id, ticket: msg.paired.ticket, token: msg.paired.token };
         keep(creds);
@@ -181,14 +215,7 @@ const RELAY = (() => {
         p.parts.push(E2E.fromB64url(r.body || "") || new Uint8Array());
         if (!r.more) {
           pending.delete(r.id);
-          const size = p.parts.reduce((n, b) => n + b.length, 0);
-          const body = new Uint8Array(size);
-          let at = 0;
-          for (const b of p.parts) {
-            body.set(b, at);
-            at += b.length;
-          }
-          p.resolve(new Response(body, { status: p.status || 500, headers: { "Content-Type": p.type || "application/octet-stream" } }));
+          p.resolve(new Response(join(p.parts), { status: p.status || 500, headers: { "Content-Type": p.type || "application/octet-stream" } }));
         }
       } else {
         handlers.onmessage(msg);
@@ -258,7 +285,7 @@ const RELAY = (() => {
     };
   }
 
-  return { detect, open, creds, keep };
+  return { detect, open, creds, keep, joiner };
 })();
 
 globalThis.RELAY = RELAY;

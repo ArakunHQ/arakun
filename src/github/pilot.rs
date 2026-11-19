@@ -495,7 +495,7 @@ fn agent(base: &str) -> ureq::Agent {
     config
         .timeout_global(Some(Duration::from_secs(20)))
         .http_status_as_error(false)
-        .user_agent(concat!("arakun/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("arakun/", env!("ARAKUN_VERSION")))
         .build()
         .into()
 }
@@ -789,10 +789,6 @@ impl Pilot {
         self.shown().filter(|i| i.in_focus(focus))
     }
 
-    pub fn count(&self, focus: &[String]) -> usize {
-        self.shown_in(focus).count()
-    }
-
     /// Whether a card in focus waits that would have popped the island.
     pub fn urgent(&self, focus: &[String]) -> bool {
         self.shown_in(focus).any(Item::pops)
@@ -829,7 +825,7 @@ impl Pilot {
         let untold = self.book.untold.clone();
         cx.spawn(async move |this, cx| {
             let (told, read, board) = cx
-                .background_spawn(async move {
+                .background_spawn(crate::guard::task(async move {
                     // The board and the items side by side: a slow one
                     // doesn't hold the other up.
                     // The handled ids the Worker missed go out beside them:
@@ -851,7 +847,7 @@ impl Pilot {
                         });
                         (told, read, board)
                     })
-                })
+                }))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.busy = false;
@@ -907,7 +903,7 @@ impl Pilot {
         cx.spawn(async move |this, cx| {
             let i = id.clone();
             let told = cx
-                .background_spawn(async move { tell_done(&cfg, &i) })
+                .background_spawn(crate::guard::task(async move { tell_done(&cfg, &i) }))
                 .await;
             // A failure stays untold; the next read tries again.
             if told.is_ok() {

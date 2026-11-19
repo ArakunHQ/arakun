@@ -22,7 +22,9 @@ impl Shell {
                 if !update::automatic() {
                     continue;
                 }
-                let result = cx.background_spawn(async { update::check() }).await;
+                let result = cx
+                    .background_spawn(crate::guard::task(async { update::check() }))
+                    .await;
                 let alive = this
                     .update(cx, |this, cx| {
                         match result {

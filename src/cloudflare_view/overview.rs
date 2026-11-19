@@ -45,7 +45,9 @@ impl CloudflareView {
         self.fix_error = None;
         cx.notify();
         cx.spawn(async move |this, cx| {
-            let result = cx.background_spawn(async move { fix::apply(&fix) }).await;
+            let result = cx
+                .background_spawn(crate::guard::task(async move { fix::apply(&fix) }))
+                .await;
             let _ = this.update(cx, |this, cx| {
                 this.fixing = None;
                 match result {
@@ -2098,7 +2100,9 @@ impl CloudflareView {
             cx.spawn(async move |this, cx| {
                 let id = zone_id.clone();
                 let read = cx
-                    .background_spawn(async move { cloudflare::zone_traffic(&id) })
+                    .background_spawn(crate::guard::task(
+                        async move { cloudflare::zone_traffic(&id) },
+                    ))
                     .await;
                 let _ = this.update(cx, |this, cx| {
                     this.traffic.insert(zone_id, read);

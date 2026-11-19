@@ -1,6 +1,7 @@
 //! Watches the environments' branches for a merged pull request and settles it
 //! (`crate::settle`): its review threads resolved, its notifications read, and
-//! the environment's sessions no longer asking for attention.
+//! the environment's sessions no longer asking for attention and hidden from
+//! the sessions list.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -10,7 +11,7 @@ use gpui::{AppContext as _, Context};
 
 use super::Shell;
 use crate::github::{pr, queue};
-use crate::model::{Status, TabKind, unix_now};
+use crate::model::{Status, unix_now};
 use crate::settle::{self, Book, Merged};
 
 /// Each check asks GitHub once per environment: not more often than this.
@@ -71,7 +72,7 @@ impl Shell {
         self.settle.busy = true;
         cx.spawn(async move |this, cx| {
             let found: Vec<(PathBuf, Merged)> = cx
-                .background_spawn(async move {
+                .background_spawn(crate::guard::task(async move {
                     envs.into_iter()
                         .flat_map(|(path, branch)| {
                             settle::merged_prs(&path, &branch)
@@ -79,13 +80,13 @@ impl Shell {
                                 .map(move |m| (path.clone(), m))
                         })
                         .collect()
-                })
+                }))
                 .await;
             let Ok(threads) = this.update(cx, |this, cx| this.settle_found(found, cx)) else {
                 return;
             };
             let results: Vec<(String, bool)> = cx
-                .background_spawn(async move {
+                .background_spawn(crate::guard::task(async move {
                     threads
                         .into_iter()
                         .map(|(url, host, item)| {
@@ -101,7 +102,7 @@ impl Shell {
                             (url, done.is_ok())
                         })
                         .collect()
-                })
+                }))
                 .await;
             let _ = this.update(cx, |this, _| {
                 let w = &mut this.settle;
@@ -158,20 +159,24 @@ impl Shell {
     }
 
     /// The environment's sessions from before the merge stop asking for
-    /// attention, and the agents nobody is looking at stop. A session still
-    /// working, or used after the merge, is left alone.
+    /// attention and leave the sessions list, and the agents nobody is looking
+    /// at stop. A session still working, or used after the merge, is left alone.
     fn settle_sessions(&mut self, path: &Path, merged_at: u64, cx: &mut Context<Self>) {
-        let Some(env) = self.find_env_mut(path) else {
+        let strip = &self.strip;
+        let Some(env) = self
+            .projects
+            .iter_mut()
+            .flat_map(|p| p.environments.iter_mut())
+            .find(|e| e.path == path)
+        else {
             return;
         };
         let mut ids = Vec::new();
         for s in &mut env.sessions {
-            let open = env
-                .tabs
-                .iter()
-                .any(|t| matches!(&t.kind, TabKind::Session { id, .. } if *id == s.id));
+            let open = strip.session_tab(&s.id).is_some();
             if let Some(status) = settled_status(s.status, s.updated, merged_at, open) {
                 s.status = status;
+                s.settled = true;
                 ids.push(s.id.clone());
             }
         }

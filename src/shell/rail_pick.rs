@@ -27,6 +27,15 @@ pub(super) fn range(order: &[PathBuf], anchor: Option<&Path>, to: &Path) -> Vec<
     }
 }
 
+/// Whether an environment with sessions of `statuses` has a row in the
+/// project's list, with the Active list drawn above it or not.
+fn listed(is_checkout: bool, statuses: &[Status], active_above: bool) -> bool {
+    if statuses.is_empty() {
+        return !is_checkout;
+    }
+    !(active_above && statuses.iter().all(|s| super::active::is_active(*s)))
+}
+
 /// What settling turns a session's status into; None leaves it. Running
 /// agents keep running.
 fn settled(status: Status) -> Option<Status> {
@@ -39,21 +48,18 @@ impl Shell {
         let Some(project) = self.projects.get(pi) else {
             return Vec::new();
         };
-        // What waits or runs is in the Active list above; here the rest.
-        // The main checkout stays: it is how you get to it. A worktree from
-        // before one session per worktree stays while any session is idle.
+        // What waits or runs is in the Active list above; here the rest. A
+        // worktree from before one session per worktree stays while any of
+        // its sessions is idle. Sessions start in worktrees, so the main
+        // checkout shows only while it holds older ones.
         let active_above = self.active_list_shown();
         project
             .environments
             .iter()
             .enumerate()
             .filter(|(_, env)| {
-                let all_above = !env.sessions.is_empty()
-                    && env
-                        .sessions
-                        .iter()
-                        .all(|s| super::active::is_active(s.status));
-                !(active_above && !env.is_checkout && all_above)
+                let statuses: Vec<Status> = env.sessions.iter().map(|s| s.status).collect();
+                listed(env.is_checkout, &statuses, active_above)
             })
             .map(|(ei, _)| ei)
             .collect()
@@ -485,6 +491,19 @@ mod tests {
             range(&order, Some(Path::new("gone")), Path::new("a")),
             paths(&["a"])
         );
+    }
+
+    #[test]
+    fn the_main_checkout_is_listed_only_while_it_holds_sessions() {
+        use Status::*;
+        assert!(!listed(true, &[], false));
+        assert!(listed(true, &[Idle], true));
+        assert!(listed(false, &[], true));
+        // What runs or waits is named in the Active list instead.
+        assert!(!listed(true, &[Working], true));
+        assert!(!listed(false, &[NeedsInput, Error], true));
+        assert!(listed(false, &[Working, Idle], true));
+        assert!(listed(false, &[Working], false));
     }
 
     #[test]

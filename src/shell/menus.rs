@@ -827,13 +827,46 @@ impl Shell {
                     .map(|p| p.path.clone())
                     .unwrap_or_default();
                 let reveal = path.clone();
-                panel = panel
-                    .child(
-                        ui::menu_item("cm-new-env", "git-branch", "New environment…", false, true)
+                // The main checkout is not in the list while no session is
+                // there. A project can have one here and one on each server
+                // that shares its origin: each gets its own entry, by machine.
+                let checkouts: Vec<(usize, String)> = self
+                    .projects
+                    .get(pi)
+                    .map(|p| {
+                        p.environments
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, e)| e.is_checkout)
+                            .map(|(ei, e)| {
+                                let label = match &e.remote {
+                                    Some(r) => format!(
+                                        "Open main checkout on {}",
+                                        crate::redact::text(&r.machine)
+                                    ),
+                                    None => "Open main checkout".to_string(),
+                                };
+                                (ei, label)
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                panel = panel.child(
+                    ui::menu_item("cm-new-env", "git-branch", "New environment…", false, true)
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.open_create_env(pi, window, cx)
+                        })),
+                );
+                for (ei, label) in checkouts {
+                    panel = panel.child(
+                        ui::menu_item(("cm-checkout", ei), "folder01", label, false, true)
                             .on_click(cx.listener(move |this, _, window, cx| {
-                                this.open_create_env(pi, window, cx)
+                                this.menu = None;
+                                this.select_env(pi, ei, window, cx)
                             })),
-                    )
+                    );
+                }
+                panel = panel
                     .child(
                         ui::menu_item(
                             "cm-reveal",

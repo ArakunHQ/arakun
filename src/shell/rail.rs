@@ -7,6 +7,7 @@ use crate::servers_view::Reach;
 const ENV_ROW_H: f32 = 28.;
 const ENV_GAP: f32 = 2.;
 
+const NEW_SESSION_TIP: &str = "A session in its own worktree. Alt+click to pick the branch";
 const NEW_ENV_TIP: &str = "New session in its own worktree (Ctrl+Shift+N). Alt+click for options";
 
 /// The one thing an environment row says at its end, the most urgent first.
@@ -871,27 +872,57 @@ impl Shell {
     fn render_env_heading(&self, pi: usize, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .flex()
-            .items_center()
-            .h(px(28.))
-            .mt(crate::ui::sp(6.))
-            .pl(crate::ui::sp(8.))
-            .text_size(px(ui::TEXT_SM))
-            .text_color(theme::text_subtle())
-            .child(div().flex_1().min_w_0().truncate().child("Sessions"))
+            .flex_col()
+            .gap(crate::ui::sp(ENV_GAP))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .h(px(28.))
+                    .mt(crate::ui::sp(6.))
+                    .pl(crate::ui::sp(8.))
+                    .text_size(px(ui::TEXT_SM))
+                    .text_color(theme::text_subtle())
+                    .child(div().flex_1().min_w_0().truncate().child("Sessions")),
+            )
             .child(
                 div()
                     .id(("env-add", pi))
+                    .group("env-add")
                     .flex()
                     .items_center()
-                    .justify_center()
-                    .size(px(24.))
-                    .rounded(crate::ui::rad(6.))
+                    .gap(crate::ui::sp(8.))
+                    .h(px(ENV_ROW_H))
+                    .px(crate::ui::sp(8.))
+                    .rounded(crate::ui::rad(8.))
                     .cursor_pointer()
-                    .hover(|s| s.bg(theme::fill_selected()))
-                    .tooltip(ui::tip(NEW_ENV_TIP))
-                    .child(icon("add01", 14.).text_color(theme::text_muted()))
+                    .border_1()
+                    .border_color(theme::border())
+                    .text_size(px(ui::TEXT_MD))
+                    .text_color(theme::text_muted())
+                    .hover(|s| s.bg(theme::hover()).text_color(theme::content()))
+                    .tooltip(ui::tip(NEW_SESSION_TIP))
+                    .child(hover_icon(
+                        "add01",
+                        14.,
+                        theme::text_muted(),
+                        theme::content(),
+                        "env-add",
+                    ))
+                    .child(div().flex_1().min_w_0().truncate().child("New session"))
+                    .child(
+                        div()
+                            .flex_none()
+                            .text_size(px(ui::TEXT_XS))
+                            .text_color(theme::text_faint())
+                            .child(crate::platform::shortcut_label("Ctrl+T")),
+                    )
                     .on_click(cx.listener(move |this, ev: &gpui::ClickEvent, window, cx| {
-                        this.new_env_click(pi, ev, window, cx)
+                        if ev.modifiers().alt {
+                            this.open_create_env(pi, window, cx)
+                        } else {
+                            this.new_session(window, cx)
+                        }
                     })),
             )
     }

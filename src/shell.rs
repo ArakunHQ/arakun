@@ -1690,11 +1690,16 @@ impl Shell {
                     if local.contains(&name) {
                         name = crate::env_name::random(|n| taken(n, ""));
                     }
+                    // Before the first commit there is nothing to branch from:
+                    // None, and the session starts in the main checkout.
+                    if !git::has_commits(&repo)? {
+                        return Ok(None);
+                    }
                     let mut result = Err(anyhow::anyhow!("not tried"));
                     for _ in 0..2 {
                         let path = crate::model::worktree_path(&project_name, &name);
                         result = git::add_worktree(&repo, &path, &name, None, true)
-                            .map(|()| (path, name.clone()));
+                            .map(|()| Some((path, name.clone())));
                         if result.is_ok() {
                             break;
                         }
@@ -1708,7 +1713,7 @@ impl Shell {
                     .retain(|p| !(p.repo == key && p.name == shown));
                 match made {
                     // The project can have moved in the list since.
-                    Ok((path, branch)) => {
+                    Ok(Some((path, branch))) => {
                         if let Some(pi) = this.projects.iter().position(|p| p.path == key) {
                             this.environment_created(pi, path.clone(), branch, true, window, cx);
                             if let Some(prompt) = prompt {
@@ -1716,6 +1721,7 @@ impl Shell {
                             }
                         }
                     }
+                    Ok(None) => this.use_checkout(&key, prompt, window, cx),
                     Err(e) => {
                         if let Some(prompt) = prompt {
                             this.unqueue(prompt, cx);
@@ -1733,6 +1739,33 @@ impl Shell {
             });
         })
         .detach();
+    }
+
+    /// A repository without commits has no worktrees: a new session goes to
+    /// the main checkout of the project at `repo`, with `prompt` when one waits.
+    fn use_checkout(
+        &mut self,
+        repo: &std::path::Path,
+        prompt: Option<sessions::QueuedPrompt>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((pi, ei)) = self.projects.iter().enumerate().find_map(|(pi, p)| {
+            (p.path == repo)
+                .then(|| p.environments.iter().position(|e| e.is_checkout))
+                .flatten()
+                .map(|ei| (pi, ei))
+        }) else {
+            return;
+        };
+        let checkout = self.projects[pi].environments[ei].path.clone();
+        match prompt {
+            Some(prompt) => self.start_queued(&checkout, prompt, window, cx),
+            None => {
+                self.select_env(pi, ei, window, cx);
+                self.show_new_session_tab(window, cx);
+            }
+        }
     }
 
     /// Shows the new worktree right away and lets `git worktree list` fill in details.
@@ -2742,15 +2775,21 @@ impl Shell {
     }
 
     /// One thread per worktree: a new session gets a worktree of its own,
-    /// unless the open environment has no thread yet.
+    /// unless the open one is a worktree with no thread yet. The main
+    /// checkout takes none.
     fn new_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.has_projects() {
             return;
         }
-        if !self.env().sessions.is_empty() {
+        if !self.env().sessions.is_empty() || self.env().is_checkout {
             self.quick_create_env(self.active_project, window, cx);
             return;
         }
+        self.show_new_session_tab(window, cx);
+    }
+
+    /// The open environment's New session tab, made when it has none.
+    fn show_new_session_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let path = self.env().path.clone();
         let blank = self
             .strip

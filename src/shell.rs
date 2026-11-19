@@ -577,6 +577,26 @@ fn crowd_out(
     out
 }
 
+/// `crowd_out`, except that with `keep_panel` the panel is never the one
+/// left out: Customize sits there, and a change made in it (a wider gap, a
+/// bigger text size) must not take away the controls that undo it. The
+/// subagents give way first, then the middle shrinks.
+fn crowd_out_keeping(
+    room: f32,
+    rail: f32,
+    panel: Option<f32>,
+    subagents: Option<f32>,
+    prefer: SideCard,
+    keep_panel: bool,
+) -> [bool; 2] {
+    if !keep_panel {
+        return crowd_out(room, rail, panel, subagents, prefer);
+    }
+    let mut out = crowd_out(room, rail, panel, subagents, SideCard::Panel);
+    out[0] = false;
+    out
+}
+
 /// Side card widths that leave `room` for the cards together. Each one gives
 /// up width in proportion to how far it is above its own minimum, and none
 /// goes below it: on a window too small even for that, the middle shrinks.
@@ -2422,6 +2442,18 @@ impl Shell {
     }
 
     fn toggle_panel(&mut self, cx: &mut Context<Self>) {
+        // Customize holds the panel's place: the toggle brings the workspace
+        // panel back there rather than hiding it unseen.
+        if self.customize.is_some() {
+            self.customize = None;
+            if !self.panel_open {
+                self.panel_open = true;
+                self.save(cx);
+            }
+            self.side_prefer = SideCard::Panel;
+            cx.notify();
+            return;
+        }
         // Left out for room, a click brings it back in the subagents' place.
         if self.panel_open && self.side_crowded.get()[0] {
             self.side_prefer = SideCard::Panel;
@@ -2572,12 +2604,13 @@ impl Shell {
             (true, false) => (self.rail_w, RAIL_W_RANGE.start),
         };
         // Each card's narrowest, with the handle beside it.
-        let crowded = crowd_out(
+        let crowded = crowd_out_keeping(
             viewport_w - 2. * gap() - MAIN_FLOOR_W,
             if rail { rail_card.1 + gap() } else { 0. },
             self.panel_wanted().then(|| PANEL_W_RANGE.start + gap()),
             (has_projects && self.subagents_open).then(|| SUBAGENTS_W_RANGE.start + gap()),
             self.side_prefer,
+            self.customize.is_some(),
         );
         self.side_crowded.set(crowded);
         let panel = self.panel_shown();
@@ -4068,6 +4101,20 @@ mod tests {
         assert_eq!(
             crowd_out(room, rail, None, sub, SideCard::Panel),
             [false, false]
+        );
+        // Customize in the panel's place stays, even asked for after the
+        // subagents or with no room at all; without it, nothing changes.
+        assert_eq!(
+            crowd_out_keeping(room, rail, panel, sub, SideCard::Subagents, true),
+            [false, true]
+        );
+        assert_eq!(
+            crowd_out_keeping(100., rail, panel, sub, SideCard::Panel, true),
+            [false, true]
+        );
+        assert_eq!(
+            crowd_out_keeping(room, rail, panel, sub, SideCard::Subagents, false),
+            [true, false]
         );
     }
 

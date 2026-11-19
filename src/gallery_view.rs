@@ -822,7 +822,7 @@ impl Render for GalleryView {
             .flex()
             .flex_col()
             .gap(crate::ui::sp(36.))
-            .child(section("Color", "Roles, not numbers: views pick what a gray is for. The ramp behind them is the Grays choice above.", color))
+            .child(section("Color", "Roles, not numbers: views pick what a gray is for. The ramp behind them is Customize › Colors › Grays.", color))
             .child(section("Type", "Each style is a size, a line height and a weight together. `.ty(Type::Body)` on any element.", type_rows))
             .child(section(
                 "Space and shape",

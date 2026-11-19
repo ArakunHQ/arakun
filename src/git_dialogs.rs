@@ -446,7 +446,7 @@ impl PullRequestDialog {
                     // Read again: a commit made while the dialog was open
                     // would stay behind, and gh pushes nothing with --head.
                     // Not knowing is no reason to skip the push.
-                    let Some(needs_push) = git::needs_push(&dir) else {
+                    let Some(needs_push) = git::needs_push(&dir, &remote) else {
                         anyhow::bail!(
                             "Couldn't read the branch's state, so nothing was pushed or created."
                         );

@@ -1027,9 +1027,23 @@ fn qualified_head(pushed_to: Option<&str>, base_owner: Option<&str>, branch: &st
 
 /// Whether creating a pull request has to push first: read again right
 /// before it, since a commit may have come while the dialog was open.
-pub fn needs_push(dir: &Path) -> Option<bool> {
+/// A `remote` that pushes elsewhere than it fetches always pushes: its
+/// tracking branch is the fetch side's and says nothing about the push side,
+/// and a push of what is already there changes nothing.
+pub fn needs_push(dir: &Path, remote: &str) -> Option<bool> {
     let s = sync(dir).ok()?;
-    Some(!s.published || s.ahead > 0)
+    Some(!s.published || s.ahead > 0 || pushes_elsewhere(dir, remote))
+}
+
+/// Whether `remote` has a push address other than the one it fetches from.
+fn pushes_elsewhere(dir: &Path, remote: &str) -> bool {
+    let fetch = stdout(git(dir).args(["remote", "get-url", remote]));
+    let push = stdout(git(dir).args(["remote", "get-url", "--push", remote]));
+    match (fetch, push) {
+        (Ok(fetch), Ok(push)) => fetch.trim() != push.trim(),
+        // Not knowing is no reason to skip the push.
+        _ => true,
+    }
 }
 
 /// A commit a new pull request would bring: its subject and the rest of
@@ -1101,12 +1115,26 @@ const PR_TEMPLATES: [&str; 6] = [
     "docs/PULL_REQUEST_TEMPLATE.md",
 ];
 
-/// The repository's pull request template as committed on HEAD: what GitHub
-/// itself would fill in.
-fn pr_template(dir: &Path) -> Option<String> {
+/// The repository's pull request template: what GitHub itself would fill
+/// in. GitHub reads it from the default branch, so a template changed there
+/// after this branch started is the one used. HEAD's only when the clone
+/// hasn't fetched the default branch.
+fn pr_template(dir: &Path, remote: &str) -> Option<String> {
+    let default = format!("{remote}/{}", default_base(dir, remote));
+    let fetched = read(
+        dir,
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("{default}^{{commit}}"),
+        ],
+    )
+    .is_ok();
+    let rev = if fetched { default.as_str() } else { "HEAD" };
     PR_TEMPLATES
         .iter()
-        .find_map(|path| show_file(dir, "HEAD", path))
+        .find_map(|path| show_file(dir, rev, path))
         .filter(|text| !text.trim().is_empty())
 }
 
@@ -1151,7 +1179,7 @@ pub fn pr_plan_onto(dir: &Path, remote: &str, branch: &str, base: &str) -> Optio
 
 fn plan_onto(dir: &Path, remote: &str, branch: &str, base: String) -> PrPlan {
     let commits = pr_commits(dir, remote, &base);
-    let template = pr_template(dir);
+    let template = pr_template(dir, remote);
     let (title, body) = pr_fill(&commits, template.as_deref(), branch);
     PrPlan {
         base,
@@ -1371,9 +1399,13 @@ test: cover the resize\u{1f}\u{1e}\n";
 
     /// A repository on `env/brave-otter` with one commit, and a `taken` branch.
     fn repo() -> std::path::PathBuf {
+        // The clock alone can repeat across tests running at once (macOS
+        // counts microseconds), and two tests in one folder break each other.
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let dir = std::env::temp_dir().join(format!(
-            "arakun-rename-{}-{:?}",
+            "arakun-rename-{}-{}-{:?}",
             std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
@@ -1410,6 +1442,39 @@ test: cover the resize\u{1f}\u{1e}\n";
     }
 
     #[test]
+    fn the_template_comes_from_the_default_branch() {
+        let dir = repo();
+        let git = |args: &[&str]| {
+            let ok = super::unpinned(&mut Command::new("git"))
+                .arg("-C")
+                .arg(&dir)
+                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                .args(["-c", "commit.gpgsign=false"])
+                .args(args)
+                .status()
+                .unwrap();
+            assert!(ok.success(), "{args:?}");
+        };
+        let template = |text: &str| {
+            let path = dir.join(".github/pull_request_template.md");
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+            git(&["add", "."]);
+            git(&["commit", "-q", "-m", text]);
+        };
+        template("old");
+        // Nothing fetched: HEAD's is all there is.
+        assert_eq!(super::pr_template(&dir, "origin").as_deref(), Some("old"));
+        // The default branch changed it after this branch started.
+        git(&["switch", "-q", "-c", "main"]);
+        template("new");
+        git(&["update-ref", "refs/remotes/origin/main", "main"]);
+        git(&["switch", "-q", "env/brave-otter"]);
+        assert_eq!(super::pr_template(&dir, "origin").as_deref(), Some("new"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn the_head_owner_is_the_one_a_push_goes_to() {
         let dir = repo();
         let git = |args: &[&str]| {
@@ -1441,6 +1506,17 @@ test: cover the resize\u{1f}\u{1e}\n";
         ]);
         assert_eq!(super::push_owner(&dir, "origin").as_deref(), Some("me"));
         assert_eq!(super::push_owner(&dir, "nowhere"), None);
+        // Its tracking branch is upstream's, so the fork always gets the push.
+        assert!(super::pushes_elsewhere(&dir, "origin"));
+        assert!(super::pushes_elsewhere(&dir, "nowhere"));
+        git(&[
+            "remote",
+            "set-url",
+            "--push",
+            "origin",
+            "https://github.com/ArakunHQ/arakun.git",
+        ]);
+        assert!(!super::pushes_elsewhere(&dir, "origin"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

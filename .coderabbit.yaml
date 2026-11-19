@@ -83,8 +83,10 @@ reviews:
 
   auto_review:
     enabled: true
-    # Agents open pull requests as drafts and mark them ready once checks pass.
-    drafts: false
+    # Review drafts too, so the review runs next to CI instead of after it.
+    # Agents open a pull request when its content is final and mark it ready
+    # once the required checks pass; waiting for that cost ~5-7 minutes a PR.
+    drafts: true
     # Stacked pull requests target the branch below them, not main. Without
     # this, CodeRabbit reviews only the bottom one of a stack.
     base_branches: [".*"]

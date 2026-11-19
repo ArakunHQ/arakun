@@ -499,8 +499,7 @@ impl Shell {
                 {
                     envs = envs.child(pending_env_row(pi * 1000 + i, name));
                 }
-                // A server makes its folders itself: `arakun-server add`.
-                if !only_open && !project.is_remote() {
+                if !only_open {
                     envs = envs.child(
                         div()
                             .id(("env-add-row", pi))

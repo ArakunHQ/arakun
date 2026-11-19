@@ -997,6 +997,24 @@ impl Shell {
                     .as_ref()
                     .map(|r| r.server.clone())
                     .unwrap_or_default();
+                let machine = self.projects[pi].environments[ei]
+                    .remote
+                    .as_ref()
+                    .map(|r| r.machine.to_string())
+                    .unwrap_or_default();
+                panel = panel.child(
+                    ui::menu_item(
+                        "cm-server-new-env",
+                        "add01",
+                        format!("New environment on {machine}"),
+                        false,
+                        true,
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.menu = None;
+                        this.servers_new_env(pi, ei, cx)
+                    })),
+                );
                 panel =
                     panel
                         .child(

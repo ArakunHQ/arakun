@@ -42,6 +42,8 @@ impl Shell {
         let pending = env.awaits_name();
         env.placeholder = None;
         let old = env.branch.to_string();
+        // A server's folder: the name is picked here, and git there renames it.
+        let remote = env.remote.is_some();
         self.save(cx);
         let namer = env_name::namer();
         let Some((agent, model)) = namer.pick(session).filter(|_| pending) else {
@@ -59,10 +61,26 @@ impl Shell {
                         return Ok(None);
                     }
                     let name = env_name::suggest(agent, &model, &task)?;
+                    if remote {
+                        return Ok(Some(name));
+                    }
                     git::rename_branch(&d, &o, &name, true).map(Some)
                 }))
                 .await;
             let _ = this.update(cx, |this, cx| match renamed {
+                // On a server the name shows, and the agent hears of it, once
+                // the server has renamed it: it may turn the name down.
+                Ok(Some(name)) if remote => {
+                    if !this.servers_rename_branch(&dir, &old, &name) {
+                        this.notify(
+                            AlertKind::Warning,
+                            "Could not name the branch",
+                            &format!("The server is not connected. It stays {old}."),
+                            None,
+                            cx,
+                        );
+                    }
+                }
                 Ok(Some(name)) => this.branch_renamed(&dir, &old, name, cx),
                 Ok(None) => {}
                 Err(e) => this.notify(
@@ -134,7 +152,13 @@ impl Shell {
 
     /// Shows the environment at `dir` by its new branch name, and has the next
     /// prompt to one of its sessions say so: they started on the old name.
-    fn branch_renamed(&mut self, dir: &Path, old: &str, name: String, cx: &mut Context<Self>) {
+    pub(super) fn branch_renamed(
+        &mut self,
+        dir: &Path,
+        old: &str,
+        name: String,
+        cx: &mut Context<Self>,
+    ) {
         self.rename_notes.insert(
             dir.to_path_buf(),
             format!(

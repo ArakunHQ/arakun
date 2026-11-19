@@ -73,19 +73,45 @@ const PHONE_SETTINGS: [Setting; 2] = [Setting::Model, Setting::Effort];
 
 impl Shell {
     /// Whether a phone is looking at this session, so it stays live like an open tab.
-    pub(super) fn phone_watching(&self, id: &str) -> bool {
+    pub(super) fn phone_watching(&self, env_path: &Path, id: &str) -> bool {
+        let pid = self.phone_id(env_path, id);
         self.phone
             .as_ref()
-            .is_some_and(|link| link.watching.values().any(|w| w.as_ref() == id))
+            .is_some_and(|link| link.watching.values().any(|w| *w == pid))
+    }
+
+    /// What phones call the session `id` of the environment at `env_path`. A
+    /// server's carries the server's id: two servers may give one the same.
+    pub(super) fn phone_id(&self, env_path: &Path, id: &str) -> SharedString {
+        match self.find_env(env_path).and_then(|e| e.remote.as_ref()) {
+            Some(r) => super::servers::phone_session_id(&r.server, id).into(),
+            None => SharedString::from(id.to_string()),
+        }
+    }
+
+    /// The environment and the session id there of what phones call `pid`.
+    fn phone_session(&self, pid: &str) -> Option<(PathBuf, SharedString)> {
+        let (id, server) = super::servers::split_phone_id(pid);
+        self.projects
+            .iter()
+            .flat_map(|p| &p.environments)
+            .find(|e| {
+                e.remote.as_ref().map(|r| r.server.as_str()) == server
+                    && e.session_index(id).is_some()
+            })
+            .map(|e| (e.path.clone(), SharedString::from(id.to_string())))
     }
 
     /// What a session's entries are read against when they go to a phone.
-    fn phone_scope(&self, cwd: &Path) -> wire::Scope {
+    fn phone_scope(&self, env_path: &Path, cwd: &Path) -> wire::Scope {
+        // A server's session names files on the server: one of the same name
+        // here is not its to show.
+        let remote = self.find_env(env_path).is_some_and(|e| e.remote.is_some());
         let key = self
             .phone
             .as_ref()
-            .map(|l| l.access.lock().unwrap().image_key.clone())
-            .unwrap_or_default();
+            .filter(|_| !remote)
+            .map(|l| l.access.lock().unwrap().image_key.clone());
         wire::Scope {
             cwd: cwd.to_path_buf(),
             key,
@@ -254,6 +280,8 @@ impl Shell {
         let Some(link) = self.phone.take() else {
             return;
         };
+        // A phone of the next link may come with the same id.
+        self.servers_phone_left(None);
         if link.reach == Reach::Tailscale {
             cx.background_executor()
                 .spawn(async {
@@ -475,6 +503,7 @@ impl Shell {
             }
             Incoming::Disconnected(id) => {
                 self.phone_stop_watching(id, cx);
+                self.servers_phone_left(Some(id));
                 if let Some(link) = &mut self.phone {
                     link.hidden.remove(&id);
                 }
@@ -505,22 +534,31 @@ impl Shell {
         cx: &mut Context<Self>,
     ) {
         match msg {
-            ClientMsg::Open { session } => {
-                let sid: SharedString = session.clone().into();
-                let Some(env_path) = self.env_of_session(&session) else {
+            ClientMsg::Open { session, .. } => {
+                let Some((env_path, sid)) = self.phone_session(&session) else {
                     self.phone_send(client, wire::error("that session is gone"));
                     return;
                 };
+                let pid: SharedString = session.into();
                 if let Some(link) = &mut self.phone {
-                    link.watching.insert(client, sid.clone());
+                    link.watching.insert(client, pid.clone());
                 }
-                let reply = self.phone_session_json(&env_path, &sid, cx);
+                // A server's session: its server sends it here as it goes.
+                if self.find_env(&env_path).is_some_and(|e| e.remote.is_some()) {
+                    self.ensure_live(&env_path, &sid, window, cx);
+                    let who = super::servers::Watcher::Phone(client);
+                    self.servers_follow(&env_path, &sid, who, cx);
+                } else {
+                    // A server's session it looked at before is let go, as
+                    // when it opens another of a server's.
+                    self.servers_look_away(super::servers::Watcher::Phone(client));
+                }
+                let reply = self.phone_session_json(&env_path, &sid, &pid, cx);
                 self.phone_send(client, reply);
             }
-            ClientMsg::Close => self.phone_stop_watching(client, cx),
+            ClientMsg::Close { .. } => self.phone_stop_watching(client, cx),
             ClientMsg::Entries { session, from, to } => {
-                let sid: SharedString = session.clone().into();
-                let Some(env_path) = self.env_of_session(&session) else {
+                let Some((env_path, sid)) = self.phone_session(&session) else {
                     return;
                 };
                 let (entries, count) = self.phone_entries(&env_path, &sid, from, to.max(from), cx);
@@ -532,7 +570,7 @@ impl Shell {
                 text,
                 uploads,
             } => {
-                let Some(env_path) = self.env_of_session(&session) else {
+                let Some((env_path, sid)) = self.phone_session(&session) else {
                     self.phone_send(client, wire::error("that session is gone"));
                     return;
                 };
@@ -543,10 +581,23 @@ impl Shell {
                     Some(link) => link.uploads.attach(text, &uploads),
                     None => text,
                 };
-                self.ensure_live(&env_path, &session, window, cx);
-                if let Some(thread) = self.phone_thread(&env_path, &session) {
+                self.ensure_live(&env_path, &sid, window, cx);
+                let server = self
+                    .find_env(&env_path)
+                    .and_then(|e| e.remote.as_ref())
+                    .map(|r| r.server.clone());
+                // A server's session: it goes there with who sent it, so one
+                // that does not get there is said to this phone, not put in
+                // the desktop's composer.
+                if let Some(server) = server {
+                    self.servers_phone_send(&server, &sid, &text, client, cx);
+                    if let Some(s) = self.session_mut(&env_path, &sid) {
+                        s.updated = crate::model::unix_now();
+                    }
+                    cx.notify();
+                } else if let Some(thread) = self.phone_thread(&env_path, &sid) {
                     thread.update(cx, |t, cx| t.send(text, cx));
-                    if let Some(s) = self.session_mut(&env_path, &session) {
+                    if let Some(s) = self.session_mut(&env_path, &sid) {
                         s.updated = crate::model::unix_now();
                     }
                     cx.notify();
@@ -597,6 +648,28 @@ impl Shell {
                 if text.is_empty() {
                     return;
                 }
+                // On a server: it starts there, with the model and effort
+                // picked (the server takes no other setting from a device),
+                // and says its id when it has one.
+                if found.remote.is_some() {
+                    let by = super::servers::Asker::Phone(client);
+                    let Some(reference) = self.servers_start(&path, agent, &text, &settings, by)
+                    else {
+                        self.phone_send(client, wire::error("that server is not connected"));
+                        return;
+                    };
+                    // The branch is named after the first prompt once it
+                    // started, as from the desktop.
+                    let first = super::servers::FirstPrompt {
+                        env: path,
+                        text,
+                        agent: agent.kind(),
+                        note: None,
+                        desktop: false,
+                    };
+                    self.servers_first_prompt(reference, first);
+                    return;
+                }
                 for (key, value) in &settings {
                     if let Some(s) = Setting::from_key(key) {
                         self.remember_setting(&path, agent, s, value, cx);
@@ -623,11 +696,11 @@ impl Shell {
                 self.phone_send(client, reply.to_string());
             }
             ClientMsg::Settings { session } => {
-                let Some(env_path) = self.env_of_session(&session) else {
+                let Some((env_path, sid)) = self.phone_session(&session) else {
                     return;
                 };
-                self.ensure_live(&env_path, &session, window, cx);
-                let list = match self.phone_thread(&env_path, &session) {
+                self.ensure_live(&env_path, &sid, window, cx);
+                let list = match self.phone_thread(&env_path, &sid) {
                     Some(thread) => {
                         let t = thread.read(cx);
                         PHONE_SETTINGS
@@ -646,12 +719,12 @@ impl Shell {
                 key,
                 value,
             } => {
-                let (Some(s), Some(env_path)) =
-                    (Setting::from_key(&key), self.env_of_session(&session))
+                let (Some(s), Some((env_path, sid))) =
+                    (Setting::from_key(&key), self.phone_session(&session))
                 else {
                     return;
                 };
-                let Some(thread) = self.phone_thread(&env_path, &session) else {
+                let Some(thread) = self.phone_thread(&env_path, &sid) else {
                     self.phone_send(client, wire::error("that session is not running"));
                     return;
                 };
@@ -659,7 +732,7 @@ impl Shell {
                 // The environment remembers it too, as when picked on the desktop.
                 let agent = self
                     .find_env(&env_path)
-                    .and_then(|e| e.sessions.iter().find(|x| *x.id == *session))
+                    .and_then(|e| e.sessions.iter().find(|x| *x.id == *sid))
                     .map(|x| x.agent);
                 if let Some(agent) = agent {
                     self.remember_setting(&env_path, agent, s, &value, cx);
@@ -674,22 +747,22 @@ impl Shell {
                 self.phone_send(client, reply.to_string());
             }
             ClientMsg::Cancel { session } => {
-                if let Some(env_path) = self.env_of_session(&session)
-                    && let Some(thread) = self.phone_thread(&env_path, &session)
+                if let Some((env_path, sid)) = self.phone_session(&session)
+                    && let Some(thread) = self.phone_thread(&env_path, &sid)
                 {
                     thread.update(cx, |t, cx| t.cancel(cx));
                 }
             }
             ClientMsg::Permission { session, option } => {
-                if let Some(env_path) = self.env_of_session(&session)
-                    && let Some(thread) = self.phone_thread(&env_path, &session)
+                if let Some((env_path, sid)) = self.phone_session(&session)
+                    && let Some(thread) = self.phone_thread(&env_path, &sid)
                 {
                     thread.update(cx, |t, cx| t.respond_permission(&option, cx));
                 }
             }
             ClientMsg::Answer { session, answers } => {
-                if let Some(env_path) = self.env_of_session(&session)
-                    && let Some(thread) = self.phone_thread(&env_path, &session)
+                if let Some((env_path, sid)) = self.phone_session(&session)
+                    && let Some(thread) = self.phone_thread(&env_path, &sid)
                 {
                     let fits = thread
                         .read(cx)
@@ -703,18 +776,18 @@ impl Shell {
                 }
             }
             ClientMsg::SkipQuestion { session } => {
-                if let Some(env_path) = self.env_of_session(&session)
-                    && let Some(thread) = self.phone_thread(&env_path, &session)
+                if let Some((env_path, sid)) = self.phone_session(&session)
+                    && let Some(thread) = self.phone_thread(&env_path, &sid)
                 {
                     thread.update(cx, |t, cx| t.skip_question(cx));
                 }
             }
             ClientMsg::Changes { session } => {
-                let Some(env_path) = self.env_of_session(&session) else {
+                let Some((env_path, sid)) = self.phone_session(&session) else {
                     self.phone_send(client, wire::error("that session is gone"));
                     return;
                 };
-                let mut msg = self.with_session_entries(&env_path, &session, cx, wire::changes);
+                let mut msg = self.with_session_entries(&env_path, &sid, cx, wire::changes);
                 msg["id"] = json!(session);
                 self.phone_send(client, msg.to_string());
             }
@@ -723,11 +796,11 @@ impl Shell {
                 entry,
                 index,
             } => {
-                let Some(env_path) = self.env_of_session(&session) else {
+                let Some((env_path, sid)) = self.phone_session(&session) else {
                     self.phone_send(client, wire::error("that session is gone"));
                     return;
                 };
-                let diff = self.with_session_entries(&env_path, &session, cx, |all, cwd| {
+                let diff = self.with_session_entries(&env_path, &sid, cx, |all, cwd| {
                     wire::diff_message(all, entry, index, cwd)
                 });
                 let reply = match diff {
@@ -740,15 +813,15 @@ impl Shell {
                 self.phone_send(client, reply);
             }
             ClientMsg::Transcript { session, from } => {
-                let Some(env_path) = self.env_of_session(&session) else {
+                let Some((env_path, sid)) = self.phone_session(&session) else {
                     self.phone_send(client, wire::error("that session is gone"));
                     return;
                 };
                 let agent = self
                     .find_env(&env_path)
-                    .and_then(|e| e.sessions.iter().find(|s| *s.id == *session))
+                    .and_then(|e| e.sessions.iter().find(|s| *s.id == *sid))
                     .map_or("", |s| s.agent.key());
-                let frames = self.with_session_entries(&env_path, &session, cx, |all, cwd| {
+                let frames = self.with_session_entries(&env_path, &sid, cx, |all, cwd| {
                     wire::transcript_message(&session, agent, cwd, all, from)
                 });
                 for frame in frames {
@@ -775,7 +848,10 @@ impl Shell {
                 }
             }
             // The desktop's projects are added in its own window, not from a device.
-            ClientMsg::AddPlace { .. } | ClientMsg::Clone { .. } => self.phone_send(
+            ClientMsg::AddPlace { .. }
+            | ClientMsg::Clone { .. }
+            | ClientMsg::NewEnv { .. }
+            | ClientMsg::RenameBranch { .. } => self.phone_send(
                 client,
                 wire::error("add projects to this computer in Arakun itself"),
             ),
@@ -828,19 +904,24 @@ impl Shell {
         let Some(id) = link.watching.remove(&client) else {
             return;
         };
-        if let Some(env_path) = self.env_of_session(&id) {
-            self.retire_if_hidden(&env_path, &id, cx);
+        self.servers_look_away(super::servers::Watcher::Phone(client));
+        if let Some((env_path, sid)) = self.phone_session(&id) {
+            self.retire_if_hidden(&env_path, &sid, cx);
         }
     }
 
-    fn phone_send(&self, client: ClientId, text: String) {
+    /// Whether phone `client` looks at what phones call `pid`: a phone that
+    /// came later with the same id does not.
+    pub(super) fn phone_looks_at(&self, client: ClientId, pid: &str) -> bool {
+        self.phone
+            .as_ref()
+            .is_some_and(|link| link.watching.get(&client).is_some_and(|w| w == pid))
+    }
+
+    pub(super) fn phone_send(&self, client: ClientId, text: String) {
         if let Some(link) = &self.phone {
             link.server.send(client, text);
         }
-    }
-
-    fn env_of_session(&self, id: &str) -> Option<PathBuf> {
-        local_env_of_session(&self.projects, id)
     }
 
     fn phone_thread(&self, env_path: &Path, id: &str) -> Option<gpui::Entity<Thread>> {
@@ -857,8 +938,8 @@ impl Shell {
         // Where the phone can start a session, with the agent each place picks.
         let mut places: Vec<serde_json::Value> = Vec::new();
         for p in &self.projects {
-            // A phone pairs with each server itself; this app speaks for this machine.
-            for e in p.environments.iter().filter(|e| e.remote.is_none()) {
+            // A server's folders too: the phone works there through this app.
+            for e in &p.environments {
                 places.push(wire::inbox_place(wire::InboxPlace {
                     path: &e.path,
                     project: &p.name,
@@ -870,8 +951,12 @@ impl Shell {
                     origin: None,
                 }));
                 for s in &e.sessions {
+                    let id = match &e.remote {
+                        Some(r) => super::servers::phone_session_id(&r.server, &s.id),
+                        None => s.id.to_string(),
+                    };
                     sessions.push(wire::inbox_session(wire::InboxSession {
-                        id: &s.id,
+                        id: &id,
                         title: &s.title,
                         agent: s.agent.label(),
                         status: s.status,
@@ -919,10 +1004,12 @@ impl Shell {
     }
 
     /// A session as a phone opens it: its state and its last entries.
+    /// Session `id` of the environment at `env_path`, as phones call it `pid`.
     fn phone_session_json(
         &mut self,
         env_path: &Path,
         id: &SharedString,
+        pid: &SharedString,
         cx: &mut Context<Self>,
     ) -> String {
         let Some(env) = self.find_env(env_path) else {
@@ -935,7 +1022,7 @@ impl Shell {
         let (title, agent, status) = (s.title.clone(), s.agent.label(), s.status);
         let place = self.env_label(env_path);
         let head = wire::SessionHead {
-            id,
+            id: pid,
             title: &title,
             agent,
             status,
@@ -945,13 +1032,13 @@ impl Shell {
             Some(thread) => {
                 let t = thread.read(cx);
                 let status = super::sessions::status_of(t);
-                wire::session_live(&head, t, status, &self.phone_scope(t.cwd()))
+                wire::session_live(&head, t, status, &self.phone_scope(env_path, t.cwd()))
             }
             None => {
                 let (all, cwd) = Thread::read_transcript(&state::transcript_path(id))
                     .map(|t| (t.entries, t.meta.cwd))
                     .unwrap_or_default();
-                wire::session_saved(&head, &all, &self.phone_scope(&cwd))
+                wire::session_saved(&head, &all, &self.phone_scope(env_path, &cwd))
             }
         }
     }
@@ -968,7 +1055,7 @@ impl Shell {
         self.with_session_entries(env_path, id, cx, |all, cwd| {
             let to = to.min(all.len());
             let from = from.min(to);
-            let scope = self.phone_scope(cwd);
+            let scope = self.phone_scope(env_path, cwd);
             (
                 all[from..to]
                     .iter()
@@ -1078,21 +1165,26 @@ impl Shell {
             self.phone_sync_inbox(cx);
         }
         for (id, from) in dirty {
-            let Some(env_path) = self.env_of_session(&id) else {
+            let Some((env_path, sid)) = self.phone_session(&id) else {
                 continue;
             };
-            let Some(thread) = self.phone_thread(&env_path, &id) else {
+            let Some(thread) = self.phone_thread(&env_path, &sid) else {
                 continue;
             };
             let t = thread.read(cx);
-            let msg = wire::entries_message(&id, t.entries(), from, &self.phone_scope(t.cwd()));
+            let msg = wire::entries_message(
+                &id,
+                t.entries(),
+                from,
+                &self.phone_scope(&env_path, t.cwd()),
+            );
             self.phone_send_watchers(&id, msg);
         }
         for id in states {
-            let Some(env_path) = self.env_of_session(&id) else {
+            let Some((env_path, sid)) = self.phone_session(&id) else {
                 continue;
             };
-            let Some(thread) = self.phone_thread(&env_path, &id) else {
+            let Some(thread) = self.phone_thread(&env_path, &sid) else {
                 continue;
             };
             let t = thread.read(cx);
@@ -1225,48 +1317,5 @@ fn tailscale_address(port: u16) -> Address {
             what: "Your tailnet does not issue HTTPS certificates yet. Turn on HTTPS Certificates in its DNS settings.".into(),
             link: Some(("Open DNS settings", tailscale::ADMIN_DNS_URL.into())),
         },
-    }
-}
-
-/// The environment a phone's session is in. Only this desktop's own: a
-/// server's sessions belong to that server, and a phone paired with the
-/// desktop has no right to read or drive them through it.
-fn local_env_of_session(projects: &[crate::model::Project], id: &str) -> Option<PathBuf> {
-    projects
-        .iter()
-        .flat_map(|p| p.environments.iter())
-        .filter(|e| e.remote.is_none())
-        .find(|e| e.session_index(id).is_some())
-        .map(|e| e.path.clone())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::model::{Agent, Environment, Remote, Session};
-
-    #[test]
-    fn a_phone_finds_no_session_of_a_server() {
-        let mut project = state::new_project(Path::new("/code/app"));
-        let mut local = Environment::new(PathBuf::from("/code/app"), None, true);
-        local
-            .sessions
-            .push(Session::new("mine".into(), "".into(), Agent::ALL[0]));
-        let mut remote = Environment::new(Remote::env_path("srv", "/srv/app"), None, true);
-        remote.remote = Some(Remote {
-            server: "srv".into(),
-            machine: "box".into(),
-            place: "/srv/app".into(),
-        });
-        remote
-            .sessions
-            .push(Session::new("theirs".into(), "".into(), Agent::ALL[0]));
-        project.environments = vec![local, remote];
-        let projects = [project];
-        assert_eq!(
-            local_env_of_session(&projects, "mine"),
-            Some(PathBuf::from("/code/app"))
-        );
-        assert_eq!(local_env_of_session(&projects, "theirs"), None);
     }
 }

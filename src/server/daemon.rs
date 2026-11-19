@@ -115,8 +115,9 @@ pub struct Daemon {
     /// What the log last said about how the server is reached.
     told: String,
     account: Entity<Account>,
-    /// The session each device is looking at.
-    watching: HashMap<ClientId, String>,
+    /// The sessions each device is looking at: one for a phone, the ones it
+    /// follows for a desktop.
+    watching: HashMap<ClientId, Vec<String>>,
     /// Devices whose page left the screen: they still get updates, but a push too.
     hidden: HashSet<ClientId>,
     /// Sessions whose entries changed since the last flush, with the lowest index that did.
@@ -900,7 +901,7 @@ impl Daemon {
     }
 
     fn watched(&self, id: &str) -> bool {
-        self.watching.values().any(|w| w == id)
+        self.watching.values().flatten().any(|w| w == id)
     }
 
     fn thread_event(
@@ -1103,7 +1104,7 @@ impl Daemon {
     fn scope(&self, cwd: &Path) -> wire::Scope {
         wire::Scope {
             cwd: cwd.to_path_buf(),
-            key: self.access.lock().unwrap().image_key.clone(),
+            key: Some(self.access.lock().unwrap().image_key.clone()),
         }
     }
 
@@ -1227,7 +1228,7 @@ impl Daemon {
                 })
             })
             .collect();
-        wire::inbox(&phone::host_name(), sessions, places)
+        wire::server_inbox(&phone::host_name(), sessions, places)
     }
 
     fn inbox_changed(&mut self, cx: &mut Context<Self>) {
@@ -1336,7 +1337,7 @@ impl Daemon {
 
     fn send_watchers(&self, id: &str, msg: String) {
         for (client, watched) in &self.watching {
-            if watched == id {
+            if watched.iter().any(|w| w == id) {
                 self.transport.send(*client, msg.clone());
             }
         }
@@ -1344,9 +1345,20 @@ impl Daemon {
 
     /// A device looked away from its session: the agent may stop if no one else is looking.
     fn stop_watching(&mut self, client: ClientId, cx: &mut Context<Self>) {
-        if let Some(id) = self.watching.remove(&client) {
+        for id in self.watching.remove(&client).unwrap_or_default() {
             self.retire_if_unwatched(&id, cx);
         }
+    }
+
+    /// A device looked away from `id` only.
+    fn stop_watching_one(&mut self, client: ClientId, id: &str, cx: &mut Context<Self>) {
+        if let Some(watched) = self.watching.get_mut(&client) {
+            watched.retain(|w| w != id);
+            if watched.is_empty() {
+                self.watching.remove(&client);
+            }
+        }
+        self.retire_if_unwatched(id, cx);
     }
 
     fn incoming(&mut self, msg: Incoming, cx: &mut Context<Self>) {
@@ -1391,7 +1403,7 @@ impl Daemon {
     fn message(&mut self, client: ClientId, msg: ClientMsg, cx: &mut Context<Self>) {
         let gone = |session: &str| session_error(session, "that session is gone");
         match msg {
-            ClientMsg::Open { session } => {
+            ClientMsg::Open { session, keep } => {
                 let Some(record) = self.store.session(&session) else {
                     self.transport.send(client, gone(&session));
                     return;
@@ -1413,15 +1425,24 @@ impl Daemon {
                         wire::session_saved(&head, all, &self.scope(cwd))
                     }),
                 };
-                // The session it looked at before has one watcher fewer.
-                if let Some(before) = self.watching.insert(client, session.clone())
-                    && before != session
-                {
-                    self.retire_if_unwatched(&before, cx);
+                let watched = self.watching.entry(client).or_default();
+                if keep {
+                    if !watched.contains(&session) {
+                        watched.push(session.clone());
+                    }
+                } else {
+                    // The sessions it looked at before have one watcher fewer.
+                    let before = std::mem::replace(watched, vec![session.clone()]);
+                    for b in before.iter().filter(|b| **b != session) {
+                        self.retire_if_unwatched(b, cx);
+                    }
                 }
                 self.transport.send(client, reply);
             }
-            ClientMsg::Close => self.stop_watching(client, cx),
+            ClientMsg::Close { session: None } => self.stop_watching(client, cx),
+            ClientMsg::Close {
+                session: Some(session),
+            } => self.stop_watching_one(client, &session, cx),
             ClientMsg::Entries { session, from, to } => {
                 if self.store.session(&session).is_none() {
                     return;
@@ -1482,8 +1503,9 @@ impl Daemon {
             } => {
                 let path = PathBuf::from(env);
                 let Some(place) = self.store.place_mut(&path) else {
+                    // Said to be about the start: the app waits for its answer.
                     self.transport
-                        .send(client, wire::error("that project is gone"));
+                        .send(client, error_about("start", "that project is gone"));
                     return;
                 };
                 let agent = agent
@@ -1492,6 +1514,10 @@ impl Daemon {
                     .unwrap_or(place.agent);
                 let text = text.trim().to_string();
                 if text.is_empty() {
+                    // Answered all the same: the app pairs each answer with
+                    // its oldest start, so a silent one would shift the rest.
+                    self.transport
+                        .send(client, error_about("start", "the prompt is empty"));
                     return;
                 }
                 // The place remembers them, as it does on the desktop: the
@@ -1735,7 +1761,66 @@ impl Daemon {
                         .await;
                     let _ = this.update(cx, |this, cx| {
                         this.cloning.end(&dest);
-                        this.place_added(client, done, cx);
+                        this.place_added(client, done, AgentKind::Claude, cx);
+                    });
+                })
+                .detach();
+            }
+            ClientMsg::NewEnv { from, branch } => {
+                let from = PathBuf::from(from);
+                let Some(agent) = self.store.place(&from).map(|p| p.agent) else {
+                    self.transport
+                        .send(client, place_failed("that project is gone"));
+                    return;
+                };
+                cx.spawn(async move |this, cx| {
+                    let made = cx
+                        .background_executor()
+                        .spawn(async move {
+                            let path = add_worktree(&from, &branch)?;
+                            let meta = PlaceMeta::read(&path);
+                            Ok((path, meta))
+                        })
+                        .await;
+                    // The new folder starts with the agent of the one it came from.
+                    let _ = this.update(cx, |this, cx| {
+                        this.place_added_with(client, made, agent, true, cx)
+                    });
+                })
+                .detach();
+            }
+            ClientMsg::RenameBranch { place, from, to } => {
+                let place = PathBuf::from(place);
+                if self.store.place(&place).is_none() {
+                    self.transport.send(
+                        client,
+                        error_about("rename_branch", "that folder is not one of this server's"),
+                    );
+                    return;
+                }
+                cx.spawn(async move |this, cx| {
+                    let done = cx
+                        .background_executor()
+                        .spawn({
+                            let (place, from, to) = (place.clone(), from.clone(), to.clone());
+                            async move { rename_branch(&place, &from, &to) }
+                        })
+                        .await;
+                    let _ = this.update(cx, |this, cx| match done {
+                        // The app shows the new name, and tells the agent, once it is so.
+                        Ok(true) => {
+                            this.inbox_dirty = true;
+                            this.sync_inbox(cx);
+                            let renamed = json!({
+                                "type": "branch_renamed", "place": place, "from": from, "to": to,
+                            });
+                            this.transport.send(client, renamed.to_string());
+                        }
+                        // Renamed by hand meanwhile: that name stays, and nothing changed.
+                        Ok(false) => {}
+                        Err(e) => this
+                            .transport
+                            .send(client, error_about("rename_branch", &e)),
                     });
                 })
                 .detach();
@@ -1770,7 +1855,7 @@ impl Daemon {
                 if found.is_ok() && this.cloning.started_since(mark) {
                     return this.add_device_place(client, typed, cx);
                 }
-                this.place_added(client, found, cx);
+                this.place_added(client, found, AgentKind::Claude, cx);
             });
         })
         .detach();
@@ -1782,10 +1867,33 @@ impl Daemon {
         &mut self,
         client: ClientId,
         found: Result<(PathBuf, PlaceMeta), String>,
+        agent: AgentKind,
+        cx: &mut Context<Self>,
+    ) {
+        self.place_added_with(client, found, agent, false, cx);
+    }
+
+    /// With `made`, the folder is a worktree made for this request: one that
+    /// cannot be saved stays on disk, and the error says where.
+    fn place_added_with(
+        &mut self,
+        client: ClientId,
+        found: Result<(PathBuf, PlaceMeta), String>,
+        agent: AgentKind,
+        made: bool,
         cx: &mut Context<Self>,
     ) {
         match found.and_then(|(p, meta)| {
-            self.offer_place(&p)?;
+            self.offer_place(&p, agent).map_err(|e| {
+                if made {
+                    format!(
+                        "{e}. The worktree is at {0}: once the server can save again, `arakun-server add {0}` lists it.",
+                        p.display()
+                    )
+                } else {
+                    e
+                }
+            })?;
             self.meta.insert(p.clone(), meta);
             Ok(p)
         }) {
@@ -1811,12 +1919,12 @@ impl Daemon {
     /// Makes `path` (canonical) a place for a device. It is one only once
     /// saved: a place lost at the next start would surprise the device later.
     /// The folder was looked at to the side; nothing here touches it again.
-    fn offer_place(&mut self, path: &Path) -> Result<(), String> {
+    fn offer_place(&mut self, path: &Path, agent: AgentKind) -> Result<(), String> {
         // A clone that started while the folder was looked at.
         if self.cloning.has(path) {
             return Err(format!("{} is being cloned.", path.display()));
         }
-        offer(&mut self.store, path)
+        offer(&mut self.store, path, agent)
     }
 
     /// Sends `text` to the session `id` as its next prompt.
@@ -1937,7 +2045,9 @@ impl Daemon {
         let looking: HashSet<String> = self
             .watching
             .iter()
-            .filter(|(client, watched)| *watched == id && !self.hidden.contains(client))
+            .filter(|(client, watched)| {
+                watched.iter().any(|w| w == id) && !self.hidden.contains(client)
+            })
             .filter_map(|(client, _)| self.transport.device_of(*client))
             .collect();
         let wanted = |d: &phone::Device| match kind {
@@ -2363,7 +2473,9 @@ impl Daemon {
         if let Some(live) = self.live.remove(id) {
             live.thread.update(cx, |t, _| t.shutdown());
         }
-        self.watching.retain(|_, watched| watched != id);
+        for watched in self.watching.values_mut() {
+            watched.retain(|w| w != id);
+        }
         self.notified.remove(id);
         // A save still on its way, or one kept because it failed, would bring
         // the file back after it is deleted.
@@ -2504,9 +2616,10 @@ fn place_failed(message: &str) -> String {
 
 /// Makes `path` a place in `store`, saved. A place that is there already is
 /// saved too: an earlier save may have failed, and it would be gone at the
-/// next start. On a failed save, a place this added goes again.
-fn offer(store: &mut store::Store, path: &Path) -> Result<(), String> {
-    let added = store.add_place(path, AgentKind::Claude);
+/// next start. On a failed save, a place this added goes again. A new place
+/// starts with `agent`.
+fn offer(store: &mut store::Store, path: &Path, agent: AgentKind) -> Result<(), String> {
+    let added = store.add_place(path, agent);
     if let Err(e) = store.save() {
         if added {
             store.remove_place(path);
@@ -2682,6 +2795,153 @@ const CLONE_LIMIT: Duration = Duration::from_secs(20 * 60);
 /// How long a stopping server waits for its clones to end and clean up.
 const CLONE_STOP_WAIT: Duration = Duration::from_secs(10);
 
+/// A branch name a device sent, as one that becomes a folder: no way out of
+/// the folder it goes in, and nothing git would take for an option.
+fn plain_branch(name: &str) -> bool {
+    !name.is_empty()
+        && !name.starts_with(['-', '.', '/'])
+        && !name.ends_with(['/', '.'])
+        && !name.contains("..")
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/'))
+}
+
+fn git(dir: &Path) -> std::process::Command {
+    let mut git = git_command();
+    git.arg("-C").arg(dir).stdin(std::process::Stdio::null());
+    git
+}
+
+/// Runs git; its last words when it fails.
+fn run_git(cmd: &mut std::process::Command) -> Result<(), String> {
+    let out = cmd
+        .output()
+        .map_err(|e| format!("could not run git: {e}"))?;
+    if out.status.success() {
+        return Ok(());
+    }
+    let why = String::from_utf8_lossy(&out.stderr);
+    Err(format!(
+        "git failed: {}",
+        why.lines()
+            .rfind(|l| !l.trim().is_empty())
+            .unwrap_or("no reason given")
+    ))
+}
+
+/// What `run_bounded` says when git ran out of `limit`.
+fn took_too_long(limit: Duration) -> String {
+    format!("git took longer than {} seconds", limit.as_secs())
+}
+
+/// An error that says which request it answers, for a client that waits on
+/// that one and must not take another's error for it.
+fn error_about(about: &str, message: &str) -> String {
+    json!({ "type": "error", "message": message, "about": about }).to_string()
+}
+
+/// A worktree of the repository `from` is a checkout of, on a new `branch`,
+/// where the app makes its own: `~/arakun-workspaces/<project>/<branch>`.
+fn add_worktree(from: &Path, branch: &str) -> Result<PathBuf, String> {
+    worktree_in(
+        &crate::platform::home().join("arakun-workspaces"),
+        from,
+        branch,
+    )
+}
+
+/// `add_worktree`, under `base`.
+fn worktree_in(base: &Path, from: &Path, branch: &str) -> Result<PathBuf, String> {
+    worktree_within(base, from, branch, WORKTREE_LIMIT)
+}
+
+/// `worktree_in`, with git and its hooks given `limit`.
+fn worktree_within(
+    base: &Path,
+    from: &Path,
+    branch: &str,
+    limit: Duration,
+) -> Result<PathBuf, String> {
+    if !plain_branch(branch) {
+        return Err(format!("{branch:?} is not a branch name this server takes"));
+    }
+    // Named as the inbox names its repository, so the path the app shows
+    // before is the one made, from any worktree of it.
+    let (root, _) = store::repo(from).ok_or("that folder is not in a git repository")?;
+    let project = store::repo_name(&root).ok_or("that repository has no name")?;
+    let dest = base.join(project).join(branch);
+    if dest.exists() {
+        return Err(format!("{} already exists", dest.display()));
+    }
+    // A link on the way would have git write outside the workspaces.
+    if !real_dest(&dest).starts_with(real_dest(base)) {
+        return Err(format!(
+            "{} leads outside {}",
+            dest.display(),
+            base.display()
+        ));
+    }
+    // Git runs in `from` itself: a checkout whose git folder lives elsewhere
+    // has no checkout at that folder's parent. A hook that never ends would
+    // hold the server's answer: it is given a time.
+    let made = run_bounded(
+        git(from)
+            .args(["worktree", "add", "--quiet", "-b", branch])
+            .arg(&dest),
+        limit,
+        None,
+    );
+    match made {
+        Ok(()) => dest.canonicalize().map_err(|e| e.to_string()),
+        // Stopped part way, maybe in the checkout itself: what is there may
+        // be half a worktree, not one to add.
+        Err(e) if dest.exists() && e == took_too_long(limit) => Err(format!(
+            "{e}, so it was stopped. What it left is at {}, on branch {branch}: remove both before you try again.",
+            dest.display()
+        )),
+        // A hook that failed after the checkout: the worktree is there, and
+        // asking again would only say so.
+        Err(e) if dest.exists() => Err(format!(
+            "{e}. The worktree is at {} anyway: `arakun-server add` it, or remove it.",
+            dest.display()
+        )),
+        Err(e) => Err(e),
+    }
+}
+
+/// How long making a worktree, its hooks included, may take.
+const WORKTREE_LIMIT: Duration = Duration::from_secs(2 * 60);
+
+/// Renames the branch at `place` from `from` to `to`, as long as `from` is
+/// still the one checked out there: one renamed by hand meanwhile stays.
+/// Whether it renamed it.
+fn rename_branch(place: &Path, from: &str, to: &str) -> Result<bool, String> {
+    if !plain_branch(to) {
+        return Err(format!("{to:?} is not a branch name this server takes"));
+    }
+    if store::branch(place).as_deref() != Some(from) {
+        return Ok(false);
+    }
+    // Pushed: the remote keeps the old name, as the app's own rename knows.
+    // A push without --set-upstream leaves only the remote-tracking ref.
+    let upstream = git(place)
+        .args(["config", "--get", &format!("branch.{from}.merge")])
+        .output()
+        .is_ok_and(|o| o.status.success());
+    let tracked = git(place)
+        .args(["for-each-ref", "--format=%(refname)"])
+        .arg(format!("refs/remotes/*/{from}"))
+        .output()
+        .is_ok_and(|o| !o.stdout.trim_ascii().is_empty());
+    if upstream || tracked {
+        return Err(format!(
+            "{from} was already pushed; rename it on the remote too, or keep the name"
+        ));
+    }
+    run_git(git(place).args(["branch", "-m", "--", from, to])).map(|()| true)
+}
+
 /// Clones `source` into `dest`, or takes `dest` as it is when it already holds
 /// that repository. A failed clone leaves nothing behind, nor does one that
 /// `stop` ends.
@@ -2701,7 +2961,6 @@ fn clone_with(
     dest: &Path,
     stop: &AtomicBool,
 ) -> Result<(), String> {
-    use std::process::Stdio;
     if stop.load(Ordering::SeqCst) {
         return Err(SERVER_STOPPED.into());
     }
@@ -2725,10 +2984,7 @@ fn clone_with(
         .args(["clone", "--quiet", "--", &source.url])
         .arg(dest)
         // Nobody is at this machine to type a password: fail instead of waiting.
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped());
+        .env("GIT_TERMINAL_PROMPT", "0");
     // ssh asks for a passphrase or a new host key on the terminal, which
     // `serve` may have. A command the server set keeps its say: it may pick
     // the key that signs in. The time limit still holds for it.
@@ -2738,17 +2994,25 @@ fn clone_with(
             "ssh -o BatchMode=yes -o ConnectTimeout=30 -o ServerAliveInterval=15",
         );
     }
-    // Git runs helpers (`git-remote-https`, ssh) of its own: a clone given up
-    // ends them too.
-    crate::platform::ProcessTree::prepare(&mut git);
-    let failed = |why: String| {
+    run_bounded(&mut git, CLONE_LIMIT, Some(stop)).inspect_err(|_| {
         let _ = std::fs::remove_dir_all(dest);
-        Err(why)
-    };
-    let mut child = match git.spawn() {
-        Ok(child) => child,
-        Err(e) => return failed(format!("could not run git: {e}")),
-    };
+    })
+}
+
+/// Runs git for at most `limit`; its last words when it fails. Git runs
+/// helpers (`git-remote-https`, ssh, hooks) of its own: given up, they end too,
+/// as they do once `stop` is set.
+fn run_bounded(
+    git: &mut std::process::Command,
+    limit: Duration,
+    stop: Option<&AtomicBool>,
+) -> Result<(), String> {
+    use std::process::Stdio;
+    git.stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+    crate::platform::ProcessTree::prepare(git);
+    let mut child = git.spawn().map_err(|e| format!("could not run git: {e}"))?;
     let tree = crate::platform::ProcessTree::adopt(&child);
     // Read as it comes, so a full pipe does not stop git.
     let mut stderr = child.stderr.take();
@@ -2764,13 +3028,13 @@ fn clone_with(
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
-            Ok(None) if stop.load(Ordering::SeqCst) => {
+            Ok(None) if stop.is_some_and(|s| s.load(Ordering::SeqCst)) => {
                 tree.kill();
                 let _ = child.kill();
                 let _ = child.wait();
-                return failed(SERVER_STOPPED.into());
+                return Err(SERVER_STOPPED.into());
             }
-            Ok(None) if started.elapsed() < CLONE_LIMIT => {
+            Ok(None) if started.elapsed() < limit => {
                 std::thread::sleep(Duration::from_millis(100));
             }
             Ok(None) => {
@@ -2779,15 +3043,12 @@ fn clone_with(
                 tree.kill();
                 let _ = child.kill();
                 let _ = child.wait();
-                return failed(format!(
-                    "git clone took longer than {} minutes",
-                    CLONE_LIMIT.as_secs() / 60
-                ));
+                return Err(took_too_long(limit));
             }
             Err(e) => {
                 tree.kill();
                 let _ = child.kill();
-                return failed(format!("git clone: {e}"));
+                return Err(format!("git: {e}"));
             }
         }
     };
@@ -2800,8 +3061,8 @@ fn clone_with(
     let why = said
         .recv_timeout(Duration::from_secs(5))
         .unwrap_or_default();
-    failed(format!(
-        "git clone failed: {}",
+    Err(format!(
+        "git failed: {}",
         why.lines()
             .rfind(|l| !l.trim().is_empty())
             .unwrap_or("no reason given")
@@ -2843,6 +3104,11 @@ fn has_ssh_command(git: &std::process::Command) -> bool {
 /// user's commit signing or URL rewrites would change what they check.
 fn git_command() -> std::process::Command {
     let mut git = std::process::Command::new("git");
+    // The folder it is run in picks the repository, not one inherited from
+    // whatever started the server (a git hook sets these).
+    for var in ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"] {
+        git.env_remove(var);
+    }
     if cfg!(test) {
         git.env("GIT_CONFIG_NOSYSTEM", "1").env(
             "GIT_CONFIG_GLOBAL",
@@ -2883,14 +3149,14 @@ mod tests {
         std::fs::create_dir(&app).unwrap();
         // A folder where the state file goes: every save fails.
         std::fs::create_dir(dir.join("state.json")).unwrap();
-        assert!(offer(&mut store, &app).is_err());
+        assert!(offer(&mut store, &app, AgentKind::Claude).is_err());
         assert!(store.place(&app).is_none(), "what it added goes again");
         // Added before, by a local `add` whose save failed: still not saved.
         store.add_place(&app, AgentKind::Claude);
-        assert!(offer(&mut store, &app).is_err());
+        assert!(offer(&mut store, &app, AgentKind::Claude).is_err());
         assert!(store.place(&app).is_some(), "what it did not add stays");
         std::fs::remove_dir(dir.join("state.json")).unwrap();
-        assert_eq!(offer(&mut store, &app), Ok(()));
+        assert_eq!(offer(&mut store, &app, AgentKind::Claude), Ok(()));
         let saved = std::fs::read_to_string(dir.join("state.json")).unwrap();
         assert!(saved.contains(app.to_str().unwrap()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -2979,6 +3245,153 @@ mod tests {
         dir.canonicalize().unwrap()
     }
 
+    /// A repository at `dir` with one commit; `init` says how git makes it.
+    fn repo_at(dir: &Path, init: &[&str]) {
+        run_git(git(dir).args(["init", "--quiet"]).args(init)).unwrap();
+        run_git(git(dir).args([
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "--quiet",
+            "--allow-empty",
+            "-m",
+            "first",
+        ]))
+        .unwrap();
+    }
+
+    #[test]
+    fn a_new_environment_is_a_worktree_named_after_its_project() {
+        let tmp = scratch("plain");
+        let app = tmp.join("app");
+        std::fs::create_dir(&app).unwrap();
+        repo_at(&app, &[]);
+        let base = tmp.join("workspaces");
+        let made = worktree_in(&base, &app, "rv/first").unwrap();
+        assert_eq!(made, base.join("app/rv/first"));
+        assert_eq!(store::branch(&made).as_deref(), Some("rv/first"));
+        // From a worktree too: the project is still the main checkout's.
+        let again = worktree_in(&base, &made, "second").unwrap();
+        assert_eq!(again, base.join("app/second"));
+        assert!(worktree_in(&base, &app, "second").is_err(), "already there");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // A hook is a script git runs: it needs to be executable.
+    #[cfg(unix)]
+    #[test]
+    fn a_hook_that_fails_after_the_checkout_leaves_the_worktree_and_says_where() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let tmp = scratch("hook");
+        let app = tmp.join("app");
+        std::fs::create_dir(&app).unwrap();
+        repo_at(&app, &[]);
+        let hook = app.join(".git/hooks/post-checkout");
+        std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
+        std::fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let base = tmp.join("workspaces");
+        let err = worktree_in(&base, &app, "hooked").unwrap_err();
+        let made = base.join("app/hooked");
+        assert!(
+            err.contains(&format!("The worktree is at {} anyway", made.display())),
+            "{err}"
+        );
+        assert_eq!(store::branch(&made).as_deref(), Some("hooked"), "it stays");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_hook_that_hangs_is_stopped_and_not_taken_for_a_failed_one() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let tmp = scratch("hang");
+        let app = tmp.join("app");
+        std::fs::create_dir(&app).unwrap();
+        repo_at(&app, &[]);
+        let hook = app.join(".git/hooks/post-checkout");
+        std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
+        std::fs::write(&hook, "#!/bin/sh\nsleep 60\n").unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let base = tmp.join("workspaces");
+        let started = Instant::now();
+        let err = worktree_within(&base, &app, "stuck", Duration::from_secs(2)).unwrap_err();
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "it waited on the hook"
+        );
+        assert!(
+            err.starts_with(&took_too_long(Duration::from_secs(2))),
+            "{err}"
+        );
+        assert!(err.contains("remove both"), "{err}");
+        assert!(!err.contains("arakun-server add"), "{err}");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn a_checkout_with_its_git_folder_elsewhere_makes_environments_too() {
+        let tmp = scratch("separate");
+        let app = tmp.join("app");
+        std::fs::create_dir(&app).unwrap();
+        std::fs::create_dir(tmp.join("git-files")).unwrap();
+        let elsewhere = tmp.join("git-files").join("app.git");
+        repo_at(&app, &["--separate-git-dir", &elsewhere.to_string_lossy()]);
+        let base = tmp.join("workspaces");
+        let made = worktree_in(&base, &app, "fix").unwrap();
+        assert_eq!(made, base.join("app/fix"));
+        // From that worktree, the next one goes beside it.
+        let next = worktree_in(&base, &made, "next").unwrap();
+        assert_eq!(next, base.join("app/next"));
+        // The app names the repository as the folders are named.
+        let named = |p: &Path| store::repo_name(&store::repo(p).unwrap().0).unwrap();
+        assert_eq!(named(&app), "app");
+        assert_eq!(named(&made), "app");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_new_environment_does_not_follow_a_link_out_of_the_workspaces() {
+        let tmp = scratch("escape");
+        let app = tmp.join("app");
+        std::fs::create_dir(&app).unwrap();
+        repo_at(&app, &[]);
+        let base = tmp.join("workspaces");
+        let outside = tmp.join("outside");
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, base.join("app")).unwrap();
+        let err = worktree_in(&base, &app, "fix").unwrap_err();
+        assert!(err.contains("leads outside"), "{err}");
+        assert!(!outside.join("fix").exists());
+        // A branch with a folder in its name is still one.
+        std::fs::remove_file(base.join("app")).unwrap();
+        assert!(worktree_in(&base, &app, "rv/fix").is_ok());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn a_branch_renamed_by_hand_meanwhile_stays() {
+        let tmp = scratch("rename");
+        repo_at(&tmp, &["-b", "random-name"]);
+        assert_eq!(rename_branch(&tmp, "random-name", "fix-login"), Ok(true));
+        assert_eq!(store::branch(&tmp).as_deref(), Some("fix-login"));
+        // The app's rename comes after the user's: it changes nothing.
+        assert_eq!(rename_branch(&tmp, "random-name", "other"), Ok(false));
+        assert_eq!(store::branch(&tmp).as_deref(), Some("fix-login"));
+        assert!(rename_branch(&tmp, "fix-login", "-x").is_err());
+        // Pushed: the name stays.
+        run_git(git(&tmp).args(["config", "branch.fix-login.merge", "refs/heads/fix-login"]))
+            .unwrap();
+        let err = rename_branch(&tmp, "fix-login", "other").unwrap_err();
+        assert!(err.contains("already pushed"), "{err}");
+        assert_eq!(store::branch(&tmp).as_deref(), Some("fix-login"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
     #[test]
     fn a_file_is_not_a_folder_to_add() {
         let dir = scratch("file");
@@ -2988,6 +3401,18 @@ mod tests {
         assert!(err.contains("is not a folder"), "{err}");
         assert_eq!(real_dir(&dir), Ok(dir.clone()));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_branch_from_a_device_stays_in_its_folder() {
+        for good in ["fix-login", "rv/fix_2", "v1.2"] {
+            assert!(plain_branch(good), "{good}");
+        }
+        for bad in [
+            "", "-b", "../x", "a/../b", "/abs", "x/", "a b", "x.", ".hidden", "a;b",
+        ] {
+            assert!(!plain_branch(bad), "{bad}");
+        }
     }
 
     #[test]

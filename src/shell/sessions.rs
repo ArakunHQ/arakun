@@ -155,7 +155,7 @@ impl Shell {
         if self.env().remote.is_some()
             && let Some(id) = self.active_session_id()
         {
-            self.servers_follow(&path, &id);
+            self.servers_follow(&path, &id, super::servers::Watcher::Desktop, cx);
         }
     }
 
@@ -303,13 +303,14 @@ impl Shell {
     ) {
         // A server's session: what the user did goes there; the rest (checks,
         // transcripts, the phone) is the server's to do.
+        let pid = self.phone_id(env_path, id);
+        self.phone_thread_event(&pid, ev, cx);
         if self.find_env(env_path).is_some_and(|e| e.remote.is_some()) {
             if let ThreadEvent::Remote(action) = ev {
                 self.servers_remote_action(env_path, id, action, cx);
             }
             return;
         }
-        self.phone_thread_event(id, ev, cx);
         // A turn whose check is about to run is announced once the check is done.
         self.speak_question(env_path, id, thread, cx);
         let checking = matches!(ev, ThreadEvent::Finished { stop_reason }
@@ -491,17 +492,17 @@ impl Shell {
                 .live
                 .as_ref()
                 .is_some_and(|l| l.thread.read(cx).in_background());
-        if open || busy || self.check_running(id) || self.phone_watching(id) {
+        if open || busy || self.check_running(id) || self.phone_watching(env_path, id) {
             return;
         }
         let Some(env) = self.find_env_mut(env_path) else {
             return;
         };
-        let remote = env.remote.is_some();
+        let remote = env.remote.as_ref().map(|r| r.server.clone());
         let session = &mut env.sessions[i];
         if let Some(live) = session.live.take() {
             // A server's transcript stays on the server.
-            if !remote {
+            if remote.is_none() {
                 let t = live.thread.read(cx);
                 let transcript = t.transcript(cx);
                 session.meta = Some(t.meta());
@@ -513,8 +514,8 @@ impl Shell {
             }
             report_failure(&live.thread, true, cx);
             live.thread.update(cx, |t, _| t.shutdown());
-            if remote {
-                self.servers_unfollow(id);
+            if let Some(server) = remote {
+                self.servers_unfollow(&server, id);
             }
         }
     }
@@ -531,41 +532,106 @@ impl Shell {
         // staged or checked for it.
         if self.env().remote.is_some() {
             let path = self.env().path.clone();
-            match self.active_session_id() {
+            let agent = self.env().agent;
+            // `/stage` runs git here, on files that are on the server.
+            if let Some(id) = self.active_session_id()
+                && text.trim() == "/stage"
+            {
+                self.ensure_live(&path, &id, window, cx);
+                if let Some(thread) = self.active_thread(cx) {
+                    thread.update(cx, |t, cx| {
+                        t.post_notice(
+                            "/stage works on this machine's files; on the server, stage in its terminal.",
+                            true,
+                            cx,
+                        )
+                    });
+                }
+                cx.notify();
+                return;
+            }
+            // The rename note goes to the agent only; it stays for the next
+            // prompt when this one does not go.
+            let note = self.rename_notes.remove(&path);
+            let prompt = match &note {
+                Some(note) => format!("{text}{}", crate::agent::chart::hint(note)),
+                None => text.clone(),
+            };
+            // A remote thread hands the prompt on without saying whether it
+            // went: whether it can go is asked first.
+            let reachable = self.env().remote.as_ref().is_some_and(|r| {
+                self.server_reach(&r.server) == Some(crate::servers_view::Reach::Connected)
+            });
+            let sent = match self.active_session_id() {
                 Some(id) => {
                     self.ensure_live(&path, &id, window, cx);
-                    if let Some(thread) = self.active_thread(cx) {
+                    let thread = self.active_thread(cx);
+                    if let Some(thread) = &thread {
                         thread.update(cx, |t, cx| {
-                            // `/stage` runs git here, on files that are on the server.
-                            if text.trim() == "/stage" {
+                            if reachable {
+                                t.send(prompt, cx);
+                            } else {
                                 t.post_notice(
-                                    "/stage works on this machine's files; on the server, stage in its terminal.",
+                                    "The server is not connected, so this did not reach it.",
                                     true,
                                     cx,
                                 );
-                            } else {
-                                t.send(text, cx)
                             }
                         });
                     }
+                    reachable && thread.is_some()
                 }
                 None => {
-                    let agent = self.env().agent;
-                    if !self.servers_start(&path, agent, &text) {
-                        // Not sent: back into the composer, with why.
-                        self.env_mut().draft.set(&text);
+                    let sent = self.servers_start(
+                        &path,
+                        agent,
+                        &prompt,
+                        &[],
+                        super::servers::Asker::Desktop,
+                    );
+                    // Until the server answers: it names the branch once the
+                    // session started, and comes back here if it did not.
+                    if let Some(reference) = sent {
+                        let first = super::servers::FirstPrompt {
+                            env: path.clone(),
+                            text: text.clone(),
+                            agent: agent.kind(),
+                            note: note.clone(),
+                            desktop: true,
+                        };
+                        self.servers_first_prompt(reference, first);
                         self.composer_changed(cx);
-                        let why = self
-                            .servers_refusal()
-                            .unwrap_or_else(|| "The server cannot be reached.".into());
-                        self.notify(
-                            crate::island::AlertKind::Warning,
-                            "The prompt did not go",
-                            &why,
-                            None,
-                            cx,
-                        );
+                        cx.notify();
+                        return;
                     }
+                    let why = self
+                        .servers_refusal()
+                        .unwrap_or_else(|| "The server cannot be reached.".into());
+                    self.notify(
+                        crate::island::AlertKind::Warning,
+                        "The prompt did not go",
+                        &why,
+                        None,
+                        cx,
+                    );
+                    false
+                }
+            };
+            if sent {
+                // The branch is named after the first prompt that went, there
+                // as here, by the agent of the session it went to.
+                let session_agent = self.active_session_id().and_then(|id| {
+                    let env = self.find_env(&path)?;
+                    Some(env.sessions[env.session_index(&id)?].agent)
+                });
+                let agent = session_agent.unwrap_or(agent);
+                self.name_after_first_prompt(&path, &text, agent.kind(), cx);
+            } else {
+                // Not sent: back into the composer, as the user wrote it.
+                self.env_mut().draft.set(&text);
+                self.composer_changed(cx);
+                if let Some(note) = note {
+                    self.rename_notes.insert(path, note);
                 }
             }
             cx.notify();
@@ -1614,7 +1680,8 @@ impl Shell {
         // the session is not the one on screen.
         let at_computer = window.is_window_active();
         if !at_computer {
-            self.notify_phones(id, kind, &title, &body, cx);
+            let pid = self.phone_id(env_path, id);
+            self.notify_phones(&pid, kind, &title, &body, cx);
         }
         let visible = at_computer
             && self.has_projects()

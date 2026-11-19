@@ -296,17 +296,18 @@ fn log(dir: &Path, args: &[&str]) -> Vec<Commit> {
 
 /// The conflicted files of merging `branch` into `main`, without touching the checkout.
 fn conflicts(dir: &Path, main: &str, branch: &str) -> Option<Vec<String>> {
-    let out = git::git(dir)
-        .args([
+    let out = git::output(
+        git::git(dir).args([
             "merge-tree",
             "--write-tree",
             "--name-only",
             "--no-messages",
             main,
             branch,
-        ])
-        .output()
-        .ok()?;
+        ]),
+        crate::platform::GIT_LOCAL,
+    )
+    .ok()?;
     match out.status.code() {
         Some(0) => Some(Vec::new()),
         // The tree id, then one conflicted path per line.
@@ -435,8 +436,7 @@ fn prs(dir: &Path) -> Result<Vec<(String, Pr)>, String> {
     if let Some(repo) = github_repo(dir) {
         cmd.args(["-R", &repo]);
     }
-    let out = cmd
-        .args([
+    cmd.args([
             "pr",
             "list",
             "--state",
@@ -445,9 +445,16 @@ fn prs(dir: &Path) -> Result<Vec<(String, Pr)>, String> {
             PR_LIMIT,
             "--json",
             "number,title,url,state,isDraft,headRefName,reviewDecision,mergeable,mergedAt,updatedAt,author,statusCheckRollup",
-        ])
-        .output()
-        .map_err(|e| if e.kind() == std::io::ErrorKind::NotFound { "GitHub CLI (gh) isn't installed".to_string() } else { e.to_string() })?;
+        ]);
+    let out = crate::platform::output_within(&mut cmd, None, crate::platform::GIT_REMOTE).map_err(
+        |e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                "GitHub CLI (gh) isn't installed".to_string()
+            } else {
+                e.to_string()
+            }
+        },
+    )?;
     if !out.status.success() {
         let err = git::strip_ansi(&String::from_utf8_lossy(&out.stderr));
         let err = err.trim();

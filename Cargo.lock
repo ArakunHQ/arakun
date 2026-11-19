@@ -282,7 +282,7 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
 name = "arakun"
-version = "0.5.0"
+version = "0.7.0"
 dependencies = [
  "aes-gcm",
  "alacritty_terminal",
@@ -293,6 +293,7 @@ dependencies = [
  "cef",
  "cef-dll-sys",
  "dunce",
+ "embed-resource",
  "futures",
  "getrandom 0.4.3",
  "gpui",
@@ -310,7 +311,9 @@ dependencies = [
  "rayon",
  "rhai",
  "ring",
+ "rusqlite",
  "rust-embed",
+ "rustls",
  "serde",
  "serde_json",
  "sha2 0.11.1",
@@ -329,7 +332,7 @@ dependencies = [
 
 [[package]]
 name = "arakun-server"
-version = "0.5.0"
+version = "0.7.0"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -1304,7 +1307,7 @@ dependencies = [
 [[package]]
 name = "collections"
 version = "0.1.0"
-source = "git+https://github.com/arakunhq/zed?rev=4750f185fb4331c3fd379672935a1f5f26d03b23#4750f185fb4331c3fd379672935a1f5f26d03b23"
+source = "git+https://github.com/arakunhq/zed?rev=4aa3b1a284c8f36da3477d613802c4cfc02f5abf#4aa3b1a284c8f36da3477d613802c4cfc02f5abf"
 dependencies = [
  "gpui_util",
  "indexmap",
@@ -1818,7 +1821,7 @@ dependencies = [
 [[package]]
 name = "derive_refineable"
 version = "0.1.0"
-source = "git+https://github.com/arakunhq/zed?rev=4750f185fb4331c3fd379672935a1f5f26d03b23#4750f185fb4331c3fd379672935a1f5f26d03b23"
+source = "git+https://github.com/arakunhq/zed?rev=4aa3b1a284c8f36da3477d613802c4cfc02f5abf#4aa3b1a284c8f36da3477d613802c4cfc02f5abf"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2167,6 +2170,18 @@ dependencies = [
  "smallvec",
  "zune-inflate",
 ]
+
+[[package]]
+name = "fallible-iterator"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2acce4a10f12dc2fb14a218589d4f1f62ef011b2d0cc4b3cb1bba8e94da14649"
+
+[[package]]
+name = "fallible-streaming-iterator"
+version = "0.1.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7360491ce676a36bf9bb3c56c1aa791658183a54d2744120f27285738d90465a"
 
 [[package]]
 name = "fancy-regex"
@@ -2694,7 +2709,7 @@ dependencies = [
 [[package]]
 name = "gpui"
 version = "0.2.2"
-source = "git+https://github.com/arakunhq/zed?rev=4750f185fb4331c3fd379672935a1f5f26d03b23#4750f185fb4331c3fd379672935a1f5f26d03b23"
+source = "git+https://github.com/arakunhq/zed?rev=4aa3b1a284c8f36da3477d613802c4cfc02f5abf#4aa3b1a284c8f36da3477d613802c4cfc02f5abf"
 dependencies = [
  "accesskit",
  "anyhow",
@@ -2763,7 +2778,7 @@ dependencies = [
 [[package]]
 name = "gpui_apple"
 version = "0.1.0"
-source = "git+https://github.com/arakunhq/zed?rev=4750f185fb4331c3fd379672935a1f5f26d03b23#4750f185fb4331c3fd379672935a1f5f26d03b23"
+source = "git+https://github.com/arakunhq/zed?rev=4aa3b1a284c8f36da3477d613802c4cfc02f5abf#4aa3b1a284c8f36da3477d613802c4cfc02f5abf"
 dependencies = [
  "anyhow",
  "block",
@@ -2786,7 +2801,7 @@ dependencies = [
 [[package]]
 name = "gpui_linux"
 version = "0.1.0"
-source = "git+https://github.com/arakunhq/zed?rev=4750f185fb4331c3fd379672935a1f5f26d03b23#4750f185fb4331c3fd379672935a1f5f26d03b23"
+source = "git+https://github.com/arakunhq/zed?rev=4aa3b1a284c8f36da3477d613802c4cfc02f5abf#4aa3b1a284c8f36da3477d613802c4cfc02f5abf"
 dependencies = [
  "accesskit",
  "accesskit_unix",
@@ -2832,7 +2847,7 @@ dependencies = [
 [[package]]
 name = "gpui_macos"
 version = "0.1.0"
-source = "git+https://github.com/arakunhq/zed?rev=4750f185fb4331c3fd379672935a1f5f26d03b23#4750f185fb4331c3fd379672935a1f5f26d03b23"
+source = "git+https://github.com/arakunhq/zed?rev=4aa3b1a284c8f36da3477d613802c4cfc02f5abf#4aa3b1a284c8f36da3477d613802c4cfc02f5abf"
 dependencies = [
  "accesskit",
  "accesskit_macos",
@@ -2878,7 +2893,7 @@ dependencies = [
 [[package]]
 name = "gpui_macros"
 version = "0.1.0"
-source = "git+https://github.com/arakunhq/zed?rev=4750f185fb4331c3fd379672935a1f5f26d03b23#4750f185fb4331c3fd379672935a1f5f26d03b23"
+source = "git+https://github.com/arakunhq/zed?rev=4aa3b1a284c8f36da3477d613802c4cfc02f5abf#4aa3b1a284c8f36da3477d613802c4cfc02f5abf"
 dependencies = [
  "heck 0.5.0",
  "proc-macro2",
@@ -2889,7 +2904,7 @@ dependencies = [
 [[package]]
 name = "gpui_platform"
 version = "0.1.0"
-source = "git+https://github.com/arakunhq/zed?rev=4750f185fb4331c3fd379672935a1f5f26d03b23#4750f185fb4331c3fd379672935a1f5f26d03b23"
+source = "git+https://github.com/arakunhq/zed?rev=4aa3b1a284c8f36da3477d613802c4cfc02f5abf#4aa3b1a284c8f36da3477d613802c4cfc02f5abf"
 dependencies = [
  "console_error_panic_hook",
  "gpui",
@@ -2902,7 +2917,7 @@ dependencies = [
 [[package]]
 name = "gpui_shared_string"
 version = "0.1.0"
-source = "git+https://github.com/arakunhq/zed?rev=4750f185fb4331c3fd379672935a1f5f26d03b23#4750f185fb4331c3fd379672935a1f5f26d03b23"
+source = "git+https://github.com/arakunhq/zed?rev=4aa3b1a284c8f36da3477d613802c4cfc02f5abf#4aa3b1a284c8f36da3477d613802c4cfc02f5abf"
 dependencies = [
  "schemars",
  "serde",
@@ -2912,7 +2927,7 @@ dependencies = [
 [[package]]
 name = "gpui_util"
 version = "0.1.0"
-source = "git+https://github.com/arakunhq/zed?rev=4750f185fb4331c3fd379672935a1f5f26d03b23#4750f185fb4331c3fd379672935a1f5f26d03b23"
+source = "git+https://github.com/arakunhq/zed?rev=4aa3b1a284c8f36da3477d613802c4cfc02f5abf#4aa3b1a284c8f36da3477d613802c4cfc02f5abf"
 dependencies = [
  "anyhow",
  "log",
@@ -2922,7 +2937,7 @@ dependencies = [
 [[package]]
 name = "gpui_web"
 version = "0.1.0"
-source = "git+https://github.com/arakunhq/zed?rev=4750f185fb4331c3fd379672935a1f5f26d03b23#4750f185fb4331c3fd379672935a1f5f26d03b23"
+source = "git+https://github.com/arakunhq/zed?rev=4aa3b1a284c8f36da3477d613802c4cfc02f5abf#4aa3b1a284c8f36da3477d613802c4cfc02f5abf"
 dependencies = [
  "anyhow",
  "console_error_panic_hook",
@@ -2950,7 +2965,7 @@ dependencies = [
 [[package]]
 name = "gpui_wgpu"
 version = "0.1.0"
-source = "git+https://github.com/arakunhq/zed?rev=4750f185fb4331c3fd379672935a1f5f26d03b23#4750f185fb4331c3fd379672935a1f5f26d03b23"
+source = "git+https://github.com/arakunhq/zed?rev=4aa3b1a284c8f36da3477d613802c4cfc02f5abf#4aa3b1a284c8f36da3477d613802c4cfc02f5abf"
 dependencies = [
  "anyhow",
  "ash",
@@ -2977,7 +2992,7 @@ dependencies = [
 [[package]]
 name = "gpui_windows"
 version = "0.1.0"
-source = "git+https://github.com/arakunhq/zed?rev=4750f185fb4331c3fd379672935a1f5f26d03b23#4750f185fb4331c3fd379672935a1f5f26d03b23"
+source = "git+https://github.com/arakunhq/zed?rev=4aa3b1a284c8f36da3477d613802c4cfc02f5abf#4aa3b1a284c8f36da3477d613802c4cfc02f5abf"
 dependencies = [
  "accesskit",
  "accesskit_windows",
@@ -3187,7 +3202,7 @@ dependencies = [
 [[package]]
 name = "http_client"
 version = "0.1.0"
-source = "git+https://github.com/arakunhq/zed?rev=4750f185fb4331c3fd379672935a1f5f26d03b23#4750f185fb4331c3fd379672935a1f5f26d03b23"
+source = "git+https://github.com/arakunhq/zed?rev=4aa3b1a284c8f36da3477d613802c4cfc02f5abf#4aa3b1a284c8f36da3477d613802c4cfc02f5abf"
 dependencies = [
  "anyhow",
  "async-compression",
@@ -3701,6 +3716,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6480ccc157a1389bb2e4891b24751b0f798ba640d22386f23143fbcc89da195a"
 dependencies = [
  "libc",
+]
+
+[[package]]
+name = "libsqlite3-sys"
+version = "0.39.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "14a5f01b87b92705d07b433c06f96cbc764637d81a0bffb5734ce17cf0f9a2b3"
+dependencies = [
+ "cc",
+ "pkg-config",
+ "vcpkg",
 ]
 
 [[package]]
@@ -4751,7 +4777,7 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 [[package]]
 name = "perf"
 version = "0.1.0"
-source = "git+https://github.com/arakunhq/zed?rev=4750f185fb4331c3fd379672935a1f5f26d03b23#4750f185fb4331c3fd379672935a1f5f26d03b23"
+source = "git+https://github.com/arakunhq/zed?rev=4aa3b1a284c8f36da3477d613802c4cfc02f5abf#4aa3b1a284c8f36da3477d613802c4cfc02f5abf"
 dependencies = [
  "collections",
  "serde",
@@ -5425,7 +5451,7 @@ dependencies = [
 [[package]]
 name = "refineable"
 version = "0.1.0"
-source = "git+https://github.com/arakunhq/zed?rev=4750f185fb4331c3fd379672935a1f5f26d03b23#4750f185fb4331c3fd379672935a1f5f26d03b23"
+source = "git+https://github.com/arakunhq/zed?rev=4aa3b1a284c8f36da3477d613802c4cfc02f5abf#4aa3b1a284c8f36da3477d613802c4cfc02f5abf"
 dependencies = [
  "derive_refineable",
 ]
@@ -5547,6 +5573,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f1964b10c76125c36f8afe190065a4bf9a87bf324842c05701330bba9f1cacbb"
 dependencies = [
  "memchr",
+]
+
+[[package]]
+name = "rusqlite"
+version = "0.41.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9c026b4444579e8d754556c6c75d040d69c4a44283cdb648ab8a8d5965c2cfa8"
+dependencies = [
+ "bitflags 2.13.2",
+ "fallible-iterator",
+ "fallible-streaming-iterator",
+ "libsqlite3-sys",
+ "smallvec",
 ]
 
 [[package]]
@@ -5712,7 +5751,7 @@ dependencies = [
 [[package]]
 name = "scheduler"
 version = "0.1.0"
-source = "git+https://github.com/arakunhq/zed?rev=4750f185fb4331c3fd379672935a1f5f26d03b23#4750f185fb4331c3fd379672935a1f5f26d03b23"
+source = "git+https://github.com/arakunhq/zed?rev=4aa3b1a284c8f36da3477d613802c4cfc02f5abf#4aa3b1a284c8f36da3477d613802c4cfc02f5abf"
 dependencies = [
  "async-task",
  "backtrace",
@@ -6217,7 +6256,7 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 [[package]]
 name = "sum_tree"
 version = "0.1.0"
-source = "git+https://github.com/arakunhq/zed?rev=4750f185fb4331c3fd379672935a1f5f26d03b23#4750f185fb4331c3fd379672935a1f5f26d03b23"
+source = "git+https://github.com/arakunhq/zed?rev=4aa3b1a284c8f36da3477d613802c4cfc02f5abf#4aa3b1a284c8f36da3477d613802c4cfc02f5abf"
 dependencies = [
  "heapless",
  "log",
@@ -7046,7 +7085,7 @@ checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
 [[package]]
 name = "util_macros"
 version = "0.1.0"
-source = "git+https://github.com/arakunhq/zed?rev=4750f185fb4331c3fd379672935a1f5f26d03b23#4750f185fb4331c3fd379672935a1f5f26d03b23"
+source = "git+https://github.com/arakunhq/zed?rev=4aa3b1a284c8f36da3477d613802c4cfc02f5abf#4aa3b1a284c8f36da3477d613802c4cfc02f5abf"
 dependencies = [
  "perf",
  "quote",
@@ -7118,6 +7157,12 @@ dependencies = [
  "sval_ref",
  "sval_serde",
 ]
+
+[[package]]
+name = "vcpkg"
+version = "0.2.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 
 [[package]]
 name = "version_check"
@@ -8528,7 +8573,7 @@ checksum = "b268e58e7c693d7c271f93ffc4ba3b380412554231c85bf61ca7af91042a4112"
 [[package]]
 name = "zlog"
 version = "0.1.0"
-source = "git+https://github.com/arakunhq/zed?rev=4750f185fb4331c3fd379672935a1f5f26d03b23#4750f185fb4331c3fd379672935a1f5f26d03b23"
+source = "git+https://github.com/arakunhq/zed?rev=4aa3b1a284c8f36da3477d613802c4cfc02f5abf#4aa3b1a284c8f36da3477d613802c4cfc02f5abf"
 dependencies = [
  "anyhow",
  "chrono",
@@ -8557,7 +8602,7 @@ dependencies = [
 [[package]]
 name = "ztracing"
 version = "0.1.0"
-source = "git+https://github.com/arakunhq/zed?rev=4750f185fb4331c3fd379672935a1f5f26d03b23#4750f185fb4331c3fd379672935a1f5f26d03b23"
+source = "git+https://github.com/arakunhq/zed?rev=4aa3b1a284c8f36da3477d613802c4cfc02f5abf#4aa3b1a284c8f36da3477d613802c4cfc02f5abf"
 dependencies = [
  "tracing",
  "tracing-subscriber",
@@ -8568,7 +8613,7 @@ dependencies = [
 [[package]]
 name = "ztracing_macro"
 version = "0.1.0"
-source = "git+https://github.com/arakunhq/zed?rev=4750f185fb4331c3fd379672935a1f5f26d03b23#4750f185fb4331c3fd379672935a1f5f26d03b23"
+source = "git+https://github.com/arakunhq/zed?rev=4aa3b1a284c8f36da3477d613802c4cfc02f5abf#4aa3b1a284c8f36da3477d613802c4cfc02f5abf"
 
 [[package]]
 name = "zune-core"

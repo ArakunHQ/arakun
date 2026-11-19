@@ -114,12 +114,14 @@ pub(super) fn git_identity() -> &'static (String, String) {
     static ID: OnceLock<(String, String)> = OnceLock::new();
     ID.get_or_init(|| {
         let get = |key: &str| {
-            crate::platform::command("git")
-                .args(["config", "--global", key])
-                .output()
-                .ok()
-                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-                .unwrap_or_default()
+            crate::platform::output_within(
+                crate::platform::command("git").args(["config", "--global", key]),
+                None,
+                crate::platform::GIT_LOCAL,
+            )
+            .ok()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_default()
         };
         (get("user.name"), get("user.email"))
     })
@@ -317,6 +319,17 @@ impl Shell {
 
     /// A segment that holds only extensions that are off draws nothing, not
     /// even its title.
+    /// Whether the Active list is drawn as a list: not in a row of icons, a
+    /// folded segment or the narrowed rail. Only then does the project list
+    /// leave what waits or runs to it.
+    pub(super) fn active_list_shown(&self) -> bool {
+        let Some((s, _)) = self.sidebar.find(&Piece::active()) else {
+            return false;
+        };
+        let section = &self.sidebar.sections[s];
+        !self.rail_narrow() && !section.row && !(section.collapsible && section.collapsed)
+    }
+
     pub(super) fn rail_section_hidden(&self, section: &Section, cx: &App) -> bool {
         !section.items.is_empty() && section.items.iter().all(|i| !self.rail_shows(&i.piece, cx))
     }
@@ -376,6 +389,43 @@ impl Shell {
         out
     }
 
+    /// What a folded segment's title shows: how many pieces it holds (0
+    /// when it is set not to say), and the color of a dot when one of them
+    /// wants the user, red when something failed or waits. `None` when there
+    /// is nothing to show.
+    fn folded_peek(
+        &self,
+        section: &Section,
+        cx: &mut Context<Self>,
+    ) -> Option<(usize, Option<Hsla>)> {
+        let shown: Vec<&Item> = section
+            .items
+            .iter()
+            .filter(|i| self.rail_shows(&i.piece, cx))
+            .collect();
+        let badges: Vec<Badge> = shown
+            .iter()
+            .filter_map(|i| match i.piece {
+                Piece::View { view } if i.badge != BadgeMode::Off => self.view_badge(view, cx),
+                _ => None,
+            })
+            .filter(|b| b.count > 0)
+            .collect();
+        let dot = if badges.iter().any(|b| b.urgent) {
+            Some(theme::error().into())
+        } else {
+            badges.iter().find_map(|b| b.color)
+        };
+        if !section.peek {
+            // Not asked to say what is inside, a failure still shows.
+            return dot
+                .filter(|_| badges.iter().any(|b| b.urgent))
+                .map(|c| (0, Some(c)));
+        }
+        let pieces = shown.iter().filter(|i| !i.piece.is_decoration()).count();
+        (pieces > 0 || dot.is_some()).then_some((pieces, dot))
+    }
+
     fn render_section(&self, si: usize, section: &Section, cx: &mut Context<Self>) -> AnyElement {
         let narrow = self.rail_narrow();
         let folded = section.collapsible && section.collapsed && !narrow;
@@ -414,22 +464,9 @@ impl Shell {
                 }
             }
         }
-        // Folded, the segment still says when something inside wants the user.
-        let urgent: usize = if folded {
-            section
-                .items
-                .iter()
-                .filter_map(|i| match i.piece {
-                    Piece::View { view } if self.rail_shows(&i.piece, cx) => self
-                        .view_badge(view, cx)
-                        .filter(|b| b.urgent)
-                        .map(|b| b.count),
-                    _ => None,
-                })
-                .sum()
-        } else {
-            0
-        };
+        // Folded, the segment still says what it holds and whether something
+        // inside wants the user.
+        let peek = folded.then(|| self.folded_peek(section, cx)).flatten();
         let title = (section.show_title && !narrow).then(|| {
             let collapsible = section.collapsible;
             div()
@@ -447,8 +484,10 @@ impl Shell {
                 .when(collapsible, |d| {
                     d.cursor_pointer()
                         .hover(|s| s.bg(theme::hover()).text_color(theme::content()))
+                        // Saved, so it opens folded next time, but not a step
+                        // to undo: folding is using the sidebar, not editing it.
                         .on_click(cx.listener(move |this, _, _, cx| {
-                            this.edit_sidebar(cx, |s| {
+                            this.quiet_edit(cx, |s| {
                                 if let Some(sec) = s.sections.get_mut(si) {
                                     sec.collapsed = !sec.collapsed;
                                 }
@@ -462,15 +501,20 @@ impl Shell {
                         .truncate()
                         .child(section.title.clone()),
                 )
-                .when(urgent > 0, |d| {
-                    d.children(badge_pill(
-                        Badge {
-                            count: urgent,
-                            color: Some(theme::error().into()),
-                            urgent: true,
-                        },
-                        BadgeMode::Count,
-                    ))
+                .when_some(peek, |d, (pieces, dot)| {
+                    d.when(pieces > 0, |d| {
+                        d.child(
+                            div()
+                                .flex_none()
+                                .font_family(theme::FONT_MONO)
+                                .text_size(px(ui::TEXT_XS))
+                                .text_color(theme::text_faint())
+                                .child(pieces.to_string()),
+                        )
+                    })
+                    .when_some(dot, |d, color| {
+                        d.child(div().flex_none().size(px(6.)).rounded_full().bg(color))
+                    })
                 })
                 .when(collapsible, |d| {
                     d.child(
@@ -855,6 +899,12 @@ impl Shell {
                         .into_any_element()
                 }
             }
+            Piece::Active => {
+                if narrow {
+                    return None;
+                }
+                self.render_active_block(cx)?
+            }
             Piece::Mascot => div()
                 .flex()
                 .items_center()
@@ -1032,6 +1082,7 @@ impl Shell {
             self.account.read(cx),
             seats.as_ref(),
             crate::agent::opencode_plan::latest().as_ref(),
+            crate::agent::devin_plan::latest().as_ref(),
             cx.listener(|this, _, window, cx| this.open_usage_tab(window, cx)),
             {
                 let shell = cx.entity().downgrade();
@@ -1150,6 +1201,18 @@ impl Shell {
                     })
                 })),
             )
+            .when(self.sidebar.sections.len() > 1, |d| {
+                d.child(
+                    ui::menu_item("rsm-ungroup", "ungroup-items", "Ungroup", false, true).on_click(
+                        cx.listener(move |this, _, _, cx| {
+                            this.menu = None;
+                            this.edit_sidebar(cx, |sb| {
+                                sb.ungroup_section(s);
+                            })
+                        }),
+                    ),
+                )
+            })
             .child(
                 ui::menu_item("rsm-hide", "view-off", "Remove segment", true, true).on_click(
                     cx.listener(move |this, _, _, cx| {

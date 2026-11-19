@@ -58,12 +58,8 @@ pub fn cached() -> Option<PlanUsage> {
 }
 
 fn store(usage: &PlanUsage) {
-    let path = cache_path();
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    if let Ok(json) = serde_json::to_string_pretty(usage) {
-        let _ = std::fs::write(path, json);
+    if let Ok(json) = serde_json::to_vec_pretty(usage) {
+        let _ = crate::durable::write(&cache_path(), &json);
     }
 }
 

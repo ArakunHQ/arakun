@@ -70,6 +70,8 @@ pub(super) enum Open {
     Task(String),
     Cloudflare,
     Usage,
+    /// Settings, at Branches.
+    BranchSettings,
     /// A link a teammate's find points at, in the system browser.
     #[cfg(feature = "team")]
     Url(String),
@@ -95,6 +97,7 @@ impl Open {
             Open::Task(id) => format!("open:task:{id}").into(),
             Open::Cloudflare => "open:cloudflare".into(),
             Open::Usage => "open:usage".into(),
+            Open::BranchSettings => "open:settings:branches".into(),
             #[cfg(feature = "team")]
             Open::Url(url) => format!("open:url:{url}").into(),
             #[cfg(feature = "team")]
@@ -128,6 +131,7 @@ impl Open {
             ("task", id) if !id.is_empty() => Some(Open::Task(id.to_string())),
             ("cloudflare", "") => Some(Open::Cloudflare),
             ("usage", "") => Some(Open::Usage),
+            ("settings", "branches") => Some(Open::BranchSettings),
             #[cfg(feature = "team")]
             ("team", "") => Some(Open::Team),
             #[cfg(feature = "team")]
@@ -163,13 +167,13 @@ fn farewell(linked: bool, enabled: bool) -> Option<ToIsland> {
 
 /// One request to the island, off this thread: it waits for the answer.
 fn tell_once(msg: ToIsland) {
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     std::thread::spawn(move || {
         if let Err(e) = crate::island_host::proto::request(&msg) {
             eprintln!("arakun: island: {e}");
         }
     });
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     let _ = msg;
 }
 
@@ -201,7 +205,7 @@ impl Shell {
         if self.island.is_some() {
             return;
         }
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        #[cfg(any(target_os = "linux", target_os = "macos", windows))]
         {
             use futures::StreamExt as _;
             let (tx, mut presses, up) = crate::island_host::link::connect(true);
@@ -249,7 +253,7 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        window.activate_window();
+        crate::background::show(window);
         match Open::parse(&key) {
             Some(Open::Session(id)) => {
                 let found = self.projects.iter().enumerate().find_map(|(pi, p)| {
@@ -281,6 +285,15 @@ impl Shell {
             }
             Some(Open::Cloudflare) => self.open_cloudflare_tab(window, cx),
             Some(Open::Usage) => self.open_usage_tab(window, cx),
+            Some(Open::BranchSettings) => {
+                // An open dialog stays, with what was typed in it.
+                if let Some((super::Modal::Settings(dialog), _)) = &self.modal {
+                    dialog.update(cx, |d, cx| d.show_branches(cx));
+                } else {
+                    crate::settings_view::start_on_branches();
+                    self.open_settings(window, cx);
+                }
+            }
             #[cfg(feature = "team")]
             Some(Open::Url(url)) => cx.open_url(&url),
             #[cfg(feature = "team")]
@@ -738,6 +751,7 @@ mod tests {
             Open::Task("tsk_9".into()),
             Open::Cloudflare,
             Open::Usage,
+            Open::BranchSettings,
             #[cfg(feature = "team")]
             Open::Url("https://example.com/x/y?v=2".into()),
             #[cfg(feature = "team")]

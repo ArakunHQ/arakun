@@ -1,6 +1,7 @@
 //! The git workflow of the Changes panel: commit, push, pull, pull requests, merging
 //! a worktree into the main checkout, and per-file stage / unstage / discard.
 
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -13,13 +14,78 @@ use gpui::{
 
 use super::{ContextMenu, MenuTarget, Modal, PanelTab, Shell, panel_empty, plural};
 use crate::git::{self, ChangeKind};
-use crate::git_dialogs::{CommitDialog, ConfirmDialog, GitDialogEvent};
+use crate::git_dialogs::{
+    CommitDialog, ConfirmDialog, GitDialogEvent, PullRequestDialog, PullRequestEvent,
+};
 use crate::model::{GitOp, TabKind, pretty_path};
 use crate::theme;
 use crate::ui::{self, ButtonKind, icon};
 
 /// `gh pr view` goes over the network; look again at most this often.
 const PR_RECHECK: Duration = Duration::from_secs(60);
+
+/// Background git reads of one environment that the window repeats on its own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(super) enum GitRead {
+    Status,
+    PullRequest,
+}
+
+/// The [`GitRead`]s running, so none of them overlaps itself. Polls ask for them every
+/// few seconds; while one is slow, starting more would only take more of the few
+/// background threads, which everything else (saves, diffs, file lists) waits on.
+#[derive(Debug, Default)]
+pub(super) struct GitReads {
+    running: HashSet<(PathBuf, GitRead)>,
+    /// Environments whose status was asked for while one was running. That one may
+    /// have read the files before the change that asked, so status runs once more.
+    status_again: HashSet<PathBuf>,
+    /// Environments whose last status ran past its limit, and when it timed out. A
+    /// status that always takes longer would otherwise be killed and start again at
+    /// once, keeping a core busy for nothing.
+    status_timed_out: HashMap<PathBuf, Instant>,
+}
+
+/// How long status rests after it ran past its limit.
+pub(super) const STATUS_PAUSE: Duration = Duration::from_secs(5 * 60);
+
+impl GitReads {
+    /// Marks `read` of `path` as running; false when it already is.
+    pub(super) fn start(&mut self, path: &Path, read: GitRead) -> bool {
+        if read == GitRead::Status
+            && self
+                .status_timed_out
+                .get(path)
+                .is_some_and(|at| at.elapsed() < STATUS_PAUSE)
+        {
+            return false;
+        }
+        let started = self.running.insert((path.to_path_buf(), read));
+        if !started && read == GitRead::Status {
+            self.status_again.insert(path.to_path_buf());
+        }
+        started
+    }
+
+    /// Marks `read` of `path` as ended; true when status must run again.
+    pub(super) fn end(&mut self, path: &Path, read: GitRead) -> bool {
+        self.running.remove(&(path.to_path_buf(), read));
+        read == GitRead::Status && self.status_again.remove(path)
+    }
+
+    /// Notes how the status of `path` that just ended went: one that timed out does not
+    /// run again for [`STATUS_PAUSE`]. True when it worked after one that timed out.
+    pub(super) fn status_ended(&mut self, path: &Path, timed_out: bool) -> bool {
+        if timed_out {
+            self.status_again.remove(path);
+            self.status_timed_out
+                .insert(path.to_path_buf(), Instant::now());
+            false
+        } else {
+            self.status_timed_out.remove(path).is_some()
+        }
+    }
+}
 
 impl Shell {
     /// Looks up the pull request of the visible environment's branch while the
@@ -45,12 +111,18 @@ impl Shell {
             Some((b, _)) if b.as_ref() != branch => env.pr = None,
             _ => {}
         }
-        env.pr_checked = Some((branch.clone().into(), Instant::now()));
+        if !self.git_reads.start(path, GitRead::PullRequest) {
+            return;
+        }
+        self.env_mut().pr_checked = Some((branch.clone().into(), Instant::now()));
         let path = path.to_path_buf();
         cx.spawn(async move |this, cx| {
             let p = path.clone();
-            let pr = cx.background_spawn(async move { git::pr_view(&p) }).await;
+            let pr = cx
+                .background_spawn(crate::guard::task(async move { git::pr_view(&p) }))
+                .await;
             let _ = this.update(cx, |this, cx| {
+                this.git_reads.end(&path, GitRead::PullRequest);
                 if let Some(env) = this.find_env_mut(&path)
                     && env.sync.branch.as_deref() == Some(branch.as_str())
                     && env.pr != pr
@@ -82,7 +154,9 @@ impl Shell {
         env.git_error = None;
         cx.notify();
         cx.spawn(async move |this, cx| {
-            let result = cx.background_spawn(async move { job() }).await;
+            let result = cx
+                .background_spawn(crate::guard::task(async move { job() }))
+                .await;
             let _ = this.update(cx, |this, cx| {
                 if let Some(env) = this.find_env_mut(&path) {
                     env.git_busy = None;
@@ -123,9 +197,9 @@ impl Shell {
         self.run_git_op(path, GitOp::Pull, move || git::pull(&dir), cx);
     }
 
-    /// Opens the branch's pull request, or pushes if needed and opens GitHub's
-    /// prefilled "new pull request" page.
-    fn git_pull_request(&mut self, cx: &mut Context<Self>) {
+    /// Opens the branch's pull request, or the dialog that creates one. What
+    /// the dialog starts with is read from the clone first.
+    fn git_pull_request(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let env = self.env();
         if let Some(pr) = env.pr.as_ref() {
             cx.open_url(&pr.url);
@@ -135,20 +209,84 @@ impl Shell {
         let (Some(remote), Some(branch), true) = (s.remote, s.branch, s.gh) else {
             return;
         };
+        if env.git_busy.is_some() || self.modal.is_some() {
+            return;
+        }
         let needs_push = !s.published || s.ahead > 0;
         let path = env.path.clone();
+        let agent = env.agent.kind();
+        // Busy while the clone is read, so a second click opens nothing.
+        if let Some(env) = self.find_env_mut(&path) {
+            env.git_busy = Some(GitOp::PullRequest);
+        }
+        cx.notify();
+        cx.spawn_in(window, async move |this, cx| {
+            let (dir, r, b) = (path.clone(), remote.clone(), branch.clone());
+            let plan = cx
+                .background_spawn(crate::guard::task_or_default(async move {
+                    // Finding an agent's CLI reads the disk too.
+                    let writer = crate::pr_writer::writer(agent, crate::env_name::installed);
+                    (git::pr_plan(&dir, &r, &b), writer)
+                }))
+                .await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.show_pull_request(path, remote, branch, needs_push, plan, window, cx)
+            });
+        })
+        .detach();
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn show_pull_request(
+        &mut self,
+        path: PathBuf,
+        remote: String,
+        branch: String,
+        needs_push: bool,
+        (plan, writer): (git::PrPlan, Option<crate::agent::AgentKind>),
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(env) = self.find_env_mut(&path) {
+            env.git_busy = None;
+        }
+        cx.notify();
+        if self.modal.is_some() {
+            return;
+        }
         let dir = path.clone();
-        self.run_git_op(
-            path,
-            GitOp::PullRequest,
-            move || {
-                if needs_push {
-                    git::push(&dir, &remote, &branch)?;
+        let dialog = cx.new(|cx| {
+            PullRequestDialog::new(dir, remote, branch, needs_push, plan, writer, window, cx)
+        });
+        let sub = cx.subscribe_in(
+            &dialog,
+            window,
+            move |this, _, ev: &PullRequestEvent, window, cx| {
+                // Either way the branch may have been pushed.
+                if let Some(env) = this.find_env_mut(&path) {
+                    env.pr_checked = None;
+                    env.git_error = None;
                 }
-                git::pr_create_web(&dir, &branch)
+                this.refresh_status(&path, cx);
+                this.close_modal(window, cx);
+                let PullRequestEvent::Created(url) = ev else {
+                    return;
+                };
+                // The new pull request shows in the GitHub tab; one on a host
+                // that tab doesn't read opens its page.
+                match crate::github::pr::ItemRef::from_url(url) {
+                    Some(item) => {
+                        this.open_github_tab(window, cx);
+                        this.github_view.update(cx, |v, cx| v.reveal(&item, cx));
+                    }
+                    None if !url.is_empty() => cx.open_url(url),
+                    None => {}
+                }
             },
-            cx,
         );
+        self.menu = None;
+        self.modal = Some((Modal::PullRequest(dialog), sub));
+        cx.notify();
     }
 
     pub(super) fn toggle_stage(&mut self, change: git::Change, cx: &mut Context<Self>) {
@@ -156,13 +294,13 @@ impl Shell {
         let dir = path.clone();
         cx.spawn(async move |this, cx| {
             let result = cx
-                .background_spawn(async move {
+                .background_spawn(crate::guard::task(async move {
                     if change.fully_staged() {
                         git::unstage(&dir, &change.path)
                     } else {
                         git::stage(&dir, &change.path)
                     }
-                })
+                }))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 if let Some(env) = this.find_env_mut(&path) {
@@ -273,7 +411,7 @@ impl Shell {
         cx.spawn_in(window, async move |this, cx| {
             let (m, b) = (main.clone(), branch.clone());
             let plan = cx
-                .background_spawn(async move { git::merge_plan(&m, &b) })
+                .background_spawn(crate::guard::task(async move { git::merge_plan(&m, &b) }))
                 .await;
             let _ = this.update_in(cx, |this, window, cx| {
                 this.show_merge(pi, main, branch, plan, dirty_here, window, cx)
@@ -425,9 +563,9 @@ impl Shell {
                     busy == Some(GitOp::PullRequest),
                     enabled,
                 )
-                .on_click(cx.listener(move |this, _, _, cx| {
+                .on_click(cx.listener(move |this, _, window, cx| {
                     if enabled {
-                        this.git_pull_request(cx)
+                        this.git_pull_request(window, cx)
                     }
                 })),
             );
@@ -799,4 +937,56 @@ fn sync_chip(
                 .into_any_element()
         })
         .when_some(label, |d, l| d.child(l))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_git_read_does_not_start_while_it_runs() {
+        let mut reads = GitReads::default();
+        let (a, b) = (Path::new("/a"), Path::new("/b"));
+        assert!(reads.start(a, GitRead::PullRequest));
+        assert!(!reads.start(a, GitRead::PullRequest));
+        assert!(reads.start(b, GitRead::PullRequest));
+        assert!(reads.start(a, GitRead::Status));
+        assert!(!reads.end(a, GitRead::PullRequest));
+        assert!(reads.start(a, GitRead::PullRequest));
+    }
+
+    #[test]
+    fn status_asked_for_while_it_runs_runs_once_more() {
+        let mut reads = GitReads::default();
+        let a = Path::new("/a");
+        assert!(reads.start(a, GitRead::Status));
+        assert!(!reads.end(a, GitRead::Status));
+        assert!(reads.start(a, GitRead::Status));
+        assert!(!reads.start(a, GitRead::Status));
+        assert!(!reads.start(a, GitRead::Status));
+        assert!(reads.end(a, GitRead::Status));
+        assert!(reads.start(a, GitRead::Status));
+        assert!(!reads.end(a, GitRead::Status));
+    }
+
+    #[test]
+    fn status_that_timed_out_rests_before_it_runs_again() {
+        let mut reads = GitReads::default();
+        let (a, b) = (Path::new("/a"), Path::new("/b"));
+        assert!(reads.start(a, GitRead::Status));
+        // Asked for again while it ran, then it timed out: no new run at once.
+        assert!(!reads.start(a, GitRead::Status));
+        assert!(!reads.status_ended(a, true));
+        assert!(!reads.end(a, GitRead::Status));
+        assert!(!reads.start(a, GitRead::Status));
+        assert!(reads.start(b, GitRead::Status));
+        assert!(reads.start(a, GitRead::PullRequest));
+        // Once the pause is over it runs, and a status that works ends it.
+        reads
+            .status_timed_out
+            .insert(a.to_path_buf(), Instant::now() - STATUS_PAUSE);
+        assert!(reads.start(a, GitRead::Status));
+        assert!(reads.status_ended(a, false));
+        assert!(!reads.status_ended(a, false));
+    }
 }

@@ -185,6 +185,11 @@ fn parse(args: &[String], cwd: &Path) -> Result<Command, String> {
             args,
         }))
     };
+    // Help before a subcommand's arguments: `new --help` started a session
+    // with `--help` as its prompt.
+    if rest.first().is_some_and(|a| a == "-h" || a == "--help") {
+        return Ok(Command::Help);
+    }
     match sub.as_str() {
         "help" | "-h" | "--help" => Ok(Command::Help),
         "serve" => {
@@ -258,6 +263,9 @@ fn parse(args: &[String], cwd: &Path) -> Result<Command, String> {
                 if rest.len() == before {
                     break;
                 }
+            }
+            if rest.first().is_some_and(|a| a == "-h" || a == "--help") {
+                return Ok(Command::Help);
             }
             let prompt = rest.join(" ");
             if prompt.trim().is_empty() {
@@ -620,6 +628,12 @@ mod tests {
         let cwd = Path::new("/");
         assert_eq!(parse(&[], cwd), Ok(Command::Help));
         assert_eq!(parse(&args(&["--help"]), cwd), Ok(Command::Help));
+        assert_eq!(parse(&args(&["new", "--help"]), cwd), Ok(Command::Help));
+        assert_eq!(
+            parse(&args(&["new", "--model", "m", "-h", "go"]), cwd),
+            Ok(Command::Help)
+        );
+        assert_eq!(parse(&args(&["stop", "-h"]), cwd), Ok(Command::Help));
         assert_eq!(parse(&args(&["pair"]), cwd), Ok(Command::Pair));
         assert_eq!(parse(&args(&["ls"]), cwd), sent("ls", &[]));
         assert!(parse(&args(&["ls", "all"]), cwd).is_err());

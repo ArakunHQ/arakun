@@ -1,6 +1,7 @@
 //! Finding (and, for Claude and Codex, installing) the entry point of each agent:
 //! ACP adapters for Claude and Codex, Factory's native `stream-jsonrpc` for Droid
-//! unless `ARAKUN_DROID_ACP=1`, and OpenCode's own ACP server (`opencode acp`).
+//! unless `ARAKUN_DROID_ACP=1`, and the ACP servers OpenCode and Devin have
+//! themselves (`opencode acp`, `devin acp`).
 
 use std::ffi::OsString;
 use std::io::Write as _;
@@ -50,18 +51,10 @@ pub fn log_path(kind: AgentKind) -> PathBuf {
     agents_dir().join(format!("{}.log", kind.id()))
 }
 
-/// Opens the agent's log for appending, starting over once it passes 8 MB.
-pub fn open_log(kind: AgentKind) -> Option<std::fs::File> {
-    let path = log_path(kind);
-    std::fs::create_dir_all(path.parent()?).ok()?;
-    let too_big = std::fs::metadata(&path).is_ok_and(|m| m.len() > 8 << 20);
-    std::fs::OpenOptions::new()
-        .create(true)
-        .append(!too_big)
-        .write(true)
-        .truncate(too_big)
-        .open(&path)
-        .ok()
+/// Opens the agent's log for appending. It moves aside to `<agent>.old.log`
+/// once it passes 8 MB, checked as it is written.
+pub fn open_log(kind: AgentKind) -> Option<crate::rotate::Writer> {
+    crate::rotate::Writer::open(log_path(kind), 8 << 20).ok()
 }
 
 /// Apps started from a compositor keybinding often get a bare PATH without
@@ -109,8 +102,9 @@ fn is_executable(path: &Path) -> bool {
 /// The interactive sign-in for `kind`, to run in a terminal: Claude Code's
 /// `/login` (the user's `claude`, else the binary bundled with the adapter's
 /// SDK; both share `~/.claude`), plain `droid`, which asks to sign in,
-/// `opencode auth login`, which asks for a provider and its key, or
-/// `codex login`, which signs in with ChatGPT in the browser.
+/// `opencode auth login`, which asks for a provider and its key,
+/// `codex login`, which signs in with ChatGPT in the browser, or
+/// `devin auth login`, which signs in to Devin in the browser.
 pub fn login_command(kind: AgentKind) -> Option<Vec<String>> {
     match kind {
         AgentKind::Claude => {
@@ -133,11 +127,13 @@ pub fn login_command(kind: AgentKind) -> Option<Vec<String>> {
             let bin = codex_cli()?;
             Some(vec![bin.display().to_string(), "login".into()])
         }
+        AgentKind::Devin => Some(devin_auth_command(&devin_bin().ok()?, "login")),
     }
 }
 
 /// The interactive sign-out for `kind`, to run in a terminal: Claude's `/logout`,
-/// `opencode auth logout`, which asks which provider, or `codex logout`. Droid's
+/// `opencode auth logout`, which asks which provider, `codex logout` or
+/// `devin auth logout`. Droid's
 /// CLI is signed out from Factory's side.
 pub fn logout_command(kind: AgentKind) -> Option<Vec<String>> {
     match kind {
@@ -158,7 +154,12 @@ pub fn logout_command(kind: AgentKind) -> Option<Vec<String>> {
             let bin = codex_cli()?;
             Some(vec![bin.display().to_string(), "logout".into()])
         }
+        AgentKind::Devin => Some(devin_auth_command(&devin_bin().ok()?, "logout")),
     }
+}
+
+fn devin_auth_command(bin: &Path, action: &str) -> Vec<String> {
+    vec![bin.display().to_string(), "auth".into(), action.into()]
 }
 
 /// The user's `claude`, else the binary bundled with the adapter's SDK; both share `~/.claude`.
@@ -384,8 +385,20 @@ pub fn agent_hint(cwd: Option<&Path>) -> Option<String> {
         .filter(|_| !std::env::var_os("ARAKUN_MEMORY").is_some_and(|v| v == "off"))
         .map(|dir| format!("\n\n{}", crate::memory::prompt_for(dir)))
         .unwrap_or_default();
-    Some(format!("{HINT}{memory}"))
+    Some(format!("{}{memory}", base_hint()))
 }
+
+fn base_hint() -> String {
+    format!("{HINT}{LAB_HINT}{HINT_END}")
+}
+
+// `arakun lab` exists only in the coderlabs build. Told to an agent in a public
+// build, it would run an unknown command, which opens a second window.
+#[cfg(feature = "coderlabs")]
+const LAB_HINT: &str =
+    "- `arakun lab` shows the harness lab dashboard (Arakun Lab evals and experiments).\n";
+#[cfg(not(feature = "coderlabs"))]
+const LAB_HINT: &str = "";
 
 const HINT: &str = "You are running inside arakun, a desktop app where the user reads this conversation. \
          The `arakun` command on your PATH controls its window, acting on this project:\n\
@@ -414,14 +427,14 @@ const HINT: &str = "You are running inside arakun, a desktop app where the user 
          - `arakun rename <branch>` renames this environment's branch, before it is pushed, when the \
          work turns out to be something its name doesn't say.\n\
          - `arakun notify <message>` sends the user a desktop notification.\n\
-         - `arakun lab` shows the harness lab dashboard (Arakun Lab evals and experiments).\n\
          - `arakun agent new [--model <provider/model>] [--effort <level>] <prompt>` starts a background agent in this \
          project that the user can watch in the sidebar: OpenCode, or arakun's own Workers AI agent with \
          `--model workers-ai/@cf/deepseek-ai/deepseek-v4.1-flash-1017` or `--model workers-ai/@cf/zai-org/glm-5.3` \
          (an unknown `--model` or `--effort` prints the ones on offer); \
          `arakun agent wait <id>`, `arakun agent log <id>`, `arakun agent send <id> <text>`, \
-         `arakun agent stop <id>` and `arakun agent ls` follow it up.\n\
-         Use them when showing something helps the user; they are optional.";
+         `arakun agent stop <id>` and `arakun agent ls` follow it up.\n";
+
+const HINT_END: &str = "Use them when showing something helps the user; they are optional.";
 
 fn droid_hint_args(cwd: Option<&Path>) -> Vec<String> {
     agent_hint(cwd)
@@ -450,6 +463,48 @@ pub fn opencode_bin() -> Result<PathBuf> {
     which(&name).ok_or_else(|| {
         anyhow!("`{name}` was not found on PATH or in ~/.local/bin. Install OpenCode first (https://opencode.ai).")
     })
+}
+
+/// The user's `devin`. Arakun does not install it: Cognition's installer also
+/// sets up its updates. `ARAKUN_DEVIN_BIN` picks another binary.
+pub fn devin_bin() -> Result<PathBuf> {
+    let name = std::env::var("ARAKUN_DEVIN_BIN").unwrap_or_else(|_| "devin".into());
+    which(&name).ok_or_else(|| {
+        anyhow!(
+            "`{name}` was not found on PATH or in ~/.local/bin. Install the Devin CLI first (https://docs.devin.ai/work-with-devin/devin-cli)."
+        )
+    })
+}
+
+/// Whether `devin auth login` has signed in: its credentials file exists.
+/// Only checks that it is there; `devin_plan` is the one reader of the file.
+pub fn devin_signed_in() -> bool {
+    devin_credentials_path().is_file()
+}
+
+pub(crate) fn devin_credentials_path() -> PathBuf {
+    devin_credentials(std::env::var_os("XDG_DATA_HOME"), &home())
+}
+
+/// Where Devin keeps its sign-in: `$XDG_DATA_HOME/devin/credentials.toml`,
+/// else under `~/.local/share`. A relative `XDG_DATA_HOME` is ignored, as the
+/// XDG spec says.
+fn devin_credentials(xdg_data: Option<OsString>, home: &Path) -> PathBuf {
+    xdg_data
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .unwrap_or_else(|| home.join(".local").join("share"))
+        .join("devin")
+        .join("credentials.toml")
+}
+
+/// The variable with Devin's API key when the environment has one. Names it,
+/// never reads the key out.
+pub fn devin_env_key() -> Option<&'static str> {
+    const VAR: &str = "WINDSURF_API_KEY";
+    std::env::var_os(VAR)
+        .is_some_and(|v| !v.is_empty())
+        .then_some(VAR)
 }
 
 /// The providers OpenCode keeps credentials for (`opencode auth login`), by
@@ -689,7 +744,9 @@ pub fn adapter_install(kind: AgentKind) -> Option<AdapterInstall> {
             CODEX_ACP_PACKAGE,
             codex_dir(),
         ),
-        AgentKind::Droid | AgentKind::OpenCode | AgentKind::WorkersAi => return None,
+        AgentKind::Droid | AgentKind::OpenCode | AgentKind::Devin | AgentKind::WorkersAi => {
+            return None;
+        }
     };
     if names_program(std::env::var(var).ok().as_deref()) || is_executable(&bin) {
         return None;
@@ -700,8 +757,8 @@ pub fn adapter_install(kind: AgentKind) -> Option<AdapterInstall> {
 /// Resolves how to start `kind` in ACP mode. Blocking: with `install`, a missing
 /// Claude or Codex adapter is installed with npm into [`agents_dir`]; without it,
 /// the error is an [`AdapterInstall`] that says what would be. `progress` gets a
-/// short status line. `ARAKUN_DROID`, `ARAKUN_CLAUDE_ACP`, `ARAKUN_OPENCODE_ACP`
-/// and `ARAKUN_CODEX_ACP` replace the command.
+/// short status line. `ARAKUN_DROID`, `ARAKUN_CLAUDE_ACP`, `ARAKUN_OPENCODE_ACP`,
+/// `ARAKUN_CODEX_ACP` and `ARAKUN_DEVIN_ACP` replace the command.
 pub fn resolve(
     kind: AgentKind,
     cwd: Option<&Path>,
@@ -825,6 +882,16 @@ pub fn resolve(
             }
             spec
         }
+        // Devin takes no system prompt over ACP or its command line, so it gets
+        // no arakun hint; it reads the project's AGENTS.md itself.
+        AgentKind::Devin => match from_override("ARAKUN_DEVIN_ACP") {
+            Some(spec) => spec?,
+            None => LaunchSpec {
+                program: devin_bin()?,
+                args: vec!["acp".into()],
+                env: Vec::new(),
+            },
+        },
         // Nothing to start: it runs in arakun (`Connection::in_process`).
         AgentKind::WorkersAi => LaunchSpec {
             program: PathBuf::from("arakun"),
@@ -1038,7 +1105,12 @@ mod tests {
 
     #[test]
     fn only_the_npm_adapters_are_installed() {
-        for kind in [AgentKind::Droid, AgentKind::OpenCode, AgentKind::WorkersAi] {
+        for kind in [
+            AgentKind::Droid,
+            AgentKind::OpenCode,
+            AgentKind::Devin,
+            AgentKind::WorkersAi,
+        ] {
             assert_eq!(adapter_install(kind), None);
         }
     }
@@ -1060,6 +1132,13 @@ mod tests {
             Some("API key")
         );
         assert_eq!(label(serde_json::json!({"OPENAI_API_KEY": null})), None);
+    }
+
+    #[test]
+    fn the_hint_names_lab_only_in_a_build_that_has_it() {
+        let hint = base_hint();
+        assert_eq!(hint.contains("`arakun lab`"), cfg!(feature = "coderlabs"));
+        assert!(hint.ends_with("they are optional."));
     }
 
     #[test]
@@ -1118,6 +1197,38 @@ mod tests {
                 "cloudflare-workers-ai/@cf/deepseek-ai/deepseek-v4.1-flash-1017",
                 "cloudflare-workers-ai/@cf/zai-org/glm-5.3",
             ]
+        );
+    }
+
+    // Windows has no absolute path without a drive letter.
+    #[cfg(not(windows))]
+    #[test]
+    fn devin_credentials_follow_xdg_data_home() {
+        let home = Path::new("/home/u");
+        assert_eq!(
+            devin_credentials(None, home),
+            Path::new("/home/u/.local/share/devin/credentials.toml")
+        );
+        assert_eq!(
+            devin_credentials(Some("/data".into()), home),
+            Path::new("/data/devin/credentials.toml")
+        );
+        assert_eq!(
+            devin_credentials(Some("relative".into()), home),
+            Path::new("/home/u/.local/share/devin/credentials.toml")
+        );
+    }
+
+    #[test]
+    fn devin_signs_in_and_out_with_its_auth_command() {
+        let bin = Path::new("/home/u/.local/bin/devin");
+        assert_eq!(
+            devin_auth_command(bin, "login"),
+            ["/home/u/.local/bin/devin", "auth", "login"]
+        );
+        assert_eq!(
+            devin_auth_command(bin, "logout"),
+            ["/home/u/.local/bin/devin", "auth", "logout"]
         );
     }
 }

@@ -302,6 +302,24 @@ impl TextField {
     }
 }
 
+/// The selection after an input method puts `text` at byte `start`. The input method
+/// counts `selected` in UTF-16 units from the start of `text`, not of the whole field.
+// The examples build this file without the app's `draft` module, so it keeps its own copy.
+fn composed_selection(start: usize, text: &str, selected: Option<Range<usize>>) -> Range<usize> {
+    let byte = |ix: usize| {
+        let mut units = 0;
+        for (i, c) in text.char_indices() {
+            if units >= ix {
+                return i;
+            }
+            units += c.len_utf16();
+        }
+        text.len()
+    };
+    let end = start + text.len();
+    selected.map_or(end..end, |r| start + byte(r.start)..start + byte(r.end))
+}
+
 impl EntityInputHandler for TextField {
     fn text_for_range(
         &mut self,
@@ -364,10 +382,7 @@ impl EntityInputHandler for TextField {
         self.content.replace_range(range.clone(), text);
         self.edited = true;
         self.marked = (!text.is_empty()).then(|| range.start..range.start + text.len());
-        self.selected = new_selected
-            .map(|r| self.range_from_utf16(&r))
-            .map(|r| range.start + r.start..range.start + r.end)
-            .unwrap_or(range.start + text.len()..range.start + text.len());
+        self.selected = composed_selection(range.start, text, new_selected);
         cx.notify();
     }
 
@@ -615,5 +630,25 @@ impl Element for TextLine {
             field.last_bounds = Some(bounds);
             field.scroll_x = scroll_x;
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::composed_selection;
+
+    #[test]
+    fn composed_selection_counts_from_the_composed_text() {
+        let before = "ñandú 日本語 ";
+        let field = format!("{before}にほ");
+        let at = |sel| composed_selection(before.len(), "にほ", sel);
+        assert_eq!(at(Some(2..2)), field.len()..field.len());
+        assert_eq!(at(Some(1..2)), before.len() + 3..field.len());
+        assert_eq!(at(None), field.len()..field.len());
+        // A surrogate pair is two UTF-16 units but one char.
+        let field = format!("{before}😀a");
+        let sel = composed_selection(before.len(), "😀a", Some(2..2));
+        assert_eq!(sel, before.len() + 4..before.len() + 4);
+        assert!(field.is_char_boundary(sel.start));
     }
 }

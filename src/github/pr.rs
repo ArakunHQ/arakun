@@ -5,9 +5,7 @@
 //! on disk: nothing reaches GitHub until the user posts it.
 
 use std::collections::HashMap;
-use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 use std::sync::OnceLock;
 
 use serde::de::DeserializeOwned;
@@ -315,6 +313,8 @@ pub struct InlineComment {
     pub in_reply_to_id: Option<u64>,
     pub diff_hunk: String,
     pub html_url: String,
+    /// `LEFT` when it is on a line the change removed, else `RIGHT`.
+    pub side: String,
     /// The node id of the review it was sent with (`Review::id`). None when
     /// GitHub didn't say (see `fetch_pull`).
     #[serde(skip)]
@@ -325,6 +325,9 @@ pub struct InlineComment {
     /// Whether the code under its thread changed since.
     #[serde(skip)]
     pub outdated: Option<bool>,
+    /// The node id of its thread. None when GitHub didn't say.
+    #[serde(skip)]
+    pub thread: Option<String>,
 }
 
 impl InlineComment {
@@ -441,9 +444,12 @@ const ISSUE_FIELDS: &str =
     "number,title,body,state,author,labels,assignees,comments,createdAt,updatedAt,closedAt,url";
 
 /// Resolution and review of each inline comment: REST doesn't give them.
-const THREADS_QUERY: &str = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){\
-pullRequest(number:$number){reviewThreads(first:100){nodes{isResolved isOutdated \
-comments(first:100){nodes{databaseId pullRequestReview{id}}}}}}}}";
+const THREADS_QUERY: &str = "query($owner:String!,$name:String!,$number:Int!,$after:String){repository(owner:$owner,name:$name){\
+pullRequest(number:$number){reviewThreads(first:100,after:$after){pageInfo{hasNextPage endCursor} \
+nodes{id isResolved isOutdated comments(first:100){nodes{databaseId pullRequestReview{id}}}}}}}}";
+
+/// Pages of 100 threads read for one pull request, at most: 2,000 threads.
+const THREADS_PAGES: usize = 20;
 
 /// Drops every `null`, so a field GitHub left empty reads as its default
 /// instead of failing the whole answer (a deleted author is `null`).
@@ -490,6 +496,8 @@ struct ThreadState {
     resolved: bool,
     outdated: bool,
     review: Option<String>,
+    /// The thread's node id: what resolving it needs.
+    thread: Option<String>,
 }
 
 /// Comment id → the state of its thread, from the answer to `THREADS_QUERY`.
@@ -500,6 +508,7 @@ fn thread_states(answer: &Value) -> HashMap<u64, ThreadState> {
         .and_then(Value::as_array);
     for thread in threads.into_iter().flatten() {
         let flag = |key: &str| thread.get(key).and_then(Value::as_bool).unwrap_or(false);
+        let node = thread.get("id").and_then(Value::as_str);
         let comments = thread.pointer("/comments/nodes").and_then(Value::as_array);
         for comment in comments.into_iter().flatten() {
             let Some(id) = comment.get("databaseId").and_then(Value::as_u64) else {
@@ -515,11 +524,21 @@ fn thread_states(answer: &Value) -> HashMap<u64, ThreadState> {
                     resolved: flag("isResolved"),
                     outdated: flag("isOutdated"),
                     review,
+                    thread: node.map(str::to_string),
                 },
             );
         }
     }
     states
+}
+
+/// Where the next page of threads starts, when the answer says there is one.
+fn threads_next_page(answer: &Value) -> Option<String> {
+    let page = answer.pointer("/data/repository/pullRequest/reviewThreads/pageInfo")?;
+    page.get("hasNextPage")?
+        .as_bool()?
+        .then(|| page.get("endCursor")?.as_str().map(str::to_string))
+        .flatten()
 }
 
 fn fetch_inline(item: &ItemRef) -> Result<Vec<InlineComment>, Problem> {
@@ -532,21 +551,44 @@ fn fetch_inline(item: &ItemRef) -> Result<Vec<InlineComment>, Problem> {
 
 fn fetch_thread_states(item: &ItemRef) -> Result<HashMap<u64, ThreadState>, Problem> {
     let (owner, name) = item.repo.split_once('/').unwrap_or((&item.repo, ""));
-    let out = super::gh_out(&[
-        "api",
-        "graphql",
-        "-f",
-        &format!("query={THREADS_QUERY}"),
-        "-f",
-        &format!("owner={owner}"),
-        "-f",
-        &format!("name={name}"),
-        "-F",
-        &format!("number={}", item.number),
-    ])?;
-    Ok(thread_states(
-        &serde_json::from_slice(&out).map_err(unexpected)?,
-    ))
+    let mut states = HashMap::new();
+    let mut after: Option<String> = None;
+    // GitHub gives 100 threads a page; a thread past the first page would
+    // have no state, and so no Resolve.
+    for _ in 0..THREADS_PAGES {
+        let mut args = strings(&[
+            "api",
+            "graphql",
+            "-f",
+            &format!("query={THREADS_QUERY}"),
+            "-f",
+            &format!("owner={owner}"),
+            "-f",
+            &format!("name={name}"),
+            "-F",
+            &format!("number={}", item.number),
+        ]);
+        if let Some(cursor) = &after {
+            args.extend(["-f".to_string(), format!("after={cursor}")]);
+        }
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let answer: Value = serde_json::from_slice(&super::gh_out(&args)?).map_err(unexpected)?;
+        states.extend(thread_states(&answer));
+        after = threads_next_page(&answer);
+        if after.is_none() {
+            break;
+        }
+    }
+    if after.is_some() {
+        // The threads past the limit show without Resolve; say why.
+        eprintln!(
+            "arakun: {}#{} has more than {} review threads; the rest were not read",
+            item.repo,
+            item.number,
+            THREADS_PAGES * 100
+        );
+    }
+    Ok(states)
 }
 
 /// One page of review threads, with where the next page starts.
@@ -689,6 +731,7 @@ pub fn fetch_pull(item: &ItemRef) -> Result<Pull, Problem> {
                 comment.resolved = Some(state.resolved);
                 comment.outdated = Some(state.outdated);
                 comment.review = state.review.clone();
+                comment.thread = state.thread.clone();
             }
         }
     }
@@ -919,6 +962,70 @@ pub struct CheckRun {
     pub workflow: String,
     pub state: CheckState,
     pub url: String,
+    /// The GitHub Actions job behind it, when its address names one: what
+    /// a re-run and the failing log need.
+    pub actions: Option<ActionsJob>,
+}
+
+/// The run (and the job in it) a check's address points at:
+/// `https://github.com/o/r/actions/runs/<run>/job/<job>`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ActionsJob {
+    /// Lower case. A check's address may be on any site, so the job only
+    /// counts on the host `gh` talks to.
+    pub host: String,
+    pub repo: String,
+    pub run: u64,
+    pub job: Option<u64>,
+}
+
+impl ActionsJob {
+    pub fn from_url(url: &str) -> Option<Self> {
+        let rest = url.split_once("://")?.1;
+        let (before, after) = rest.split_once("/actions/runs/")?;
+        // `host/owner/repo`: the last two parts name the repository.
+        let mut parts = before.rsplitn(3, '/');
+        let (name, owner) = (parts.next()?, parts.next()?);
+        let host = parts.next()?.to_ascii_lowercase();
+        if host.is_empty() || host.contains('/') {
+            return None;
+        }
+        let repo = format!("{owner}/{name}");
+        if !valid_repo(&repo) {
+            return None;
+        }
+        let number = |text: &str| -> Option<u64> {
+            let end = text
+                .find(|c: char| !c.is_ascii_digit())
+                .unwrap_or(text.len());
+            text[..end].parse().ok()
+        };
+        Some(ActionsJob {
+            host,
+            repo,
+            run: number(after)?,
+            job: after.split_once("/job/").and_then(|(_, j)| number(j)),
+        })
+    }
+
+    /// Whether the job ran in `repo` on `host`, the host `gh` talks to
+    /// (`gh_host`): only those are read or run again. The same ids on
+    /// another host name another repository's job and run.
+    pub fn in_repo(&self, repo: &str, host: &str) -> bool {
+        let host = host.to_ascii_lowercase();
+        (self.host == host || self.host.strip_prefix("www.") == Some(host.as_str()))
+            && self.repo.eq_ignore_ascii_case(repo)
+    }
+}
+
+impl CheckRun {
+    /// The Actions job of `repo` on `host` whose log says why this check failed.
+    pub fn failed_job(&self, repo: &str, host: &str) -> Option<u64> {
+        if self.state != CheckState::Failed {
+            return None;
+        }
+        self.actions.as_ref().filter(|a| a.in_repo(repo, host))?.job
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -973,6 +1080,7 @@ impl Check {
                 workflow: String::new(),
                 state,
                 url: self.target_url.clone(),
+                actions: None,
             };
         }
         let state = if self.status != "COMPLETED" {
@@ -989,6 +1097,7 @@ impl Check {
             workflow: self.workflow_name.clone(),
             state,
             url: self.details_url.clone(),
+            actions: ActionsJob::from_url(&self.details_url),
         }
     }
 
@@ -1027,6 +1136,179 @@ pub fn checks_summary(pull: &Pull) -> ChecksSummary {
         }
     }
     sum
+}
+
+/// The Actions runs of `repo` on `host` that "Re-run failed" starts again:
+/// those with a failed check and none still running (GitHub refuses a run in
+/// progress).
+pub fn rerunnable(sum: &ChecksSummary, repo: &str, host: &str) -> Vec<u64> {
+    let of = |state: CheckState| {
+        sum.checks
+            .iter()
+            .filter(move |c| c.state == state)
+            .filter_map(|c| c.actions.as_ref())
+            .filter(|a| a.in_repo(repo, host))
+            .map(|a| a.run)
+    };
+    let running: Vec<u64> = of(CheckState::Running).collect();
+    let mut runs: Vec<u64> = Vec::new();
+    for run in of(CheckState::Failed) {
+        if !running.contains(&run) && !runs.contains(&run) {
+            runs.push(run);
+        }
+    }
+    runs
+}
+
+/// How long reading a job's log or starting a run again may take. A `gh`
+/// that hangs would keep the log on "Loading", or every other write waiting.
+const CHECK_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// [`gh_run`], killing `gh` after `timeout`.
+fn gh_run_within(cmd: &Cmd, timeout: std::time::Duration) -> Result<Vec<u8>, Problem> {
+    let mut gh = git::gh(&std::env::temp_dir());
+    gh.args(&cmd.args);
+    let input = cmd.stdin.as_ref().map(|t| t.as_bytes());
+    let out = crate::headless::sandbox::run_with_timeout(gh, input, timeout)
+        .map_err(|e| Problem::Other(format!("could not run gh: {e}")))?;
+    if !out.status.success() {
+        return Err(super::problem(&String::from_utf8_lossy(&out.stderr)));
+    }
+    Ok(out.stdout)
+}
+
+/// Log lines kept of a failing job: the end is where it failed.
+const CHECK_LOG_LINES: usize = 60;
+
+/// The end of the failing step's log of one job, as the Runs tab shows it.
+pub fn check_log(item: &ItemRef, job: u64) -> Result<Vec<crate::ci::LogLine>, Problem> {
+    if !valid_repo(&item.repo) {
+        return Err(invalid("Not a repository name."));
+    }
+    let path = format!("repos/{}/actions/jobs/{job}/logs", item.repo);
+    let out = super::gh_out_within(&["api", "--allow-escape-sequences", &path], CHECK_WAIT)?;
+    let lines = crate::ci::parse_log(&String::from_utf8_lossy(&out));
+    let mut end = crate::ci::failure_excerpt(&lines);
+    if end.len() > CHECK_LOG_LINES {
+        end.drain(..end.len() - CHECK_LOG_LINES);
+    }
+    Ok(end)
+}
+
+fn rerun_cmd(item: &ItemRef, run: u64) -> Result<Cmd, Problem> {
+    pulls_only(item)?;
+    if !valid_repo(&item.repo) {
+        return Err(invalid("Not a repository name."));
+    }
+    Ok(Cmd {
+        args: strings(&[
+            "run",
+            "rerun",
+            &run.to_string(),
+            "--failed",
+            "-R",
+            &item.repo,
+        ]),
+        stdin: None,
+    })
+}
+
+/// Starts the failed jobs of each of `runs` again (`rerunnable`).
+pub fn rerun_failed(item: &ItemRef, runs: &[u64]) -> Result<(), Problem> {
+    if runs.is_empty() {
+        return Err(invalid("No failed run to start again."));
+    }
+    rerun_each(runs, |run| {
+        act_with(super::read_only(), rerun_cmd(item, run), |cmd| {
+            gh_run_within(cmd, CHECK_WAIT)
+        })
+        .map(|_| ())
+    })
+}
+
+/// Tries every run, also after one fails: the runs don't depend on each
+/// other. When none starts, the first problem is the answer (no `gh`, signed
+/// out); when some do, the answer says which started and which didn't.
+fn rerun_each(
+    runs: &[u64],
+    mut start: impl FnMut(u64) -> Result<(), Problem>,
+) -> Result<(), Problem> {
+    let mut started: Vec<String> = Vec::new();
+    let mut failed: Vec<(u64, Problem)> = Vec::new();
+    for run in runs {
+        match start(*run) {
+            Ok(()) => started.push(run.to_string()),
+            Err(problem) => failed.push((*run, problem)),
+        }
+    }
+    if failed.is_empty() {
+        return Ok(());
+    }
+    if started.is_empty() {
+        return Err(failed.remove(0).1);
+    }
+    let failed: Vec<String> = failed
+        .iter()
+        .map(|(run, problem)| format!("run {run} ({})", problem.text()))
+        .collect();
+    Err(Problem::Other(format!(
+        "Started run {} again, but not {}.",
+        started.join(", "),
+        failed.join(", ")
+    )))
+}
+
+/// The prompt that hands a pull request's failed checks to an agent.
+/// `failed` are the checks with the end of their log, when it was read.
+pub fn fix_checks_prompt(
+    item: &ItemRef,
+    title: &str,
+    pull: &Pull,
+    failed: &[(&CheckRun, Option<&[crate::ci::LogLine]>)],
+) -> String {
+    let url = item.url();
+    let mut p = format!(
+        "The checks of the pull request \"{title}\" ({label}) failed on branch `{branch}` at {sha}.\nURL: {url}\n\nFailed checks:\n",
+        label = item.label(),
+        branch = pull.head_ref_name,
+        sha = short_sha(&pull.head_ref_oid),
+    );
+    for (c, _) in failed {
+        let name = if c.workflow.is_empty() {
+            c.name.clone()
+        } else {
+            format!("{} ({})", c.name, c.workflow)
+        };
+        if c.url.is_empty() {
+            p.push_str(&format!("- {name}\n"));
+        } else {
+            p.push_str(&format!("- {name}: {}\n", c.url));
+        }
+    }
+    for (c, log) in failed {
+        let Some(log) = log.filter(|l| !l.is_empty()) else {
+            continue;
+        };
+        p.push_str(&format!(
+            "\nEnd of the failing step's log of {}:\n```\n",
+            c.name
+        ));
+        for l in log {
+            p.push_str(&l.text);
+            p.push('\n');
+        }
+        p.push_str("```\n");
+    }
+    p.push_str(&format!(
+        "\nRead the rest with `gh` (`gh pr checks {url}`, `gh run view --job <job id> --log-failed -R {repo}`; \
+the job id ends each check's address). This checkout may be another repository or another branch: check with \
+`git remote -v` and `git branch --show-current`, and if it isn't `{branch}` of {repo}, say so and stop.\n\n\
+Find the cause and fix it in this checkout. Run the same command locally to confirm it passes, then summarize \
+what changed. Don't push.",
+        repo = item.repo,
+        branch = pull.head_ref_name,
+    ));
+    p
 }
 
 // ---------------------------------------------------------------------------
@@ -1354,12 +1636,16 @@ pub struct Thread {
     pub diff_hunk: String,
     pub resolved: Option<bool>,
     pub outdated: Option<bool>,
+    /// The line of today's diff it is on, and whether that is the removed
+    /// side; None once the code under it changed.
+    pub place: Option<(u32, bool)>,
+    /// The thread's node id: what resolving it needs.
+    pub node: Option<String>,
     pub comments: Vec<InlineComment>,
 }
 
 impl Thread {
     /// The id to answer the thread with (`reply`).
-    #[allow(dead_code)] // Not offered in the view yet.
     pub fn id(&self) -> u64 {
         self.comments.first().map_or(0, |c| c.id)
     }
@@ -1383,6 +1669,8 @@ pub fn threads(inline: &[InlineComment]) -> Vec<Thread> {
                     diff_hunk: comment.diff_hunk.clone(),
                     resolved: comment.resolved,
                     outdated: comment.outdated,
+                    place: comment.line.map(|l| (l, comment.side == "LEFT")),
+                    node: comment.thread.clone(),
                     comments: Vec::new(),
                 });
                 threads.len() - 1
@@ -1992,7 +2280,6 @@ fn review_at_cmd(item: &ItemRef, verdict: Verdict, body: &str, sha: &str) -> Res
     Ok(Cmd { args, stdin })
 }
 
-#[allow(dead_code)] // Not offered in the view yet.
 fn reply_cmd(item: &ItemRef, comment_id: u64, body: &str) -> Result<Cmd, Problem> {
     pulls_only(item)?;
     let stdin = with_body(body)?;
@@ -2013,6 +2300,92 @@ fn reply_cmd(item: &ItemRef, comment_id: u64, body: &str) -> Result<Cmd, Problem
             ".html_url",
         ]),
         stdin,
+    })
+}
+
+const UNRESOLVE_THREAD: &str =
+    "mutation($id:ID!){unresolveReviewThread(input:{threadId:$id}){thread{id}}}";
+
+/// Marks the thread `node` (`Thread::node`) resolved, or open again.
+fn thread_cmd(node: &str, resolve: bool) -> Result<Cmd, Problem> {
+    // A node id is base64 and `_`: nothing else goes into the call.
+    let ok = !node.is_empty()
+        && node
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '=' | '+' | '/'));
+    if !ok {
+        return Err(invalid(
+            "GitHub didn't say which thread this is; reload the pull request.",
+        ));
+    }
+    let query = if resolve {
+        RESOLVE_THREAD
+    } else {
+        UNRESOLVE_THREAD
+    };
+    Ok(Cmd {
+        args: strings(&[
+            "api",
+            "graphql",
+            "-f",
+            &format!("query={query}"),
+            "-f",
+            &format!("id={node}"),
+        ]),
+        stdin: None,
+    })
+}
+
+/// A comment on one line of the diff, not sent yet.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LineComment {
+    pub path: String,
+    pub line: u32,
+    /// On a line the change removed (GitHub's `LEFT` side).
+    pub left: bool,
+    pub body: String,
+}
+
+/// One review of commit `sha` that carries `comments`, each on its line.
+/// The body is JSON on stdin: the comments are a list, which `-f` can't say.
+fn line_review_cmd(item: &ItemRef, sha: &str, comments: &[LineComment]) -> Result<Cmd, Problem> {
+    pulls_only(item)?;
+    if !valid_repo(&item.repo) {
+        return Err(invalid("Not a repository name."));
+    }
+    if !is_sha(sha) {
+        return Err(invalid(
+            "Arakun doesn't know which commit these lines are of; reload the diff.",
+        ));
+    }
+    if comments.is_empty() || comments.iter().any(|c| c.body.trim().is_empty()) {
+        return Err(invalid("Write something first."));
+    }
+    let list: Vec<Value> = comments
+        .iter()
+        .map(|c| {
+            serde_json::json!({
+                "path": c.path,
+                "line": c.line,
+                "side": if c.left { "LEFT" } else { "RIGHT" },
+                "body": c.body,
+            })
+        })
+        .collect();
+    let body = serde_json::json!({"event": "COMMENT", "commit_id": sha, "comments": list});
+    let path = format!("repos/{}/pulls/{}/reviews", item.repo, item.number);
+    Ok(Cmd {
+        args: strings(&[
+            "api",
+            "-X",
+            "POST",
+            &path,
+            "--input",
+            "-",
+            "--jq",
+            ".html_url",
+        ]),
+        stdin: Some(body.to_string()),
     })
 }
 
@@ -2105,28 +2478,16 @@ fn state_cmd(item: &ItemRef, verb: &str) -> Cmd {
 
 fn gh_run(cmd: &Cmd) -> Result<Vec<u8>, Problem> {
     let mut gh = git::gh(&std::env::temp_dir());
-    gh.args(&cmd.args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    gh.stdin(if cmd.stdin.is_some() {
-        Stdio::piped()
-    } else {
-        Stdio::null()
-    });
-    let mut child = gh.spawn().map_err(|e| {
-        if e.kind() == std::io::ErrorKind::NotFound {
-            Problem::NoGh
-        } else {
-            Problem::Other(format!("could not run gh: {e}"))
-        }
-    })?;
-    if let (Some(text), Some(mut pipe)) = (&cmd.stdin, child.stdin.take()) {
-        // gh may give up before it reads everything; what it wrote says why.
-        let _ = pipe.write_all(text.as_bytes());
-    }
-    let out = child
-        .wait_with_output()
-        .map_err(|e| Problem::Other(format!("could not run gh: {e}")))?;
+    gh.args(&cmd.args);
+    // gh may give up before it reads all of stdin; what it wrote says why.
+    let input = cmd.stdin.as_deref().map(str::as_bytes);
+    let out = crate::platform::output_within(&mut gh, input, crate::platform::GIT_REMOTE).map_err(
+        |e| match e.kind() {
+            std::io::ErrorKind::NotFound => Problem::NoGh,
+            std::io::ErrorKind::TimedOut => Problem::Other(e.to_string()),
+            _ => Problem::Other(format!("could not run gh: {e}")),
+        },
+    )?;
     if !out.status.success() {
         return Err(super::problem(&String::from_utf8_lossy(&out.stderr)));
     }
@@ -2167,9 +2528,18 @@ pub fn review_at(item: &ItemRef, verdict: Verdict, body: &str, sha: &str) -> Res
 }
 
 /// Answers a thread on the diff (`Thread::id`); returns the answer's address.
-#[allow(dead_code)] // Not offered in the view yet.
 pub fn reply(item: &ItemRef, comment_id: u64, body: &str) -> Result<String, Problem> {
     act(reply_cmd(item, comment_id, body))
+}
+
+/// Resolves a thread on the diff, or opens it again.
+pub fn set_thread_resolved(node: &str, resolve: bool) -> Result<(), Problem> {
+    act(thread_cmd(node, resolve)).map(|_| ())
+}
+
+/// Sends the comments written on lines of commit `sha` as one review.
+pub fn review_lines(item: &ItemRef, sha: &str, comments: &[LineComment]) -> Result<(), Problem> {
+    act(line_review_cmd(item, sha, comments)).map(|_| ())
 }
 
 /// Merges only if the head is still `head`, the commit the user saw.
@@ -2189,7 +2559,6 @@ pub fn close(item: &ItemRef) -> Result<(), Problem> {
     act(Ok(state_cmd(item, "close"))).map(|_| ())
 }
 
-#[allow(dead_code)] // Not offered in the view yet.
 pub fn reopen(item: &ItemRef) -> Result<(), Problem> {
     act(Ok(state_cmd(item, "reopen"))).map(|_| ())
 }
@@ -2406,6 +2775,21 @@ Then save the review as a draft, its text on stdin:\n\n\
 arakun github draft {label} --verdict <approve|request-changes|comment> --head <that commit> --body-file - --agent <your name> <<'EOF'\n<the review>\nEOF\n\n\
 I read the draft in Arakun and post, edit or discard it myself. Never post a comment or a review, approve, \
 request changes, merge or close anything on GitHub yourself.",
+        label = item.label(),
+    )
+}
+
+/// The prompt behind "Work on it": an agent does what an issue asks, in the
+/// checkout, and leaves git and GitHub to the user.
+pub fn issue_prompt(item: &ItemRef, title: &str) -> String {
+    let (url, repo) = (item.url(), &item.repo);
+    format!(
+        "Work on the issue \"{title}\" ({label}).\nURL: {url}\n\n\
+Read it with `gh issue view {url} --comments`. Use the URL: this checkout may be another repository. Check with \
+`git remote -v`, and if it isn't {repo}, say so and stop.\n\n\
+Find what it asks for in the code and make the change in this checkout. Run the tests that cover it, or say why \
+you could not. Then tell me what you changed and what is left.\n\n\
+Don't commit or push, and don't comment on the issue, close it or open a pull request: I do that myself.",
         label = item.label(),
     )
 }
@@ -3183,7 +3567,7 @@ mod tests {
     fn thread_states_come_from_the_graphql_answer() {
         let answer: Value = serde_json::from_str(
             r#"{"data": {"repository": {"pullRequest": {"reviewThreads": {"nodes": [
-              {"isResolved": true, "isOutdated": false, "comments": {"nodes": [
+              {"id": "PRRT_1", "isResolved": true, "isOutdated": false, "comments": {"nodes": [
                 {"databaseId": 101, "pullRequestReview": {"id": "PRR_1"}}, {"databaseId": 102, "pullRequestReview": null}]}},
               {"isResolved": false, "isOutdated": true, "comments": {"nodes": [{"databaseId": 103, "pullRequestReview": {"id": "PRR_3"}}, {}]}}
             ]}}}}}"#,
@@ -3207,7 +3591,18 @@ mod tests {
             (states[&103].resolved, states[&103].outdated),
             (false, true)
         );
+        // Every comment of a thread names it; a thread without an id names none.
+        assert_eq!(states[&102].thread.as_deref(), Some("PRRT_1"));
+        assert_eq!(states[&103].thread, None);
         assert!(thread_states(&serde_json::json!({"errors": [{"message": "nope"}]})).is_empty());
+        // The 101st thread is on a second page.
+        let page = |more: bool| {
+            serde_json::json!({"data": {"repository": {"pullRequest": {"reviewThreads": {
+                "pageInfo": {"hasNextPage": more, "endCursor": "abc"}, "nodes": []}}}}})
+        };
+        assert_eq!(threads_next_page(&page(true)).as_deref(), Some("abc"));
+        assert_eq!(threads_next_page(&page(false)), None);
+        assert_eq!(threads_next_page(&answer), None);
     }
 
     #[test]
@@ -3342,6 +3737,164 @@ mod tests {
             CheckState::Running
         );
         assert_eq!(checks_summary(&Pull::default()), ChecksSummary::default());
+    }
+
+    #[test]
+    fn a_run_that_fails_does_not_stop_the_runs_after_it() {
+        let mut tried = Vec::new();
+        let result = rerun_each(&[7, 8, 9], |run| {
+            tried.push(run);
+            if run == 8 {
+                Err(Problem::Other("it is still running".into()))
+            } else {
+                Ok(())
+            }
+        });
+        assert_eq!(tried, [7, 8, 9]);
+        let Err(Problem::Other(text)) = result else {
+            panic!("the failure of run 8 is reported");
+        };
+        assert_eq!(
+            text,
+            "Started run 7, 9 again, but not run 8 (it is still running)."
+        );
+        // Nothing started: the problem itself, such as a missing gh.
+        assert!(matches!(
+            rerun_each(&[7, 8], |_| Err(Problem::NoGh)),
+            Err(Problem::NoGh)
+        ));
+        assert!(rerun_each(&[7, 8], |_| Ok(())).is_ok());
+    }
+
+    #[test]
+    fn a_check_names_its_actions_job() {
+        let a = ActionsJob::from_url(
+            "https://github.com/ArakunHQ/arakun/actions/runs/12/job/34?pr=41#step:3:1",
+        )
+        .unwrap();
+        assert_eq!(
+            (a.repo.as_str(), a.run, a.job),
+            ("ArakunHQ/arakun", 12, Some(34))
+        );
+        assert!(a.in_repo("arakunhq/ARAKUN", "GitHub.com"));
+        assert!(!a.in_repo("ArakunHQ/other", "github.com"));
+        // The same repository name and ids on another host are another job.
+        assert!(!a.in_repo("ArakunHQ/arakun", "ghe.example"));
+        // A run's own page names no job; another host still names its repository.
+        let run = ActionsJob::from_url("https://ghe.example/o/r/actions/runs/7").unwrap();
+        assert_eq!((run.repo.as_str(), run.run, run.job), ("o/r", 7, None));
+        // Enterprise stays valid when it is the host gh talks to.
+        assert!(run.in_repo("o/r", "ghe.example"));
+        assert!(!run.in_repo("o/r", "github.com"));
+        for other in [
+            "https://x/5",
+            "https://cla.example/41",
+            "https://github.com/actions/runs/1",
+            "https://github.com/o/r/actions/runs/latest",
+            "github.com/o/r/actions/runs/1",
+            "",
+        ] {
+            assert_eq!(ActionsJob::from_url(other), None, "{other}");
+        }
+    }
+
+    #[test]
+    fn only_finished_failed_runs_start_again() {
+        let check = |name: &str, status: &str, conclusion: &str, url: &str| Check {
+            name: name.into(),
+            status: status.into(),
+            conclusion: conclusion.into(),
+            details_url: url.into(),
+            workflow_name: "CI".into(),
+            ..Default::default()
+        };
+        let here = "https://github.com/ArakunHQ/arakun/actions/runs";
+        let p = Pull {
+            head_ref_name: "pr/resize".into(),
+            head_ref_oid: SHA.into(),
+            status_check_rollup: vec![
+                check(
+                    "Clippy",
+                    "COMPLETED",
+                    "FAILURE",
+                    &format!("{here}/7/job/70"),
+                ),
+                check(
+                    "Tests",
+                    "COMPLETED",
+                    "CANCELLED",
+                    &format!("{here}/7/job/71"),
+                ),
+                check("Fmt", "COMPLETED", "SUCCESS", &format!("{here}/7/job/72")),
+                // Run 8 still works: GitHub would refuse to start it again.
+                check("Docs", "COMPLETED", "FAILURE", &format!("{here}/8/job/80")),
+                check("Site", "IN_PROGRESS", "", &format!("{here}/8/job/81")),
+                // Not this repository's run, and not an Actions job at all.
+                check(
+                    "Fork",
+                    "COMPLETED",
+                    "FAILURE",
+                    "https://github.com/else/where/actions/runs/9/job/90",
+                ),
+                check("Vendor", "COMPLETED", "FAILURE", "https://ci.example/1"),
+            ],
+            ..Default::default()
+        };
+        let sum = checks_summary(&p);
+        assert_eq!(rerunnable(&sum, "arakunhq/arakun", "github.com"), [7]);
+        assert!(rerunnable(&sum, "arakunhq/arakun", "ghe.example").is_empty());
+        let jobs: Vec<(u64, &str)> = sum
+            .checks
+            .iter()
+            .filter_map(|c| {
+                Some((
+                    c.failed_job("ArakunHQ/arakun", "github.com")?,
+                    c.name.as_str(),
+                ))
+            })
+            .collect();
+        // Not the job that passed, the one still running or the fork's.
+        assert_eq!(jobs, [(70, "Clippy"), (71, "Tests"), (80, "Docs")]);
+        // The fixture's only failure isn't an Actions job: nothing to start.
+        assert!(rerunnable(&checks_summary(&pull()), "ArakunHQ/arakun", "github.com").is_empty());
+
+        let pr = item(ItemKind::Pull);
+        assert_eq!(
+            rerun_cmd(&pr, 7).unwrap().args.join(" "),
+            "run rerun 7 --failed -R ArakunHQ/arakun"
+        );
+        assert!(rerun_cmd(&item(ItemKind::Issue), 7).is_err());
+        assert!(rerun_failed(&pr, &[]).is_err());
+
+        let log = [crate::ci::LogLine {
+            kind: crate::ci::LineKind::Error,
+            text: "error: unused variable `x`".into(),
+        }];
+        let failed: Vec<(&CheckRun, Option<&[crate::ci::LogLine]>)> = sum
+            .checks
+            .iter()
+            .filter(|c| c.state == CheckState::Failed)
+            .map(|c| (c, (c.name == "Clippy").then_some(&log[..])))
+            .collect();
+        let prompt = fix_checks_prompt(&pr, "Keep the tab name", &p, &failed);
+        assert!(
+            prompt.contains("failed on branch `pr/resize` at 0123456"),
+            "{prompt}"
+        );
+        assert!(
+            prompt.contains(&format!("- Clippy (CI): {here}/7/job/70")),
+            "{prompt}"
+        );
+        assert!(
+            prompt.contains("- Vendor (CI): https://ci.example/1"),
+            "{prompt}"
+        );
+        assert!(
+            prompt.contains("log of Clippy:\n```\nerror: unused variable `x`\n```"),
+            "{prompt}"
+        );
+        assert!(!prompt.contains("log of Tests"), "{prompt}");
+        assert!(prompt.ends_with("Don't push."), "{prompt}");
     }
 
     #[test]
@@ -3773,6 +4326,27 @@ mod tests {
             .collect();
         assert_eq!(ids, [vec![1, 2, 3, 4], vec![5], vec![6]]);
         assert_eq!(threads(&inline)[0].path, "f1");
+
+        // Where a thread sits in today's diff, and which thread it is.
+        let placed = InlineComment {
+            id: 7,
+            line: Some(12),
+            side: "LEFT".into(),
+            thread: Some("PRRT_7".into()),
+            ..Default::default()
+        };
+        let outdated = InlineComment {
+            id: 8,
+            original_line: Some(3),
+            ..Default::default()
+        };
+        let t = threads(&[placed, outdated]);
+        assert_eq!(
+            (t[0].place, t[0].node.as_deref()),
+            (Some((12, true)), Some("PRRT_7"))
+        );
+        // Once the code under it changed it has no line to show under.
+        assert_eq!((t[1].place, t[1].line), (None, Some(3)));
     }
 
     /// What `gh pr diff` prints for a pull request that touches a bit of
@@ -4182,6 +4756,50 @@ mod tests {
     }
 
     #[test]
+    fn threads_resolve_and_lines_take_one_review() {
+        let pr = item(ItemKind::Pull);
+        let cmd = thread_cmd("PRRT_kwDOabc-_1", true).unwrap();
+        assert_eq!(cmd.args[..3], ["api", "graphql", "-f"]);
+        assert!(cmd.args[3].contains("resolveReviewThread"), "{cmd:?}");
+        assert_eq!(cmd.args[5], "id=PRRT_kwDOabc-_1");
+        let open = thread_cmd("PRRT_1", false).unwrap();
+        assert!(open.args[3].contains("unresolveReviewThread"), "{open:?}");
+        // No id (GitHub didn't say), or one that isn't an id: nothing is sent.
+        assert!(thread_cmd("", true).is_err());
+        assert!(thread_cmd("PRRT_1 -f query=x", true).is_err());
+
+        let line = |path: &str, line, left, body: &str| LineComment {
+            path: path.into(),
+            line,
+            left,
+            body: body.into(),
+        };
+        let body = "Why `$(rm -rf ~)`?\n\"quoted\"";
+        let comments = [
+            line("src/a.rs", 12, false, body),
+            line("src/b.rs", 3, true, "gone"),
+        ];
+        let cmd = line_review_cmd(&pr, SHA, &comments).unwrap();
+        assert_eq!(
+            cmd.args.join(" "),
+            "api -X POST repos/ArakunHQ/arakun/pulls/41/reviews --input - --jq .html_url"
+        );
+        // The words travel as JSON on stdin, whatever they look like.
+        let sent: Value = serde_json::from_str(cmd.stdin.as_deref().unwrap()).unwrap();
+        assert_eq!(
+            sent,
+            serde_json::json!({"event": "COMMENT", "commit_id": SHA, "comments": [
+                {"path": "src/a.rs", "line": 12, "side": "RIGHT", "body": body},
+                {"path": "src/b.rs", "line": 3, "side": "LEFT", "body": "gone"},
+            ]})
+        );
+        assert!(line_review_cmd(&pr, SHA, &[]).is_err());
+        assert!(line_review_cmd(&pr, "abc", &comments).is_err());
+        assert!(line_review_cmd(&pr, SHA, &[line("a", 1, false, " ")]).is_err());
+        assert!(line_review_cmd(&item(ItemKind::Issue), SHA, &comments).is_err());
+    }
+
+    #[test]
     fn a_read_only_arakun_never_starts_gh() {
         let pr = item(ItemKind::Pull);
         let never = |_: &Cmd| -> Result<Vec<u8>, Problem> { panic!("gh was started") };
@@ -4193,6 +4811,18 @@ mod tests {
             request_review_cmd(&pr, &["ana".to_string()]),
             Ok(state_cmd(&pr, "close")),
             Ok(state_cmd(&pr, "reopen")),
+            rerun_cmd(&pr, 7),
+            thread_cmd("PRRT_1", true),
+            line_review_cmd(
+                &pr,
+                SHA,
+                &[LineComment {
+                    path: "a.rs".into(),
+                    line: 1,
+                    left: false,
+                    body: "hi".into(),
+                }],
+            ),
             // Even one that would be refused anyway says it is read-only.
             comment_cmd(&pr, ""),
         ];
@@ -4434,6 +5064,18 @@ mod tests {
             "{p}"
         );
         assert!(p.ends_with("Never post a comment or a review, approve, request changes, merge or close anything on GitHub yourself."), "{p}");
+    }
+
+    #[test]
+    fn the_issue_prompt_changes_code_and_nothing_on_github() {
+        let p = issue_prompt(&item(ItemKind::Issue), "Tab name is lost");
+        assert!(p.starts_with("Work on the issue \"Tab name is lost\" (ArakunHQ/arakun#41)."));
+        assert!(
+            p.contains("gh issue view https://github.com/ArakunHQ/arakun/issues/41 --comments")
+        );
+        assert!(p.contains("if it isn't ArakunHQ/arakun, say so and stop"));
+        assert!(p.contains("Don't commit or push"));
+        assert!(p.contains("don't comment on the issue, close it or open a pull request"));
     }
 
     #[test]

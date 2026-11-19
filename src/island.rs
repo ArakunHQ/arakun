@@ -155,6 +155,7 @@ pub fn set_enabled(on: bool) {
 
 /// The island needs a layer-shell window (Wayland; on X11 gpui would open a
 /// normal one) or macOS, where it is a panel over the menu bar.
+#[cfg(not(windows))]
 pub fn supported(cx: &App) -> bool {
     cfg!(target_os = "macos") || cx.compositor_name() == "Wayland"
 }
@@ -198,6 +199,12 @@ pub fn activate_app(pid: u32) {
     mac::activate(pid);
     #[cfg(not(target_os = "macos"))]
     let _ = pid;
+}
+
+/// On Windows the island is a topmost popup that clicks pass around (`top_center`).
+#[cfg(windows)]
+pub fn supported(_: &App) -> bool {
+    true
 }
 
 /// The screen the island lives on: the widest landscape one, so a monitor
@@ -311,9 +318,25 @@ fn window_kind(keys: bool) -> gpui::WindowKind {
     })
 }
 
+/// Windows has no layer shell to anchor the island to the top edge: it is a
+/// topmost window placed at the top center of the display's work area, so a
+/// taskbar moved to the top stays visible. `None` without displays.
+#[cfg(windows)]
+pub fn top_center(cx: &App, display: Option<gpui::DisplayId>) -> Option<Bounds<Pixels>> {
+    let screen = display
+        .and_then(|id| cx.find_display(id))
+        .or_else(|| cx.primary_display())?;
+    let area = screen.visible_bounds();
+    Some(Bounds {
+        origin: point(area.center().x - px(WIN_W / 2.), area.origin.y),
+        size: size(px(WIN_W), px(WIN_H)),
+    })
+}
+
 /// macOS: a panel above the menu bar that doesn't activate the app; `adopt`
-/// makes the rest of it. Elsewhere `supported` says no and the island never
-/// opens, so this just has to build.
+/// makes the rest of it. On Windows a topmost popup, placed by `top_center`.
+/// Elsewhere `supported` says no and the island never opens, so this just has
+/// to build.
 #[cfg(not(target_os = "linux"))]
 fn window_kind(_keys: bool) -> gpui::WindowKind {
     gpui::WindowKind::PopUp

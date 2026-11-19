@@ -217,7 +217,9 @@ impl CloudflareView {
                     break;
                 };
                 let configured = cx
-                    .background_spawn(async move { cloudflare::mcp_server(agent).is_some() })
+                    .background_spawn(crate::guard::task(async move {
+                        cloudflare::mcp_server(agent).is_some()
+                    }))
                     .await;
                 let alive = this.update(cx, |this, cx| {
                     let watching =
@@ -340,7 +342,10 @@ impl CloudflareView {
         let agent = self.agent;
         self.mcp_task = Some(cx.spawn(async move |this, cx| {
             let state = cx
-                .background_spawn(async move { cloudflare::mcp_status(agent) })
+                .background_spawn(crate::guard::task_or(
+                    async move { cloudflare::mcp_status(agent) },
+                    |panicked| cloudflare::Mcp::Failing(panicked.to_string()),
+                ))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.mcp_task = None;
@@ -374,11 +379,11 @@ impl CloudflareView {
             use futures::StreamExt as _;
             // The quick answers arrive first (through `early`), the analytics with the result.
             let (tx, mut early) = futures::channel::mpsc::unbounded::<cloudflare::Snapshot>();
-            let load = cx.background_spawn(async move {
+            let load = cx.background_spawn(crate::guard::task(async move {
                 cloudflare::load(&roots, &move |s: &cloudflare::Snapshot| {
                     let _ = tx.unbounded_send(s.clone());
                 })
-            });
+            }));
             while let Some(snap) = early.next().await {
                 let alive = this.update(cx, |this, cx| {
                     // Keep the last analytics on screen until the new ones are in.
@@ -526,6 +531,7 @@ impl CloudflareView {
             Agent::Droid => "Starts a Droid session with what Arakun sees",
             Agent::OpenCode => "Starts an OpenCode session with what Arakun sees",
             Agent::Codex => "Starts a Codex session with what Arakun sees",
+            Agent::Devin => "Starts a Devin session with what Arakun sees",
             Agent::WorkersAi => "Starts a Workers AI session with what Arakun sees",
         };
         ui::button_with(
@@ -644,6 +650,7 @@ impl CloudflareView {
             Agent::Droid => "Cloudflare MCP for Droid",
             Agent::OpenCode => "Cloudflare MCP for OpenCode",
             Agent::Codex => "Cloudflare MCP for Codex",
+            Agent::Devin => "Cloudflare MCP for Devin",
             Agent::WorkersAi => "Cloudflare MCP",
         })
         .child(
@@ -2057,9 +2064,11 @@ impl CloudflareView {
                 div()
                     .flex()
                     .gap(crate::ui::sp(10.))
-                    .when(self.agent != Agent::WorkersAi, |d| {
-                        d.child(self.render_mcp(cx))
-                    })
+                    // Workers AI has no MCP client; Arakun cannot connect Devin's yet.
+                    .when(
+                        !matches!(self.agent, Agent::WorkersAi | Agent::Devin),
+                        |d| d.child(self.render_mcp(cx)),
+                    )
                     .child(self.render_share(cx)),
             )
     }
@@ -2254,6 +2263,7 @@ fn agent_name(agent: Agent) -> &'static str {
         Agent::Droid => "Droid",
         Agent::OpenCode => "OpenCode",
         Agent::Codex => "Codex",
+        Agent::Devin => "Devin",
         Agent::WorkersAi => "Workers AI",
     }
 }

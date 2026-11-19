@@ -274,10 +274,9 @@ which git ignores. Turn the hooks off with `lefthook uninstall`.
   GitHub). Nobody is asked to review a draft, so you can push while CI and CodeRabbit
   run: CodeRabbit reviews drafts too, so its comments are usually waiting when the
   checks are. Once the required checks pass, mark it ready with `gh pr ready` or the
-  button on GitHub. Don't wait for the optional checks
-  (macOS, CodeQL), which can queue for a long time, unless the change touches macOS-only
-  code (`cfg(target_os = "macos")`, a path with `macos` in its name, the macOS build
-  config): then wait for the macOS jobs too. Don't wait for the **Human approval**
+  button on GitHub. `tools/wait-checks.sh` waits for them, and for the macOS job only
+  when the diff touches macOS code. Don't wait for the other checks (macOS for other
+  changes, CodeQL), which can queue for a long time. Don't wait for the **Human approval**
   status either: for a pull request from outside the team it is required, but it only
   resolves after a person approves, and marking ready is what asks for the review. It
   stays a merge gate, not a pre-ready one. When CodeRabbit finishes, people are asked to review

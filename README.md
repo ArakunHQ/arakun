@@ -1021,6 +1021,7 @@ forward through tabs, `Ctrl+Cmd+F` toggles full screen, and `Cmd+H`, `Cmd+M` and
 `Cmd+Q` hide, minimize and quit.
 
 - `Ctrl+T` new session (in a new worktree unless the open one is a worktree without one), `Ctrl+J` toggle the terminal dock, `Ctrl+B` toggle the sidebar
+- `Ctrl+Alt+B` toggle the workspace panel, `Ctrl+Alt+S` toggle the subagents panel
 - `Ctrl+D` / `Ctrl+Shift+D` split right / down, `Ctrl+Alt+arrows` move between panes
 - `Ctrl+Tab`, `Ctrl+1...9` switch tabs, across environments; `Alt+Up` / `Alt+Down`
   switch environments
@@ -1031,7 +1032,8 @@ forward through tabs, `Ctrl+Cmd+F` toggles full screen, and `Cmd+H`, `Cmd+M` and
   right. The tab on screen stays open when its environment has no other. GNOME, Ubuntu
   and some KDE setups keep `Ctrl+Alt+T` to open their own terminal; there, use Reopen
   closed tab in the File menu or a tab's right-click menu
-- `Ctrl+Shift+N` new session in a new worktree, at once on a random branch
+- `Ctrl+Shift+N` new session in a new worktree, at once on a random branch;
+  `Ctrl+Alt+N` asks for the branch and options first
 - `Ctrl+F` search the conversation
 - `Ctrl+K` (or `Ctrl+P`) the palette: sessions of every project, GitHub, runs, files and
   symbols, views, commands, settings and memory in one search. Start with `>` for

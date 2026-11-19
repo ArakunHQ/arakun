@@ -2435,7 +2435,10 @@ impl Agent {
             clip_middle(&text, tool_chars())
         };
         self.update(sid, json!({"sessionUpdate": "tool_call_update", "toolCallId": id, "status": status, "rawOutput": shown_output}));
-        (text, None)
+        // A stopped search stops the turn, like a stopped command: without the
+        // halt the calls queued after it still run.
+        let halt = (call.name == "grep" && self.cancelled()).then_some("the turn was stopped");
+        (text, halt)
     }
 
     fn run_command(

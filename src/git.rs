@@ -416,12 +416,19 @@ impl Change {
     }
 }
 
-fn diff_base(dir: &Path) -> &'static str {
-    let has_head = succeeds(
+/// The ref uncommitted changes diff against. `EMPTY_TREE` only when git says
+/// HEAD is absent: a probe that could not run (a stall past `GIT_LOCAL`) is an
+/// error, or `discard` would take the unborn-repository path and delete work.
+fn diff_base(dir: &Path) -> Result<&'static str> {
+    let out = output(
         git(dir).args(["rev-parse", "--verify", "--quiet", "HEAD"]),
         GIT_LOCAL,
-    );
-    if has_head { "HEAD" } else { EMPTY_TREE }
+    )?;
+    Ok(if out.status.success() {
+        "HEAD"
+    } else {
+        EMPTY_TREE
+    })
 }
 
 /// Uncommitted changes against HEAD (staged and unstaged together, as the Changes
@@ -467,7 +474,7 @@ pub fn status(dir: &Path) -> Result<Vec<Change>> {
     }
 
     let numstat =
-        stdout(git(dir).args(["diff", diff_base(dir), "--numstat", "-z", "--no-renames"]))
+        stdout(git(dir).args(["diff", diff_base(dir)?, "--numstat", "-z", "--no-renames"]))
             .unwrap_or_default();
     let mut counts = std::collections::HashMap::new();
     for rec in numstat.split('\0').filter(|s| !s.is_empty()) {
@@ -528,7 +535,7 @@ pub fn diff(dir: &Path, path: &str, untracked: bool) -> Result<String> {
         // --no-index exits 1 when the files differ, which is the expected case.
         return Ok(String::from_utf8_lossy(&out.stdout).into_owned());
     }
-    stdout(git(dir).args(["diff", "--no-color", diff_base(dir), "--", path]))
+    stdout(git(dir).args(["diff", "--no-color", diff_base(dir)?, "--", path]))
 }
 
 // ---------------------------------------------------------------------------
@@ -597,8 +604,8 @@ fn git_paths(dir: &Path) -> Command {
     cmd
 }
 
-fn has_head(dir: &Path) -> bool {
-    diff_base(dir) == "HEAD"
+fn has_head(dir: &Path) -> Result<bool> {
+    Ok(diff_base(dir)? == "HEAD")
 }
 
 /// Where the checked-out branch stands against its remote.
@@ -765,7 +772,7 @@ pub fn stage_only(dir: &Path, files: &[String]) -> Result<Vec<String>> {
 }
 
 pub fn unstage(dir: &Path, path: &str) -> Result<()> {
-    if has_head(dir) {
+    if has_head(dir)? {
         run_loud(
             git_paths(dir).args(["restore", "--staged", "--"]).arg(path),
             GIT_LOCAL,
@@ -792,7 +799,7 @@ pub fn discard(dir: &Path, change: &Change) -> Result<()> {
         std::fs::remove_file(&file).with_context(|| format!("could not delete {}", change.path))?;
         return Ok(());
     }
-    if has_head(dir) {
+    if has_head(dir)? {
         run_loud(
             git_paths(dir)
                 .args(["restore", "--source=HEAD", "--staged", "--worktree", "--"])

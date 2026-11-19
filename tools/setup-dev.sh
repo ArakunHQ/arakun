@@ -2,19 +2,20 @@
 # Sets up a Linux or macOS machine to build Arakun and run the checks CI runs.
 # For contributors and for coding agents. Windows: tools/setup-dev.ps1.
 #
-#   tools/setup-dev.sh [--yes] [--check] [--relay] [--display] [--hooks] [--build]
+#   tools/setup-dev.sh [--yes] [--check] [--relay] [--display] [--browser] [--hooks] [--build]
 #
 #   --yes      do not ask before installing (implied when stdin is not a terminal)
 #   --check    only report what is missing; exit 1 if anything is
 #   --relay    also Node 24+ and the npm packages of relay/
 #   --display  also Xvfb and tesseract, for `arakun dev` (Linux only)
+#   --browser  also the CEF SDK a build with the browser needs, linked at .cef-sdk (macOS only)
 #   --hooks    turn on the Git hooks in lefthook.yml (lefthook install)
 #   --build    build the tests once, so the first clippy or test run is quick
 #
 # Always: the system libraries GPUI needs (apt or pacman; on macOS the Xcode Command
 # Line Tools), and the Rust version in rust-toolchain.toml with clippy and rustfmt, through rustup.
-# It builds without the browser, as CI does; for CEF see "With the browser" in the
-# README. Running it again is safe.
+# It builds without the browser, as CI does; for CEF see --browser and "With the browser"
+# in the README. Running it again is safe.
 set -eu
 
 here=$(cd "$(dirname "$0")/.." && pwd)
@@ -22,6 +23,7 @@ yes=0
 check=0
 relay=0
 display=0
+browser=0
 hooks=0
 build=0
 while [ $# -gt 0 ]; do
@@ -30,9 +32,10 @@ while [ $# -gt 0 ]; do
     --check) check=1 ;;
     --relay) relay=1 ;;
     --display) display=1 ;;
+    --browser) browser=1 ;;
     --hooks) hooks=1 ;;
     --build) build=1 ;;
-    -h|--help) sed -n '2,16p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,18p' "$0"; exit 0 ;;
     *) echo "setup-dev: unknown option $1" >&2; exit 2 ;;
   esac
   shift
@@ -234,6 +237,44 @@ if [ $display = 1 ]; then
     for t in Xvfb tesseract; do
       if command -v $t >/dev/null; then ok $t; else lack $t; fi
     done
+  fi
+fi
+
+# --- browser (CEF) ---
+# The `cef` crate's own download reads the CDN's index first, which has grown past what its
+# HTTP client accepts. So this fetches the archive the release workflow pins, checks its
+# SHA-1, and links it where .cargo/config.toml points CEF_PATH. The SDK lives outside the
+# checkout so every worktree shares one copy. Keep the version and checksums in step with
+# .github/workflows/release.yml and ci.yml.
+if [ $browser = 1 ]; then
+  say "browser (CEF 156.0.15)"
+  if [ "$os" != Darwin ]; then
+    say "on Linux, see \"With the browser\" in the README; skipped"
+  else
+    for t in cmake ninja; do
+      if command -v $t >/dev/null; then ok $t; else lack "$t (brew install cmake ninja)"; fi
+    done
+    # The hardware, not `uname -m`: that says x86_64 in a shell under Rosetta.
+    if [ "$(sysctl -n hw.optional.arm64 2>/dev/null || echo 0)" = 1 ]; then
+      plat=macosarm64 sha1=bcdd1877edb300b0fb91d8f71c0b14aae256cd0f
+    else
+      plat=macosx64 sha1=13756e3029307720fe00898d54aef8a64c9b4043
+    fi
+    archive=cef_binary_156.0.15+gcf671c0+chromium-156.0.8078.80_${plat}_minimal.tar.bz2
+    sdk=${XDG_DATA_HOME:-$HOME/.local/share}/arakun/cef-sdk/156.0.15-$plat
+    link=$here/.cef-sdk
+    if [ -d "$link" ] && [ ! -L "$link" ]; then
+      # A folder the crate's own download left; replacing it is the user's call.
+      ok ".cef-sdk is a folder, left as it is (remove it to use the shared SDK)"
+    elif [ -f "$sdk/archive.json" ] && [ "$(readlink "$link" || true)" = "$sdk" ]; then
+      ok "CEF SDK at .cef-sdk"
+    elif [ $check = 1 ]; then
+      lack "CEF SDK at .cef-sdk (tools/setup-dev.sh --browser)"
+    else
+      [ -f "$sdk/archive.json" ] || python3 -I "$here/tools/fetch-cef.py" "$archive" "$sha1" "$sdk"
+      ln -sfn "$sdk" "$link"
+      ok "CEF SDK at .cef-sdk"
+    fi
   fi
 fi
 

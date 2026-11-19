@@ -55,7 +55,8 @@ powershell -ExecutionPolicy Bypass -File tools\setup-dev.ps1 -Hooks
 `--hooks` (`-Hooks`) runs `lefthook install`; on Windows it installs lefthook with winget
 first, and elsewhere it says how to install it if it is missing.
 `--relay` (`-Relay`) adds Node 24 and the relay's npm packages, `--display` adds Xvfb and
-tesseract for `arakun dev`, `--build` (`-Build`) builds the tests once, and `--yes`
+tesseract for `arakun dev`, `--browser` fetches the CEF SDK a macOS build with the browser
+needs and links it at `.cef-sdk`, `--build` (`-Build`) builds the tests once, and `--yes`
 (`-Yes`) never asks. `--help` (`-Help`) lists them all. To do it by hand instead,
 follow [Build from source](README.md#build-from-source) in the README.
 

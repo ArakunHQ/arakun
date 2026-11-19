@@ -219,16 +219,22 @@ mod tests {
         assert!(path.exists());
         // On macOS a socket is made close-on-exec only after it exists, so a
         // process another test starts in between keeps it open and answering
-        // until it exits. Wait for that, or `serve` sees a live server.
+        // until it exits. Probing with a connect is not enough: the holder can
+        // leave between the probe and `serve`'s own check, so retry `serve`
+        // itself within the same wait.
         let start = std::time::Instant::now();
-        while UnixStream::connect(&path).is_ok() {
-            assert!(
-                start.elapsed() < Duration::from_secs(10),
-                "something still answers on the stale socket"
-            );
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        let (listening, _rx) = serve(&path).unwrap();
+        let listening = loop {
+            match serve(&path) {
+                Ok(l) => break l,
+                Err(e) => {
+                    assert!(
+                        start.elapsed() < Duration::from_secs(10),
+                        "something still answers on the stale socket: {e}"
+                    );
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+            }
+        };
         drop(listening);
     }
 

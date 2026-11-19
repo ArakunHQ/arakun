@@ -179,14 +179,28 @@ jobs:
 
       - uses: $/.github/actions/gpui-libs
 
+      # Clippy needs only the build-time SDK that tools/install-cef.sh makes
+      # (headers and a stub libcef.so, a few MB). Unpacking the 330 MB archive
+      # for it took 27-36 s a run. Like the Rust cache, only main saves it: any
+      # branch could save an entry under this key, and a cache hit skips the
+      # SHA-1 check below.
+      - name: Restore the CEF SDK
+        id: cef-sdk
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/cef/sdk
+          key: cef-sdk-${{ env.CEF_ARCHIVE }}-${{ hashFiles('tools/install-cef.sh') }}
+
       # 330 MB that never changes for a given version.
       - name: Cache the CEF archive
+        if: steps.cef-sdk.outputs.cache-hit != 'true'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/cef-archive
           key: ${{ env.CEF_ARCHIVE }}
 
       - name: Prepare CEF
+        if: steps.cef-sdk.outputs.cache-hit != 'true'
         run: |
           archive="$RUNNER_TEMP/cef-archive/$CEF_ARCHIVE"
           if [ ! -f "$archive" ]; then
@@ -198,6 +212,18 @@ jobs:
           mkdir -p "$RUNNER_TEMP/cef-dist"
           tar -xjf "$archive" -C "$RUNNER_TEMP/cef-dist" --strip-components=1
           tools/install-cef.sh "$RUNNER_TEMP/cef-dist" "$RUNNER_TEMP/cef"
+
+      - name: Save the CEF SDK
+        if: steps.cef-sdk.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/cef/sdk
+          key: ${{ steps.cef-sdk.outputs.cache-primary-key }}
+
+      # install-cef.sh makes this link, but not on a cache hit. CEF_PATH in
+      # .cargo/config.toml points at it.
+      - name: Link the CEF SDK
+        run: ln -sfn "$RUNNER_TEMP/cef/sdk" .cef-sdk
 
       # The version and components in rust-toolchain.toml. Runner images ship rustup.
       - name: Rust toolchain

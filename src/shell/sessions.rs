@@ -544,7 +544,8 @@ impl Shell {
             agent: env.agent,
             draft_settings: env.draft_settings.clone(),
             claude_settings: env.claude_settings.clone(),
-            opencode_settings: env.opencode_settings.clone(),
+            // What it uses now: one it inherits could change while it waits.
+            opencode_settings: opencode_draft(env),
             codex_settings: env.codex_settings.clone(),
             devin_settings: env.devin_settings.clone(),
             workers_ai_settings: env.workers_ai_settings.clone(),

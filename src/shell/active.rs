@@ -117,6 +117,9 @@ impl Shell {
                 list = list.child(self.render_active_row(row, current, cx));
             }
         }
+        if self.pick_bar_under_active() {
+            list = list.children(self.render_pick_bar(cx));
+        }
         Some(list.into_any_element())
     }
 
@@ -131,6 +134,8 @@ impl Shell {
             s.title.clone()
         };
         let (pi, ei, id) = (row.project, row.env, s.id.clone());
+        let picked = self.is_picked(&env.path);
+        let path = env.path.clone();
         div()
             .id(SharedString::from(format!("active-{pi}-{ei}-{}", s.id)))
             .flex()
@@ -146,8 +151,11 @@ impl Shell {
             } else {
                 theme::text_muted()
             })
-            .when(current, |d| d.bg(theme::selection()))
-            .when(!current, |d| {
+            .when(current && !picked, |d| d.bg(theme::selection()))
+            .when(picked, |d| {
+                d.bg(theme::selection_strong()).text_color(theme::content())
+            })
+            .when(!current && !picked, |d| {
                 d.hover(|st| st.bg(theme::hover()).text_color(theme::content()))
             })
             .tooltip(ui::tip_text(format!(
@@ -163,7 +171,10 @@ impl Shell {
                     .items_center()
                     .justify_center()
                     .size(px(14.))
-                    .child(status_dot(s.status)),
+                    .when(picked, |d| {
+                        d.child(icon("tick02", 14.).text_color(theme::content()))
+                    })
+                    .when(!picked, |d| d.child(status_dot(s.status))),
             )
             .child(div().flex_1().min_w_0().truncate().child(title))
             .child(
@@ -175,8 +186,15 @@ impl Shell {
                     .text_color(theme::text_faint())
                     .child(project.name.clone()),
             )
-            .on_click(cx.listener(move |this, _, window, cx| {
-                this.open_session_at(pi, ei, id.clone(), window, cx)
+            .on_click(cx.listener(move |this, ev: &gpui::ClickEvent, window, cx| {
+                // Picks its worktree for the bar's actions, as in the list below.
+                let m = ev.modifiers();
+                if m.secondary() || m.shift {
+                    this.toggle_pick(&path, cx);
+                } else {
+                    this.drop_pick();
+                    this.open_session_at(pi, ei, id.clone(), window, cx)
+                }
             }))
             .into_any_element()
     }

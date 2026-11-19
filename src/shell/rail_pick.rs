@@ -129,6 +129,33 @@ impl Shell {
         cx.notify();
     }
 
+    /// Ctrl or Shift+click on a row of the Active list: it stands for its
+    /// session's worktree, which may be listed only there (all its sessions
+    /// wait or run). No range: the Active list is in another order.
+    pub(super) fn toggle_pick(&mut self, path: &Path, cx: &mut Context<Self>) {
+        match self.rail_pick.iter().position(|p| p == path) {
+            Some(i) => {
+                self.rail_pick.remove(i);
+            }
+            None => self.rail_pick.push(path.to_path_buf()),
+        }
+        cx.notify();
+    }
+
+    /// Whether the bar goes under the Active list: a picked worktree is not in
+    /// the open project's list, so it was picked there.
+    pub(super) fn pick_bar_under_active(&self) -> bool {
+        let pi = self.active_project;
+        let listed: Vec<&Path> = self
+            .listed_envs(pi)
+            .into_iter()
+            .map(|ei| self.projects[pi].environments[ei].path.as_path())
+            .collect();
+        self.rail_pick
+            .iter()
+            .any(|p| !listed.contains(&p.as_path()))
+    }
+
     /// Returns whether anything was picked.
     pub(super) fn drop_pick(&mut self) -> bool {
         self.rail_pick_anchor = None;

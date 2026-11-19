@@ -518,7 +518,9 @@ impl Shell {
                         cx,
                     ));
                 }
-                envs = envs.children(self.render_pick_bar(cx));
+                if !self.pick_bar_under_active() {
+                    envs = envs.children(self.render_pick_bar(cx));
+                }
                 for (i, name) in self
                     .pending_envs
                     .iter()

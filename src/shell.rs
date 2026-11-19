@@ -1009,8 +1009,19 @@ impl Shell {
         this.ensure_terminal(window, cx);
         this.ensure_active_live(window, cx);
         this.resume_after_restart(window, cx);
-        cx.background_spawn(crate::guard::task(async { state::sweep_orphans() }))
-            .detach();
+        // Taken from the state as loaded: a refresh can save one without a
+        // worktree removed outside Arakun before the sweep reads it.
+        let listed = this
+            .projects
+            .iter()
+            .flat_map(|p| &p.environments)
+            .flat_map(|e| &e.sessions)
+            .flat_map(sessions::session_file_ids)
+            .collect();
+        cx.background_spawn(crate::guard::task(
+            async move { state::sweep_orphans(listed) },
+        ))
+        .detach();
         this.warm_droid_catalog(cx);
         this.listen_for_commands(window, cx);
         this.watch_headless(window, cx);
@@ -2032,11 +2043,29 @@ impl Shell {
                     });
                     match removed {
                         Some(sessions) => this.forget_sessions(sessions, cx),
-                        None => sessions::discard_session_files(
-                            own_ids.clone(),
-                            session_ids.clone(),
-                            cx,
-                        ),
+                        None => {
+                            // A headless scan may have put its sessions in
+                            // another environment meanwhile: they go too.
+                            for id in &own_ids {
+                                while let Some(i) = this.strip.session_tab(id) {
+                                    this.discard_tab(i, window, cx);
+                                }
+                            }
+                            let mut moved = Vec::new();
+                            for env in this.projects.iter_mut().flat_map(|p| &mut p.environments) {
+                                let (gone, kept) = std::mem::take(&mut env.sessions)
+                                    .into_iter()
+                                    .partition(|s| own_ids.iter().any(|id| *id == *s.id));
+                                env.sessions = kept;
+                                moved.extend::<Vec<_>>(gone);
+                            }
+                            this.forget_sessions(moved, cx);
+                            sessions::discard_session_files(
+                                own_ids.clone(),
+                                session_ids.clone(),
+                                cx,
+                            );
+                        }
                     }
                     // Its tabs, and the pages of its browser tabs, go with it.
                     this.settle_strip(cx);

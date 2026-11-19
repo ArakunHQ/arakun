@@ -500,16 +500,16 @@ fn seen_path() -> PathBuf {
 ///
 /// Only sessions this state was seen listing count. Another Arakun with its
 /// own state (`ARAKUN_STATE`), of any version, keeps its sessions in the same
-/// folder, and a file whose owner was never seen is never deleted. Skipped
-/// when the state or the seen list can't be read, since every file would
-/// look unlisted.
-pub fn sweep_orphans() {
-    let Some(state) = std::fs::read(file())
+/// folder, and a file whose owner was never seen is never deleted. `listed`
+/// is what the state held when Arakun loaded it. Skipped when the state or
+/// the seen list can't be read, since every file would look unlisted.
+pub fn sweep_orphans(listed: std::collections::HashSet<String>) {
+    let parses = std::fs::read(file())
         .ok()
-        .and_then(|b| serde_json::from_slice::<State>(&b).ok())
-    else {
+        .is_some_and(|b| serde_json::from_slice::<State>(&b).is_ok());
+    if !parses {
         return;
-    };
+    }
     let seen_path = seen_path();
     let seen: Seen = match std::fs::read(&seen_path) {
         Ok(bytes) => match serde_json::from_slice(&bytes) {
@@ -523,21 +523,10 @@ pub fn sweep_orphans() {
         (data_dir().join("sessions"), "json"),
         (data_dir().join("linked"), "md"),
     ];
-    let seen = sweep(&dirs, seen, &listed_ids(&state), crate::model::unix_now());
+    let seen = sweep(&dirs, seen, &listed, crate::model::unix_now());
     if let Ok(bytes) = serde_json::to_vec(&seen) {
         let _ = crate::durable::write(&seen_path, &bytes);
     }
-}
-
-fn listed_ids(state: &State) -> std::collections::HashSet<String> {
-    let sessions = state
-        .projects
-        .iter()
-        .flat_map(|p| &p.envs)
-        .flat_map(|e| &e.sessions);
-    sessions
-        .flat_map(|s| std::iter::once(s.id.clone()).chain(s.continues.iter().map(|c| c.id.clone())))
-        .collect()
 }
 
 /// Deletes the files in `dirs` (`<id>.<ext>`) of the sessions `seen` holds

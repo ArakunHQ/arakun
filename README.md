@@ -143,7 +143,8 @@ terminal-only. The status line and keybindings from your settings don't apply in
   files of a session its state has not listed for a week, such as one whose worktree was
   removed outside Arakun. It keeps the sessions it has seen in `state.json.seen`, next to
   the state file (the `ARAKUN_STATE` file when that is set), and never deletes a file
-  whose session it hasn't seen listed.
+  whose session it hasn't seen listed. A headless session keeps its file while its folder
+  under `headless/` in Arakun's data folder is there.
 - **Project check.** A per-project command (`cargo test`, `npm test`...) runs after each
   turn that edits files; on failure the tail of the output goes back to the agent, up to
   three times in a row. Checks run one at a time across all sessions, at low priority and

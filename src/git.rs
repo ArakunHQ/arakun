@@ -1189,7 +1189,7 @@ mod tests {
         let start = std::time::Instant::now();
         let mut cmd = crate::platform::command("git");
         assert!(
-            super::status_within(&mut cmd.arg("--version"), Duration::from_secs(5))
+            super::status_within(cmd.arg("--version"), Duration::from_secs(5))
                 .is_some_and(|s| s.success())
         );
         #[cfg(unix)]

@@ -76,7 +76,9 @@ with "Show onboarding" in the palette (`Ctrl+K`). That it was done is kept in
   a project's start screen, starts its session in a new worktree too (on a server, it
   starts where it was written). The sidebar lists each worktree by its session's title.
   The main checkout is listed only while it holds older sessions; open it from the
-  project's right-click menu (Open main checkout).
+  project's right-click menu (Open main checkout, one per machine). Before a
+  repository's first commit there is nothing to branch from, so sessions start in
+  the main checkout.
 - **Several at once.** `Ctrl`+click (`Cmd`+click on macOS) rows of the sidebar's list
   to pick them, and `Shift`+click to pick a run of them. In the Active list, either
   picks the session's worktree. A bar under them settles their

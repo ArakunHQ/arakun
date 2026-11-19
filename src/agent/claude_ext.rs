@@ -1221,10 +1221,11 @@ fn run(bin: &Path, cwd: &Path, args: &[&str], timeout: Duration) -> Result<Strin
         .stderr(Stdio::piped());
     let mut child = cmd.spawn().map_err(|e| {
         // Both a missing program and a missing folder are "os error 2"; say which.
-        if cwd.is_dir() {
-            anyhow!("could not start {}: {e}", bin.display())
-        } else {
-            anyhow!("{} does not exist", cwd.display())
+        match std::fs::metadata(cwd) {
+            Err(m) if m.kind() == std::io::ErrorKind::NotFound => {
+                anyhow!("{} does not exist", cwd.display())
+            }
+            _ => anyhow!("could not start {}: {e}", bin.display()),
         }
     })?;
     let mut stdout = child.stdout.take().ok_or_else(|| anyhow!("no stdout"))?;
@@ -1335,6 +1336,12 @@ mod tests {
         let err = run(Path::new("arakun-no-such-program"), &gone, &[], t).unwrap_err();
         assert!(err.to_string().ends_with("does not exist"), "{err}");
         let err = run(Path::new("arakun-no-such-program"), &here, &[], t).unwrap_err();
+        assert!(err.to_string().starts_with("could not start"), "{err}");
+        // A file where the folder should be is not "missing": keep the real error.
+        let file = here.join(format!("arakun-not-a-folder-{}", std::process::id()));
+        std::fs::write(&file, "").unwrap();
+        let err = run(Path::new("arakun-no-such-program"), &file, &[], t).unwrap_err();
+        let _ = std::fs::remove_file(&file);
         assert!(err.to_string().starts_with("could not start"), "{err}");
     }
 

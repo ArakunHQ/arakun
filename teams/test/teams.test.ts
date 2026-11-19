@@ -205,11 +205,13 @@ describe("teams", () => {
     expect(await expectJson(api(u, "GET", "/teams"), 200)).toEqual([{ team_id: created.team_id, name: "Arakun", role: "owner", epoch: 1, rotation_pending: true }]);
     await expectJson(api(u, "PUT", `/teams/${created.team_id}/envelopes`, { device: d, body: { envelopes: [await envelope(created.team_id, 1, newKey(), d, d)] } }), 200);
     const got = await expectJson(api(u, "GET", `/teams/${created.team_id}`), 200);
+    expect(got.keyed_epoch).toBe(1);
     expect(got).toEqual({
       team_id: created.team_id,
       name: "Arakun",
       epoch: 1,
       rotation_pending: false,
+      keyed_epoch: 1,
       members: [{ github_id: 1001, login: "octocat", role: "owner", joined_at: expect.any(Number) }],
       channels: [],
     });

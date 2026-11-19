@@ -278,6 +278,7 @@ async function getTeam(c: Ctx, teamId: string): Promise<Response> {
     team_id: row.team_id,
     name: row.name,
     epoch: row.epoch,
+    keyed_epoch: row.keyed_epoch,
     rotation_pending: row.keyed_epoch < row.epoch,
     members: members!.results,
     channels: (channels!.results as { channel_id: string; name_ct: string; created_at: number }[]).map((ch) => ({
@@ -907,5 +908,19 @@ async function history(c: Ctx, teamId: string, channelId: string): Promise<Respo
   const limit = /^[0-9]{1,3}$/.test(limitText) ? Number(limitText) : NaN;
   if (!Number.isSafeInteger(after)) return error(400, "after is a seq, 0 or more");
   if (!(limit >= 1 && limit <= HISTORY_LIMIT)) return error(400, `limit is 1 to ${HISTORY_LIMIT}`);
-  return Response.json(await channelStub(c.env, teamId, channelId).history(after, limit));
+  const beforeText = c.url.searchParams.get("before");
+  const before = beforeText === "latest" ? Number.MAX_SAFE_INTEGER : beforeText === null ? undefined : Number(beforeText);
+  if (beforeText !== null && (c.url.searchParams.has("after") || (beforeText !== "latest" && !/^[1-9][0-9]{0,14}$/.test(beforeText))))
+    return error(400, "use either after or before; before is a positive seq or latest");
+  const rows = await channelStub(c.env, teamId, channelId).history(after, limit, before);
+  // Only release the captured page to a device that still has access.
+  const grant = await c.env.DB.prepare(
+    `SELECT s.expires_at FROM sessions s
+     JOIN members m ON m.github_id = s.github_id AND m.team_id = ?2
+     JOIN devices d ON d.github_id = s.github_id AND d.device_id = ?3
+     JOIN user_flags f ON f.github_id = s.github_id AND f.flag = 'teams'
+     WHERE s.token_hash = ?1`,
+  ).bind(c.me.hash, teamId, access.device.device_id).first<{ expires_at: number }>();
+  if (!grant || grant.expires_at <= now()) return notFound();
+  return Response.json(rows);
 }

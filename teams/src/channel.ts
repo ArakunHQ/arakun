@@ -117,6 +117,11 @@ export class Channel extends DurableObject<Env> {
       device_id TEXT NOT NULL,
       message TEXT NOT NULL
     )`);
+    // Retention drops ciphertext, not the channel's record of accepted IDs.
+    // A trigger makes the ID and the delete part of the same transaction.
+    this.sql.exec("CREATE TABLE IF NOT EXISTS retired_ids (id TEXT PRIMARY KEY) WITHOUT ROWID");
+    this.sql.exec(`CREATE TRIGGER IF NOT EXISTS retire_message BEFORE DELETE ON messages
+      BEGIN INSERT OR IGNORE INTO retired_ids (id) VALUES (OLD.id); END`);
   }
 
   /// Opens a socket. Only the Worker calls this, after its checks.
@@ -159,11 +164,13 @@ export class Channel extends DurableObject<Env> {
   }
 
   /// Messages after `after`, oldest first.
-  history(after: number, limit: number): Stored[] {
-    return this.sql
-      .exec<{ seq: number; at: number; message: string }>("SELECT seq, at, message FROM messages WHERE seq > ? ORDER BY seq LIMIT ?", after, limit)
-      .toArray()
-      .map((row) => ({ seq: row.seq, at: row.at, message: JSON.parse(row.message) as WireMessage }));
+  history(after: number, limit: number, before?: number): Stored[] {
+    const query = before === undefined
+      ? "SELECT seq, at, message FROM messages WHERE seq > ? ORDER BY seq LIMIT ?"
+      : "SELECT seq, at, message FROM messages WHERE seq < ? ORDER BY seq DESC LIMIT ?";
+    const rows = this.sql.exec<{ seq: number; at: number; message: string }>(query, before ?? after, limit).toArray();
+    if (before !== undefined) rows.reverse();
+    return rows.map((row) => ({ seq: row.seq, at: row.at, message: JSON.parse(row.message) as WireMessage }));
   }
 
   /// Closes a removed member's sockets; answers how many there were.
@@ -276,7 +283,7 @@ export class Channel extends DurableObject<Env> {
 
     // From here to the send nothing awaits, so no other frame runs in between:
     // the checks below and the insert are one step.
-    if (this.sql.exec("SELECT 1 FROM messages WHERE id = ?", msg.id).toArray().length > 0) {
+    if (this.sql.exec("SELECT 1 FROM messages WHERE id = ?1 UNION ALL SELECT 1 FROM retired_ids WHERE id = ?1 LIMIT 1", msg.id).toArray().length > 0) {
       return this.refuse(ws, msg.id, "a message with this id exists");
     }
     // The epoch read above may be old by now: a rotation can end, and a send
@@ -288,15 +295,18 @@ export class Channel extends DurableObject<Env> {
     const at = now();
     let seq: number;
     try {
-      seq = this.sql
-        .exec<{ seq: number }>("INSERT INTO messages (id, at, device_id, message) VALUES (?, ?, ?, ?) RETURNING seq", msg.id, at, msg.device_id, JSON.stringify(msg))
-        .one().seq;
+      seq = this.ctx.storage.transactionSync(() => {
+        const n = this.sql
+          .exec<{ seq: number }>("INSERT INTO messages (id, at, device_id, message) VALUES (?, ?, ?, ?) RETURNING seq", msg.id, at, msg.device_id, JSON.stringify(msg))
+          .one().seq;
+        if (n > MAX_MESSAGES) this.sql.exec("DELETE FROM messages WHERE seq <= ?", n - TRIM_TO);
+        return n;
+      });
     } catch (e) {
       // The sender hears it rather than waiting for an ack that never comes.
       console.error("channel insert failed:", e);
       return this.refuse(ws, msg.id, "the channel could not store the message");
     }
-    if (seq > MAX_MESSAGES) this.sql.exec("DELETE FROM messages WHERE seq <= ?", seq - TRIM_TO);
     // Everyone on the channel, the sender included: that is its ack. A socket
     // whose session ended, or whose user lost the team or the flag, is closed
     // instead. One still unchecked after the last round gets nothing, and its

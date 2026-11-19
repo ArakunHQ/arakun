@@ -506,6 +506,25 @@ describe("presence", () => {
 });
 
 describe("history", () => {
+  it("remembers an accepted message ID after trimming its ciphertext", async () => {
+    const t = await team();
+    const a = await openChannel(t.owner.user, t.owner.device, t.teamId, t.channelId);
+    const first = await message(t.teamId, t.channelId, t.owner.device, 1, t.keys.get(1)!, "early");
+    a.send(first);
+    await stored(a);
+    const stub = env.CHANNEL.get(env.CHANNEL.idFromName(`${t.teamId}/${t.channelId}`)) as DurableObjectStub;
+    await runInDurableObject<Channel, void>(stub, (_, state) => {
+      state.storage.sql.exec("UPDATE sqlite_sequence SET seq = 10000 WHERE name = 'messages'");
+    });
+    a.send(await message(t.teamId, t.channelId, t.owner.device, 1, t.keys.get(1)!, "latest"));
+    expect((await stored(a)).seq).toBe(10001);
+    expect(await storedCount(t)).toBe(1);
+    a.send(first);
+    expect((await refused(a)).error).toContain("exists");
+    expect(await storedCount(t)).toBe(1);
+    a.ws.close();
+  });
+
   it("keeps older history when a message cannot be inserted", async () => {
     const t = await team();
     const a = await openChannel(t.owner.user, t.owner.device, t.teamId, t.channelId);
@@ -540,6 +559,11 @@ describe("history", () => {
     expect(all.map((r) => r.message)).toEqual(sent);
     const page = await expectJson<{ seq: number }[]>(api(m.user, "GET", `${path}?after=2&limit=2`, { device: m.device }), 200);
     expect(page.map((r) => r.seq)).toEqual([3, 4]);
+    for (const [cursor, want] of [["latest", [4, 5]], ["4", [2, 3]], ["2", [1]]] as const) {
+      const older = await expectJson<{ seq: number }[]>(api(m.user, "GET", `${path}?before=${cursor}&limit=2`, { device: m.device }), 200);
+      expect(older.map((r) => r.seq)).toEqual(want);
+    }
+    await expectJson(api(m.user, "GET", `${path}?before=latest&after=1`, { device: m.device }), 400);
     expect(await expectJson(api(m.user, "GET", `${path}?after=5`, { device: m.device }), 200)).toEqual([]);
     for (const q of ["?limit=0", "?limit=201", "?after=-1", "?after=x"]) await expectJson(api(m.user, "GET", `${path}${q}`, { device: m.device }), 400);
     await expectJson(api(m.user, "GET", path), 400);

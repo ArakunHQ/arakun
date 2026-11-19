@@ -162,14 +162,26 @@ pub fn serve() -> Option<mpsc::UnboundedReceiver<Incoming>> {
     std::thread::Builder::new()
         .name("arakun-control".into())
         .spawn(move || {
-            for stream in listener.incoming().flatten() {
-                let tx = tx.clone();
-                std::thread::spawn(move || answer(stream, tx));
-            }
+            crate::accept::serve(
+                listener.incoming(),
+                CONNECTIONS,
+                "arakun-control-conn",
+                || false,
+                |stream| {
+                    let tx = tx.clone();
+                    move || answer(stream, tx)
+                },
+            );
         })
         .ok()?;
     Some(rx)
 }
+
+/// Commands from the user's own processes; each is one line and its reply.
+const CONNECTIONS: crate::accept::Limits = crate::accept::Limits {
+    total: 64,
+    per_peer: 64,
+};
 
 static SERVING: AtomicBool = AtomicBool::new(false);
 /// A project to add once the window is up, from `arakun <dir>` when arakun was not running.
@@ -297,11 +309,16 @@ Usage:
                              turn curl away (arakun fetch --help)
   arakun crawl [--limit N] [--depth N] <url>
                              a site's pages as Markdown, through Browser Run
+  arakun show                  bring the window up, also when it was closed
+                             with Keep running in the background on
+  arakun quit                  quit Arakun
   arakun restart               quit and start again, on the installed build;
                              agent turns running go on by themselves after it
   arakun update [--check]      download the latest release and install it (a
                              running Arakun installs it when it quits);
-                             --check only says whether there is one
+                             --check only says whether there is one;
+                             --channel nightly|stable picks nightly builds
+                             of main (they can break) or releases
   arakun mem …                 memory agents keep across sessions: save, search,
                              get, context, list, forget (arakun mem help)
   arakun github draft <owner/repo>#<n> --verdict <v> --body-file <file|-> [--head <sha>] [--agent <name>]
@@ -364,12 +381,23 @@ pub fn run_cli() -> bool {
 
 fn cli(args: Vec<String>) -> Cli {
     let Some(first) = args.first() else {
-        return Cli::App;
+        // One window: launching it again (the app launcher) shows the running one,
+        // hidden or not, rather than starting a second Arakun.
+        let req = Request {
+            cmd: "show".into(),
+            args: Vec::new(),
+            cwd: PathBuf::from("/"),
+            side: false,
+        };
+        return match send(&req) {
+            Ok(reply) if reply.ok => Cli::Exit(0),
+            _ => Cli::App,
+        };
     };
     // Needs no display or running window, so the release workflow can run the
     // packaged binary with it.
     if first == "--version" || first == "-V" {
-        println!("arakun {}", env!("CARGO_PKG_VERSION"));
+        println!("arakun {}", env!("ARAKUN_VERSION"));
         return Cli::Exit(0);
     }
     if first == "mem" {
@@ -544,6 +572,10 @@ fn cli(args: Vec<String>) -> Cli {
         "notify" if !rest.is_empty() => request("notify", vec![rest.join(" ")]),
         "notify" => return usage("arakun notify <message…>"),
         "ls" => request("ls", Vec::new()),
+        "show" if rest.is_empty() => request("show", Vec::new()),
+        "show" => return usage("arakun show"),
+        "quit" if rest.is_empty() => request("quit", Vec::new()),
+        "quit" => return usage("arakun quit"),
         "restart" if rest.is_empty() => request("restart", Vec::new()),
         "restart" => return usage("arakun restart"),
         "add" => match rest.as_slice() {
@@ -554,12 +586,14 @@ fn cli(args: Vec<String>) -> Cli {
             },
             _ => return usage("arakun add [dir]"),
         },
-        // `arakun .` like an editor; anything else (flags, unknown words) starts the app.
+        // `arakun .` like an editor.
         dir if args.len() == 1 && Path::new(dir).is_dir() => match resolve_dir(&cwd, dir) {
             Ok(dir) => request("add", vec![dir.display().to_string()]),
             Err(e) => return fail(&e),
         },
-        _ => return Cli::App,
+        dir if Path::new(dir).is_dir() => return usage("arakun <dir>"),
+        // A typo must not start a second window on the same state.
+        word => return unknown(word),
     };
     match send(&req) {
         Ok(reply) if reply.ok => {
@@ -585,8 +619,14 @@ fn cli(args: Vec<String>) -> Cli {
     }
 }
 
+#[cfg(not(windows))]
 pub(crate) const ISLAND_USAGE: &str = "arakun island [sleeping|idle|working|speaking|listening|list|auto|fps|ver|luego|aprobar|rechazar] \
      | arakun island alert <title> [subtitle]";
+#[cfg(windows)]
+pub(crate) const ISLAND_USAGE: &str = "arakun island [sleeping|idle|working|speaking|listening|list|auto|fps|ver|luego|aprobar|rechazar] \
+     | arakun island alert <title> [subtitle] \
+     | arakun island session <id> <working|waiting|done|error|ended> [project] [doing] \
+     | arakun island hook [agent]";
 
 /// `arakun island`'s state, or `alert` with its title and subtitle.
 fn island_args(rest: &[String]) -> Option<Vec<String>> {
@@ -622,6 +662,9 @@ fn island_args(rest: &[String]) -> Option<Vec<String>> {
                 .cloned()
                 .collect(),
         ),
+        // `island_host::external` checks the rest.
+        #[cfg(windows)]
+        [first, ..] if first == "session" || first == "hook" => Some(rest.to_vec()),
         _ => None,
     }
 }
@@ -1054,6 +1097,16 @@ fn fail(message: &str) -> Cli {
     Cli::Exit(1)
 }
 
+/// A first word that is not a command, a flag or a directory.
+fn unknown(word: &str) -> Cli {
+    if word.starts_with('-') {
+        eprintln!("arakun: unknown flag {word}; see arakun --help");
+    } else {
+        eprintln!("arakun: unknown command {word}, and no such directory; see arakun --help");
+    }
+    Cli::Exit(2)
+}
+
 /// Whether an Arakun window is running and listening for commands.
 pub fn app_running() -> bool {
     UnixStream::connect(socket_path()).is_ok()
@@ -1210,6 +1263,27 @@ mod tests {
         assert_eq!(fresh_output("ok\nCompiled\n", "ok\nCompiled\n"), "");
         // Nothing recognisable left: all of it is new.
         assert_eq!(fresh_output("gone\n", "fresh\n"), "fresh\n");
+    }
+
+    #[test]
+    fn unknown_words_and_flags_exit_without_the_app() {
+        let cli = |args: &[&str]| cli(args.iter().map(|a| a.to_string()).collect());
+        // None of these may reach the socket or start a window: they return
+        // before either.
+        for args in [
+            &["lgos"][..],
+            &["doctor"],
+            &["--verbose"],
+            &["-x"],
+            &["lgos", "src"],
+            &["--verbose", "."],
+            &["no-such-dir-here"],
+        ] {
+            assert!(matches!(cli(args), Cli::Exit(2)), "{args:?}");
+        }
+        // A directory takes nothing after it.
+        assert!(matches!(cli(&[".", "extra"]), Cli::Exit(2)));
+        assert!(matches!(cli(&[]), Cli::App));
     }
 
     #[test]
@@ -1417,6 +1491,18 @@ mod tests {
         assert_eq!(a(&["alert"]), None);
         assert_eq!(a(&["alert", "t", "s", "x"]), None);
         assert_eq!(a(&["dancing"]), None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn island_takes_outside_sessions_on_windows() {
+        let a = |v: &[&str]| island_args(&v.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        assert_eq!(a(&["hook"]).map(|v| v.len()), Some(1));
+        assert_eq!(a(&["hook", "Codex"]).map(|v| v.len()), Some(2));
+        assert_eq!(
+            a(&["session", "s1", "done", "web"]).map(|v| v.len()),
+            Some(4)
+        );
     }
 
     #[test]

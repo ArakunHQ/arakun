@@ -69,7 +69,7 @@ impl Shell {
         });
         cx.spawn(async move |this, cx| {
             let rows = cx
-                .background_spawn(async { onboarding::find_agents() })
+                .background_spawn(crate::guard::task(async { onboarding::find_agents() }))
                 .await;
             let _ = this.update(cx, |this, cx| this.onboarding_found_agents(rows, cx));
         })
@@ -110,7 +110,11 @@ impl Shell {
         o.github = None;
         cx.spawn(async move |this, cx| {
             let found = cx
-                .background_spawn(async { onboarding::find_github() })
+                .background_spawn(crate::guard::task_or(
+                    async { onboarding::find_github() },
+                    // The step then offers to install it, which also checks again.
+                    |_| onboarding::GitHub::NoGh,
+                ))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 if let Some(o) = this.onboarding.as_mut() {
@@ -176,9 +180,9 @@ impl Shell {
         saved.light = light;
         crate::palettes::apply(&saved);
         let version = crate::palettes::next_version();
-        cx.background_spawn(async move {
+        cx.background_spawn(crate::guard::task(async move {
             crate::palettes::store_version(&saved, version);
-        })
+        }))
         .detach();
         cx.refresh_windows();
         cx.notify();
@@ -231,8 +235,12 @@ impl Shell {
             crate::telemetry::events::ONBOARDING_FINISHED,
             &[("outcome", outcome), ("step", o.step().label())],
         );
-        cx.background_spawn(async { onboarding::set_done() })
+        cx.background_spawn(crate::guard::task(async { onboarding::set_done() }))
             .detach();
+        for view in onboarding::views_set_up(o.fresh, o.github, o.pair_phone) {
+            self.extensions_view
+                .update(cx, |v, cx| v.set_view(view, true, cx));
+        }
         if self.has_projects() {
             window.focus(&self.composer_focus, cx);
             if o.pair_phone {

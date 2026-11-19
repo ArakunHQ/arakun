@@ -55,7 +55,7 @@ impl Shell {
                 return;
             }
             ExtensionsEvent::Server(id, msg) => {
-                self.servers_send(id, msg);
+                self.server_send_raw(id, msg);
                 return;
             }
             _ => {}

@@ -2,6 +2,12 @@
 
 use super::*;
 
+/// The model menu: the agent column beside the model's options.
+const MODEL_MENU_W: f32 = 500.;
+const AGENT_COLUMN_W: f32 = 170.;
+/// Claude offers some twenty models; past this the list scrolls.
+const MODEL_LIST_MAX_H: f32 = 280.;
+
 impl Shell {
     pub(super) fn render_env_menu(
         &self,
@@ -89,7 +95,14 @@ impl Shell {
                                 .text_color(theme::text_faint())
                                 .child(format!(
                                     "{} · {}",
-                                    plural(env.tabs.len(), "tab"),
+                                    plural(
+                                        self.strip
+                                            .tabs
+                                            .iter()
+                                            .filter(|t| t.is_in(&env.path))
+                                            .count(),
+                                        "tab"
+                                    ),
                                     plural(env.terminals.len(), "terminal")
                                 )),
                         )
@@ -142,8 +155,8 @@ impl Shell {
         at: gpui::Point<Pixels>,
         cx: &mut Context<Self>,
     ) {
-        self.menu_sub = None;
-        self.menu_in_sub = false;
+        self.menu_agent = None;
+        self.menu_scroll.scroll_to_item(0);
         self.menu_cursor = None;
         self.menu = Some(ContextMenu { target, at });
         cx.notify();
@@ -174,6 +187,11 @@ impl Shell {
                     current(Setting::Mode).as_deref() == Some("agent-full-access"),
                 ))
             }
+            // Devin's mode: Code, Smart, Ask, Plan or Bypass; bypass never asks.
+            model::Agent::Devin => {
+                let label = self.setting_value_label(Setting::Mode, cx)?;
+                Some((label, current(Setting::Mode).as_deref() == Some("bypass")))
+            }
             // It asks before commands and edits; `arakun agent new` sessions don't.
             model::Agent::WorkersAi => None,
             model::Agent::Droid => {
@@ -201,45 +219,62 @@ impl Shell {
 
     // ---- what the composer and rail menus can do, for clicks and keys ---------
 
-    /// The rows the keyboard walks in the open menu, top to bottom: the
-    /// submenu's choices when the keys went into it, else the menu's own rows.
+    /// The agent whose models the model menu shows.
+    fn menu_agent(&self) -> model::Agent {
+        self.menu_agent.unwrap_or_else(|| self.composer_agent())
+    }
+
+    /// The agents the model menu offers: all of them, unless the session can't
+    /// be handed over.
+    fn menu_agents(&self) -> Vec<model::Agent> {
+        if self.can_switch_agent() {
+            model::Agent::ALL.to_vec()
+        } else {
+            vec![self.composer_agent()]
+        }
+    }
+
+    /// The rows the keyboard walks in the open menu, top to bottom. In the
+    /// model menu these are the hovered agent's; ← and → change the agent.
     pub(super) fn menu_keys(&self, cx: &App) -> Vec<MenuKey> {
         use crate::agent::{AgentKind, Setting};
         let Some(menu) = &self.menu else {
             return Vec::new();
         };
-        let choices = |s: Setting| -> Vec<MenuKey> {
-            self.setting_choices(s, cx)
+        let choices = |agent: model::Agent, s: Setting| -> Vec<MenuKey> {
+            self.agent_choices(agent, s, cx)
                 .map(|(_, options)| {
                     options
                         .into_iter()
-                        .map(|o| MenuKey::Choice(s, o.id.clone(), o.disabled.is_none()))
+                        .map(|o| MenuKey::Choice(agent, s, o.id.clone(), o.disabled.is_none()))
                         .collect()
                 })
                 .unwrap_or_default()
         };
         match menu.target {
-            MenuTarget::ModelMenu => match self.menu_sub.filter(|_| self.menu_in_sub) {
-                Some(s) => choices(s),
-                None => {
-                    let mut keys: Vec<MenuKey> = [Setting::Model, Setting::Effort]
-                        .into_iter()
-                        .filter(|s| self.setting_value_label(*s, cx).is_some())
-                        .map(MenuKey::Sub)
-                        .collect();
-                    if let Some((current, _)) = self.setting_choices(Setting::Fast, cx) {
-                        keys.push(MenuKey::Fast(current == "on"));
-                    }
-                    keys.push(MenuKey::Reset);
-                    keys
+            MenuTarget::ModelMenu => {
+                let agent = self.menu_agent();
+                let mut keys = choices(agent, Setting::Model);
+                if self.agent_choices(agent, Setting::Effort, cx).is_some() {
+                    keys.push(MenuKey::Effort(agent));
                 }
-            },
-            MenuTarget::PermissionMenu => self
-                .permission_sections(cx)
-                .into_iter()
-                .flat_map(choices)
-                .collect(),
-            MenuTarget::AgentMenu => model::Agent::ALL.into_iter().map(MenuKey::Agent).collect(),
+                if let Some((current, _)) = self.agent_choices(agent, Setting::Fast, cx) {
+                    keys.push(MenuKey::Fast(agent, current == "on"));
+                }
+                keys.push(MenuKey::Reset(agent));
+                // Enter can move to the agent even before it has models.
+                if agent != self.composer_agent() {
+                    keys.push(MenuKey::Agent(agent));
+                }
+                keys
+            }
+            MenuTarget::PermissionMenu => {
+                let agent = self.composer_agent();
+                self.permission_sections(cx)
+                    .into_iter()
+                    .flat_map(|s| choices(agent, s))
+                    .collect()
+            }
             MenuTarget::RailUsage => AgentKind::ALL
                 .into_iter()
                 .map(MenuKey::Rail)
@@ -251,37 +286,33 @@ impl Shell {
 
     /// Does what a row of a composer or rail menu does.
     pub(super) fn menu_run(&mut self, key: MenuKey, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::agent::Setting;
         match key {
-            MenuKey::Choice(s, id, enabled) => {
+            MenuKey::Choice(agent, s, id, enabled) => {
                 if enabled {
-                    self.menu = None;
-                    self.choose_setting(s, &id, cx);
+                    if closes_on_pick(s, agent, self.composer_agent()) {
+                        self.menu = None;
+                    }
+                    self.pick_setting(agent, s, &id, window, cx);
                 }
             }
-            MenuKey::Sub(s) => {
-                self.menu_sub = Some(s);
-                self.menu_in_sub = true;
-                let (current, options) = self.setting_choices(s, cx).unwrap_or_default();
-                self.menu_cursor = Some(options.iter().position(|o| o.id == current).unwrap_or(0));
+            MenuKey::Effort(agent) => self.step_effort(agent, true, window, cx),
+            MenuKey::Fast(agent, on) => {
+                self.pick_setting(
+                    agent,
+                    Setting::Fast,
+                    if on { "off" } else { "on" },
+                    window,
+                    cx,
+                );
             }
-            MenuKey::Fast(on) => self.choose_setting(
-                crate::agent::Setting::Fast,
-                if on { "off" } else { "on" },
-                cx,
-            ),
-            MenuKey::Reset => {
+            MenuKey::Reset(agent) => {
                 self.menu = None;
-                self.reset_settings(cx);
-            }
-            MenuKey::Agent(agent) if self.composer_in_session() => {
-                self.menu = None;
-                self.continue_with(agent, window, cx);
+                self.reset_settings(agent, cx);
             }
             MenuKey::Agent(agent) => {
                 self.menu = None;
-                self.env_mut().agent = agent;
-                model::set_default_agent(agent);
-                self.save(cx);
+                self.switch_agent(agent, window, cx);
             }
             MenuKey::Rail(agent) => {
                 account_view::set_rail_shows(agent, !account_view::rail_shows(agent));
@@ -293,6 +324,34 @@ impl Shell {
             }
         }
         cx.notify();
+    }
+
+    /// The next (or previous) reasoning level of `agent`, without wrapping.
+    fn step_effort(
+        &mut self,
+        agent: model::Agent,
+        up: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::agent::Setting;
+        let Some((current, options)) = self.agent_choices(agent, Setting::Effort, cx) else {
+            return;
+        };
+        let usable: Vec<&str> = options
+            .iter()
+            .filter(|o| o.disabled.is_none())
+            .map(|o| o.id.as_str())
+            .collect();
+        let at = usable.iter().position(|id| *id == current);
+        let next = match (at, up) {
+            (None, _) => usable.first(),
+            (Some(i), true) => usable.get(i + 1),
+            (Some(i), false) => i.checked_sub(1).and_then(|i| usable.get(i)),
+        };
+        if let Some(id) = next.map(|id| id.to_string()) {
+            self.pick_setting(agent, Setting::Effort, &id, window, cx);
+        }
     }
 
     /// Arrows, Enter and Space in a composer or rail menu. True when the key
@@ -307,7 +366,11 @@ impl Shell {
         if keys.is_empty() {
             return false;
         }
-        let usable = |k: &MenuKey| !matches!(k, MenuKey::Choice(_, _, false));
+        let model_menu = matches!(
+            self.menu.as_ref().map(|m| m.target),
+            Some(MenuTarget::ModelMenu)
+        );
+        let usable = |k: &MenuKey| !matches!(k, MenuKey::Choice(_, _, _, false));
         let step = |from: Option<usize>, down: bool| -> Option<usize> {
             let n = keys.len();
             let mut i = from.map_or(if down { n - 1 } else { 0 }, |i| i.min(n - 1));
@@ -332,19 +395,33 @@ impl Shell {
             }
             "home" => self.menu_cursor = step(None, true),
             "end" => self.menu_cursor = step(None, false),
-            "right" => match self.menu_cursor.and_then(|i| keys.get(i)) {
-                Some(k @ MenuKey::Sub(_)) => self.menu_run(k.clone(), window, cx),
-                _ => return true,
-            },
-            "left" if self.menu_in_sub => {
-                let sub = self.menu_sub;
-                self.menu_in_sub = false;
-                self.menu_cursor = sub.and_then(|s| {
-                    self.menu_keys(cx)
-                        .iter()
-                        .position(|k| *k == MenuKey::Sub(s))
-                });
+            "left" | "right" if model_menu => {
+                let right = key == "right";
+                match self.menu_cursor.and_then(|i| keys.get(i)) {
+                    Some(MenuKey::Effort(agent)) => {
+                        self.step_effort(*agent, right, window, cx);
+                    }
+                    // Anywhere else they page through the agents.
+                    _ => {
+                        let agents = self.menu_agents();
+                        let n = agents.len();
+                        let at = agents
+                            .iter()
+                            .position(|a| *a == self.menu_agent())
+                            .unwrap_or(0);
+                        self.menu_agent = Some(
+                            agents[if right {
+                                (at + 1) % n
+                            } else {
+                                (at + n - 1) % n
+                            }],
+                        );
+                        self.menu_cursor = None;
+                        self.menu_scroll.scroll_to_item(0);
+                    }
+                }
             }
+            "right" => return true,
             "enter" | "space" => {
                 if let Some(k) = self.menu_cursor.and_then(|i| keys.get(i)).cloned() {
                     self.menu_run(k, window, cx);
@@ -352,8 +429,9 @@ impl Shell {
             }
             _ => return false,
         }
-        if self.menu_in_sub
+        if model_menu
             && let Some(i) = self.menu_cursor
+            && matches!(keys.get(i), Some(MenuKey::Choice(..)))
         {
             self.menu_scroll.scroll_to_item(i);
         }
@@ -363,52 +441,31 @@ impl Shell {
 
     fn menu_key_is_current(&self, k: &MenuKey, cx: &App) -> bool {
         match k {
-            MenuKey::Choice(s, id, _) => {
-                self.setting_choices(*s, cx).is_some_and(|(c, _)| c == *id)
-            }
-            MenuKey::Agent(a) => self.composer_agent() == *a,
+            MenuKey::Choice(agent, s, id, _) => self
+                .agent_choices(*agent, *s, cx)
+                .is_some_and(|(c, _)| c == *id),
             _ => false,
         }
     }
 
-    /// Whether the keyboard is on row `i` of the menu's own rows (`sub` false)
-    /// or of its submenu (`sub` true).
-    fn menu_focus(&self, i: usize, sub: bool) -> bool {
-        self.menu_in_sub == sub && self.menu_cursor == Some(i)
+    /// Whether the keyboard is on row `i` of the menu, in `menu_keys` order.
+    fn menu_focus(&self, i: usize) -> bool {
+        self.menu_cursor == Some(i)
     }
 
     fn permission_sections(&self, cx: &App) -> Vec<crate::agent::Setting> {
         use crate::agent::Setting;
         match self.composer_agent() {
-            model::Agent::Claude | model::Agent::OpenCode | model::Agent::Codex => {
-                vec![Setting::Mode]
-            }
+            model::Agent::Claude
+            | model::Agent::OpenCode
+            | model::Agent::Codex
+            | model::Agent::Devin => vec![Setting::Mode],
             model::Agent::WorkersAi => Vec::new(),
             model::Agent::Droid => [Setting::Mode, Setting::Autonomy]
                 .into_iter()
                 .filter(|s| self.setting_choices(*s, cx).is_some())
                 .collect(),
         }
-    }
-
-    pub(super) fn render_agent_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let current = self.composer_agent();
-        let heading = if self.composer_in_session() {
-            "Continue with"
-        } else {
-            "Agent"
-        };
-        ui::menu_panel("agent-menu", 220.)
-            .child(ui::menu_heading(heading))
-            .children(model::Agent::ALL.into_iter().enumerate().map(|(i, agent)| {
-                ui::choice_row(("agent-opt", agent as usize), agent == current)
-                    .when(self.menu_focus(i, false), |d| d.bg(theme::fill_hover()))
-                    .child(agent_icon(agent, 14.))
-                    .child(div().flex_1().min_w_0().truncate().child(agent.label()))
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.menu_run(MenuKey::Agent(agent), window, cx)
-                    }))
-            }))
     }
 
     /// Which providers the rail's usage card shows; the Usage tab keeps them all.
@@ -422,7 +479,7 @@ impl Shell {
                     agent.label(),
                     account_view::rail_shows(agent),
                 )
-                .when(self.menu_focus(i, false), |d| d.bg(theme::fill_hover()))
+                .when(self.menu_focus(i), |d| d.bg(theme::fill_hover()))
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.menu_run(MenuKey::Rail(agent), window, cx)
                 }))
@@ -436,7 +493,7 @@ impl Shell {
                     false,
                     true,
                 )
-                .when(self.menu_focus(AgentKind::ALL.len(), false), |d| {
+                .when(self.menu_focus(AgentKind::ALL.len()), |d| {
                     d.bg(theme::fill_hover())
                 })
                 .on_click(
@@ -447,100 +504,233 @@ impl Shell {
             )
     }
 
-    /// Model, reasoning and fast mode; hovering a row (or → on it) shows its
-    /// choices beside the menu.
+    /// Agents on the left; on the right the hovered agent's models, reasoning
+    /// and fast mode. Picking another agent's model moves the composer to it.
     pub(super) fn render_model_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
         use crate::agent::Setting;
-        const WIDTH: f32 = 250.;
-        let rows: Vec<(Setting, String)> = [Setting::Model, Setting::Effort]
-            .into_iter()
-            .filter_map(|s| Some((s, self.setting_value_label(s, cx)?)))
-            .collect();
-        let n_rows = rows.len();
+        let current = self.composer_agent();
+        let shown = self.menu_agent();
+        let agents = self.menu_agents();
+        let switchable = agents.len() > 1;
+        let in_session = self.composer_in_session();
+        let models = self.choice_rows(shown, Setting::Model, false, 0, cx);
+        let n_models = models.len();
+        let effort = self.agent_choices(shown, Setting::Effort, cx);
+        let fast_ix = n_models + usize::from(effort.is_some());
         let fast = self
-            .setting_choices(Setting::Fast, cx)
+            .agent_choices(shown, Setting::Fast, cx)
             .map(|(c, _)| c == "on");
-        let reset_ix = n_rows + usize::from(fast.is_some());
-        let open = self.menu_sub.filter(|s| rows.iter().any(|(r, _)| r == s));
-        let leave_sub = |this: &mut Self, hovered: &bool, cx: &mut Context<Self>| {
-            if *hovered && this.menu_sub.is_some() {
-                this.menu_sub = None;
-                this.menu_in_sub = false;
-                cx.notify();
-            }
+        let reset_ix = fast_ix + usize::from(fast.is_some());
+        let switch_label = if in_session {
+            format!("Continue with {}", shown.label())
+        } else {
+            format!("Use {}", shown.label())
         };
-        ui::menu_panel("model-menu", WIDTH)
-            .relative()
-            .children(rows.into_iter().enumerate().map(|(i, (s, value))| {
-                let open_here = open == Some(s);
-                ui::submenu_row(
-                    ("model-row", s as usize),
-                    s.label(),
-                    value,
-                    open_here || self.menu_focus(i, false),
-                )
-                .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
-                    if *hovered && this.menu_sub != Some(s) {
-                        this.menu_sub = Some(s);
-                        this.menu_in_sub = false;
-                        cx.notify();
-                    }
-                }))
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.menu_run(MenuKey::Sub(s), window, cx)
-                }))
+
+        let agent_column = div()
+            .flex_none()
+            .w(px(AGENT_COLUMN_W))
+            .flex()
+            .flex_col()
+            .gap(crate::ui::sp(1.))
+            .child(ui::menu_heading(if in_session {
+                "Continue with"
+            } else {
+                "Agent"
             }))
+            .children(agents.into_iter().map(|agent| {
+                let model = self.agent_value_label(agent, Setting::Model, cx);
+                div()
+                    .id(("model-agent", agent as usize))
+                    .flex()
+                    .items_center()
+                    .gap(crate::ui::sp(8.))
+                    .min_h(px(ui::MENU_ROW_H))
+                    .py(crate::ui::sp(4.))
+                    .px(crate::ui::sp(8.))
+                    .rounded(ui::menu_row_radius())
+                    .cursor_pointer()
+                    .text_size(px(ui::TEXT_MD))
+                    .text_color(theme::text())
+                    .when(agent == shown, |d| d.bg(theme::fill_hover()))
+                    .when(agent == current, |d| d.bg(theme::fill_selected()))
+                    .child(agent_icon(agent, 14.))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .child(div().truncate().child(agent.label()))
+                            .when_some(model, |d, m| {
+                                d.child(
+                                    div()
+                                        .truncate()
+                                        .text_size(px(ui::TEXT_XS))
+                                        .text_color(theme::text_subtle())
+                                        .child(m),
+                                )
+                            }),
+                    )
+                    .when(agent == current, |d| {
+                        d.child(
+                            icon("tick02", 12.)
+                                .flex_none()
+                                .text_color(theme::text_subtle()),
+                        )
+                    })
+                    .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                        if *hovered && this.menu_agent() != agent {
+                            this.menu_agent = Some(agent);
+                            this.menu_cursor = None;
+                            cx.notify();
+                        }
+                    }))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.menu_run(MenuKey::Agent(agent), window, cx)
+                    }))
+            }));
+
+        let empty = n_models == 0;
+        let options = div()
+            .flex_1()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .gap(crate::ui::sp(1.))
+            .child(ui::menu_heading(if shown == current {
+                "Model"
+            } else {
+                "Model · switches agent"
+            }))
+            .when(empty, |d| {
+                d.child(
+                    div()
+                        .px(crate::ui::sp(8.))
+                        .py(crate::ui::sp(6.))
+                        .text_size(px(ui::TEXT_SM))
+                        .text_color(theme::text_subtle())
+                        .child(format!(
+                            "{}'s models show here after its first session.",
+                            shown.label()
+                        )),
+                )
+            })
+            .when(!empty, |d| {
+                d.child(
+                    div()
+                        .id("model-list")
+                        .flex()
+                        .flex_col()
+                        .gap(crate::ui::sp(1.))
+                        .max_h(px(MODEL_LIST_MAX_H))
+                        .min_h(px(0.))
+                        .overflow_y_scroll()
+                        .track_scroll(&self.menu_scroll)
+                        .children(models),
+                )
+            })
+            .when_some(effort, |d, (now, levels)| {
+                d.child(ui::menu_heading("Reasoning")).child(
+                    div().px(crate::ui::sp(4.)).pb(crate::ui::sp(2.)).child(
+                        ui::segmented()
+                            .w_full()
+                            .when(self.menu_focus(n_models), |d| {
+                                d.border_color(theme::border_strong())
+                            })
+                            .children(levels.into_iter().enumerate().map(|(i, o)| {
+                                let enabled = o.disabled.is_none();
+                                let key =
+                                    MenuKey::Choice(shown, Setting::Effort, o.id.clone(), enabled);
+                                ui::segment(
+                                    ("model-effort", i),
+                                    None,
+                                    effort_short(&o.id, &o.name),
+                                    o.id == now,
+                                )
+                                .flex_1()
+                                .min_w_0()
+                                .justify_center()
+                                .px(crate::ui::sp(4.))
+                                .when_some(effort_tip(&o.id), |d, tip| d.tooltip(ui::tip(tip)))
+                                .when(!enabled, |d| d.opacity(0.45).cursor_default())
+                                .when(enabled, |d| {
+                                    d.on_click(cx.listener(move |this, _, window, cx| {
+                                        this.menu_run(key.clone(), window, cx)
+                                    }))
+                                })
+                            })),
+                    ),
+                )
+            })
             .when_some(fast, |d, on| {
                 d.child(
                     ui::switch_row("model-fast", Setting::Fast.label(), on)
-                        .when(self.menu_focus(n_rows, false), |d| {
-                            d.bg(theme::fill_hover())
-                        })
-                        .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
-                            leave_sub(this, hovered, cx)
-                        }))
+                        .when(self.menu_focus(fast_ix), |d| d.bg(theme::fill_hover()))
                         .on_click(cx.listener(move |this, _, window, cx| {
-                            this.menu_run(MenuKey::Fast(on), window, cx)
+                            this.menu_run(MenuKey::Fast(shown, on), window, cx)
                         })),
                 )
             })
             .child(ui::menu_divider())
             .child(
                 ui::menu_item("model-reset", "undo", "Reset to default", false, true)
-                    .when(self.menu_focus(reset_ix, false), |d| {
-                        d.bg(theme::fill_hover())
-                    })
-                    .on_hover(
-                        cx.listener(move |this, hovered: &bool, _, cx| {
-                            leave_sub(this, hovered, cx)
-                        }),
-                    )
-                    .on_click(
-                        cx.listener(|this, _, window, cx| {
-                            this.menu_run(MenuKey::Reset, window, cx)
-                        }),
-                    ),
+                    .when(self.menu_focus(reset_ix), |d| d.bg(theme::fill_hover()))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.menu_run(MenuKey::Reset(shown), window, cx)
+                    })),
             )
-            .when_some(open, |d, s| {
+            .when(shown != current, |d| {
                 d.child(
-                    div()
-                        .absolute()
-                        .left(px(WIDTH + 4.))
-                        .bottom(px(-1.))
-                        .child(self.render_choice_list(s, false, cx)),
+                    ui::menu_item("model-switch", "arrow-right01", switch_label, false, true)
+                        .when(self.menu_focus(reset_ix + 1), |d| d.bg(theme::fill_hover()))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.menu_run(MenuKey::Agent(shown), window, cx)
+                        })),
                 )
-            })
+            });
+
+        // The menu opens upward, so a height that followed the hovered agent's
+        // options would move the agents under the cursor and hover another.
+        // With more than one agent the agent column sets the height, and the
+        // options fit in it, the model list scrolling.
+        let options = if switchable {
+            div()
+                .relative()
+                .flex_1()
+                .min_w_0()
+                .self_stretch()
+                .child(options.absolute().top_0().left_0().right_0().bottom_0())
+        } else {
+            options
+        };
+
+        ui::menu_panel("model-menu", MODEL_MENU_W)
+            .flex_row()
+            .items_start()
+            .gap(crate::ui::sp(4.))
+            .child(agent_column)
+            .child(
+                div()
+                    .flex_none()
+                    .w(px(1.))
+                    .self_stretch()
+                    .my(crate::ui::sp(4.))
+                    .bg(theme::border_subtle()),
+            )
+            .child(options)
     }
 
     /// Who decides what the agent may do: Claude's modes, or Droid's mode and
     /// autonomy, each choice with what it means.
     pub(super) fn render_permission_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let sections = self.permission_sections(cx);
+        let agent = self.composer_agent();
         let last = sections.len().saturating_sub(1);
         let mut offset = 0;
         let mut panel = ui::menu_panel("permission-menu", 320.);
         for (i, s) in sections.into_iter().enumerate() {
-            let rows = self.choice_rows(s, true, offset, false, cx);
+            let rows = self.choice_rows(agent, s, true, offset, cx);
             offset += rows.len();
             panel = panel.child(
                 div()
@@ -555,41 +745,24 @@ impl Shell {
         panel
     }
 
-    /// A setting's choices as their own little menu, beside the model menu.
-    fn render_choice_list(
-        &self,
-        s: crate::agent::Setting,
-        describe: bool,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        use crate::agent::Setting;
-        let width = if s == Setting::Model { 290. } else { 200. };
-        ui::menu_panel(("choice-list", s as usize), width)
-            .max_h(px(400.))
-            .min_h_0()
-            .overflow_y_scroll()
-            .track_scroll(&self.menu_scroll)
-            .children(self.choice_rows(s, describe, 0, true, cx))
-    }
-
-    /// The choices of a setting as radio rows; `offset` is where they start in
-    /// the keyboard's order, `sub` whether they are a submenu's.
+    /// `agent`'s choices of a setting as radio rows; `offset` is where they
+    /// start in the keyboard's order.
     fn choice_rows(
         &self,
+        agent: model::Agent,
         s: crate::agent::Setting,
         describe: bool,
         offset: usize,
-        sub: bool,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
         use crate::agent::Setting;
-        let (current, options) = self.setting_choices(s, cx).unwrap_or_default();
+        let (current, options) = self.agent_choices(agent, s, cx).unwrap_or_default();
         options
             .into_iter()
             .enumerate()
             .map(|(i, o)| {
                 let enabled = o.disabled.is_none();
-                let key = MenuKey::Choice(s, o.id.clone(), enabled);
+                let key = MenuKey::Choice(agent, s, o.id.clone(), enabled);
                 // Claude's "Default (recommended)" model says which model it is.
                 let note = o.disabled.clone().or(o.detail.clone()).or_else(|| {
                     (s == Setting::Model && o.id == "default")
@@ -598,9 +771,7 @@ impl Shell {
                 });
                 let description = o.description.filter(|_| describe);
                 ui::choice_row(("choice", s as usize * 1000 + i), o.id == current)
-                    .when(self.menu_focus(offset + i, sub), |d| {
-                        d.bg(theme::fill_hover())
-                    })
+                    .when(self.menu_focus(offset + i), |d| d.bg(theme::fill_hover()))
                     .when(!enabled, |d| d.opacity(0.45).cursor_default())
                     .child(
                         div()
@@ -788,7 +959,6 @@ impl Shell {
             MenuTarget::PermissionMenu => {
                 return self.render_permission_menu(cx).into_any_element();
             }
-            MenuTarget::AgentMenu => return self.render_agent_menu(cx).into_any_element(),
             MenuTarget::RailUsage => return self.render_rail_usage_menu(cx).into_any_element(),
             MenuTarget::Session(i) => return self.render_session_menu(i, cx),
             MenuTarget::Tab(i) => return self.render_tab_menu(i, cx),
@@ -841,6 +1011,104 @@ impl Shell {
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.confirm_discard(discard.clone(), window, cx)
                             })),
+                    );
+            }
+            // A server's folder: nothing here acts on it but the Servers tab.
+            MenuTarget::Env(pi, ei)
+                if self
+                    .projects
+                    .get(pi)
+                    .and_then(|p| p.environments.get(ei))
+                    .is_some_and(|e| e.remote.is_some()) =>
+            {
+                let server = self.projects[pi].environments[ei]
+                    .remote
+                    .as_ref()
+                    .map(|r| r.server.clone())
+                    .unwrap_or_default();
+                let machine = self.projects[pi].environments[ei]
+                    .remote
+                    .as_ref()
+                    .map(|r| r.machine.to_string())
+                    .unwrap_or_default();
+                panel = panel.child(
+                    ui::menu_item(
+                        "cm-server-new-env",
+                        "add01",
+                        format!("New environment on {machine}"),
+                        false,
+                        true,
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.menu = None;
+                        this.servers_new_env(pi, ei, cx)
+                    })),
+                );
+                panel =
+                    panel
+                        .child(
+                            ui::menu_item(
+                                "cm-server-add-place",
+                                "folder01",
+                                "Clone or add a folder on this server…",
+                                false,
+                                true,
+                            )
+                            .on_click(cx.listener(
+                                move |this, _, window, cx| {
+                                    this.menu = None;
+                                    this.servers_add_place(&server, window, cx)
+                                },
+                            )),
+                        )
+                        .child(
+                            ui::menu_item("cm-servers", "computer", "Open Servers", false, true)
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.open_servers_tab(window, cx)
+                                })),
+                        );
+                let env = &self.projects[pi].environments[ei];
+                let can_settle = env
+                    .sessions
+                    .iter()
+                    .any(|s| matches!(s.status, Status::NeedsInput | Status::Error));
+                let deletable = !env.is_checkout;
+                let settle = env.path.clone();
+                panel = panel
+                    .child(
+                        ui::menu_item(
+                            "cm-server-settle",
+                            "checkmark-circle02",
+                            "Settle threads",
+                            false,
+                            can_settle,
+                        )
+                        .when(can_settle, |d| {
+                            d.on_click(cx.listener(move |this, _, _, cx| {
+                                this.menu = None;
+                                this.servers_settle_env(&settle, cx);
+                                cx.notify();
+                            }))
+                        }),
+                    )
+                    .child(div().my(px(4.)).h(px(1.)).bg(theme::stroke()))
+                    .child(
+                        ui::menu_item(
+                            "cm-server-delete",
+                            "delete02",
+                            if deletable {
+                                "Delete environment…"
+                            } else {
+                                "Main checkout can't be deleted"
+                            },
+                            true,
+                            deletable,
+                        )
+                        .when(deletable, |d| {
+                            d.on_click(cx.listener(move |this, _, window, cx| {
+                                this.servers_delete_env(pi, ei, window, cx)
+                            }))
+                        }),
                     );
             }
             MenuTarget::Env(pi, ei) => {
@@ -896,5 +1164,82 @@ impl Shell {
             }
         }
         panel.into_any_element()
+    }
+}
+
+/// A reasoning level as short as a segment can hold.
+fn effort_short(id: &str, name: &str) -> String {
+    match id {
+        "default" | "auto" => "Auto".into(),
+        "none" | "off" => "Off".into(),
+        "minimal" => "Min".into(),
+        "low" => "Low".into(),
+        "medium" => "Med".into(),
+        "high" => "High".into(),
+        "xhigh" => "XHigh".into(),
+        "max" => "Max".into(),
+        "ultra" => "Ultra".into(),
+        _ => name.to_string(),
+    }
+}
+
+/// What a reasoning level's segment says on hover.
+fn effort_tip(id: &str) -> Option<&'static str> {
+    Some(match id {
+        "default" | "auto" => "The model's own default",
+        "none" | "off" => "No reasoning",
+        "minimal" => "Minimal reasoning",
+        "low" => "Low reasoning",
+        "medium" => "Medium reasoning",
+        "high" => "High reasoning",
+        "xhigh" => "Extra high reasoning",
+        "max" => "Maximum reasoning",
+        "ultra" => "Ultra reasoning",
+        _ => return None,
+    })
+}
+
+/// Whether picking `agent`'s choice of `s` closes the menu. Reasoning stays
+/// open to compare levels, and so does a model of the agent in use: the
+/// reasoning row sits below the models and may change with them, so it comes
+/// next. Another agent's model switches the agent or hands the session over.
+fn closes_on_pick(
+    s: crate::agent::Setting,
+    agent: model::Agent,
+    composer_agent: model::Agent,
+) -> bool {
+    use crate::agent::Setting;
+    match s {
+        Setting::Effort => false,
+        Setting::Model => agent != composer_agent,
+        _ => true,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::Setting;
+
+    #[test]
+    fn model_menu_stays_open_for_the_same_agent() {
+        let (claude, codex) = (model::Agent::Claude, model::Agent::Codex);
+        assert!(!closes_on_pick(Setting::Model, claude, claude));
+        assert!(closes_on_pick(Setting::Model, codex, claude));
+        assert!(!closes_on_pick(Setting::Effort, claude, claude));
+        assert!(!closes_on_pick(Setting::Effort, codex, claude));
+        assert!(closes_on_pick(Setting::Mode, claude, claude));
+    }
+
+    #[test]
+    fn effort_levels_fit_a_segment() {
+        for id in [
+            "default", "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
+        ] {
+            assert!(effort_short(id, id).len() <= 5, "{id}");
+            assert!(effort_tip(id).is_some(), "{id}");
+        }
+        assert_eq!(effort_short("turbo", "Turbo"), "Turbo");
+        assert_eq!(effort_tip("turbo"), None);
     }
 }

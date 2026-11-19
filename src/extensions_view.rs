@@ -325,7 +325,8 @@ impl ExtensionsView {
         self.set_kind(Kind::Arakun, cx);
     }
 
-    fn set_view(&mut self, view: View, on: bool, cx: &mut Context<Self>) {
+    /// Turns an extension tab on or off, as its switch here does.
+    pub fn set_view(&mut self, view: View, on: bool, cx: &mut Context<Self>) {
         if self.views.set(view, on) {
             self.views.save();
             cx.emit(ExtensionsEvent::Toggled(view, on));
@@ -397,7 +398,9 @@ impl ExtensionsView {
             if first {
                 let dir = cwd.clone();
                 let quick = cx
-                    .background_spawn(async move { claude_ext::load_quick(&dir) })
+                    .background_spawn(crate::guard::task_or_default(async move {
+                        claude_ext::load_quick(&dir)
+                    }))
                     .await;
                 let ok = this.update(cx, |this, cx| {
                     if this.cwd.as_ref() == Some(&cwd) && this.claude.is_none() {
@@ -411,7 +414,9 @@ impl ExtensionsView {
             }
             let dir = cwd.clone();
             let found = cx
-                .background_spawn(async move { claude_ext::load(&dir) })
+                .background_spawn(crate::guard::task_or_default(async move {
+                    claude_ext::load(&dir)
+                }))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 if this.cwd.as_ref() != Some(&cwd) {
@@ -432,7 +437,9 @@ impl ExtensionsView {
         cx.spawn(async move |this, cx| {
             let dir = cwd.clone();
             let mut quick = cx
-                .background_spawn(async move { claude_ext::load_quick(&dir) })
+                .background_spawn(crate::guard::task_or_default(async move {
+                    claude_ext::load_quick(&dir)
+                }))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 if this.cwd.as_ref() != Some(&cwd) {
@@ -455,7 +462,9 @@ impl ExtensionsView {
         self.error = None;
         cx.spawn(async move |this, cx| {
             let result = cx
-                .background_spawn(async move { claude_ext::set_plugin(&cwd, &id, enabled) })
+                .background_spawn(crate::guard::task(async move {
+                    claude_ext::set_plugin(&cwd, &id, enabled)
+                }))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.plugin_busy = None;
@@ -490,7 +499,9 @@ impl ExtensionsView {
         self.notice = None;
         self.confirm_remove = None;
         cx.spawn(async move |this, cx| {
-            let result = cx.background_spawn(async move { job() }).await;
+            let result = cx
+                .background_spawn(crate::guard::task(async move { job() }))
+                .await;
             let _ = this.update(cx, |this, cx| {
                 this.op = None;
                 match result {
@@ -619,7 +630,11 @@ impl ExtensionsView {
         }
         self.run_droid(None, move || extensions::load(&cwd), cx);
         self._plugins_task = Some(cx.spawn(async move |this, cx| {
-            let found = cx.background_spawn(async move { plugins::load() }).await;
+            let found = cx
+                .background_spawn(crate::guard::task_or_default(
+                    async move { plugins::load() },
+                ))
+                .await;
             let _ = this.update(cx, |this, cx| {
                 this.plugins = Some(found);
                 cx.notify();
@@ -636,7 +651,9 @@ impl ExtensionsView {
         self.droid_busy = busy;
         self.droid_error = None;
         self._droid_task = Some(cx.spawn(async move |this, cx| {
-            let result = cx.background_spawn(async move { job() }).await;
+            let result = cx
+                .background_spawn(crate::guard::task(async move { job() }))
+                .await;
             let _ = this.update(cx, |this, cx| {
                 this.droid_busy = None;
                 this._droid_task = None;

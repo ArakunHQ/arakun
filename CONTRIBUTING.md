@@ -89,8 +89,14 @@ CI runs the checks below that a pull request can affect. A change to docs, `iso/
 `tools/` (apart from `tools/rustfmt.sh` and the layout audit) alone skips the Rust
 jobs, the relay job runs only when `relay/`, `phone/` or CI itself changes, and
 cargo-deny runs only when `Cargo.toml`, `Cargo.lock` or `deny.toml` changes, and
-zizmor runs only when `.github/` changes. Run the ones that match what you changed
-before you push:
+zizmor runs only when `.github/` changes.
+
+CI is the gate, not your machine. Before you push, run the quick checks for what you
+changed: `tools/rustfmt.sh --check` and clippy for Rust, and the tests of the modules
+you touched (`cargo test --locked --no-default-features <module>`, for example
+`terminal` or `design_lint` for a UI change). The full test suite, cargo-deny, zizmor
+and the other platforms can be left to CI on your draft pull request; fix what it
+finds there. These are the commands CI runs:
 
 ```sh
 # the app (with CEF set up, you can leave out --no-default-features)
@@ -167,7 +173,8 @@ lefthook install
   [Pull requests](#pull-requests)).
 
 Skip the hooks for one command with `LEFTHOOK=0 git commit ...`, or one job with
-`LEFTHOOK_EXCLUDE=clippy git commit ...`. Put your own changes in `lefthook-local.yml`,
+`LEFTHOOK_EXCLUDE=clippy git commit ...`. To leave the full test suite to CI, push with
+`LEFTHOOK_EXCLUDE=cargo-test git push`. Put your own changes in `lefthook-local.yml`,
 which git ignores. Turn the hooks off with `lefthook uninstall`.
 
 ## Writing code

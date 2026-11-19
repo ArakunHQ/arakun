@@ -629,6 +629,7 @@ impl AutomationsDialog {
                         (Agent::Claude, Agent::Claude.label()),
                         (Agent::OpenCode, Agent::OpenCode.label()),
                         (Agent::Codex, Agent::Codex.label()),
+                        (Agent::Devin, Agent::Devin.label()),
                     ],
                     agent,
                     cx,

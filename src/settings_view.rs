@@ -30,6 +30,8 @@ pub enum SettingsEvent {
     OpenCodeSignOut,
     CodexSignIn,
     CodexSignOut,
+    DevinSignIn,
+    DevinSignOut,
     OpenUsage,
     OpenGallery,
     RailUsage(crate::agent::AgentKind, bool),
@@ -39,6 +41,9 @@ pub enum SettingsEvent {
     DiffPalette(DiffPalette),
     Glass(bool),
     Island(bool),
+    /// Only Linux has the switch.
+    #[cfg(target_os = "linux")]
+    Background(bool),
     /// Quit and start again, which installs the downloaded update.
     RestartToUpdate,
     OpenAccount,
@@ -81,6 +86,7 @@ enum Section {
     Codex,
     Droid,
     OpenCode,
+    Devin,
 }
 
 impl Section {
@@ -98,6 +104,7 @@ impl Section {
         Section::Codex,
         Section::Droid,
         Section::OpenCode,
+        Section::Devin,
     ];
 
     fn group(self) -> Group {
@@ -115,6 +122,7 @@ impl Section {
             Section::Codex => Some(AgentKind::Codex),
             Section::Droid => Some(AgentKind::Droid),
             Section::OpenCode => Some(AgentKind::OpenCode),
+            Section::Devin => Some(AgentKind::Devin),
             _ => None,
         }
     }
@@ -133,6 +141,7 @@ impl Section {
             Section::Codex => "Codex",
             Section::Droid => "Droid",
             Section::OpenCode => "OpenCode",
+            Section::Devin => "Devin",
         }
     }
 
@@ -147,7 +156,11 @@ impl Section {
             #[cfg(feature = "coderlabs")]
             Section::CoderSpace => "check-list",
             Section::Shortcuts => "keyboard",
-            Section::Claude | Section::Codex | Section::Droid | Section::OpenCode => "bot",
+            Section::Claude
+            | Section::Codex
+            | Section::Droid
+            | Section::OpenCode
+            | Section::Devin => "bot",
         }
     }
 
@@ -169,6 +182,7 @@ impl Section {
             Section::Codex => "Codex's sign-in: your ChatGPT plan or an OpenAI API key.",
             Section::Droid => "Your Factory plan, and what Droid loads in the visible environment.",
             Section::OpenCode => "The providers OpenCode signs in to, OpenCode Go among them.",
+            Section::Devin => "Devin's sign-in: your Devin account or a Windsurf API key.",
         }
     }
 
@@ -177,11 +191,11 @@ impl Section {
         match self {
             #[cfg(feature = "coderlabs")]
             Section::General => {
-                "raccoon mascot animation motion new session dynamic island notch top bar agents alerts oye arakun wake word voice microphone"
+                "raccoon mascot animation motion new session dynamic island notch top bar agents alerts background close hide tray oye arakun wake word voice microphone"
             }
             #[cfg(not(feature = "coderlabs"))]
             Section::General => {
-                "raccoon mascot animation motion new session dynamic island notch top bar agents alerts sidebar usage card plans browser web page drive click type scripts"
+                "raccoon mascot animation motion new session dynamic island notch top bar agents alerts background close hide tray sidebar usage card plans browser web page drive click type scripts"
             }
             Section::Appearance => {
                 "theme palette color colors accent tint corners radius rounded round sharp spacing gap padding compact roomy density window custom share night graphite midnight forest rose diff colors colorblind high contrast glass blur transparent translucent grays gray text size font scale design system mode dark light"
@@ -207,6 +221,7 @@ impl Section {
                 "factory account plan usage api key credits skills mcp servers extensions plugins"
             }
             Section::OpenCode => "opencode go zen provider api key models sign in logout",
+            Section::Devin => "devin cognition windsurf api key sign in logout",
         }
     }
 
@@ -218,7 +233,7 @@ impl Section {
         // The Updates card and the link setting are in General in every build, so
         // their words are added here rather than to each build's keyword list.
         let general = if self == Section::General {
-            "update updates automatic automatically auto version release upgrade \
+            "update updates automatic automatically auto version release upgrade nightly channel beta testers \
              links open system default external"
         } else {
             ""
@@ -260,11 +275,7 @@ const SHORTCUTS: &[Shortcut] = &[
         "Jump to a session, environment or command",
     ),
     ("Navigate", "Alt+↑ / Alt+↓", "Previous / next environment"),
-    (
-        "Navigate",
-        "Ctrl+B",
-        "Hide or show the sidebar and workspace panel",
-    ),
+    ("Navigate", "Ctrl+B", "Hide or show the sidebar"),
     ("Navigate", "Ctrl+,", "Settings"),
     (
         "Navigate",
@@ -353,6 +364,10 @@ pub struct SettingsDialog {
     codex: Option<&'static str>,
     /// The variable with Codex's API key, when the environment has one.
     codex_env: Option<&'static str>,
+    /// Whether `devin auth login` has signed in.
+    devin: bool,
+    /// The variable with Devin's API key, when the environment has one.
+    devin_env: Option<&'static str>,
     input: Entity<TextInput>,
     section: Section,
     voice: voice::Settings,
@@ -371,6 +386,8 @@ pub struct SettingsDialog {
     palette_note: Option<(SharedString, bool)>,
     /// Delete was clicked once on the palette in use.
     confirm_delete: bool,
+    /// The nightly switch was clicked and its warning is showing.
+    confirm_nightly: bool,
     /// The name of the user's palette in use.
     name_input: Entity<TextInput>,
     /// Whether the field to paste a shared palette is open.
@@ -492,7 +509,9 @@ impl SettingsDialog {
             );
         cx.spawn(async move |this, cx| {
             let (plan, access) = cx
-                .background_spawn(async move { (plan::refresh(), claude_auth::access()) })
+                .background_spawn(crate::guard::task(async move {
+                    (plan::refresh(), claude_auth::access())
+                }))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.claude = plan;
@@ -503,7 +522,9 @@ impl SettingsDialog {
         .detach();
         cx.spawn(async move |this, cx| {
             let set = cx
-                .background_spawn(async move { voice::api_key().is_some() })
+                .background_spawn(crate::guard::task(
+                    async move { voice::api_key().is_some() },
+                ))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.voice_key = Some(set);
@@ -522,6 +543,8 @@ impl SettingsDialog {
             opencode: crate::agent::opencode_providers(),
             codex: crate::agent::codex_sign_in(),
             codex_env: crate::agent::codex_env_key(),
+            devin: crate::agent::devin_signed_in(),
+            devin_env: crate::agent::devin_env_key(),
             input,
             section,
             voice,
@@ -537,6 +560,7 @@ impl SettingsDialog {
             share_input,
             palette_note: None,
             confirm_delete: false,
+            confirm_nightly: false,
             name_input,
             show_import: false,
             palette_save: None,
@@ -580,7 +604,9 @@ impl SettingsDialog {
         cx.notify();
         cx.spawn(async move |this, cx| {
             let saved = cx
-                .background_spawn(async move { voice::store_api_key(&key) })
+                .background_spawn(crate::guard::task(
+                    async move { voice::store_api_key(&key) },
+                ))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.voice_busy = false;
@@ -608,7 +634,7 @@ impl SettingsDialog {
         }
         self.voice_busy = true;
         cx.spawn(async move |this, cx| {
-            cx.background_spawn(async move { voice::clear_api_key() })
+            cx.background_spawn(crate::guard::task(async move { voice::clear_api_key() }))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.voice_busy = false;
@@ -662,11 +688,11 @@ impl SettingsDialog {
         cx.notify();
         cx.spawn(async move |this, cx| {
             let wav = cx
-                .background_spawn(async move {
+                .background_spawn(crate::guard::task(async move {
                     let key = voice::api_key()
                         .ok_or_else(|| "Save your ElevenLabs API key first.".to_string())?;
                     voice::fetch(&key, &id, tone, voice::sample(lang), lang)
-                })
+                }))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.voice_busy = false;
@@ -761,6 +787,16 @@ impl SettingsDialog {
         }
     }
 
+    /// Devin's own sign-in comes first; a key only in the environment is named
+    /// by its variable, never shown.
+    fn devin_status(&self) -> String {
+        match (self.devin, self.devin_env) {
+            (true, _) => "Signed in".into(),
+            (false, Some(var)) => format!("API key · {var}"),
+            (false, None) => "Not signed in".into(),
+        }
+    }
+
     /// Whether an agent's section gets the green dot: it can run, through a
     /// sign-in or a key. `false` for the other sections.
     fn signed_in(&self, s: Section) -> bool {
@@ -769,6 +805,7 @@ impl SettingsDialog {
             Section::Codex => self.codex.is_some() || self.codex_env.is_some(),
             Section::Droid => self.droid,
             Section::OpenCode => !self.opencode.is_empty(),
+            Section::Devin => self.devin || self.devin_env.is_some(),
             _ => false,
         }
     }
@@ -864,6 +901,19 @@ impl SettingsDialog {
                         cx.notify();
                     }))
                     .into_any_element(),
+                    #[cfg(target_os = "linux")]
+                    row(
+                        "Keep running in the background",
+                        "Closing the window hides it; agents, terminals and the island go on. Run arakun to bring it back, arakun quit to quit.",
+                        switch(crate::background::enabled()).into_any_element(),
+                    )
+                    .id("set-background")
+                    .cursor_pointer()
+                    .on_click(cx.listener(|_, _, _, cx| {
+                        cx.emit(SettingsEvent::Background(!crate::background::enabled()));
+                        cx.notify();
+                    }))
+                    .into_any_element(),
                     #[cfg(feature = "coderlabs")]
                     row(
                         "Oye Arakun",
@@ -949,7 +999,7 @@ impl SettingsDialog {
                 }
                 let settle = row(
                     "Settle threads after merge",
-                    "Once an environment's pull request is merged: its open review threads are resolved on GitHub, its notifications are marked read, and the environment's sessions stop asking for you. The GitHub tab marks read the notifications of every merged pull request.",
+                    "Once an environment's pull request is merged: its open review threads are resolved on GitHub, its notifications are marked read, and the environment's sessions stop asking for you and leave the sessions list. The GitHub tab marks read the notifications of every merged pull request.",
                     switch(crate::settle::on()).into_any_element(),
                 )
                 .id("set-settle-after-merge")
@@ -1108,6 +1158,35 @@ impl SettingsDialog {
                     ],
                 )])
             }
+            Section::Devin => {
+                let signed_in = self.devin;
+                stack(vec![titled(
+                    "Account",
+                    vec![
+                        row(
+                            self.devin_status(),
+                            if signed_in {
+                                "The same sign-in the devin CLI uses. Arakun only checks that it is there."
+                            } else if self.devin_env.is_some() {
+                                "Sessions use the API key in the environment. Sign in to use your Devin account instead."
+                            } else {
+                                "Runs devin auth login in a terminal; approve the sign-in in the browser. WINDSURF_API_KEY works too."
+                            },
+                            if signed_in {
+                                ui::button("set-devin-out", "Sign out", ButtonKind::Danger, true)
+                                    .on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::DevinSignOut)))
+                                    .into_any_element()
+                            } else {
+                                ui::button("set-devin-in", "Sign in", ButtonKind::Outline, true)
+                                    .on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::DevinSignIn)))
+                                    .into_any_element()
+                            },
+                        )
+                        .into_any_element(),
+                        no_sign_in_row(AgentKind::Devin),
+                    ],
+                )])
+            }
             Section::Droid => stack(vec![
                 titled(
                     "Factory",
@@ -1250,7 +1329,7 @@ impl SettingsDialog {
     /// the last check found.
     fn update_rows(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         use crate::update::{self, Status};
-        let version = format!("Arakun {}", env!("CARGO_PKG_VERSION"));
+        let version = format!("Arakun {}", env!("ARAKUN_VERSION"));
         if !update::release_build() {
             return vec![
                 row(
@@ -1276,11 +1355,12 @@ impl SettingsDialog {
             cx.notify();
         }))
         .into_any_element();
+        let nightly = self.nightly_row(cx);
         let status = update::status();
         let busy = matches!(status, Status::Checking | Status::Downloading(_));
         let action = match &status {
             // Only Linux and macOS can start Arakun again by themselves.
-            Status::Ready(_) if cfg!(unix) => ui::button(
+            Status::Ready(tag) if cfg!(unix) && update::will_install(tag) => ui::button(
                 "set-update-restart",
                 "Restart now",
                 ButtonKind::Outline,
@@ -1294,7 +1374,9 @@ impl SettingsDialog {
                     }
                     update::set_status(Status::Checking);
                     cx.spawn(async move |this, cx| {
-                        cx.background_spawn(async { update::check() }).await.ok();
+                        cx.background_spawn(crate::guard::task(async { update::check() }))
+                            .await
+                            .ok();
                         this.update(cx, |_, cx| cx.notify()).ok();
                     })
                     .detach();
@@ -1303,7 +1385,106 @@ impl SettingsDialog {
             ),
         };
         let current = row(version, status.text(), action.into_any_element()).into_any_element();
-        vec![auto, current]
+        vec![auto, nightly, current]
+    }
+
+    /// The nightly channel: a switch that shows what nightlies risk, and asks
+    /// again, before it takes them.
+    fn nightly_row(&self, cx: &mut Context<Self>) -> AnyElement {
+        use crate::update::{self, Channel};
+        let on = update::channel() == Channel::Nightly;
+        let hint = if on {
+            "Gets a build of main every night. Turn it off to go back to releases: this build stays until a release newer than it comes out."
+        } else {
+            "Builds of main from every night, before they are released. For maintainers and testers."
+        };
+        // Off the UI thread: the write waits while another Arakun installs
+        // an update (update::channel_lock).
+        let set = |to: Channel, cx: &mut Context<Self>| {
+            cx.spawn(async move |this, cx| {
+                let saved = cx
+                    .background_spawn(crate::guard::task(async move { update::set_channel(to) }))
+                    .await;
+                if let Err(e) = saved {
+                    eprintln!("arakun: the update channel will not last past a restart: {e}");
+                }
+                this.update(cx, |_, cx| cx.notify()).ok();
+            })
+            .detach();
+        };
+        let switch_row = row("Nightly builds", hint, switch(on).into_any_element())
+            .id("set-nightly")
+            .cursor_pointer()
+            .on_click(cx.listener(move |this, _, _, cx| {
+                if on {
+                    set(Channel::Stable, cx);
+                } else {
+                    this.confirm_nightly = !this.confirm_nightly;
+                    cx.notify();
+                }
+            }));
+        if on || !self.confirm_nightly {
+            return switch_row.into_any_element();
+        }
+        let warning = div()
+            .flex()
+            .flex_col()
+            .gap(crate::ui::sp(10.))
+            .mx(crate::ui::sp(14.))
+            .mb(crate::ui::sp(12.))
+            .p(crate::ui::sp(12.))
+            .rounded(crate::ui::rad(ui::RADIUS_LG))
+            .border_1()
+            .border_color(theme::warn())
+            .child(
+                div()
+                    .text_size(px(ui::TEXT_SM))
+                    .text_color(theme::warn())
+                    .font_weight(FontWeight::MEDIUM)
+                    .child("Nightly builds can break."),
+            )
+            .child(
+                div()
+                    .text_size(px(ui::TEXT_SM))
+                    .text_color(theme::text_muted())
+                    .child(
+                        "They are made from main every night and nobody tests them by hand. \
+                         One can crash, lose a session or change how your data is stored, and \
+                         a release may not read what a nightly wrote. Use them to try what is \
+                         next and report what breaks, not for work you can't redo.",
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .gap(crate::ui::sp(8.))
+                    .child(
+                        ui::button(
+                            "set-nightly-yes",
+                            "Get nightly builds",
+                            ButtonKind::Danger,
+                            true,
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.confirm_nightly = false;
+                            set(Channel::Nightly, cx);
+                        })),
+                    )
+                    .child(
+                        ui::button("set-nightly-no", "Cancel", ButtonKind::Ghost, true).on_click(
+                            cx.listener(|this, _, _, cx| {
+                                this.confirm_nightly = false;
+                                cx.notify();
+                            }),
+                        ),
+                    ),
+            );
+        div()
+            .flex()
+            .flex_col()
+            .child(switch_row)
+            .child(warning)
+            .into_any_element()
     }
 
     /// Puts `id` in use across the app and remembers it.
@@ -2651,7 +2832,7 @@ impl Render for SettingsDialog {
 
         // The version, or how many sections the search leaves.
         let foot: SharedString = if q.is_empty() {
-            format!("Arakun {}", env!("CARGO_PKG_VERSION")).into()
+            format!("Arakun {}", env!("ARAKUN_VERSION")).into()
         } else {
             match shown.len() {
                 0 => "No matches".into(),

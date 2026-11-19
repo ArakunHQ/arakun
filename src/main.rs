@@ -1,3 +1,4 @@
+mod accept;
 mod account;
 mod account_view;
 mod agent;
@@ -6,6 +7,7 @@ mod ascii_face;
 mod assets;
 mod attach_picker;
 mod automations_view;
+mod background;
 mod branches;
 mod branches_view;
 mod browser;
@@ -15,11 +17,13 @@ mod canvas;
 mod canvas_view;
 mod caret;
 mod ci;
+mod clone_source;
 mod cloudflare;
 mod cloudflare_view;
 #[cfg(feature = "coderlabs")]
 mod coderspace;
 mod control;
+mod crash;
 #[cfg(test)]
 mod design_lint;
 mod dev;
@@ -35,6 +39,7 @@ mod git;
 mod git_dialogs;
 mod github;
 mod github_view;
+mod guard;
 mod headless;
 mod highlight;
 mod history;
@@ -95,6 +100,7 @@ mod update;
 mod usage_history;
 mod usage_view;
 mod voice;
+mod window_error;
 #[cfg(feature = "coderlabs")]
 mod xlog;
 mod zoom;
@@ -144,12 +150,20 @@ fn main() {
     control::export_env();
     platform::detach_own_console();
     // After the CLI: `arakun <command>` runs in agents' shells and reports nothing.
+    crash::install();
     // Sends only what the user agreed to; the first launch asks (`ask_telemetry`).
     telemetry::init();
     telemetry::capture(telemetry::events::APP_LAUNCHED, &[]);
     update::clean_up();
     let started = std::time::Instant::now();
-    gpui::Application::with_platform(ui_zoom::platform())
+    // Without a display server gpui runs headless, and nothing would ever show.
+    #[cfg(target_os = "linux")]
+    if let Err(e) = window_error::check_display() {
+        window_error::exit(&e);
+    }
+    let platform =
+        window_error::catch(ui_zoom::platform).unwrap_or_else(|e| window_error::exit(&e));
+    gpui::Application::with_platform(platform)
         .with_assets(assets::Assets)
         .run(move |cx: &mut App| {
             assets::load_fonts(cx);
@@ -296,7 +310,8 @@ fn main() {
                     },
                     |window, cx| cx.new(|cx| shell::Shell::new(window, cx)),
                 )
-                .unwrap();
+                // Fails without a usable GPU driver; say so instead of panicking.
+                .unwrap_or_else(|e| window_error::exit(&format!("{e:#}")));
             let _ = shell.update(cx, |shell, window, cx| {
                 // The setup asks about reports itself; the dialog is for everyone else.
                 shell.onboard_if_new(window, cx);

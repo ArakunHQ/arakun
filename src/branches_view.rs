@@ -264,7 +264,11 @@ impl BranchesView {
         cx.notify();
         self._load = Some(cx.spawn(async move |this, cx| {
             let r = root.clone();
-            let map = cx.background_spawn(async move { branches::load(&r) }).await;
+            let map = cx
+                .background_spawn(crate::guard::task_or_default(
+                    async move { branches::load(&r) },
+                ))
+                .await;
             let _ = this.update(cx, |this, cx| {
                 if this.root.as_ref() == Some(&root) {
                     if let Some(old) = &this.map {

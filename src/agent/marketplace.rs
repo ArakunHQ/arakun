@@ -63,11 +63,8 @@ pub fn plugins(cwd: &Path) -> Result<Vec<PluginEntry>> {
     )?;
     let v: Value = serde_json::from_str(&out).context("reading claude plugin list")?;
     let list = parse_plugins(&v, &manifests());
-    if let Some(dir) = cache_file().parent() {
-        let _ = std::fs::create_dir_all(dir);
-        if let Ok(json) = serde_json::to_vec(&list) {
-            let _ = std::fs::write(cache_file(), json);
-        }
+    if let Ok(json) = serde_json::to_vec(&list) {
+        let _ = crate::durable::write(&cache_file(), &json);
     }
     Ok(list)
 }
@@ -453,11 +450,8 @@ pub fn official_servers() -> Result<Vec<RegistryServer>> {
             .then_with(|| a.title.to_lowercase().cmp(&b.title.to_lowercase()))
     });
     found.dedup_by(|a, b| a.name == b.name);
-    if let Some(dir) = official_file().parent() {
-        let _ = std::fs::create_dir_all(dir);
-        if let Ok(json) = serde_json::to_vec(&found) {
-            let _ = std::fs::write(official_file(), json);
-        }
+    if let Ok(json) = serde_json::to_vec(&found) {
+        let _ = crate::durable::write(&official_file(), &json);
     }
     Ok(found)
 }
@@ -783,7 +777,17 @@ pub fn install_server(
 }
 
 fn run(bin: &Path, cwd: &Path, args: &[&str], timeout: Duration) -> Result<String> {
-    super::claude_ext::run_cli(bin, cwd, args, timeout)
+    super::claude_ext::run_cli(bin, &workdir(cwd), args, timeout)
+}
+
+/// Everything here is for the user, not the project, so a folder that is gone
+/// (an environment deleted outside arakun) must not stop it: use home instead.
+fn workdir(cwd: &Path) -> PathBuf {
+    if cwd.is_dir() {
+        cwd.to_path_buf()
+    } else {
+        launch::home()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -840,6 +844,13 @@ mod tests {
         assert!(ok["error"].is_null());
         let failed = done("a@b", Err(anyhow!("no such plugin")));
         assert_eq!(failed["error"], "no such plugin");
+    }
+
+    #[test]
+    fn missing_folder_runs_from_home() {
+        let here = std::env::temp_dir();
+        assert_eq!(workdir(&here), here);
+        assert_eq!(workdir(&here.join("arakun-no-such-folder")), launch::home());
     }
 
     fn sample() -> Value {

@@ -22,6 +22,10 @@ For macOS it also writes:
   from the light look, so an inverted light look would replace the brand there.
   Icon Composer designs on the full 1024 pt square; macOS adds the margin.
 
+For Windows it writes src/arakun.ico: the tile at 16 to 256 px, the small
+face up to 48 px. build.rs puts it in arakun.exe as icon 1, the one gpui loads
+for the window and the taskbar, and Explorer shows for the file.
+
 For the phone remote (phone/) it writes icon.svg, icon-192.png and icon-512.png
 (the tile), and apple-touch-icon.png and icon-maskable-512.png (full-bleed ink,
 which iOS and Android round or mask themselves).
@@ -33,6 +37,7 @@ import subprocess
 import sys
 
 import re
+import struct
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 TILE, PAPER, AMBER = "#151515", "#f1efe8", "#ffb547"
@@ -44,6 +49,8 @@ SHIFT = (10.73, 10.68)
 # Apple's macOS icon grid: on a 1024 px canvas the tile is 824 px with a
 # 185.4 px corner radius, and a shadow below it (10 px down, 10 px blur, 30 %).
 MAC_CANVAS, MAC_TILE, MAC_RADIUS = 1024, 824, 185.4
+# The sizes Windows asks an .ico for, from 100 % to 300 % scale.
+ICO_SIZES = [16, 20, 24, 32, 40, 48, 64, 256]
 
 
 def face():
@@ -169,6 +176,20 @@ def icon_composer(parts):
     print(f"brand-logo: wrote {os.path.relpath(icon, ROOT)}", file=sys.stderr)
 
 
+def ico(pngs):
+    """Packs (size, png bytes) pairs into an .ico. Windows Vista and later read
+    PNG entries directly, so nothing is converted to bitmaps."""
+    head = struct.pack("<HHH", 0, 1, len(pngs))
+    offset = len(head) + 16 * len(pngs)
+    entries, data = b"", b""
+    for size, png in pngs:
+        # 0 means 256 in the one-byte width and height.
+        entries += struct.pack("<BBBBHHII", size % 256, size % 256, 0, 0, 1, 32,
+                               len(png), offset + len(data))
+        data += png
+    return head + entries + data
+
+
 def main():
     parts = face()
     brand = os.path.join(ROOT, "assets", "brand")
@@ -194,6 +215,14 @@ def main():
     subprocess.run(["rsvg-convert", "-w", str(ASCII_W), "-o", out],
                    input=ascii_face(parts).encode(), check=True)
     print(f"brand-logo: wrote {os.path.relpath(out, ROOT)} ({ASCII_W} px wide)", file=sys.stderr)
+    pngs = [(size, subprocess.run(["rsvg-convert", "-w", str(size), "-h", str(size)],
+                                  input=svg(parts, size <= 48).encode(), check=True,
+                                  capture_output=True).stdout)
+            for size in ICO_SIZES]
+    out = os.path.join(ROOT, "src", "arakun.ico")
+    with open(out, "wb") as f:
+        f.write(ico(pngs))
+    print(f"brand-logo: wrote {os.path.relpath(out, ROOT)}", file=sys.stderr)
     icon_composer(parts)
 
 

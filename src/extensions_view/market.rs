@@ -99,7 +99,9 @@ impl ExtensionsView {
         self.ms.registry_error = None;
         cx.spawn(async move |this, cx| {
             let found = cx
-                .background_spawn(async move { marketplace::official_servers() })
+                .background_spawn(crate::guard::task(async move {
+                    marketplace::official_servers()
+                }))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.ms.official_loading = false;
@@ -123,7 +125,9 @@ impl ExtensionsView {
         self.ms.catalog_error = None;
         cx.spawn(async move |this, cx| {
             let found = cx
-                .background_spawn(async move { marketplace::plugins(&cwd) })
+                .background_spawn(crate::guard::task(
+                    async move { marketplace::plugins(&cwd) },
+                ))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.ms.catalog_loading = false;
@@ -166,7 +170,9 @@ impl ExtensionsView {
         self.ms.task = Some(cx.spawn(async move |this, cx| {
             let q = query.clone();
             let found = cx
-                .background_spawn(async move { marketplace::search(&q, cursor.as_deref()) })
+                .background_spawn(crate::guard::task(async move {
+                    marketplace::search(&q, cursor.as_deref())
+                }))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.ms.registry_loading = false;

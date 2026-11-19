@@ -18,6 +18,11 @@ pub enum ToIsland {
     Hello {
         pid: u32,
     },
+    /// An agent outside Arakun changed (`arakun island hook`, `arakun island session`).
+    #[cfg(windows)]
+    Session {
+        update: super::external::Update,
+    },
     /// What every session is up to, sent when it changes.
     Feed {
         feed: Feed,
@@ -190,6 +195,18 @@ pub fn voz_args(args: &[String]) -> Option<ToIsland> {
 pub fn request(msg: &ToIsland) -> std::io::Result<Reply> {
     use std::io::{BufRead as _, BufReader, Write as _};
     let mut stream = std::os::unix::net::UnixStream::connect(socket_path())?;
+    stream.set_read_timeout(Some(std::time::Duration::from_secs(5)))?;
+    stream.write_all(encode(msg).as_bytes())?;
+    let mut line = String::new();
+    BufReader::new(&stream).read_line(&mut line)?;
+    decode(&line).map_err(std::io::Error::other)
+}
+
+/// Windows 10+ has AF_UNIX sockets too; `uds_windows` exposes them.
+#[cfg(windows)]
+pub fn request(msg: &ToIsland) -> std::io::Result<Reply> {
+    use std::io::{BufRead as _, BufReader, Write as _};
+    let mut stream = uds_windows::UnixStream::connect(socket_path())?;
     stream.set_read_timeout(Some(std::time::Duration::from_secs(5)))?;
     stream.write_all(encode(msg).as_bytes())?;
     let mut line = String::new();

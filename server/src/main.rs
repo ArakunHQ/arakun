@@ -6,6 +6,8 @@
 //!   cargo build --release --locked -p arakun-server
 //!   arakun-server help
 
+#[path = "../../src/accept.rs"]
+mod accept;
 #[allow(dead_code)]
 #[path = "../../src/account.rs"]
 mod account;
@@ -19,6 +21,8 @@ mod durable;
 #[allow(dead_code)]
 #[path = "../../src/fetch.rs"]
 mod fetch;
+#[path = "../../src/guard.rs"]
+mod guard;
 #[allow(dead_code)]
 #[path = "../../src/headless/sandbox.rs"]
 mod sandbox;
@@ -65,6 +69,12 @@ mod phone_page {
 }
 #[path = "../../src/caret.rs"]
 mod caret;
+
+// What the picker reads from a source (`shorthand`) goes unused here.
+#[allow(dead_code)]
+#[path = "../../src/clone_source.rs"]
+mod clone_source;
+
 #[allow(dead_code)]
 #[path = "../../src/highlight.rs"]
 mod highlight;
@@ -105,7 +115,7 @@ fn main() {
     server::set_name("arakun-server");
     let args: Vec<String> = std::env::args().skip(1).collect();
     if matches!(args.first().map(String::as_str), Some("--version" | "-V")) {
-        println!("arakun-server {}", env!("CARGO_PKG_VERSION"));
+        println!("arakun-server {}", env!("ARAKUN_VERSION"));
         return;
     }
     std::process::exit(server::cli(&args));

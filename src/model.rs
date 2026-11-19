@@ -1,6 +1,7 @@
 //! Projects are git repositories; each environment is one of their worktrees and
-//! owns its own tabs, sessions and terminals, so switching environments swaps the
-//! whole set.
+//! owns its own sessions and terminals. The window has one row of tabs
+//! (`TabStrip`) for all of them: a tab says which environment it works in, and
+//! showing it shows that environment.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -19,6 +20,7 @@ pub enum Agent {
     Droid,
     OpenCode,
     Codex,
+    Devin,
     WorkersAi,
 }
 
@@ -37,11 +39,12 @@ pub fn set_default_agent(agent: Agent) {
 }
 
 impl Agent {
-    pub const ALL: [Agent; 5] = [
+    pub const ALL: [Agent; 6] = [
         Agent::Claude,
         Agent::Droid,
         Agent::OpenCode,
         Agent::Codex,
+        Agent::Devin,
         Agent::WorkersAi,
     ];
 
@@ -51,6 +54,7 @@ impl Agent {
             Agent::Droid => "Droid",
             Agent::OpenCode => "OpenCode",
             Agent::Codex => "Codex",
+            Agent::Devin => "Devin",
             Agent::WorkersAi => "Workers AI",
         }
     }
@@ -61,6 +65,7 @@ impl Agent {
             Agent::Droid => "droid",
             Agent::OpenCode => "opencode",
             Agent::Codex => "codex",
+            Agent::Devin => "devin",
             Agent::WorkersAi => "workers-ai",
         }
     }
@@ -71,6 +76,7 @@ impl Agent {
             Agent::Droid => AgentKind::Droid,
             Agent::OpenCode => AgentKind::OpenCode,
             Agent::Codex => AgentKind::Codex,
+            Agent::Devin => AgentKind::Devin,
             Agent::WorkersAi => AgentKind::WorkersAi,
         }
     }
@@ -81,6 +87,7 @@ impl Agent {
             "claude" => Agent::Claude,
             "opencode" => Agent::OpenCode,
             "codex" => Agent::Codex,
+            "devin" => Agent::Devin,
             "workers-ai" => Agent::WorkersAi,
             _ => Agent::Droid,
         }
@@ -222,6 +229,13 @@ pub enum Document {
     Failed(SharedString),
 }
 
+/// A load that panicked shows as one that failed.
+impl crate::guard::Fallback for Document {
+    fn fallback(panicked: crate::guard::Panicked) -> Self {
+        Document::Failed(panicked.to_string().into())
+    }
+}
+
 /// A loaded document: its lines and, for known languages, per-line color spans.
 pub struct Doc {
     pub lines: Vec<SharedString>,
@@ -238,6 +252,10 @@ impl Doc {
 pub struct Tab {
     /// Stable identity for the back/forward history, which outlives index shifts.
     pub id: u64,
+    /// The environment a session, file, diff or browser tab works in, by its
+    /// path. Showing the tab shows that environment. A view (GitHub, Usage…)
+    /// has none and follows the environment on screen.
+    pub env: Option<PathBuf>,
     pub title: SharedString,
     pub kind: TabKind,
     /// The page of a browser tab, created the first time the tab is shown.
@@ -265,6 +283,7 @@ impl Tab {
     pub fn new(title: impl Into<SharedString>, kind: TabKind) -> Self {
         Self {
             id: Self::next_id(),
+            env: None,
             title: title.into(),
             kind,
             browser: None,
@@ -275,6 +294,23 @@ impl Tab {
             markdown: None,
             sheet: 0,
         }
+    }
+
+    /// A tab that works in the environment at `env`.
+    pub fn of(env: &Path, title: impl Into<SharedString>, kind: TabKind) -> Self {
+        Self {
+            env: Some(env.to_path_buf()),
+            ..Self::new(title, kind)
+        }
+    }
+
+    /// The blank tab an environment starts a session from.
+    pub fn new_session(env: &Path) -> Self {
+        Self::of(env, "New session", TabKind::NewSession)
+    }
+
+    pub fn is_in(&self, env: &Path) -> bool {
+        self.env.as_deref() == Some(env)
     }
 }
 
@@ -308,6 +344,9 @@ pub struct Session {
     /// The sessions it took over from other agents ("Continue with"), oldest
     /// first; their history is already in this one's transcript.
     pub continues: Vec<Earlier>,
+    /// Its pull request merged (`crate::settle`): the sessions list leaves it
+    /// out until it is used again.
+    pub settled: bool,
     pub live: Option<LiveSession>,
 }
 
@@ -344,6 +383,7 @@ impl Session {
             cli_model: None,
             auto_allow: false,
             continues: Vec::new(),
+            settled: false,
             live: None,
         }
     }
@@ -423,16 +463,6 @@ pub struct Environment {
     /// Shown by its branch, not its folder: arakun named or renamed the branch, so
     /// the folder no longer says what the environment is.
     pub follow_branch: bool,
-    pub tabs: Vec<Tab>,
-    pub active_tab: usize,
-    /// Tab ids visited, newest last (the active tab on top), for Back.
-    pub tab_back: Vec<u64>,
-    /// Tabs gone Back from, for Forward.
-    pub tab_fwd: Vec<u64>,
-    /// Tabs closed here, newest last, with the place each had: Reopen closed tab
-    /// takes them back in turn.
-    pub closed_tabs: Vec<(usize, TabKind)>,
-    pub split: Option<Split>,
     pub sessions: Vec<Session>,
     pub terminals: Vec<TermTab>,
     pub active_terminal: usize,
@@ -452,6 +482,8 @@ pub struct Environment {
     pub opencode_settings: Vec<(crate::agent::Setting, String)>,
     /// The same for Codex.
     pub codex_settings: Vec<(crate::agent::Setting, String)>,
+    /// The same for Devin.
+    pub devin_settings: Vec<(crate::agent::Setting, String)>,
     /// The same for Workers AI.
     pub workers_ai_settings: Vec<(crate::agent::Setting, String)>,
     pub explorer: Explorer,
@@ -462,20 +494,167 @@ pub struct Environment {
     /// A push, pull or PR running from the Changes panel.
     pub git_busy: Option<GitOp>,
     pub git_error: Option<SharedString>,
+    /// A folder on a paired server, not here. Its sessions run there; nothing
+    /// of it is saved, the server's inbox brings it back each time.
+    pub remote: Option<Remote>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum GitOp {
-    Push,
-    Pull,
-    PullRequest,
+/// Where a remote environment is: the server (`crate::servers`) and the
+/// folder's path on it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Remote {
+    pub server: String,
+    /// What the server calls itself, shown beside the environment.
+    pub machine: SharedString,
+    pub place: String,
 }
 
-impl Environment {
+impl Remote {
+    /// The path a remote environment goes by here. No folder has it: the
+    /// scheme keeps it from ever naming one, and it is unique per folder.
+    pub fn env_path(server: &str, place: &str) -> PathBuf {
+        PathBuf::from(format!("{}{server}{place}", Self::SCHEME))
+    }
+
+    /// The path of a project only servers have, under the key it is found by.
+    pub fn project_path(key: &str) -> PathBuf {
+        PathBuf::from(format!("{}project/{key}", Self::SCHEME))
+    }
+
+    /// Whether `path` is one of the two above.
+    pub fn is_path(path: &Path) -> bool {
+        path.to_string_lossy().starts_with(Self::SCHEME)
+    }
+
+    const SCHEME: &str = "arakun-server://";
+}
+
+/// A tab that was closed: where it was, what it showed and in which environment.
+pub struct ClosedTab {
+    pub index: usize,
+    pub kind: TabKind,
+    pub env: Option<PathBuf>,
+}
+
+/// The window's one row of tabs, for every project and environment. A tab that
+/// works in an environment says which (`Tab::env`), and the tabs of one
+/// environment stay next to each other until the user moves them.
+#[derive(Default)]
+pub struct TabStrip {
+    pub tabs: Vec<Tab>,
+    pub active_tab: usize,
+    /// Tab ids visited, newest last (the active tab on top), for Back.
+    pub tab_back: Vec<u64>,
+    /// Tabs gone Back from, for Forward.
+    pub tab_fwd: Vec<u64>,
+    /// Tabs closed, newest last: Reopen closed tab takes them back in turn.
+    pub closed_tabs: Vec<ClosedTab>,
+    /// The split of the environment on screen, `split_env`.
+    pub split: Option<Split>,
+    pub split_env: Option<PathBuf>,
+    /// The splits of the environments that are not on screen, each with the tab
+    /// its focused pane showed. One comes back with its environment.
+    pub parked: std::collections::HashMap<PathBuf, (Split, u64)>,
+    /// The tab each environment showed last, which going to the environment shows again.
+    pub front: std::collections::HashMap<PathBuf, u64>,
+}
+
+impl TabStrip {
+    pub fn active(&self) -> Option<&Tab> {
+        self.tabs.get(self.active_tab)
+    }
+
+    pub fn position(&self, id: u64) -> Option<usize> {
+        self.tabs.iter().position(|t| t.id == id)
+    }
+
+    /// The first tab of the environment at `env` that `is` picks.
+    pub fn find_in(&self, env: &Path, is: impl Fn(&Tab) -> bool) -> Option<usize> {
+        self.tabs.iter().position(|t| t.is_in(env) && is(t))
+    }
+
+    /// The tab of session `id`. Session ids are unique across environments.
+    pub fn session_tab(&self, id: &str) -> Option<usize> {
+        self.tabs
+            .iter()
+            .position(|t| matches!(&t.kind, TabKind::Session { id: tid, .. } if tid.as_ref() == id))
+    }
+
+    /// Whether the tab at `index` is the active one and `env`, the environment
+    /// on screen, has no other tab. Closing it leaves `env` nothing to show.
+    pub fn is_last_on_screen(&self, index: usize, env: &Path) -> bool {
+        index == self.active_tab
+            && !self
+                .tabs
+                .iter()
+                .enumerate()
+                .any(|(i, t)| i != index && t.is_in(env))
+    }
+
+    /// The tab to show for the environment at `env`: the one it showed last,
+    /// else its first.
+    pub fn front_of(&self, env: &Path) -> Option<usize> {
+        self.front
+            .get(env)
+            .and_then(|id| self.position(*id))
+            .filter(|i| self.tabs[*i].is_in(env))
+            .or_else(|| self.find_in(env, |_| true))
+    }
+
+    /// Adds a tab after the last one of its environment (a view: after the last
+    /// view), or at the end when it is the first. Returns its index.
+    pub fn add(&mut self, tab: Tab) -> usize {
+        let at = self
+            .tabs
+            .iter()
+            .rposition(|t| t.env == tab.env)
+            .map_or(self.tabs.len(), |i| i + 1);
+        if !self.tabs.is_empty() && at <= self.active_tab {
+            self.active_tab += 1;
+        }
+        self.tabs.insert(at, tab);
+        at
+    }
+
+    /// Takes the tab at `index` out. Another active tab stays active. In place of
+    /// a closed active tab comes its right neighbour, or the left one when only
+    /// that one is of the same environment or nothing is to the right.
+    pub fn remove(&mut self, index: usize) -> Option<Tab> {
+        if index >= self.tabs.len() {
+            return None;
+        }
+        let tab = self.tabs.remove(index);
+        if self.active_tab > index {
+            self.active_tab -= 1;
+        } else if self.active_tab == index && index > 0 {
+            let same = |i: usize| self.tabs.get(i).is_some_and(|t| t.env == tab.env);
+            if index >= self.tabs.len() || (!same(index) && same(index - 1)) {
+                self.active_tab = index - 1;
+            }
+        }
+        Some(tab)
+    }
+
+    /// Takes out every tab `gone` picks, keeping the active tab when it stays.
+    pub fn remove_where(&mut self, gone: impl Fn(&Tab) -> bool) -> Vec<Tab> {
+        let active_id = self.active().map(|t| t.id);
+        let (removed, kept) = std::mem::take(&mut self.tabs)
+            .into_iter()
+            .partition(|t| gone(t));
+        self.tabs = kept;
+        self.active_tab = active_id
+            .and_then(|id| self.position(id))
+            .unwrap_or(self.active_tab)
+            .min(self.tabs.len().saturating_sub(1));
+        self.front
+            .retain(|_, id| self.tabs.iter().any(|t| t.id == *id));
+        removed
+    }
+
     /// Back/forward assume the last history entry is the visible tab; tabs restored
     /// or opened without going through the shell start the history here.
     pub fn seed_tab_history(&mut self) {
-        let Some(id) = self.tabs.get(self.active_tab).map(|t| t.id) else {
+        let Some(id) = self.active().map(|t| t.id) else {
             return;
         };
         if self.tab_back.last() != Some(&id) {
@@ -483,71 +662,65 @@ impl Environment {
         }
     }
 
-    pub fn new(path: PathBuf, branch: Option<String>, is_checkout: bool) -> Self {
-        let mut env = Self {
-            name: SharedString::default(),
-            branch: SharedString::default(),
-            explorer: Explorer::new(path.clone()),
-            path,
-            is_checkout,
-            placeholder: None,
-            follow_branch: false,
-            tabs: vec![Tab::new("New session", TabKind::NewSession)],
-            active_tab: 0,
-            tab_back: Vec::new(),
-            tab_fwd: Vec::new(),
-            closed_tabs: Vec::new(),
-            split: None,
-            sessions: Vec::new(),
-            terminals: Vec::new(),
-            active_terminal: 0,
-            terminals_opened: 0,
-            changes: Vec::new(),
-            draft: Default::default(),
-            draft_images: Vec::new(),
-            agent: default_agent(),
-            draft_settings: Vec::new(),
-            claude_settings: Vec::new(),
-            opencode_settings: Vec::new(),
-            codex_settings: Vec::new(),
-            workers_ai_settings: Vec::new(),
-            sync: git::Sync::default(),
-            pr: None,
-            pr_checked: None,
-            git_busy: None,
-            git_error: None,
-        };
-        env.set_branch(branch);
-        env.seed_tab_history();
-        env
-    }
-
-    /// The branch still has the dialog's random name, so the first prompt may rename it.
-    pub fn awaits_name(&self) -> bool {
-        self.placeholder.as_deref() == Some(self.branch.as_ref())
-    }
-
-    /// Shows the environment by its branch from now on, and relabels it.
-    pub fn follow_branch(&mut self) {
-        self.follow_branch = true;
-        self.name = self.branch.clone();
-    }
-
-    pub fn set_branch(&mut self, branch: Option<String>) {
-        let branch: SharedString = branch.unwrap_or_else(|| "detached HEAD".into()).into();
-        self.name = if self.is_checkout || self.follow_branch {
-            branch.clone()
-        } else {
-            dir_name(&self.path).into()
-        };
-        self.branch = branch;
-    }
-
     /// Index of the tab in the unfocused pane, when the split is still meaningful.
-    pub fn split_other(&self) -> Option<usize> {
+    /// The two panes show one environment, `env`: a split whose other tab works
+    /// in another one waits until that environment is on screen again.
+    pub fn split_other(&self, env: &Path) -> Option<usize> {
         let split = self.split.as_ref()?;
-        let i = self.tabs.iter().position(|t| t.id == split.other)?;
-        (i != self.active_tab).then_some(i)
+        let i = self.position(split.other)?;
+        let fits = self.tabs[i].env.as_deref().is_none_or(|e| e == env);
+        (i != self.active_tab && fits).then_some(i)
+    }
+
+    /// Makes `split` the one of the environment `env`, which came on screen
+    /// after the tab `prev` was active: the split of the environment that left
+    /// is put aside, and the one `env` had comes back. Arriving on the tab of
+    /// its other pane swaps the panes' roles, as selecting that tab does.
+    pub fn bring_split(&mut self, env: &Path, prev: Option<u64>) {
+        match self.split_env.take() {
+            Some(old) if old == env => {
+                self.split_env = Some(old);
+                return;
+            }
+            Some(old) => {
+                if let Some(split) = self.split.take() {
+                    let fits = |id: &u64| {
+                        *id != split.other
+                            && self.position(*id).is_some_and(|i| {
+                                self.tabs[i].env.as_deref().is_none_or(|e| e == old)
+                            })
+                    };
+                    let focus = prev
+                        .filter(&fits)
+                        .or_else(|| self.front.get(&old).copied().filter(&fits));
+                    if let Some(focus) = focus {
+                        self.parked.insert(old, (split, focus));
+                    }
+                }
+            }
+            // The first environment on screen: a split made so far is its own.
+            None if self.split.is_some() => {
+                self.split_env = Some(env.to_path_buf());
+                return;
+            }
+            // No split on screen (the environment that had one is gone): the
+            // one this environment put aside comes back below.
+            None => {}
+        }
+        self.split_env = Some(env.to_path_buf());
+        let Some((mut split, focus)) = self.parked.remove(env) else {
+            return;
+        };
+        if self.active().map(|t| t.id) == Some(split.other) {
+            if self.position(focus).is_none() {
+                return;
+            }
+            split.other = focus;
+            split.focus_first = !split.focus_first;
+        }
+        if self.position(split.other).is_some() {
+            self.split = Some(split);
+        }
     }
 
     /// Shows the tab `id` in the first (left or top) pane or the second, splitting with
@@ -555,17 +728,18 @@ impl Environment {
     /// the other's side; a third tab takes over the pane it lands on. False when nothing moved.
     pub fn place_tab(
         &mut self,
+        env: &Path,
         id: u64,
         first: bool,
         companion: impl FnOnce(&mut Self) -> usize,
     ) -> bool {
-        let Some(index) = self.tabs.iter().position(|t| t.id == id) else {
+        let Some(index) = self.position(id) else {
             return false;
         };
-        let Some(active_id) = self.tabs.get(self.active_tab).map(|t| t.id) else {
+        let Some(active_id) = self.active().map(|t| t.id) else {
             return false;
         };
-        let other_id = self.split_other().map(|i| self.tabs[i].id);
+        let other_id = self.split_other(env).map(|i| self.tabs[i].id);
         if let (Some(other_id), Some(split)) = (other_id, self.split.as_mut()) {
             if id == active_id || id == other_id {
                 let on_first = (id == active_id) == split.focus_first;
@@ -589,13 +763,14 @@ impl Environment {
             self.active_tab
         };
         let other_id = self.tabs[other].id;
+        // The companion may have been added before the dropped tab.
+        self.active_tab = self.position(id).unwrap_or(index);
         self.split = Some(Split {
             other: other_id,
             dir: SplitDir::Right,
             ratio,
             focus_first: first,
         });
-        self.active_tab = index;
         true
     }
 
@@ -621,9 +796,9 @@ impl Environment {
     }
 
     /// Remembers a closed tab for Reopen closed tab; the oldest go past a limit.
-    pub fn remember_closed(&mut self, index: usize, kind: TabKind) {
+    pub fn remember_closed(&mut self, index: usize, kind: TabKind, env: Option<PathBuf>) {
         const KEEP: usize = 25;
-        self.closed_tabs.push((index, kind));
+        self.closed_tabs.push(ClosedTab { index, kind, env });
         let excess = self.closed_tabs.len().saturating_sub(KEEP);
         self.closed_tabs.drain(..excess);
     }
@@ -675,6 +850,70 @@ impl Environment {
             .unwrap_or(0);
         true
     }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum GitOp {
+    Push,
+    Pull,
+    PullRequest,
+}
+
+impl Environment {
+    pub fn new(path: PathBuf, branch: Option<String>, is_checkout: bool) -> Self {
+        let mut env = Self {
+            name: SharedString::default(),
+            branch: SharedString::default(),
+            explorer: Explorer::new(path.clone()),
+            path,
+            is_checkout,
+            placeholder: None,
+            follow_branch: false,
+            sessions: Vec::new(),
+            terminals: Vec::new(),
+            active_terminal: 0,
+            terminals_opened: 0,
+            changes: Vec::new(),
+            draft: Default::default(),
+            draft_images: Vec::new(),
+            agent: default_agent(),
+            draft_settings: Vec::new(),
+            claude_settings: Vec::new(),
+            opencode_settings: Vec::new(),
+            codex_settings: Vec::new(),
+            devin_settings: Vec::new(),
+            workers_ai_settings: Vec::new(),
+            sync: git::Sync::default(),
+            pr: None,
+            pr_checked: None,
+            git_busy: None,
+            git_error: None,
+            remote: None,
+        };
+        env.set_branch(branch);
+        env
+    }
+
+    /// The branch still has the dialog's random name, so the first prompt may rename it.
+    pub fn awaits_name(&self) -> bool {
+        self.placeholder.as_deref() == Some(self.branch.as_ref())
+    }
+
+    /// Shows the environment by its branch from now on, and relabels it.
+    pub fn follow_branch(&mut self) {
+        self.follow_branch = true;
+        self.name = self.branch.clone();
+    }
+
+    pub fn set_branch(&mut self, branch: Option<String>) {
+        let branch: SharedString = branch.unwrap_or_else(|| "detached HEAD".into()).into();
+        self.name = if self.is_checkout || self.follow_branch {
+            branch.clone()
+        } else {
+            dir_name(&self.path).into()
+        };
+        self.branch = branch;
+    }
 
     pub fn session_index(&self, id: &str) -> Option<usize> {
         self.sessions.iter().position(|s| s.id.as_ref() == id)
@@ -725,6 +964,11 @@ pub struct Project {
 }
 
 impl Project {
+    /// Only on servers: nothing of it is on this machine.
+    pub fn is_remote(&self) -> bool {
+        Remote::is_path(&self.path)
+    }
+
     pub fn env_index(&self, path: &Path) -> Option<usize> {
         self.environments.iter().position(|e| e.path == path)
     }
@@ -749,6 +993,9 @@ impl Project {
             };
             self.environments.push(env);
         }
+        // A server's folders are no worktrees here: git does not list them.
+        self.environments
+            .extend(old.into_iter().filter(|e| e.remote.is_some()));
         self.active_env = active
             .and_then(|p| self.env_index(&p))
             .unwrap_or(0)
@@ -865,11 +1112,16 @@ mod tests {
         assert!(!env.awaits_name());
     }
 
-    fn env_with(kinds: Vec<TabKind>) -> Environment {
-        let mut env =
-            Environment::new(PathBuf::from("/tmp/arakun-test"), Some("main".into()), true);
-        env.tabs = kinds.into_iter().map(|k| Tab::new("t", k)).collect();
-        env
+    const HERE: &str = "/tmp/arakun-test";
+
+    fn env_with(kinds: Vec<TabKind>) -> TabStrip {
+        TabStrip {
+            tabs: kinds
+                .into_iter()
+                .map(|k| Tab::of(Path::new(HERE), "t", k))
+                .collect(),
+            ..Default::default()
+        }
     }
 
     fn browser(url: &str) -> TabKind {
@@ -888,7 +1140,7 @@ mod tests {
             ratio: 0.5,
             focus_first: true,
         });
-        assert_eq!(env.split_other(), Some(1));
+        assert_eq!(env.split_other(Path::new(HERE)), Some(1));
 
         env.active_tab = 1;
         env.settle_split(Some(ids[0]));
@@ -898,13 +1150,13 @@ mod tests {
             !split.focus_first,
             "the focused pane moved to the second slot"
         );
-        assert_eq!(env.split_other(), Some(0));
+        assert_eq!(env.split_other(Path::new(HERE)), Some(0));
 
         // Picking a third tab replaces the focused pane's content only.
         env.active_tab = 2;
         env.settle_split(Some(ids[1]));
         assert_eq!(env.split.unwrap().other, ids[0]);
-        assert_eq!(env.split_other(), Some(0));
+        assert_eq!(env.split_other(Path::new(HERE)), Some(0));
     }
 
     #[test]
@@ -931,10 +1183,10 @@ mod tests {
     fn dropping_tabs_on_panes() {
         let mut env = env_with(vec![browser("a"), browser("b"), browser("c")]);
         let ids: Vec<u64> = env.tabs.iter().map(|t| t.id).collect();
-        let no_companion = |_: &mut Environment| -> usize { unreachable!() };
+        let no_companion = |_: &mut TabStrip| -> usize { unreachable!() };
         // Not split: b dropped on the right opens beside the active a.
-        assert!(env.place_tab(ids[1], false, no_companion));
-        let left_right = |env: &Environment| {
+        assert!(env.place_tab(Path::new(HERE), ids[1], false, no_companion));
+        let left_right = |env: &TabStrip| {
             let split = env.split.unwrap();
             let (active, other) = (env.tabs[env.active_tab].id, split.other);
             if split.focus_first {
@@ -945,13 +1197,13 @@ mod tests {
         };
         assert_eq!(left_right(&env), (ids[0], ids[1]));
         // Dropping a shown tab on its own side does nothing; on the other side, they swap.
-        assert!(!env.place_tab(ids[1], false, no_companion));
-        assert!(env.place_tab(ids[1], true, no_companion));
+        assert!(!env.place_tab(Path::new(HERE), ids[1], false, no_companion));
+        assert!(env.place_tab(Path::new(HERE), ids[1], true, no_companion));
         assert_eq!(left_right(&env), (ids[1], ids[0]));
         // A third tab takes over the pane it lands on, either side.
-        assert!(env.place_tab(ids[2], false, no_companion));
+        assert!(env.place_tab(Path::new(HERE), ids[2], false, no_companion));
         assert_eq!(left_right(&env), (ids[1], ids[2]));
-        assert!(env.place_tab(ids[0], true, no_companion));
+        assert!(env.place_tab(Path::new(HERE), ids[0], true, no_companion));
         assert_eq!(left_right(&env), (ids[0], ids[2]));
         assert_eq!(
             env.tabs[env.active_tab].id, ids[0],
@@ -963,7 +1215,7 @@ mod tests {
     fn dropping_the_only_shown_tab_pairs_it_with_a_companion() {
         let mut env = env_with(vec![browser("a"), browser("b")]);
         let ids: Vec<u64> = env.tabs.iter().map(|t| t.id).collect();
-        assert!(env.place_tab(ids[0], false, |_| 1));
+        assert!(env.place_tab(Path::new(HERE), ids[0], false, |_| 1));
         let split = env.split.unwrap();
         assert_eq!(
             (env.tabs[env.active_tab].id, split.other, split.focus_first),
@@ -982,7 +1234,7 @@ mod tests {
             focus_first: true,
         });
         env.tabs.remove(1);
-        assert_eq!(env.split_other(), None);
+        assert_eq!(env.split_other(Path::new(HERE)), None);
         env.settle_split(None);
         assert!(env.split.is_none());
     }
@@ -1004,7 +1256,7 @@ mod tests {
         assert!(env.split.is_none());
     }
 
-    fn titles(env: &Environment) -> Vec<String> {
+    fn titles(env: &TabStrip) -> Vec<String> {
         env.tabs.iter().map(|t| name(&t.kind)).collect()
     }
 
@@ -1058,13 +1310,163 @@ mod tests {
         assert_eq!(env.active_tab, 1);
     }
 
+    fn strip_of(envs: &[&str]) -> TabStrip {
+        TabStrip {
+            tabs: envs
+                .iter()
+                .map(|e| Tab::of(Path::new(e), *e, browser(e)))
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    fn envs(strip: &TabStrip) -> Vec<String> {
+        strip
+            .tabs
+            .iter()
+            .map(|t| match &t.env {
+                Some(env) => env.display().to_string(),
+                None => "view".into(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn only_the_active_tab_can_be_last_on_screen() {
+        let a = Path::new("a");
+        let mut strip = strip_of(&["a", "b"]);
+        strip.tabs.push(Tab::new("Notes", TabKind::Notes));
+        // a's only tab, on screen.
+        assert!(strip.is_last_on_screen(0, a));
+        // b's only tab, but another tab is on screen.
+        assert!(!strip.is_last_on_screen(1, Path::new("b")));
+        // A view on screen while a has no tab of its own.
+        strip.tabs.remove(0);
+        strip.active_tab = 1;
+        assert!(strip.is_last_on_screen(1, a));
+        // A second tab of a: either one can go.
+        let mut strip = strip_of(&["a", "a", "b"]);
+        assert!(!strip.is_last_on_screen(0, a));
+        strip.active_tab = 1;
+        assert!(!strip.is_last_on_screen(1, a));
+    }
+
+    #[test]
+    fn a_new_tab_lands_after_the_tabs_of_its_environment() {
+        let mut strip = strip_of(&["a", "a", "b"]);
+        strip.active_tab = 2;
+        let active = strip.tabs[2].id;
+        assert_eq!(strip.add(Tab::new_session(Path::new("a"))), 2);
+        assert_eq!(envs(&strip), ["a", "a", "a", "b"]);
+        assert_eq!(strip.active().map(|t| t.id), Some(active));
+        // The first tab of an environment, and the first view, go last.
+        assert_eq!(strip.add(Tab::new_session(Path::new("c"))), 4);
+        assert_eq!(strip.add(Tab::new("Notes", TabKind::Notes)), 5);
+        assert_eq!(strip.add(Tab::new_session(Path::new("b"))), 4);
+        assert_eq!(envs(&strip), ["a", "a", "a", "b", "b", "c", "view"]);
+        assert_eq!(strip.active().map(|t| t.id), Some(active));
+    }
+
+    #[test]
+    fn closing_the_active_tab_stays_in_its_environment_when_it_can() {
+        let mut strip = strip_of(&["a", "a", "b", "b"]);
+        // The last tab of `a`: its left neighbour, not the first of `b`.
+        strip.active_tab = 1;
+        strip.remove(1);
+        assert_eq!(strip.active_tab, 0);
+        // The only tab of `a`: the right neighbour takes over.
+        strip.remove(0);
+        assert_eq!((strip.active_tab, envs(&strip)[0].as_str()), (0, "b"));
+        // A tab before the active one: the same tab stays active.
+        strip.active_tab = 1;
+        let active = strip.tabs[1].id;
+        strip.remove(0);
+        assert_eq!(strip.active().map(|t| t.id), Some(active));
+        assert!(strip.remove(5).is_none());
+    }
+
+    #[test]
+    fn an_environment_comes_back_on_the_tab_it_showed_last() {
+        let mut strip = strip_of(&["a", "a", "b"]);
+        assert_eq!(strip.front_of(Path::new("a")), Some(0));
+        strip.front.insert("a".into(), strip.tabs[1].id);
+        assert_eq!(strip.front_of(Path::new("a")), Some(1));
+        // That tab closed: the first one left of the environment.
+        strip.remove(1);
+        assert_eq!(strip.front_of(Path::new("a")), Some(0));
+        assert_eq!(strip.front_of(Path::new("c")), None);
+    }
+
+    #[test]
+    fn the_tabs_of_an_environment_that_is_gone_close() {
+        let mut strip = strip_of(&["a", "b", "a", "b"]);
+        strip.active_tab = 3;
+        let active = strip.tabs[3].id;
+        let gone = strip.remove_where(|t| t.is_in(Path::new("a")));
+        assert_eq!(gone.len(), 2);
+        assert_eq!(envs(&strip), ["b", "b"]);
+        assert_eq!(strip.active().map(|t| t.id), Some(active));
+    }
+
+    #[test]
+    fn a_split_shows_only_with_its_own_environment() {
+        let mut strip = strip_of(&["a", "a", "b"]);
+        strip.tabs.push(Tab::new("Notes", TabKind::Notes));
+        strip.split = Some(Split {
+            other: strip.tabs[1].id,
+            dir: SplitDir::Right,
+            ratio: 0.5,
+            focus_first: true,
+        });
+        assert_eq!(strip.split_other(Path::new("a")), Some(1));
+        // On another environment it waits, and shows again on the way back.
+        strip.active_tab = 2;
+        assert_eq!(strip.split_other(Path::new("b")), None);
+        assert!(strip.split.is_some());
+        // A view fits beside any environment.
+        strip.split.as_mut().unwrap().other = strip.tabs[3].id;
+        assert_eq!(strip.split_other(Path::new("b")), Some(3));
+    }
+
+    #[test]
+    fn an_environment_gets_its_split_back() {
+        let mut strip = strip_of(&["a", "a", "b"]);
+        strip.tabs.push(Tab::new("Notes", TabKind::Notes));
+        let ids: Vec<u64> = strip.tabs.iter().map(|t| t.id).collect();
+        let (a, b) = (Path::new("a"), Path::new("b"));
+        strip.bring_split(a, None);
+        strip.split = Some(Split {
+            other: ids[3],
+            dir: SplitDir::Right,
+            ratio: 0.5,
+            focus_first: true,
+        });
+        // On `b` the split of `a` is away, also when its other pane is a view.
+        strip.active_tab = 2;
+        strip.bring_split(b, Some(ids[0]));
+        assert!(strip.split.is_none());
+        assert_eq!(strip.split_other(b), None);
+        // Back on the tab that had the focus: as it was.
+        strip.active_tab = 0;
+        strip.bring_split(a, Some(ids[2]));
+        assert_eq!(strip.split_other(a), Some(3));
+        assert!(strip.split.unwrap().focus_first);
+        // Back on the other pane's tab: the panes trade roles.
+        strip.active_tab = 2;
+        strip.bring_split(b, Some(ids[0]));
+        strip.active_tab = 3;
+        strip.bring_split(a, Some(ids[2]));
+        let split = strip.split.unwrap();
+        assert_eq!((split.other, split.focus_first), (ids[0], false));
+    }
+
     #[test]
     fn closed_tabs_are_capped() {
         let mut env = env_with(vec![browser("a")]);
         for i in 0..40 {
-            env.remember_closed(i, TabKind::Notes);
+            env.remember_closed(i, TabKind::Notes, None);
         }
         assert_eq!(env.closed_tabs.len(), 25);
-        assert_eq!(env.closed_tabs[0].0, 15, "the oldest went");
+        assert_eq!(env.closed_tabs[0].index, 15, "the oldest went");
     }
 }

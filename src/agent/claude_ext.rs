@@ -289,14 +289,8 @@ fn read_checked(cwd: &Path) -> Checked {
 
 fn save_checked(cwd: &Path, checked: &Checked) {
     let file = cache_file(cwd);
-    if let Some(dir) = file.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
     if let Ok(json) = serde_json::to_vec(checked) {
-        let tmp = file.with_extension("tmp");
-        if std::fs::write(&tmp, json).is_ok() {
-            let _ = std::fs::rename(tmp, file);
-        }
+        let _ = crate::durable::write(&file, &json);
     }
 }
 
@@ -1219,7 +1213,15 @@ fn run(bin: &Path, cwd: &Path, args: &[&str], timeout: Duration) -> Result<Strin
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let mut child = cmd.spawn()?;
+    let mut child = cmd.spawn().map_err(|e| {
+        // Both a missing program and a missing folder are "os error 2"; say which.
+        match std::fs::metadata(cwd) {
+            Err(m) if m.kind() == std::io::ErrorKind::NotFound => {
+                anyhow!("{} does not exist", cwd.display())
+            }
+            _ => anyhow!("could not start {}: {e}", bin.display()),
+        }
+    })?;
     let mut stdout = child.stdout.take().ok_or_else(|| anyhow!("no stdout"))?;
     let mut stderr = child.stderr.take().ok_or_else(|| anyhow!("no stderr"))?;
     let reader = std::thread::spawn(move || {
@@ -1319,6 +1321,23 @@ fn looks_secret(w: &str) -> bool {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn spawn_errors_say_what_is_missing() {
+        let here = std::env::temp_dir();
+        let gone = here.join("arakun-no-such-folder");
+        let t = Duration::from_secs(5);
+        let err = run(Path::new("arakun-no-such-program"), &gone, &[], t).unwrap_err();
+        assert!(err.to_string().ends_with("does not exist"), "{err}");
+        let err = run(Path::new("arakun-no-such-program"), &here, &[], t).unwrap_err();
+        assert!(err.to_string().starts_with("could not start"), "{err}");
+        // A file where the folder should be is not "missing": keep the real error.
+        let file = here.join(format!("arakun-not-a-folder-{}", std::process::id()));
+        std::fs::write(&file, "").unwrap();
+        let err = run(Path::new("arakun-no-such-program"), &file, &[], t).unwrap_err();
+        let _ = std::fs::remove_file(&file);
+        assert!(err.to_string().starts_with("could not start"), "{err}");
+    }
 
     #[test]
     fn masks_tokens() {

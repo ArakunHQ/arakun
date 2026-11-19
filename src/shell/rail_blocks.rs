@@ -85,6 +85,13 @@ pub(super) fn view_id(view: View) -> &'static str {
     }
 }
 
+/// How wide the rail must be to show a row's shortcut beside its label.
+const RAIL_SHORTCUT_MIN_W: f32 = 200.;
+
+/// The least a run of scrolling sections (the projects and environments)
+/// keeps on a short window: the rest of the rail scrolls instead.
+const RAIL_SCROLL_MIN_H: f32 = 128.;
+
 /// The shortcut a piece answers to, as written for Windows and Linux.
 fn piece_shortcut(piece: &Piece) -> Option<&'static str> {
     match piece {
@@ -335,7 +342,7 @@ impl Shell {
                     .flex()
                     .flex_col()
                     .flex_1()
-                    .min_h_0()
+                    .min_h(px(RAIL_SCROLL_MIN_H))
                     .overflow_y_scroll()
                     .children(std::mem::take(run))
                     .into_any_element(),
@@ -591,15 +598,20 @@ impl Shell {
                     }),
                 )
         };
+        // A rail squeezed by a small window keeps the label and drops the key:
+        // the tooltip still names it.
+        let roomy = self.rail_width() >= RAIL_SHORTCUT_MIN_W;
         let shortcut = |p: &Piece| {
-            piece_shortcut(p).filter(|_| style.shortcuts).map(|s| {
-                div()
-                    .text_size(px(ui::TEXT_XS))
-                    .font_weight(FontWeight::NORMAL)
-                    .text_color(theme::text_faint())
-                    .child(crate::platform::shortcut_label(s))
-                    .into_any_element()
-            })
+            piece_shortcut(p)
+                .filter(|_| style.shortcuts && roomy)
+                .map(|s| {
+                    div()
+                        .text_size(px(ui::TEXT_XS))
+                        .font_weight(FontWeight::NORMAL)
+                        .text_color(theme::text_faint())
+                        .child(crate::platform::shortcut_label(s))
+                        .into_any_element()
+                })
         };
         let el = match &item.piece {
             Piece::View { view } => {
@@ -916,6 +928,7 @@ impl Shell {
             self.account.read(cx),
             seats.as_ref(),
             crate::agent::opencode_plan::latest().as_ref(),
+            crate::agent::devin_plan::latest().as_ref(),
             cx.listener(|this, _, window, cx| this.open_usage_tab(window, cx)),
             {
                 let shell = cx.entity().downgrade();

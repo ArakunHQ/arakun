@@ -2189,7 +2189,6 @@ pub fn close(item: &ItemRef) -> Result<(), Problem> {
     act(Ok(state_cmd(item, "close"))).map(|_| ())
 }
 
-#[allow(dead_code)] // Not offered in the view yet.
 pub fn reopen(item: &ItemRef) -> Result<(), Problem> {
     act(Ok(state_cmd(item, "reopen"))).map(|_| ())
 }
@@ -2406,6 +2405,21 @@ Then save the review as a draft, its text on stdin:\n\n\
 arakun github draft {label} --verdict <approve|request-changes|comment> --head <that commit> --body-file - --agent <your name> <<'EOF'\n<the review>\nEOF\n\n\
 I read the draft in Arakun and post, edit or discard it myself. Never post a comment or a review, approve, \
 request changes, merge or close anything on GitHub yourself.",
+        label = item.label(),
+    )
+}
+
+/// The prompt behind "Work on it": an agent does what an issue asks, in the
+/// checkout, and leaves git and GitHub to the user.
+pub fn issue_prompt(item: &ItemRef, title: &str) -> String {
+    let (url, repo) = (item.url(), &item.repo);
+    format!(
+        "Work on the issue \"{title}\" ({label}).\nURL: {url}\n\n\
+Read it with `gh issue view {url} --comments`. Use the URL: this checkout may be another repository. Check with \
+`git remote -v`, and if it isn't {repo}, say so and stop.\n\n\
+Find what it asks for in the code and make the change in this checkout. Run the tests that cover it, or say why \
+you could not. Then tell me what you changed and what is left.\n\n\
+Don't commit or push, and don't comment on the issue, close it or open a pull request: I do that myself.",
         label = item.label(),
     )
 }
@@ -4434,6 +4448,18 @@ mod tests {
             "{p}"
         );
         assert!(p.ends_with("Never post a comment or a review, approve, request changes, merge or close anything on GitHub yourself."), "{p}");
+    }
+
+    #[test]
+    fn the_issue_prompt_changes_code_and_nothing_on_github() {
+        let p = issue_prompt(&item(ItemKind::Issue), "Tab name is lost");
+        assert!(p.starts_with("Work on the issue \"Tab name is lost\" (ArakunHQ/arakun#41)."));
+        assert!(
+            p.contains("gh issue view https://github.com/ArakunHQ/arakun/issues/41 --comments")
+        );
+        assert!(p.contains("if it isn't ArakunHQ/arakun, say so and stop"));
+        assert!(p.contains("Don't commit or push"));
+        assert!(p.contains("don't comment on the issue, close it or open a pull request"));
     }
 
     #[test]

@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::agent::AgentKind;
 use crate::model::Agent;
+use crate::sidebar::View;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Step {
@@ -104,7 +105,13 @@ pub fn set_done() {
 
 /// The agents that need something on the machine, in the order shown.
 /// Workers AI is left out: it has no CLI to find.
-pub const AGENTS: [Agent; 4] = [Agent::Claude, Agent::Codex, Agent::OpenCode, Agent::Droid];
+pub const AGENTS: [Agent; 5] = [
+    Agent::Claude,
+    Agent::Codex,
+    Agent::OpenCode,
+    Agent::Droid,
+    Agent::Devin,
+];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Readiness {
@@ -123,8 +130,8 @@ pub struct AgentRow {
 }
 
 /// Claude Code and Codex run through an adapter that Arakun installs with npm
-/// and that brings the agent's own binary; `has` is that adapter. OpenCode
-/// and Droid are the user's own CLIs; `has` is the CLI.
+/// and that brings the agent's own binary; `has` is that adapter. OpenCode,
+/// Droid and Devin are the user's own CLIs; `has` is the CLI.
 fn readiness(agent: Agent, has: bool, npm: bool) -> Readiness {
     let through_npm = matches!(agent, Agent::Claude | Agent::Codex);
     match (has, through_npm && npm) {
@@ -145,6 +152,7 @@ pub fn find_agents() -> Vec<AgentRow> {
                 Agent::Codex => crate::agent::adapter_install(AgentKind::Codex).is_none(),
                 Agent::OpenCode => crate::agent::opencode_bin().is_ok(),
                 Agent::Droid => crate::agent::droid_bin().is_ok(),
+                Agent::Devin => crate::agent::devin_bin().is_ok(),
                 Agent::WorkersAi => false,
             };
             AgentRow {
@@ -161,6 +169,10 @@ pub fn install_link(agent: Agent) -> (&'static str, &'static str) {
         Agent::Claude | Agent::Codex => ("Needs Node.js for npm", "https://nodejs.org"),
         Agent::OpenCode => ("Get OpenCode", "https://opencode.ai"),
         Agent::Droid => ("Get Droid", "https://factory.ai"),
+        Agent::Devin => (
+            "Get the Devin CLI",
+            "https://docs.devin.ai/work-with-devin/devin-cli",
+        ),
         Agent::WorkersAi => ("", ""),
     }
 }
@@ -211,6 +223,22 @@ pub fn find_github() -> GitHub {
     }
 }
 
+/// The sidebar tabs a finished setup turns on, for what the user set up in
+/// it. A new install starts with every tab that is an extension off, so
+/// without this the GitHub they just connected and the phone they chose to
+/// pair have no row in the sidebar. A setup opened again leaves GitHub as it
+/// is: a returning user may have turned it off on purpose.
+pub fn views_set_up(fresh: bool, github: Option<GitHub>, pair_phone: bool) -> Vec<View> {
+    let mut on = Vec::new();
+    if fresh && github == Some(GitHub::Connected) {
+        on.push(View::GitHub);
+    }
+    if pair_phone {
+        on.push(View::Phone);
+    }
+    on
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -252,6 +280,7 @@ mod tests {
         assert_eq!(readiness(Agent::Claude, false, false), Readiness::Missing);
         // npm does not bring the user's own CLIs.
         assert_eq!(readiness(Agent::Droid, false, true), Readiness::Missing);
+        assert_eq!(readiness(Agent::Devin, false, true), Readiness::Missing);
         assert_eq!(readiness(Agent::OpenCode, true, false), Readiness::Ready);
     }
 
@@ -276,5 +305,21 @@ mod tests {
         assert_eq!(pick(&none, Agent::Droid), None);
         // Workers AI needs no CLI, so it is not listed and cannot be kept.
         assert_eq!(pick(&rows, Agent::WorkersAi), Some(Agent::OpenCode));
+    }
+
+    #[test]
+    fn the_setup_turns_on_the_tabs_it_set_up() {
+        let connected = Some(GitHub::Connected);
+        assert_eq!(views_set_up(true, connected, false), [View::GitHub]);
+        assert_eq!(
+            views_set_up(true, connected, true),
+            [View::GitHub, View::Phone]
+        );
+        // GitHub not signed in, or still being asked.
+        assert!(views_set_up(true, Some(GitHub::SignedOut), false).is_empty());
+        assert!(views_set_up(true, None, false).is_empty());
+        // Opened again: only what was asked for there.
+        assert!(views_set_up(false, connected, false).is_empty());
+        assert_eq!(views_set_up(false, connected, true), [View::Phone]);
     }
 }

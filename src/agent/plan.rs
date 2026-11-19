@@ -119,6 +119,8 @@ impl Window {
             "Week".into()
         } else if self.label == "Monthly limit" {
             "Month".into()
+        } else if self.label == "Daily limit" {
+            "Day".into()
         } else {
             self.label
                 .strip_prefix("Weekly · ")
@@ -246,12 +248,8 @@ fn cached_seats() -> Option<Seats> {
 }
 
 fn store_seats(seats: &Seats) {
-    let path = seats_path();
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    if let Ok(json) = serde_json::to_string_pretty(seats) {
-        let _ = std::fs::write(path, json);
+    if let Ok(json) = serde_json::to_vec_pretty(seats) {
+        let _ = crate::durable::write(&seats_path(), &json);
     }
 }
 
@@ -525,9 +523,15 @@ fn parse_headers(headers: &Value) -> PlanUsage {
 pub(crate) fn http(url: &str, post: Option<&str>, headers: &[(&str, String)]) -> Result<String> {
     let (body, status) = http_with(url, post, headers, "")?;
     if !(200..300).contains(&status) {
-        bail!("HTTP {status}: {}", &body[..body.len().min(200)]);
+        return Err(status_error(status, &body));
     }
     Ok(body)
+}
+
+/// A non-2xx answer as an error: the status and the start of the body.
+fn status_error(status: u32, body: &str) -> anyhow::Error {
+    // Cut at a char: an error page from a proxy or portal can be in any language.
+    anyhow!("HTTP {status}: {}", &body[..body.floor_char_boundary(200)])
 }
 
 /// curl with `extra` (write-out variables) printed after the body: the
@@ -934,5 +938,14 @@ mod tests {
             ..w
         };
         assert_eq!(past.reset_text(1_000_000).as_deref(), Some("resetting…"));
+    }
+
+    #[test]
+    fn status_error_cuts_the_body_at_a_char() {
+        // 199 ASCII bytes, then "é" across byte 200: an error page in another language.
+        let body = format!("{}é and more", "x".repeat(199));
+        let err = status_error(502, &body).to_string();
+        assert_eq!(err, format!("HTTP 502: {}", "x".repeat(199)));
+        assert_eq!(status_error(404, "nö").to_string(), "HTTP 404: nö");
     }
 }

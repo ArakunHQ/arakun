@@ -23,13 +23,38 @@ pub enum DialogEvent {
         branch: String,
         auto_name: bool,
     },
+    /// The worktree is to be made on a paired server (`shell::servers`):
+    /// its id, a folder of the repository there, and the new branch.
+    CreateOnServer {
+        server: String,
+        from: String,
+        branch: String,
+        auto_name: bool,
+    },
     Deleted(PathBuf),
+    /// A server's environment is to be deleted there (`shell::servers`); the
+    /// dialog waits, busy, for the server's answer.
+    DeleteOnServer {
+        delete_branch: bool,
+    },
     /// A project command (setup script, check) was saved; None clears it.
     Command(Option<String>),
     Dismissed,
 }
 
 // ---------------------------------------------------------------------------
+
+/// Where a new environment can be made: this computer, or a paired server
+/// with the repository.
+#[derive(Clone)]
+pub struct Machine {
+    /// The server's id and a folder of the repository there; None for this computer.
+    pub server: Option<(String, String)>,
+    pub label: SharedString,
+    /// The repository's folder name on the server, which names the folder
+    /// new worktrees go in there. None for this computer, or when not known.
+    pub folder: Option<SharedString>,
+}
 
 pub struct CreateEnvDialog {
     repo: PathBuf,
@@ -51,6 +76,9 @@ pub struct CreateEnvDialog {
     base_open: bool,
     busy: bool,
     error: Option<SharedString>,
+    /// The machines to pick from, and the one picked.
+    machines: Vec<Machine>,
+    machine: usize,
     _sub: Subscription,
 }
 
@@ -78,7 +106,7 @@ impl CreateEnvDialog {
                 if this.base_open {
                     this.base_open = false;
                     cx.notify();
-                } else if !this.busy {
+                } else if this.dismissable() {
                     cx.emit(DialogEvent::Dismissed);
                 }
             }
@@ -95,7 +123,9 @@ impl CreateEnvDialog {
         let r = repo.clone();
         cx.spawn(async move |this, cx| {
             let branches = cx
-                .background_spawn(async move { git::branches(&r).unwrap_or_default() })
+                .background_spawn(crate::guard::task_or_default(async move {
+                    git::branches(&r).unwrap_or_default()
+                }))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.branches = branches;
@@ -137,8 +167,43 @@ impl CreateEnvDialog {
             base_open: false,
             busy: false,
             error: None,
+            machines: vec![Machine {
+                server: None,
+                label: "This computer".into(),
+                folder: None,
+            }],
+            machine: 0,
             _sub: sub,
         }
+    }
+
+    /// Offers these machines, with `pick` chosen.
+    pub fn with_machines(mut self, machines: Vec<Machine>, pick: usize) -> Self {
+        if !machines.is_empty() {
+            self.machine = pick.min(machines.len() - 1);
+            self.machines = machines;
+        }
+        self
+    }
+
+    /// The server did not make the environment: why, and the name stays to fix.
+    pub fn failed(&mut self, why: String, cx: &mut Context<Self>) {
+        self.busy = false;
+        self.error = Some(why.into());
+        cx.notify();
+    }
+
+    /// Whether it can go now: not while a worktree is made here, but while a
+    /// server makes one, whose answer the island says once it is gone.
+    fn dismissable(&self) -> bool {
+        !self.busy || self.on_server().is_some()
+    }
+
+    /// The server picked, when it is not this computer.
+    fn on_server(&self) -> Option<&Machine> {
+        self.machines
+            .get(self.machine)
+            .filter(|m| m.server.is_some())
     }
 
     fn name(&self, cx: &App) -> String {
@@ -147,7 +212,30 @@ impl CreateEnvDialog {
 
     fn submit(&mut self, cx: &mut Context<Self>) {
         let name = self.name(cx);
-        if self.busy || name.is_empty() || !self.branches_loaded {
+        if self.busy || name.is_empty() {
+            return;
+        }
+        // On a server, the server makes it; git there checks the name. This
+        // computer's branches have nothing to say about it.
+        if let Some((server, from)) = self.on_server().and_then(|m| m.server.clone()) {
+            if name.contains(char::is_whitespace) {
+                self.error = Some(format!("\"{name}\" is not a valid branch name").into());
+                cx.notify();
+                return;
+            }
+            // Open until the server answers, so a name it turns down can be fixed.
+            self.busy = true;
+            self.error = None;
+            cx.notify();
+            cx.emit(DialogEvent::CreateOnServer {
+                server,
+                from,
+                auto_name: name == self.suggested,
+                branch: name,
+            });
+            return;
+        }
+        if !self.branches_loaded {
             return;
         }
         if name.contains(char::is_whitespace) || !git::branch_name_ok(&self.repo, &name) {
@@ -168,9 +256,9 @@ impl CreateEnvDialog {
             let branch = name.clone();
             // The branch list can be stale or empty (a failed read): git decides.
             let result = cx
-                .background_spawn(async move {
+                .background_spawn(crate::guard::task(async move {
                     git::add_worktree(&repo, &target, &name, base.as_deref(), auto_name)
-                })
+                }))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.busy = false;
@@ -246,12 +334,54 @@ fn field_box() -> gpui::Div {
 impl Render for CreateEnvDialog {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let name = self.name(cx);
-        let existing = self.branches.local.contains(&name);
+        let server = self.on_server().map(|m| m.label.clone());
+        // A server makes a new branch, and refuses a name taken there: this
+        // computer's branches say nothing of it.
+        let existing = server.is_none() && self.branches.local.contains(&name);
         let namer = (name == self.suggested && !existing)
             .then_some(self.namer)
             .flatten();
-        let target = (!name.is_empty()).then(|| worktree_path(&self.project, &name));
-        let ready = !name.is_empty() && !self.busy && self.branches_loaded;
+        let folder = self.on_server().and_then(|m| m.folder.clone());
+        let target = (!name.is_empty()).then(|| match (&server, &folder) {
+            // The server's home, not this one's, and its repository's name there.
+            (Some(m), Some(f)) => format!("~/arakun-workspaces/{f}/{name} on {m}"),
+            (Some(m), None) => format!("Created on {m}"),
+            (None, _) => format!(
+                "Created in {}",
+                pretty_path(&worktree_path(&self.project, &name))
+            ),
+        });
+        let ready = !name.is_empty() && !self.busy && (self.branches_loaded || server.is_some());
+        let machines = (self.machines.len() > 1).then(|| {
+            self.machines
+                .iter()
+                .enumerate()
+                .fold(ui::segmented(), |track, (i, m)| {
+                    let leading = if m.server.is_some() {
+                        "computer"
+                    } else {
+                        "home01"
+                    };
+                    track.child(
+                        ui::segment(
+                            ("env-machine", i),
+                            Some(leading),
+                            m.label.clone(),
+                            i == self.machine,
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            // The request under way is for the machine it was sent to.
+                            if this.busy {
+                                return;
+                            }
+                            this.machine = i;
+                            this.base_open = false;
+                            this.error = None;
+                            cx.notify();
+                        })),
+                    )
+                })
+        });
 
         let base_picker = div()
             .relative()
@@ -328,7 +458,7 @@ impl Render for CreateEnvDialog {
                 "New environment",
                 None,
                 ui::close_button("create-env-close").on_click(cx.listener(|this, _, _, cx| {
-                    if !this.busy {
+                    if this.dismissable() {
                         cx.emit(DialogEvent::Dismissed)
                     }
                 })),
@@ -349,6 +479,16 @@ impl Render for CreateEnvDialog {
                                 self.project
                             )),
                     )
+                    .when_some(machines, |d, track| {
+                        d.child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap(crate::ui::sp(6.))
+                                .child(field_label("Machine"))
+                                .child(div().flex().child(track)),
+                        )
+                    })
                     .child(
                         div()
                             .flex()
@@ -376,24 +516,36 @@ impl Render for CreateEnvDialog {
                                 )
                             }),
                     )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap(crate::ui::sp(6.))
-                            .child(field_label("Start from"))
-                            .child(base_picker),
-                    )
+                    // A server starts from its own checkout's commit: the
+                    // branches listed are this computer's.
+                    .when(server.is_none(), |d| {
+                        d.child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap(crate::ui::sp(6.))
+                                .child(field_label("Start from"))
+                                .child(base_picker),
+                        )
+                    })
                     .when_some(target, |d, t| {
                         d.child(
                             div()
                                 .text_size(px(ui::TEXT_XS))
                                 .text_color(theme::text_faint())
                                 .font_family(theme::FONT_MONO)
-                                .child(format!("Created in {}", pretty_path(&t))),
+                                .child(t),
                         )
                     })
-                    .when_some(self.setup.clone(), |d, s| {
+                    .when(self.setup.is_some() && server.is_some(), |d| {
+                        d.child(
+                            div()
+                                .text_size(px(ui::TEXT_XS))
+                                .text_color(theme::text_subtle())
+                                .child("The setup script runs only for environments on this computer."),
+                        )
+                    })
+                    .when_some(self.setup.clone().filter(|_| server.is_none()), |d, s| {
                         d.child(
                             div()
                                 .flex()
@@ -426,9 +578,9 @@ impl Render for CreateEnvDialog {
                             .justify_end()
                             .gap(crate::ui::sp(8.))
                             .child(
-                                ui::button("create-env-cancel", "Cancel", ButtonKind::Ghost, !self.busy)
+                                ui::button("create-env-cancel", "Cancel", ButtonKind::Ghost, self.dismissable())
                                     .on_click(cx.listener(|this, _, _, cx| {
-                                        if !this.busy {
+                                        if this.dismissable() {
                                             cx.emit(DialogEvent::Dismissed)
                                         }
                                     })),
@@ -478,7 +630,7 @@ impl CommandDialog {
     pub fn setup(current: Option<&str>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         Self::new(
             "Setup script",
-            "Runs in a terminal of every new environment of this project, right after its worktree is created. Empty disables it.",
+            "Runs in a terminal of every new environment of this project on this computer, right after its worktree is created. Not on servers. Empty disables it.",
             "npm install && cp .env.example .env",
             current,
             window,
@@ -604,6 +756,8 @@ pub struct DeleteEnvDialog {
     delete_branch: bool,
     busy: bool,
     error: Option<SharedString>,
+    /// The server a remote environment is on; `path` is then its folder there.
+    machine: Option<SharedString>,
     focus: FocusHandle,
 }
 
@@ -623,7 +777,9 @@ impl DeleteEnvDialog {
         let p = path.clone();
         cx.spawn(async move |this, cx| {
             let counts = cx
-                .background_spawn(async move { (git::unpushed(&p), git::local_only(&p)) })
+                .background_spawn(crate::guard::task(async move {
+                    (git::unpushed(&p), git::local_only(&p))
+                }))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.unpushed = counts.0;
@@ -642,8 +798,42 @@ impl DeleteEnvDialog {
             delete_branch: false,
             busy: false,
             error: None,
+            machine: None,
             focus,
         }
+    }
+
+    /// For the folder `place` on the server `machine`. What is uncommitted or
+    /// unpushed there is not known here, so the dialog does not count it.
+    pub fn remote(
+        place: PathBuf,
+        branch: Option<String>,
+        machine: SharedString,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let focus = cx.focus_handle();
+        window.focus(&focus, cx);
+        Self {
+            repo: PathBuf::new(),
+            path: place,
+            branch,
+            dirty: 0,
+            unpushed: None,
+            local_only: None,
+            delete_branch: false,
+            busy: false,
+            error: None,
+            machine: Some(machine),
+            focus,
+        }
+    }
+
+    /// The server did not delete it: why, and the dialog can try again.
+    pub fn failed(&mut self, error: String, cx: &mut Context<Self>) {
+        self.busy = false;
+        self.error = Some(error.into());
+        cx.notify();
     }
 
     fn submit(&mut self, cx: &mut Context<Self>) {
@@ -653,13 +843,21 @@ impl DeleteEnvDialog {
         self.busy = true;
         self.error = None;
         cx.notify();
+        if self.machine.is_some() {
+            cx.emit(DialogEvent::DeleteOnServer {
+                delete_branch: self.delete_branch,
+            });
+            return;
+        }
         let repo = self.repo.clone();
         let path = self.path.clone();
         let branch = self.delete_branch.then(|| self.branch.clone()).flatten();
         cx.spawn(async move |this, cx| {
             let p = path.clone();
             let result = cx
-                .background_spawn(async move { git::remove_worktree(&repo, &p, branch.as_deref()) })
+                .background_spawn(crate::guard::task(async move {
+                    git::remove_worktree(&repo, &p, branch.as_deref())
+                }))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.busy = false;
@@ -817,7 +1015,12 @@ impl Render for DeleteEnvDialog {
                     .text_size(px(ui::TEXT_MD))
                     .line_height(px(19.))
                     .child(div().text_color(theme::text_muted()).child(
-                        "This permanently deletes the worktree folder and everything inside it.",
+                        match &self.machine {
+                            Some(m) => format!(
+                                "This permanently deletes the worktree folder on {m}, everything inside it, and its sessions there."
+                            ),
+                            None => "This permanently deletes the worktree folder and everything inside it.".into(),
+                        },
                     ))
                     .child(
                         div()
@@ -843,7 +1046,11 @@ impl Render for DeleteEnvDialog {
                                             .flex_1()
                                             .min_w_0()
                                             .font_family(theme::FONT_MONO)
-                                            .child(pretty_path(&self.path)),
+                                            // `~` here is not the server's home.
+                                            .child(match &self.machine {
+                                                Some(m) => format!("{m}: {}", self.path.display()),
+                                                None => pretty_path(&self.path),
+                                            }),
                                     ),
                             )
                             .child(list),

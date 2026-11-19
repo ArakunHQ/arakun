@@ -71,16 +71,17 @@ impl Shell {
             url.clone()
         };
         let visible = self.has_projects() && self.env().path == env_path;
-        let env = self.find_env_mut(env_path)?;
+        self.find_env(env_path)?;
         crate::telemetry::capture(crate::telemetry::events::BROWSER_TAB_OPENED, &[]);
-        let tab = Tab::new(title, TabKind::Browser { url: url.into() });
+        let tab = Tab::of(env_path, title, TabKind::Browser { url: url.into() });
         let id = tab.id;
-        env.tabs.push(tab);
-        if activate {
-            env.active_tab = env.tabs.len() - 1;
-        }
+        let index = self.strip.add(tab);
         if activate && visible {
+            self.strip.active_tab = index;
             self.note_active_tab(cx);
+        } else if activate {
+            // Its environment is not on screen: it shows this tab the next time.
+            self.strip.front.insert(env_path.to_path_buf(), id);
         }
         self.ensure_active_browser(focus, window, cx);
         self.save(cx);
@@ -93,9 +94,8 @@ impl Shell {
         if !self.has_projects() {
             return Vec::new();
         }
-        let env = self.env();
-        std::iter::once(env.active_tab)
-            .chain(env.split_other())
+        std::iter::once(self.strip.active_tab)
+            .chain(self.split_other())
             .collect()
     }
 
@@ -104,7 +104,7 @@ impl Shell {
         let tabs = self.visible_tabs();
         tabs.into_iter()
             .filter_map(|i| {
-                self.env()
+                self.strip
                     .tabs
                     .get(i)?
                     .browser
@@ -117,9 +117,9 @@ impl Shell {
     /// Whether a browser tab on screen still lacks its page, or CEF has not been
     /// told which pages are on screen.
     pub(super) fn browsers_out_of_date(&self) -> bool {
-        let env = self.env();
         let wants_page = self.visible_tabs().into_iter().any(|i| {
-            env.tabs
+            self.strip
+                .tabs
                 .get(i)
                 .is_some_and(|t| matches!(t.kind, TabKind::Browser { .. }) && t.browser.is_none())
         });
@@ -137,7 +137,7 @@ impl Shell {
         if !self.has_projects() {
             return;
         }
-        let active = self.env().active_tab;
+        let active = self.strip.active_tab;
         for index in self.visible_tabs() {
             let page = self.ensure_page(index, window, cx);
             if focus
@@ -166,7 +166,14 @@ impl Shell {
         let views: Vec<Entity<BrowserView>> = self
             .visible_tabs()
             .into_iter()
-            .filter_map(|i| env.tabs.get(i)?.browser.as_ref().map(|b| b.view.clone()))
+            .filter_map(|i| {
+                self.strip
+                    .tabs
+                    .get(i)?
+                    .browser
+                    .as_ref()
+                    .map(|b| b.view.clone())
+            })
             .filter(|v| v.read(cx).is_home())
             .collect();
         if views.is_empty() {
@@ -195,14 +202,14 @@ impl Shell {
         }
         cx.spawn(async move |_, cx| {
             let servers = cx
-                .background_spawn(async move {
+                .background_spawn(crate::guard::task(async move {
                     let mut up: Vec<Server> = candidates
                         .into_iter()
                         .filter(|s| port_open(s.port))
                         .collect();
                     up.sort_by_key(|s| s.port);
                     up
-                })
+                }))
                 .await;
             let info = HomeInfo {
                 branch,
@@ -217,30 +224,19 @@ impl Shell {
         .detach();
     }
 
-    fn ensure_page(
+    /// The page of the browser tab at `index`, created when it has none.
+    pub(super) fn ensure_page(
         &mut self,
         index: usize,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<Entity<BrowserView>> {
-        let env_path = self.env().path.clone();
-        self.ensure_page_in(&env_path, index, window, cx)
-    }
-
-    /// The page of browser tab `index` of an environment, created when it has none.
-    pub(super) fn ensure_page_in(
-        &mut self,
-        env_path: &Path,
-        index: usize,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Option<Entity<BrowserView>> {
-        let tab = self.find_env_mut(env_path)?.tabs.get_mut(index)?;
+        let tab = self.strip.tabs.get_mut(index)?;
+        let env_path = tab.env.clone()?;
         let TabKind::Browser { url } = &tab.kind else {
             return None;
         };
         if tab.browser.is_none() {
-            let env_path = env_path.to_path_buf();
             let url = url.to_string();
             let view = cx.new(|cx| BrowserView::new(url, window, cx));
             let events = cx.subscribe_in(
@@ -269,10 +265,9 @@ impl Shell {
         self.shown_browsers = shown.clone();
         self.browsers_dirty = false;
         let views: Vec<Entity<BrowserView>> = self
-            .projects
+            .strip
+            .tabs
             .iter()
-            .flat_map(|p| &p.environments)
-            .flat_map(|e| &e.tabs)
             .filter_map(|t| t.browser.as_ref().map(|b| b.view.clone()))
             .collect();
         for view in views {
@@ -282,11 +277,9 @@ impl Shell {
     }
 
     fn browser_tab_mut(&mut self, env_path: &Path, id: EntityId) -> Option<(usize, &mut Tab)> {
-        let env = self.find_env_mut(env_path)?;
-        env.tabs
-            .iter_mut()
-            .enumerate()
-            .find(|(_, t)| t.browser.as_ref().is_some_and(|b| b.view.entity_id() == id))
+        self.strip.tabs.iter_mut().enumerate().find(|(_, t)| {
+            t.is_in(env_path) && t.browser.as_ref().is_some_and(|b| b.view.entity_id() == id)
+        })
     }
 
     fn browser_event(
@@ -314,17 +307,8 @@ impl Shell {
                 self.push_browser_tab(env_path, url.clone(), visible, visible, window, cx);
             }
             BrowserEvent::CloseRequested => {
-                let visible = self.has_projects() && self.env().path == env_path;
                 if let Some((i, _)) = self.browser_tab_mut(env_path, id) {
-                    if visible {
-                        self.discard_tab(i, window, cx);
-                    } else if let Some(env) = self.find_env_mut(env_path) {
-                        env.tabs.remove(i);
-                        if env.tabs.is_empty() {
-                            env.tabs.push(Tab::new("New session", TabKind::NewSession));
-                        }
-                        env.active_tab = env.active_tab.min(env.tabs.len() - 1);
-                    }
+                    self.discard_tab(i, window, cx);
                 }
             }
             BrowserEvent::TitleChanged(title) => {

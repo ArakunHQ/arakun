@@ -13,7 +13,9 @@ tone_instructions: >-
   why, then the fix. No praise, no filler, no emoji.
 
 reviews:
-  profile: chill
+  # Only the most important feedback. Every comment has to be answered
+  # (AGENTS.md), so a minor one costs as much as a real bug.
+  profile: quiet
 
   # Requests changes on blocking findings. Approves only pull requests it rates
   # minimal risk, once those findings are resolved. Merging still takes a
@@ -155,6 +157,9 @@ reviews:
     - "!phone/test/vectors/**"
 
   path_instructions:
+    - path: "**"
+      instructions: |
+        Comment only when the change is wrong: a bug, a crash, a security or privacy problem, data loss, a broken build or platform, or a broken rule from AGENTS.md or the checks below. Leave out style, naming, wording, comment polish, small refactors, extra tests "for completeness", unlikely edge cases and "consider" suggestions. If you are not sure something is a real problem, leave it out. Do not repeat a point you made on an earlier commit.
     - path: "**/*.rs"
       instructions: |
         - CI runs rustfmt and `clippy -D warnings` on Linux, Windows and macOS, and the tests on Linux and macOS. Do not repeat what they catch; look for logic errors, panics (unwrap, indexing, slicing on char boundaries), blocking work on the UI thread, races and leaked tasks or processes.
@@ -247,7 +252,7 @@ reviews:
         Isometric scene scripts in the line-iso style: thin ink outlines, three-tone faces, one accent color. See the arakun-iso skill in .claude/skills.
     - path: "**/*.md"
       instructions: |
-        Docs use plain, short sentences. Check that commands, flags, paths and shortcuts named in the text match the code. Do not comment on line length.
+        Check that commands, flags, paths and shortcuts named in the text match the code. Do not comment on wording, style, line length or Markdown formatting.
 
   tools:
     # CI runs clippy with the real feature set; CodeRabbit's run would duplicate it.
@@ -266,8 +271,9 @@ reviews:
     # Checks the skills in .claude/skills for unsafe instructions.
     skillspector:
       enabled: true
+    # Its findings are formatting nits in docs.
     markdownlint:
-      enabled: true
+      enabled: false
     github-checks:
       enabled: true
 

@@ -223,7 +223,9 @@ impl EventEmitter<AccountEvent> for Account {}
 impl Account {
     pub fn new(cx: &mut Context<Self>) -> Self {
         cx.spawn(async move |this, cx| {
-            let key = cx.background_spawn(async move { load_key() }).await;
+            let key = cx
+                .background_spawn(crate::guard::task(async move { load_key() }))
+                .await;
             let _ = this.update(cx, |this, cx| {
                 this.key = key;
                 this.key_loaded = true;
@@ -285,7 +287,7 @@ impl Account {
         cx.notify();
         self._fetch = Some(cx.spawn(async move |this, cx| {
             let result = cx
-                .background_spawn(async move {
+                .background_spawn(crate::guard::task(async move {
                     if source != KeySource::Droid {
                         return fetch_limits(&key, source);
                     }
@@ -303,7 +305,7 @@ impl Account {
                         Err(e) if e.is_empty() => Err(DROID_REJECTED.into()),
                         other => other,
                     }
-                })
+                }))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.busy = false;
@@ -337,12 +339,12 @@ impl Account {
         self._fetch = Some(cx.spawn(async move |this, cx| {
             let k = key.clone();
             let result = cx
-                .background_spawn(async move {
+                .background_spawn(crate::guard::task(async move {
                     let limits = fetch_limits(&k, KeySource::Keyring)?;
                     keyring_store(&k)
                         .map_err(|e| format!("Could not save the key in the keyring: {e}"))?;
                     Ok(limits)
-                })
+                }))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.busy = false;
@@ -365,7 +367,8 @@ impl Account {
         if self.key_source() != Some(KeySource::Keyring) {
             return;
         }
-        cx.background_spawn(async move { keyring_clear() }).detach();
+        cx.background_spawn(crate::guard::task(async move { keyring_clear() }))
+            .detach();
         self.key = None;
         self.limits = None;
         self.fetched = None;

@@ -4,7 +4,7 @@
 //! toggles do write Droid's user settings, as its own CLI does.
 
 use std::collections::HashMap;
-use std::io::{BufRead as _, BufReader, Write as _};
+use std::io::Write as _;
 use std::path::Path;
 use std::process::Stdio;
 use std::sync::mpsc;
@@ -14,7 +14,7 @@ use anyhow::{Context as _, Result, anyhow};
 use serde_json::{Value, json};
 
 use super::launch;
-use super::rpc::{FACTORY_API_VERSION, FACTORY_PROTOCOL_VERSION};
+use super::rpc::{FACTORY_API_VERSION, FACTORY_PROTOCOL_VERSION, lossy_lines};
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct McpServer {
@@ -86,14 +86,8 @@ pub fn cached(cwd: &Path) -> Option<Extensions> {
 
 fn save(cwd: &Path, x: &Extensions) {
     let file = cache_file(cwd);
-    if let Some(dir) = file.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
     if let Ok(json) = serde_json::to_vec(x) {
-        let tmp = file.with_extension("tmp");
-        if std::fs::write(&tmp, json).is_ok() {
-            let _ = std::fs::rename(tmp, file);
-        }
+        let _ = crate::durable::write(&file, &json);
     }
 }
 
@@ -175,8 +169,7 @@ fn batch(cwd: &Path, calls: &[(&str, Value)]) -> Result<Vec<Result<Value, String
     let stdout = child.stdout.take().context("droid stdout")?;
     let (tx, rx) = mpsc::channel::<Value>();
     std::thread::spawn(move || {
-        for line in BufReader::new(stdout).lines() {
-            let Ok(line) = line else { break };
+        for line in lossy_lines(stdout) {
             if let Ok(v) = serde_json::from_str::<Value>(&line)
                 && v["type"].as_str() == Some("response")
                 && tx.send(v).is_err()

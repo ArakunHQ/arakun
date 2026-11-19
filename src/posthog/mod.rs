@@ -194,14 +194,8 @@ fn write_private(file: &Path, bytes: &[u8]) -> std::io::Result<()> {
 }
 
 fn write_json(file: &Path, v: &impl Serialize) {
-    if let Some(d) = file.parent() {
-        let _ = std::fs::create_dir_all(d);
-    }
     if let Ok(json) = serde_json::to_vec(v) {
-        let tmp = file.with_extension("tmp");
-        if std::fs::write(&tmp, json).is_ok() {
-            let _ = std::fs::rename(tmp, file);
-        }
+        let _ = crate::durable::write(file, &json);
     }
 }
 
@@ -215,6 +209,12 @@ pub enum ApiError {
     /// 429: nothing more until this unix second.
     RateLimited(u64),
     Failed(String),
+}
+
+impl From<crate::guard::Panicked> for ApiError {
+    fn from(panicked: crate::guard::Panicked) -> Self {
+        ApiError::Failed(panicked.to_string())
+    }
 }
 
 impl ApiError {

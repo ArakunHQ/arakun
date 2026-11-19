@@ -14,7 +14,7 @@ use anyhow::{Context as _, Result, anyhow};
 use serde_json::{Value, json};
 
 use super::launch;
-use super::rpc::{FACTORY_API_VERSION, FACTORY_PROTOCOL_VERSION, unix_now};
+use super::rpc::{FACTORY_API_VERSION, FACTORY_PROTOCOL_VERSION, lossy_lines, unix_now};
 use super::thread::{ConfigOption, ModelInfo, NativeSettings, parse_config};
 use super::{AgentKind, Setting};
 
@@ -186,8 +186,7 @@ fn fetch_models() -> Result<Value> {
     let wrote = writeln!(stdin, "{request}").and_then(|_| stdin.flush());
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
-        for line in BufReader::new(stdout).lines() {
-            let Ok(line) = line else { break };
+        for line in lossy_lines(stdout) {
             let Ok(v) = serde_json::from_str::<Value>(&line) else {
                 continue;
             };
@@ -327,8 +326,7 @@ fn fetch_options(kind: AgentKind) -> Result<(String, Value)> {
     let stdout = child.stdout.take().context("adapter stdout")?;
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
-        for line in BufReader::new(stdout).lines() {
-            let Ok(line) = line else { break };
+        for line in lossy_lines(stdout) {
             let Ok(v) = serde_json::from_str::<Value>(&line) else {
                 continue;
             };
@@ -492,59 +490,83 @@ pub fn refresh_opencode() {
     }
 }
 
-// ---- Codex's options --------------------------------------------------------
+// ---- Codex's and Devin's options -------------------------------------------
+
+/// An agent's config options as a fresh session starts with them, kept as raw
+/// JSON and parsed, and on disk in `file` next to Droid's cache.
+struct RawOptions {
+    slot: Mutex<Option<(Value, Arc<Vec<ConfigOption>>)>>,
+    file: &'static str,
+}
+
+impl RawOptions {
+    const fn new(file: &'static str) -> Self {
+        RawOptions {
+            slot: Mutex::new(None),
+            file,
+        }
+    }
+
+    fn path(&self) -> PathBuf {
+        cache_path().with_file_name(self.file)
+    }
+
+    fn with<T>(&self, f: impl FnOnce(&mut (Value, Arc<Vec<ConfigOption>>)) -> T) -> T {
+        let mut slot = self.slot.lock().unwrap();
+        let cache = slot.get_or_insert_with(|| {
+            let raw = std::fs::read(self.path())
+                .ok()
+                .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+                .map(|v| v["options"].clone())
+                .unwrap_or_default();
+            let options = Arc::new(parse_config(&raw));
+            (raw, options)
+        });
+        f(cache)
+    }
+
+    fn options(&self) -> Arc<Vec<ConfigOption>> {
+        self.with(|c| c.1.clone())
+    }
+
+    /// Keeps what a fresh session reported, when it changed. Writes the file
+    /// after letting go of the cache, so readers don't wait for the disk.
+    fn remember(&self, raw: &Value) {
+        let options = parse_config(raw);
+        if options.is_empty() {
+            return;
+        }
+        let changed = self.with(|c| {
+            if c.0 == *raw {
+                return false;
+            }
+            *c = (raw.clone(), Arc::new(options));
+            true
+        });
+        if changed {
+            let _ = crate::durable::write(
+                &self.path(),
+                json!({"fetched": unix_now(), "options": raw})
+                    .to_string()
+                    .as_bytes(),
+            );
+        }
+    }
+}
 
 /// Codex's config options (mode, model, reasoning effort, fast mode) as a fresh
-/// session starts with them: what `~/.codex/config.toml` sets, kept as raw JSON
-/// and parsed.
-static CODEX: Mutex<Option<(Value, Arc<Vec<ConfigOption>>)>> = Mutex::new(None);
-
-fn codex_cache_path() -> PathBuf {
-    cache_path().with_file_name("codex-options.json")
-}
-
-fn with_codex<T>(f: impl FnOnce(&mut (Value, Arc<Vec<ConfigOption>>)) -> T) -> T {
-    let mut slot = CODEX.lock().unwrap();
-    let cache = slot.get_or_insert_with(|| {
-        let raw = std::fs::read(codex_cache_path())
-            .ok()
-            .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
-            .map(|v| v["options"].clone())
-            .unwrap_or_default();
-        let options = Arc::new(parse_config(&raw));
-        (raw, options)
-    });
-    f(cache)
-}
+/// session starts with them: what `~/.codex/config.toml` sets.
+static CODEX: RawOptions = RawOptions::new("codex-options.json");
 
 /// The options a fresh Codex session starts with; empty until one has run.
 pub fn codex_options() -> Arc<Vec<ConfigOption>> {
-    with_codex(|c| c.1.clone())
+    CODEX.options()
 }
 
-/// Keeps what a fresh Codex session reported, when it changed. Writes the
-/// file after letting go of the cache, so readers don't wait for the disk.
-/// Blocking; run it off the main thread.
+/// Keeps what a fresh Codex session reported, when it changed. Blocking; run
+/// it off the main thread.
 pub fn remember_codex_options(raw: &Value) {
-    let options = parse_config(raw);
-    if options.is_empty() {
-        return;
-    }
-    let changed = with_codex(|c| {
-        if c.0 == *raw {
-            return false;
-        }
-        *c = (raw.clone(), Arc::new(options));
-        true
-    });
-    if changed {
-        let _ = crate::durable::write(
-            &codex_cache_path(),
-            json!({"fetched": unix_now(), "options": raw})
-                .to_string()
-                .as_bytes(),
-        );
-    }
+    CODEX.remember(raw)
 }
 
 /// Asks Codex for its options when none are cached and its adapter is
@@ -559,6 +581,44 @@ pub fn refresh_codex() {
         Ok((_, raw)) => remember_codex_options(&raw),
         Err(e) => eprintln!("arakun: codex options: {e:#}"),
     }
+}
+
+/// Devin's config options (mode and model) as a fresh session starts with them.
+/// Signed out, Devin lists no models.
+static DEVIN: RawOptions = RawOptions::new("devin-options.json");
+
+/// The options a fresh Devin session starts with; empty until one has run.
+pub fn devin_options() -> Arc<Vec<ConfigOption>> {
+    DEVIN.options()
+}
+
+/// Keeps what a fresh Devin session reported, when it changed. Blocking; run
+/// it off the main thread.
+pub fn remember_devin_options(raw: &Value) {
+    DEVIN.remember(raw)
+}
+
+/// Asks Devin for its options when none are cached, or when the cache has no
+/// models but Devin is signed in now. A session that never gets a prompt, so
+/// it costs no tokens. Blocking; run it off the main thread.
+pub fn refresh_devin() {
+    if !devin_stale(&devin_options(), launch::devin_signed_in()) || launch::devin_bin().is_err() {
+        return;
+    }
+    match fetch_options(AgentKind::Devin) {
+        Ok((_, raw)) => remember_devin_options(&raw),
+        Err(e) => eprintln!("arakun: devin options: {e:#}"),
+    }
+}
+
+/// Whether Devin's cached options need asking again: there are none, or they
+/// were read signed out (no models) and Devin is signed in now.
+fn devin_stale(options: &[ConfigOption], signed_in: bool) -> bool {
+    options.is_empty()
+        || signed_in
+            && options
+                .iter()
+                .any(|o| o.category.as_deref() == Some("model") && o.options.is_empty())
 }
 
 // ---- The agents' own sessions ---------------------------------------------
@@ -858,5 +918,23 @@ mod tests {
         std::fs::write(&path, format!("{}\n", lines[0])).unwrap();
         assert!(read_claude_session(&path).is_none());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn devin_asks_again_for_models_once_signed_in() {
+        let raw = json!([
+            {"id": "mode", "name": "Session Mode", "category": "mode", "type": "select",
+             "currentValue": "accept-edits",
+             "options": [{"value": "accept-edits", "name": "Code"}, {"value": "plan", "name": "Plan"}]},
+            {"id": "model", "name": "Model", "category": "model", "type": "select",
+             "currentValue": "swe-1-6-fast", "options": []}
+        ]);
+        let signed_out = parse_config(&raw);
+        assert!(devin_stale(&[], false));
+        assert!(!devin_stale(&signed_out, false));
+        assert!(devin_stale(&signed_out, true));
+        let mut with_models = raw.clone();
+        with_models[1]["options"] = json!([{"value": "swe-1-6-fast", "name": "SWE-1.6 Fast"}]);
+        assert!(!devin_stale(&parse_config(&with_models), true));
     }
 }

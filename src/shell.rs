@@ -2319,6 +2319,23 @@ impl Shell {
                 }
             })
         };
+        let views_on = {
+            let ext = self.extensions_view.read(cx);
+            crate::sidebar::View::EXTENSIONS
+                .iter()
+                .copied()
+                .filter(|v| ext.shows(*v))
+                .collect()
+        };
+        let project = self.has_projects().then(|| self.project()).map(|p| {
+            crate::settings_view::ProjectSettings {
+                path: p.path.clone(),
+                name: p.name.clone(),
+                setup: p.setup.clone(),
+                check: p.check.clone(),
+                remote: p.is_remote(),
+            }
+        });
         let look = crate::customize_view::Summary::of(&match &self.customize {
             Some((view, _)) => view.read(cx).saved().clone(),
             None => crate::palettes::load(),
@@ -2330,6 +2347,8 @@ impl Shell {
                 look,
                 #[cfg(feature = "coderlabs")]
                 coderspace,
+                views_on,
+                project,
                 window,
                 cx,
             )
@@ -2358,6 +2377,29 @@ impl Shell {
                     crate::island::set_enabled(*on);
                     this.sync_island(window, cx);
                     this.save(cx);
+                }
+                SettingsEvent::Zoom(pct) => this.zoom_to(*pct, window, cx),
+                SettingsEvent::SidebarView(view, on) => {
+                    this.extensions_view
+                        .update(cx, |v, cx| v.set_view(*view, *on, cx));
+                }
+                SettingsEvent::ProjectCommand {
+                    project,
+                    check,
+                    command,
+                } => {
+                    if let Some(p) = this.projects.iter_mut().find(|p| p.path == *project) {
+                        if *check {
+                            p.check = command.clone();
+                            // A check set by hand is one the user wants.
+                            if command.is_some() {
+                                p.check_declined = false;
+                            }
+                        } else {
+                            p.setup = command.clone();
+                        }
+                        this.save(cx);
+                    }
                 }
                 SettingsEvent::RestartToUpdate => {
                     this.restarting = true;

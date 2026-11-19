@@ -190,7 +190,8 @@ terminal-only. The status line and keybindings from your settings don't apply in
   turn that edits files; on failure the tail of the output goes back to the agent, up to
   three times in a row. Checks run one at a time across all sessions, at low priority and
   with half the cores for builds (`CARGO_BUILD_JOBS`), so several agents finishing
-  together don't stall the computer. Arakun also notices when an agent loops (the same
+  together don't stall the computer. Set it, and the setup script new environments run,
+  in Settings › Project or the project's menu. Arakun also notices when an agent loops (the same
   failing command or the same edit over and over) and offers to stop and rethink.
 - **Memory.** Agents save what they learn (`arakun mem`), and every new session starts
   with an index of it in the system prompt. Plain JSON files, one per repository plus a
@@ -381,8 +382,8 @@ after a week).
   saved in `~/.local/share/arakun/cliproxy-management-key`, and the last limits read
   in `cliproxy-plan.json` next to it.
 - **Marketplace.** Plugins and MCP servers to add, and the MCP servers, plugins, skills
-  and permission rules the agents load now. Under Arakun › Extensions you turn on the
-  tabs the sidebar shows besides Inbox, Runs, Branches and Marketplace: GitHub, Notes,
+  and permission rules the agents load now. Under Arakun › Extensions (or Settings ›
+  General › Sidebar) you turn on the tabs the sidebar shows besides Inbox, Runs, Branches and Marketplace: GitHub, Notes,
   Memory, Usage, Cloudflare, PostHog, Isometric, Phone, Servers and Automations. The
   palette and the sidebar builder list only the tabs that are on. A new install starts
   with none on, except what you set up in the first-run setup: GitHub once the GitHub
@@ -1088,7 +1089,8 @@ forward through tabs, `Ctrl+Cmd+F` toggles full screen, and `Cmd+H`, `Cmd+M` and
   `Enter` ticking one off. Pins are kept in `pins.json`, rules (reminders too) in
   `rules.json`, to-dos in `todos.json` and what you open in `palette-frecency.json`,
   next to the state file.
-- `Ctrl+=` / `Ctrl+-` / `Ctrl+0` zoom the whole interface (in a browser tab, the page)
+- `Ctrl+=` / `Ctrl+-` / `Ctrl+0` zoom the whole interface (in a browser tab, the page);
+  Settings › Appearance › Zoom does it too
 - `Ctrl+Shift+H` turns [redacted mode](#redacted-mode) on or off
 - In the composer: `Enter` sends, `Shift+Enter` new line, `Up` on an empty composer
   recalls earlier prompts; paste or drop images to attach them. While the agent works,

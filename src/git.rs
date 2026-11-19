@@ -3,7 +3,7 @@
 //! the index lock while an agent or terminal is committing in the same worktree.
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, ExitStatus, Output, Stdio};
 
 use anyhow::{Context as _, Result, anyhow, bail};
 
@@ -257,20 +257,25 @@ pub fn origin_base(repo: &Path) -> Option<String> {
     let remote = format!("refs/remotes/origin/{branch}");
     // Exit code 2: origin answered and has no such branch. A copy fetched before it
     // was deleted must not be used then.
-    let listed = git(repo)
-        .args(["ls-remote", "--exit-code", "--heads", "origin"])
-        .arg(format!("refs/heads/{branch}"))
-        .output();
-    match listed.as_ref().map(|o| o.status.code()) {
-        Ok(Some(2)) => return None,
+    let listed = status_within(
+        git(repo)
+            .args(["ls-remote", "--exit-code", "--heads", "origin"])
+            .arg(format!("refs/heads/{branch}")),
+        ORIGIN_TIMEOUT,
+    );
+    match listed.and_then(|s| s.code()) {
+        Some(2) => return None,
         // An explicit destination: origin's fetch refspec may not cover this branch.
-        Ok(Some(0)) => {
-            let _ = git(repo)
-                .args(["fetch", "--quiet", "origin"])
-                .arg(format!("+refs/heads/{branch}:{remote}"))
-                .output();
+        Some(0) => {
+            let _ = status_within(
+                git(repo)
+                    .args(["fetch", "--quiet", "origin"])
+                    .arg(format!("+refs/heads/{branch}:{remote}")),
+                ORIGIN_TIMEOUT,
+            );
         }
-        // Offline or no access: a remote branch fetched earlier is still a better start.
+        // Offline, no access or too slow: a remote branch fetched earlier is still a
+        // better start.
         _ => {}
     }
     // The full name: a local branch called origin/<branch> would make the short one
@@ -280,6 +285,35 @@ pub fn origin_base(repo: &Path) -> Option<String> {
         .status()
         .is_ok_and(|s| s.success())
         .then_some(remote)
+}
+
+/// How long each call to origin may take while an environment is made. A new
+/// environment waits on it, so a stalled origin must not hold it up for long.
+const ORIGIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Runs `cmd` without its output and returns how it exited, or None when it could
+/// not start or ran past `limit`; it is killed then.
+fn status_within(cmd: &mut Command, limit: std::time::Duration) -> Option<ExitStatus> {
+    let mut child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let until = std::time::Instant::now() + limit;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Some(status),
+            Ok(None) if std::time::Instant::now() < until => {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
 }
 
 pub fn remove_worktree(repo: &Path, path: &Path, delete_branch: Option<&str>) -> Result<()> {
@@ -1147,6 +1181,24 @@ mod tests {
         assert_eq!(super::current_branch(&tree).as_deref(), Some("taken"));
         let _ = std::fs::remove_dir_all(dir);
         let _ = std::fs::remove_dir_all(tree);
+    }
+
+    #[test]
+    fn a_stalled_command_is_stopped_at_the_limit() {
+        use std::time::Duration;
+        let start = std::time::Instant::now();
+        let mut cmd = crate::platform::command("git");
+        assert!(
+            super::status_within(&mut cmd.arg("--version"), Duration::from_secs(5))
+                .is_some_and(|s| s.success())
+        );
+        #[cfg(unix)]
+        {
+            let mut sleep = Command::new("sleep");
+            sleep.arg("30");
+            assert!(super::status_within(&mut sleep, Duration::from_millis(200)).is_none());
+            assert!(start.elapsed() < Duration::from_secs(10));
+        }
     }
 
     #[test]

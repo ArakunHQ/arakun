@@ -166,9 +166,14 @@ pub struct ToolCall {
     pub added: u32,
     #[serde(default)]
     pub removed: u32,
-    /// What a command printed, sent through ACP's `_meta.terminal_output` extension.
+    /// The end of what a command printed, sent through ACP's
+    /// `_meta.terminal_output` extension. Only the tail is kept: a noisy build
+    /// would otherwise grow it, the transcript and every redraw without end.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub terminal_output: String,
+    /// Lines cut from the start of `terminal_output` to keep it short.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub terminal_dropped_lines: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exit_code: Option<i64>,
     /// Claude Code: the Agent call whose subagent made this one.
@@ -179,7 +184,39 @@ pub struct ToolCall {
     pub tool_name: Option<String>,
 }
 
+fn is_zero(n: &u64) -> bool {
+    *n == 0
+}
+
+/// How much of a command's output a tool call keeps. The card shows 40 lines,
+/// and the phone, the log and loop detection read only the end too.
+const TERMINAL_KEEP: usize = 64 * 1024;
+
 impl ToolCall {
+    /// Adds what a command printed, then drops whole lines from the start once
+    /// the output is twice `TERMINAL_KEEP`, so the cost of cutting is spread
+    /// over many appends.
+    pub fn push_terminal_output(&mut self, data: &str) {
+        self.terminal_output.push_str(data);
+        let len = self.terminal_output.len();
+        if len <= 2 * TERMINAL_KEEP {
+            return;
+        }
+        let mut cut = len - TERMINAL_KEEP;
+        while !self.terminal_output.is_char_boundary(cut) {
+            cut += 1;
+        }
+        // Start at a line so an escape sequence isn't cut in half. One line
+        // longer than the whole tail is cut where it is.
+        if let Some(nl) = self.terminal_output[cut..].find('\n') {
+            cut += nl + 1;
+        }
+        // A line cut through the middle still counts once, by its kept end.
+        let dropped = self.terminal_output[..cut].bytes().filter(|&b| b == b'\n');
+        self.terminal_dropped_lines += dropped.count() as u64;
+        self.terminal_output.drain(..cut);
+    }
+
     /// A call that runs a subagent (Claude's Agent/Task, Droid's Task).
     pub fn is_subagent(&self) -> bool {
         matches!(self.tool_name.as_deref(), Some("Agent" | "Task"))
@@ -3622,6 +3659,7 @@ impl Thread {
                     added: 0,
                     removed: 0,
                     terminal_output: String::new(),
+                    terminal_dropped_lines: 0,
                     exit_code: None,
                     parent: None,
                     tool_name: None,
@@ -3670,7 +3708,7 @@ impl Thread {
         let meta = &u["_meta"];
         for key in ["terminal_output", "terminal_output_delta"] {
             if let Some(data) = meta[key]["data"].as_str() {
-                t.terminal_output.push_str(data);
+                t.push_terminal_output(data);
             }
         }
         if let Some(code) = meta["terminal_exit"]["exit_code"].as_i64() {
@@ -4078,6 +4116,41 @@ fn take_next(queue: &mut Vec<String>, urgent: &mut usize, paused: bool) -> Optio
 #[cfg(test)]
 mod tests {
     #[test]
+    fn command_output_keeps_its_tail_and_counts_what_it_dropped() {
+        let mut t = super::ToolCall {
+            id: "t".into(),
+            title: String::new(),
+            kind: "execute".into(),
+            status: super::ToolStatus::InProgress,
+            content: Vec::new(),
+            locations: Vec::new(),
+            raw_input: None,
+            raw_output: None,
+            added: 0,
+            removed: 0,
+            terminal_output: String::new(),
+            terminal_dropped_lines: 0,
+            exit_code: None,
+            parent: None,
+            tool_name: None,
+        };
+        let mut total = 0u64;
+        for i in 0..100_000 {
+            t.push_terminal_output(&format!("line {i}\n"));
+            total += 1;
+            assert!(t.terminal_output.len() <= 2 * super::TERMINAL_KEEP);
+        }
+        let kept = t.terminal_output.lines().count() as u64;
+        assert_eq!(t.terminal_dropped_lines + kept, total);
+        assert!(t.terminal_output.starts_with("line "));
+        assert!(t.terminal_output.ends_with("line 99999\n"));
+        // Output with no line breaks is cut anyway, on a character.
+        t.push_terminal_output(&"é".repeat(3 * super::TERMINAL_KEEP));
+        assert!(t.terminal_output.len() <= 2 * super::TERMINAL_KEEP);
+        assert!(t.terminal_output.ends_with('é'));
+    }
+
+    #[test]
     fn a_disconnect_waits_for_the_exit_unless_closing() {
         let failed = |at| {
             let mut t = Thread::new(AgentKind::Claude, "/p".into(), None);
@@ -4317,6 +4390,7 @@ mod tests {
             added: 0,
             removed: 0,
             terminal_output: String::new(),
+            terminal_dropped_lines: 0,
             exit_code: None,
             parent: None,
             tool_name: None,

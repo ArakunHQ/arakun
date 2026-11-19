@@ -109,7 +109,8 @@ gh pr checks --watch     # or your host's way to wait on a pull request
 ```
 
 - Red: use the `triage-ci` skill, push the fix, wait again.
-- Green: `gh pr ready`. That requests reviewers and starts CodeRabbit, so never
+- Green: `gh pr ready`. CodeRabbit reviews drafts too, so its review is often
+  done before the checks; marking ready asks for the reviewers, so never
   before CI passes.
 - The first pull request of a new contributor needs the CLA signed; only the
   person can do that.

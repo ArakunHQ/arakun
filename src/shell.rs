@@ -1692,7 +1692,7 @@ impl Shell {
                     }
                     // Before the first commit there is nothing to branch from:
                     // None, and the session starts in the main checkout.
-                    if !git::has_commits(&repo) {
+                    if !git::has_commits(&repo)? {
                         return Ok(None);
                     }
                     let mut result = Err(anyhow::anyhow!("not tried"));

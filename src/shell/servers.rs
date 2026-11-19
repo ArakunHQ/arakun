@@ -93,6 +93,10 @@ pub(super) struct ServersLink {
     /// Environments of folders a server no longer offers, kept for the
     /// sessions that ran there: nothing new starts in them.
     retired: HashSet<PathBuf>,
+    /// Servers asked to clone or add a folder, until they answer.
+    adding: HashSet<String>,
+    /// A folder a server just added, by server and path: it opens once listed.
+    added: Option<(String, String)>,
     /// The id a pairing under way will carry once it works.
     pairing: Option<String>,
     /// Gives a pairing up when its link has run out.
@@ -149,6 +153,25 @@ fn gone_places(sessions: &[SessionRow], places: &[PlaceRow]) -> Vec<PlaceRow> {
 /// What the place of an older server's session starts with, whose folder is
 /// known by name only. Not an absolute path, so it never names a folder there.
 const GONE: &str = "gone:";
+
+/// Whether `message` is a server refusing one of `kinds` because it is older
+/// than them: it cannot read the message (`bad message: unknown variant ...`).
+fn older_server_refused(message: &str, kinds: &[&str]) -> bool {
+    // The variant refused comes first; the ones expected after it may name
+    // a kind here without being about it.
+    kinds
+        .iter()
+        .any(|k| message.starts_with(&format!("bad message: unknown variant `{k}`")))
+}
+
+/// A folder request (`add_place` or `clone`) to `server` that never left
+/// this app: the form can ask again, and says why. None when there was none.
+fn folder_request_lost(adding: &mut HashSet<String>, server: &str, kind: &str) -> Option<String> {
+    if !matches!(kind, "add_place" | "clone") || !adding.remove(server) {
+        return None;
+    }
+    Some("The request did not reach the server. Try again once it is connected.".into())
+}
 
 /// A server reached over plain http: what goes to it, its token too, can be read on the way.
 fn in_the_clear(s: &Saved) -> bool {
@@ -401,6 +424,8 @@ impl Shell {
             starting: None,
             starting_id: None,
             retired: HashSet::new(),
+            adding: HashSet::new(),
+            added: None,
             pairing: None,
             pairing_timeout: None,
             error: None,
@@ -439,6 +464,7 @@ impl Shell {
         let state = ServersState {
             servers,
             pairing: link.pairing.is_some(),
+            adding: link.adding.clone(),
             error: link.error.clone(),
         };
         self.servers_view.update(cx, |v, cx| v.set_state(state, cx));
@@ -500,9 +526,27 @@ impl Shell {
                 if link.following.as_ref().is_some_and(|f| f.server == *id) {
                     link.following = None;
                 }
+                // What it was asked is not coming: the others' requests stay.
+                link.adding.remove(id);
+                if link.added.as_ref().is_some_and(|(s, _)| s == id) {
+                    link.added = None;
+                }
                 // Its link stops without a word: its start is not answered.
                 end_start(&mut link.starting, id);
                 self.sync_remote_projects(window, cx);
+            }
+            ServersEvent::AddPlace { server, path } => {
+                if let Some(conn) = link.conns.get(server) {
+                    conn.client
+                        .send(&json!({ "type": "add_place", "path": path }));
+                    link.adding.insert(server.clone());
+                }
+            }
+            ServersEvent::Clone { server, url } => {
+                if let Some(conn) = link.conns.get(server) {
+                    conn.client.send(&json!({ "type": "clone", "url": url }));
+                    link.adding.insert(server.clone());
+                }
             }
             ServersEvent::Open { server, session } => {
                 let (server, session) = (server.clone(), session.clone());
@@ -864,6 +908,15 @@ impl Shell {
                 };
                 env
             }
+            Some(kind @ ("add_place" | "clone")) => {
+                if let Some(link) = &mut self.servers
+                    && let Some(why) = folder_request_lost(&mut link.adding, server, kind)
+                {
+                    link.error = Some(why);
+                    self.sync_servers_view(cx);
+                }
+                return;
+            }
             // An answer that did not go can be given again.
             Some("answer" | "skip_question") => {
                 let session = text(msg, "session");
@@ -955,6 +1008,37 @@ impl Shell {
         self.open_session(session.to_string().into(), window, cx);
     }
 
+    /// The form to clone a repository on a server, or add one of its folders.
+    pub(super) fn servers_add_place(
+        &mut self,
+        server: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_servers_tab(window, cx);
+        self.servers_view
+            .update(cx, |v, cx| v.add_place(server, window, cx));
+    }
+
+    /// A folder a server added for this app is an environment now: it opens.
+    fn servers_open_added(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((server, place)) = self.servers.as_ref().and_then(|l| l.added.clone()) else {
+            return;
+        };
+        let env_path = Remote::env_path(&server, &place);
+        let found = self
+            .projects
+            .iter()
+            .enumerate()
+            .find_map(|(pi, p)| p.env_index(&env_path).map(|ei| (pi, ei)));
+        if let Some((pi, ei)) = found {
+            if let Some(link) = &mut self.servers {
+                link.added = None;
+            }
+            self.select_env(pi, ei, window, cx);
+        }
+    }
+
     /// A session this app started on a server is in its inbox now: its tab opens.
     fn servers_open_started(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some((server, id)) = self.servers.as_ref().and_then(|l| l.starting_id.clone()) else {
@@ -1035,6 +1119,13 @@ impl Shell {
                 if !back {
                     end_start(&mut link.starting, id);
                 }
+                // The answer would have come on the connection that dropped,
+                // but the server may still finish: the form says to look first.
+                if !back && link.adding.remove(id) {
+                    link.error = Some(
+                        "The connection dropped before the server said whether the folder was added. Check its folders before you try again.".into(),
+                    );
+                }
                 if let Some(conn) = link.conns.get_mut(id) {
                     conn.reach = reach;
                     // Back after a drop: the followed session is asked for
@@ -1055,6 +1146,29 @@ impl Shell {
                 if msg["type"] == "inbox" {
                     self.servers_inbox(id, &msg);
                     self.sync_remote_projects(window, cx);
+                } else if msg["type"] == "place_added" {
+                    if link.adding.remove(id) {
+                        link.added = Some((id.to_string(), text(&msg, "path")));
+                        self.servers_view.update(cx, |v, cx| v.place_added(id, cx));
+                    }
+                    // The server sends its inbox before this: the folder is here.
+                    self.servers_open_added(window, cx);
+                } else if msg["type"] == "place_failed" {
+                    // What was being added is not coming: the form can ask again.
+                    if link.adding.remove(id) {
+                        link.error = Some(text(&msg, "message"));
+                    }
+                } else if msg["type"] == "error"
+                    && link.adding.contains(id)
+                    && older_server_refused(&text(&msg, "message"), &["add_place", "clone"])
+                {
+                    // A server from before folders could be added: it does not
+                    // know the request, and says so in a plain error.
+                    link.adding.remove(id);
+                    link.error = Some(
+                        "This server cannot add folders yet. Update arakun-server on it and try again."
+                            .into(),
+                    );
                 } else if msg["type"] == "started" {
                     if link.starting.as_deref() == Some(id) {
                         link.starting = None;
@@ -1547,6 +1661,30 @@ mod tests {
             ticket: "t".into(),
         };
         assert!(!in_the_clear(&saved("http://10.0.0.2:7474", relay)));
+    }
+
+    #[test]
+    fn a_folder_request_that_never_left_frees_the_form() {
+        let mut adding = HashSet::from(["a".to_string(), "b".to_string()]);
+        let why = folder_request_lost(&mut adding, "a", "clone").unwrap();
+        assert!(why.contains("did not reach"), "{why}");
+        assert_eq!(adding, HashSet::from(["b".to_string()]));
+        // The other server's request is still on its way.
+        assert!(folder_request_lost(&mut adding, "a", "add_place").is_none());
+        assert!(folder_request_lost(&mut adding, "b", "start").is_none());
+        assert!(adding.contains("b"));
+        assert!(folder_request_lost(&mut adding, "b", "add_place").is_some());
+        assert!(adding.is_empty());
+    }
+
+    #[test]
+    fn an_older_server_is_told_from_its_plain_errors() {
+        let old = "bad message: unknown variant `add_place`, expected one of `open`, `send` at line 1 column 19";
+        assert!(older_server_refused(old, &["add_place", "clone"]));
+        assert!(!older_server_refused(old, &["clone"]));
+        assert!(!older_server_refused("no such session", &["add_place"]));
+        let other = "bad message: unknown variant `rename`, expected one of `add_place`, `clone`";
+        assert!(!older_server_refused(other, &["add_place", "clone"]));
     }
 
     #[test]

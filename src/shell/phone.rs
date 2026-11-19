@@ -774,6 +774,11 @@ impl Shell {
                     }
                 }
             }
+            // The desktop's projects are added in its own window, not from a device.
+            ClientMsg::AddPlace { .. } | ClientMsg::Clone { .. } => self.phone_send(
+                client,
+                wire::error("add projects to this computer in Arakun itself"),
+            ),
             ClientMsg::Ping => {}
         }
     }

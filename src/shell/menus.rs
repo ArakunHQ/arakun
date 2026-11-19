@@ -992,11 +992,34 @@ impl Shell {
                     .and_then(|p| p.environments.get(ei))
                     .is_some_and(|e| e.remote.is_some()) =>
             {
-                panel = panel.child(
-                    ui::menu_item("cm-servers", "computer", "Open Servers", false, true).on_click(
-                        cx.listener(|this, _, window, cx| this.open_servers_tab(window, cx)),
-                    ),
-                );
+                let server = self.projects[pi].environments[ei]
+                    .remote
+                    .as_ref()
+                    .map(|r| r.server.clone())
+                    .unwrap_or_default();
+                panel =
+                    panel
+                        .child(
+                            ui::menu_item(
+                                "cm-server-add-place",
+                                "folder01",
+                                "Clone or add a folder on this server…",
+                                false,
+                                true,
+                            )
+                            .on_click(cx.listener(
+                                move |this, _, window, cx| {
+                                    this.menu = None;
+                                    this.servers_add_place(&server, window, cx)
+                                },
+                            )),
+                        )
+                        .child(
+                            ui::menu_item("cm-servers", "computer", "Open Servers", false, true)
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.open_servers_tab(window, cx)
+                                })),
+                        );
             }
             MenuTarget::Env(pi, ei) => {
                 let env = self.projects.get(pi).and_then(|p| p.environments.get(ei));

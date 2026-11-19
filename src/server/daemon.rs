@@ -12,6 +12,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use futures::StreamExt as _;
@@ -27,6 +28,7 @@ use crate::agent::{
     self, AgentKind, Entry, Setting, SettingOption, Thread, ThreadEvent, ThreadStatus, Transcript,
     catalog, workers_ai,
 };
+use crate::clone_source;
 use crate::model::{Status, unix_now};
 use crate::phone::relay::{self, RelayClient};
 use crate::phone::{
@@ -125,6 +127,13 @@ pub struct Daemon {
     flush: Option<Task<()>>,
     last_inbox: String,
     last_usage: String,
+    /// Folders a device's clone is going into, until it is done.
+    cloning: Clones,
+    /// What git says of each place, read to the side ([`PlaceMeta`]): a
+    /// folder on a mount that stops answering would hold up every device.
+    meta: HashMap<PathBuf, PlaceMeta>,
+    /// A read of every place's [`PlaceMeta`] is under way.
+    reading_meta: bool,
     uploads: phone::Uploads,
     /// The last thing each session notified about, so one turn says it once.
     notified: HashMap<String, Notice>,
@@ -708,7 +717,10 @@ impl Daemon {
             flush: None,
             last_inbox: String::new(),
             last_usage: String::new(),
+            cloning: Clones::default(),
             uploads: phone::Uploads::default(),
+            meta: HashMap::new(),
+            reading_meta: false,
             notified: HashMap::new(),
             writer: parts.writer,
             last_read: Default::default(),
@@ -1036,6 +1048,7 @@ impl Daemon {
             return;
         }
         self.last_read.trim();
+        self.read_meta(cx);
         self.sync_inbox(cx);
         let due: Vec<String> = self
             .live
@@ -1068,6 +1081,14 @@ impl Daemon {
         self.save_devices();
         self.save_store();
         self.writer.finish();
+        // Git runs in a process group of its own, which the terminal's Ctrl-C
+        // does not reach: left alone, a clone would go on writing a folder
+        // that no place names, or leave half of one.
+        self.cloning.stop_all();
+        let given_up = Instant::now() + CLONE_STOP_WAIT;
+        while self.cloning.busy() && Instant::now() < given_up {
+            std::thread::sleep(Duration::from_millis(20));
+        }
         // The process ends without dropping the app, so the socket goes here.
         self.listening = None;
         if self.reach == Reach::Tailscale {
@@ -1093,12 +1114,56 @@ impl Daemon {
         self.transport.sync_tickets(&self.access);
     }
 
-    fn place_label(path: &Path) -> String {
+    /// Reads every place's [`PlaceMeta`] to the side, and sends the inbox
+    /// again when it changed. One read at a time.
+    fn read_meta(&mut self, cx: &mut Context<Self>) {
+        if self.reading_meta {
+            return;
+        }
+        self.reading_meta = true;
+        let paths: Vec<PathBuf> = self.store.places.iter().map(|p| p.path.clone()).collect();
+        cx.spawn(async move |this, cx| {
+            let read: HashMap<PathBuf, PlaceMeta> = cx
+                .background_executor()
+                .spawn(async move {
+                    paths
+                        .into_iter()
+                        .map(|p| {
+                            let meta = PlaceMeta::read(&p);
+                            (p, meta)
+                        })
+                        .collect()
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.reading_meta = false;
+                // A place added while it was read keeps what was read for it then.
+                let mut meta = read;
+                for (path, m) in &this.meta {
+                    if this.store.place(path).is_some() && !meta.contains_key(path) {
+                        meta.insert(path.clone(), m.clone());
+                    }
+                }
+                if meta != this.meta {
+                    this.meta = meta;
+                    this.sync_inbox(cx);
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// What git said of `path` last.
+    fn meta_of(&self, path: &Path) -> PlaceMeta {
+        self.meta.get(path).cloned().unwrap_or_default()
+    }
+
+    fn place_label(&self, path: &Path) -> String {
         let name = path
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| path.display().to_string());
-        match store::branch(path) {
+        match self.meta_of(path).branch {
             Some(branch) => format!("{name} · {branch}"),
             None => name,
         }
@@ -1112,7 +1177,7 @@ impl Daemon {
             .iter()
             .map(|p| {
                 let name = p.name();
-                let repo = store::repo(&p.path);
+                let PlaceMeta { branch, repo } = self.meta_of(&p.path);
                 // Worktrees of one repository are one project, named for it.
                 let project = repo
                     .as_ref()
@@ -1122,10 +1187,14 @@ impl Daemon {
                     path: &p.path,
                     project: &project,
                     env: &name,
-                    branch: store::branch(&p.path).as_deref(),
+                    branch: branch.as_deref(),
                     agent: p.agent.id(),
                     repo: repo.as_ref().map(|(root, _)| root.as_path()),
-                    origin: repo.as_ref().and_then(|(_, o)| o.as_deref()),
+                    origin: repo
+                        .as_ref()
+                        .and_then(|(_, o)| o.as_deref())
+                        .map(without_login)
+                        .as_deref(),
                 })
             })
             .collect();
@@ -1327,7 +1396,7 @@ impl Daemon {
                     self.transport.send(client, gone(&session));
                     return;
                 };
-                let place = Self::place_label(&record.place);
+                let place = self.place_label(&record.place);
                 let head = wire::SessionHead {
                     id: &record.id,
                     title: &record.title,
@@ -1595,8 +1664,159 @@ impl Daemon {
                     self.hidden.insert(client);
                 }
             }
+            ClientMsg::AddPlace { path } => self.add_device_place(client, path, cx),
+            ClientMsg::Clone { url } => {
+                let Some(source) = clone_source::parse_clone_source(&url) else {
+                    self.transport.send(
+                        client,
+                        place_failed(
+                            "That is not a repository to clone: give its URL or owner/repo.",
+                        ),
+                    );
+                    return;
+                };
+                // Git would send this machine's logins for the host in the clear.
+                if source.url.starts_with("http://") {
+                    self.transport.send(
+                        client,
+                        place_failed(
+                            "Give an https:// or ssh address: plain http is not encrypted.",
+                        ),
+                    );
+                    return;
+                }
+                let home = crate::platform::home();
+                let parent = clone_source::clone_parent(
+                    self.store.places.iter().map(|p| p.path.as_path()),
+                    &home,
+                );
+                let dest = parent.join(&source.name);
+                // A clone takes as long as the network: the server answers
+                // everyone else meanwhile.
+                cx.spawn(async move |this, cx| {
+                    // Reserved by its real path, which is the one a folder
+                    // added meanwhile is known by, whatever path it was given.
+                    let dest = cx
+                        .background_executor()
+                        .spawn(async move { real_dest(&dest) })
+                        .await;
+                    // A second clone there would find the first one half done.
+                    let reserved = this.update(cx, |this, _| {
+                        if this.stopping {
+                            return None;
+                        }
+                        let run = this.cloning.start(&dest);
+                        if run.is_none() {
+                            this.transport.send(
+                                client,
+                                place_failed(&format!(
+                                    "{} is being cloned already.",
+                                    dest.display()
+                                )),
+                            );
+                        }
+                        run
+                    });
+                    let Ok(Some(run)) = reserved else {
+                        return;
+                    };
+                    let into = dest.clone();
+                    let done = cx
+                        .background_executor()
+                        .spawn(async move {
+                            // Busy first: a stop asked from now on is seen.
+                            run.busy.store(true, Ordering::SeqCst);
+                            let cloned = clone_into(&source, &into, &run.stop);
+                            run.busy.store(false, Ordering::SeqCst);
+                            let path = cloned.and_then(|()| real_dir(&into))?;
+                            let meta = PlaceMeta::read(&path);
+                            Ok((path, meta))
+                        })
+                        .await;
+                    let _ = this.update(cx, |this, cx| {
+                        this.cloning.end(&dest);
+                        this.place_added(client, done, cx);
+                    });
+                })
+                .detach();
+            }
             ClientMsg::Ping => {}
         }
+    }
+
+    /// Adds a folder already on this machine that a device named, `typed`.
+    fn add_device_place(&mut self, client: ClientId, typed: String, cx: &mut Context<Self>) {
+        let home = crate::platform::home();
+        let (cloning, mark) = self.cloning.seen();
+        // A folder on a mount that does not answer would hold up
+        // every device: it is looked at to the side.
+        cx.spawn(async move |this, cx| {
+            let looked = typed.clone();
+            let found = cx
+                .background_executor()
+                .spawn(async move {
+                    let path = device_path(&looked, &home)?;
+                    // A failed clone takes its folder away again.
+                    if being_cloned(&path, &cloning) {
+                        return Err(format!("{} is being cloned.", path.display()));
+                    }
+                    let meta = PlaceMeta::read(&path);
+                    Ok((path, meta))
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                // A clone that started while the folder was looked at may
+                // have made it, failed and taken it away since: look again.
+                if found.is_ok() && this.cloning.started_since(mark) {
+                    return this.add_device_place(client, typed, cx);
+                }
+                this.place_added(client, found, cx);
+            });
+        })
+        .detach();
+    }
+
+    /// A folder a device asked for is a place now, or why it is not. The
+    /// inbox goes out first, so the device knows the place it is told of.
+    fn place_added(
+        &mut self,
+        client: ClientId,
+        found: Result<(PathBuf, PlaceMeta), String>,
+        cx: &mut Context<Self>,
+    ) {
+        match found.and_then(|(p, meta)| {
+            self.offer_place(&p)?;
+            self.meta.insert(p.clone(), meta);
+            Ok(p)
+        }) {
+            Ok(path) => {
+                let inbox = self.inbox(cx);
+                if self.last_inbox != inbox {
+                    self.transport.broadcast(&inbox);
+                    self.last_inbox = inbox;
+                } else {
+                    // The others have this one, but the device may not: it
+                    // got its own on connecting, which can be older.
+                    self.transport.send(client, inbox);
+                }
+                self.transport.send(
+                    client,
+                    json!({ "type": "place_added", "path": path }).to_string(),
+                );
+            }
+            Err(e) => self.transport.send(client, place_failed(&e)),
+        }
+    }
+
+    /// Makes `path` (canonical) a place for a device. It is one only once
+    /// saved: a place lost at the next start would surprise the device later.
+    /// The folder was looked at to the side; nothing here touches it again.
+    fn offer_place(&mut self, path: &Path) -> Result<(), String> {
+        // A clone that started while the folder was looked at.
+        if self.cloning.has(path) {
+            return Err(format!("{} is being cloned.", path.display()));
+        }
+        offer(&mut self.store, path)
     }
 
     /// Sends `text` to the session `id` as its next prompt.
@@ -2014,7 +2234,10 @@ impl Daemon {
         }
         let mut out = String::from("folders:");
         for p in &self.store.places {
-            let branch = store::branch(&p.path).map_or(String::new(), |b| format!("  [{b}]"));
+            let branch = self
+                .meta_of(&p.path)
+                .branch
+                .map_or(String::new(), |b| format!("  [{b}]"));
             out.push_str(&format!(
                 "\n  {}{branch}  {}",
                 p.path.display(),
@@ -2273,9 +2496,913 @@ fn draft_choices(
     }
 }
 
+/// A failed folder request: its own reply, so the app does not take it for
+/// an error about a session it is starting.
+fn place_failed(message: &str) -> String {
+    json!({ "type": "place_failed", "message": message }).to_string()
+}
+
+/// Makes `path` a place in `store`, saved. A place that is there already is
+/// saved too: an earlier save may have failed, and it would be gone at the
+/// next start. On a failed save, a place this added goes again.
+fn offer(store: &mut store::Store, path: &Path) -> Result<(), String> {
+    let added = store.add_place(path, AgentKind::Claude);
+    if let Err(e) = store.save() {
+        if added {
+            store.remove_place(path);
+        }
+        return Err(format!("could not save the server's state: {e}"));
+    }
+    Ok(())
+}
+
+/// `url` without the login a `scheme://user:token@host/...` address carries:
+/// devices see the address, never what this machine signs in with.
+fn without_login(url: &str) -> String {
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return url.to_string();
+    };
+    let end = rest.find('/').unwrap_or(rest.len());
+    match rest[..end].rfind('@') {
+        Some(at) => format!("{scheme}://{}", &rest[at + 1..]),
+        None => url.to_string(),
+    }
+}
+
+/// What git says of a place: its branch, and the repository it is a
+/// checkout of (`store::repo`). Read from its files, never on the loop that
+/// answers devices.
+#[derive(Clone, Default, PartialEq)]
+struct PlaceMeta {
+    branch: Option<String>,
+    repo: Option<(PathBuf, Option<String>)>,
+}
+
+impl PlaceMeta {
+    fn read(path: &Path) -> PlaceMeta {
+        PlaceMeta {
+            branch: store::branch(path),
+            repo: store::repo(path),
+        }
+    }
+}
+
+/// The clones under way, by the real path ([`real_dest`]) of the folder each
+/// goes into.
+#[derive(Default)]
+struct Clones {
+    running: HashMap<PathBuf, Arc<CloneRun>>,
+    /// How many have started, ever.
+    started: u64,
+}
+
+/// A clone under way. The server stops it when it stops itself.
+#[derive(Default)]
+struct CloneRun {
+    stop: AtomicBool,
+    /// Git runs, or a folder it made is being removed.
+    busy: AtomicBool,
+}
+
+impl Clones {
+    /// Reserves `dest` for a clone, or None when one goes there already.
+    fn start(&mut self, dest: &Path) -> Option<Arc<CloneRun>> {
+        if self.running.contains_key(dest) {
+            return None;
+        }
+        let run = Arc::new(CloneRun::default());
+        self.running.insert(dest.to_path_buf(), run.clone());
+        self.started += 1;
+        Some(run)
+    }
+
+    fn end(&mut self, dest: &Path) {
+        self.running.remove(dest);
+    }
+
+    fn has(&self, path: &Path) -> bool {
+        self.running.contains_key(path)
+    }
+
+    /// What an Add looks at its folder with: where clones go now, and a mark
+    /// for [`started_since`](Self::started_since).
+    fn seen(&self) -> (Vec<PathBuf>, u64) {
+        (self.running.keys().cloned().collect(), self.started)
+    }
+
+    /// Whether a clone started after `mark` was taken.
+    fn started_since(&self, mark: u64) -> bool {
+        self.started != mark
+    }
+
+    fn stop_all(&self) {
+        for run in self.running.values() {
+            run.stop.store(true, Ordering::SeqCst);
+        }
+    }
+
+    fn busy(&self) -> bool {
+        self.running
+            .values()
+            .any(|run| run.busy.load(Ordering::SeqCst))
+    }
+}
+
+/// Whether `path` (canonical) is where a clone under way goes. Clones are
+/// reserved by [`real_dest`], so this is the same path however it was given.
+fn being_cloned(path: &Path, cloning: &[PathBuf]) -> bool {
+    cloning.iter().any(|c| c == path)
+}
+
+/// `dest` with its links resolved, before the folder exists: its nearest
+/// folder that does exist is resolved and the rest kept as given.
+fn real_dest(dest: &Path) -> PathBuf {
+    let mut rest = Vec::new();
+    let mut at = dest;
+    loop {
+        if let Ok(real) = std::fs::canonicalize(at) {
+            return rest.iter().rev().fold(real, |p, part| p.join(part));
+        }
+        match (at.parent(), at.file_name()) {
+            (Some(up), Some(name)) => {
+                rest.push(name.to_owned());
+                at = up;
+            }
+            _ => return dest.to_path_buf(),
+        }
+    }
+}
+
+/// A folder a device named: its whole path, or one from `~/`, which stands
+/// for `home`. It must exist; links are followed, as the CLI does.
+fn device_path(typed: &str, home: &Path) -> Result<PathBuf, String> {
+    let typed = typed.trim();
+    let path = match typed.strip_prefix('~') {
+        Some("") => home.to_path_buf(),
+        Some(rest) if rest.starts_with('/') => home.join(&rest[1..]),
+        _ => PathBuf::from(typed),
+    };
+    if !path.is_absolute() {
+        return Err("Give the folder's whole path, or one from ~/.".into());
+    }
+    real_dir(&path)
+}
+
+/// `path` with its links followed. Devices get places as JSON text, which a
+/// name that is not UTF-8 cannot be.
+fn real_dir(path: &Path) -> Result<PathBuf, String> {
+    let real = path
+        .canonicalize()
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    if real.to_str().is_none() {
+        return Err(format!("{}: the name is not UTF-8", path.display()));
+    }
+    if !real.is_dir() {
+        return Err(format!("{} is not a folder", path.display()));
+    }
+    Ok(real)
+}
+
+/// What every clone runs with.
+const CLONE_CONFIG: [&str; 6] = [
+    // A host that stops sending gives up after a minute, not at the limit.
+    "-c",
+    "http.lowSpeedLimit=1",
+    "-c",
+    "http.lowSpeedTime=60",
+    // An https address a `url.*.insteadOf` rewrites to plain http would
+    // send this machine's logins for the host in the clear.
+    "-c",
+    "protocol.http.allow=never",
+];
+
+/// How long a clone may take before it is given up.
+const CLONE_LIMIT: Duration = Duration::from_secs(20 * 60);
+
+/// How long a stopping server waits for its clones to end and clean up.
+const CLONE_STOP_WAIT: Duration = Duration::from_secs(10);
+
+/// Clones `source` into `dest`, or takes `dest` as it is when it already holds
+/// that repository. A failed clone leaves nothing behind, nor does one that
+/// `stop` ends.
+fn clone_into(
+    source: &clone_source::CloneSource,
+    dest: &Path,
+    stop: &AtomicBool,
+) -> Result<(), String> {
+    clone_with(git_command(), source, dest, stop)
+}
+
+/// [`clone_into`], with `git` as the command to start from: tests give it
+/// an environment of their own.
+fn clone_with(
+    mut git: std::process::Command,
+    source: &clone_source::CloneSource,
+    dest: &Path,
+    stop: &AtomicBool,
+) -> Result<(), String> {
+    use std::process::Stdio;
+    if stop.load(Ordering::SeqCst) {
+        return Err(SERVER_STOPPED.into());
+    }
+    if dest.exists() {
+        return match checkout_origin(dest) {
+            Some(found) if found.same_repo(source) => Ok(()),
+            Some(found) => Err(format!("{} already holds {}", dest.display(), found.label)),
+            None => Err(format!("{} already exists", dest.display())),
+        };
+    }
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("could not create {}: {e}", parent.display()))?;
+    }
+    // Made here, and only if it is not there yet: what a failed clone removes
+    // is then this request's own folder.
+    std::fs::create_dir(dest).map_err(|e| format!("{}: {e}", dest.display()))?;
+    // Asked before the clone's own settings go on: those do not name one.
+    let own_ssh = has_ssh_command(&git);
+    git.args(CLONE_CONFIG)
+        .args(["clone", "--quiet", "--", &source.url])
+        .arg(dest)
+        // Nobody is at this machine to type a password: fail instead of waiting.
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+    // ssh asks for a passphrase or a new host key on the terminal, which
+    // `serve` may have. A command the server set keeps its say: it may pick
+    // the key that signs in. The time limit still holds for it.
+    if !own_ssh {
+        git.env(
+            "GIT_SSH_COMMAND",
+            "ssh -o BatchMode=yes -o ConnectTimeout=30 -o ServerAliveInterval=15",
+        );
+    }
+    // Git runs helpers (`git-remote-https`, ssh) of its own: a clone given up
+    // ends them too.
+    crate::platform::ProcessTree::prepare(&mut git);
+    let failed = |why: String| {
+        let _ = std::fs::remove_dir_all(dest);
+        Err(why)
+    };
+    let mut child = match git.spawn() {
+        Ok(child) => child,
+        Err(e) => return failed(format!("could not run git: {e}")),
+    };
+    let tree = crate::platform::ProcessTree::adopt(&child);
+    // Read as it comes, so a full pipe does not stop git.
+    let mut stderr = child.stderr.take();
+    let (said_tx, said) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut text = String::new();
+        if let Some(err) = stderr.as_mut() {
+            let _ = std::io::Read::read_to_string(err, &mut text);
+        }
+        let _ = said_tx.send(text);
+    });
+    let started = Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if stop.load(Ordering::SeqCst) => {
+                tree.kill();
+                let _ = child.kill();
+                let _ = child.wait();
+                return failed(SERVER_STOPPED.into());
+            }
+            Ok(None) if started.elapsed() < CLONE_LIMIT => {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            Ok(None) => {
+                // Git itself too: a tree that could not be set up (a job
+                // object Windows refused) would leave it running.
+                tree.kill();
+                let _ = child.kill();
+                let _ = child.wait();
+                return failed(format!(
+                    "git clone took longer than {} minutes",
+                    CLONE_LIMIT.as_secs() / 60
+                ));
+            }
+            Err(e) => {
+                tree.kill();
+                let _ = child.kill();
+                return failed(format!("git clone: {e}"));
+            }
+        }
+    };
+    if status.success() {
+        return Ok(());
+    }
+    // A helper left behind can hold stderr open: it goes, and what git said
+    // is waited for a little only.
+    tree.kill();
+    let why = said
+        .recv_timeout(Duration::from_secs(5))
+        .unwrap_or_default();
+    failed(format!(
+        "git clone failed: {}",
+        why.lines()
+            .rfind(|l| !l.trim().is_empty())
+            .unwrap_or("no reason given")
+    ))
+}
+
+const SERVER_STOPPED: &str = "the server stopped before the clone was done";
+
+/// Whether `git` has an ssh command of its own, from its environment or the
+/// server's git config, the way git looks for one.
+fn has_ssh_command(git: &std::process::Command) -> bool {
+    let set = |key: &str| {
+        let given = git.get_envs().find(|(k, _)| *k == key).map(|(_, v)| v);
+        match given {
+            Some(v) => v.is_some_and(|v| !v.is_empty()),
+            None => std::env::var_os(key).is_some_and(|v| !v.is_empty()),
+        }
+    };
+    if set("GIT_SSH_COMMAND") || set("GIT_SSH") {
+        return true;
+    }
+    let mut config = std::process::Command::new(git.get_program());
+    for (key, value) in git.get_envs() {
+        match value {
+            Some(v) => config.env(key, v),
+            None => config.env_remove(key),
+        };
+    }
+    // Outside any repository: a clone reads no repository's config either.
+    config
+        .current_dir(std::env::temp_dir())
+        .args(["config", "--get", "core.sshCommand"])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .is_ok_and(|o| o.status.success() && !o.stdout.trim_ascii().is_empty())
+}
+
+/// Git as the server runs it. Tests leave out this machine's settings: a
+/// user's commit signing or URL rewrites would change what they check.
+fn git_command() -> std::process::Command {
+    let mut git = std::process::Command::new("git");
+    if cfg!(test) {
+        git.env("GIT_CONFIG_NOSYSTEM", "1").env(
+            "GIT_CONFIG_GLOBAL",
+            std::env::temp_dir().join("arakun-test-no-gitconfig"),
+        );
+    }
+    git
+}
+
+/// The repository whose checkout `dir` is, by its `origin`. A folder inside
+/// some other checkout is not one.
+fn checkout_origin(dir: &Path) -> Option<clone_source::CloneSource> {
+    let git = |args: &[&str]| {
+        git_command()
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+    };
+    let top = git(&["rev-parse", "--show-toplevel"])?;
+    if Path::new(&top).canonicalize().ok()? != dir.canonicalize().ok()? {
+        return None;
+    }
+    clone_source::parse_clone_source(&git(&["remote", "get-url", "origin"])?)
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_place_is_offered_only_once_it_is_saved() {
+        let dir = scratch("offer");
+        let mut store = store::Store::load(&dir).unwrap();
+        let app = dir.join("app");
+        std::fs::create_dir(&app).unwrap();
+        // A folder where the state file goes: every save fails.
+        std::fs::create_dir(dir.join("state.json")).unwrap();
+        assert!(offer(&mut store, &app).is_err());
+        assert!(store.place(&app).is_none(), "what it added goes again");
+        // Added before, by a local `add` whose save failed: still not saved.
+        store.add_place(&app, AgentKind::Claude);
+        assert!(offer(&mut store, &app).is_err());
+        assert!(store.place(&app).is_some(), "what it did not add stays");
+        std::fs::remove_dir(dir.join("state.json")).unwrap();
+        assert_eq!(offer(&mut store, &app), Ok(()));
+        let saved = std::fs::read_to_string(dir.join("state.json")).unwrap();
+        assert!(saved.contains(app.to_str().unwrap()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_origin_goes_out_without_its_login() {
+        assert_eq!(
+            without_login("https://bot:ghp_secret@github.com/o/r.git"),
+            "https://github.com/o/r.git"
+        );
+        assert_eq!(without_login("ssh://git@host:22/o/r"), "ssh://host:22/o/r");
+        // An @ further on is the path's, and an scp-like address has no secret.
+        assert_eq!(without_login("https://host/o/r@v2"), "https://host/o/r@v2");
+        assert_eq!(
+            without_login("git@github.com:o/r.git"),
+            "git@github.com:o/r.git"
+        );
+    }
+
+    #[test]
+    fn a_clone_never_falls_back_to_plain_http() {
+        let dir = scratch("plain-http");
+        // The machine's git config could turn https into http.
+        let out = std::process::Command::new("git")
+            .args([
+                "-c",
+                "url.http://127.0.0.1:9/.insteadOf=https://example.invalid/",
+            ])
+            .args(CLONE_CONFIG)
+            .args(["clone", "--quiet", "--", "https://example.invalid/o/r.git"])
+            .arg(dir.join("r"))
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .stdin(std::process::Stdio::null())
+            .output()
+            .unwrap();
+        assert!(!out.status.success());
+        let said = String::from_utf8_lossy(&out.stderr);
+        assert!(said.contains("transport 'http' not allowed"), "{said}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // Linux keeps any bytes as a name; the folder needs one that is not UTF-8.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_link_to_a_folder_whose_name_is_not_utf8_is_refused() {
+        use std::os::unix::ffi::OsStrExt as _;
+        let dir = scratch("not-utf8");
+        let odd = dir.join(std::ffi::OsStr::from_bytes(b"caf\xe9"));
+        std::fs::create_dir(&odd).unwrap();
+        let link = dir.join("cafe");
+        std::os::unix::fs::symlink(&odd, &link).unwrap();
+        let err = real_dir(&link).unwrap_err();
+        assert!(err.contains("not UTF-8"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // A link is how a second path to one folder comes about.
+    #[cfg(unix)]
+    #[test]
+    fn a_folder_being_cloned_is_known_by_any_path_to_it() {
+        let dir = scratch("cloning");
+        let real = dir.join("real");
+        std::fs::create_dir_all(real.join("app")).unwrap();
+        let link = dir.join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        // The clone is reserved before its folder is there, through the link.
+        let reserved = super::real_dest(&link.join("new/app"));
+        assert_eq!(reserved, real.join("new/app"));
+        // The folder appears, and is added by another path while the clone runs.
+        std::fs::create_dir_all(real.join("new/app")).unwrap();
+        let added = std::fs::canonicalize(link.join("new/app")).unwrap();
+        assert!(super::being_cloned(&added, std::slice::from_ref(&reserved)));
+        let app = std::fs::canonicalize(real.join("app")).unwrap();
+        assert!(!super::being_cloned(&app, &[reserved]));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     use super::*;
+
+    /// A folder of its own under the system's temporary one.
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("arakun-daemon-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.canonicalize().unwrap()
+    }
+
+    #[test]
+    fn a_file_is_not_a_folder_to_add() {
+        let dir = scratch("file");
+        let file = dir.join("notes.txt");
+        std::fs::write(&file, "x").unwrap();
+        let err = real_dir(&file).unwrap_err();
+        assert!(err.contains("is not a folder"), "{err}");
+        assert_eq!(real_dir(&dir), Ok(dir.clone()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_device_names_a_folder_by_its_whole_path_or_from_home() {
+        let home = scratch("home");
+        std::fs::create_dir(home.join("app")).unwrap();
+        assert_eq!(device_path("~", &home).unwrap(), home);
+        assert_eq!(device_path(" ~/ ", &home).unwrap(), home);
+        assert_eq!(device_path("~/app", &home).unwrap(), home.join("app"));
+        let whole = home.join("app").display().to_string();
+        assert_eq!(device_path(&whole, &home).unwrap(), home.join("app"));
+        // Relative to what? The server has no folder the device stands in.
+        assert!(
+            device_path("code/app", &home)
+                .unwrap_err()
+                .contains("whole path")
+        );
+        assert!(device_path("~nobody/app", &home).is_err());
+        assert!(device_path("~/missing", &home).is_err());
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// Runs git in `dir` with a name of its own and none of the user's settings.
+    fn git_in(dir: &Path, args: &[&str]) {
+        let ok = git_command()
+            .arg("-C")
+            .arg(dir)
+            .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+            .args(args)
+            .output()
+            .unwrap()
+            .status
+            .success();
+        assert!(ok, "git {args:?}");
+    }
+
+    #[test]
+    fn a_clone_reuses_its_own_checkout_and_leaves_others_alone() {
+        let root = scratch("clone");
+        let origin = origin_repo(&root);
+        let source = |url: &str| clone_source::CloneSource {
+            url: url.to_string(),
+            on_github: false,
+            label: url.to_string().into(),
+            name: "r".into(),
+            shorthand: false,
+        };
+        let url = origin.display().to_string();
+        let dest = root.join("code").join("r");
+        clone_into(&source(&url), &dest, &AtomicBool::new(false)).unwrap();
+        assert!(dest.join(".git").exists());
+        // Asked again, the checkout is taken as it is. Its origin must read as
+        // a repository address, which a local path does not.
+        let remote = "https://example.com/o/r.git";
+        git_in(&dest, &["remote", "set-url", "origin", remote]);
+        let again = clone_source::parse_clone_source(remote).unwrap();
+        clone_into(&again, &dest, &AtomicBool::new(false)).unwrap();
+        let other = clone_source::parse_clone_source("https://example.com/o/s.git").unwrap();
+        let err = clone_into(&other, &dest, &AtomicBool::new(false)).unwrap_err();
+        assert!(err.contains("already holds"), "{err}");
+
+        // A plain folder inside that checkout is not a checkout of it.
+        let inner = dest.join("docs");
+        std::fs::create_dir(&inner).unwrap();
+        let err = clone_into(&again, &inner, &AtomicBool::new(false)).unwrap_err();
+        assert!(err.contains("already exists"), "{err}");
+
+        // A clone that fails removes only the folder it made.
+        let missing = root.join("nothing-here").display().to_string();
+        let gone = root.join("code").join("gone");
+        assert!(clone_into(&source(&missing), &gone, &AtomicBool::new(false)).is_err());
+        assert!(!gone.exists());
+        assert!(dest.join(".git").exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A repository with one commit, at `dir/origin`.
+    fn origin_repo(dir: &Path) -> PathBuf {
+        let origin = dir.join("origin");
+        std::fs::create_dir(&origin).unwrap();
+        git_in(&origin, &["init", "--quiet"]);
+        git_in(
+            &origin,
+            &["commit", "--quiet", "--allow-empty", "-m", "one"],
+        );
+        origin
+    }
+
+    /// An `ssh` at `path` that writes down how it was run, next to itself,
+    /// and runs what git asks for at the other end here instead.
+    #[cfg(unix)]
+    fn fake_ssh(path: &Path) {
+        use std::os::unix::fs::PermissionsExt as _;
+        let script = "#!/bin/sh\n\
+            printf '%s\\n' \"$@\" > \"$0.args\"\n\
+            for last; do :; done\n\
+            eval \"git ${last#git-}\"\n";
+        std::fs::write(path, script).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    // The fake ssh is a shell script.
+    #[cfg(unix)]
+    #[test]
+    fn an_ssh_clone_never_waits_on_a_prompt_and_keeps_the_servers_own_ssh() {
+        let dir = scratch("ssh");
+        let origin = origin_repo(&dir);
+        let bin = dir.join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        fake_ssh(&bin.join("ssh"));
+        let source = clone_source::CloneSource {
+            url: format!("ssh://example.invalid{}", origin.display()),
+            on_github: false,
+            label: "o/r".into(),
+            name: "r".into(),
+            shorthand: false,
+        };
+        let path = std::env::join_paths(std::iter::once(bin.clone()).chain(std::env::split_paths(
+            &std::env::var_os("PATH").unwrap_or_default(),
+        )))
+        .unwrap();
+        let git = || {
+            let mut git = git_command();
+            git.env("PATH", &path)
+                .env_remove("GIT_SSH_COMMAND")
+                .env_remove("GIT_SSH");
+            git
+        };
+
+        // No ssh command set: ssh may not ask for a passphrase or a host key.
+        clone_with(git(), &source, &dir.join("plain"), &AtomicBool::new(false)).unwrap();
+        assert!(dir.join("plain/.git").exists());
+        let args = std::fs::read_to_string(bin.join("ssh.args")).unwrap();
+        assert!(args.lines().any(|l| l == "BatchMode=yes"), "{args}");
+
+        // The server's git picks its own ssh, say for the key it signs in
+        // with: that one is run as it is.
+        std::fs::remove_file(bin.join("ssh.args")).unwrap();
+        let own = dir.join("own-ssh");
+        fake_ssh(&own);
+        let mut configured = git();
+        configured
+            .env("GIT_CONFIG_COUNT", "1")
+            .env("GIT_CONFIG_KEY_0", "core.sshCommand")
+            .env("GIT_CONFIG_VALUE_0", &own);
+        clone_with(
+            configured,
+            &source,
+            &dir.join("own"),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert!(dir.join("own/.git").exists());
+        let args = std::fs::read_to_string(dir.join("own-ssh.args")).unwrap();
+        assert!(!args.contains("BatchMode"), "{args}");
+        assert!(!bin.join("ssh.args").exists(), "the plain ssh did not run");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // A certificate for 127.0.0.1 and the authority that signed it, made
+    // for this test only. They protect nothing.
+    #[cfg(target_os = "linux")]
+    const TEST_CA: &str = "-----BEGIN CERTIFICATE-----\n\
+MIIBmjCCAT+gAwIBAgIUfclK8YbDD/E7oTFEzGr9nNhTVK8wCgYIKoZIzj0EAwIw\n\
+GTEXMBUGA1UEAwwOYXJha3VuIHRlc3QgY2EwIBcNMjYxMTE4MjIwNzQxWhgPMjEy\n\
+NjEwMjUyMjA3NDFaMBkxFzAVBgNVBAMMDmFyYWt1biB0ZXN0IGNhMFkwEwYHKoZI\n\
+zj0CAQYIKoZIzj0DAQcDQgAErelQF52dVIXiqbahI/+vaq8H9EAig6U2bvj6A49O\n\
+z7cjlqy1tAguSxCX90QwN/SgbCsgh47sZE9qq8Vo6TDox6NjMGEwHQYDVR0OBBYE\n\
+FDs0jzS2DcBpQ7eYpW0sD8nb01BPMB8GA1UdIwQYMBaAFDs0jzS2DcBpQ7eYpW0s\n\
+D8nb01BPMA8GA1UdEwEB/wQFMAMBAf8wDgYDVR0PAQH/BAQDAgIEMAoGCCqGSM49\n\
+BAMCA0kAMEYCIQCf8GOFkipY1rWcGVoKrfsFnLMWSc86wZVMXi/Z2mi6DgIhAIxt\n\
+SklF/YD6bQ6wc1DHFQEZiCjGfv2YijPx9EkeXQjr\n\
+-----END CERTIFICATE-----";
+    #[cfg(target_os = "linux")]
+    const TEST_CERT: &str = "-----BEGIN CERTIFICATE-----\n\
+MIIBuTCCAV+gAwIBAgIUEsd7LR7OTgVI9u7xto3rcxZvwuwwCgYIKoZIzj0EAwIw\n\
+GTEXMBUGA1UEAwwOYXJha3VuIHRlc3QgY2EwIBcNMjYxMTE4MjIwNzQxWhgPMjEy\n\
+NjEwMjUyMjA3NDFaMBQxEjAQBgNVBAMMCTEyNy4wLjAuMTBZMBMGByqGSM49AgEG\n\
+CCqGSM49AwEHA0IABGzYq0E5SaAw2wL11P3j15wkZTc1G9iEHhzkK2XeAfzu3axi\n\
+BqGTCyuyBo+ZOJUH1thMPnbLvR0C3FU006EWw1+jgYcwgYQwDAYDVR0TAQH/BAIw\n\
+ADAOBgNVHQ8BAf8EBAMCB4AwEwYDVR0lBAwwCgYIKwYBBQUHAwEwDwYDVR0RBAgw\n\
+BocEfwAAATAdBgNVHQ4EFgQUZjNa4mvSW5vadwvH3urT+QbcaI4wHwYDVR0jBBgw\n\
+FoAUOzSPNLYNwGlDt5ilbSwPydvTUE8wCgYIKoZIzj0EAwIDSAAwRQIhAJYzDK6f\n\
+pxaUor2zgIk6bx0tPIGQ/OmqE+i+Sx9C/q57AiBfNNVow1DD9GMLXugVvRviVpnb\n\
+p2hwF/IQOdR9oPiVBQ==\n\
+-----END CERTIFICATE-----";
+    #[cfg(target_os = "linux")]
+    const TEST_CERT_KEY: &str = "-----BEGIN PRIVATE KEY-----\n\
+MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgJluVUiTfZ7P2f/2n\n\
+LE/y2RAG+2bvZUHKxQdTxLuxnKKhRANCAARs2KtBOUmgMNsC9dT949ecJGU3NRvY\n\
+hB4c5Ctl3gH87t2sYgahkwsrsgaPmTiVB9bYTD52y70dAtxVNNOhFsNf\n\
+-----END PRIVATE KEY-----";
+
+    /// An https server on 127.0.0.1 that hands out the files under `root`,
+    /// as git's plain ("dumb") http protocol reads them, to whoever signs in
+    /// as `login` (`user:password`). Returns its port and how many requests
+    /// signed in.
+    #[cfg(target_os = "linux")]
+    fn https_server(
+        root: PathBuf,
+        login: &str,
+    ) -> (u16, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        use base64::Engine as _;
+        use rustls::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject as _};
+        use std::io::{Read as _, Write as _};
+        use std::sync::{Arc, atomic::AtomicUsize, atomic::Ordering};
+        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        let config = rustls::ServerConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_no_client_auth()
+            .with_single_cert(
+                vec![CertificateDer::from_pem_slice(TEST_CERT.as_bytes()).unwrap()],
+                PrivateKeyDer::from_pem_slice(TEST_CERT_KEY.as_bytes()).unwrap(),
+            )
+            .unwrap();
+        let config = Arc::new(config);
+        let expected = format!(
+            "Basic {}",
+            base64::engine::general_purpose::STANDARD.encode(login)
+        );
+        let signed_in = Arc::new(AtomicUsize::new(0));
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let counted = signed_in.clone();
+        // Lives as long as the tests do.
+        std::thread::spawn(move || {
+            for tcp in listener.incoming().flatten() {
+                let (config, root) = (config.clone(), root.clone());
+                let (expected, counted) = (expected.clone(), counted.clone());
+                std::thread::spawn(move || -> std::io::Result<()> {
+                    let conn =
+                        rustls::ServerConnection::new(config).map_err(std::io::Error::other)?;
+                    let mut tls = rustls::StreamOwned::new(conn, tcp);
+                    let mut head = Vec::new();
+                    let mut byte = [0u8];
+                    while !head.ends_with(b"\r\n\r\n") {
+                        if tls.read(&mut byte)? == 0 {
+                            return Ok(());
+                        }
+                        head.push(byte[0]);
+                    }
+                    let head = String::from_utf8_lossy(&head);
+                    let target = head.split_whitespace().nth(1).unwrap_or("/");
+                    let signed = head.lines().any(|l| {
+                        l.split_once(':').is_some_and(|(k, v)| {
+                            k.eq_ignore_ascii_case("authorization") && v.trim() == expected
+                        })
+                    });
+                    let file = root.join(target.split('?').next().unwrap().trim_start_matches('/'));
+                    let (status, body) = if !signed {
+                        ("401 Unauthorized", Vec::new())
+                    } else {
+                        counted.fetch_add(1, Ordering::SeqCst);
+                        match std::fs::read(&file) {
+                            Ok(body) => ("200 OK", body),
+                            Err(_) => ("404 Not Found", Vec::new()),
+                        }
+                    };
+                    write!(
+                        tls,
+                        "HTTP/1.1 {status}\r\nContent-Length: {}\r\n\
+                         WWW-Authenticate: Basic realm=\"test\"\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    )?;
+                    tls.write_all(&body)?;
+                    tls.conn.send_close_notify();
+                    tls.flush()
+                });
+            }
+        });
+        (port, signed_in)
+    }
+
+    // The server's credential helper is a shell function, and the https
+    // server needs rustls, which only Linux tests build.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_https_clone_signs_in_with_the_servers_login_and_never_shows_it() {
+        let dir = scratch("https");
+        let origin = origin_repo(&dir);
+        let served = dir.join("served");
+        std::fs::create_dir(&served).unwrap();
+        let origin = origin.to_str().unwrap();
+        git_in(&served, &["clone", "--quiet", "--bare", origin, "r.git"]);
+        git_in(&served.join("r.git"), &["update-server-info"]);
+        let ca = dir.join("ca.pem");
+        std::fs::write(&ca, TEST_CA).unwrap();
+        let (port, signed_in) = https_server(served, "u:right-token");
+        let source = clone_source::CloneSource {
+            url: format!("https://127.0.0.1:{port}/r.git"),
+            on_github: false,
+            label: "o/r".into(),
+            name: "r".into(),
+            shorthand: false,
+        };
+        // How the server's git signs in: a credential helper, as `gh auth
+        // setup-git` or a stored login sets up.
+        let git = |password: &str| {
+            let mut git = git_command();
+            git.env("GIT_CONFIG_COUNT", "2")
+                .env("GIT_CONFIG_KEY_0", "http.sslCAInfo")
+                .env("GIT_CONFIG_VALUE_0", &ca)
+                .env("GIT_CONFIG_KEY_1", "credential.helper")
+                .env(
+                    "GIT_CONFIG_VALUE_1",
+                    format!(
+                        "!f() {{ test \"$1\" = get && printf 'username=u\\npassword={password}\\n'; }}; f"
+                    ),
+                );
+            git
+        };
+
+        clone_with(
+            git("right-token"),
+            &source,
+            &dir.join("ok"),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert!(dir.join("ok/.git").exists());
+        assert!(signed_in.load(std::sync::atomic::Ordering::SeqCst) > 0);
+        let config = std::fs::read_to_string(dir.join("ok/.git/config")).unwrap();
+        assert!(!config.contains("right-token"), "{config}");
+
+        // A login the host turns down: no prompt to wait on, and what the
+        // device is told does not carry the password.
+        let err = clone_with(
+            git("wrong-token"),
+            &source,
+            &dir.join("no"),
+            &AtomicBool::new(false),
+        )
+        .unwrap_err();
+        assert!(!err.contains("wrong-token"), "{err}");
+        assert!(err.contains("Authentication failed"), "{err}");
+        assert!(!dir.join("no").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_add_looks_again_when_a_clone_started_while_it_looked() {
+        let mut clones = Clones::default();
+        let dest = PathBuf::from("/srv/code/app");
+        // An Add takes what is being cloned: nothing yet.
+        let (cloning, mark) = clones.seen();
+        assert!(!being_cloned(&dest, &cloning));
+        // A clone starts there while the Add looks at the folder.
+        assert!(clones.start(&dest).is_some());
+        assert!(clones.start(&dest).is_none(), "one clone at a time");
+        assert!(clones.has(&dest));
+        // It fails, takes its folder away and ends, all before the Add is
+        // back: the reservation is gone, but the Add knows to look again.
+        clones.end(&dest);
+        assert!(!clones.has(&dest));
+        assert!(clones.started_since(mark));
+        // Looking again, nothing started meanwhile.
+        let (_, mark) = clones.seen();
+        assert!(!clones.started_since(mark));
+    }
+
+    // The fake ssh is a shell script.
+    #[cfg(unix)]
+    #[test]
+    fn a_clone_the_server_stops_ends_and_leaves_no_folder() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = scratch("stop");
+        // An ssh that never answers.
+        let ssh = dir.join("slow-ssh");
+        std::fs::write(&ssh, "#!/bin/sh\nexec sleep 600\n").unwrap();
+        std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut git = git_command();
+        git.env("GIT_SSH_COMMAND", &ssh);
+        let source = clone_source::CloneSource {
+            url: "ssh://example.invalid/o/r.git".into(),
+            on_github: false,
+            label: "o/r".into(),
+            name: "r".into(),
+            shorthand: false,
+        };
+        let mut clones = Clones::default();
+        let dest = dir.join("r");
+        let run = clones.start(&dest).unwrap();
+        let cloning = {
+            let (run, dest, source) = (run.clone(), dest.clone(), source.clone());
+            std::thread::spawn(move || {
+                run.busy.store(true, Ordering::SeqCst);
+                let cloned = clone_with(git, &source, &dest, &run.stop);
+                run.busy.store(false, Ordering::SeqCst);
+                cloned
+            })
+        };
+        let started = Instant::now();
+        while !dest.exists() {
+            assert!(
+                started.elapsed() < Duration::from_secs(10),
+                "the clone began"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        // The server stops, as `shut_down` does it.
+        clones.stop_all();
+        let started = Instant::now();
+        while clones.busy() {
+            assert!(started.elapsed() < CLONE_STOP_WAIT, "the clone ended");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(cloning.join().unwrap(), Err(SERVER_STOPPED.into()));
+        assert!(!dest.exists());
+        // A clone asked for after the stop does not begin.
+        let late = clone_into(&source, &dir.join("late"), &run.stop);
+        assert_eq!(late, Err(SERVER_STOPPED.into()));
+        assert!(!dir.join("late").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn the_address_line_says_what_is_in_the_way() {

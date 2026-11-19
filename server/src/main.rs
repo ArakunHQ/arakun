@@ -67,6 +67,12 @@ mod phone_page {
 }
 #[path = "../../src/caret.rs"]
 mod caret;
+
+// What the picker reads from a source (`shorthand`) goes unused here.
+#[allow(dead_code)]
+#[path = "../../src/clone_source.rs"]
+mod clone_source;
+
 #[allow(dead_code)]
 #[path = "../../src/highlight.rs"]
 mod highlight;

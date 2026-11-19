@@ -146,6 +146,7 @@ impl Shell {
         }
         let needs_push = !s.published || s.ahead > 0;
         let path = env.path.clone();
+        let agent = env.agent.kind();
         // Busy while the clone is read, so a second click opens nothing.
         if let Some(env) = self.find_env_mut(&path) {
             env.git_busy = Some(GitOp::PullRequest);
@@ -155,7 +156,9 @@ impl Shell {
             let (dir, r, b) = (path.clone(), remote.clone(), branch.clone());
             let plan = cx
                 .background_spawn(crate::guard::task_or_default(async move {
-                    git::pr_plan(&dir, &r, &b)
+                    // Finding an agent's CLI reads the disk too.
+                    let writer = crate::pr_writer::writer(agent, crate::env_name::installed);
+                    (git::pr_plan(&dir, &r, &b), writer)
                 }))
                 .await;
             let _ = this.update_in(cx, |this, window, cx| {
@@ -172,7 +175,7 @@ impl Shell {
         remote: String,
         branch: String,
         needs_push: bool,
-        plan: git::PrPlan,
+        (plan, writer): (git::PrPlan, Option<crate::agent::AgentKind>),
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -184,8 +187,9 @@ impl Shell {
             return;
         }
         let dir = path.clone();
-        let dialog =
-            cx.new(|cx| PullRequestDialog::new(dir, remote, branch, needs_push, plan, window, cx));
+        let dialog = cx.new(|cx| {
+            PullRequestDialog::new(dir, remote, branch, needs_push, plan, writer, window, cx)
+        });
         let sub = cx.subscribe_in(
             &dialog,
             window,

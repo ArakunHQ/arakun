@@ -66,6 +66,7 @@ mod picker;
 mod platform;
 mod posthog;
 mod posthog_view;
+mod pr_writer;
 mod prompts;
 mod redact;
 mod rotate;

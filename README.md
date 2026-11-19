@@ -206,7 +206,12 @@ terminal-only. The status line and keybindings from your settings don't apply in
   pull request template, else the commit messages). It opens as a draft unless you turn
   that off, pushes the branch first when it has commits GitHub doesn't, and then shows
   the new pull request in the GitHub tab. "Open GitHub's form" opens the page in your
-  browser instead, to write the description there.
+  browser instead, to write the description there. "Write with AI" has Claude Code
+  write the title and the description from the branch's commits, its diff (up to 60,000
+  characters) and the template, when it is the environment's agent or the one picked for
+  naming branches. It answers once with its tools off, so it reads nothing else, and
+  nothing goes to GitHub until you create the pull request. Other agents don't write it:
+  they can read files while they answer.
 - **Queue.** The GitHub tab opens on one line that says how many things need you,
   then a quiet list grouped by where each pull request stands (Needs you, Stuck,
   pilot is on it, Waiting on CI, Waiting on others, Ready to merge), stacked pull

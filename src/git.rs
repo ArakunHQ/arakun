@@ -1153,8 +1153,21 @@ pub fn default_base(dir: &Path, remote: &str) -> String {
 }
 
 /// The commits on HEAD that `remote/base` doesn't have, oldest first.
-fn pr_commits(dir: &Path, remote: &str, base: &str) -> Vec<PrCommit> {
-    let range = format!("{remote}/{base}..HEAD");
+pub fn pr_commits(dir: &Path, remote: &str, base: &str) -> Vec<PrCommit> {
+    pr_commits_at(dir, remote, base, "HEAD")
+}
+
+/// The commit `branch` is on now, to read everything about it from one
+/// commit; None when there is no such branch.
+pub fn branch_tip(dir: &Path, branch: &str) -> Option<String> {
+    let name = format!("refs/heads/{branch}^{{commit}}");
+    let out = read(dir, &["rev-parse", "--verify", "--quiet", &name]).ok()?;
+    Some(out.trim().to_string()).filter(|id| !id.is_empty())
+}
+
+/// [`pr_commits`] of the commit `tip` instead of HEAD.
+pub fn pr_commits_at(dir: &Path, remote: &str, base: &str, tip: &str) -> Vec<PrCommit> {
+    let range = format!("{remote}/{base}..{tip}");
     let Ok(out) = read(
         dir,
         &["log", "--reverse", "--format=%s%x1f%b%x1e", &range, "--"],
@@ -1191,7 +1204,7 @@ const PR_TEMPLATES: [&str; 6] = [
 /// in. GitHub reads it from the default branch, so a template changed there
 /// after this branch started is the one used. HEAD's only when the clone
 /// hasn't fetched the default branch.
-fn pr_template(dir: &Path, remote: &str) -> Option<String> {
+pub fn pr_template(dir: &Path, remote: &str) -> Option<String> {
     let default = format!("{remote}/{}", default_base(dir, remote));
     let fetched = read(
         dir,
@@ -1208,6 +1221,33 @@ fn pr_template(dir: &Path, remote: &str) -> Option<String> {
         .iter()
         .find_map(|path| show_file(dir, rev, path))
         .filter(|text| !text.trim().is_empty())
+}
+
+/// What `tip` changes since it left `remote/base`, for a model to read: the
+/// list of files with their counts, and the diff cut at `cap` characters (at
+/// the end of a line), with whether it was cut. Empty when git can't tell.
+pub fn pr_diff(
+    dir: &Path,
+    remote: &str,
+    base: &str,
+    tip: &str,
+    cap: usize,
+) -> (String, String, bool) {
+    let range = format!("{remote}/{base}...{tip}");
+    let stat = read(dir, &["diff", "--stat=200", "--no-color", &range, "--"]).unwrap_or_default();
+    let diff = read(dir, &["diff", "--no-color", &range, "--"]).unwrap_or_default();
+    let (diff, cut) = cut_at_line(diff, cap);
+    (stat, diff, cut)
+}
+
+/// `text` cut to at most `cap` characters, at the end of a line when it has one.
+fn cut_at_line(text: String, cap: usize) -> (String, bool) {
+    let Some((end, _)) = text.char_indices().nth(cap) else {
+        return (text, false);
+    };
+    let head = &text[..end];
+    let end = head.rfind('\n').map_or(end, |i| i + 1);
+    (text[..end].to_string(), true)
 }
 
 /// The title and body a pull request of `commits` starts with, as GitHub
@@ -1422,6 +1462,18 @@ test: cover the resize\u{1f}\u{1e}\n";
         );
         assert!(parse_pr_commits("").is_empty());
 
+        // A long diff ends at a line, and says it was cut; characters, not bytes.
+        use super::cut_at_line;
+        assert_eq!(
+            cut_at_line("a\nbb\nccc\n".into(), 20),
+            ("a\nbb\nccc\n".into(), false)
+        );
+        assert_eq!(
+            cut_at_line("a\nbb\nccc\n".into(), 6),
+            ("a\nbb\n".into(), true)
+        );
+        assert_eq!(cut_at_line("ééééé".into(), 2), ("éé".into(), true));
+
         // One commit is the whole pull request; several are listed.
         assert_eq!(
             pr_fill(&commits[..1], None, "pr/tab-name"),
@@ -1618,6 +1670,36 @@ test: cover the resize\u{1f}\u{1e}\n";
             assert!(super::has_commits(&plain).is_err());
         }
         let _ = std::fs::remove_dir_all(&plain);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_pull_request_is_read_from_its_branch_not_from_head() {
+        let dir = repo();
+        let git = |args: &[&str]| {
+            let ok = super::unpinned(&mut Command::new("git"))
+                .arg("-C")
+                .arg(&dir)
+                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                .args(["-c", "commit.gpgsign=false"])
+                .args(args)
+                .status()
+                .unwrap();
+            assert!(ok.success(), "{args:?}");
+        };
+        git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        git(&["switch", "-q", "taken"]);
+        git(&["commit", "-q", "--allow-empty", "-m", "feat: on taken"]);
+        // Another branch is checked out while the dialog for `taken` is open.
+        git(&["switch", "-q", "env/brave-otter"]);
+        let tip = super::branch_tip(&dir, "taken").unwrap();
+        let subjects: Vec<String> = super::pr_commits_at(&dir, "origin", "main", &tip)
+            .into_iter()
+            .map(|c| c.subject)
+            .collect();
+        assert_eq!(subjects, ["feat: on taken"]);
+        assert!(super::pr_commits(&dir, "origin", "main").is_empty());
+        assert_eq!(super::branch_tip(&dir, "no-such-branch"), None);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -11,6 +11,7 @@ use gpui::{
     StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, px,
 };
 
+use crate::agent::AgentKind;
 use crate::git;
 use crate::input::{InputEvent, TextInput};
 use crate::theme;
@@ -275,6 +276,11 @@ pub struct PullRequestDialog {
     /// The branch has commits GitHub doesn't: they are pushed first.
     needs_push: bool,
     plan: git::PrPlan,
+    desc: Description,
+    /// The agent "Write with AI" asks; None when none can answer here.
+    writer: Option<AgentKind>,
+    /// The agent is writing.
+    writing: bool,
     title: Entity<TextInput>,
     base: Entity<TextInput>,
     draft: bool,
@@ -295,6 +301,7 @@ impl PullRequestDialog {
         branch: String,
         needs_push: bool,
         plan: git::PrPlan,
+        writer: Option<AgentKind>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -347,7 +354,10 @@ impl PullRequestDialog {
             remote,
             branch,
             needs_push,
+            desc: Description::new(&plan.base, plan.body.clone()),
             plan,
+            writer,
+            writing: false,
             title,
             base,
             draft: true,
@@ -365,6 +375,9 @@ impl PullRequestDialog {
         let base = self.base.read(cx).text().trim().to_string();
         if base.is_empty() || base == self.plan.base {
             self.planning = None;
+            // Back on the base read last: what the agent wrote for another
+            // base meanwhile doesn't describe it.
+            self.desc.planned(&self.plan.base, self.plan.body.clone());
             return;
         }
         self.planning = Some(base.clone());
@@ -388,6 +401,7 @@ impl PullRequestDialog {
                     let title = plan.title.clone();
                     this.title.update(cx, |input, cx| input.set_text(title, cx));
                 }
+                this.desc.planned(&plan.base, plan.body.clone());
                 this.plan = plan;
                 cx.notify();
             });
@@ -400,7 +414,8 @@ impl PullRequestDialog {
     fn submit(&mut self, web: bool, cx: &mut Context<Self>) {
         let title = self.title.read(cx).text().trim().to_string();
         let base = self.base.read(cx).text().trim().to_string();
-        if self.busy.is_some() || (!web && (title.is_empty() || base.is_empty())) {
+        // What the agent is writing would arrive after the pull request went out.
+        if self.busy.is_some() || self.writing || (!web && (title.is_empty() || base.is_empty())) {
             return;
         }
         // The description shown is still the one of the base before: it
@@ -426,11 +441,24 @@ impl PullRequestDialog {
             cx.notify();
             return;
         }
+        // Reads and the agent finish in any order: whatever the order, a
+        // description of another base's commits doesn't go out.
+        if !web && !self.desc.describes(&base) {
+            self.error = Some(
+                format!(
+                    "The description is still the one for {}. Try again in a moment.",
+                    self.desc.base
+                )
+                .into(),
+            );
+            cx.notify();
+            return;
+        }
         self.busy = Some(web);
         self.error = None;
         cx.notify();
         let (dir, remote, branch) = (self.dir.clone(), self.remote.clone(), self.branch.clone());
-        let (draft, body) = (self.draft, self.plan.body.clone());
+        let (draft, body) = (self.draft, self.desc.body.clone());
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_spawn(crate::guard::task(async move {
@@ -486,6 +514,150 @@ impl PullRequestDialog {
     }
 }
 
+/// The pull request's description, who wrote it, and the base whose
+/// commits it describes. A reading of the commits for a new base and the
+/// agent can finish in either order; the base decides which text is shown.
+#[derive(Debug)]
+struct Description {
+    /// What goes out: the plan's, or what the agent wrote.
+    body: String,
+    /// Who wrote the description shown, once an agent did.
+    written_by: Option<AgentKind>,
+    /// The base the description was read or written for.
+    base: String,
+}
+
+impl Description {
+    fn new(base: &str, body: String) -> Self {
+        Self {
+            body,
+            written_by: None,
+            base: base.trim().to_string(),
+        }
+    }
+
+    /// A reading of the commits onto `base` found `body`.
+    fn planned(&mut self, base: &str, body: String) {
+        // What the agent wrote for this base stays: the user asked for it.
+        if self.written_by.is_some() && self.describes(base) {
+            return;
+        }
+        *self = Self::new(base, body);
+    }
+
+    fn wrote(&mut self, base: &str, agent: AgentKind, body: String) {
+        *self = Self::new(base, body);
+        self.written_by = Some(agent);
+    }
+
+    fn describes(&self, base: &str) -> bool {
+        written_for(&self.base, base)
+    }
+}
+
+/// Whether what an agent wrote for the base `asked` still fits the base in
+/// the dialog `now`.
+fn written_for(asked: &str, now: &str) -> bool {
+    asked.trim() == now.trim()
+}
+
+impl PullRequestDialog {
+    /// "Write with AI": the agent reads the branch's commits and diff and
+    /// writes the title and the description. Nothing goes to GitHub; the
+    /// user reads both before creating.
+    fn write_with_ai(&mut self, cx: &mut Context<Self>) {
+        let Some(agent) = self.writer else { return };
+        let base = self.base.read(cx).text().trim().to_string();
+        if self.writing || self.busy.is_some() || base.is_empty() {
+            return;
+        }
+        self.writing = true;
+        self.error = None;
+        cx.notify();
+        let (dir, remote, branch) = (self.dir.clone(), self.remote.clone(), self.branch.clone());
+        // Both fields stay editable while it writes.
+        let (for_base, old_title) = (base.clone(), self.title.read(cx).text().to_string());
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_spawn(crate::guard::task(async move {
+                    let input = crate::pr_writer::read(&dir, &remote, &base, &branch);
+                    if input.commits.is_empty() && input.diff.trim().is_empty() {
+                        anyhow::bail!(
+                            "Nothing to write from: git found no commits on {branch} that {remote}/{base} doesn't have."
+                        );
+                    }
+                    crate::pr_writer::write(agent, &input)
+                }))
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.writing = false;
+                let now = (
+                    this.base.read(cx).text().trim().to_string(),
+                    this.title.read(cx).text().to_string(),
+                );
+                match result {
+                    // It describes the commits of another base than the one
+                    // the pull request would now merge into.
+                    Ok(_) if !written_for(&for_base, &now.0) => {
+                        this.error = Some(
+                            format!(
+                                "\"Merge into\" changed while {} wrote. Write it again for {}.",
+                                agent.label(),
+                                now.0
+                            )
+                            .into(),
+                        )
+                    }
+                    Ok((title, body)) => {
+                        // A title typed meanwhile is the user's.
+                        if now.1 == old_title {
+                            this.title.update(cx, |i, cx| i.set_text(title, cx));
+                        }
+                        this.desc.wrote(&for_base, agent, body);
+                    }
+                    Err(e) => {
+                        this.error = Some(format!("{} couldn't write it: {e}", agent.label()).into())
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// The button beside the description's label.
+    fn write_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let can = self.writer.is_some() && !self.writing && self.busy.is_none();
+        let label = match (self.writing, self.desc.written_by) {
+            (true, _) => "Writing…",
+            (false, Some(_)) => "Write again",
+            (false, None) => "Write with AI",
+        };
+        let tip = match self.writer {
+            Some(agent) => format!(
+                "{} reads the branch's commits and diff, and writes the title and description",
+                agent.label()
+            ),
+            None => "Needs Claude Code: as this environment's agent, or picked for naming branches"
+                .to_string(),
+        };
+        ui::button_with(
+            "pull-request-write",
+            (!self.writing).then_some("sparkles"),
+            label,
+            ButtonKind::Outline,
+            can,
+        )
+        .when(self.writing, |d| {
+            d.child(ui::spinner("pull-request-writing", 12., theme::content()))
+        })
+        .tooltip(ui::tip_text(tip))
+        .when(can, |d| {
+            d.on_click(cx.listener(|this, _, _, cx| this.write_with_ai(cx)))
+        })
+    }
+}
+
 impl Focusable for PullRequestDialog {
     fn focus_handle(&self, cx: &App) -> FocusHandle {
         self.title.focus_handle(cx)
@@ -511,6 +683,7 @@ impl Render for PullRequestDialog {
         use ui::Typography as _;
         let free = self.busy.is_none();
         let ready = free
+            && !self.writing
             && !self.title.read(cx).text().trim().is_empty()
             && !self.base.read(cx).text().trim().is_empty();
         let commits = match self.plan.commits {
@@ -527,12 +700,12 @@ impl Render for PullRequestDialog {
                 ""
             }
         );
-        let body_label = if self.plan.template {
-            "Description (the repository's template)"
-        } else {
-            "Description (from the commits)"
+        let body_label = match self.desc.written_by {
+            Some(agent) => format!("Description (written by {})", agent.label()),
+            None if self.plan.template => "Description (the repository's template)".to_string(),
+            None => "Description (from the commits)".to_string(),
         };
-        let body = if self.plan.body.trim().is_empty() {
+        let body = if self.desc.body.trim().is_empty() {
             ui::text(
                 ui::Type::Caption,
                 theme::text_subtle(),
@@ -542,7 +715,7 @@ impl Render for PullRequestDialog {
             div()
                 .ty(ui::Type::Mono)
                 .text_color(theme::text_muted())
-                .child(self.plan.body.clone())
+                .child(self.desc.body.clone())
         };
         let create = if self.draft {
             "Create draft"
@@ -572,7 +745,19 @@ impl Render for PullRequestDialog {
                             .flex()
                             .flex_col()
                             .gap(crate::ui::sp(6.))
-                            .child(ui::text(ui::Type::Label, theme::text_muted(), body_label))
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(crate::ui::sp(8.))
+                                    .child(
+                                        ui::text(ui::Type::Label, theme::text_muted(), body_label)
+                                            .flex_1()
+                                            .min_w_0()
+                                            .truncate(),
+                                    )
+                                    .child(self.write_button(cx)),
+                            )
                             .child(
                                 div()
                                     .id("pull-request-body")
@@ -618,7 +803,8 @@ impl Render for PullRequestDialog {
                                         "Open GitHub's form"
                                     },
                                     ButtonKind::Ghost,
-                                    free,
+                                    // Nothing opens while the agent writes.
+                                    free && !self.writing,
                                 )
                                 .on_click(cx.listener(|this, _, _, cx| this.submit(true, cx))),
                             )
@@ -898,5 +1084,50 @@ impl Render for ConfirmDialog {
                             }),
                     ),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const AGENT: AgentKind = AgentKind::Claude;
+
+    #[test]
+    fn a_read_for_another_base_replaces_the_description() {
+        let mut d = Description::new("main", "main's".into());
+        d.planned("release", "release's".into());
+        assert_eq!(d.body, "release's");
+        assert!(d.describes("release"));
+    }
+
+    #[test]
+    fn the_agent_answer_stays_when_a_read_for_its_base_lands() {
+        let mut d = Description::new("main", "main's".into());
+        d.wrote("release", AGENT, "agent".into());
+        d.planned("release", "release's".into());
+        assert_eq!(d.body, "agent");
+        assert_eq!(d.written_by, Some(AGENT));
+    }
+
+    #[test]
+    fn the_agent_answer_goes_when_a_read_for_another_base_lands() {
+        let mut d = Description::new("main", "main's".into());
+        d.wrote("main", AGENT, "agent".into());
+        d.planned("release", "release's".into());
+        assert_eq!(d.body, "release's");
+        assert_eq!(d.written_by, None);
+    }
+
+    #[test]
+    fn going_back_to_the_read_base_restores_its_description() {
+        // The agent wrote for release before release's commits were read;
+        // the plan is still main's.
+        let mut d = Description::new("main", "main's".into());
+        d.wrote("release", AGENT, "agent".into());
+        assert!(!d.describes("main"));
+        d.planned("main", "main's".into());
+        assert_eq!(d.body, "main's");
+        assert!(d.describes("main"));
     }
 }

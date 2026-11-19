@@ -328,13 +328,16 @@ jobs:
   # Clippy and the tests share one job because Depot has few macOS machines. On
   # 18 Nov 2026 the macOS jobs waited a median of 4 and up to 100 minutes for
   # one, while each ran in 1-3 minutes; one job asks for half as many machines.
+  #
+  # On GitHub's runners for now: on 19 Nov 2026 Depot's macOS runners took no
+  # job for hours and held up a release. Free here, as the repository is public.
   macos:
     name: Clippy and tests (macOS, no browser)
     needs: changes
     permissions:
       contents: read
     if: ${{ !cancelled() && needs.changes.outputs.rust != 'false' }}
-    runs-on: depot-macos-latest
+    runs-on: macos-latest
     # Several merges in a row queued a macOS job for every commit on main. Here
     # one runs and only the newest waits; GitHub cancels the older waiting ones.
     # The newest tests what they changed too, and saves the cache. Every other

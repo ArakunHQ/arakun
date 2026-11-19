@@ -752,10 +752,15 @@ arakun-server pair           # in another terminal: a link and its QR code
 
 The link is good for two minutes and pairs one device. There are two ways to use it:
 
-- **In the app.** Open the Servers tab and paste the link. The server and its sessions
-  show there. A session opens as the app draws its own, live; you can start one in any
-  folder the server offers, send follow-ups, stop a turn and answer what the agent
-  asks. The app keeps what pairing gave it in `servers.json` next to its state, which
+- **In the app.** Open the Servers tab and paste the link. From then on the app
+  connects to the server when it starts, and works there as if you were at that
+  machine: each folder the server offers is an environment in the sidebar, marked with
+  the machine's name. A folder whose repository you also have here (the same `origin`)
+  joins that project; the others make projects of their own. Its sessions open in the
+  same tabs, with the same composer, as sessions here: send, stop, approve and answer
+  go to the server. Git, terminals and the file tree stay with this machine's folders;
+  `/stage`, fork, rewind and "Continue with" are not available for a server's session
+  yet. The app keeps what pairing gave it in `servers.json` next to its state, which
   only your user can read. "Forget" on a server removes it there and has the server
   forget the app. A server that cannot be reached at that moment keeps the app in its
   list: remove it there with `arakun-server unpair <device>`.

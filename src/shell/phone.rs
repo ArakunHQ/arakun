@@ -831,11 +831,7 @@ impl Shell {
     }
 
     fn env_of_session(&self, id: &str) -> Option<PathBuf> {
-        self.projects
-            .iter()
-            .flat_map(|p| p.environments.iter())
-            .find(|e| e.session_index(id).is_some())
-            .map(|e| e.path.clone())
+        local_env_of_session(&self.projects, id)
     }
 
     fn phone_thread(&self, env_path: &Path, id: &str) -> Option<gpui::Entity<Thread>> {
@@ -852,14 +848,18 @@ impl Shell {
         // Where the phone can start a session, with the agent each place picks.
         let mut places: Vec<serde_json::Value> = Vec::new();
         for p in &self.projects {
-            for e in &p.environments {
-                places.push(wire::inbox_place(
-                    &e.path,
-                    &p.name,
-                    &e.name,
-                    Some(&e.branch),
-                    e.agent.key(),
-                ));
+            // A phone pairs with each server itself; this app speaks for this machine.
+            for e in p.environments.iter().filter(|e| e.remote.is_none()) {
+                places.push(wire::inbox_place(wire::InboxPlace {
+                    path: &e.path,
+                    project: &p.name,
+                    env: &e.name,
+                    branch: Some(&e.branch),
+                    agent: e.agent.key(),
+                    repo: Some(&p.path),
+                    // The page a phone opens has no use for it.
+                    origin: None,
+                }));
                 for s in &e.sessions {
                     sessions.push(wire::inbox_session(wire::InboxSession {
                         id: &s.id,
@@ -871,6 +871,7 @@ impl Shell {
                         removed: s.removed,
                         project: &p.name,
                         env: &e.name,
+                        place: &e.path,
                         pr: s.meta.as_ref().and_then(|m| m.pr.as_deref()),
                         asks: s.live.as_ref().and_then(|l| wire::asks(l.thread.read(cx))),
                     }));
@@ -1215,5 +1216,48 @@ fn tailscale_address(port: u16) -> Address {
             what: "Your tailnet does not issue HTTPS certificates yet. Turn on HTTPS Certificates in its DNS settings.".into(),
             link: Some(("Open DNS settings", tailscale::ADMIN_DNS_URL.into())),
         },
+    }
+}
+
+/// The environment a phone's session is in. Only this desktop's own: a
+/// server's sessions belong to that server, and a phone paired with the
+/// desktop has no right to read or drive them through it.
+fn local_env_of_session(projects: &[crate::model::Project], id: &str) -> Option<PathBuf> {
+    projects
+        .iter()
+        .flat_map(|p| p.environments.iter())
+        .filter(|e| e.remote.is_none())
+        .find(|e| e.session_index(id).is_some())
+        .map(|e| e.path.clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{Agent, Environment, Remote, Session};
+
+    #[test]
+    fn a_phone_finds_no_session_of_a_server() {
+        let mut project = state::new_project(Path::new("/code/app"));
+        let mut local = Environment::new(PathBuf::from("/code/app"), None, true);
+        local
+            .sessions
+            .push(Session::new("mine".into(), "".into(), Agent::ALL[0]));
+        let mut remote = Environment::new(Remote::env_path("srv", "/srv/app"), None, true);
+        remote.remote = Some(Remote {
+            server: "srv".into(),
+            machine: "box".into(),
+            place: "/srv/app".into(),
+        });
+        remote
+            .sessions
+            .push(Session::new("theirs".into(), "".into(), Agent::ALL[0]));
+        project.environments = vec![local, remote];
+        let projects = [project];
+        assert_eq!(
+            local_env_of_session(&projects, "mine"),
+            Some(PathBuf::from("/code/app"))
+        );
+        assert_eq!(local_env_of_session(&projects, "theirs"), None);
     }
 }

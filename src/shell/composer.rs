@@ -659,6 +659,24 @@ impl Shell {
     /// the draft waiting in the queue.
     fn submit_with(&mut self, now: bool, window: &mut Window, cx: &mut Context<Self>) {
         let env_path = self.env().path.clone();
+        // A server that cannot be reached would lose the prompt: it stays here.
+        if let Some(remote) = self.env().remote.clone()
+            && self.server_reach(&remote.server) != Some(crate::servers_view::Reach::Connected)
+        {
+            if let Some(thread) = self.active_thread(cx) {
+                thread.update(cx, |t, cx| {
+                    t.post_notice(
+                        format!(
+                            "{} is not connected; the prompt stays in the composer.",
+                            remote.machine
+                        ),
+                        true,
+                        cx,
+                    )
+                });
+            }
+            return;
+        }
         let mut text = self.env().draft.trim().to_string();
         let typed = text.clone();
         let pastes = self.pastes.remove(&env_path).unwrap_or_default();

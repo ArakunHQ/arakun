@@ -524,18 +524,30 @@ pub fn snapshot_with(
     active_project: usize,
     layout: Layout,
 ) -> Vec<u8> {
+    // Headless sessions are listed from their own folder, not saved here;
+    // their project stays once it holds sessions the app took over.
+    // A server's projects and folders come from the server each time.
+    let saved = |p: &&Project| {
+        !p.is_remote()
+            && (p.path != crate::headless::root()
+                || p.environments
+                    .iter()
+                    .flat_map(|e| &e.sessions)
+                    .any(|s| !crate::headless::shown(&s.id)))
+    };
+    let kept = projects.iter().filter(saved).count();
+    // The index is into the saved list, so skipped projects before the active
+    // one must not count. Local projects added later sit behind remote ones.
+    let active_saved = projects
+        .iter()
+        .take(active_project)
+        .filter(saved)
+        .count()
+        .min(kept.saturating_sub(1));
     let state = State {
         projects: projects
             .iter()
-            // Headless sessions are listed from their own folder, not saved here;
-            // their project stays once it holds sessions the app took over.
-            .filter(|p| {
-                p.path != crate::headless::root()
-                    || p.environments
-                        .iter()
-                        .flat_map(|e| &e.sessions)
-                        .any(|s| !crate::headless::shown(&s.id))
-            })
+            .filter(saved)
             .map(|p| ProjectState {
                 path: p.path.clone(),
                 logo: p.logo,
@@ -548,10 +560,15 @@ pub fn snapshot_with(
                 automations: p.automations.clone(),
                 #[cfg(feature = "coderlabs")]
                 coderspace: p.coderspace.clone(),
-                active_env: p.environments.get(p.active_env).map(|e| e.path.clone()),
+                active_env: p
+                    .environments
+                    .get(p.active_env)
+                    .filter(|e| e.remote.is_none())
+                    .map(|e| e.path.clone()),
                 envs: p
                     .environments
                     .iter()
+                    .filter(|e| e.remote.is_none())
                     .map(|e| EnvState {
                         path: e.path.clone(),
                         branch: Some(e.branch.to_string()),
@@ -630,7 +647,7 @@ pub fn snapshot_with(
                     .collect(),
             })
             .collect(),
-        active_project,
+        active_project: active_saved,
         dock_open: layout.dock_open,
         dock_height: layout.dock_height,
         rail_open: layout.rail_open,
@@ -972,6 +989,44 @@ mod tests {
         };
         let (_, _, layout, _) = restore(serde_json::from_slice(&snapshot(&[], 0, layout)).unwrap());
         assert!(!layout.rail_open && !layout.panel_open);
+    }
+
+    #[test]
+    fn active_project_counts_only_saved_projects() {
+        let local = |n: &str| new_project(Path::new(&format!("/tmp/arakun-active-{n}")));
+        let remote = |k: &str| new_project(&crate::model::Remote::project_path(k));
+        // A local project added after the servers' ones sits behind them.
+        let projects = [
+            local("l0"),
+            remote("r1"),
+            remote("r2"),
+            local("l3"),
+            local("l4"),
+        ];
+        let layout = Layout {
+            dock_open: false,
+            dock_height: DOCK_HEIGHT,
+            rail_open: true,
+            panel_open: true,
+            rail_w: RAIL_W,
+            panel_w: PANEL_W,
+            subagents_open: false,
+            subagents_w: SUBAGENTS_W,
+            arcade: false,
+            diff_palette: crate::theme::DiffPalette::Default,
+            glass: false,
+            grays: crate::theme::Grays::Crisp,
+            type_scale: crate::ui::TypeScale::Compact,
+            rail_usage: [true, true, true],
+            ui_zoom: 100,
+            window: None,
+        };
+        let state: State = serde_json::from_slice(&snapshot(&projects, 3, layout)).unwrap();
+        assert_eq!(state.projects.len(), 3);
+        assert_eq!(
+            state.projects[state.active_project].path,
+            Path::new("/tmp/arakun-active-l3")
+        );
     }
 
     #[test]

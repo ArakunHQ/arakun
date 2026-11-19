@@ -15,6 +15,7 @@ mod canvas;
 mod canvas_view;
 mod caret;
 mod ci;
+mod clone_source;
 mod cloudflare;
 mod cloudflare_view;
 #[cfg(feature = "coderlabs")]

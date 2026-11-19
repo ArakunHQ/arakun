@@ -482,6 +482,39 @@ pub struct Environment {
     /// A push, pull or PR running from the Changes panel.
     pub git_busy: Option<GitOp>,
     pub git_error: Option<SharedString>,
+    /// A folder on a paired server, not here. Its sessions run there; nothing
+    /// of it is saved, the server's inbox brings it back each time.
+    pub remote: Option<Remote>,
+}
+
+/// Where a remote environment is: the server (`crate::servers`) and the
+/// folder's path on it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Remote {
+    pub server: String,
+    /// What the server calls itself, shown beside the environment.
+    pub machine: SharedString,
+    pub place: String,
+}
+
+impl Remote {
+    /// The path a remote environment goes by here. No folder has it: the
+    /// scheme keeps it from ever naming one, and it is unique per folder.
+    pub fn env_path(server: &str, place: &str) -> PathBuf {
+        PathBuf::from(format!("{}{server}{place}", Self::SCHEME))
+    }
+
+    /// The path of a project only servers have, under the key it is found by.
+    pub fn project_path(key: &str) -> PathBuf {
+        PathBuf::from(format!("{}project/{key}", Self::SCHEME))
+    }
+
+    /// Whether `path` is one of the two above.
+    pub fn is_path(path: &Path) -> bool {
+        path.to_string_lossy().starts_with(Self::SCHEME)
+    }
+
+    const SCHEME: &str = "arakun-server://";
 }
 
 /// A tab that was closed: where it was, what it showed and in which environment.
@@ -831,6 +864,7 @@ impl Environment {
             pr_checked: None,
             git_busy: None,
             git_error: None,
+            remote: None,
         };
         env.set_branch(branch);
         env
@@ -906,6 +940,11 @@ pub struct Project {
 }
 
 impl Project {
+    /// Only on servers: nothing of it is on this machine.
+    pub fn is_remote(&self) -> bool {
+        Remote::is_path(&self.path)
+    }
+
     pub fn env_index(&self, path: &Path) -> Option<usize> {
         self.environments.iter().position(|e| e.path == path)
     }
@@ -930,6 +969,9 @@ impl Project {
             };
             self.environments.push(env);
         }
+        // A server's folders are no worktrees here: git does not list them.
+        self.environments
+            .extend(old.into_iter().filter(|e| e.remote.is_some()));
         self.active_env = active
             .and_then(|p| self.env_index(&p))
             .unwrap_or(0)

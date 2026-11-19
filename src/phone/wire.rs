@@ -737,6 +737,9 @@ pub struct InboxSession<'a> {
     pub removed: u32,
     pub project: &'a str,
     pub env: &'a str,
+    /// The folder it runs in: the same path as its place's, so a device can
+    /// put the session under that place.
+    pub place: &'a Path,
     pub pr: Option<&'a str>,
     pub asks: Option<Value>,
 }
@@ -745,19 +748,29 @@ pub fn inbox_session(s: InboxSession) -> Value {
     json!({
         "id": s.id, "title": s.title, "agent": s.agent, "status": status(s.status),
         "updated": s.updated, "added": s.added, "removed": s.removed,
-        "project": s.project, "env": s.env, "pr": s.pr, "asks": s.asks,
+        "project": s.project, "env": s.env, "place": s.place, "pr": s.pr, "asks": s.asks,
     })
 }
 
-/// Where a phone can start a session, with the agent that place picks (its key).
-pub fn inbox_place(
-    path: &Path,
-    project: &str,
-    env: &str,
-    branch: Option<&str>,
-    agent: &str,
-) -> Value {
-    json!({ "path": path, "project": project, "env": env, "branch": branch, "agent": agent })
+/// Where a session can start: the folder, the repository it is a checkout
+/// of, and the agent that place picks (its key).
+pub struct InboxPlace<'a> {
+    pub path: &'a Path,
+    pub project: &'a str,
+    pub env: &'a str,
+    pub branch: Option<&'a str>,
+    pub agent: &'a str,
+    /// The repository's main folder, shared by all its worktrees.
+    pub repo: Option<&'a Path>,
+    /// Its `origin`, by which the app finds the same project on its side.
+    pub origin: Option<&'a str>,
+}
+
+pub fn inbox_place(p: InboxPlace) -> Value {
+    json!({
+        "path": p.path, "project": p.project, "env": p.env, "branch": p.branch,
+        "agent": p.agent, "repo": p.repo, "origin": p.origin,
+    })
 }
 
 /// `inbox`: every session, newest first, and the places.

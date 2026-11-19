@@ -332,6 +332,46 @@ impl TeamsView {
         self.hub.update(cx, |h, _| h.set_bot_project(Some(dir)));
     }
 
+    pub fn peer_request(
+        &self,
+        project: Option<&std::path::Path>,
+        args: &[String],
+        done: futures::channel::oneshot::Sender<crate::control::Reply>,
+        cx: &mut Context<Self>,
+    ) {
+        self.hub.update(cx, |h, cx| {
+            let scope = h
+                .peer_review
+                .as_ref()
+                .filter(|g| g.live())
+                .and_then(|g| h.channels.get(&g.channel));
+            let (Some(c), Some(project), [goal]) = (scope, project, args) else {
+                let _ = done.send(crate::control::Reply::err(
+                    "Pair one review in the Teams channel for this worktree first.",
+                ));
+                return;
+            };
+            if Some(project) != h.bot.project.as_deref() {
+                let _ = done.send(crate::control::Reply::err(
+                    "This worktree does not own the paired review.",
+                ));
+                return;
+            }
+            let (team, channel) = (c.team_id.clone(), c.channel_id.clone());
+            match h.review_command(&team, &channel, &format!("review {goal}"), cx) {
+                Ok(()) => {
+                    h.peer_review
+                        .as_mut()
+                        .expect("request reserved a grant")
+                        .caller = Some(done)
+                }
+                Err(e) => {
+                    let _ = done.send(crate::control::Reply::err(e));
+                }
+            }
+        });
+    }
+
     /// Opens the first channel once there is one and nothing else was picked,
     /// opens a team just created, keeps the pane on things that still exist,
     /// and asks for the pictures of everyone the tab can show.
@@ -663,6 +703,19 @@ impl TeamsView {
                     .update(cx, |h, cx| h.edit(&team, &channel, &id, text, cx));
             if sent {
                 self.stop_editing(cx);
+            }
+            return;
+        }
+        if text == "/agents" || text.starts_with("/agents ") {
+            let result = self.hub.update(cx, |hub, cx| {
+                hub.review_command(&team, &channel, text["/agents".len()..].trim(), cx)
+            });
+            match result {
+                Ok(()) => self.composer.update(cx, |i, cx| i.set_text("", cx)),
+                Err(why) => self.hub.update(cx, |h, cx| {
+                    h.error = Some(why);
+                    cx.notify();
+                }),
             }
             return;
         }
@@ -1759,6 +1812,7 @@ impl TeamsView {
         let mut rows = Self::rows();
         for (i, p) in pending.iter().enumerate() {
             let (t1, t2, gid) = (tid.clone(), tid.clone(), p.github_id);
+            let request = p.request_id.clone();
             let busy = approving[i];
             rows = rows
                 .child(
@@ -1794,7 +1848,8 @@ impl TeamsView {
                             !busy && !keyless,
                         )
                         .on_click(cx.listener(move |this, _, _, cx| {
-                            this.hub.update(cx, |h, cx| h.approve(&t2, gid, cx))
+                            this.hub
+                                .update(cx, |h, cx| h.approve(&t2, gid, &request, cx))
                         })),
                     ),
                 )
@@ -2183,6 +2238,9 @@ impl TeamsView {
             "bot" => Some("bot"),
             "decision" => Some("decision"),
             "decision_accept" => Some("accepted"),
+            "agent_review" => {
+                Some(super::coord::Event::read(&m.body).map_or("Agent review", |e| e.label()))
+            }
             other => Some(other),
         }
         .map(|k| ui::badge(k.to_string(), Tone::Info));
@@ -2615,7 +2673,25 @@ impl TeamsView {
             .unwrap_or_else(|| "locked channel".into());
         let status = c.map_or(socket::Status::Connecting, |c| c.status.clone());
         let messages: Vec<Msg> = c.map(|c| c.messages.clone()).unwrap_or_default();
+        let peer_hint = hub
+            .peer_review
+            .as_ref()
+            .filter(|g| g.channel == key && g.live())
+            .map(|g| {
+                format!(
+                    "Paired with @{} · /agents review <goal> · /agents off",
+                    t.login(g.peer)
+                )
+            })
+            .unwrap_or_else(|| {
+                "Pair agents: /agents pair @login · one Claude turn, shared text only ($0.10 limit)"
+                    .into()
+            });
         let loading = c.is_none_or(|c| c.loading);
+        let retry_history = c.is_some_and(|c| c.history_error);
+        let has_older = c.is_some_and(|c| c.older_before.is_some());
+        let older_loading = c.is_some_and(|c| c.older_loading);
+        let older_error = c.is_some_and(|c| c.older_error);
         let (hidden, locked) = c.map_or((0, 0), |c| (c.hidden, c.locked()));
         let keyless = t.keyless;
         let joined = hub.joined.contains(team_id);
@@ -2740,28 +2816,60 @@ impl TeamsView {
                 if locked == 1 { "is" } else { "are" }
             ));
         }
-        let first = if loading && messages.is_empty() {
-            ui::loading("teams-history", "Reading the channel…").into_any_element()
-        } else if messages.is_empty() && hidden + locked == 0 && !joined {
-            ui::empty_state(
-                "comment01",
-                &format!("This is the start of {name}"),
-                "Say hello. Only this team's devices can read what is said here.",
-                None,
-            )
-            .into_any_element()
-        } else {
-            div()
-                .flex()
-                .flex_col()
-                .gap(ui::sp(4.))
-                .px(ui::sp(16.))
-                .children(
-                    note.into_iter()
-                        .map(|n| ui::text(Type::Caption, theme::attention().into(), n)),
+        let first =
+            if retry_history {
+                let key = key.clone();
+                ui::button(
+                    "teams-history-retry",
+                    "Could not read the channel. Retry",
+                    ButtonKind::Ghost,
+                    !loading,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.hub.update(cx, |h, cx| h.catch_up(&key, cx))
+                }))
+                .into_any_element()
+            } else if has_older {
+                let key = key.clone();
+                let label = if older_loading {
+                    "Reading older messages..."
+                } else if older_error {
+                    "Could not read older messages. Retry"
+                } else {
+                    "Load older messages"
+                };
+                ui::button(
+                    "teams-history-older",
+                    label,
+                    ButtonKind::Ghost,
+                    !older_loading,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.hub.update(cx, |h, cx| h.load_older(&key, cx))
+                }))
+                .into_any_element()
+            } else if loading && messages.is_empty() {
+                ui::loading("teams-history", "Reading the channel…").into_any_element()
+            } else if messages.is_empty() && hidden + locked == 0 && !joined {
+                ui::empty_state(
+                    "comment01",
+                    &format!("This is the start of {name}"),
+                    "Say hello. Only this team's devices can read what is said here.",
+                    None,
                 )
                 .into_any_element()
-        };
+            } else {
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(ui::sp(4.))
+                    .px(ui::sp(16.))
+                    .children(
+                        note.into_iter()
+                            .map(|n| ui::text(Type::Caption, theme::attention().into(), n)),
+                    )
+                    .into_any_element()
+            };
         let mut rows: Vec<AnyElement> = vec![div().flex_1().into_any_element(), first];
         for (li, line) in lines.iter().enumerate() {
             let el = match line {
@@ -2876,6 +2984,11 @@ impl TeamsView {
                 },
             )
             .child(list)
+            .child(div().px(ui::sp(16.)).child(ui::text(
+                Type::Caption,
+                theme::text_subtle(),
+                peer_hint,
+            )))
             .child(self.render_composer(can_send, connected, bot.hint.take(), cx));
 
         let column = self.render_column(team_id, channel_id, faces, cx);

@@ -20,6 +20,7 @@ use super::api::{
     ApiError, Call, DeviceRow, Endorsement, InviteRow, Me, MemberRow, PendingRow, Remind, Role,
     Stored, TeamDetail, TeamInvite, TeamRow, WaitingRow,
 };
+use super::coord::{self, Event as PeerEvent, Grant};
 use super::crypto::{self, Body, Envelope, TeamKey, WireMessage};
 use super::socket::{self, Dial, Link};
 use super::store::{self, Kept, Local, Sealer};
@@ -210,6 +211,11 @@ pub struct ChannelState {
     locked: Vec<Stored>,
     pub status: socket::Status,
     pub loading: bool,
+    pub older_before: Option<u64>,
+    pub older_loading: bool,
+    pub older_error: bool,
+    pub history_error: bool,
+    sync_from: Option<u64>,
     /// Messages from a device not known yet, kept until the device lists
     /// are read again.
     unknown: Vec<Stored>,
@@ -290,6 +296,7 @@ pub struct Hub {
     pub joined: HashSet<String>,
     /// @bot's runs and what this user did with its answers, on this device.
     pub bot: super::bot::Bots,
+    pub(super) peer_review: Option<Grant>,
     /// The channel the tab shows, by channel key: what arrives there is read.
     viewing: Option<String>,
     /// Unread counts of channels with no socket here, from their history.
@@ -340,6 +347,7 @@ impl Hub {
             error: None,
             busy: HashSet::new(),
             bot: super::bot::Bots::default(),
+            peer_review: None,
             viewing: None,
             unread_read: HashMap::new(),
             unread_at: None,
@@ -395,9 +403,13 @@ impl Hub {
             _ => false,
         };
         if same {
+            if !self.teams_entity.read(cx).enabled() {
+                self.peer_review = None;
+            }
             return;
         }
         self.generation += 1;
+        self.peer_review = None;
         self.net = None;
         self.sealer = None;
         self.kept = Kept::default();
@@ -567,7 +579,15 @@ impl Hub {
         self._tick = Some(cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(REFRESH).await;
-                if this.update(cx, |hub, cx| hub.refresh(cx)).is_err() {
+                if this
+                    .update(cx, |hub, cx| {
+                        if hub.peer_review.as_ref().is_some_and(|g| !g.live()) {
+                            hub.peer_review = None;
+                        }
+                        hub.refresh(cx);
+                    })
+                    .is_err()
+                {
                     return;
                 }
             }
@@ -704,6 +724,11 @@ impl Hub {
                         .cloned()
                         .collect();
                     for t in gone {
+                        if hub.peer_review.as_ref().is_some_and(|g| {
+                            hub.channels.get(&g.channel).is_some_and(|c| c.team_id == t)
+                        }) {
+                            hub.peer_review = None;
+                        }
                         if let Some(was) = hub.team.get(&t) {
                             hub.info = Some(format!("You're no longer in {}.", was.detail.name));
                         }
@@ -873,6 +898,16 @@ impl Hub {
             )
         });
         let rotation = read.detail.rotation_pending;
+        if self.peer_review.as_ref().is_some_and(|g| {
+            self.channels
+                .get(&g.channel)
+                .is_some_and(|c| c.team_id == team_id)
+                && (rotation
+                    || g.epoch != read.detail.epoch
+                    || !read.detail.members.iter().any(|m| m.github_id == g.peer))
+        }) {
+            self.peer_review = None;
+        }
         self.team.insert(
             team_id.to_string(),
             TeamState {
@@ -933,7 +968,7 @@ impl Hub {
                 let mine = trusted_devices(&call.devices(me)?);
                 let key = crypto::new_team_key();
                 let envelopes = seal_all(net, &team_id, &[(1, key)], &mine)?;
-                call.put_envelopes(&team_id, &envelopes)?;
+                call.put_envelopes(&team_id, 0, &envelopes)?;
                 let channel_id = crypto::ulid();
                 let name_ct = crypto::seal_channel_name(&team_id, &channel_id, 1, &key, "general");
                 call.create_channel(&team_id, &channel_id, &name_ct)?;
@@ -975,6 +1010,7 @@ impl Hub {
             return;
         }
         let epoch = t.detail.epoch;
+        let keyed_epoch = t.detail.keyed_epoch.unwrap_or(epoch.saturating_sub(1));
         let devices: Vec<DeviceRow> = t.devices.values().flatten().cloned().collect();
         let team_id = team_id.to_string();
         let key = crypto::new_team_key();
@@ -984,7 +1020,8 @@ impl Hub {
                 let team_id = team_id.clone();
                 move |net| {
                     let envelopes = seal_all(net, &team_id, &[(epoch, key)], &devices)?;
-                    net.call().put_envelopes(&team_id, &envelopes)?;
+                    net.call()
+                        .put_envelopes(&team_id, keyed_epoch, &envelopes)?;
                     Ok(devices.into_iter().map(|d| d.device_id).collect::<Vec<_>>())
                 }
             },
@@ -1014,6 +1051,7 @@ impl Hub {
             return;
         };
         let keys = self.kept.keys(team_id);
+        let keyed_epoch = t.detail.keyed_epoch.unwrap_or(t.detail.epoch);
         let mine = self.device_id().unwrap_or_default();
         if keys.is_empty() {
             return;
@@ -1051,7 +1089,7 @@ impl Hub {
                 move |net| {
                     let envelopes = seal_all(net, &team_id, &keys, &fresh)?;
                     for chunk in envelopes.chunks(500) {
-                        net.call().put_envelopes(&team_id, chunk)?;
+                        net.call().put_envelopes(&team_id, keyed_epoch, chunk)?;
                     }
                     Ok(fresh.into_iter().map(|d| d.device_id).collect::<Vec<_>>())
                 }
@@ -1190,11 +1228,22 @@ impl Hub {
 
     /// Lets a pending member in: their devices must all check out, and get
     /// every key this device holds from the oldest it can give without a gap.
-    pub fn approve(&mut self, team_id: &str, github_id: u64, cx: &mut Context<Self>) {
+    pub fn approve(
+        &mut self,
+        team_id: &str,
+        github_id: u64,
+        request_id: &str,
+        cx: &mut Context<Self>,
+    ) {
         let Some(t) = self.team.get(team_id) else {
             return;
         };
-        let Some(p) = t.pending.iter().find(|p| p.github_id == github_id).cloned() else {
+        let Some(p) = t
+            .pending
+            .iter()
+            .find(|p| p.github_id == github_id && p.request_id == request_id)
+            .cloned()
+        else {
             return;
         };
         let trusted = trusted_devices(&p.devices);
@@ -1225,7 +1274,8 @@ impl Hub {
                 let team_id = team_id.clone();
                 move |net| {
                     let envelopes = seal_all(net, &team_id, &keys, &trusted)?;
-                    net.call().approve(&team_id, github_id, &envelopes)?;
+                    net.call()
+                        .approve(&team_id, github_id, &p.request_id, &envelopes)?;
                     Ok(trusted.into_iter().map(|d| d.device_id).collect::<Vec<_>>())
                 }
             },
@@ -1355,6 +1405,11 @@ impl Hub {
             locked: Vec::new(),
             status: socket::Status::Connecting,
             loading: true,
+            older_before: None,
+            older_loading: false,
+            older_error: false,
+            history_error: false,
+            sync_from: None,
             unknown: Vec::new(),
             outbox: BTreeMap::new(),
             link: None,
@@ -1378,6 +1433,9 @@ impl Hub {
                 // the last list may be stale.
                 if !connected {
                     c.here.clear();
+                    if self.peer_review.as_ref().is_some_and(|g| g.channel == key) {
+                        self.peer_review = None;
+                    }
                 }
                 if refused {
                     c.link = None;
@@ -1392,6 +1450,9 @@ impl Hub {
             socket::Event::Frame(v) => match v["type"].as_str() {
                 Some("message") => {
                     if let Ok(stored) = serde_json::from_value::<Stored>(v) {
+                        if !c.loading && stored.seq > c.last_seq.saturating_add(1) {
+                            self.catch_up(&key, cx);
+                        }
                         self.ingest(&key, vec![stored], false, cx);
                     }
                 }
@@ -1425,15 +1486,21 @@ impl Hub {
 
     /// Reads the history after the newest message held, page by page, then
     /// sends again what is still unacknowledged.
-    fn catch_up(&mut self, key: &str, cx: &mut Context<Self>) {
-        let Some(c) = self.channels.get(key) else {
+    pub(super) fn catch_up(&mut self, key: &str, cx: &mut Context<Self>) {
+        let Some(c) = self.channels.get_mut(key) else {
             return;
         };
-        let (team_id, channel_id, after) = (c.team_id.clone(), c.channel_id.clone(), c.last_seq);
+        let after = *c.sync_from.get_or_insert(c.last_seq);
+        c.loading = true;
+        c.history_error = false;
+        let (team_id, channel_id) = (c.team_id.clone(), c.channel_id.clone());
         let key = key.to_string();
         self.run(
             cx,
             move |net| {
+                if after == 0 {
+                    return net.call().older(&team_id, &channel_id, None);
+                }
                 let mut all = Vec::new();
                 let mut after = after;
                 loop {
@@ -1455,6 +1522,10 @@ impl Hub {
                 c.loading = false;
                 match result {
                     Ok(stored) => {
+                        if after == 0 {
+                            c.older_before = previous_page(&stored);
+                        }
+                        c.sync_from = None;
                         hub.ingest(&key, stored, false, cx);
                         let c = hub.channels.get_mut(&key).expect("looked up above");
                         if let Some(link) = &c.link {
@@ -1463,10 +1534,41 @@ impl Hub {
                             }
                         }
                     }
-                    Err(e) => hub.error = Some(format!("Could not read the channel: {e}")),
+                    Err(_) => c.history_error = true,
                 }
             },
         );
+    }
+
+    pub(super) fn load_older(&mut self, key: &str, cx: &mut Context<Self>) {
+        let Some(c) = self.channels.get_mut(key) else {
+            return;
+        };
+        let Some(before) = c.older_before else { return };
+        if c.older_loading {
+            return;
+        }
+        c.older_loading = true;
+        c.older_error = false;
+        let (team, channel, key) = (c.team_id.clone(), c.channel_id.clone(), key.to_owned());
+        self.run(
+            cx,
+            move |net| net.call().older(&team, &channel, Some(before)),
+            move |hub, result, cx| {
+                let Some(c) = hub.channels.get_mut(&key) else {
+                    return;
+                };
+                c.older_loading = false;
+                match result {
+                    Ok(rows) => {
+                        c.older_before = previous_page(&rows);
+                        hub.ingest(&key, rows, false, cx);
+                    }
+                    Err(_) => c.older_error = true,
+                }
+            },
+        );
+        cx.notify();
     }
 
     /// Checks and opens stored messages, and files them by `seq`. Ones from
@@ -1483,6 +1585,7 @@ impl Hub {
         let mut unknown_seen = false;
         // This device's @bot questions the server just stored: the bot runs now.
         let mut asked = Vec::new();
+        let mut peer_mail = Vec::new();
         for s in stored {
             if c.seen_ids.contains(&s.message.id) {
                 continue;
@@ -1521,6 +1624,16 @@ impl Hub {
                 asked.push(s.message.id.clone());
             }
             c.seen_ids.insert(s.message.id.clone());
+            if let Some(event) = PeerEvent::read(&body) {
+                peer_mail.push((
+                    gid,
+                    s.message.epoch,
+                    event,
+                    body.text.clone(),
+                    s.message.id.clone(),
+                    body.reply_to.clone(),
+                ));
+            }
             let msg = Msg {
                 id: s.message.id.clone(),
                 seq: Some(s.seq),
@@ -1542,6 +1655,61 @@ impl Hub {
         apply_edits(&mut c.messages);
         let team_id = c.team_id.clone();
         let channel_id = c.channel_id.clone();
+        for (sender, epoch, event, text, id, parent) in peer_mail {
+            if event == PeerEvent::Blocked
+                && let Some(grant) = &self.peer_review
+                && grant.channel == key
+                && grant.epoch == epoch
+                && sender == grant.peer
+                && let Some(request) = self.channels[key]
+                    .messages
+                    .iter()
+                    .find(|m| Some(&m.id) == parent.as_ref() && m.github_id == self.github_id())
+                    .and_then(|m| PeerEvent::read(&m.body))
+                && grant.waiting_for(&request)
+            {
+                if let Some(grant) = self.peer_review.as_mut()
+                    && let Some(caller) = grant.caller.take()
+                {
+                    let _ = caller.send(crate::control::Reply::err(
+                        "The peer reported a blocked review. See the Teams channel.",
+                    ));
+                }
+                self.peer_review = None;
+                continue;
+            }
+            if let Some(grant) = &mut self.peer_review
+                && grant.channel == key
+                && grant.epoch == epoch
+                && let Some(turn) = grant.receive(sender, event, &text)
+            {
+                let stop = grant.stop.clone();
+                let ticket = grant.ticket.clone();
+                let (team, channel) = (team_id.clone(), channel_id.clone());
+                cx.spawn(async move |this, cx| {
+                    let result = cx.background_spawn(async move { super::bot::review_peer(&turn.prompt, &stop) }).await;
+                    let _ = this.update(cx, |hub, cx| {
+                        if !hub.peer_review.as_ref().is_some_and(|g| g.ticket == ticket && g.live())
+                            || hub.review_epoch(&team, &channel) != Some(epoch) { return; }
+                        let body = match result {
+                            Ok(s) if coord::valid_text(s.trim()) => turn.response.body(s.trim().into(), Some(id)),
+                            _ => PeerEvent::Blocked.body("Could not finish this review within its limits. A member can take over.".into(), Some(id)),
+                        };
+                        let answer = if matches!(PeerEvent::read(&body), Some(PeerEvent::Done)) {
+                            crate::control::Reply::ok(body.text.clone())
+                        } else {
+                            crate::control::Reply::err("No recommendation was available.")
+                        };
+                        if hub.send_body(&team, &channel, body, cx)
+                            && let Some(caller) = hub.peer_review.as_mut().and_then(|g| g.caller.take())
+                        {
+                            let _ = caller.send(answer);
+                        }
+                        hub.peer_review = None;
+                    });
+                }).detach();
+            }
+        }
         for id in asked {
             self.start_bot(&team_id, &channel_id, &id, cx);
         }
@@ -1562,6 +1730,88 @@ impl Hub {
     }
 
     // ---- unread ---------------------------------------------------------------
+
+    fn review_epoch(&self, team: &str, channel: &str) -> Option<u64> {
+        let t = self.team.get(team)?;
+        let c = self.channels.get(&channel_key(team, channel))?;
+        (!t.detail.rotation_pending
+            && self.kept.key(team, t.detail.epoch).is_some()
+            && !c.loading
+            && c.status == socket::Status::Connected)
+            .then_some(t.detail.epoch)
+    }
+
+    pub(super) fn review_command(
+        &mut self,
+        team: &str,
+        channel: &str,
+        cmd: &str,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        if cmd == "off" {
+            self.peer_review = None;
+            cx.notify();
+            return Ok(());
+        }
+        let key = channel_key(team, channel);
+        if !self.teams_entity.read(cx).enabled() || self.bot.project.is_none() {
+            return Err("Open a local project with Teams enabled to pair an agent.".into());
+        }
+        let epoch = self
+            .review_epoch(team, channel)
+            .ok_or("Wait for a connected channel with its current key.")?;
+        let me = self.github_id();
+        let (event, text) = if let Some(login) = cmd.strip_prefix("pair @") {
+            let peer = self.team[team]
+                .detail
+                .members
+                .iter()
+                .find(|m| m.login.eq_ignore_ascii_case(login) && m.github_id != me)
+                .ok_or("Choose another current member by GitHub login.")?
+                .github_id;
+            let grant = Grant::new(key, epoch, peer);
+            let ready = grant.ready();
+            self.peer_review = Some(grant);
+            (
+                ready,
+                format!("Available for one Claude review with @{login} for 15 minutes."),
+            )
+        } else if let Some(goal) = cmd.strip_prefix("review ") {
+            let g = self
+                .peer_review
+                .as_mut()
+                .filter(|g| g.channel == key && g.epoch == epoch && g.live())
+                .ok_or("Pair this device with a member first.")?;
+            let other = self.channels[&key]
+                .messages
+                .iter()
+                .rev()
+                .find_map(|m| {
+                    if m.github_id == g.peer
+                        && m.delivery == Delivery::Sent
+                        && now().saturating_sub(m.at) < coord::WINDOW.as_secs()
+                        && let Some(PeerEvent::Ready { peer, ticket }) = PeerEvent::read(&m.body)
+                        && peer == me
+                    {
+                        Some(ticket)
+                    } else {
+                        None
+                    }
+                })
+                .ok_or("The other member must pair a device with you in this channel first.")?;
+            let event = g
+                .request(other, goal)
+                .ok_or("This ticket is in use, or the goal is empty or longer than 4000 bytes.")?;
+            (event, goal.into())
+        } else {
+            return Err("Use /agents pair @login, /agents review <goal>, or /agents off.".into());
+        };
+        if !self.send_body(team, channel, event.body(text, None), cx) {
+            self.peer_review = None;
+            return Err("Could not send the review event; pair again.".into());
+        }
+        Ok(())
+    }
 
     /// The channel the tab shows now, if any: its messages count as read.
     pub fn set_viewing(&mut self, key: Option<String>, cx: &mut Context<Self>) {
@@ -1786,7 +2036,13 @@ impl Hub {
 /// Kinds that show as a message of their own, and so count as unread.
 /// Acceptances show under their answer.
 fn counts_as_unread(kind: &str) -> bool {
-    matches!(kind, "text" | "bot" | "decision")
+    matches!(kind, "text" | "bot" | "decision" | "agent_review")
+}
+
+fn previous_page(rows: &[Stored]) -> Option<u64> {
+    rows.first()
+        .filter(|r| rows.len() >= 50 && r.seq > 1)
+        .map(|r| r.seq)
 }
 
 /// An unread count as the channel list shows it.
@@ -2211,7 +2467,7 @@ mod tests {
         let mine = trusted_devices(&a.call().devices(ma.github_id).unwrap());
         let key = crypto::new_team_key();
         let envelopes = seal_all(&a, &team, &[(1, key)], &mine).unwrap();
-        assert!(!a.call().put_envelopes(&team, &envelopes).unwrap());
+        assert!(!a.call().put_envelopes(&team, 0, &envelopes).unwrap());
         let channel = crypto::ulid();
         let sealed = crypto::seal_channel_name(&team, &channel, 1, &key, "general");
         a.call().create_channel(&team, &channel, &sealed).unwrap();
@@ -2238,7 +2494,9 @@ mod tests {
         let theirs = trusted_devices(&p.devices);
         assert_eq!(theirs.len(), 1);
         let envelopes = seal_all(&a, &team, &contiguous_tail(&[(1, key)]), &theirs).unwrap();
-        a.call().approve(&team, mb.github_id, &envelopes).unwrap();
+        a.call()
+            .approve(&team, mb.github_id, &p.request_id, &envelopes)
+            .unwrap();
 
         // B reads the team as load_team does: the key, checked, and the channel.
         let read = read_team(&b, &team, false, &HashSet::new()).unwrap();
@@ -2289,6 +2547,9 @@ mod tests {
             loop {
                 if let (who, socket::Event::Frame(v)) = next() {
                     assert_ne!(v["type"], "error", "{v}");
+                    if v["type"] != "message" {
+                        continue;
+                    }
                     let s: Stored = serde_json::from_value(v).unwrap();
                     if s.message.id == want {
                         return (who, s);
@@ -2322,6 +2583,62 @@ mod tests {
         let history = b.call().history(&team, &channel, 0).unwrap();
         let ids: Vec<&str> = history.iter().map(|s| s.message.id.as_str()).collect();
         assert_eq!(ids, vec![first.as_str(), reply.as_str()]);
+
+        // The two local model outputs are fixtures; the devices, encrypted
+        // bodies, authenticated sockets and stored acknowledgements are real.
+        let mut handoff = |net: &Net, link: &Link, who: &str, body: Body| {
+            let id = send(net, link, &body);
+            loop {
+                let (recipient, stored) = heard(&id);
+                if recipient == who {
+                    assert!(crypto::verify_message(
+                        &team,
+                        &channel,
+                        &stored.message,
+                        &crypto::unb64(net.local.device.sig_pub()).unwrap()
+                    ));
+                    return crypto::open_message(&team, &channel, &stored.message, &key).unwrap();
+                }
+            }
+        };
+        let scope = channel_key(&team, &channel);
+        let mut lead = Grant::new(scope.clone(), 1, mb.github_id);
+        let mut reviewer = Grant::new(scope, 1, ma.github_id);
+        let offer = handoff(
+            &b,
+            &lb,
+            "a",
+            reviewer.ready().body("Available".into(), None),
+        );
+        let Some(PeerEvent::Ready { peer, ticket }) = PeerEvent::read(&offer) else {
+            panic!("no reviewer")
+        };
+        assert_eq!(peer, ma.github_id);
+        let goal = "Check the release plan";
+        let ask = lead.request(ticket, goal).unwrap();
+        let got = handoff(&a, &la, "b", ask.body(goal.into(), None));
+        let review = reviewer
+            .receive(ma.github_id, PeerEvent::read(&got).unwrap(), &got.text)
+            .unwrap();
+        let got = handoff(
+            &b,
+            &lb,
+            "a",
+            review.response.body("Add a rollback check".into(), None),
+        );
+        let synthesis = lead
+            .receive(mb.github_id, PeerEvent::read(&got).unwrap(), &got.text)
+            .unwrap();
+        assert!(synthesis.prompt.contains("Add a rollback check"));
+        let got = handoff(
+            &a,
+            &la,
+            "b",
+            synthesis
+                .response
+                .body("Test the rollback before release".into(), None),
+        );
+        assert_eq!(PeerEvent::read(&got), Some(PeerEvent::Done));
         drop((la, lb));
 
         // A second device of A, vouched for by the first from its code, as
@@ -2362,7 +2679,7 @@ mod tests {
             .filter(|d| d.device_id == d2.id())
             .collect();
         a.call()
-            .put_envelopes(&team, &seal_all(&a, &team, &[(1, key)], &fresh).unwrap())
+            .put_envelopes(&team, 1, &seal_all(&a, &team, &[(1, key)], &fresh).unwrap())
             .unwrap();
         let read2 = read_team(&second, &team, true, &HashSet::new()).unwrap();
         assert_eq!(read2.keys, vec![(1, key)]);
@@ -2374,7 +2691,7 @@ mod tests {
         assert_eq!(read.detail.epoch, 2);
         let devices: Vec<DeviceRow> = read.devices.values().flatten().cloned().collect();
         let envelopes = seal_all(&a, &team, &[(2, crypto::new_team_key())], &devices).unwrap();
-        assert!(!a.call().put_envelopes(&team, &envelopes).unwrap());
+        assert!(!a.call().put_envelopes(&team, 1, &envelopes).unwrap());
         assert!(matches!(
             b.call().team(&team),
             Err(ApiError::Status(404, _))

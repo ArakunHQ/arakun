@@ -36,6 +36,18 @@ impl Shell {
                     let _ = this.update(cx, |this, cx| this.rename_command(req, done, cx));
                     continue;
                 }
+                if req.cmd == "peer-review" {
+                    let _ = this.update(cx, |shell, cx| {
+                        // No fallback to the visible project for a caller elsewhere.
+                        let env = crate::platform::canonicalize(&req.cwd)
+                            .ok()
+                            .and_then(|p| shell.env_for(&p));
+                        shell.teams_view.update(cx, |v, cx| {
+                            v.peer_request(env.as_deref(), &req.args, done, cx);
+                        });
+                    });
+                    continue;
+                }
                 if req.cmd == "page" {
                     let _ = this.update_in(cx, |this, window, cx| {
                         this.page_command(req, done, window, cx)

@@ -2946,6 +2946,10 @@ impl Shell {
     }
 
     fn after_switch(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.has_projects() {
+            let dir = self.env().path.clone();
+            self.teams_view.update(cx, |v, cx| v.set_project(dir, cx));
+        }
         self.completion = None;
         // The strip goes to the tab this environment showed last.
         self.show_env_tab(false);

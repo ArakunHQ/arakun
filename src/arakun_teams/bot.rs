@@ -671,6 +671,7 @@ pub fn bot_body(range: &Range, via: u64, outcome: &Outcome) -> Body {
         mentions: Vec::new(),
         bot: serde_json::to_value(meta).ok(),
         decision: None,
+        coordination: None,
     }
 }
 
@@ -701,6 +702,7 @@ pub fn accept_body(bot: &Msg) -> Body {
         mentions: Vec::new(),
         bot: None,
         decision: Some(serde_json::json!({ "of": bot.id })),
+        coordination: None,
     }
 }
 
@@ -713,6 +715,7 @@ pub fn reverse_body(bot_id: &str, reason: String) -> Body {
         mentions: Vec::new(),
         bot: None,
         decision: Some(serde_json::json!({ "of": bot_id })),
+        coordination: None,
     }
 }
 
@@ -766,70 +769,113 @@ pub fn claude_result(stdout: &str) -> Result<String, String> {
 
 impl Agent for ClaudeCode {
     fn run(&self, prompt: &str, cwd: &Path, stop: &AtomicBool) -> Result<String, String> {
-        let bin = crate::agent::claude_cli().ok_or(
-            "Claude Code is not installed on this machine. @bot runs on your own Claude Code.",
-        )?;
-        let mut cmd = crate::platform::command(bin);
-        crate::agent::claude_auth::one_shot(&mut cmd)
-            .map_err(|e| format!("could not hand Claude Code its key helper: {e}"))?;
-        cmd.args(claude_args())
-            .current_dir(cwd)
-            .env("PATH", crate::agent::child_path_env())
-            .env("NO_COLOR", "1")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| format!("could not start Claude Code: {e}"))?;
-        // On stdin, not in argv: other local users can read a process's arguments.
-        if let Some(mut stdin) = child.stdin.take() {
-            let prompt = prompt.to_string();
-            std::thread::spawn(move || {
-                let _ = stdin.write_all(prompt.as_bytes());
-            });
+        run_claude(prompt, cwd, stop, claude_args())
+    }
+}
+
+/// Peer work is text-only. Never inherit @bot's file or web tools, the
+/// project directory, or a CLI's default tools.
+fn peer_args() -> Vec<String> {
+    [
+        "-p",
+        "--output-format",
+        "json",
+        "--no-session-persistence",
+        "--strict-mcp-config",
+        "--setting-sources",
+        "",
+        "--tools",
+        "",
+        "--permission-mode",
+        "dontAsk",
+        "--max-turns",
+        "1",
+        "--max-budget-usd",
+        "0.10",
+    ]
+    .map(String::from)
+    .to_vec()
+}
+
+pub(super) fn review_peer(prompt: &str, stop: &AtomicBool) -> Result<String, String> {
+    if stop.load(Ordering::Relaxed) {
+        return Err("stopped".into());
+    }
+    let dir = private_dir().map_err(|e| e.to_string())?;
+    let out = run_claude(prompt, &dir, stop, peer_args());
+    let _ = std::fs::remove_dir(&dir);
+    out
+}
+
+fn run_claude(
+    prompt: &str,
+    cwd: &Path,
+    stop: &AtomicBool,
+    args: Vec<String>,
+) -> Result<String, String> {
+    let bin = crate::agent::claude_cli().ok_or(
+        "Claude Code is not installed on this machine. @bot runs on your own Claude Code.",
+    )?;
+    let mut cmd = crate::platform::command(bin);
+    crate::agent::claude_auth::one_shot(&mut cmd)
+        .map_err(|e| format!("could not hand Claude Code its key helper: {e}"))?;
+    cmd.args(args)
+        .current_dir(cwd)
+        .env("PATH", crate::agent::child_path_env())
+        .env("NO_COLOR", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("could not start Claude Code: {e}"))?;
+    // On stdin, not in argv: other local users can read a process's arguments.
+    if let Some(mut stdin) = child.stdin.take() {
+        let prompt = prompt.to_string();
+        std::thread::spawn(move || {
+            let _ = stdin.write_all(prompt.as_bytes());
+        });
+    }
+    let read = |pipe: Option<Box<dyn std::io::Read + Send>>| {
+        std::thread::spawn(move || {
+            let mut text = String::new();
+            if let Some(mut pipe) = pipe {
+                let _ = pipe.read_to_string(&mut text);
+            }
+            text
+        })
+    };
+    let stdout = read(child.stdout.take().map(|p| Box::new(p) as _));
+    let stderr = read(child.stderr.take().map(|p| Box::new(p) as _));
+    let started = Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
+            break status;
         }
-        let read = |pipe: Option<Box<dyn std::io::Read + Send>>| {
-            std::thread::spawn(move || {
-                let mut text = String::new();
-                if let Some(mut pipe) = pipe {
-                    let _ = pipe.read_to_string(&mut text);
-                }
-                text
-            })
-        };
-        let stdout = read(child.stdout.take().map(|p| Box::new(p) as _));
-        let stderr = read(child.stderr.take().map(|p| Box::new(p) as _));
-        let started = Instant::now();
-        let status = loop {
-            if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
-                break status;
-            }
-            if stop.load(Ordering::Relaxed) {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err("stopped".into());
-            }
-            if started.elapsed() > TIMEOUT {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(format!(
-                    "Claude Code did not answer within {} minutes",
-                    TIMEOUT.as_secs() / 60
-                ));
-            }
-            std::thread::sleep(Duration::from_millis(100));
-        };
-        let out = stdout.join().unwrap_or_default();
-        // A failed run still prints its JSON result, with the reason.
-        match claude_result(&out) {
-            Err(e) if !status.success() && out.trim().is_empty() => {
-                let err = stderr.join().unwrap_or_default();
-                let last = err.lines().rev().find(|l| !l.trim().is_empty());
-                Err(last.map_or(e, |l| format!("Claude Code failed: {}", l.trim())))
-            }
-            result => result,
+        if stop.load(Ordering::Relaxed) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("stopped".into());
         }
+        if started.elapsed() > TIMEOUT {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!(
+                "Claude Code did not answer within {} minutes",
+                TIMEOUT.as_secs() / 60
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    let out = stdout.join().unwrap_or_default();
+    // A failed run still prints its JSON result, with the reason.
+    match claude_result(&out) {
+        Err(e) if !status.success() && out.trim().is_empty() => {
+            let err = stderr.join().unwrap_or_default();
+            let last = err.lines().rev().find(|l| !l.trim().is_empty());
+            Err(last.map_or(e, |l| format!("Claude Code failed: {}", l.trim())))
+        }
+        result => result,
     }
 }
 
@@ -1197,6 +1243,9 @@ impl Hub {
 
     /// The project the bot reads, from the environment the window shows.
     pub fn set_bot_project(&mut self, dir: Option<PathBuf>) {
+        if self.bot.project != dir {
+            self.peer_review = None;
+        }
         self.bot.project = dir;
     }
 }
@@ -1205,6 +1254,20 @@ impl Hub {
 mod tests {
     use super::*;
     use std::sync::Mutex;
+
+    #[test]
+    fn peer_reviews_have_no_tools_and_a_single_bounded_turn() {
+        let args = peer_args();
+        for pair in [
+            ["--tools", ""],
+            ["--setting-sources", ""],
+            ["--max-turns", "1"],
+            ["--max-budget-usd", "0.10"],
+        ] {
+            assert!(args.windows(2).any(|w| w == pair));
+        }
+        assert!(args.iter().any(|s| s == "--strict-mcp-config"));
+    }
 
     fn msg(id: &str, seq: Option<u64>, login: &str, text: &str, reply_to: Option<&str>) -> Msg {
         Msg {

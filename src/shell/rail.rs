@@ -346,10 +346,83 @@ impl Shell {
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
+                    .when(!narrow, |d| d.children(self.render_switcher_offer(cx)))
                     .children(self.render_pinned_block(cx))
                     .children(self.render_rail_sections(cx)),
             )
             .pb(crate::ui::sp(4.))
+    }
+
+    /// Offers the Switcher to someone whose layout predates it, once: "Try it"
+    /// swaps it in and asks whether to keep it, "Go back" restores theirs.
+    fn render_switcher_offer(&self, cx: &mut Context<Self>) -> Option<gpui::Div> {
+        let trying = self.sidebar.trial_of.is_some();
+        if !trying && !self.sidebar.offers_switcher() {
+            return None;
+        }
+        let (title, body, yes, no) = if trying {
+            (
+                "This is the new sidebar",
+                "Change it any time in Customize sidebar.",
+                "Keep it",
+                "Go back",
+            )
+        } else {
+            (
+                "Try the new sidebar",
+                "One project at a time with its environments, and the views as icons.",
+                "Try it",
+                "No thanks",
+            )
+        };
+        let yes = ui::button("switcher-yes", yes, ui::ButtonKind::Primary, true).on_click(
+            cx.listener(move |this, _, _, cx| {
+                if trying {
+                    this.change_sidebar(cx, |s| s.trial_of = None);
+                } else {
+                    this.change_sidebar(cx, |s| *s = s.as_switcher());
+                }
+            }),
+        );
+        let no = ui::button("switcher-no", no, ui::ButtonKind::Ghost, true).on_click(cx.listener(
+            move |this, _, _, cx| match this.sidebar.trial_of.clone() {
+                Some(old) => this.change_sidebar(cx, |s| *s = *old),
+                None => this.change_sidebar(cx, |s| s.switcher_offered = true),
+            },
+        ));
+        Some(
+            div()
+                .flex()
+                .flex_col()
+                .flex_none()
+                .gap(crate::ui::sp(8.))
+                .mx(crate::ui::sp(8.))
+                .mb(crate::ui::sp(8.))
+                .p(crate::ui::sp(12.))
+                .rounded(crate::ui::rad(10.))
+                .border_1()
+                .border_color(theme::stroke())
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(crate::ui::sp(2.))
+                        .child(
+                            div()
+                                .text_size(px(ui::TEXT_MD))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(theme::text())
+                                .child(title),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(ui::TEXT_SM))
+                                .text_color(theme::text_subtle())
+                                .child(body),
+                        ),
+                )
+                .child(div().flex().gap(crate::ui::sp(6.)).child(yes).child(no)),
+        )
     }
 
     /// What the rail, the workspace panel and the subagents column sit in,

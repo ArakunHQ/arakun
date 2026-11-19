@@ -256,10 +256,13 @@ impl Shell {
         };
         let active_id = self.active_session_id();
         // The session in the other pane of a split shows too.
-        let other_id = env.split_other().and_then(|i| match &env.tabs[i].kind {
-            TabKind::Session { id, .. } => Some(id.clone()),
-            _ => None,
-        });
+        let other_id =
+            self.strip
+                .split_other(&env.path)
+                .and_then(|i| match &self.strip.tabs[i].kind {
+                    TabKind::Session { id, .. } => Some(id.clone()),
+                    _ => None,
+                });
         let on_screen = |s: &model::Session| {
             active_id.as_ref() == Some(&s.id) || other_id.as_ref() == Some(&s.id)
         };

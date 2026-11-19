@@ -1,6 +1,8 @@
 //! The "New" dialog behind the + on the rail's Projects heading: start a
 //! session in a project the user has, or add a project.
 
+use std::path::PathBuf;
+
 use gpui::AppContext as _;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
@@ -13,8 +15,10 @@ use crate::theme;
 use crate::ui::{self, Type, Typography as _, icon};
 
 pub enum NewDialogEvent {
-    /// A new session in the project at this index, in its open environment.
-    Session(usize),
+    /// A new session in the project at this path, in its open environment. A
+    /// path, not an index: a server sync can drop a project while the dialog is
+    /// open and shift the indexes after it.
+    Session(PathBuf),
     /// Add a project (the folder picker).
     Project,
     Dismissed,
@@ -23,6 +27,7 @@ pub enum NewDialogEvent {
 /// A project a session can start in.
 pub struct ProjectChoice {
     pub index: usize,
+    pub path: PathBuf,
     pub name: SharedString,
     /// The environment the session would start in.
     pub env: SharedString,
@@ -77,7 +82,12 @@ impl NewDialog {
 
     fn pick(&self, choice: Choice, cx: &mut Context<Self>) {
         cx.emit(match choice {
-            Choice::Session(i) => NewDialogEvent::Session(i),
+            Choice::Session(i) => {
+                let Some(p) = self.open.iter().chain(&self.others).find(|p| p.index == i) else {
+                    return;
+                };
+                NewDialogEvent::Session(p.path.clone())
+            }
             Choice::Project => NewDialogEvent::Project,
         });
     }
@@ -355,6 +365,7 @@ impl super::Shell {
         self.env_menu_open = false;
         let choice = |(index, p): (usize, &crate::model::Project)| ProjectChoice {
             index,
+            path: p.path.clone(),
             name: p.name.clone(),
             env: p
                 .environments
@@ -384,9 +395,11 @@ impl super::Shell {
             &dialog,
             window,
             |this, _, ev: &NewDialogEvent, window, cx| match ev {
-                NewDialogEvent::Session(i) => {
-                    let i = *i;
+                NewDialogEvent::Session(path) => {
+                    let found = this.projects.iter().position(|p| &p.path == path);
                     this.close_modal(window, cx);
+                    // The project went away while the dialog was open.
+                    let Some(i) = found else { return };
                     if i != this.active_project {
                         this.select_project(i, window, cx);
                     }

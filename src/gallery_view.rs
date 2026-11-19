@@ -71,22 +71,29 @@ fn demo_series() -> (Vec<Series>, Vec<SharedString>, Vec<Option<SharedString>>) 
     )
 }
 
+/// Hands the chart its made-up data. The Droid line's gray comes from the
+/// mode and palette in use, so this runs on every render too; the chart
+/// repaints only when something changed.
+fn set_demo(c: &mut AreaChart, cx: &mut Context<AreaChart>) {
+    let (series, labels, notes) = demo_series();
+    let usd: ui::Format = Rc::new(|v| format!("${v:.2}"));
+    let short: ui::Format = Rc::new(|v| format!("${v:.0}"));
+    c.set(
+        series,
+        labels,
+        vec!["Oct 1".into(), "Oct 15".into(), "Oct 30".into()],
+        notes,
+        usd,
+        short,
+        cx,
+    );
+}
+
 impl GalleryView {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let chart = cx.new(|cx| {
             let mut c = AreaChart::new(200.);
-            let (series, labels, notes) = demo_series();
-            let usd: ui::Format = Rc::new(|v| format!("${v:.2}"));
-            let short: ui::Format = Rc::new(|v| format!("${v:.0}"));
-            c.set(
-                series,
-                labels,
-                vec!["Oct 1".into(), "Oct 15".into(), "Oct 30".into()],
-                notes,
-                usd,
-                short,
-                cx,
-            );
+            set_demo(&mut c, cx);
             c
         });
         Self {
@@ -204,6 +211,7 @@ fn panel(width: f32) -> gpui::Div {
 
 impl Render for GalleryView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.chart.update(cx, set_demo);
         let r = theme::grays().ramp();
 
         let header = div()

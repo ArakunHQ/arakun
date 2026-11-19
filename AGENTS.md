@@ -109,7 +109,7 @@ cargo test --locked --no-default-features <module>   # only the modules you touc
 # relay/ or phone/ changed
 (cd relay && npx tsc --noEmit)
 # teams/ changed
-(cd teams && npx tsc --noEmit)
+(cd teams && npm ci && npm run check)
 ```
 
 Leave the rest to CI on the draft pull request: the full `cargo test`, the

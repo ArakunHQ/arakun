@@ -25,6 +25,7 @@ pub enum Target {
     ToggleDock,
     ToggleSidebar,
     TogglePanel,
+    Customize,
     ToggleSubagents,
     Account,
     Settings,

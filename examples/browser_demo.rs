@@ -7,6 +7,9 @@
 mod assets;
 #[path = "../src/browser/mod.rs"]
 mod browser;
+#[path = "../src/durable.rs"]
+#[allow(dead_code)]
+mod durable;
 // The new-tab page's raccoon.
 #[allow(dead_code)]
 #[path = "../src/mascot.rs"]

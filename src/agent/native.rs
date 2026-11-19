@@ -22,8 +22,8 @@ use serde_json::{Value, json};
 use super::super::attach;
 use super::super::rpc::{Connection, RpcError};
 use super::{
-    Entry, PermissionOption, PermissionRequest, PlanEntry, SessionMeta, Thread, ThreadEvent,
-    ThreadStatus, ToolCall, ToolContent, ToolStatus, recount, str_of,
+    Entry, FailedAt, PermissionOption, PermissionRequest, PlanEntry, SessionMeta, Thread,
+    ThreadEvent, ThreadStatus, ToolCall, ToolContent, ToolStatus, recount, str_of,
 };
 
 /// Which protocol a [`Thread`] speaks.
@@ -221,9 +221,51 @@ pub struct AskUserRequest {
     /// ACP form elicitation (Claude's AskUserQuestion): per question, its field
     /// and the free-text field beside it. Empty for native Droid.
     pub fields: Vec<(String, Option<String>)>,
+    /// The subagent session asking, when it is not this one.
+    pub session: Option<String>,
+}
+
+/// A questionnaire as a server words it (`phone::wire::question`), for a
+/// session that runs there.
+pub(super) fn remote_question(v: &Value) -> Option<AskUserRequest> {
+    let text = |v: &Value, k: &str| v[k].as_str().unwrap_or("").to_string();
+    let questions = v["questions"].as_array()?;
+    Some(AskUserRequest {
+        rpc_id: Value::Null,
+        tool_call_id: text(v, "tool_call_id"),
+        questions: questions
+            .iter()
+            .map(|q| Question {
+                index: q["index"].as_u64().unwrap_or(0),
+                topic: text(q, "topic"),
+                question: text(q, "question"),
+                options: q["options"]
+                    .as_array()
+                    .map(|o| {
+                        o.iter()
+                            .filter_map(|x| x.as_str().map(str::to_string))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                multi: q["multi"].as_bool().unwrap_or(false),
+            })
+            .collect(),
+        fields: Vec::new(),
+        session: None,
+    })
 }
 
 impl AskUserRequest {
+    /// What tells one of a server's questionnaires from another.
+    pub(super) fn remote_key(&self) -> String {
+        let mut key = self.tool_call_id.clone();
+        for q in &self.questions {
+            key.push('\n');
+            key.push_str(&q.question);
+        }
+        key
+    }
+
     /// An ACP `elicitation/create` form as questions: each select field (or plain
     /// text field) is one, and a `<field>_custom` text field rides along as its
     /// free-text answer. `None` for forms this card cannot show.
@@ -270,6 +312,7 @@ impl AskUserRequest {
             tool_call_id: str_of(params, "toolCallId").unwrap_or_default(),
             questions,
             fields,
+            session: None,
         })
     }
 }
@@ -347,6 +390,10 @@ pub(super) struct State {
     /// Streaming text blocks: (message id, block index) -> entry.
     pub blocks: HashMap<(String, u64), usize>,
     pub questions: VecDeque<AskUserRequest>,
+    /// The server's questionnaire an answer or skip went out for, by
+    /// [`AskUserRequest::remote_key`]: the server cannot tell two of them
+    /// apart, so a second Submit could answer the next one.
+    pub remote_answered: Option<String>,
     /// Settings asked for before the session existed.
     pub want: Vec<(Setting, String)>,
     /// Droid's working state: idle, thinking, executing_tool, compacting_conversation, ...
@@ -914,6 +961,14 @@ impl Thread {
 
     /// Answers the pending AskUser questionnaire, one answer per question.
     pub fn answer_question(&mut self, answers: Vec<String>, cx: &mut Context<Self>) {
+        // A server's question stays until the server says it is answered: if
+        // this does not reach it, the card and the typed answers are still here.
+        if self.remote {
+            if self.remote_answer_once() {
+                cx.emit(ThreadEvent::Remote(super::RemoteAction::Answer(answers)));
+            }
+            return;
+        }
         let Some(req) = self.native.questions.pop_front() else {
             return;
         };
@@ -928,27 +983,111 @@ impl Thread {
         } else {
             json!({"action": "accept", "content": form_content(&req, &answers)})
         };
-        if let Some(conn) = &self.conn {
-            conn.respond(req.rpc_id, reply);
+        self.reply_question(req, reply, cx);
+    }
+
+    /// Whether the server's questionnaire on show can be answered: once,
+    /// until the server says what it waits on now or the answer did not go.
+    fn remote_answer_once(&mut self) -> bool {
+        let Some(key) = self
+            .native
+            .questions
+            .front()
+            .map(AskUserRequest::remote_key)
+        else {
+            return false;
+        };
+        if self.native.remote_answered.as_ref() == Some(&key) {
+            return false;
         }
-        self.after_input(&req.tool_call_id, cx);
+        self.native.remote_answered = Some(key);
+        true
     }
 
     /// Dismisses the pending questionnaire without answering.
     pub fn skip_question(&mut self, cx: &mut Context<Self>) {
+        // A server's question stays until the server says it is answered: if
+        // this does not reach it, the card and the typed answers are still here.
+        if self.remote {
+            if self.remote_answer_once() {
+                cx.emit(ThreadEvent::Remote(super::RemoteAction::SkipQuestion));
+            }
+            return;
+        }
         let Some(req) = self.native.questions.pop_front() else {
             return;
         };
-        if let Some(conn) = &self.conn {
-            // A declined form tells Claude the user skipped; it goes on.
-            let reply = if req.fields.is_empty() {
-                json!({"answers": [], "cancelled": true})
-            } else {
-                json!({"action": "decline"})
-            };
-            conn.respond(req.rpc_id, reply);
+        // A declined form tells Claude the user skipped; it goes on.
+        let reply = if req.fields.is_empty() {
+            json!({"answers": [], "cancelled": true})
+        } else {
+            json!({"action": "decline"})
+        };
+        self.reply_question(req, reply, cx);
+    }
+
+    /// Sends the answer to a questionnaire. A subagent's thread holds a copy
+    /// of what its session asks the parent, as with permission requests;
+    /// either answers it, and the other drops its copy.
+    fn reply_question(&mut self, req: AskUserRequest, reply: Value, cx: &mut Context<Self>) {
+        match self.parent.clone() {
+            Some(parent) => {
+                let id = req.rpc_id.clone();
+                cx.defer(move |cx| {
+                    let _ = parent.update(cx, |p, cx| p.answer_question_for_child(&id, reply, cx));
+                });
+            }
+            None => {
+                if let Some(conn) = &self.conn {
+                    conn.respond(req.rpc_id.clone(), reply);
+                }
+                self.forget_question_in_child(&req, cx);
+            }
         }
         self.after_input(&req.tool_call_id, cx);
+    }
+
+    /// The user answered a subagent's questionnaire in the subagent's own view.
+    fn answer_question_for_child(&mut self, rpc_id: &Value, reply: Value, cx: &mut Context<Self>) {
+        let Some(at) = self
+            .native
+            .questions
+            .iter()
+            .position(|q| &q.rpc_id == rpc_id)
+        else {
+            return;
+        };
+        let Some(req) = self.native.questions.remove(at) else {
+            return;
+        };
+        if let Some(conn) = &self.conn {
+            conn.respond(req.rpc_id.clone(), reply);
+        }
+        self.after_input(&req.tool_call_id, cx);
+    }
+
+    /// Drops the subagent's copy of a questionnaire answered or dropped here.
+    pub(super) fn forget_question_in_child(
+        &mut self,
+        req: &AskUserRequest,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(child) = req
+            .session
+            .as_deref()
+            .and_then(|s| self.subagent(s))
+            .map(|s| s.thread.clone())
+        else {
+            return;
+        };
+        let id = req.rpc_id.clone();
+        child.update(cx, |c, cx| {
+            if let Some(at) = c.native.questions.iter().position(|q| q.rpc_id == id)
+                && let Some(req) = c.native.questions.remove(at)
+            {
+                c.after_input(&req.tool_call_id, cx);
+            }
+        });
     }
 
     /// The agent process is up and the session is loaded, so session requests can go out.
@@ -1005,6 +1144,9 @@ impl Thread {
 
     /// Summarizes the conversation so far to free context (`droid.compact_session`).
     pub fn compact(&mut self, instructions: Option<String>, cx: &mut Context<Self>) {
+        if self.remote {
+            return self.remote_cannot("Compacting", cx);
+        }
         if !self.native_live() && !self.acp_live() {
             if !self.native.deferred.contains(&Deferred::Compact) {
                 self.native.deferred.push(Deferred::Compact);
@@ -1067,6 +1209,9 @@ impl Thread {
 
     /// Copies the session into a new one (`droid.fork_session`); emits [`ThreadEvent::Forked`].
     pub fn fork(&mut self, cx: &mut Context<Self>) {
+        if self.remote {
+            return self.remote_cannot("Forking", cx);
+        }
         if !self.native_live() && !self.acp_live() {
             if !self.native.deferred.contains(&Deferred::Fork) {
                 self.native.deferred.push(Deferred::Fork);
@@ -1111,7 +1256,8 @@ impl Thread {
     /// Whether the prompt at `ix` can be rewound to: live and idle, native Droid
     /// or an agent that forks sessions at a message (Claude Code).
     pub fn can_rewind(&self, ix: usize) -> bool {
-        (self.native_live() || (self.acp_live() && self.caps.fork))
+        !self.remote
+            && (self.native_live() || (self.acp_live() && self.caps.fork))
             && !self.is_busy()
             && matches!(
                 self.entries.get(ix),
@@ -1324,14 +1470,18 @@ impl Thread {
                     }
                     None => {
                         let _ = this.update(cx, |t, cx| {
-                            t.fail("droid.initialize_session returned no sessionId".into(), cx)
+                            t.fail(
+                                FailedAt::Session(None),
+                                "droid.initialize_session returned no sessionId".into(),
+                                cx,
+                            )
                         });
                     }
                 },
                 Err(e) => {
                     let _ = this.update(cx, |t, cx| {
                         let msg = t.describe_error(&e, "Starting the session failed");
-                        t.fail(msg, cx)
+                        t.fail(FailedAt::Session(Some(e.code)), msg, cx)
                     });
                 }
             }
@@ -1563,18 +1713,47 @@ impl Thread {
             }
         })
         .detach();
-        self.native_drop_questions();
     }
 
-    pub(super) fn native_drop_questions(&mut self) {
-        for req in self.native.questions.drain(..) {
+    /// Answers the questionnaires nobody answered as cancelled. `keep_running`:
+    /// those of subagents still running stay, as their permission requests do.
+    pub(super) fn drop_questions(&mut self, keep_running: bool, cx: &mut Context<Self>) {
+        self.drop_questions_where(
+            |t, q| {
+                !(keep_running
+                    && q.session
+                        .as_deref()
+                        .and_then(|s| t.subagent(s))
+                        .is_some_and(|s| s.state.is_running()))
+            },
+            cx,
+        );
+    }
+
+    /// Answers the questionnaires `gone` picks as cancelled, and drops the
+    /// copies their subagents' threads hold.
+    pub(super) fn drop_questions_where(
+        &mut self,
+        gone: impl Fn(&Thread, &AskUserRequest) -> bool,
+        cx: &mut Context<Self>,
+    ) {
+        let asks = std::mem::take(&mut self.native.questions);
+        let (drop, keep): (Vec<_>, Vec<_>) = asks.into_iter().partition(|q| gone(self, q));
+        self.native.questions = keep.into();
+        for req in drop {
             if let Some(conn) = &self.conn {
                 let reply = if req.fields.is_empty() {
                     json!({"answers": [], "cancelled": true})
                 } else {
                     json!({"action": "cancel"})
                 };
-                conn.respond(req.rpc_id, reply);
+                conn.respond(req.rpc_id.clone(), reply);
+            }
+            self.forget_question_in_child(&req, cx);
+            // Not `after_input`: callers settle the status, and a turn ending
+            // here must not start the next queued prompt under itself.
+            if let Some(&ix) = self.tool_index.get(&req.tool_call_id) {
+                self.entries_changed(ix, cx);
             }
         }
     }
@@ -1586,7 +1765,7 @@ impl Thread {
             self.meta_changed(cx);
             return;
         }
-        self.native_drop_questions();
+        self.drop_questions(false, cx);
         let error = std::mem::take(&mut self.native.turn_error);
         let stop = match reason.as_str() {
             "completed" | "spec_handoff" => "end_turn",
@@ -2027,6 +2206,7 @@ impl Thread {
                     tool_call_id: tool_call_id.clone(),
                     questions,
                     fields: Vec::new(),
+                    session: None,
                 });
                 if let Some(&ix) = self.tool_index.get(&tool_call_id) {
                     self.entries_changed(ix, cx);

@@ -1,6 +1,6 @@
 import { env, SELF } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
-import { session } from "../src/auth";
+import { describe, expect, it, vi } from "vitest";
+import { session, signIn as signInHandler } from "../src/auth";
 import { ADMIN, as, call, freshIp, github, nowSeconds, signIn, signInRequest } from "./helpers";
 
 const DAY = 24 * 60 * 60;
@@ -24,17 +24,40 @@ describe("sign-in with GitHub", () => {
     expect(sessions?.n).toBe(1);
   });
 
-  it("asks GitHub whether our app issued the token, with the headers GitHub wants", async () => {
+  it("asks GitHub whether our app issued the token, then revokes it, with the headers GitHub wants", async () => {
     await signIn(1001, "octocat", "gho_abc");
-    expect(github.calls).toHaveLength(1);
-    const req = github.calls[0]!;
-    expect(req.method).toBe("POST");
-    expect(req.url).toBe("https://api.github.com/applications/Iv-test/token");
-    expect(req.headers.get("Authorization")).toBe(`Basic ${btoa("Iv-test:client-secret")}`);
-    expect(JSON.parse(github.bodies[0]!)).toEqual({ access_token: "gho_abc" });
-    expect(req.headers.get("User-Agent")).toBe("arakun-teams");
-    expect(req.headers.get("Accept")).toBe("application/vnd.github+json");
-    expect(req.headers.get("X-GitHub-Api-Version")).toBe("2022-11-28");
+    expect(github.calls.map((req) => req.method)).toEqual(["POST", "DELETE"]);
+    for (const [i, req] of github.calls.entries()) {
+      expect(req.url).toBe("https://api.github.com/applications/Iv-test/token");
+      expect(req.headers.get("Authorization")).toBe(`Basic ${btoa("Iv-test:client-secret")}`);
+      expect(JSON.parse(github.bodies[i]!)).toEqual({ access_token: "gho_abc" });
+      expect(req.headers.get("User-Agent")).toBe("arakun-teams");
+      expect(req.headers.get("Accept")).toBe("application/vnd.github+json");
+      expect(req.headers.get("X-GitHub-Api-Version")).toBe("2022-11-28");
+      expect(req.redirect).toBe("manual");
+    }
+  });
+
+  it("gives one session per GitHub token, since it revokes the token", async () => {
+    github.users.set("gho_once", { id: 1001, login: "octocat" });
+    expect((await signInRequest("gho_once")).status).toBe(200);
+    expect(github.users.has("gho_once")).toBe(false);
+    expect((await signInRequest("gho_once")).status).toBe(401);
+  });
+
+  it("gives no session when the token cannot be revoked", async () => {
+    github.users.set("gho_ok", { id: 1001, login: "octocat" });
+    for (const outage of ["throw", 503, 422, 401, 302] as const) {
+      github.revokeOutage = outage;
+      const res = await signInRequest("gho_ok");
+      expect(res.status, String(outage)).toBe(502);
+      expect(await res.json()).toEqual({ error: expect.any(String) });
+    }
+    // Revoked by another sign-in between the check and the revoke.
+    github.revokeOutage = 404;
+    expect((await signInRequest("gho_ok")).status).toBe(401);
+    const sessions = await env.DB.prepare("SELECT COUNT(*) AS n FROM sessions").first<{ n: number }>();
+    expect(sessions?.n).toBe(0);
   });
 
   it("gives a new session on each sign-in and keeps the login current", async () => {
@@ -51,6 +74,28 @@ describe("sign-in with GitHub", () => {
     expect(await res.json()).toEqual({ error: expect.any(String) });
     const users = await env.DB.prepare("SELECT COUNT(*) AS n FROM users").first<{ n: number }>();
     expect(users?.n).toBe(0);
+  });
+
+  it("logs a rejected token without the token", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    expect((await signInRequest("gho_unknown_value")).status).toBe(401);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0])).toMatch(/404/);
+    expect(String(warn.mock.calls[0])).not.toContain("gho_unknown_value");
+  });
+
+  it("logs a wrong client secret, and answers 502", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    github.users.set("gho_ok", { id: 1001, login: "octocat" });
+    // The fake checks the credentials as GitHub does; a wrong secret gets 401.
+    const wrong = { ...env, GITHUB_CLIENT_SECRET: "not-the-secret" };
+    const req = new Request("https://teams.test/auth/github", {
+      method: "POST",
+      headers: { "CF-Connecting-IP": freshIp() },
+      body: JSON.stringify({ access_token: "gho_ok" }),
+    });
+    expect((await signInHandler(req, wrong)).status).toBe(502);
+    expect(error).toHaveBeenCalledWith("GitHub refused the app's client credentials");
   });
 
   it("answers 401 for a token another app issued, even one GitHub would accept elsewhere", async () => {
@@ -158,15 +203,17 @@ describe("sign-in with GitHub", () => {
   });
 
   it("answers 429 after ten sign-ins a minute from one IP", async () => {
-    github.users.set("gho_ok", { id: 1001, login: "octocat" });
+    // Each sign-in revokes its token, so each needs a new one.
+    for (let i = 0; i <= 11; i++) github.users.set(`gho_ok_${i}`, { id: 1001, login: "octocat" });
     const ip = "203.0.113.7";
-    for (let i = 0; i < 10; i++) expect((await signInRequest("gho_ok", ip)).status).toBe(200);
-    const res = await signInRequest("gho_ok", ip);
+    for (let i = 0; i < 10; i++) expect((await signInRequest(`gho_ok_${i}`, ip)).status).toBe(200);
+    const res = await signInRequest("gho_ok_10", ip);
     expect(res.status).toBe(429);
     expect(await res.json()).toEqual({ error: expect.any(String) });
-    expect(github.calls).toHaveLength(10);
+    // A check and a revoke for each of the ten.
+    expect(github.calls).toHaveLength(20);
     // Another IP is not held back.
-    expect((await signInRequest("gho_ok", "203.0.113.8")).status).toBe(200);
+    expect((await signInRequest("gho_ok_11", "203.0.113.8")).status).toBe(200);
   });
 
   it("never stores the GitHub token or the session token", async () => {
@@ -234,6 +281,25 @@ describe("sessions", () => {
     const after = await expiry();
     expect(after!.expires_at).toBeGreaterThanOrEqual(t + 90 * DAY);
     expect(after!.last_used_at).toBeGreaterThanOrEqual(t);
+  });
+
+  it("is never extended past 180 days after sign-in, and then ends", async () => {
+    const got = await signIn(1001, "octocat");
+    const t = nowSeconds();
+    // Signed in 150 days ago, last used two days ago: renewal stops at day 180.
+    await env.DB.prepare("UPDATE sessions SET created_at = ?, expires_at = ?, last_used_at = ?")
+      .bind(t - 150 * DAY, t + DAY, t - 2 * DAY)
+      .run();
+    expect((await call("GET", "/me", as(got.session))).status).toBe(200);
+    const row = await env.DB.prepare("SELECT expires_at, last_used_at FROM sessions").first<{ expires_at: number; last_used_at: number }>();
+    expect(row!.expires_at).toBe(t - 150 * DAY + 180 * DAY);
+    expect(row!.last_used_at).toBeGreaterThanOrEqual(t);
+
+    // Day 180 has come: no renewal brings it back.
+    await env.DB.prepare("UPDATE sessions SET created_at = ?, expires_at = ?, last_used_at = ?")
+      .bind(t - 180 * DAY, t - 1, t - 2 * DAY)
+      .run();
+    expect((await call("GET", "/me", as(got.session))).status).toBe(401);
   });
 
   it("drops the user's expired sessions on the next sign-in", async () => {

@@ -269,6 +269,7 @@ impl Thread {
             _ => {}
         }
         self.permissions.clear();
+        self.native.questions.clear();
         self.set_status(ThreadStatus::Idle, cx);
     }
 
@@ -505,6 +506,11 @@ impl Thread {
                     conn.respond(req.rpc_id.clone(), reply.clone());
                 }
                 self.after_input(&req.tool_call_id, cx);
+            }
+            let asked = self.native.questions.len();
+            self.drop_questions_where(|_, q| q.session.as_deref() == Some(id), cx);
+            if self.native.questions.len() != asked {
+                self.after_input("", cx);
             }
         }
         cx.emit(ThreadEvent::SubagentsChanged { spawned: None });

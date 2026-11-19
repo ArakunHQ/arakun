@@ -11,7 +11,7 @@
 
 use std::net::{TcpStream, ToSocketAddrs as _};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, mpsc as std_mpsc};
+use std::sync::{Arc, Mutex, mpsc as std_mpsc};
 use std::time::{Duration, Instant};
 
 use futures::channel::mpsc;
@@ -21,7 +21,7 @@ use tungstenite::{Message, WebSocket, stream::MaybeTlsStream};
 use super::{Invite, Saved, Way, socket_origin};
 use crate::phone::e2e::{Handshake, Session};
 use crate::phone::identity::is_label;
-use crate::phone::relay::{CONTROL, DATA, HELLO};
+use crate::phone::relay::{CONTROL, DATA, HELLO, Joiner};
 use crate::phone::wire;
 
 /// The first wait after a drop; each failure doubles it up to `RETRY_MAX`.
@@ -71,6 +71,9 @@ pub enum Event {
     Paired(Saved),
     /// A message from the server, whole (`wire`'s `part`s put back together).
     Message(Value),
+    /// A message [`Client::send`] was given that never went out: the
+    /// connection dropped first. What the user typed in it can go back.
+    Undelivered(Value),
 }
 
 /// A server's events come with the id the app knows it by.
@@ -86,8 +89,13 @@ enum Out {
 
 /// The connection. Dropping it hangs up.
 pub struct Client {
+    id: String,
     out: std_mpsc::Sender<Out>,
     stop: Arc<AtomicBool>,
+    /// Set by the connection's thread when it gives up for good. Held while
+    /// a message is queued, so none slips in after its last look at the queue.
+    closed: Arc<Mutex<bool>>,
+    events: Events,
 }
 
 impl Client {
@@ -111,28 +119,43 @@ impl Client {
     fn start(id: String, who: Who, name: String, events: Events, timing: Timing) -> Client {
         let (out, queued) = std_mpsc::channel();
         let stop = Arc::new(AtomicBool::new(false));
+        let closed = Arc::new(Mutex::new(false));
         let link = Link {
-            id,
+            id: id.clone(),
             who,
             name,
             queued,
-            events,
+            events: events.clone(),
             stop: stop.clone(),
+            closed: closed.clone(),
             status: None,
             parts: wire::Parts::default(),
             timing,
+            torn: false,
         };
         let _ = std::thread::Builder::new()
             .name("arakun-server-link".into())
             .spawn(move || link.run());
-        Client { out, stop }
+        Client {
+            id,
+            out,
+            stop,
+            closed,
+            events,
+        }
     }
 
     /// A message to the server (the phone's `ClientMsg`, as JSON). Dropped
-    /// while there is no connection: the server says where things stand again
-    /// when there is one.
+    /// while there is no connection, and told back as [`Event::Undelivered`]:
+    /// the server says where things stand again when there is one. After the
+    /// connection gave up for good, it is told back at once.
     pub fn send(&self, msg: &Value) {
-        let _ = self.out.send(Out::Say(msg.to_string()));
+        let closed = self.closed.lock().unwrap_or_else(|e| e.into_inner());
+        if *closed || self.out.send(Out::Say(msg.to_string())).is_err() {
+            let _ = self
+                .events
+                .unbounded_send((self.id.clone(), Event::Undelivered(msg.clone())));
+        }
     }
 
     /// Has the server forget this app, when it can be told right now, and
@@ -176,10 +199,15 @@ struct Link {
     queued: std_mpsc::Receiver<Out>,
     events: Events,
     stop: Arc<AtomicBool>,
+    closed: Arc<Mutex<bool>>,
     /// The last status told, so the same one is not told twice.
     status: Option<Status>,
     parts: wire::Parts,
     timing: Timing,
+    /// A write failed and the socket may still hold that frame: it is
+    /// dropped without a close or a flush, so what was told back as
+    /// undelivered does not go out after all.
+    torn: bool,
 }
 
 impl Link {
@@ -203,12 +231,14 @@ impl Link {
                 Ended::Stopped => return,
                 Ended::Refused(why) => {
                     self.set_status(Status::Refused(why));
+                    self.close();
                     return;
                 }
                 // A link works once and for two minutes: a pairing that did
                 // not get through is not tried again behind the user's back.
                 Ended::Retry(why) if matches!(self.who, Who::Invite(_)) => {
                     self.set_status(Status::Refused(why));
+                    self.close();
                     return;
                 }
                 Ended::Retry(why) => {
@@ -243,7 +273,34 @@ impl Link {
 
     /// What was asked while there was no connection has nowhere to go.
     fn forget_queued(&self) {
-        while self.queued.try_recv().is_ok() {}
+        while let Ok(out) = self.queued.try_recv() {
+            if let Out::Say(text) = out {
+                self.undelivered(&text);
+            }
+        }
+    }
+
+    /// No more connections: what is queued, and what is sent from now on, is told back.
+    fn close(&self) {
+        let mut closed = self.closed.lock().unwrap_or_else(|e| e.into_inner());
+        *closed = true;
+        self.forget_queued();
+    }
+
+    /// Ends a connection. After a failed write the frame may still be in
+    /// the socket's buffer, and a close or flush would send it.
+    fn hang_up(&mut self, ws: &mut Socket) {
+        if !std::mem::take(&mut self.torn) {
+            let _ = ws.close(None);
+            let _ = ws.flush();
+        }
+    }
+
+    /// `text` did not go out: the shell hears what it was.
+    fn undelivered(&self, text: &str) {
+        if let Ok(msg) = serde_json::from_str(text) {
+            self.tell(Event::Undelivered(msg));
+        }
     }
 
     /// Pairing gave the app its place on the server: from now on it comes as itself.
@@ -286,8 +343,7 @@ impl Link {
         };
         self.connected(wait);
         let ended = self.talk_direct(&mut ws, &unpair);
-        let _ = ws.close(None);
-        let _ = ws.flush();
+        self.hang_up(&mut ws);
         ended
     }
 
@@ -316,7 +372,9 @@ impl Link {
             while let Ok(out) = self.queued.try_recv() {
                 match out {
                     Out::Say(text) => {
-                        if let Err(e) = ws.send(Message::text(text)) {
+                        if let Err(e) = write_alone(ws, Message::text(text.as_str())) {
+                            self.torn = true;
+                            self.undelivered(&text);
                             return Ended::Retry(format!("Could not write to the server: {e}"));
                         }
                     }
@@ -364,8 +422,7 @@ impl Link {
             Err(ended) => return ended,
         };
         let ended = self.talk_relay(&mut ws, &origin, &label, wait);
-        let _ = ws.close(None);
-        let _ = ws.flush();
+        self.hang_up(&mut ws);
         ended
     }
 
@@ -383,6 +440,8 @@ impl Link {
         let mut session: Option<Session> = None;
         // The server knows who this is: messages may go.
         let mut ready = false;
+        // A message too big for one relay frame comes as `{part}` pieces.
+        let mut pieces = Joiner::default();
         loop {
             // As in `talk_direct`: a stop is acted on after the queue is read.
             let stopping = self.stop.load(Ordering::Relaxed);
@@ -401,6 +460,13 @@ impl Link {
                                 kind @ ("open" | "pc_online") => {
                                     if kind == "open" {
                                         channel = msg["channel"].as_u64().unwrap_or(0) as u32;
+                                    }
+                                    // A server that replaced the one this was
+                                    // talking to: the relay says no `pc_offline`
+                                    // first, but what the old one was asked
+                                    // gets no answer, so it went away all the same.
+                                    if ready {
+                                        self.set_status(Status::ServerAway);
                                     }
                                     (session, ready) = (None, false);
                                     let hs = Handshake::begin();
@@ -427,7 +493,11 @@ impl Link {
                         HELLO => {
                             let Some(hs) = handshake.take() else { continue };
                             match hs.finish(payload, label, channel) {
-                                Ok(agreed) => session = Some(agreed),
+                                Ok(agreed) => {
+                                    session = Some(agreed);
+                                    // Pieces from before belong to no message now.
+                                    pieces = Joiner::default();
+                                }
                                 // Whoever answered does not hold the key the address names.
                                 Err(e) => {
                                     return Ended::Refused(format!(
@@ -465,6 +535,12 @@ impl Link {
                                         "A message from the server did not open.".into(),
                                     );
                                 }
+                            };
+                            let msg = match pieces.take(msg) {
+                                Ok(Some(msg)) => msg,
+                                // More pieces of it are on their way.
+                                Ok(None) => continue,
+                                Err(why) => return Ended::Retry(why.into()),
                             };
                             if let Some(p) = msg.get("paired") {
                                 let text = |key: &str| p[key].as_str().unwrap_or("").to_string();
@@ -518,8 +594,14 @@ impl Link {
                 if let (true, Some(seal)) = (ready, session.as_mut()) {
                     let sealed = seal.seal(text.as_bytes());
                     if let Err(ended) = send_frame(ws, DATA, &sealed) {
+                        self.torn = true;
+                        if !last {
+                            self.undelivered(&text);
+                        }
                         return ended;
                     }
+                } else if !last {
+                    self.undelivered(&text);
                 }
                 if last {
                     return Ended::Stopped;
@@ -581,8 +663,20 @@ fn send_frame(ws: &mut Socket, kind: u8, payload: &[u8]) -> Result<(), Ended> {
     let mut frame = Vec::with_capacity(1 + payload.len());
     frame.push(kind);
     frame.extend_from_slice(payload);
-    ws.send(Message::Binary(frame.into()))
+    write_alone(ws, Message::Binary(frame.into()))
         .map_err(|e| Ended::Retry(format!("Could not write to the relay: {e}")))
+}
+
+/// Writes `msg` with nothing else behind it. A read can queue a pong; it
+/// goes out first, on its own. Otherwise `msg` could go out whole and the
+/// pong after it fail, and a message the server got would be told back
+/// as undelivered. So an error here means `msg` did not fully go out.
+fn write_alone<S: std::io::Read + std::io::Write>(
+    ws: &mut WebSocket<S>,
+    msg: Message,
+) -> tungstenite::Result<()> {
+    ws.flush()?;
+    ws.send(msg)
 }
 
 /// What the relay or the server said as it hung up, in the app's terms.
@@ -885,6 +979,7 @@ mod tests {
             Event::Status(s) => s,
             Event::Paired(_) => panic!("paired, where a status was expected"),
             Event::Message(m) => panic!("{m}, where a status was expected"),
+            Event::Undelivered(m) => panic!("{m} undelivered, where a status was expected"),
         }
     }
 
@@ -959,7 +1054,7 @@ mod tests {
         client.send(&json!({ "type": "open", "session": "s1" }));
         assert!(matches!(
             from_server(&mut incoming),
-            Incoming::Message(_, ClientMsg::Open { session }) if session == "s1"
+            Incoming::Message(_, ClientMsg::Open { session, .. }) if session == "s1"
         ));
 
         // Several pings went by unanswered by anything but pongs: still connected.
@@ -996,6 +1091,127 @@ mod tests {
         assert!(
             matches!(status(&mut rx), Status::Refused(why) if why.contains("no longer paired"))
         );
+    }
+
+    #[test]
+    fn what_could_not_go_out_is_told_back() {
+        // A port nobody listens on: every dial fails.
+        let port = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let saved = Saved {
+            id: "srv".into(),
+            name: "box".into(),
+            origin: format!("http://127.0.0.1:{port}"),
+            way: Way::Direct,
+            device: "d".into(),
+            token: "t".into(),
+        };
+        let (tx, mut rx) = mpsc::unbounded();
+        let client = Client::start("srv".into(), Who::Saved(saved), String::new(), tx, QUICK);
+        let prompt = json!({ "type": "send", "session": "s1", "text": "hi" });
+        client.send(&prompt);
+        loop {
+            match next(&mut rx) {
+                Event::Undelivered(msg) => {
+                    assert_eq!(msg, prompt);
+                    break;
+                }
+                Event::Status(_) => {}
+                _ => panic!("only statuses come before it"),
+            }
+        }
+    }
+
+    #[test]
+    fn what_a_refusing_server_never_got_is_told_back() {
+        let access = Access::new(Vec::new(), String::new());
+        let (server, _incoming) = Server::start(Ipv4Addr::LOCALHOST, 0, access).unwrap();
+        // No pairing was begun, so the link is refused and not tried again.
+        let invite = Invite {
+            origin: format!("http://127.0.0.1:{}", server.port()),
+            code: "not-a-code".into(),
+            secret: None,
+        };
+        let (tx, mut rx) = mpsc::unbounded();
+        let client = Client::start("srv".into(), Who::Invite(invite), "x".into(), tx, QUICK);
+        // Queued while pairing: the thread gives up with it still there.
+        let queued = json!({ "type": "start", "env": "/srv/app", "text": "hi" });
+        client.send(&queued);
+        let (mut refused, mut told) = (false, false);
+        while !(refused && told) {
+            match next(&mut rx) {
+                Event::Status(Status::Refused(_)) => refused = true,
+                Event::Status(_) => {}
+                Event::Undelivered(msg) => {
+                    assert_eq!(msg, queued);
+                    told = true;
+                }
+                _ => panic!("nothing else comes"),
+            }
+        }
+        // Sent after the thread is gone: nothing reads it, so it comes back at once.
+        let late = json!({ "type": "send", "session": "s1", "text": "late" });
+        client.send(&late);
+        assert!(matches!(next(&mut rx), Event::Undelivered(msg) if msg == late));
+    }
+
+    /// Takes the first `room` bytes written to it, then fails. Reads give
+    /// `incoming`, then would block.
+    struct Cramped {
+        incoming: std::io::Cursor<Vec<u8>>,
+        written: Vec<u8>,
+        room: usize,
+    }
+
+    impl std::io::Read for Cramped {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            match self.incoming.read(buf)? {
+                0 => Err(std::io::ErrorKind::WouldBlock.into()),
+                n => Ok(n),
+            }
+        }
+    }
+
+    impl std::io::Write for Cramped {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            let n = buf.len().min(self.room - self.written.len());
+            if n == 0 {
+                return Err(std::io::ErrorKind::BrokenPipe.into());
+            }
+            self.written.extend_from_slice(&buf[..n]);
+            Ok(n)
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_message_told_back_as_undelivered_did_not_go_out() {
+        const PONG: usize = 6; // Header and mask, no payload.
+        let text = r#"{"type":"answer","session":"s1"}"#;
+        let frame = 6 + text.len();
+        // A failed write may stop anywhere, also after the message and
+        // before the pong that a ping queued.
+        for room in 0..=PONG + frame {
+            let stream = Cramped {
+                incoming: std::io::Cursor::new(vec![0x89, 0x00]),
+                written: Vec::new(),
+                room,
+            };
+            let mut ws =
+                WebSocket::from_raw_socket(stream, tungstenite::protocol::Role::Client, None);
+            assert!(matches!(ws.read(), Ok(Message::Ping(_))));
+            let sent = write_alone(&mut ws, Message::text(text));
+            let out = &ws.get_ref().written;
+            let start = if out.first() == Some(&0x8a) { PONG } else { 0 };
+            let whole = out.len() >= start + frame;
+            assert_eq!(sent.is_ok(), whole, "room {room}");
+        }
     }
 
     #[test]
@@ -1193,6 +1409,21 @@ mod tests {
         // Sealed both ways from here.
         seal(&mut ws, &mut session, json!({ "type": "inbox" }));
         assert!(matches!(next(&mut rx), Event::Message(m) if m["type"] == "inbox"));
+
+        // A message too big for one relay frame comes in pieces, as the
+        // server's relay client sends it, and reaches the shell joined.
+        let text = "é".repeat(300 * 1024);
+        let big = json!({ "type": "entries", "text": text }).to_string();
+        let sent = crate::phone::relay::parts(&big, 160 * 1024);
+        assert!(sent.len() > 1);
+        for piece in sent {
+            seal(&mut ws, &mut session, serde_json::from_str(&piece).unwrap());
+        }
+        assert!(
+            matches!(next(&mut rx), Event::Message(m) if m["type"] == "entries" && m["text"] == text)
+        );
+        seal(&mut ws, &mut session, json!({ "type": "usage" }));
+        assert!(matches!(next(&mut rx), Event::Message(m) if m["type"] == "usage"));
         client.send(&json!({ "type": "cancel", "session": "s1" }));
         assert_eq!(
             sealed(&mut ws, &mut session),
@@ -1205,6 +1436,23 @@ mod tests {
         assert_eq!(status(&mut rx), Status::ServerAway);
         let back = json!({ "type": "pc_online" }).to_string();
         ws.send(phone_frame(CONTROL, back.as_bytes())).unwrap();
+        let (kind, hello) = next_frame(&mut ws);
+        assert_eq!(kind, HELLO);
+        let (reply, mut session) = Handshake::begin()
+            .answer(&PhoneHello::parse(&hello).unwrap(), &identity, 7, "test")
+            .unwrap();
+        ws.send(phone_frame(HELLO, &reply)).unwrap();
+        assert_eq!(
+            sealed(&mut ws, &mut session),
+            json!({ "auth": { "token": "tok" } })
+        );
+        seal(&mut ws, &mut session, json!({ "ok": { "id": "dev1" } }));
+        assert_eq!(status(&mut rx), Status::Connected);
+
+        // Another server process takes its place at the relay, which says
+        // only that one is online: this one is gone, then back.
+        ws.send(phone_frame(CONTROL, back.as_bytes())).unwrap();
+        assert_eq!(status(&mut rx), Status::ServerAway);
         let (kind, hello) = next_frame(&mut ws);
         assert_eq!(kind, HELLO);
         let (reply, mut session) = Handshake::begin()

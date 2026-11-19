@@ -13,12 +13,17 @@ tone_instructions: >-
   why, then the fix. No praise, no filler, no emoji.
 
 reviews:
-  profile: chill
+  # Only the most important feedback. Every comment has to be answered
+  # (AGENTS.md), so a minor one costs as much as a real bug.
+  profile: quiet
 
-  # Requests changes on blocking findings. Approves only pull requests it rates
-  # minimal risk, once those findings are resolved. Merging still takes a
-  # person with write access. CodeRabbit also rates security risk, but no
-  # limit is set on it: the merge-risk limit already covers the sensitive paths.
+  # Requests changes on blocking findings (major and critical only). Approves
+  # pull requests it rates moderate risk or less, once those findings are
+  # resolved. Most feature pull requests rate moderate, and a person had to
+  # approve every one; the sensitive paths stay with a person through the
+  # overrides below. Merging still takes a person with write access.
+  # CodeRabbit also rates security risk, but no limit is set on it: the
+  # overrides already cover the sensitive paths.
   # The Reviewers workflow dismisses an approval of a pull request from
   # outside the team, because overrides can only match members of a team. It
   # also dismisses one when the author resolved CodeRabbit's threads in the
@@ -26,20 +31,69 @@ reviews:
   # with threads still open, and asks a person.
   auto_approvals:
     enabled: true
-    max_merge_risk: minimal
+    max_merge_risk: moderate
+    # Minor and trivial findings stay in the review as advice and do not hold
+    # back the approval. The schema accepts only `major` and `critical` here.
+    min_blocking_severity: major
     # An author could otherwise clear CodeRabbit's blocking findings on their
     # own pull request with `@coderabbitai resolve` and get it approved.
     # Someone else has to run `approve` or `resolve` now.
     allow_author_approval: false
+    # Never approve a pull request that touches one of these paths, whatever
+    # its risk rating: a person approves them. A matching file applies to the
+    # whole pull request. Keep the list in step with the High paths in
+    # merge_risk_instructions below.
+    overrides:
+      - enabled: false
+        paths:
+          - ".github/**"
+          - "AGENTS.md"
+          - "CLAUDE.md"
+          - "CONTRIBUTING.md"
+          - ".claude/**"
+          - ".coderabbit.yaml"
+          - "lefthook.yml"
+          - "src/headless*"
+          - "src/headless*/**"
+          - "src/control.rs"
+          - "src/account.rs"
+          - "src/fetch.rs"
+          - "src/voice.rs"
+          - "src/cloudflare/**"
+          - "src/posthog/**"
+          - "src/github/**"
+          - "src/phone/**"
+          - "relay/**"
+          - "phone/**"
+          - "Cargo.toml"
+          - "Cargo.lock"
+          - "deny.toml"
+          - "build.rs"
+          - "rust-toolchain.toml"
+          - "tools/setup-dev.*"
+          - "tools/install*"
+          - "src/platform.rs"
+          - "src/git.rs"
+          - "src/agent/launch.rs"
+          - "src/agent/rpc.rs"
+          - "src/state.rs"
+          - "src/memory.rs"
+          - "src/stored.rs"
+          - "src/durable.rs"
+          - "src/update.rs"
+          - "src/server/**"
+          - "src/server.rs"
   merge_risk_instructions: >-
     Minimal risk: changes only to docs or Markdown that people read (README.md,
     docs/, CONTRIBUTING.md), comments, tests, iso/*.rhai scenes or screenshots,
     or a typo or label in UI text, with no change in behavior. Low risk: a small
     UI or layout change in one view that uses the design system tokens, or a
     change to AGENTS.md, CLAUDE.md or a skill in .claude/skills (agents follow
-    those and run the commands in them). Moderate or higher: any change to
-    src/phone (end-to-end encryption and its wire format), relay/, teams/ or
-    phone/;
+    those and run the commands in them). Moderate: a feature or a change in
+    behavior across several files or views (new panels, menus, settings,
+    shortcuts or background work) that stays out of the paths and kinds of
+    change listed next. High or higher: any change to
+    src/phone (end-to-end encryption and its wire format), relay/, teams/ or phone/;
     the headless agent sandbox, its policy and its broker (src/headless*);
     the control socket (src/control.rs); code that reads, stores or sends
     tokens and API keys (src/account.rs, src/fetch.rs, src/voice.rs,
@@ -49,9 +103,11 @@ reviews:
     lefthook.yml; Cargo.toml, Cargo.lock, deny.toml, build.rs or
     rust-toolchain.toml; tools/setup-dev.* or tools/install* (they run on
     users' machines, often with sudo); src/platform.rs; git operations in
-    src/git.rs; how agents and shells are launched; and any format stored on
-    disk (state.json, memory, transcripts) or a CLI flag that other tools rely
-    on. A change for one platform that the other platforms build without
+    src/git.rs; how agents and shells are launched (src/agent/launch.rs and
+    src/agent/rpc.rs); release signature checks in src/update.rs; the daemon
+    in src/server.rs and src/server/; and any format stored on disk (including
+    src/state.rs, src/memory.rs, src/stored.rs and src/durable.rs) or a CLI
+    flag that other tools rely on. A change for one platform that the other platforms build without
     testing also raises the risk. Code behind the `browser` feature is only
     built on Linux in CI, so a change there that touches Windows or macOS
     paths raises it too.
@@ -82,8 +138,11 @@ reviews:
 
   auto_review:
     enabled: true
-    # Agents open pull requests as drafts and mark them ready once checks pass.
-    drafts: false
+    # Review drafts too, so the review runs next to CI instead of after it.
+    # Agents open a pull request when its content is final and mark it ready
+    # once the required checks pass (tools/wait-checks.sh); waiting for that
+    # cost ~5-7 minutes a PR.
+    drafts: true
     # Stacked pull requests target the branch below them, not main. Without
     # this, CodeRabbit reviews only the bottom one of a stack.
     base_branches: [".*"]
@@ -157,6 +216,9 @@ reviews:
     - "!phone/test/vectors/**"
 
   path_instructions:
+    - path: "**"
+      instructions: |
+        Comment only when the change is wrong: a bug, a crash, a security or privacy problem, data loss, a broken build or platform, or a broken rule from AGENTS.md or the checks below. Leave out style, naming, wording, comment polish, small refactors, extra tests "for completeness", unlikely edge cases and "consider" suggestions. If you are not sure something is a real problem, leave it out. Do not repeat a point you made on an earlier commit.
     - path: "**/*.rs"
       instructions: |
         - CI runs rustfmt and `clippy -D warnings` on Linux, Windows and macOS, and the tests on Linux and macOS. Do not repeat what they catch; look for logic errors, panics (unwrap, indexing, slicing on char boundaries), blocking work on the UI thread, races and leaked tasks or processes.
@@ -252,7 +314,7 @@ reviews:
         Isometric scene scripts in the line-iso style: thin ink outlines, three-tone faces, one accent color. See the arakun-iso skill in .claude/skills.
     - path: "**/*.md"
       instructions: |
-        Docs use plain, short sentences. Check that commands, flags, paths and shortcuts named in the text match the code. Do not comment on line length.
+        Check that commands, flags, paths and shortcuts named in the text match the code. Do not comment on wording, style, line length or Markdown formatting.
 
   tools:
     # CI runs clippy with the real feature set; CodeRabbit's run would duplicate it.
@@ -271,8 +333,9 @@ reviews:
     # Checks the skills in .claude/skills for unsafe instructions.
     skillspector:
       enabled: true
+    # Its findings are formatting nits in docs.
     markdownlint:
-      enabled: true
+      enabled: false
     github-checks:
       enabled: true
 

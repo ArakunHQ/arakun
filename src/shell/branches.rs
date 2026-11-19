@@ -137,7 +137,7 @@ impl Shell {
             } => {
                 let watching = window.is_window_active()
                     && matches!(
-                        self.env().tabs.get(self.env().active_tab).map(|t| &t.kind),
+                        self.strip.active().map(|t| &t.kind),
                         Some(TabKind::Branches)
                     );
                 if !watching {
@@ -168,7 +168,9 @@ impl Shell {
         cx.spawn_in(window, async move |this, cx| {
             let (r, p, b) = (repo_root.clone(), wt.clone(), branch.clone());
             let result = cx
-                .background_spawn(async move { git::add_branch_worktree(&r, &p, &b) })
+                .background_spawn(crate::guard::task(async move {
+                    git::add_branch_worktree(&r, &p, &b)
+                }))
                 .await;
             let _ = this.update_in(cx, |this, window, cx| match result {
                 Ok(()) => {

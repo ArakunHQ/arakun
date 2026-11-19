@@ -415,7 +415,9 @@ impl Shell {
             cx.spawn(async move |this, cx| {
                 let p = env_path.clone();
                 let files = cx
-                    .background_spawn(async move { git::ls_files(&p).unwrap_or_default() })
+                    .background_spawn(crate::guard::task(async move {
+                        git::ls_files(&p).unwrap_or_default()
+                    }))
                     .await;
                 let _ = this.update(cx, |this, cx| {
                     this.file_index_loading = false;
@@ -657,6 +659,24 @@ impl Shell {
     /// the draft waiting in the queue.
     fn submit_with(&mut self, now: bool, window: &mut Window, cx: &mut Context<Self>) {
         let env_path = self.env().path.clone();
+        // A server that cannot be reached would lose the prompt: it stays here.
+        if let Some(remote) = self.env().remote.clone()
+            && self.server_reach(&remote.server) != Some(crate::servers_view::Reach::Connected)
+        {
+            if let Some(thread) = self.active_thread(cx) {
+                thread.update(cx, |t, cx| {
+                    t.post_notice(
+                        format!(
+                            "{} is not connected; the prompt stays in the composer.",
+                            remote.machine
+                        ),
+                        true,
+                        cx,
+                    )
+                });
+            }
+            return;
+        }
         let mut text = self.env().draft.trim().to_string();
         let typed = text.clone();
         let pastes = self.pastes.remove(&env_path).unwrap_or_default();
@@ -717,8 +737,10 @@ impl Shell {
         self.history_at = None;
         if self.prompt_history.push(&typed) {
             let bytes = self.prompt_history.bytes();
-            cx.background_spawn(async move { crate::history::write(&bytes) })
-                .detach();
+            cx.background_spawn(crate::guard::task(
+                async move { crate::history::write(&bytes) },
+            ))
+            .detach();
         }
         self.send_prompt(text, now, window, cx);
     }
@@ -726,19 +748,19 @@ impl Shell {
     /// The tab the composer writes to: the active tab, or the session showing beside it
     /// while the other pane (a page, a file) has the focus.
     pub(super) fn composer_tab(&self) -> usize {
-        let env = self.env();
+        let strip = &self.strip;
         let session = |i: usize| {
             matches!(
-                env.tabs.get(i).map(|t| &t.kind),
+                strip.tabs.get(i).map(|t| &t.kind),
                 Some(TabKind::Session { .. })
             )
         };
-        let active = env.active_tab;
+        let active = strip.active_tab;
         let fresh = matches!(
-            env.tabs.get(active).map(|t| &t.kind),
+            strip.tabs.get(active).map(|t| &t.kind),
             Some(TabKind::NewSession)
         );
-        match env.split_other() {
+        match self.split_other() {
             Some(other) if !session(active) && !fresh && session(other) => other,
             _ => active,
         }
@@ -747,7 +769,8 @@ impl Shell {
     /// The chat the composer writes to; its raccoon sits on the composer.
     pub(super) fn composer_chat(&self) -> Option<Entity<crate::agent::ThreadView>> {
         let env = self.env();
-        let Some(TabKind::Session { id, .. }) = env.tabs.get(self.composer_tab()).map(|t| &t.kind)
+        let Some(TabKind::Session { id, .. }) =
+            self.strip.tabs.get(self.composer_tab()).map(|t| &t.kind)
         else {
             return None;
         };
@@ -775,7 +798,7 @@ impl Shell {
             [0., 1.]
         } else if chat.read(cx).focus_handle(cx).contains_focused(window, cx) {
             [0., -1.]
-        } else if let Some(split) = env.split.filter(|_| window.focused(cx).is_some()) {
+        } else if let Some(split) = self.strip.split.filter(|_| window.focused(cx).is_some()) {
             match (split.dir, split.focus_first) {
                 (crate::model::SplitDir::Right, true) => [-1., 0.],
                 (crate::model::SplitDir::Right, false) => [1., 0.],
@@ -808,7 +831,7 @@ impl Shell {
             return;
         }
         let tab = self.composer_tab();
-        if tab != self.env().active_tab {
+        if tab != self.strip.active_tab {
             self.select_tab(tab, window, cx);
         }
     }
@@ -821,11 +844,11 @@ impl Shell {
     ) -> impl IntoElement {
         let env = self.env();
         let tab = self.composer_tab();
-        let session_id = match env.tabs.get(tab).map(|t| &t.kind) {
+        let session_id = match self.strip.tabs.get(tab).map(|t| &t.kind) {
             Some(TabKind::Session { id, .. }) => Some(id.clone()),
             _ => None,
         };
-        let agent = match env.tabs.get(tab).map(|t| &t.kind) {
+        let agent = match self.strip.tabs.get(tab).map(|t| &t.kind) {
             Some(TabKind::Session { agent, .. }) => *agent,
             _ => env.agent,
         };
@@ -836,10 +859,6 @@ impl Shell {
                 .map(|l| l.thread.clone())
         });
         let in_session = session_id.is_some();
-        // A session another process runs can't be handed over from here.
-        let can_switch = !session_id
-            .as_ref()
-            .is_some_and(|id| crate::headless::shown(id));
         let busy = thread.as_ref().is_some_and(|t| t.read(cx).is_busy());
         use crate::agent::Setting;
         let model_label = self.setting_value_label(Setting::Model, cx);
@@ -1333,52 +1352,39 @@ impl Shell {
                             .items_center()
                             .gap(crate::ui::sp(4.))
                             .child(
+                                // One chip for the agent, its model and reasoning.
                                 chip(
-                                    "composer-agent",
-                                    Some(agent_icon(agent, 14.)),
-                                    agent.label().into(),
-                                    None,
-                                    can_switch,
+                                    "composer-model",
+                                    Some(
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .gap(crate::ui::sp(3.))
+                                            .child(agent_icon(agent, 14.))
+                                            .when(fast, |d| {
+                                                d.child(
+                                                    icon("flash", 12.)
+                                                        .text_color(theme::text_subtle()),
+                                                )
+                                            })
+                                            .into_any_element(),
+                                    ),
+                                    model_label.unwrap_or_else(|| agent.label().into()),
+                                    effort_label,
+                                    true,
                                 )
+                                .tooltip(ui::tip("Agent, model and reasoning"))
                                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                                .when(can_switch, |d| {
-                                    d.on_click(cx.listener(|this, ev: &gpui::ClickEvent, _, cx| {
+                                .on_click(cx.listener(
+                                    |this, ev: &gpui::ClickEvent, _, cx| {
                                         this.open_composer_menu(
-                                            MenuTarget::AgentMenu,
+                                            MenuTarget::ModelMenu,
                                             ev.position(),
                                             cx,
                                         )
-                                    }))
-                                }),
+                                    },
+                                )),
                             )
-                            .when_some(model_label, |d, label| {
-                                d.child(
-                                    chip(
-                                        "composer-model",
-                                        fast.then(|| {
-                                            icon("flash", 12.)
-                                                .text_color(theme::text_subtle())
-                                                .into_any_element()
-                                        }),
-                                        label,
-                                        effort_label,
-                                        true,
-                                    )
-                                    .tooltip(ui::tip("Model and reasoning"))
-                                    .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                                        cx.stop_propagation()
-                                    })
-                                    .on_click(cx.listener(
-                                        |this, ev: &gpui::ClickEvent, _, cx| {
-                                            this.open_composer_menu(
-                                                MenuTarget::ModelMenu,
-                                                ev.position(),
-                                                cx,
-                                            )
-                                        },
-                                    )),
-                                )
-                            })
                             .when_some(permissions, |d, (label, risky)| {
                                 d.child(
                                     chip(

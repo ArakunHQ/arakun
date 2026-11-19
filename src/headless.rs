@@ -37,6 +37,7 @@ use serde_json::Value;
 use crate::agent::{
     self, AgentKind, Entry, Setting, Thread, ThreadEvent, ThreadStatus, workers_ai,
 };
+use crate::control::{Stop, flags_end};
 use policy::{Level, Policy};
 use sandbox::{Cap, Jail, Sandbox};
 
@@ -186,7 +187,7 @@ pub fn root() -> PathBuf {
 // a running Arakun would list a leftover one as a session.
 #[cfg(test)]
 thread_local! {
-    static TEST_ROOT: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+    pub(crate) static TEST_ROOT: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
 }
 
 fn valid(id: &str) -> bool {
@@ -610,7 +611,7 @@ fn spawn_host(
 
 pub const RUN_USAGE: &str = "arakun agent run [--resume <id>] [--model <id>] [--dir <path>] [--title <t>] [--effort <e>] \
      [--policy readonly|workspace|full] [--allow net,modal,mail-read] [--read <path>]… [--no-sandbox [--yes]] \
-     [--append-system-prompt <file>] [--wait [--timeout <secs>] [--result <file>]] <prompt…>";
+     [--append-system-prompt <file>] [--wait [--timeout <secs>] [--result <file>]] [--] <prompt…>";
 
 /// The options of `agent run`, flags only before the prompt.
 #[derive(Debug, Default, PartialEq)]
@@ -635,7 +636,8 @@ struct Run {
     prompt: String,
 }
 
-fn run_args(rest: &[String]) -> Option<Run> {
+fn run_args(rest: &[String]) -> Result<Run, Stop> {
+    let bad = || Stop::Usage;
     let mut r = Run::default();
     let mut i = 0;
     while let Some(flag) = rest.get(i) {
@@ -660,18 +662,32 @@ fn run_args(rest: &[String]) -> Option<Run> {
                 continue;
             }
             "--read" => {
-                r.reads
-                    .push(rest.get(i + 1).filter(|v| !v.is_empty())?.clone());
+                r.reads.push(
+                    rest.get(i + 1)
+                        .filter(|v| !v.is_empty())
+                        .ok_or_else(bad)?
+                        .clone(),
+                );
                 i += 2;
                 continue;
             }
-            _ => break,
+            _ => {
+                i += flags_end(flag)?;
+                break;
+            }
         };
-        *slot = rest.get(i + 1).filter(|v| !v.is_empty())?.clone();
+        *slot = rest
+            .get(i + 1)
+            .filter(|v| !v.is_empty())
+            .ok_or_else(bad)?
+            .clone();
         i += 2;
     }
     r.prompt = rest[i..].join(" ");
-    (!r.prompt.trim().is_empty()).then_some(r)
+    if r.prompt.trim().is_empty() {
+        return Err(bad());
+    }
+    Ok(r)
 }
 
 /// `[-n N] [--timeout S] id [text…]`: the id and the rest.
@@ -712,11 +728,8 @@ pub fn cli(rest: &[String], cwd: &Path) -> Option<i32> {
     };
     match sub.as_str() {
         "run" => Some(match run_args(args) {
-            Some(r) => run(r, cwd),
-            None => {
-                eprintln!("usage: {RUN_USAGE}");
-                2
-            }
+            Ok(r) => run(r, cwd),
+            Err(stop) => crate::control::report(stop, RUN_USAGE),
         }),
         "ls" if args.is_empty() => Some(ls()),
         "pending" => Some(pending_cmd(args.iter().any(|a| a == "--json"))),
@@ -1912,14 +1925,14 @@ mod tests {
             (r.title.as_str(), r.effort.as_str(), r.prompt.as_str()),
             ("T", "max", "go")
         );
-        assert_eq!(run_args(&s(&[])), None);
-        assert_eq!(run_args(&s(&["--model"])), None);
-        assert_eq!(run_args(&s(&["--model", "", "go"])), None);
-        assert_eq!(run_args(&s(&["--dir", "x"])), None);
-        assert_eq!(run_args(&s(&["  "])), None);
+        assert!(run_args(&s(&[])).is_err());
+        assert!(run_args(&s(&["--model"])).is_err());
+        assert!(run_args(&s(&["--model", "", "go"])).is_err());
+        assert!(run_args(&s(&["--dir", "x"])).is_err());
+        assert!(run_args(&s(&["  "])).is_err());
         let r = run_args(&s(&["--read", "/a", "--read", "b", "go"])).unwrap();
         assert_eq!(r.reads, s(&["/a", "b"]));
-        assert_eq!(run_args(&s(&["--read"])), None);
+        assert!(run_args(&s(&["--read"])).is_err());
         let r = run_args(&s(&[
             "--no-sandbox",
             "--allow",
@@ -1973,6 +1986,20 @@ mod tests {
         .unwrap();
         assert_eq!((r.resume.as_str(), r.prompt.as_str()), ("h123", "fix it"));
         assert!(!run_args(&s(&["go", "--wait"])).unwrap().wait);
+    }
+
+    #[test]
+    fn run_stops_at_help_or_a_flag_it_does_not_know() {
+        // `arakun agent run --help` started a paid run with `--help` as the prompt.
+        assert_eq!(run_args(&s(&["--help"])), Err(Stop::Help));
+        assert_eq!(run_args(&s(&["--model", "m", "-h", "go"])), Err(Stop::Help));
+        assert_eq!(
+            run_args(&s(&["--modle", "m", "go"])),
+            Err(Stop::Flag("--modle".into()))
+        );
+        assert_eq!(run_args(&s(&["go", "--help"])).unwrap().prompt, "go --help");
+        assert_eq!(run_args(&s(&["--", "--help"])).unwrap().prompt, "--help");
+        assert_eq!(run_args(&s(&["- fix it"])).unwrap().prompt, "- fix it");
     }
 
     #[test]

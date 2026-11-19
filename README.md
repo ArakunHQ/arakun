@@ -72,8 +72,9 @@ with "Show onboarding" in the palette (`Ctrl+K`). That it was done is kept in
   dropdown says the same per project. The **+** on Environments, or
   `Ctrl+Shift+N`, makes an environment at once on a random branch from the current
   branch as it is on `origin`, fetched first (or the local commit when origin has
-  none); `Alt`+click on it, or File › New Environment with Options…, asks for the
-  branch and where to start from, the local commit among them. Every environment has
+  none; on a server, from that server's checkout, with no fetch). `Alt`+click on
+  it, or File › New Environment with Options…, asks for the branch and where to
+  start from, the local commit among them. Every environment has
   its own sessions, terminals and draft prompt. The window has one row of tabs for all
   of them: a session, file, diff or browser tab belongs to its environment, and going
   to the tab shows that environment. Going to an environment shows the tab it showed

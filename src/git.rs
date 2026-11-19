@@ -254,18 +254,29 @@ pub fn add_worktree(
 /// caller then starts from the current commit.
 pub fn origin_base(repo: &Path) -> Option<String> {
     let branch = current_branch(repo)?;
-    // Offline or no access: a remote branch fetched earlier is still a better start.
-    let _ = git(repo)
-        .args(["fetch", "--quiet", "origin", &branch])
+    let remote = format!("refs/remotes/origin/{branch}");
+    // Exit code 2: origin answered and has no such branch. A copy fetched before it
+    // was deleted must not be used then.
+    let listed = git(repo)
+        .args(["ls-remote", "--exit-code", "--heads", "origin"])
+        .arg(format!("refs/heads/{branch}"))
         .output();
-    let remote = format!("origin/{branch}");
+    match listed.as_ref().map(|o| o.status.code()) {
+        Ok(Some(2)) => return None,
+        // An explicit destination: origin's fetch refspec may not cover this branch.
+        Ok(Some(0)) => {
+            let _ = git(repo)
+                .args(["fetch", "--quiet", "origin"])
+                .arg(format!("+refs/heads/{branch}:{remote}"))
+                .output();
+        }
+        // Offline or no access: a remote branch fetched earlier is still a better start.
+        _ => {}
+    }
+    // The full name: a local branch called origin/<branch> would make the short one
+    // ambiguous.
     git(repo)
-        .args([
-            "show-ref",
-            "--verify",
-            "--quiet",
-            &format!("refs/remotes/{remote}"),
-        ])
+        .args(["show-ref", "--verify", "--quiet", &remote])
         .status()
         .is_ok_and(|s| s.success())
         .then_some(remote)
@@ -1129,13 +1140,33 @@ mod tests {
             "-m",
             "local",
         ]));
+        // A local branch with the remote branch's short name must not confuse it.
+        assert!(git(&["-C", d, "branch", "origin/env/brave-otter"]));
+        // Origin's fetch refspec leaves the branch out: it is fetched all the same.
+        assert!(git(&[
+            "-C",
+            d,
+            "config",
+            "remote.origin.fetch",
+            "+refs/heads/other:refs/remotes/origin/other"
+        ]));
+        assert!(git(&[
+            "-C",
+            d,
+            "update-ref",
+            "-d",
+            "refs/remotes/origin/env/brave-otter"
+        ]));
         let base = super::origin_base(&dir);
-        assert_eq!(base.as_deref(), Some("origin/env/brave-otter"));
+        assert_eq!(base.as_deref(), Some("refs/remotes/origin/env/brave-otter"));
         super::add_worktree(&dir, &tree, "fresh", base.as_deref(), true).unwrap();
         let rev = |dir: &std::path::Path, r: &str| {
             super::stdout(super::git(dir).args(["rev-parse", r])).unwrap()
         };
-        assert_eq!(rev(&tree, "HEAD"), rev(&dir, "origin/env/brave-otter"));
+        assert_eq!(
+            rev(&tree, "HEAD"),
+            rev(&dir, "refs/remotes/origin/env/brave-otter")
+        );
         assert_ne!(rev(&tree, "HEAD"), rev(&dir, "HEAD"));
         // Not tracking origin/env/brave-otter: a push must not go there.
         assert!(
@@ -1144,6 +1175,15 @@ mod tests {
                 .output()
                 .is_ok_and(|o| !o.status.success())
         );
+        // Deleted on origin: the copy fetched earlier is stale, so start locally.
+        assert!(git(&[
+            "--git-dir",
+            remote.to_str().unwrap(),
+            "branch",
+            "-D",
+            "env/brave-otter"
+        ]));
+        assert_eq!(super::origin_base(&dir), None);
         let _ = std::fs::remove_dir_all(&tree);
         let _ = std::fs::remove_dir_all(dir);
         let _ = std::fs::remove_dir_all(remote);

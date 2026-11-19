@@ -310,10 +310,13 @@ impl CreateEnvDialog {
         self.branches.remote.contains(&remote).then_some(remote)
     }
 
+    /// What the default starts from. The branch list holds only what was fetched, so
+    /// without origin/<branch> in it, origin is asked when the environment is made.
     fn default_base_label(&self) -> SharedString {
-        match self.origin_branch() {
-            Some(r) => format!("Latest {r}").into(),
-            None => self.base_label_for_head(),
+        match (self.origin_branch(), &self.branches.current) {
+            (Some(r), _) => format!("Latest {r}").into(),
+            (None, Some(c)) => format!("Latest origin/{c}, or current commit").into(),
+            (None, None) => self.base_label_for_head(),
         }
     }
 }
@@ -415,8 +418,8 @@ impl Render for CreateEnvDialog {
             .when(self.base_open, |d| {
                 let mut options: Vec<(Option<String>, SharedString)> =
                     vec![(None, self.default_base_label())];
-                // Without an origin branch the default already is the current commit.
-                if self.origin_branch().is_some() {
+                // Detached, the default already is the current commit.
+                if self.branches.current.is_some() {
                     options.push((Some("HEAD".into()), self.base_label_for_head()));
                 }
                 options.extend(

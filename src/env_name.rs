@@ -171,7 +171,17 @@ fn namer_path() -> PathBuf {
     crate::platform::app_dir().join("branch-namer.json")
 }
 
+/// The namer set in this run. `set_namer` saves in the background, so the
+/// file can lag behind it, and waiting for the disk would stall the window.
+static SET: std::sync::Mutex<Option<Namer>> = std::sync::Mutex::new(None);
+
 pub fn namer() -> Namer {
+    let set = SET
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(namer) = set.as_ref() {
+        return namer.clone();
+    }
     std::fs::read(namer_path())
         .ok()
         .and_then(|b| serde_json::from_slice::<Namer>(&b).ok())
@@ -188,11 +198,16 @@ pub fn installed(agent: AgentKind) -> bool {
 }
 
 pub fn set_namer(namer: &Namer) {
-    let path = namer_path();
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    let _ = std::fs::write(path, serde_json::to_vec_pretty(namer).unwrap_or_default());
+    // Kept in memory too, so `namer` gives it back at once, and for this run
+    // even when the file cannot be written.
+    *SET.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(namer.clone());
+    // Saved on every key typed in the model field.
+    crate::durable::write_soon(
+        namer_path(),
+        serde_json::to_vec_pretty(namer).unwrap_or_default(),
+        "could not save the branch namer",
+    );
 }
 
 /// The longest part of the first prompt the model reads; the start says what the task is.

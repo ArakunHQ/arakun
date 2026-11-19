@@ -964,12 +964,16 @@ impl Shell {
             _quit: [
                 cx.on_app_quit(|this, cx| {
                     // A draft typed in the last moments may not be saved yet.
-                    if let Err(e) = state::write(&this.state_bytes()) {
+                    // Replaces any save still queued, so none can land over it.
+                    state::queue(this.state_bytes());
+                    if let Err(e) = state::write_queued() {
                         eprintln!("arakun: could not save state: {e}");
                     }
                     this.save_transcripts(cx);
                     // Notices are saved off the UI thread: let the last one land.
                     crate::notices::flush();
+                    // Settings switched in the last moments.
+                    crate::durable::flush();
                     // Up to 2 s for usage events still queued.
                     crate::telemetry::quit();
                     crate::control::cleanup();
@@ -1034,9 +1038,9 @@ impl Shell {
     // Persistence and git refresh
 
     fn save(&self, cx: &mut Context<Self>) {
-        let bytes = self.state_bytes();
+        state::queue(self.state_bytes());
         cx.background_spawn(crate::guard::task(async move {
-            if let Err(e) = state::write(&bytes) {
+            if let Err(e) = state::write_queued() {
                 eprintln!("arakun: could not save state: {e}");
             }
         }))

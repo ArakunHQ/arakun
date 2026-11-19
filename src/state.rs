@@ -487,8 +487,62 @@ pub fn load() -> State {
         })
 }
 
-pub fn write(bytes: &[u8]) -> std::io::Result<()> {
-    crate::durable::write(&file(), bytes)
+/// The newest state snapshot not yet on disk. Saves are written off the UI
+/// thread, on whichever thread is free; each takes the newest snapshot when
+/// its turn comes, so an older one can never be renamed over a newer one.
+static SAVES: Saves = Saves::new();
+
+/// Queues `bytes` (on the UI thread, where the state changes) in place of
+/// any older snapshot not written yet.
+pub fn queue(bytes: Vec<u8>) {
+    SAVES.queue(bytes);
+}
+
+/// Writes the newest queued snapshot, if a save before this one has not.
+pub fn write_queued() -> std::io::Result<()> {
+    SAVES.write(|bytes| crate::durable::write(&file(), bytes))
+}
+
+struct Saves {
+    pending: std::sync::Mutex<Option<Vec<u8>>>,
+    writing: std::sync::Mutex<()>,
+}
+
+impl Saves {
+    const fn new() -> Self {
+        Saves {
+            pending: std::sync::Mutex::new(None),
+            writing: std::sync::Mutex::new(()),
+        }
+    }
+
+    fn pending(&self) -> std::sync::MutexGuard<'_, Option<Vec<u8>>> {
+        self.pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn queue(&self, bytes: Vec<u8>) {
+        *self.pending() = Some(bytes);
+    }
+
+    fn write(&self, write: impl FnOnce(&[u8]) -> std::io::Result<()>) -> std::io::Result<()> {
+        // One write at a time: the snapshot taken here is the newest, and
+        // a newer one queued meanwhile waits and is written after it.
+        let _one_at_a_time = self
+            .writing
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(bytes) = self.pending().take() else {
+            return Ok(());
+        };
+        let written = write(&bytes);
+        if written.is_err() {
+            // Kept for the next save to try, unless a newer one came.
+            self.pending().get_or_insert(bytes);
+        }
+        written
+    }
 }
 
 pub fn snapshot(projects: &[Project], active_project: usize, layout: Layout) -> Vec<u8> {
@@ -854,6 +908,64 @@ pub fn new_project(path: &Path) -> Project {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn record(
+        disk: &std::sync::Mutex<Vec<Vec<u8>>>,
+        fail: bool,
+    ) -> impl FnOnce(&[u8]) -> std::io::Result<()> + '_ {
+        move |bytes| {
+            if fail {
+                return Err(std::io::Error::other("disk full"));
+            }
+            disk.lock().unwrap().push(bytes.to_vec());
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn only_the_newest_queued_snapshot_is_written() {
+        let saves = Saves::new();
+        let disk = std::sync::Mutex::new(Vec::new());
+        saves.queue(b"older".to_vec());
+        saves.queue(b"newer".to_vec());
+        // Two save tasks ran; the first takes the newest, the second finds
+        // nothing left.
+        saves.write(record(&disk, false)).unwrap();
+        saves.write(record(&disk, false)).unwrap();
+        assert_eq!(*disk.lock().unwrap(), [b"newer".to_vec()]);
+    }
+
+    #[test]
+    fn a_failed_save_is_kept_for_the_next_one() {
+        let saves = Saves::new();
+        let disk = std::sync::Mutex::new(Vec::new());
+        saves.queue(b"state".to_vec());
+        assert!(saves.write(record(&disk, true)).is_err());
+        saves.write(record(&disk, false)).unwrap();
+        assert_eq!(*disk.lock().unwrap(), [b"state".to_vec()]);
+        // A newer snapshot queued after a failure replaces the failed one.
+        saves.queue(b"old".to_vec());
+        assert!(saves.write(record(&disk, true)).is_err());
+        saves.queue(b"new".to_vec());
+        saves.write(record(&disk, false)).unwrap();
+        assert_eq!(disk.lock().unwrap().last().unwrap(), b"new");
+    }
+
+    #[test]
+    fn saves_from_many_threads_end_with_the_newest() {
+        let saves = Saves::new();
+        let disk = std::sync::Mutex::new(Vec::new());
+        std::thread::scope(|scope| {
+            for n in 0..32u8 {
+                saves.queue(vec![n]);
+                let (saves, disk) = (&saves, &disk);
+                scope.spawn(move || saves.write(record(disk, false)).unwrap());
+            }
+        });
+        let disk = disk.into_inner().unwrap();
+        assert_eq!(disk.last().unwrap(), &[31]);
+        assert!(disk.windows(2).all(|w| w[0] < w[1]), "{disk:?}");
+    }
 
     #[test]
     fn continued_sessions_keep_what_they_took_over() {

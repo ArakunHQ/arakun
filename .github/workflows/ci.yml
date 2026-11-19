@@ -337,10 +337,12 @@ jobs:
     runs-on: depot-macos-latest
     # Several merges in a row queued a macOS job for every commit on main. Here
     # one runs and only the newest waits; GitHub cancels the older waiting ones.
-    # The newest tests what they changed too, and saves the cache. Pull requests
-    # and tags get a group per run, so they never cancel each other here.
+    # The newest tests what they changed too, and saves the cache. Every other
+    # run gets a group per run, so it never cancels or is cancelled here: pull
+    # requests, tags, and release.yml's nightlies, which run on main but by
+    # schedule or by hand and fail if this job is cancelled.
     concurrency:
-      group: ${{ github.ref == 'refs/heads/main' && 'ci-macos-main' || format('ci-macos-{0}', github.run_id) }}
+      group: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'ci-macos-main' || format('ci-macos-{0}', github.run_id) }}
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

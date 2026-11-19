@@ -158,16 +158,21 @@ pub(super) fn away_envs(statuses: &[Vec<Status>], open: usize) -> Vec<(usize, us
 /// What a worktree's row is called: its thread, the newest when it holds
 /// more than one (from before one thread per worktree), with how many more.
 /// `None` for the main checkout, a scratch place known by its branch, and for
-/// a worktree with no thread yet. `sessions` is `(title, last activity)`.
-pub(super) fn thread_label(is_checkout: bool, sessions: &[(&str, u64)]) -> Option<(String, usize)> {
+/// a worktree with no thread yet. `sessions` is `(title, last activity)`;
+/// the last value is the index of the one named, which a click opens.
+pub(super) fn thread_label(
+    is_checkout: bool,
+    sessions: &[(&str, u64)],
+) -> Option<(String, usize, usize)> {
     if is_checkout {
         return None;
     }
-    let (title, _) = sessions
+    let (i, (title, _)) = sessions
         .iter()
-        .filter(|(t, _)| !t.trim().is_empty())
-        .max_by_key(|(_, updated)| *updated)?;
-    Some((title.to_string(), sessions.len() - 1))
+        .enumerate()
+        .filter(|(_, (t, _))| !t.trim().is_empty())
+        .max_by_key(|(_, (_, updated))| *updated)?;
+    Some((title.to_string(), sessions.len() - 1, i))
 }
 
 /// A worktree is often named after its project (`beta-fix-login`); next to
@@ -919,13 +924,19 @@ impl Shell {
         let changes = show_changes.then(|| env.diff_totals());
         let signal = env_signal(status, ci_failed, changes);
         // The sessions in the Active list are named there; this row names the rest.
-        let titles: Vec<(&str, u64)> = env
+        let named: Vec<&model::Session> = env
             .sessions
             .iter()
             .filter(|s| !active_above || !super::active::is_active(s.status))
+            .collect();
+        let titles: Vec<(&str, u64)> = named
+            .iter()
             .map(|s| (s.title.as_ref(), s.updated))
             .collect();
         let label = thread_label(env.is_checkout, &titles);
+        // A click opens the session the row is named after: going to the
+        // worktree would show the tab it showed last, maybe another session's.
+        let opens = label.as_ref().map(|(_, _, i)| named[*i].id.clone());
         let lead: AnyElement = if env.is_checkout && status == Status::Idle {
             icon("folder01", 14.)
                 .text_color(if active {
@@ -1010,7 +1021,7 @@ impl Shell {
                 d.hover(|s| s.bg(theme::hover()).text_color(theme::content()))
             })
             .child(lead)
-            .when_some(label.clone(), |d, (title, more)| {
+            .when_some(label.clone(), |d, (title, more, _)| {
                 d.tooltip(ui::tip_text(format!("{} · {}", title, env.branch)))
                     .child(div().flex_1().min_w_0().truncate().child(title))
                     .when(more > 0, |d| {
@@ -1037,7 +1048,10 @@ impl Shell {
             })
             .children(self.render_machine(env, pi * 1000 + ei))
             .children(end.map(|e| div().flex_none().child(e)))
-            .on_click(cx.listener(move |this, _, window, cx| this.select_env(pi, ei, window, cx)))
+            .on_click(cx.listener(move |this, _, window, cx| match &opens {
+                Some(id) => this.open_session_at(pi, ei, id.clone(), window, cx),
+                None => this.select_env(pi, ei, window, cx),
+            }))
     }
 }
 
@@ -1065,16 +1079,16 @@ mod tests {
     fn a_worktree_is_called_by_its_thread() {
         assert_eq!(
             thread_label(false, &[("Fix login", 5)]),
-            Some(("Fix login".into(), 0))
+            Some(("Fix login".into(), 0, 0))
         );
         // From before one thread per worktree: the newest, and how many more.
         assert_eq!(
             thread_label(false, &[("Old", 1), ("New", 9), ("Mid", 4)]),
-            Some(("New".into(), 2))
+            Some(("New".into(), 2, 1))
         );
         assert_eq!(
             thread_label(false, &[("", 9), ("Named", 2)]),
-            Some(("Named".into(), 1))
+            Some(("Named".into(), 1, 1))
         );
         // No thread yet, or the main checkout: known by the branch.
         assert_eq!(thread_label(false, &[]), None);

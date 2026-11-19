@@ -96,8 +96,8 @@ export async function logout(request: Request, env: Env): Promise<Response> {
 }
 
 /// The session the request's bearer token names, if it is still valid. Every
-/// endpoint that needs a user goes through here, and team endpoints will check
-/// their flag after it.
+/// endpoint that needs a user goes through here; team endpoints then check
+/// the `teams` flag.
 export async function session(request: Request, env: Env, { renew = true } = {}): Promise<Session | null> {
   const token = bearer(request);
   if (!token || !SESSION_TOKEN.test(token)) return null;

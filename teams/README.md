@@ -1,8 +1,10 @@
 # Teams
 
-The pilot of Arakun teams: a Cloudflare Worker with a D1 database. For now it only
-signs users in with GitHub and tells the app which features each user has. Teams,
-members and chat come later, on the same database.
+The pilot of Arakun teams: a Cloudflare Worker with a D1 database and one Durable
+Object per channel. It signs users in with GitHub, tells the app which features
+each user has, and runs the end-to-end encrypted teams of [PROTOCOL.md](PROTOCOL.md):
+devices, teams, invites, team keys in envelopes, and channels with live messages.
+The server stores and forwards; it never holds a key that opens team content.
 
 ```
 teams/
@@ -10,9 +12,23 @@ teams/
   src/auth.ts      POST /auth/github, GET /me, POST /auth/logout, sessions
   src/admin.ts     PUT|DELETE /admin/users/<github_id>/flags/<flag>,
                    DELETE /admin/users/<github_id>/sessions
+  src/teams.ts     devices, teams, invites, envelopes, members, channels
+  src/channel.ts   the Channel Durable Object: messages, seq, live sockets
+  src/wire.ts      the shapes of PROTOCOL.md and their signature checks
   migrations/      the D1 tables, applied in order by wrangler
-  test/            Vitest inside workerd, with real D1 and a fake GitHub
+  test/            Vitest inside workerd, with real D1, the real Durable
+                   Object, real P-256 keys and a fake GitHub
 ```
+
+D1 holds what is small and relational: users, devices, teams, members, invites,
+envelopes and channels. Each channel's messages live in its own SQLite-backed
+Durable Object, named `<team_id>/<channel_id>`, which also holds the channel's
+sockets (with the hibernation API). The Worker checks the session, the flag, the
+membership and the device before it opens a socket on the object, and passes who
+is calling in headers it builds itself (the session as its SHA-256, never the
+token). On every message the object checks the signature, reads the team's epoch
+from D1 again, and checks every socket's session, membership and flag, so a socket
+that lost any of them is closed before it gets the message.
 
 ## How sign-in works
 
@@ -39,8 +55,9 @@ A session lasts 90 days and is extended on use, at most once a day, but never pa
 the SHA-256 of the session token.
 
 Users are keyed by their numeric GitHub ID, which stays when they rename their account.
-Flags are set per user on the server, and every team endpoint must check its flag
-there. Anyone can sign in; without a flag, `/me` answers `flags: []`.
+Flags are set per user on the server, and every team endpoint checks the `teams`
+flag there. Anyone can sign in. If the `flags` that `/me` answers do not include
+`teams` (there may be other flags), every team endpoint answers `403`.
 
 ## Development
 
@@ -52,6 +69,9 @@ npm ci
 npm run check     # tsc --noEmit
 npm test          # vitest run
 ```
+
+`npx wrangler deploy --dry-run` (and `--env production --dry-run`) checks the
+configuration and the bundle without deploying.
 
 For `wrangler dev`, create the tables in the local database first:
 
@@ -117,6 +137,11 @@ admin secret cannot grant flags or make sessions in production.
    npx wrangler deploy --env production
    ```
 
+   The first deploy creates the `Channel` Durable Object class from the `v1`
+   migration in `wrangler.toml` (`new_sqlite_classes`). A later change to the class
+   that renames or deletes it needs a new `[[migrations]]` tag, in both the
+   top-level and the `[env.production]` lists.
+
 To host the test Worker too, give it its own database and put that `database_id` in
 the top-level `[[d1_databases]]`. Never put production's id there. Then follow the
 same steps with `arakun-teams-dev` and without `--env production`, and give it a
@@ -127,11 +152,18 @@ npx wrangler d1 create arakun-teams-dev
 npx wrangler d1 migrations apply arakun-teams-dev --remote
 ```
 
-The rate limit on `POST /auth/github` (about 10 a minute per client IP) is set in
-`wrangler.toml` under `[[ratelimits]]`. Rate limits with the same `namespace_id` in
-one account share their counters, so production and the test Worker have different
-ids, and each id must be unique among the account's rate limits. Cloudflare counts it in each location on its own, and its
-counters catch up with a delay, so it is approximate: a client can get a few more.
+Two rate limits are set in `wrangler.toml` under `[[ratelimits]]`: `POST /auth/github`
+(about 10 a minute per client IP, `namespace_id` 1001 in production, 1003 in the
+top-level Worker) and the messages each device sends on channel sockets (about 60
+every 10 seconds, `namespace_id` 1002 in production, 1004 in the top-level Worker).
+Rate limits with the same `namespace_id` in one account share their counters for
+the same key, so a device sending through the test Worker would use up its
+production allowance; give a new rate limit an id nothing else in the account uses.
+Cloudflare counts each location on its own, and its counters catch up with a
+delay, so both are approximate: a client can get a few more.
+
+The compatibility date is after 2026-04-07, so the runtime answers a WebSocket
+client's close by itself; `src/channel.ts` relies on that. `relay/` has its own date.
 
 ## Granting flags
 
@@ -187,7 +219,8 @@ npx wrangler d1 execute arakun-teams --env production --remote --command "
 
 ## API
 
-Times are Unix seconds.
+Times are Unix seconds. The request and answer bodies of the team endpoints, and
+the checks on them, are in [PROTOCOL.md](PROTOCOL.md).
 
 | Request | Answer |
 | --- | --- |
@@ -202,3 +235,43 @@ Times are Unix seconds.
 The admin endpoints answer `401` without the exact secret and `400` for a bad ID or
 flag. A flag name is a lower-case letter, then up to 31 of `a-z`, `0-9` and `_`.
 Anything else answers `404`. There is no CORS: only the desktop app calls this.
+
+### Teams
+
+Every request below needs the session and the `teams` flag: `401` without a session,
+`403` without the flag. Team requests answer `404` to anyone who is not a member
+(pending members included, except on `remind`), and "admin" ones `403` to members who are not an owner or
+admin. "Device" means the request carries `X-Arakun-Device` with one of the caller's
+devices: `400` without it, `403` if it is someone else's.
+
+| Request | Who | Answer |
+| --- | --- | --- |
+| `POST /devices` `{sig_pub, enc_pub, name, endorsement}` | anyone | `201 {device_id}`, `200` if registered already. `400` for a bad key, name or endorsement; `409` if another account has the key, or past 20 devices. |
+| `GET /users/<github_id>/devices` | the user, or someone in a team with them | `200 [{device_id, sig_pub, enc_pub, name, created_at, endorsed_by, endorsement_sig}]` |
+| `POST /teams` `{name}` | anyone | `201 {team_id, epoch: 1}`; the caller is the owner. |
+| `GET /teams` | anyone | `200 [{team_id, name, role, epoch, rotation_pending}]` |
+| `GET /teams/<team_id>` | member | `200 {team_id, name, epoch, rotation_pending, members, channels}` |
+| `POST /teams/<team_id>/invites` `{github_login}` | admin | `201 {invite_id, expires_at}`, 7 days. `409` if a member or pending already. |
+| `GET /teams/<team_id>/invites` | admin | `200 [{invite_id, login, invited_by_login, created_at, expires_at}]`, open ones, newest first. |
+| `DELETE /teams/<team_id>/invites/<invite_id>` | admin | `204`. `404` if the team has no such open invite. |
+| `GET /invites` | anyone | `200 [{invite_id, team_id, team_name, invited_by_login, created_at, expires_at, member_count}]` |
+| `POST /invites/<invite_id>/accept` | the invitee, device | `200 {team_id, status: "pending"}`. `404` if expired or someone else's. |
+| `POST /invites/<invite_id>/decline` | the invitee | `204`, and the invite is gone. `404` if expired or someone else's. |
+| `GET /pending` | anyone | `200 [{team_id, team_name, requested_at, invited_by_login, invited_by_id, reminded_at}]`, the caller's own requests. |
+| `POST /teams/<team_id>/remind` | pending in that team | `204`, sets `reminded_at`. `429 {error, retry_at}` within an hour of the last one; `404` for anyone not pending there, members included. |
+| `GET /teams/<team_id>/pending` | admin | `200 [{github_id, login, invited_login, request_id, requested_at, reminded_at, devices}]` |
+| `POST /teams/<team_id>/pending/<github_id>/approve` `{request_id, envelopes}` | admin, device | `200 {github_id, role: "member"}`. `400` unless there is one envelope per device of theirs and epoch with a key; `409` before the team's first key, at 25 members, or if the request, the team's key or their devices changed meanwhile. |
+| `POST /teams/<team_id>/pending/<github_id>/reject` | admin | `204` |
+| `PUT /teams/<team_id>/envelopes` `{envelopes}` | admin, device | `200 {stored, epoch, rotation_pending}`; `stored` counts what was written. At most 500. `409` when a new key lost to a removal, another device's key or a new member or device. |
+| `GET /teams/<team_id>/envelopes` | member, device | `200 [Envelope + made_at]`, the device's own; `made_at` is when the epoch's key first reached the team. |
+| `DELETE /teams/<team_id>/members/<github_id>` | admin, or the member themselves | `200 {epoch, rotation_pending: true}`. Their sockets close. `409` for the last owner. |
+| `POST /teams/<team_id>/channels` `{channel_id, name_ct}` | admin | `201 {channel_id}`. `409` for an ID in use or past 500 channels. |
+| `PUT /teams/<team_id>/channels/<channel_id>` `{name_ct}` | admin | `200 {channel_id}`: the name sealed again with the newest key, or a new name. `409` if that key changed meanwhile. |
+| `GET /teams/<team_id>/channels/<channel_id>/ws` | member, device | `101`, the channel's socket. `426` without `Upgrade: websocket`. |
+| `GET /teams/<team_id>/channels/<channel_id>/messages?after=<seq>&limit=<n>` | member, device | `200 [{seq, at, message}]`, oldest first; `limit` 1 to 200. |
+
+A channel keeps at most 10,000 messages. Once its sequence exceeds 10,000,
+each successful send keeps the newest 9,000. If the first history row has a
+`seq` greater than `after + 1`, the missing prefix is no longer available on
+the server. Mark the gap, keep any local copies, and resume from the first
+returned row instead of requesting the missing prefix again.

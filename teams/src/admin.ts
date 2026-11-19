@@ -8,11 +8,9 @@
 // The flag routes answer { github_id, flags } with the user's flags after the
 // change; the sessions route answers { github_id, closed } with how many ended.
 
-import { error, flagList, flagsQuery, now, sha256, type Env } from "./util";
+import { GITHUB_ID, error, flagList, flagsQuery, now, sha256, type Env } from "./util";
 
 const FLAG = /^[a-z][a-z0-9_]{0,31}$/;
-/// A positive integer that fits in a JavaScript number without rounding.
-const GITHUB_ID = /^[1-9][0-9]{0,15}$/;
 
 export async function admin(request: Request, env: Env, path: string): Promise<Response> {
   if (!(await authorized(request, env))) return error(401, "unauthorized");

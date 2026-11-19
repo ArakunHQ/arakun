@@ -735,12 +735,23 @@ The default `browser` feature needs CEF at build time and at run time.
   This puts the runtime in `~/.local/share/arakun/cef` (loaded on the first browser tab)
   and links the build-time SDK at `.cef-sdk`, which `.cargo/config.toml` points `CEF_PATH`
   at.
-- **Windows and macOS:** the first build downloads CEF into `.cef-sdk` by itself. It
-  also needs CMake and Ninja (on macOS, `brew install cmake ninja`); for Windows, see
-  [docs/windows.md](docs/windows.md). If that download fails with "the response body is
-  larger than request limit", the `cef` crate can no longer read the CDN's index. Fetch
-  the archive with `tools/fetch-cef.py` instead and point `CEF_PATH` at it, as the
-  release workflow does (it has the archive names and checksums).
+- **macOS:** the build also needs CMake and Ninja (`brew install cmake ninja`), and the
+  download needs Python 3.12 or newer (`brew install python`; the `python3` macOS ships
+  is too old). Run:
+
+  ```sh
+  tools/setup-dev.sh --browser
+  cargo build --release
+  ```
+
+  This downloads the CEF archive the release uses, checks its SHA-1, keeps it in
+  `~/.local/share/arakun/cef-sdk` for every checkout, and links it at `.cef-sdk`. The
+  `cef` crate's own download no longer works: the CDN's index is larger than it reads
+  ("the response body is larger than request limit").
+- **Windows:** see [docs/windows.md](docs/windows.md). If the build's own CEF download
+  fails with "the response body is larger than request limit", fetch the archive with
+  `tools/fetch-cef.py` and point `CEF_PATH` at it, as the release workflow does (it has
+  the archive names and checksums).
 
 ### Browser tabs on Ubuntu
 

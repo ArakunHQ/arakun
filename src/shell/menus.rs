@@ -512,6 +512,7 @@ impl Shell {
         let current = self.composer_agent();
         let shown = self.menu_agent();
         let agents = self.menu_agents();
+        let switchable = agents.len() > 1;
         let in_session = self.composer_in_session();
         let models = self.choice_rows(shown, Setting::Model, false, 0, cx);
         let n_models = models.len();
@@ -624,6 +625,7 @@ impl Shell {
                         .flex_col()
                         .gap(crate::ui::sp(1.))
                         .max_h(px(MODEL_LIST_MAX_H))
+                        .min_h(px(0.))
                         .overflow_y_scroll()
                         .track_scroll(&self.menu_scroll)
                         .children(models),
@@ -688,6 +690,21 @@ impl Shell {
                         })),
                 )
             });
+
+        // The menu opens upward, so a height that followed the hovered agent's
+        // options would move the agents under the cursor and hover another.
+        // With more than one agent the agent column sets the height, and the
+        // options fit in it, the model list scrolling.
+        let options = if switchable {
+            div()
+                .relative()
+                .flex_1()
+                .min_w_0()
+                .self_stretch()
+                .child(options.absolute().top_0().left_0().right_0().bottom_0())
+        } else {
+            options
+        };
 
         ui::menu_panel("model-menu", MODEL_MENU_W)
             .flex_row()

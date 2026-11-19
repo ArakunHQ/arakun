@@ -349,7 +349,9 @@ impl Assignment {
 /// The seat a Claude Code session starts on: `pinned`, the one saved with
 /// it, while that seat is still there; else the one [`pick`] finds. `None`
 /// leaves the session as it would be without seats: none are saved, or they
-/// can't work ([`blocked`]). Reads files, not the network.
+/// can't work ([`blocked`]). Refreshes each seat's windows stale past
+/// [`plan::seats`]' bounds, so the pick is not made on hours-old usage; the
+/// resolver that calls this runs off the UI thread.
 pub fn assign(pinned: Option<&str>) -> Option<Assignment> {
     if blocked().is_some() {
         return None;
@@ -363,7 +365,7 @@ pub fn assign(pinned: Option<&str>) -> Option<Assignment> {
         &names,
         own,
         borrowed.is_some(),
-        &plan::known_seats(),
+        &plan::seats(),
         &live(),
         |id| match id {
             OWN => own.then_some(None),

@@ -354,7 +354,7 @@ impl PullRequestDialog {
             remote,
             branch,
             needs_push,
-            desc: Description::new(plan.body.clone()),
+            desc: Description::new(&plan.base, plan.body.clone()),
             plan,
             writer,
             writing: false,
@@ -375,10 +375,12 @@ impl PullRequestDialog {
         let base = self.base.read(cx).text().trim().to_string();
         if base.is_empty() || base == self.plan.base {
             self.planning = None;
+            // Back on the base read last: what the agent wrote for another
+            // base meanwhile doesn't describe it.
+            self.desc.planned(&self.plan.base, self.plan.body.clone());
             return;
         }
         self.planning = Some(base.clone());
-        let asks = self.desc.asks;
         let (dir, remote, branch) = (self.dir.clone(), self.remote.clone(), self.branch.clone());
         cx.spawn(async move |this, cx| {
             let onto = base.clone();
@@ -399,7 +401,7 @@ impl PullRequestDialog {
                     let title = plan.title.clone();
                     this.title.update(cx, |input, cx| input.set_text(title, cx));
                 }
-                this.desc.planned(asks, plan.body.clone(), this.writing);
+                this.desc.planned(&plan.base, plan.body.clone());
                 this.plan = plan;
                 cx.notify();
             });
@@ -433,6 +435,19 @@ impl PullRequestDialog {
                 format!(
                     "This clone has no {}/{base} to read the commits from. Fetch it, or open GitHub's form.",
                     self.remote
+                )
+                .into(),
+            );
+            cx.notify();
+            return;
+        }
+        // Reads and the agent finish in any order: whatever the order, a
+        // description of another base's commits doesn't go out.
+        if !web && !self.desc.describes(&base) {
+            self.error = Some(
+                format!(
+                    "The description is still the one for {}. Try again in a moment.",
+                    self.desc.base
                 )
                 .into(),
             );
@@ -499,66 +514,44 @@ impl PullRequestDialog {
     }
 }
 
-/// The pull request's description, and who wrote it. A reading of the
-/// commits for a new base and the agent can finish in either order; this
-/// decides which text is shown.
+/// The pull request's description, who wrote it, and the base whose
+/// commits it describes. A reading of the commits for a new base and the
+/// agent can finish in either order; the base decides which text is shown.
 #[derive(Debug)]
 struct Description {
     /// What goes out: the plan's, or what the agent wrote.
     body: String,
     /// Who wrote the description shown, once an agent did.
     written_by: Option<AgentKind>,
-    /// Counts the times the agent was asked.
-    asks: u32,
-    /// The ask whose answer is shown; 0 for the plan's.
-    shown: u32,
-    /// The plan read while the agent was writing: shown if it fails, so
-    /// the description is never the one of the base before.
-    fallback: Option<String>,
+    /// The base the description was read or written for.
+    base: String,
 }
 
 impl Description {
-    fn new(body: String) -> Self {
+    fn new(base: &str, body: String) -> Self {
         Self {
             body,
             written_by: None,
-            asks: 0,
-            shown: 0,
-            fallback: None,
+            base: base.trim().to_string(),
         }
     }
 
-    /// A reading of the commits, begun when the agent had been asked
-    /// `asks` times, found `body`.
-    fn planned(&mut self, asks: u32, body: String, writing: bool) {
-        if asks == self.asks || (!writing && self.shown <= asks) {
-            // What was written for the other base, by an agent too, goes
-            // with it.
-            self.body = body;
-            self.written_by = None;
-            self.shown = 0;
-            self.fallback = None;
-        } else if writing {
-            // The agent was asked since, for this base: its answer is newer.
-            self.fallback = Some(body);
+    /// A reading of the commits onto `base` found `body`.
+    fn planned(&mut self, base: &str, body: String) {
+        // What the agent wrote for this base stays: the user asked for it.
+        if self.written_by.is_some() && self.describes(base) {
+            return;
         }
-        // Otherwise the agent answered since, for this base: that stays.
+        *self = Self::new(base, body);
     }
 
-    fn wrote(&mut self, agent: AgentKind, body: String) {
-        self.body = body;
+    fn wrote(&mut self, base: &str, agent: AgentKind, body: String) {
+        *self = Self::new(base, body);
         self.written_by = Some(agent);
-        self.shown = self.asks;
-        self.fallback = None;
     }
 
-    /// The agent wrote nothing that fits.
-    fn failed(&mut self) {
-        if let Some(body) = self.fallback.take() {
-            self.body = body;
-            self.written_by = None;
-            self.shown = 0;
-        }
+    fn describes(&self, base: &str) -> bool {
+        written_for(&self.base, base)
     }
 }
 
@@ -579,7 +572,6 @@ impl PullRequestDialog {
             return;
         }
         self.writing = true;
-        self.desc.asks += 1;
         self.error = None;
         cx.notify();
         let (dir, remote, branch) = (self.dir.clone(), self.remote.clone(), self.branch.clone());
@@ -607,7 +599,6 @@ impl PullRequestDialog {
                     // It describes the commits of another base than the one
                     // the pull request would now merge into.
                     Ok(_) if !written_for(&for_base, &now.0) => {
-                        this.desc.failed();
                         this.error = Some(
                             format!(
                                 "\"Merge into\" changed while {} wrote. Write it again for {}.",
@@ -622,10 +613,9 @@ impl PullRequestDialog {
                         if now.1 == old_title {
                             this.title.update(cx, |i, cx| i.set_text(title, cx));
                         }
-                        this.desc.wrote(agent, body);
+                        this.desc.wrote(&for_base, agent, body);
                     }
                     Err(e) => {
-                        this.desc.failed();
                         this.error = Some(format!("{} couldn't write it: {e}", agent.label()).into())
                     }
                 }
@@ -1104,48 +1094,40 @@ mod tests {
     const AGENT: AgentKind = AgentKind::Claude;
 
     #[test]
-    fn a_read_that_lands_while_the_agent_writes_is_kept_for_a_failure() {
-        let mut d = Description::new("old base".into());
-        let began = d.asks;
-        d.asks += 1;
-        d.planned(began, "new base".into(), true);
-        assert_eq!(d.body, "old base");
-        d.failed();
-        assert_eq!(d.body, "new base");
-        assert_eq!(d.written_by, None);
+    fn a_read_for_another_base_replaces_the_description() {
+        let mut d = Description::new("main", "main's".into());
+        d.planned("release", "release's".into());
+        assert_eq!(d.body, "release's");
+        assert!(d.describes("release"));
     }
 
     #[test]
-    fn the_agent_answer_beats_a_read_that_began_before_it() {
-        let mut d = Description::new("old base".into());
-        let began = d.asks;
-        d.asks += 1;
-        d.planned(began, "new base".into(), true);
-        d.wrote(AGENT, "agent".into());
-        assert_eq!(d.body, "agent");
-        // Landing after the answer changes nothing either.
-        d.planned(began, "new base".into(), false);
+    fn the_agent_answer_stays_when_a_read_for_its_base_lands() {
+        let mut d = Description::new("main", "main's".into());
+        d.wrote("release", AGENT, "agent".into());
+        d.planned("release", "release's".into());
         assert_eq!(d.body, "agent");
         assert_eq!(d.written_by, Some(AGENT));
     }
 
     #[test]
-    fn a_read_that_lands_after_a_failed_write_is_shown() {
-        let mut d = Description::new("old base".into());
-        let began = d.asks;
-        d.asks += 1;
-        d.failed();
-        d.planned(began, "new base".into(), false);
-        assert_eq!(d.body, "new base");
+    fn the_agent_answer_goes_when_a_read_for_another_base_lands() {
+        let mut d = Description::new("main", "main's".into());
+        d.wrote("main", AGENT, "agent".into());
+        d.planned("release", "release's".into());
+        assert_eq!(d.body, "release's");
+        assert_eq!(d.written_by, None);
     }
 
     #[test]
-    fn a_read_begun_after_the_ask_replaces_the_answer() {
-        let mut d = Description::new("plan".into());
-        d.asks += 1;
-        d.wrote(AGENT, "agent".into());
-        d.planned(d.asks, "other base".into(), false);
-        assert_eq!(d.body, "other base");
-        assert_eq!(d.written_by, None);
+    fn going_back_to_the_read_base_restores_its_description() {
+        // The agent wrote for release before release's commits were read;
+        // the plan is still main's.
+        let mut d = Description::new("main", "main's".into());
+        d.wrote("release", AGENT, "agent".into());
+        assert!(!d.describes("main"));
+        d.planned("main", "main's".into());
+        assert_eq!(d.body, "main's");
+        assert!(d.describes("main"));
     }
 }

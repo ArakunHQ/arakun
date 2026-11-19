@@ -267,11 +267,12 @@ after a week).
   count as read when you close it. Arakun keeps the last 300 in
   `notices.json` next to its state. `arakun notices [--unseen]` prints them.
 - **Phone remote.** A web page served by Arakun lets a paired phone follow sessions, send
-  prompts and answer the agent. Phones reach the computer over the local network (the
-  default), over Tailscale, or through an end-to-end encrypted relay. On the local
-  network and over Tailscale the page comes from the computer itself, so it only opens
-  while the computer is on and awake; the relay works from anywhere and says when the
-  computer is offline (the Phone tab says so and offers Use Relay). The relay defaults
+  prompts and answer the agent. While the agent works, a prompt you send waits for the
+  turn to end; with something written, Stop becomes "Stop and send". Phones reach the
+  computer over the local network (the default), over Tailscale, or through an
+  end-to-end encrypted relay. On the local network and over Tailscale the page comes
+  from the computer itself, so it only opens while the computer is on and awake; the
+  relay works from anywhere and says when the computer is offline (the Phone tab says so and offers Use Relay). The relay defaults
   to the hosted one at `arakun.dev`; you can run your own from [`relay/`](relay)
   (a Cloudflare Worker) and point `relay_base` in `phone.json` at it.
   The page keeps shortcuts, phrases you send often, as a row of buttons over the box.

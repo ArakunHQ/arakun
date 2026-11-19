@@ -81,6 +81,11 @@ pub enum ClientMsg {
         /// saved files are attached as `@` mentions when the prompt goes out.
         #[serde(default)]
         uploads: Vec<String>,
+        /// Stops the running turn and sends this as soon as it stopped,
+        /// instead of queueing it behind the turn (`Ctrl+Enter` in the app).
+        /// A server without it queues the prompt, as before.
+        #[serde(default)]
+        now: bool,
     },
     /// A piece of a photo the phone is sending: `data` is base64, piece `part`
     /// of `of` under `upload`'s id. Kept apart because a relay frame is small;
@@ -1550,7 +1555,8 @@ mod tests {
             ClientMsg::Send {
                 session: "s1".into(),
                 text: "hi".into(),
-                uploads: vec![]
+                uploads: vec![],
+                now: false,
             }
         );
         let with: ClientMsg = serde_json::from_str(
@@ -1562,7 +1568,20 @@ mod tests {
             ClientMsg::Send {
                 session: "s1".into(),
                 text: "mira".into(),
-                uploads: vec!["u1".into(), "u2".into()]
+                uploads: vec!["u1".into(), "u2".into()],
+                now: false,
+            }
+        );
+        let now: ClientMsg =
+            serde_json::from_str(r#"{"type":"send","session":"s1","text":"no","now":true}"#)
+                .unwrap();
+        assert_eq!(
+            now,
+            ClientMsg::Send {
+                session: "s1".into(),
+                text: "no".into(),
+                uploads: vec![],
+                now: true,
             }
         );
         let piece: ClientMsg = serde_json::from_str(

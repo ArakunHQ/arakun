@@ -1498,9 +1498,10 @@ impl Daemon {
                 session,
                 text,
                 uploads,
+                now,
             } => {
                 let text = self.uploads.attach(text, &uploads);
-                if let Err(e) = self.send_to_session(&session, text, cx) {
+                if let Err(e) = self.send_to_session(&session, text, now, cx) {
                     self.transport.send(client, session_error(&session, &e));
                 }
             }
@@ -2160,10 +2161,13 @@ impl Daemon {
     }
 
     /// Sends `text` to the session `id` as its next prompt.
+    /// Sends a prompt to a session; `now` stops a running turn for it
+    /// instead of queueing it behind.
     fn send_to_session(
         &mut self,
         id: &str,
         text: String,
+        now: bool,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
         if let Some(s) = self.store.session(id) {
@@ -2180,7 +2184,11 @@ impl Daemon {
             if t.queue_paused() {
                 t.resume_queue(cx);
             }
-            t.send(text, cx);
+            if now {
+                t.interrupt_with(text, cx);
+            } else {
+                t.send(text, cx);
+            }
         });
         if let Some(s) = self.store.session_mut(id) {
             s.updated = unix_now();
@@ -2381,7 +2389,7 @@ impl Daemon {
                     "log" => Reply::ok(self.log(&id, arg(1).parse().unwrap_or(super::LOG), cx)),
                     "state" => Reply::ok(self.state(&id, cx)),
                     "send" => self
-                        .send_to_session(&id, arg(1).to_string(), cx)
+                        .send_to_session(&id, arg(1).to_string(), false, cx)
                         .map(|()| format!("sent to {id}"))
                         .into(),
                     // One waiting on an answer counts: stopping it withdraws

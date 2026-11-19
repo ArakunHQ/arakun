@@ -248,6 +248,14 @@ pub fn add_worktree(
     Ok(())
 }
 
+/// Removes the worktree at `path` only while it has nothing uncommitted: git
+/// refuses otherwise. For a removal nobody confirmed.
+pub fn remove_clean_worktree(repo: &Path, path: &Path) -> Result<()> {
+    run(git(repo).args(["worktree", "remove"]).arg(path))?;
+    let _ = run(git(repo).args(["worktree", "prune"]));
+    Ok(())
+}
+
 /// Where a new environment starts by default: the checked-out branch as it is on
 /// origin, fetched first, so it begins from what was pushed and merged rather than a
 /// local branch that may be behind. None when there is no such remote branch; the

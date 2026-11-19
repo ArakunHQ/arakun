@@ -25,6 +25,7 @@ mod automations;
 mod branches;
 mod browsers;
 mod checks;
+mod cleanup;
 mod cloudflare;
 mod commands;
 mod composer;
@@ -356,6 +357,7 @@ pub struct Shell {
     _scheduler: Option<Task<()>>,
     /// Merges seen and settled (`settle`).
     settle: settle::Watch,
+    cleanup: cleanup::Watch,
     /// Set while the divider between split panes is being dragged.
     split_drag: bool,
     /// Bounds of the split panes as last painted, for dragging the divider.
@@ -881,6 +883,7 @@ impl Shell {
             _control: None,
             _scheduler: None,
             settle: settle::Watch::default(),
+            cleanup: cleanup::Watch::default(),
             split_drag: false,
             split_bounds: Rc::default(),
             browsers_dirty: false,
@@ -1536,6 +1539,11 @@ impl Shell {
                 self.projects.len() - 1
             }
         };
+        // The one on screen until now was in use until now. Without this a
+        // switch right after a long sleep leaves it with its old date, and
+        // the cleanup could take what was just open.
+        self.mark_visible_used();
+        self.avoid_env_being_removed(index);
         self.active_project = index;
         self.show_env_tab(false);
         self.note_active_tab(cx);
@@ -2656,7 +2664,29 @@ impl Shell {
         cx.notify();
     }
 
+    /// A project about to show would show the environment it was left on.
+    /// When the cleanup is removing that one right now (`shell::cleanup`),
+    /// the project shows its main checkout instead.
+    fn avoid_env_being_removed(&mut self, project: usize) {
+        let Some(p) = self.projects.get(project) else {
+            return;
+        };
+        let going = p
+            .environments
+            .get(p.active_env)
+            .is_some_and(|e| self.being_cleaned_up(&e.path));
+        if going {
+            let main = p.environments.iter().position(|e| e.is_checkout);
+            self.projects[project].active_env = main.unwrap_or(0);
+        }
+    }
+
     fn select_project(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        // The one on screen until now was in use until now. Without this a
+        // switch right after a long sleep leaves it with its old date, and
+        // the cleanup could take what was just open.
+        self.mark_visible_used();
+        self.avoid_env_being_removed(index);
         self.active_project = index;
         self.env_menu_open = false;
         self.after_switch(window, cx);
@@ -2667,6 +2697,9 @@ impl Shell {
         // The strip goes to the tab this environment showed last.
         self.show_env_tab(false);
         self.note_active_tab(cx);
+        self.mark_visible_used();
+        // The project or environment switched to may show its GitHub tab.
+        self.unfloat_github(cx);
         self.refresh_visible(cx);
         self.ensure_active_live(window, cx);
         self.ensure_terminal(window, cx);
@@ -2684,6 +2717,18 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Its folder is going away this moment (`shell::cleanup`).
+        if self.projects[project]
+            .environments
+            .get(env)
+            .is_some_and(|e| self.being_cleaned_up(&e.path))
+        {
+            return;
+        }
+        // The one on screen until now was in use until now. Without this a
+        // switch right after a long sleep leaves it with its old date, and
+        // the cleanup could take what was just open.
+        self.mark_visible_used();
         self.active_project = project;
         self.projects[project].active_env = env;
         self.env_menu_open = false;

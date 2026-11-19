@@ -23,7 +23,7 @@ impl Step {
     pub fn label(self) -> &'static str {
         match self {
             Step::Agents => "Agents",
-            Step::Look => "Look and shortcuts",
+            Step::Look => "Preferences",
             Step::Connections => "Connections",
             Step::Reports => "Crash reports",
             Step::Project => "First project",
@@ -45,7 +45,9 @@ impl Step {
             Step::Agents => {
                 "Arakun runs the agents you already have. New environments start with the one you pick, and you can switch for any session."
             }
-            Step::Look => "Pick a mode now. Palettes, corners and spacing are in Settings.",
+            Step::Look => {
+                "Pick a mode and when old environments go. Palettes, corners, spacing and the rest are in Settings."
+            }
             Step::Connections => "Both are optional, and both can wait.",
             Step::Reports => {
                 "They tell us what breaks and what gets used. Nothing is sent unless you say yes."

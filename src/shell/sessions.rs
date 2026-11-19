@@ -1034,6 +1034,10 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<SharedString> {
+        // Its folder is going away this moment (`shell::cleanup`).
+        if self.being_cleaned_up(env_path) {
+            return None;
+        }
         let visible = self.has_projects() && self.env().path == env_path;
         let id = new_session_id();
         let env = self.find_env_mut(env_path)?;

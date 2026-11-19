@@ -17,6 +17,7 @@ mod canvas;
 mod canvas_view;
 mod caret;
 mod ci;
+mod cleanup;
 mod clone_source;
 mod cloudflare;
 mod cloudflare_view;

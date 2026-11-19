@@ -26,9 +26,10 @@ pub fn hosts(agent: AgentKind) -> &'static [&'static str] {
         AgentKind::Droid => &["api.factory.ai"],
         AgentKind::OpenCode => &["opencode.ai"],
         AgentKind::WorkersAi => &["api.cloudflare.com"],
-        // Arakun reads only how Codex is signed in, never its tokens, and only
-        // whether Devin is.
-        AgentKind::Codex | AgentKind::Devin => &[],
+        // The server `devin auth login` signs in with; `devin_plan` reads the quota there.
+        AgentKind::Devin => &["server.codeium.com"],
+        // Arakun reads only how Codex is signed in, never its tokens.
+        AgentKind::Codex => &[],
     }
 }
 
@@ -62,7 +63,7 @@ pub fn notice(agent: AgentKind) -> &'static str {
             "Arakun has no account of its own and never asks you to approve access. Sign in runs the codex CLI's own login. Arakun only checks which kind of sign-in Codex has and never reads the tokens."
         }
         AgentKind::Devin => {
-            "Arakun has no account of its own and never asks you to approve access. Sign in runs the devin CLI's own login. Arakun only checks that Devin has a sign-in and never reads the tokens."
+            "Arakun has no account of its own and never asks you to approve access. Sign in runs the devin CLI's own login. Arakun reads the key Devin saves only to show your plan's quota, sends it only to server.codeium.com, and never changes it."
         }
         AgentKind::Droid => {
             "Arakun has no account of its own and never asks you to approve access. It reads the login droid already has and never changes it; droid renews it itself. A Factory API key you connect here, or FACTORY_API_KEY, is used instead; a connected key is kept in the system keyring. Either one goes only to api.factory.ai."
@@ -114,6 +115,8 @@ mod tests {
         }
         assert!(check(AgentKind::Claude, "https://api.factory.ai/").is_err());
         assert!(check(AgentKind::Codex, "https://api.openai.com/").is_err());
+        assert!(check(AgentKind::Devin, "https://server.codeium.com/exa.x/Y").is_ok());
+        assert!(check(AgentKind::Devin, "https://api.devin.ai/").is_err());
     }
 
     #[test]
@@ -123,13 +126,13 @@ mod tests {
             AgentKind::Droid,
             AgentKind::OpenCode,
             AgentKind::WorkersAi,
+            AgentKind::Devin,
         ] {
             for host in hosts(agent) {
                 assert!(notice(agent).contains(host), "{agent:?} {host}");
             }
         }
         assert!(notice(AgentKind::Codex).contains("never reads the tokens"));
-        assert!(notice(AgentKind::Devin).contains("never reads the tokens"));
         // Droid can run on a key Arakun keeps, not only on droid's login.
         assert!(notice(AgentKind::Droid).contains("keyring"));
         for word in ["keyring", "FACTORY_API_KEY", "api.factory.ai"] {

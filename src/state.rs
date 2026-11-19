@@ -265,8 +265,8 @@ pub struct Layout {
     pub glass: bool,
     pub grays: crate::theme::Grays,
     pub type_scale: crate::ui::TypeScale,
-    /// Whether the rail's usage card shows Claude, Droid and OpenCode.
-    pub rail_usage: [bool; 3],
+    /// Whether the rail's usage card shows Claude, Droid, OpenCode and Devin.
+    pub rail_usage: [bool; 4],
     pub ui_zoom: u32,
     pub window: Option<WindowState>,
 }
@@ -730,6 +730,7 @@ pub fn snapshot_with(
             ("claude", layout.rail_usage[0]),
             ("droid", layout.rail_usage[1]),
             ("opencode", layout.rail_usage[2]),
+            ("devin", layout.rail_usage[3]),
         ]
         .into_iter()
         .filter(|(_, shown)| !shown)
@@ -937,7 +938,7 @@ pub fn restore(state: State) -> (Vec<Project>, usize, Layout, TabStrip) {
         glass: state.glass,
         grays: crate::theme::Grays::from_id(&state.grays),
         type_scale: crate::ui::TypeScale::from_id(&state.type_scale),
-        rail_usage: ["claude", "droid", "opencode"]
+        rail_usage: ["claude", "droid", "opencode", "devin"]
             .map(|k| !state.rail_hidden.iter().any(|h| h == k)),
         // 0 only comes from `State::default()`, when there is no state file.
         ui_zoom: if state.ui_zoom == 0 {
@@ -1113,7 +1114,7 @@ mod tests {
             glass: false,
             grays: crate::theme::Grays::Crisp,
             type_scale: crate::ui::TypeScale::Compact,
-            rail_usage: [true, true, true],
+            rail_usage: [true, true, true, true],
             ui_zoom: 100,
             window: None,
         };
@@ -1147,7 +1148,7 @@ mod tests {
             glass: false,
             grays: crate::theme::Grays::Crisp,
             type_scale: crate::ui::TypeScale::Compact,
-            rail_usage: [true, true, true],
+            rail_usage: [true, true, true, true],
             ui_zoom: 100,
             window: None,
         };
@@ -1180,12 +1181,12 @@ mod tests {
             glass: false,
             grays: crate::theme::Grays::Soft,
             type_scale: crate::ui::TypeScale::Comfortable,
-            rail_usage: [true, false, true],
+            rail_usage: [true, false, true, false],
             ui_zoom: 100,
             window: None,
         };
         let (_, _, layout, _) = restore(serde_json::from_slice(&snapshot(&[], 0, layout)).unwrap());
-        assert_eq!(layout.rail_usage, [true, false, true]);
+        assert_eq!(layout.rail_usage, [true, false, true, false]);
         assert_eq!(
             (layout.grays, layout.type_scale),
             (crate::theme::Grays::Soft, crate::ui::TypeScale::Comfortable)
@@ -1216,7 +1217,7 @@ mod tests {
             glass: false,
             grays: crate::theme::Grays::Crisp,
             type_scale: crate::ui::TypeScale::Compact,
-            rail_usage: [true, true, true],
+            rail_usage: [true, true, true, true],
             ui_zoom: 100,
             window: None,
         };
@@ -1249,7 +1250,7 @@ mod tests {
             glass: false,
             grays: crate::theme::Grays::Crisp,
             type_scale: crate::ui::TypeScale::Compact,
-            rail_usage: [true, true, true],
+            rail_usage: [true, true, true, true],
             ui_zoom: 100,
             window: None,
         };
@@ -1286,7 +1287,7 @@ mod tests {
             glass: false,
             grays: crate::theme::Grays::Crisp,
             type_scale: crate::ui::TypeScale::Compact,
-            rail_usage: [true, true, true],
+            rail_usage: [true, true, true, true],
             ui_zoom: 100,
             window: None,
         };
@@ -1352,7 +1353,7 @@ mod tests {
             glass: false,
             grays: crate::theme::Grays::Crisp,
             type_scale: crate::ui::TypeScale::Compact,
-            rail_usage: [true, true, true],
+            rail_usage: [true, true, true, true],
             ui_zoom: 100,
             window: None,
         };

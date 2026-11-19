@@ -637,6 +637,7 @@ impl Shell {
         account_view::set_rail_shows(crate::agent::AgentKind::Claude, layout.rail_usage[0]);
         account_view::set_rail_shows(crate::agent::AgentKind::Droid, layout.rail_usage[1]);
         account_view::set_rail_shows(crate::agent::AgentKind::OpenCode, layout.rail_usage[2]);
+        account_view::set_rail_shows(crate::agent::AgentKind::Devin, layout.rail_usage[3]);
         crate::ui::set_type_scale(layout.type_scale);
         if layout.ui_zoom != crate::ui_zoom::pct() {
             crate::ui_zoom::set_pct(layout.ui_zoom);
@@ -1230,6 +1231,7 @@ impl Shell {
                 account_view::rail_shows(crate::agent::AgentKind::Claude),
                 account_view::rail_shows(crate::agent::AgentKind::Droid),
                 account_view::rail_shows(crate::agent::AgentKind::OpenCode),
+                account_view::rail_shows(crate::agent::AgentKind::Devin),
             ],
             ui_zoom: crate::ui_zoom::pct(),
             window: self.window_state.clone(),

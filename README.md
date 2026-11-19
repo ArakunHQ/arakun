@@ -284,10 +284,21 @@ after a week).
 
 - **Service tabs.** A PostHog tab (personal API keys; matches projects by their `phc_`
   keys) and a Cloudflare tab (uses the `cf` CLI's sign-in).
-- **Usage.** Token use and cost from Claude Code's and Droid's own logs, and each plan's
-  limits. Arakun has no account of its own and never asks you to approve access: it
+- **Usage.** Token use and estimated API cost from Claude Code's and Droid's own logs,
+  and Devin's local SQLite session history, including sessions run outside Arakun.
+  Devin's history is read only from `$XDG_DATA_HOME/devin/cli/sessions.db` (by default
+  `~/.local/share/devin/cli/sessions.db`), or `sessions.db` in `DEVIN_SESSIONS_DIR`.
+  Repeated responses are counted once. Models without a known API price are shown
+  as unpriced, not as free. Billed ACUs and experimental file-based session history
+  are not imported yet.
+  Arakun also shows Claude Code, Droid, OpenCode and Devin plan limits. Devin's daily
+  and weekly quota (Max has only the weekly one) comes from the endpoint the devin
+  CLI's `/usage` reads. It is not a documented API, so it can stop working after a
+  Devin update; then the quota is left out. Plans billed in credits or ACUs show none.
+  Arakun has no account of its own and never asks you to approve access: it
   reads the limits with the sign-in each CLI already has (Claude Code, droid,
-  OpenCode), and Sign in runs the CLI's own login. It only reads that sign-in and
+  OpenCode, devin), and Sign in runs the CLI's own login. Devin's key goes only to
+  server.codeium.com, the server `devin auth login` signed in with. It only reads that sign-in and
   never changes it. It sends it only to that provider's own host over https, never to
   a gateway set in `ANTHROPIC_BASE_URL`. Droid can also use a Factory API key you
   connect in Arakun (kept in the system keyring) or `FACTORY_API_KEY`, which goes only

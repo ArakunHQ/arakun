@@ -604,11 +604,7 @@ fn place_only(e: &Entry, details: Option<&Details>, me: &str, day_start: u64) ->
                 });
             }
             if mentioned || assigned {
-                let asked = if assigned {
-                    "assigned to you".to_string()
-                } else {
-                    format!("{author} mentioned you")
-                };
+                let asked = asked_text(assigned, author, me);
                 return Some(Placed {
                     group: Group::Mentions,
                     lane: Lane::OnYou,
@@ -681,7 +677,7 @@ fn place_only(e: &Entry, details: Option<&Details>, me: &str, day_start: u64) ->
                     group: Group::Mentions,
                     lane: Lane::OnYou,
                     mark: Mark::Mention,
-                    sub: join(&["issue", &format!("{author} mentioned you")]),
+                    sub: join(&["issue", &asked_text(false, author, me)]),
                     ..Default::default()
                 });
             }
@@ -693,7 +689,19 @@ fn place_only(e: &Entry, details: Option<&Details>, me: &str, day_start: u64) ->
                 ..Default::default()
             })
         }
-        None => place_unread(e, &num, reason, mentioned, assigned, day_start, &join),
+        None => place_unread(e, &num, reason, mentioned, assigned, me, day_start, &join),
+    }
+}
+
+/// Why a mention row asks for the user. `author` is the item's author, not
+/// whoever wrote the mention, so on the user's own item it would name them.
+fn asked_text(assigned: bool, author: &str, me: &str) -> String {
+    if assigned {
+        "assigned to you".into()
+    } else if author.is_empty() || author.eq_ignore_ascii_case(me) {
+        "mentioned you".into()
+    } else {
+        format!("{author} mentioned you")
     }
 }
 
@@ -704,6 +712,7 @@ fn place_unread(
     reason: &str,
     mentioned: bool,
     assigned: bool,
+    me: &str,
     day_start: u64,
     join: &dyn Fn(&[&str]) -> String,
 ) -> Option<Placed> {
@@ -743,13 +752,7 @@ fn place_unread(
         });
     }
     if mentioned || assigned {
-        let asked = if assigned {
-            "assigned to you".to_string()
-        } else if author.is_empty() {
-            "mentioned you".into()
-        } else {
-            format!("{author} mentioned you")
-        };
+        let asked = asked_text(assigned, author, me);
         return Some(Placed {
             group: Group::Mentions,
             lane: Lane::OnYou,
@@ -922,6 +925,14 @@ mod tests {
       "state":"open","title":"ci: run clippy and tests on macos","updatedAt":"2026-11-14T22:22:11Z","url":"https://github.com/ArakunHQ/arakun/pull/55"},
       {"author":null,"number":16,"repository":{"name":"Habitae","nameWithOwner":"KarloAldrete/Habitae"},"isPullRequest":false,
       "state":"open","title":"landing review","updatedAt":"2026-06-14T05:01:21Z","url":"https://github.com/KarloAldrete/Habitae/issues/16","closedAt":null}]"#;
+
+    #[test]
+    fn mentions_never_name_the_user() {
+        assert_eq!(asked_text(false, "rik", ME), "rik mentioned you");
+        assert_eq!(asked_text(false, "karloaldrete", ME), "mentioned you");
+        assert_eq!(asked_text(false, "", ME), "mentioned you");
+        assert_eq!(asked_text(true, ME, ME), "assigned to you");
+    }
 
     fn found(why: Why, repo: &str, n: u64, state: &str, pull: Option<bool>) -> (Why, Found) {
         let page = if pull == Some(false) {

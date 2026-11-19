@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::agent::{SessionMeta, Setting};
 use crate::model::{
     Agent, Automation, Environment, Project, Session, Snippet, Split, SplitDir, Status, Tab,
-    TabKind,
+    TabKind, TabStrip,
 };
 
 #[derive(Serialize, Deserialize, Default)]
@@ -399,47 +399,68 @@ fn is_session(t: &Tab) -> bool {
     matches!(t.kind, TabKind::Session { .. })
 }
 
-/// Position of the active tab among the session tabs (0 when another tab is active).
-fn active_session_tab(e: &Environment) -> usize {
-    match e.tabs.get(e.active_tab) {
-        Some(t) if is_session(t) => e.tabs[..e.active_tab]
-            .iter()
-            .filter(|t| is_session(t))
-            .count(),
-        _ => 0,
-    }
-}
-
 fn is_saved_browser(t: &Tab) -> bool {
     matches!(&t.kind, TabKind::Browser { url } if !matches!(url.as_ref(), "" | "about:blank"))
 }
 
-/// Position of a tab among the tabs that reopen after a restart, in their reopened order.
-fn reopened_index(e: &Environment, id: u64) -> Option<usize> {
-    let tab = e.tabs.iter().position(|t| t.id == id)?;
-    let before = &e.tabs[..tab];
-    if is_session(&e.tabs[tab]) {
+/// The tabs of one environment, in the order the strip shows them. The file
+/// keeps them per environment, as it did when every environment had its own tabs.
+fn tabs_of<'a>(strip: &'a TabStrip, e: &Environment) -> Vec<&'a Tab> {
+    strip.tabs.iter().filter(|t| t.is_in(&e.path)).collect()
+}
+
+/// Position of the environment's front tab among its session tabs (0 when it
+/// is another tab). With a split put aside, the tab of its focused pane counts:
+/// the split is saved against it.
+fn active_session_tab(strip: &TabStrip, e: &Environment) -> usize {
+    let tabs = tabs_of(strip, e);
+    let parked = strip
+        .parked
+        .get(&e.path)
+        .filter(|_| strip.split_env.as_deref() != Some(&e.path));
+    let front = match parked {
+        Some((_, focus)) => Some(*focus),
+        None => strip.front_of(&e.path).map(|i| strip.tabs[i].id),
+    };
+    match tabs.iter().position(|t| Some(t.id) == front) {
+        Some(i) if is_session(tabs[i]) => tabs[..i].iter().filter(|t| is_session(t)).count(),
+        _ => 0,
+    }
+}
+
+/// Position of a tab among its environment's tabs that reopen after a restart,
+/// in their reopened order.
+fn reopened_index(strip: &TabStrip, e: &Environment, id: u64) -> Option<usize> {
+    let tabs = tabs_of(strip, e);
+    let tab = tabs.iter().position(|t| t.id == id)?;
+    let before = &tabs[..tab];
+    if is_session(tabs[tab]) {
         Some(before.iter().filter(|t| is_session(t)).count())
-    } else if is_saved_browser(&e.tabs[tab]) {
-        let sessions = e.tabs.iter().filter(|t| is_session(t)).count();
+    } else if is_saved_browser(tabs[tab]) {
+        let sessions = tabs.iter().filter(|t| is_session(t)).count();
         Some(sessions + before.iter().filter(|t| is_saved_browser(t)).count())
     } else {
         None
     }
 }
 
-fn split_state(e: &Environment) -> Option<SplitState> {
-    let split = e.split.as_ref()?;
-    e.split_other()?;
+/// The split, kept with the environment whose two tabs it shows.
+fn split_state(strip: &TabStrip, e: &Environment) -> Option<SplitState> {
+    let split = if strip.split_env.as_deref() == Some(&e.path) {
+        strip.split_other(&e.path)?;
+        strip.split?
+    } else {
+        // Not on screen: its split waits with the strip.
+        strip.parked.get(&e.path)?.0
+    };
     Some(SplitState {
-        tab: reopened_index(e, split.other)?,
+        tab: reopened_index(strip, e, split.other)?,
         down: split.dir == SplitDir::Down,
         ratio: split.ratio,
         focus_first: split.focus_first,
     })
 }
 
-/// Where a session's transcript is saved.
 pub fn transcript_path(id: &str) -> PathBuf {
     data_dir().join("sessions").join(format!("{id}.json"))
 }
@@ -545,7 +566,18 @@ impl Saves {
     }
 }
 
+/// [`snapshot_with`] for projects that have no tabs open.
+#[cfg(test)]
 pub fn snapshot(projects: &[Project], active_project: usize, layout: Layout) -> Vec<u8> {
+    snapshot_with(projects, &TabStrip::default(), active_project, layout)
+}
+
+pub fn snapshot_with(
+    projects: &[Project],
+    strip: &TabStrip,
+    active_project: usize,
+    layout: Layout,
+) -> Vec<u8> {
     // Headless sessions are listed from their own folder, not saved here;
     // their project stays once it holds sessions the app took over.
     // A server's projects and folders come from the server each time.
@@ -643,18 +675,16 @@ pub fn snapshot(projects: &[Project], active_project: usize, layout: Layout) -> 
                                 continues: s.continues.clone(),
                             })
                             .collect(),
-                        open: e
-                            .tabs
-                            .iter()
+                        open: tabs_of(strip, e)
+                            .into_iter()
                             .filter_map(|t| match &t.kind {
                                 TabKind::Session { id, .. } => Some(id.to_string()),
                                 _ => None,
                             })
                             .collect(),
-                        active_tab: active_session_tab(e),
-                        browsers: e
-                            .tabs
-                            .iter()
+                        active_tab: active_session_tab(strip, e),
+                        browsers: tabs_of(strip, e)
+                            .into_iter()
                             .filter_map(|t| match &t.kind {
                                 // Blank tabs are not worth reopening.
                                 TabKind::Browser { url } if is_saved_browser(t) => {
@@ -663,7 +693,7 @@ pub fn snapshot(projects: &[Project], active_project: usize, layout: Layout) -> 
                                 _ => None,
                             })
                             .collect(),
-                        split: split_state(e),
+                        split: split_state(strip, e),
                         draft: e.draft.to_string(),
                         caret: e.draft.head(),
                         images: e.draft_images.clone(),
@@ -702,7 +732,11 @@ pub fn snapshot(projects: &[Project], active_project: usize, layout: Layout) -> 
     serde_json::to_vec_pretty(&state).unwrap_or_default()
 }
 
-pub fn restore(state: State) -> (Vec<Project>, usize, Layout) {
+pub fn restore(state: State) -> (Vec<Project>, usize, Layout, TabStrip) {
+    let mut strip = TabStrip::default();
+    // The split each environment was saved with, and the tab of its focused
+    // pane; the one on screen gets its own back, the others wait.
+    let mut splits: Vec<(PathBuf, Split, u64)> = Vec::new();
     let last_agent = state.last_agent.clone();
     crate::island::set_enabled(!state.island_off);
     let projects: Vec<Project> = state
@@ -772,12 +806,13 @@ pub fn restore(state: State) -> (Vec<Project>, usize, Layout) {
                             session
                         })
                         .collect();
-                    let tabs: Vec<Tab> = e
+                    let mut tabs: Vec<Tab> = e
                         .open
                         .iter()
                         .filter_map(|id| {
                             let s = &env.sessions[env.session_index(id)?];
-                            Some(Tab::new(
+                            Some(Tab::of(
+                                &env.path,
                                 s.title.clone(),
                                 TabKind::Session {
                                     agent: s.agent,
@@ -786,7 +821,6 @@ pub fn restore(state: State) -> (Vec<Project>, usize, Layout) {
                             ))
                         })
                         .collect();
-                    let mut tabs = tabs;
                     let sessions_open = tabs.len();
                     tabs.extend(e.browsers.into_iter().map(|url| {
                         let title = if url.is_empty() {
@@ -794,29 +828,36 @@ pub fn restore(state: State) -> (Vec<Project>, usize, Layout) {
                         } else {
                             url.clone()
                         };
-                        Tab::new(title, TabKind::Browser { url: url.into() })
+                        Tab::of(&env.path, title, TabKind::Browser { url: url.into() })
                     }));
-                    if !tabs.is_empty() {
-                        env.active_tab = if sessions_open > 0 {
-                            e.active_tab.min(sessions_open - 1)
-                        } else {
-                            0
-                        };
-                        env.tabs = tabs;
+                    let front = if sessions_open > 0 {
+                        e.active_tab.min(sessions_open - 1)
+                    } else {
+                        0
+                    };
+                    if let Some(tab) = tabs.get(front) {
+                        strip.front.insert(env.path.clone(), tab.id);
                     }
-                    env.split = e.split.and_then(|s| {
-                        let other = env.tabs.get(s.tab).filter(|_| s.tab != env.active_tab)?;
-                        Some(Split {
-                            other: other.id,
-                            dir: if s.down {
-                                SplitDir::Down
-                            } else {
-                                SplitDir::Right
+                    if let Some(s) = e.split
+                        && let Some(other) = tabs.get(s.tab).filter(|_| s.tab != front)
+                        && let Some(focus) = tabs.get(front)
+                    {
+                        splits.push((
+                            env.path.clone(),
+                            Split {
+                                other: other.id,
+                                dir: if s.down {
+                                    SplitDir::Down
+                                } else {
+                                    SplitDir::Right
+                                },
+                                ratio: s.ratio.clamp(Split::MIN_RATIO, Split::MAX_RATIO),
+                                focus_first: s.focus_first,
                             },
-                            ratio: s.ratio.clamp(Split::MIN_RATIO, Split::MAX_RATIO),
-                            focus_first: s.focus_first,
-                        })
-                    });
+                            focus.id,
+                        ));
+                    }
+                    strip.tabs.extend(tabs);
                     env
                 })
                 .collect();
@@ -846,6 +887,24 @@ pub fn restore(state: State) -> (Vec<Project>, usize, Layout) {
         })
         .collect();
     let active = state.active_project.min(projects.len().saturating_sub(1));
+    // The strip opens on the tab of the environment that was on screen.
+    if let Some(shown) = projects
+        .get(active)
+        .and_then(|p| p.environments.get(p.active_env))
+    {
+        strip.active_tab = strip
+            .front_of(&shown.path)
+            .unwrap_or_else(|| strip.add(Tab::new_session(&shown.path)));
+        for (path, split, focus) in splits {
+            if path == shown.path {
+                strip.split = Some(split);
+            } else {
+                strip.parked.insert(path, (split, focus));
+            }
+        }
+        strip.split_env = Some(shown.path.clone());
+        strip.seed_tab_history();
+    }
     let layout = Layout {
         dock_open: state.dock_open,
         dock_height: state.dock_height,
@@ -882,7 +941,7 @@ pub fn restore(state: State) -> (Vec<Project>, usize, Layout) {
         (true, Some(agent)) => crate::model::set_default_agent(agent),
         (true, None) => {}
     }
-    (projects, active, layout)
+    (projects, active, layout, strip)
 }
 
 pub fn new_project(path: &Path) -> Project {
@@ -1040,7 +1099,7 @@ mod tests {
             ui_zoom: 100,
             window: None,
         };
-        let (_, _, layout) = restore(serde_json::from_slice(&snapshot(&[], 0, layout)).unwrap());
+        let (_, _, layout, _) = restore(serde_json::from_slice(&snapshot(&[], 0, layout)).unwrap());
         assert!(!layout.rail_open && !layout.panel_open);
     }
 
@@ -1107,7 +1166,7 @@ mod tests {
             ui_zoom: 100,
             window: None,
         };
-        let (_, _, layout) = restore(serde_json::from_slice(&snapshot(&[], 0, layout)).unwrap());
+        let (_, _, layout, _) = restore(serde_json::from_slice(&snapshot(&[], 0, layout)).unwrap());
         assert_eq!(layout.rail_usage, [true, false, true]);
         assert_eq!(
             (layout.grays, layout.type_scale),
@@ -1177,7 +1236,7 @@ mod tests {
             window: None,
         };
         let bytes = snapshot(std::slice::from_ref(&project), 0, layout);
-        let (mut projects, _, _) = restore(serde_json::from_slice(&bytes).unwrap());
+        let (mut projects, _, _, _) = restore(serde_json::from_slice(&bytes).unwrap());
         let env = &mut projects[0].environments[1];
         assert!(env.awaits_name());
         // Renamed by hand while arakun was closed: the refresh after the restart reads it.
@@ -1214,7 +1273,7 @@ mod tests {
             window: None,
         };
         let bytes = snapshot(std::slice::from_ref(&project), 0, layout);
-        let (projects, _, _) = restore(serde_json::from_slice(&bytes).unwrap());
+        let (projects, _, _, _) = restore(serde_json::from_slice(&bytes).unwrap());
         let draft = &projects[0].environments[0].draft;
         assert_eq!((&**draft, draft.head()), ("fix the tests\nplease", 3));
         assert!(projects[0].environments[1].draft.is_empty());
@@ -1231,29 +1290,35 @@ mod tests {
         let mut project = new_project(Path::new("/tmp/arakun-split-test"));
         let env = &mut project.environments[0];
         env.sessions = vec![Session::new("s1".into(), "One".into(), Agent::Droid)];
-        env.tabs = vec![
-            Tab::new(
-                "One",
-                TabKind::Session {
-                    agent: Agent::Droid,
-                    id: "s1".into(),
-                },
-            ),
-            Tab::new("New tab", TabKind::Browser { url: "".into() }),
-            Tab::new(
-                "Docs",
-                TabKind::Browser {
-                    url: "https://example.com".into(),
-                },
-            ),
-        ];
-        env.active_tab = 0;
-        env.split = Some(Split {
-            other: env.tabs[2].id,
+        let here = env.path.clone();
+        let mut strip = TabStrip {
+            tabs: vec![
+                Tab::of(
+                    &here,
+                    "One",
+                    TabKind::Session {
+                        agent: Agent::Droid,
+                        id: "s1".into(),
+                    },
+                ),
+                Tab::of(&here, "New tab", TabKind::Browser { url: "".into() }),
+                Tab::of(
+                    &here,
+                    "Docs",
+                    TabKind::Browser {
+                        url: "https://example.com".into(),
+                    },
+                ),
+            ],
+            ..Default::default()
+        };
+        strip.split = Some(Split {
+            other: strip.tabs[2].id,
             dir: SplitDir::Down,
             ratio: 0.35,
             focus_first: true,
         });
+        strip.split_env = Some(here.clone());
 
         let layout = Layout {
             dock_open: false,
@@ -1273,16 +1338,34 @@ mod tests {
             ui_zoom: 100,
             window: None,
         };
-        let bytes = snapshot(std::slice::from_ref(&project), 0, layout);
-        let (projects, _, _) = restore(serde_json::from_slice(&bytes).unwrap());
-        let env = &projects[0].environments[0];
+        let bytes = snapshot_with(std::slice::from_ref(&project), &strip, 0, layout.clone());
+        let (_, _, _, strip) = restore(serde_json::from_slice(&bytes).unwrap());
         // The blank browser tab is not reopened, so the docs tab lands at index 1.
-        assert_eq!(env.tabs.len(), 2);
-        let split = env.split.expect("split restored");
-        assert_eq!(env.split_other(), Some(1));
+        assert_eq!(strip.tabs.len(), 2);
+        let split = strip.split.expect("split restored");
+        assert_eq!(strip.split_other(&here), Some(1));
         assert_eq!(split.dir, SplitDir::Down);
         assert!(split.focus_first);
         assert!((split.ratio - 0.35).abs() < 1e-6);
+
+        // Saved while another environment is on screen, it waits for its own.
+        let mut strip = strip;
+        let elsewhere = PathBuf::from("/tmp/arakun-split-elsewhere");
+        project
+            .environments
+            .push(Environment::new(elsewhere.clone(), None, false));
+        project.active_env = 1;
+        let (focus, other) = (strip.tabs[0].id, strip.tabs[1].id);
+        strip.bring_split(&elsewhere, Some(focus));
+        assert!(strip.split.is_none());
+        // The environment's front tab moved on since; the split keeps its own.
+        strip.front.insert(here.clone(), other);
+        let bytes = snapshot_with(std::slice::from_ref(&project), &strip, 0, layout);
+        let (_, _, _, mut strip) = restore(serde_json::from_slice(&bytes).unwrap());
+        assert!(strip.split.is_none(), "it is not the one on screen");
+        strip.active_tab = strip.front_of(&here).unwrap();
+        strip.bring_split(&here, None);
+        assert_eq!((strip.active_tab, strip.split_other(&here)), (0, Some(1)));
     }
 
     #[test]

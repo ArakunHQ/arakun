@@ -679,7 +679,7 @@ impl Shell {
         at: gpui::Point<gpui::Pixels>,
         cx: &mut Context<Self>,
     ) {
-        if !self.has_projects() || index >= self.env().tabs.len() {
+        if !self.has_projects() || index >= self.strip.tabs.len() {
             return;
         }
         // Below the title bar, so the menu doesn't cover the tab it is about.

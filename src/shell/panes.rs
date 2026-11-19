@@ -1,5 +1,6 @@
 //! Split panes and tab shortcuts. The focused pane always shows the active tab
-//! (see `model::Split`); the other pane shows one more tab of the same environment.
+//! (see `model::Split`); the other pane shows one more tab of the same environment,
+//! or a view.
 
 use gpui::{AnyElement, Context, IntoElement, MouseButton, Window, canvas, div, px, relative};
 
@@ -15,7 +16,7 @@ impl Shell {
     ) -> gpui::Stateful<gpui::Div> {
         let dir = self
             .has_projects()
-            .then(|| self.env().split.map(|s| s.dir))
+            .then(|| self.strip.split.map(|s| s.dir))
             .flatten();
         root.when(self.split_drag, |d| {
             d.when(dir == Some(SplitDir::Right), |d| d.cursor_col_resize())
@@ -82,12 +83,11 @@ impl Shell {
         if !self.has_projects() {
             return;
         }
-        let env = self.env();
-        let n = env.tabs.len() as isize;
+        let n = self.strip.tabs.len() as isize;
         if n < 2 {
             return;
         }
-        let next = (env.active_tab as isize + delta).rem_euclid(n) as usize;
+        let next = (self.strip.active_tab as isize + delta).rem_euclid(n) as usize;
         self.select_tab(next, window, cx);
         self.focus_active_content(window, cx);
     }
@@ -97,9 +97,13 @@ impl Shell {
         if !self.has_projects() {
             return;
         }
-        let len = self.env().tabs.len();
-        let index = if n == usize::MAX { len - 1 } else { n };
-        if index < len && index != self.env().active_tab {
+        let len = self.strip.tabs.len();
+        let index = if n == usize::MAX {
+            len.saturating_sub(1)
+        } else {
+            n
+        };
+        if index < len && index != self.strip.active_tab {
             self.select_tab(index, window, cx);
             self.focus_active_content(window, cx);
         }
@@ -116,7 +120,7 @@ impl Shell {
         {
             return;
         }
-        let Some(tab) = env.tabs.get(env.active_tab) else {
+        let Some(tab) = self.strip.active() else {
             return;
         };
         match &tab.kind {
@@ -157,12 +161,11 @@ impl Shell {
         if !self.has_projects() {
             return;
         }
-        let env = self.env_mut();
-        let current = env.split_other().and(env.split.as_ref()).map(|s| s.dir);
+        let current = self.split_other().and(self.strip.split).map(|s| s.dir);
         match current {
             Some(d) if d == dir => self.close_split(cx),
             Some(_) => {
-                if let Some(split) = env.split.as_mut() {
+                if let Some(split) = self.strip.split.as_mut() {
                     split.dir = dir;
                 }
                 self.save(cx);
@@ -184,16 +187,25 @@ impl Shell {
         if !self.has_projects() {
             return;
         }
-        let env = self.env_mut();
-        let Some(active_id) = env.tabs.get(env.active_tab).map(|t| t.id) else {
+        // A tab of another environment: that environment comes on screen first,
+        // and the tab is paired with one of its own.
+        let foreign = target
+            .and_then(|t| self.strip.tabs.get(t))
+            .is_some_and(|t| t.env.as_deref().is_some_and(|e| e != self.env().path));
+        if let (true, Some(t)) = (foreign, target) {
+            self.select_tab(t, window, cx);
+        }
+        let here = self.env().path.clone();
+        let strip = &mut self.strip;
+        let Some(active_id) = strip.active().map(|t| t.id) else {
             return;
         };
-        let ratio = env.split.map_or(0.5, |s| s.ratio);
-        match target.filter(|t| *t < env.tabs.len()) {
-            Some(t) if t == env.active_tab => {
-                let other = companion(env);
-                let other_id = env.tabs[other].id;
-                env.split = Some(Split {
+        let ratio = strip.split.map_or(0.5, |s| s.ratio);
+        match target.filter(|t| *t < strip.tabs.len()) {
+            Some(t) if t == strip.active_tab => {
+                let other = companion(strip, &here);
+                let other_id = strip.tabs[other].id;
+                strip.split = Some(Split {
                     other: other_id,
                     dir,
                     ratio,
@@ -201,14 +213,21 @@ impl Shell {
                 });
             }
             target => {
-                let next = target.unwrap_or_else(|| companion(env));
-                env.split = Some(Split {
+                let next_id = match target {
+                    Some(t) => strip.tabs[t].id,
+                    None => {
+                        let other = companion(strip, &here);
+                        strip.tabs[other].id
+                    }
+                };
+                strip.split = Some(Split {
                     other: active_id,
                     dir,
                     ratio,
                     focus_first: false,
                 });
-                env.active_tab = next;
+                // By id: the companion may be a new tab, added before the active one.
+                strip.active_tab = strip.position(next_id).unwrap_or(strip.active_tab);
             }
         }
         self.note_active_tab(cx);
@@ -221,10 +240,10 @@ impl Shell {
 
     /// Ctrl+Alt+Shift+arrow: the two panes trade places.
     pub(super) fn swap_panes(&mut self, cx: &mut Context<Self>) {
-        if !self.has_projects() || self.env().split_other().is_none() {
+        if !self.has_projects() || self.split_other().is_none() {
             return;
         }
-        if let Some(split) = self.env_mut().split.as_mut() {
+        if let Some(split) = self.strip.split.as_mut() {
             split.swap();
         }
         self.save(cx);
@@ -244,7 +263,20 @@ impl Shell {
         if !self.has_projects() {
             return;
         }
-        if !self.env_mut().place_tab(id, first, companion) {
+        // A tab of another environment: that environment comes on screen first.
+        if let Some(index) = self.strip.position(id)
+            && self.strip.tabs[index]
+                .env
+                .as_deref()
+                .is_some_and(|e| e != self.env().path)
+        {
+            self.select_tab(index, window, cx);
+        }
+        let here = self.env().path.clone();
+        if !self
+            .strip
+            .place_tab(&here, id, first, |strip| companion(strip, &here))
+        {
             cx.notify();
             return;
         }
@@ -259,8 +291,7 @@ impl Shell {
     /// While a tab is dragged: the two halves of the content (or the two panes) to drop it on.
     pub(super) fn render_tab_drop_zones(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         self.lifted_tab(cx)?;
-        let env = self.env();
-        let split = env.split_other().and(env.split);
+        let split = self.split_other().and(self.strip.split);
         let row = split.is_none_or(|s| s.dir == SplitDir::Right);
         let ratio = split.map_or(0.5, |s| s.ratio);
         // Each zone owns its share of the content exactly (a margin would add
@@ -357,7 +388,7 @@ impl Shell {
         if !self.has_projects() {
             return;
         }
-        self.env_mut().split = None;
+        self.strip.split = None;
         self.sync_browsers(cx);
         self.save(cx);
         cx.notify();
@@ -368,16 +399,15 @@ impl Shell {
         if !self.has_projects() {
             return;
         }
-        let Some(other) = self.env().split_other() else {
+        let Some(other) = self.split_other() else {
             return;
         };
         // Activating the other pane's tab swaps the panes' roles (`settle_split`).
         self.select_tab(other, window, cx);
         // A click lands on whatever it hit, except the New session placeholder,
         // which turns into the composer and should take the typing.
-        let env = self.env();
         let fresh = matches!(
-            env.tabs.get(env.active_tab).map(|t| &t.kind),
+            self.strip.active().map(|t| &t.kind),
             Some(TabKind::NewSession)
         );
         if keyboard || fresh {
@@ -390,7 +420,7 @@ impl Shell {
             return;
         }
         let b = self.split_bounds.get();
-        let Some(split) = self.env_mut().split.as_mut() else {
+        let Some(split) = self.strip.split.as_mut() else {
             return;
         };
         let (pos, origin, len) = match split.dir {
@@ -406,7 +436,9 @@ impl Shell {
     }
 
     /// Closes the tabs at the indices `close` picks, never `anchor`; they can be
-    /// reopened in turn, leftmost first.
+    /// reopened in turn, leftmost first. Only tabs of the anchor's environment
+    /// (for a view: the other views) close: closing a session's tab can stop its
+    /// agent, which a menu on one environment's tab must not do in another.
     fn close_tabs(
         &mut self,
         anchor: usize,
@@ -414,24 +446,24 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !self.has_projects() || anchor >= self.env().tabs.len() {
+        if !self.has_projects() || anchor >= self.strip.tabs.len() {
             return;
         }
-        let closed = self.env_mut().remove_tabs(anchor, close);
-        let path = self.env().path.clone();
+        let mine = same_env_as(&self.strip, anchor);
+        let closed = self.strip.remove_tabs(anchor, |i| mine[i] && close(i));
         let mut sessions = Vec::new();
         for (index, tab) in closed.into_iter().rev() {
             if let Some(kind) = reopenable(&tab, cx) {
-                self.env_mut().remember_closed(index, kind);
+                self.strip.remember_closed(index, kind, tab.env.clone());
             }
             if let Some(b) = &tab.browser {
                 b.view.update(cx, |v, cx| v.close(cx));
             }
-            if let TabKind::Session { id, .. } = tab.kind {
-                sessions.push(id);
+            if let (TabKind::Session { id, .. }, Some(env)) = (tab.kind, tab.env) {
+                sessions.push((env, id));
             }
         }
-        for id in sessions {
+        for (path, id) in sessions {
             self.retire_if_hidden(&path, &id, cx);
         }
         // A no-op while a Servers tab is left anywhere.
@@ -448,19 +480,33 @@ impl Shell {
         if !self.has_projects() {
             return;
         }
-        while let Some((index, kind)) = self.env_mut().closed_tabs.pop() {
-            let before: Vec<u64> = self.env().tabs.iter().map(|t| t.id).collect();
-            if !self.reopen_kind(kind, window, cx) {
+        while let Some(closed) = self.strip.closed_tabs.pop() {
+            let before: Vec<u64> = self.strip.tabs.iter().map(|t| t.id).collect();
+            // It comes back in the environment it was closed in.
+            if let Some(path) = &closed.env {
+                let Some((pi, ei)) = self
+                    .projects
+                    .iter()
+                    .enumerate()
+                    .find_map(|(pi, p)| Some((pi, p.env_index(path)?)))
+                else {
+                    continue;
+                };
+                if self.env().path != *path {
+                    self.select_env(pi, ei, window, cx);
+                }
+            }
+            if !self.reopen_kind(closed.kind, window, cx) {
                 continue;
             }
-            let env = self.env_mut();
-            let active = env.active_tab;
+            let strip = &mut self.strip;
+            let active = strip.active_tab;
             // Already open elsewhere: the opener only went to it, so it stays put.
-            if let Some(tab) = env.tabs.get_mut(active)
+            if let Some(tab) = strip.tabs.get_mut(active)
                 && !before.contains(&tab.id)
             {
                 tab.preview = false;
-                env.move_tab(active, index);
+                strip.move_tab(active, closed.index);
             }
             self.note_active_tab(cx);
             self.ensure_active_live(window, cx);
@@ -509,13 +555,13 @@ impl Shell {
         if !self.has_projects() {
             return;
         }
-        let env = self.env_mut();
-        let from = env.active_tab;
+        let strip = &mut self.strip;
+        let from = strip.active_tab;
         let Some(to) = from.checked_add_signed(delta) else {
             return;
         };
-        if env.move_tab(from, to) {
-            let at = env.active_tab;
+        if strip.move_tab(from, to) {
+            let at = strip.active_tab;
             self.tab_scroll.scroll_to_item(at);
             self.save(cx);
             cx.notify();
@@ -528,9 +574,8 @@ impl Shell {
         if !self.has_projects() {
             return;
         }
-        let env = self.env_mut();
-        if let Some(from) = env.tabs.iter().position(|t| t.id == id)
-            && env.move_tab(from, to)
+        if let Some(from) = self.strip.position(id)
+            && self.strip.move_tab(from, to)
         {
             self.save(cx);
         }
@@ -543,11 +588,10 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let env = self.env();
-        let Some(split) = env.split else {
-            return self.render_pane(env.active_tab, true, window, cx);
+        let active = self.strip.active_tab;
+        let Some(split) = self.strip.split else {
+            return self.render_pane(active, true, window, cx);
         };
-        let active = env.active_tab;
         let row = split.dir == SplitDir::Right;
         let (first, second) = if split.focus_first {
             (active, other)
@@ -632,7 +676,7 @@ impl Shell {
                 cx.listener(|this, ev: &gpui::MouseDownEvent, _, cx| {
                     cx.stop_propagation();
                     if ev.click_count >= 2 {
-                        if let Some(s) = this.env_mut().split.as_mut() {
+                        if let Some(s) = this.strip.split.as_mut() {
                             s.ratio = 0.5;
                         }
                         this.save(cx);
@@ -665,14 +709,14 @@ impl Shell {
         let mut panel = ui::menu_panel("tab-menu", 220.)
             .min_h_0()
             .overflow_y_scroll();
-        let env = self.env();
-        let Some(tab) = env.tabs.get(index) else {
+        let Some(tab) = self.strip.tabs.get(index) else {
             return panel.into_any_element();
         };
-        let split_open = env.split_other().is_some();
-        let several = env.tabs.len() > 1;
-        let any_right = index + 1 < env.tabs.len();
-        let can_reopen = !env.closed_tabs.is_empty();
+        let split_open = self.split_other().is_some();
+        let mine = same_env_as(&self.strip, index);
+        let several = mine.iter().filter(|m| **m).count() > 1;
+        let any_right = mine.iter().skip(index + 1).any(|m| *m);
+        let can_reopen = !self.strip.closed_tabs.is_empty();
         panel =
             panel
                 .child(
@@ -697,7 +741,7 @@ impl Shell {
                     ),
                 )
                 .when(split_open, |d| {
-                    let icon = match env.split.map(|s| s.dir) {
+                    let icon = match self.strip.split.map(|s| s.dir) {
                         Some(SplitDir::Down) => "arrow-data-transfer-vertical",
                         _ => "arrow-data-transfer-horizontal",
                     };
@@ -766,8 +810,10 @@ impl Shell {
                             }))
                         }),
                 );
+        // The session menu acts on the environment on screen.
         if let TabKind::Session { id, .. } = &tab.kind
-            && let Some(si) = env.session_index(id)
+            && tab.is_in(&self.env().path)
+            && let Some(si) = self.env().session_index(id)
         {
             panel = panel.child(div().my(px(4.)).h(px(1.)).bg(theme::stroke()));
             panel = self.session_menu_items(si, panel, cx);
@@ -776,19 +822,27 @@ impl Shell {
     }
 }
 
-/// The tab to pair with the active one: the most recently visited other tab, else
-/// any other tab, else a fresh New session tab.
-fn companion(env: &mut Environment) -> usize {
-    let active_id = env.tabs.get(env.active_tab).map(|t| t.id);
-    let recent = env
+/// For each tab, whether it is of the same environment as the tab at `index`.
+fn same_env_as(strip: &model::TabStrip, index: usize) -> Vec<bool> {
+    let env = strip.tabs.get(index).map(|t| &t.env);
+    strip.tabs.iter().map(|t| Some(&t.env) == env).collect()
+}
+
+/// The tab to pair with the active one: the most recently visited other tab of
+/// the environment `here` (or a view), else any such tab, else a fresh New session tab.
+fn companion(strip: &mut model::TabStrip, here: &std::path::Path) -> usize {
+    let active = strip.active_tab;
+    let fits = |strip: &model::TabStrip, i: usize| {
+        i != active && strip.tabs[i].env.as_deref().is_none_or(|e| e == here)
+    };
+    let recent = strip
         .tab_back
         .iter()
         .rev()
-        .filter(|id| Some(**id) != active_id)
-        .find_map(|id| env.tabs.iter().position(|t| t.id == *id));
-    if let Some(i) = recent.or_else(|| (0..env.tabs.len()).find(|i| *i != env.active_tab)) {
+        .filter_map(|id| strip.position(*id))
+        .find(|i| fits(strip, *i));
+    if let Some(i) = recent.or_else(|| (0..strip.tabs.len()).find(|i| fits(strip, *i))) {
         return i;
     }
-    env.tabs.push(Tab::new("New session", TabKind::NewSession));
-    env.tabs.len() - 1
+    strip.add(Tab::new_session(here))
 }

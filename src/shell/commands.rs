@@ -434,16 +434,18 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(env) = self.find_env_mut(env_path) else {
-            return;
-        };
-        if env.tabs.get(env.active_tab).is_some_and(|t| t.id == id) {
+        // The window has one split, for the environment on screen.
+        if !self.has_projects() || self.env().path != env_path {
             return;
         }
-        let (dir, ratio, focus_first) = env.split.map_or((SplitDir::Right, 0.5, true), |s| {
+        let strip = &mut self.strip;
+        if strip.active().is_some_and(|t| t.id == id) {
+            return;
+        }
+        let (dir, ratio, focus_first) = strip.split.map_or((SplitDir::Right, 0.5, true), |s| {
             (s.dir, s.ratio, s.focus_first)
         });
-        env.split = Some(Split {
+        strip.split = Some(Split {
             other: id,
             dir,
             ratio,

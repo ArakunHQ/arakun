@@ -72,8 +72,12 @@ with "Show onboarding" in the palette (`Ctrl+K`). That it was done is kept in
   dropdown says the same per project. The **+** on Environments, or
   `Ctrl+Shift+N`, makes an environment at once on a random branch from the current
   commit; `Alt`+click on it, or File › New Environment with Options…, asks for the
-  branch and where to start from. Every environment has its own tabs, sessions, terminals
-  and draft prompt. The Workspace panel shows Sessions, an Explorer and the uncommitted
+  branch and where to start from. Every environment has its own sessions, terminals
+  and draft prompt. The window has one row of tabs for all of them: a session, file,
+  diff or browser tab belongs to its environment, and going to the tab shows that
+  environment. Going to an environment shows the tab it showed last. With tabs of
+  several environments open, each run of tabs starts with its environment's name. The
+  Workspace panel shows Sessions, an Explorer and the uncommitted
   Changes; the Branches tab draws every live branch against the default one.
 
   <img src="docs/screenshots/changes.png" alt="A file's diff in a tab, next to the Changes list with lines added and removed per file" width="760">
@@ -879,11 +883,12 @@ forward through tabs, `Ctrl+Cmd+F` toggles full screen, and `Cmd+H`, `Cmd+M` and
 
 - `Ctrl+T` new session, `Ctrl+J` toggle the terminal dock, `Ctrl+B` toggle the sidebar
 - `Ctrl+D` / `Ctrl+Shift+D` split right / down, `Ctrl+Alt+arrows` move between panes
-- `Ctrl+Tab`, `Ctrl+1...9` switch tabs; `Alt+Up` / `Alt+Down` switch environments
+- `Ctrl+Tab`, `Ctrl+1...9` switch tabs, across environments; `Alt+Up` / `Alt+Down`
+  switch environments
 - `Ctrl+W` close the tab, `Ctrl+Alt+T` reopen the last closed tab where it was;
   `Ctrl+Shift+PageUp` / `Ctrl+Shift+PageDown` move the tab left / right. A middle click
   closes a tab, dragging it onto another moves it there, and its right-click menu also
-  closes the other tabs or the tabs to its right. GNOME, Ubuntu and some KDE setups
+  closes the other tabs of its environment or those to its right. GNOME, Ubuntu and some KDE setups
   keep `Ctrl+Alt+T` to open their own terminal; there, use Reopen closed tab in the
   File menu or a tab's right-click menu
 - `Ctrl+Shift+N` new environment, at once on a random branch

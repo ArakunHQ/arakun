@@ -250,6 +250,11 @@ enum MenuKey {
 
 pub struct Shell {
     projects: Vec<Project>,
+    /// The one row of tabs, for every project and environment.
+    strip: model::TabStrip,
+    /// The active tab brought another environment on screen: `render` gives
+    /// it its terminal and starts its sessions, which need the window.
+    env_followed: bool,
     /// The latest `refresh_project` of each project root. An older one that ends
     /// later would put back what it read before, such as a branch renamed since.
     refresh_gen: std::collections::HashMap<std::path::PathBuf, u64>,
@@ -624,7 +629,7 @@ impl Shell {
         let composer_blur = cx.on_blur(&composer_focus, window, |this, window, cx| {
             this.spy_from_composer(window, cx)
         });
-        let (mut projects, active_project, layout) = state::restore(state::load());
+        let (projects, active_project, layout, strip) = state::restore(state::load());
         theme::set_diff_palette(layout.diff_palette);
         theme::set_glass(layout.glass);
         theme::set_grays(layout.grays);
@@ -639,9 +644,6 @@ impl Shell {
         }
         if layout.glass {
             window.set_background_appearance(theme::window_background());
-        }
-        for env in projects.iter_mut().flat_map(|p| p.environments.iter_mut()) {
-            env.seed_tab_history();
         }
         let account = cx.new(Account::new);
         let account_sub = cx.observe(&account, |this, _, cx| {
@@ -808,6 +810,8 @@ impl Shell {
         });
         let mut this = Self {
             projects,
+            strip,
+            env_followed: false,
             refresh_gen: Default::default(),
             rename_notes: Default::default(),
             active_project,
@@ -1034,6 +1038,142 @@ impl Shell {
         &mut p.environments[p.active_env]
     }
 
+    /// The environment a tab works in; a view's is the one on screen.
+    fn tab_env(&self, tab: &Tab) -> &Environment {
+        tab.env
+            .as_deref()
+            .and_then(|p| self.find_env(p))
+            .unwrap_or_else(|| self.env())
+    }
+
+    /// The other pane's tab, while the split shows.
+    fn split_other(&self) -> Option<usize> {
+        self.strip.split_other(&self.env().path)
+    }
+
+    /// Makes the active tab one of the environment on screen: the tab it showed
+    /// last, or a New session tab when it has none. `keep_view` leaves a view
+    /// (GitHub, Usage…) in front, since it belongs to no environment.
+    fn show_env_tab(&mut self, keep_view: bool) {
+        let path = self.env().path.clone();
+        let fits = self.strip.active().is_some_and(|t| match &t.env {
+            Some(env) => *env == path,
+            None => keep_view,
+        });
+        if fits {
+            return;
+        }
+        // A blank tab that is all the environment left behind has no use:
+        // going through environments must not leave one for each.
+        let strip = &mut self.strip;
+        // Unless it is half of that environment's split, which waits for it.
+        if let Some(left) = strip
+            .active()
+            .filter(|t| matches!(t.kind, TabKind::NewSession))
+            && strip.tabs.iter().filter(|t| t.env == left.env).count() == 1
+            && !(strip.split.is_some() && strip.split_env == left.env)
+        {
+            strip.remove(strip.active_tab);
+        }
+        let index = match strip.front_of(&path) {
+            Some(i) => i,
+            None => strip.add(Tab::new_session(&path)),
+        };
+        strip.active_tab = index;
+    }
+
+    /// Brings the strip in line with the projects: the tabs of environments that
+    /// are gone close, and the active tab is one of the environment on screen.
+    fn settle_strip(&mut self, cx: &mut Context<Self>) {
+        let projects = &self.projects;
+        let lost = |env: &Option<std::path::PathBuf>| {
+            env.as_deref().is_some_and(|path| {
+                !projects
+                    .iter()
+                    .flat_map(|p| &p.environments)
+                    .any(|e| e.path == path)
+            })
+        };
+        let active = self.strip.active().map(|t| t.id);
+        let gone = self.strip.remove_where(|t| lost(&t.env));
+        self.strip.closed_tabs.retain(|c| !lost(&c.env));
+        self.strip.parked.retain(|env, _| !lost(&Some(env.clone())));
+        if lost(&self.strip.split_env) {
+            self.strip.split = None;
+            self.strip.split_env = None;
+        }
+        for tab in &gone {
+            if let Some(b) = &tab.browser {
+                b.view.update(cx, |v, cx| v.close(cx));
+            }
+        }
+        if !self.has_projects() {
+            // The views go with the last project, as the welcome takes the window.
+            self.strip = Default::default();
+            return;
+        }
+        let before = self.strip.active().map(|t| t.id);
+        if active.is_some_and(|id| self.strip.position(id).is_some()) {
+            self.show_env_tab(true);
+        } else {
+            // The active tab went: the environment now on screen shows the tab
+            // it showed last, not whichever tab took the old place in the row.
+            let path = self.env().path.clone();
+            self.strip.active_tab = match self.strip.front_of(&path) {
+                Some(i) => i,
+                None => self.strip.add(Tab::new_session(&path)),
+            };
+        }
+        if !gone.is_empty() || self.strip.active().map(|t| t.id) != before {
+            self.note_active_tab(cx);
+            self.env_followed = true;
+            cx.notify();
+        }
+    }
+
+    /// The split of the environment on screen comes with it; `prev` is the tab
+    /// that was active before.
+    fn bring_split(&mut self, prev: Option<u64>) {
+        if self.has_projects() {
+            let here = self.env().path.clone();
+            self.strip.bring_split(&here, prev);
+        }
+    }
+
+    /// The environment of the active tab comes on screen with it.
+    fn follow_tab(&mut self, cx: &mut Context<Self>) {
+        if !self.has_projects() {
+            return;
+        }
+        let Some(tab) = self.strip.active() else {
+            return;
+        };
+        let Some(path) = tab.env.clone() else {
+            return;
+        };
+        self.strip.front.insert(path.clone(), tab.id);
+        if self.env().path == path {
+            return;
+        }
+        let Some((pi, ei)) = self
+            .projects
+            .iter()
+            .enumerate()
+            .find_map(|(pi, p)| Some((pi, p.env_index(&path)?)))
+        else {
+            return;
+        };
+        self.active_project = pi;
+        self.projects[pi].active_env = ei;
+        self.env_menu_open = false;
+        self.completion = None;
+        self.refresh_visible(cx);
+        if self.panel_tab == PanelTab::Explorer {
+            self.ensure_explorer(cx);
+        }
+        self.env_followed = true;
+    }
+
     // -----------------------------------------------------------------------
     // Persistence and git refresh
 
@@ -1092,7 +1232,7 @@ impl Shell {
             ui_zoom: crate::ui_zoom::pct(),
             window: self.window_state.clone(),
         };
-        state::snapshot(&self.projects, self.active_project, layout)
+        state::snapshot_with(&self.projects, &self.strip, self.active_project, layout)
     }
 
     /// Re-reads a project's worktrees, then the status of every environment.
@@ -1120,6 +1260,7 @@ impl Shell {
                     let pi = this.projects.iter().position(|p| p.path == root)?;
                     if let Ok(trees) = trees {
                         this.projects[pi].sync_worktrees(trees);
+                        this.settle_strip(cx);
                         this.save(cx);
                         cx.notify();
                     }
@@ -1175,7 +1316,7 @@ impl Shell {
                             // Open diff tabs track their file: reload when its entry
                             // changed, close when the file has no changes left.
                             let old = std::mem::replace(&mut env.changes, changes);
-                            for tab in &env.tabs {
+                            for tab in this.strip.tabs.iter().filter(|t| t.is_in(&env.path)) {
                                 let TabKind::Diff { path: file, .. } = &tab.kind else {
                                     continue;
                                 };
@@ -1331,7 +1472,8 @@ impl Shell {
             }
         };
         self.active_project = index;
-        self.unfloat_github(cx);
+        self.show_env_tab(false);
+        self.note_active_tab(cx);
         self.refresh_project(index, cx);
         self.sync_ci_roots(cx);
         self.save(cx);
@@ -1355,6 +1497,7 @@ impl Shell {
         self.active_project = self
             .active_project
             .min(self.projects.len().saturating_sub(1));
+        self.settle_strip(cx);
         self.unfloat_github(cx);
         // Its Servers tab went with it; a no-op while one is left elsewhere.
         self.servers_tab_closed(cx);
@@ -1654,8 +1797,8 @@ impl Shell {
         kind: TabKind,
         is: impl Fn(&TabKind) -> bool,
     ) {
-        let env = self.env_mut();
-        let index = match env.tabs.iter().position(|t| is(&t.kind)) {
+        let strip = &mut self.strip;
+        let index = match strip.tabs.iter().position(|t| is(&t.kind)) {
             Some(i) => i,
             None => {
                 crate::telemetry::capture(
@@ -1664,17 +1807,16 @@ impl Shell {
                 );
                 let mut tab = Tab::new(title, kind);
                 tab.preview = true;
-                let active = env.active_tab;
-                if env.tabs.get(active).is_some_and(|t| t.preview) {
-                    env.tabs[active] = tab;
+                let active = strip.active_tab;
+                if strip.tabs.get(active).is_some_and(|t| t.preview) {
+                    strip.tabs[active] = tab;
                     active
                 } else {
-                    env.tabs.push(tab);
-                    env.tabs.len() - 1
+                    strip.add(tab)
                 }
             }
         };
-        env.active_tab = index;
+        strip.active_tab = index;
     }
 
     /// Keeps the visible preview tab: it was used.
@@ -1682,9 +1824,8 @@ impl Shell {
         if !self.has_projects() {
             return;
         }
-        let env = self.env_mut();
-        let active = env.active_tab;
-        if let Some(tab) = env.tabs.get_mut(active).filter(|t| t.preview) {
+        let active = self.strip.active_tab;
+        if let Some(tab) = self.strip.tabs.get_mut(active).filter(|t| t.preview) {
             tab.preview = false;
             cx.notify();
         }
@@ -1865,22 +2006,14 @@ impl Shell {
                 DialogEvent::Deleted(path) => {
                     let path = path.clone();
                     this.close_modal(window, cx);
-                    if let Some(env) = this.find_env_mut(&path) {
-                        let views: Vec<_> = env
-                            .tabs
-                            .iter()
-                            .filter_map(|t| t.browser.as_ref().map(|b| b.view.clone()))
-                            .collect();
-                        for view in views {
-                            view.update(cx, |v, cx| v.close(cx));
-                        }
-                    }
                     if let Some(project) = this.projects.get_mut(pi) {
                         project.environments.retain(|e| e.path != path);
                         project.active_env = project
                             .active_env
                             .min(project.environments.len().saturating_sub(1));
                     }
+                    // Its tabs, and the pages of its browser tabs, go with it.
+                    this.settle_strip(cx);
                     this.unfloat_github(cx);
                     this.servers_tab_closed(cx);
                     this.save(cx);
@@ -2329,8 +2462,9 @@ impl Shell {
 
     fn after_switch(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.completion = None;
-        // The project or environment switched to may show its GitHub tab.
-        self.unfloat_github(cx);
+        // The strip goes to the tab this environment showed last.
+        self.show_env_tab(false);
+        self.note_active_tab(cx);
         self.refresh_visible(cx);
         self.ensure_active_live(window, cx);
         self.ensure_terminal(window, cx);
@@ -2370,11 +2504,12 @@ impl Shell {
     }
 
     fn activate_tab(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
-        let env = self.env_mut();
-        let prev = env.tabs.get(env.active_tab).map(|t| t.id);
-        env.active_tab = index;
-        env.settle_split(prev);
+        let prev = self.strip.active().map(|t| t.id);
+        self.strip.active_tab = index;
         // Back and forward come here without `note_active_tab`.
+        self.follow_tab(cx);
+        self.bring_split(prev);
+        self.strip.settle_split(prev);
         self.unfloat_github(cx);
         self.ensure_active_live(window, cx);
         self.save(cx);
@@ -2386,36 +2521,41 @@ impl Shell {
         // The GitHub tab came to the front: a sheet floating over another
         // tab stays open in it instead of hiding its list.
         self.unfloat_github(cx);
-        let env = self.env_mut();
-        // Every path that changes the active tab ends here, so the split settles here too.
-        env.settle_split(env.tab_back.last().copied());
-        let Some(id) = env.tabs.get(env.active_tab).map(|t| t.id) else {
+        // Every path that changes the active tab ends here, so the environment
+        // follows it and the split settles here too.
+        self.follow_tab(cx);
+        self.bring_split(self.strip.tab_back.last().copied());
+        let strip = &mut self.strip;
+        strip.settle_split(strip.tab_back.last().copied());
+        let Some(id) = strip.active().map(|t| t.id) else {
             return;
         };
-        if env.tab_back.last() == Some(&id) {
+        if strip.tab_back.last() == Some(&id) {
             return;
         }
-        env.tab_back.push(id);
-        let excess = env.tab_back.len().saturating_sub(64);
-        env.tab_back.drain(..excess);
-        env.tab_fwd.clear();
+        strip.tab_back.push(id);
+        let excess = strip.tab_back.len().saturating_sub(64);
+        strip.tab_back.drain(..excess);
+        strip.tab_fwd.clear();
     }
 
-    /// Back/forward through the tabs of the visible environment, skipping tabs
-    /// that were closed since.
+    /// Back/forward through the tabs, skipping tabs that were closed since.
     fn tab_history(&mut self, back: bool, window: &mut Window, cx: &mut Context<Self>) {
         if !self.has_projects() {
             return;
         }
         let target = {
-            let env = self.env_mut();
+            let env = &mut self.strip;
             let mut target = None;
             if back {
+                // Forward returns to the tab Back started from, not to a
+                // closed one skipped on the way.
+                let from = env.tab_back.last().copied().unwrap_or_default();
                 while env.tab_back.len() > 1 {
-                    let cur = env.tab_back.pop().unwrap_or_default();
+                    env.tab_back.pop();
                     let prev = env.tab_back.last().copied().unwrap_or_default();
                     if let Some(i) = env.tabs.iter().position(|t| t.id == prev) {
-                        env.tab_fwd.push(cur);
+                        env.tab_fwd.push(from);
                         target = Some(i);
                         break;
                     }
@@ -2437,7 +2577,7 @@ impl Shell {
     }
 
     fn can_go_back(&self) -> bool {
-        let env = self.env();
+        let env = &self.strip;
         env.tab_back.len() > 1
             && env.tab_back[..env.tab_back.len() - 1]
                 .iter()
@@ -2445,7 +2585,7 @@ impl Shell {
     }
 
     fn can_go_forward(&self) -> bool {
-        let env = self.env();
+        let env = &self.strip;
         env.tab_fwd
             .iter()
             .any(|id| env.tabs.iter().any(|t| t.id == *id))
@@ -2472,30 +2612,37 @@ impl Shell {
         if !self.has_projects() {
             return;
         }
-        let env = self.env_mut();
         let mut closed_session = None;
         let mut closed_servers = false;
-        if index < env.tabs.len() {
-            let tab = env.tabs.remove(index);
+        let here = self.env().path.clone();
+        let was_active = index == self.strip.active_tab;
+        if let Some(tab) = self.strip.remove(index) {
+            // Closing the tab on screen keeps its environment on screen: a
+            // closed view, or the last tab of the environment, must not land
+            // on a neighbour that works elsewhere and bring that one in.
+            let strays = tab.env.is_none()
+                || !self
+                    .strip
+                    .active()
+                    .is_some_and(|t| t.env.as_deref().is_none_or(|e| e == here));
+            if was_active && strays {
+                self.strip.active_tab = match self.strip.front_of(&here) {
+                    Some(i) => i,
+                    None => self.strip.add(Tab::new_session(&here)),
+                };
+            }
             if let Some(kind) = reopenable(&tab, cx).filter(|_| remember) {
-                env.remember_closed(index, kind);
+                self.strip.remember_closed(index, kind, tab.env.clone());
             }
             closed_servers = matches!(tab.kind, TabKind::Servers);
             if let Some(b) = &tab.browser {
                 b.view.update(cx, |v, cx| v.close(cx));
             }
-            if let TabKind::Session { id, .. } = tab.kind {
-                closed_session = Some(id);
-            }
-            if env.tabs.is_empty() {
-                env.tabs.push(Tab::new("New session", TabKind::NewSession));
-            }
-            if env.active_tab >= env.tabs.len() || env.active_tab > index {
-                env.active_tab = env.active_tab.saturating_sub(1);
+            if let (TabKind::Session { id, .. }, Some(env)) = (tab.kind, tab.env) {
+                closed_session = Some((env, id));
             }
         }
-        if let Some(id) = closed_session {
-            let path = self.env().path.clone();
+        if let Some((path, id)) = closed_session {
             self.retire_if_hidden(&path, &id, cx);
         }
         if closed_servers {
@@ -2511,17 +2658,14 @@ impl Shell {
         if !self.has_projects() {
             return;
         }
-        let env = self.env_mut();
-        if let Some(i) = env
-            .tabs
-            .iter()
-            .position(|t| matches!(t.kind, TabKind::NewSession))
-        {
-            env.active_tab = i;
-        } else {
-            env.tabs.push(Tab::new("New session", TabKind::NewSession));
-            env.active_tab = env.tabs.len() - 1;
-        }
+        let path = self.env().path.clone();
+        let blank = self
+            .strip
+            .find_in(&path, |t| matches!(t.kind, TabKind::NewSession));
+        self.strip.active_tab = match blank {
+            Some(i) => i,
+            None => self.strip.add(Tab::new_session(&path)),
+        };
         self.note_active_tab(cx);
         window.focus(&self.composer_focus, cx);
         cx.notify();
@@ -2563,8 +2707,7 @@ impl Shell {
         if !self.has_projects() {
             return true;
         }
-        let env = self.env();
-        let tab = env.tabs.get(env.active_tab);
+        let tab = self.strip.active();
         let home = matches!(tab.map(|t| &t.kind), None | Some(TabKind::NewSession));
         let browser_home = tab
             .and_then(|t| t.browser.as_ref())
@@ -2583,8 +2726,7 @@ impl Shell {
         if !self.has_projects() {
             return false;
         }
-        let env = self.env();
-        let in_view = match env.tabs.get(self.composer_tab()).map(|t| &t.kind) {
+        let in_view = match self.strip.tabs.get(self.composer_tab()).map(|t| &t.kind) {
             Some(TabKind::Session { id, .. }) => Some(id),
             _ => None,
         };
@@ -2594,10 +2736,9 @@ impl Shell {
     }
 
     fn render_main(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let env = self.env();
-        match env.split_other() {
+        match self.split_other() {
             Some(other) => self.render_split(other, window, cx),
-            None => self.render_pane(env.active_tab, true, window, cx),
+            None => self.render_pane(self.strip.active_tab, true, window, cx),
         }
     }
 
@@ -2611,7 +2752,7 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let body = self.render_pane_body(index, focused, window, cx);
-        if !self.env().tabs.get(index).is_some_and(|t| t.preview) {
+        if !self.strip.tabs.get(index).is_some_and(|t| t.preview) {
             return body;
         }
         // A click anywhere inside a preview tab means it's in use: keep it.
@@ -2630,7 +2771,7 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let env = self.env();
-        let tab = env.tabs.get(index);
+        let tab = self.strip.tabs.get(index);
         match tab.map(|t| t.kind.clone()) {
             Some(TabKind::Session { id, .. }) => {
                 let live = env
@@ -2678,7 +2819,7 @@ impl Shell {
                 None => panel_empty("Opening page…").into_any_element(),
             },
             Some(TabKind::File { .. }) | Some(TabKind::Diff { .. }) => {
-                self.render_document(&env.tabs[index], window, cx)
+                self.render_document(&self.strip.tabs[index], window, cx)
             }
             Some(TabKind::Notes) => self.render_notes(cx).into_any_element(),
             #[cfg(feature = "coderlabs")]
@@ -2800,6 +2941,12 @@ impl Render for Shell {
             }
         }
         let rail_right = self.sidebar.style.side == crate::sidebar::Side::Right;
+        if has_projects && std::mem::take(&mut self.env_followed) {
+            cx.defer_in(window, |this, window, cx| {
+                this.ensure_active_live(window, cx);
+                this.ensure_terminal(window, cx);
+            });
+        }
         if has_projects {
             if self.browsers_out_of_date() {
                 cx.defer_in(window, |this, window, cx| {
@@ -3057,7 +3204,7 @@ impl Render for Shell {
             )
             .on_action(cx.listener(|this, _: &CloseTab, window, cx| {
                 if this.has_projects() {
-                    let i = this.env().active_tab;
+                    let i = this.strip.active_tab;
                     this.close_tab(i, window, cx)
                 }
             }))

@@ -149,20 +149,16 @@ impl Shell {
             self.open_picker(window, cx);
             return;
         }
-        let env = self.env_mut();
-        let index = match env
+        let strip = &mut self.strip;
+        let index = match strip
             .tabs
             .iter()
             .position(|t| matches!(t.kind, TabKind::Phone))
         {
             Some(i) => i,
-            None => {
-                env.tabs
-                    .push(crate::model::Tab::new("Phone", TabKind::Phone));
-                env.tabs.len() - 1
-            }
+            None => strip.add(crate::model::Tab::new("Phone", TabKind::Phone)),
         };
-        env.active_tab = index;
+        strip.active_tab = index;
         self.note_active_tab(cx);
         self.sync_phone_view(cx);
         self.phone_view.update(cx, |v, cx| v.focus(window, cx));

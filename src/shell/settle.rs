@@ -10,7 +10,7 @@ use gpui::{AppContext as _, Context};
 
 use super::Shell;
 use crate::github::{pr, queue};
-use crate::model::{Status, TabKind, unix_now};
+use crate::model::{Status, unix_now};
 use crate::settle::{self, Book, Merged};
 
 /// Each check asks GitHub once per environment: not more often than this.
@@ -161,15 +161,18 @@ impl Shell {
     /// attention, and the agents nobody is looking at stop. A session still
     /// working, or used after the merge, is left alone.
     fn settle_sessions(&mut self, path: &Path, merged_at: u64, cx: &mut Context<Self>) {
-        let Some(env) = self.find_env_mut(path) else {
+        let strip = &self.strip;
+        let Some(env) = self
+            .projects
+            .iter_mut()
+            .flat_map(|p| p.environments.iter_mut())
+            .find(|e| e.path == path)
+        else {
             return;
         };
         let mut ids = Vec::new();
         for s in &mut env.sessions {
-            let open = env
-                .tabs
-                .iter()
-                .any(|t| matches!(&t.kind, TabKind::Session { id, .. } if *id == s.id));
+            let open = strip.session_tab(&s.id).is_some();
             if let Some(status) = settled_status(s.status, s.updated, merged_at, open) {
                 s.status = status;
                 ids.push(s.id.clone());

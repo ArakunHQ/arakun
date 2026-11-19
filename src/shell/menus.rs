@@ -95,7 +95,14 @@ impl Shell {
                                 .text_color(theme::text_faint())
                                 .child(format!(
                                     "{} · {}",
-                                    plural(env.tabs.len(), "tab"),
+                                    plural(
+                                        self.strip
+                                            .tabs
+                                            .iter()
+                                            .filter(|t| t.is_in(&env.path))
+                                            .count(),
+                                        "tab"
+                                    ),
                                     plural(env.terminals.len(), "terminal")
                                 )),
                         )

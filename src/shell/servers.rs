@@ -1035,7 +1035,7 @@ impl Shell {
                 env.set_branch(Some(place.branch.clone()));
             }
             env.remote = Some(remote);
-            sync_sessions(env, sessions);
+            sync_sessions(&self.strip, env, sessions);
         }
 
         // An environment on screen that moved to another project is followed there.
@@ -1053,6 +1053,9 @@ impl Shell {
         self.active_project = self
             .active_project
             .min(self.projects.len().saturating_sub(1));
+        // The tabs of a folder the servers no longer list close; one that
+        // moved to another project keeps its tabs, which go by its path.
+        self.settle_strip(cx);
         self.servers_open_started(window, cx);
         self.servers_open_added(window, cx);
         // Phones list the servers' sessions too.
@@ -2399,11 +2402,12 @@ fn take_misplaced(
 
 /// Brings an environment's sessions in line with the server's list, newest
 /// first. A session with a tab open stays until its tab closes.
-fn sync_sessions(env: &mut Environment, rows: Vec<SessionRow>) {
+fn sync_sessions(strip: &model::TabStrip, env: &mut Environment, rows: Vec<SessionRow>) {
     let ids: HashSet<&str> = rows.iter().map(|r| r.id.as_str()).collect();
-    let open: HashSet<SharedString> = env
+    let open: HashSet<SharedString> = strip
         .tabs
         .iter()
+        .filter(|t| t.is_in(&env.path))
         .filter_map(|t| match &t.kind {
             TabKind::Session { id, .. } => Some(id.clone()),
             _ => None,

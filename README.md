@@ -839,7 +839,11 @@ The link is good for two minutes and pairs one device. There are two ways to use
   you ask. A repository's main folder is never deleted. A phone paired with this app sees and works in the
   servers' sessions too. Git, terminals and the file tree stay with this machine's folders;
   `/stage`, fork, rewind and "Continue with" are not available for a server's session
-  yet. To add a folder on a server, press the folder button on it in the Servers tab,
+  yet. In the Marketplace, "Install on" picks a paired server: Discover then lists
+  the plugins its marketplaces offer, and Install adds a plugin or MCP server for
+  Claude Code there, for every project. An MCP server that wants a sign-in is signed
+  in to on that machine (`claude mcp login <name>`), since that opens a browser.
+  To add a folder on a server, press the folder button on it in the Servers tab,
   or right-click one of its environments. Clone runs that machine's git, with its
   logins, and puts the repository in the folder that holds most of the server's
   folders. Folders right in the home folder do not count; with none elsewhere, the

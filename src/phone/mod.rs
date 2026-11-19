@@ -212,6 +212,23 @@ pub enum ClientMsg {
     },
     /// Both agents' plan limits, as the desktop knows them.
     Usage,
+    /// The Claude Code plugins this machine's marketplaces offer, and the MCP
+    /// servers Claude has here: what the app asks of a server to install
+    /// there. Answered with a `market` message.
+    Market,
+    /// Installs a plugin (`name@marketplace`) for the user here, on in every
+    /// project. Answered with `market_done`.
+    InstallPlugin {
+        id: String,
+    },
+    /// Adds an MCP server from the registry for the user here, `install` filled
+    /// in with `values`. Answered with `market_done`.
+    InstallServer {
+        name: String,
+        install: crate::agent::marketplace::Install,
+        #[serde(default)]
+        values: HashMap<String, String>,
+    },
     /// Whether the page is on the phone's screen. A page in the background
     /// keeps its socket, so without this it would pass for someone watching.
     Visible {
@@ -1602,6 +1619,39 @@ mod tests {
                 text: "hi".into(),
                 settings: vec![("modelId".into(), "m".into())]
             }
+        );
+    }
+
+    #[test]
+    fn an_install_reads_as_the_app_sends_it() {
+        use crate::agent::marketplace::Install;
+        let install = Install::Remote {
+            transport: "http".into(),
+            url: "https://mcp.example/".into(),
+            headers: vec![],
+        };
+        let values = HashMap::from([("TOKEN".to_string(), "t".to_string())]);
+        // As `extensions_view` builds it.
+        let sent = serde_json::json!({
+            "type": "install_server", "name": "example", "install": install, "values": values,
+        });
+        assert_eq!(
+            serde_json::from_value::<ClientMsg>(sent).unwrap(),
+            ClientMsg::InstallServer {
+                name: "example".into(),
+                install,
+                values,
+            }
+        );
+        let plugin = serde_json::json!({ "type": "install_plugin", "id": "a@b" });
+        assert_eq!(
+            serde_json::from_value::<ClientMsg>(plugin).unwrap(),
+            ClientMsg::InstallPlugin { id: "a@b".into() }
+        );
+        let market = serde_json::json!({ "type": "market" });
+        assert_eq!(
+            serde_json::from_value::<ClientMsg>(market).unwrap(),
+            ClientMsg::Market
         );
     }
 

@@ -379,12 +379,16 @@ impl Change {
     }
 }
 
-fn diff_base(dir: &Path) -> &'static str {
-    let has_head = git(dir)
+/// Whether HEAD points at a commit: not in a repository before its first one.
+pub fn has_commits(dir: &Path) -> bool {
+    git(dir)
         .args(["rev-parse", "--verify", "--quiet", "HEAD"])
         .output()
-        .is_ok_and(|o| o.status.success());
-    if has_head { "HEAD" } else { EMPTY_TREE }
+        .is_ok_and(|o| o.status.success())
+}
+
+fn diff_base(dir: &Path) -> &'static str {
+    if has_commits(dir) { "HEAD" } else { EMPTY_TREE }
 }
 
 /// Uncommitted changes against HEAD (staged and unstaged together, as the Changes
@@ -993,6 +997,23 @@ mod tests {
             assert!(ok.success());
         }
         dir
+    }
+
+    #[test]
+    fn a_repository_has_commits_after_its_first() {
+        let dir = repo();
+        assert!(super::has_commits(&dir));
+        let empty = dir.join("empty");
+        std::fs::create_dir_all(&empty).unwrap();
+        let ok = super::unpinned(&mut Command::new("git"))
+            .arg("-C")
+            .arg(&empty)
+            .args(["init", "-q"])
+            .status()
+            .unwrap();
+        assert!(ok.success());
+        assert!(!super::has_commits(&empty));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

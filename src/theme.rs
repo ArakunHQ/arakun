@@ -50,12 +50,6 @@ impl DiffPalette {
             .unwrap_or(DiffPalette::Default)
     }
 
-    /// The added and removed text colors.
-    pub fn swatch(self) -> (Rgba, Rgba) {
-        let (add, del, _) = self.colors();
-        (rgb(add.0), rgb(del.0))
-    }
-
     /// Text, line bar and line background alpha for (added, removed). Light
     /// mode takes GitHub's light colors, since the dark ones are too pale to
     /// read on white.

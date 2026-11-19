@@ -32,12 +32,14 @@ pub(super) fn repo_slug(dir: &Path) -> Option<String> {
     if let Some(r) = crate::branches::github_repo(dir) {
         return Some(r);
     }
-    let out = crate::platform::command("git")
-        .args(["remote", "get-url", "origin"])
-        .current_dir(dir)
-        .stderr(std::process::Stdio::null())
-        .output()
-        .ok()?;
+    let out = crate::platform::output_within(
+        crate::platform::command("git")
+            .args(["remote", "get-url", "origin"])
+            .current_dir(dir),
+        None,
+        crate::platform::GIT_LOCAL,
+    )
+    .ok()?;
     let url = String::from_utf8_lossy(&out.stdout).trim().to_string();
     let rest = url
         .strip_prefix("git@github.com:")
@@ -1268,11 +1270,19 @@ impl Shell {
             Target::Account,
         );
         add(
+            "customize",
+            "paint-board",
+            "Customize",
+            &[],
+            "Colors, palettes, corners, spacing and text size, beside the app.",
+            Target::Customize,
+        );
+        add(
             "settings",
             "settings01",
             "Settings",
             &["Ctrl", ","],
-            "Appearance, agents, the island and more.",
+            "Agents, the island, shortcuts and more.",
             Target::Settings,
         );
         add(
@@ -1357,14 +1367,14 @@ impl Shell {
             (
                 Setting::Glass,
                 "Glass window",
-                "Settings › Appearance",
+                "Customize › Shape",
                 "Lets the desktop show through the window's background.",
                 theme::glass(),
             ),
             (
                 Setting::Arcade,
                 "Animated raccoon",
-                "Settings › Appearance",
+                "Settings › General",
                 "The mascot moves with what the agents do.",
                 self.arcade,
             ),
@@ -1449,6 +1459,7 @@ impl Shell {
             Target::ToggleDock => self.toggle_dock(window, cx),
             Target::ToggleSidebar => self.toggle_rail(cx),
             Target::TogglePanel => self.toggle_panel(cx),
+            Target::Customize => self.open_customize(CustomizeTab::Colors, window, cx),
             Target::ToggleSubagents => self.toggle_subagents(cx),
             Target::Account => self.open_account(window, cx),
             Target::Settings => self.open_settings(window, cx),

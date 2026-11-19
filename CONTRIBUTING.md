@@ -55,8 +55,9 @@ powershell -ExecutionPolicy Bypass -File tools\setup-dev.ps1 -Hooks
 `--hooks` (`-Hooks`) runs `lefthook install`; on Windows it installs lefthook with winget
 first, and elsewhere it says how to install it if it is missing.
 `--relay` (`-Relay`) adds Node 24 and the relay's npm packages, `--display` adds Xvfb and
-tesseract for `arakun dev`, `--browser` fetches the CEF SDK a macOS build with the browser
-needs and links it at `.cef-sdk`, `--build` (`-Build`) builds the tests once, and `--yes`
+tesseract for `arakun dev` (on macOS only tesseract, through Homebrew), `--browser`
+fetches the CEF SDK a macOS build with the browser needs and links it at `.cef-sdk`,
+`--build` (`-Build`) builds the tests once, and `--yes`
 (`-Yes`) never asks. `--help` (`-Help`) lists them all. To do it by hand instead,
 follow [Build from source](README.md#build-from-source) in the README.
 
@@ -207,9 +208,12 @@ which git ignores. Turn the hooks off with `lefthook uninstall`.
   A test in `src/design_lint.rs` fails on hand-written values where the system has a
   name for them. The **Design system** tab (Settings → Design system → Open) shows every
   token and component live.
-- **See your change.** On Linux, `arakun dev start` runs a second, fresh Arakun from your
-  build on a virtual display (it needs `Xvfb`; `tesseract` for `dev text` and clicking
-  by text). It never touches your own screen or Arakun:
+- **See your change.** `arakun dev start` runs a second, fresh Arakun from your build,
+  with data of its own. On Linux it runs on a virtual display (it needs `Xvfb`). On
+  macOS it opens a window that never takes the focus, and `dev shot` captures that
+  window alone; the app you run it from needs Screen Recording permission. Both need
+  `tesseract` for `dev text` and clicking by text. Input goes into the test Arakun
+  directly, so it never touches your pointer, your keyboard or your own Arakun:
 
   ```sh
   cargo build --no-default-features
@@ -274,10 +278,9 @@ which git ignores. Turn the hooks off with `lefthook uninstall`.
   GitHub). Nobody is asked to review a draft, so you can push while CI and CodeRabbit
   run: CodeRabbit reviews drafts too, so its comments are usually waiting when the
   checks are. Once the required checks pass, mark it ready with `gh pr ready` or the
-  button on GitHub. Don't wait for the optional checks
-  (macOS, CodeQL), which can queue for a long time, unless the change touches macOS-only
-  code (`cfg(target_os = "macos")`, a path with `macos` in its name, the macOS build
-  config): then wait for the macOS jobs too. Don't wait for the **Human approval**
+  button on GitHub. `tools/wait-checks.sh` waits for them, and for the macOS job only
+  when the diff touches macOS code. Don't wait for the other checks (macOS for other
+  changes, CodeQL), which can queue for a long time. Don't wait for the **Human approval**
   status either: for a pull request from outside the team it is required, but it only
   resolves after a person approves, and marking ready is what asks for the review. It
   stays a merge gate, not a pre-ready one. When CodeRabbit finishes, people are asked to review

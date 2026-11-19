@@ -85,6 +85,7 @@ use crate::ci::{self, Ci};
 use crate::cloudflare_view::CloudflareView;
 #[cfg(feature = "coderlabs")]
 use crate::coderspace::CoderSpace;
+use crate::customize_view::{CustomizeEvent, CustomizeTab, CustomizeView};
 use crate::dialogs::{CreateEnvDialog, DeleteEnvDialog, DialogEvent};
 use crate::explorer;
 use crate::extensions_view::ExtensionsView;
@@ -159,7 +160,8 @@ gpui::actions!(
         ZoomIn,
         ZoomOut,
         ZoomReset,
-        CustomizeSidebar
+        CustomizeSidebar,
+        OpenCustomize
     ]
 );
 
@@ -327,8 +329,12 @@ pub struct Shell {
     rail_pick_anchor: Option<std::path::PathBuf>,
     /// Polls `git status` of the visible environment while the window is active.
     poll: Option<Task<()>>,
-    /// The last background `git fetch`, so the network is asked rarely.
+    /// When the last background `git fetch` ended, so the network is asked rarely.
     last_fetch: Option<Instant>,
+    /// A background `git fetch` is running; one at a time.
+    fetching: bool,
+    /// The polled git reads running now, so a slow one is not started again.
+    git_reads: git_actions::GitReads,
     /// Diff tabs whose file lost its changes; closed from `render` (needs a window).
     stale_diffs: Vec<(std::path::PathBuf, String)>,
     /// Open `@`/`/` completion of the composer.
@@ -456,7 +462,8 @@ pub struct Shell {
     iso_view: Entity<crate::iso_view::IsoView>,
     #[cfg(feature = "coderlabs")]
     canvas_view: Entity<crate::canvas_view::CanvasView>,
-    _gallery_view: Subscription,
+    /// The Customize panel, while it is open in the workspace panel's place.
+    customize: Option<(Entity<CustomizeView>, Subscription)>,
     _usage_view: Subscription,
     /// (project root, branch) → the fix session whose push CI is judging.
     fix_loops: std::collections::HashMap<(std::path::PathBuf, String), runs::FixLoop>,
@@ -574,6 +581,26 @@ fn crowd_out(
             need -= w;
         }
     }
+    out
+}
+
+/// `crowd_out`, except that with `keep_panel` the panel is never the one
+/// left out: Customize sits there, and a change made in it (a wider gap, a
+/// bigger text size) must not take away the controls that undo it. The
+/// subagents give way first, then the middle shrinks.
+fn crowd_out_keeping(
+    room: f32,
+    rail: f32,
+    panel: Option<f32>,
+    subagents: Option<f32>,
+    prefer: SideCard,
+    keep_panel: bool,
+) -> [bool; 2] {
+    if !keep_panel {
+        return crowd_out(room, rail, panel, subagents, prefer);
+    }
+    let mut out = crowd_out(room, rail, panel, subagents, SideCard::Panel);
+    out[0] = false;
     out
 }
 
@@ -728,13 +755,6 @@ impl Shell {
         let iso_view = cx.new(crate::iso_view::IsoView::new);
         #[cfg(feature = "coderlabs")]
         let canvas_view = cx.new(crate::canvas_view::CanvasView::new);
-        let gallery_sub = cx.subscribe(
-            &gallery_view,
-            |this, _, _: &crate::gallery_view::GalleryChanged, cx| {
-                this.save(cx);
-                cx.refresh_windows();
-            },
-        );
         let usage_sub = cx.subscribe_in(
             &usage_view,
             window,
@@ -868,6 +888,8 @@ impl Shell {
             rail_pick_anchor: None,
             poll: None,
             last_fetch: None,
+            fetching: false,
+            git_reads: Default::default(),
             stale_diffs: Vec::new(),
             completion: None,
             file_index: None,
@@ -958,7 +980,7 @@ impl Shell {
             _usage_view: usage_sub,
             usage_view,
             gallery_view,
-            _gallery_view: gallery_sub,
+            customize: None,
             iso_view,
             #[cfg(feature = "coderlabs")]
             canvas_view,
@@ -1358,6 +1380,9 @@ impl Shell {
         if crate::model::Remote::is_path(env_path) {
             return;
         }
+        if !self.git_reads.start(env_path, git_actions::GitRead::Status) {
+            return;
+        }
         let path = env_path.to_path_buf();
         cx.spawn(async move |this, cx| {
             let p = path.clone();
@@ -1367,6 +1392,27 @@ impl Shell {
                 }))
                 .await;
             let _ = this.update(cx, |this, cx| {
+                let timed_out = changes.as_ref().err().or(sync.as_ref().err());
+                let timed_out = timed_out.filter(|e| git::timed_out(e));
+                let recovered = this.git_reads.status_ended(&path, timed_out.is_some());
+                if let Some(env) = this.find_env_mut(&path) {
+                    if let Some(e) = timed_out {
+                        env.git_error = Some(
+                            format!(
+                                "{e}. Arakun looks again in {} minutes.",
+                                git_actions::STATUS_PAUSE.as_secs() / 60
+                            )
+                            .into(),
+                        );
+                        cx.notify();
+                    } else if recovered && env.git_error.is_some() {
+                        env.git_error = None;
+                        cx.notify();
+                    }
+                }
+                if this.git_reads.end(&path, git_actions::GitRead::Status) {
+                    this.refresh_status(&path, cx);
+                }
                 if let Ok(sync) = sync
                     && let Some(env) = this.find_env_mut(&path)
                     && env.sync != sync
@@ -1480,19 +1526,24 @@ impl Shell {
         if !self.has_projects() || self.env().sync.remote.is_none() {
             return;
         }
-        if self.last_fetch.is_some_and(|t| t.elapsed() < FETCH_EVERY) {
+        if self.fetching || self.last_fetch.is_some_and(|t| t.elapsed() < FETCH_EVERY) {
             return;
         }
-        self.last_fetch = Some(Instant::now());
+        self.fetching = true;
         let path = self.env().path.clone();
         cx.spawn(async move |this, cx| {
             let p = path.clone();
             let fetched = cx
                 .background_spawn(crate::guard::task(async move { git::fetch(&p) }))
                 .await;
-            if fetched.is_ok() {
-                let _ = this.update(cx, |this, cx| this.refresh_status(&path, cx));
-            }
+            let _ = this.update(cx, |this, cx| {
+                this.fetching = false;
+                // Counted from the end, so a slow fetch is not followed by another at once.
+                this.last_fetch = Some(Instant::now());
+                if fetched.is_ok() {
+                    this.refresh_status(&path, cx);
+                }
+            });
         })
         .detach();
     }
@@ -2306,12 +2357,36 @@ impl Shell {
                 }
             })
         };
+        let views_on = {
+            let ext = self.extensions_view.read(cx);
+            crate::sidebar::View::EXTENSIONS
+                .iter()
+                .copied()
+                .filter(|v| ext.shows(*v))
+                .collect()
+        };
+        let project = self.has_projects().then(|| self.project()).map(|p| {
+            crate::settings_view::ProjectSettings {
+                path: p.path.clone(),
+                name: p.name.clone(),
+                setup: p.setup.clone(),
+                check: p.check.clone(),
+                remote: p.is_remote(),
+            }
+        });
+        let look = crate::customize_view::Summary::of(&match &self.customize {
+            Some((view, _)) => view.read(cx).saved().clone(),
+            None => crate::palettes::load(),
+        });
         let dialog = cx.new(|cx| {
             SettingsDialog::new(
                 arcade,
                 droid,
+                look,
                 #[cfg(feature = "coderlabs")]
                 coderspace,
+                views_on,
+                project,
                 window,
                 cx,
             )
@@ -2326,31 +2401,10 @@ impl Shell {
                     this.save(cx);
                     cx.refresh_windows();
                 }
-                SettingsEvent::DiffPalette(p) => {
-                    theme::set_diff_palette(*p);
-                    this.save(cx);
-                    cx.refresh_windows();
-                }
                 SettingsEvent::RailUsage(agent, on) => {
                     account_view::set_rail_shows(*agent, *on);
                     this.save(cx);
                     cx.notify();
-                }
-                SettingsEvent::Grays(g) => {
-                    theme::set_grays(*g);
-                    this.save(cx);
-                    cx.refresh_windows();
-                }
-                SettingsEvent::TypeScale(t) => {
-                    crate::ui::set_type_scale(*t);
-                    this.save(cx);
-                    cx.refresh_windows();
-                }
-                SettingsEvent::Glass(on) => {
-                    theme::set_glass(*on);
-                    window.set_background_appearance(theme::window_background());
-                    this.save(cx);
-                    cx.refresh_windows();
                 }
                 #[cfg(target_os = "linux")]
                 SettingsEvent::Background(on) => {
@@ -2361,6 +2415,29 @@ impl Shell {
                     crate::island::set_enabled(*on);
                     this.sync_island(window, cx);
                     this.save(cx);
+                }
+                SettingsEvent::Zoom(pct) => this.zoom_to(*pct, window, cx),
+                SettingsEvent::SidebarView(view, on) => {
+                    this.extensions_view
+                        .update(cx, |v, cx| v.set_view(*view, *on, cx));
+                }
+                SettingsEvent::ProjectCommand {
+                    project,
+                    check,
+                    command,
+                } => {
+                    if let Some(p) = this.projects.iter_mut().find(|p| p.path == *project) {
+                        if *check {
+                            p.check = command.clone();
+                            // A check set by hand is one the user wants.
+                            if command.is_some() {
+                                p.check_declined = false;
+                            }
+                        } else {
+                            p.setup = command.clone();
+                        }
+                        this.save(cx);
+                    }
                 }
                 SettingsEvent::RestartToUpdate => {
                     this.restarting = true;
@@ -2383,9 +2460,9 @@ impl Shell {
                     this.close_modal(window, cx);
                     this.open_usage_tab(window, cx);
                 }
-                SettingsEvent::OpenGallery => {
+                SettingsEvent::OpenCustomize => {
                     this.close_modal(window, cx);
-                    this.open_gallery_tab(window, cx);
+                    this.open_customize(CustomizeTab::Colors, window, cx);
                 }
                 SettingsEvent::ClaudeSignIn => {
                     this.close_modal(window, cx);
@@ -2445,6 +2522,18 @@ impl Shell {
     }
 
     fn toggle_panel(&mut self, cx: &mut Context<Self>) {
+        // Customize holds the panel's place: the toggle brings the workspace
+        // panel back there rather than hiding it unseen.
+        if self.customize.is_some() {
+            self.customize = None;
+            if !self.panel_open {
+                self.panel_open = true;
+                self.save(cx);
+            }
+            self.side_prefer = SideCard::Panel;
+            cx.notify();
+            return;
+        }
         // Left out for room, a click brings it back in the subagents' place.
         if self.panel_open && self.side_crowded.get()[0] {
             self.side_prefer = SideCard::Panel;
@@ -2456,6 +2545,66 @@ impl Shell {
             self.side_prefer = SideCard::Panel;
         }
         self.save(cx);
+        cx.notify();
+    }
+
+    /// Opens the Customize panel in the workspace panel's place, on `tab`, or
+    /// moves the open one to it. It shows without a project too, so how the
+    /// app looks is always changed from the same place.
+    pub(super) fn open_customize(
+        &mut self,
+        tab: CustomizeTab,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if matches!(self.modal, Some((Modal::Settings(_), _))) {
+            self.close_modal(window, cx);
+        }
+        self.menu = None;
+        if let Some((view, _)) = &self.customize {
+            view.update(cx, |v, cx| v.set_tab(tab, cx));
+        } else {
+            let view = cx.new(|cx| CustomizeView::new(tab, window, cx));
+            let sub =
+                cx.subscribe_in(
+                    &view,
+                    window,
+                    |this, _, ev: &CustomizeEvent, window, cx| match ev {
+                        CustomizeEvent::Close => this.close_customize(cx),
+                        CustomizeEvent::OpenGallery => this.open_gallery_tab(window, cx),
+                        CustomizeEvent::Grays(g) => {
+                            theme::set_grays(*g);
+                            this.save(cx);
+                            cx.refresh_windows();
+                        }
+                        CustomizeEvent::TypeScale(t) => {
+                            crate::ui::set_type_scale(*t);
+                            this.save(cx);
+                            cx.refresh_windows();
+                        }
+                        CustomizeEvent::DiffPalette(p) => {
+                            theme::set_diff_palette(*p);
+                            this.save(cx);
+                            cx.refresh_windows();
+                        }
+                        CustomizeEvent::Glass(on) => {
+                            theme::set_glass(*on);
+                            window.set_background_appearance(theme::window_background());
+                            this.save(cx);
+                            cx.refresh_windows();
+                        }
+                    },
+                );
+            self.customize = Some((view, sub));
+        }
+        // It takes the workspace panel's place, so that place must be shown.
+        self.side_prefer = SideCard::Panel;
+        cx.notify();
+    }
+
+    /// Closes the Customize panel; its last edit is saved as it goes.
+    fn close_customize(&mut self, cx: &mut Context<Self>) {
+        self.customize = None;
         cx.notify();
     }
 
@@ -2535,12 +2684,13 @@ impl Shell {
             (true, false) => (self.rail_w, RAIL_W_RANGE.start),
         };
         // Each card's narrowest, with the handle beside it.
-        let crowded = crowd_out(
+        let crowded = crowd_out_keeping(
             viewport_w - 2. * gap() - MAIN_FLOOR_W,
             if rail { rail_card.1 + gap() } else { 0. },
-            (has_projects && self.panel_open).then(|| PANEL_W_RANGE.start + gap()),
+            self.panel_wanted().then(|| PANEL_W_RANGE.start + gap()),
             (has_projects && self.subagents_open).then(|| SUBAGENTS_W_RANGE.start + gap()),
             self.side_prefer,
+            self.customize.is_some(),
         );
         self.side_crowded.set(crowded);
         let panel = self.panel_shown();
@@ -2553,7 +2703,7 @@ impl Shell {
             [
                 rail_card,
                 if panel {
-                    (self.panel_w, PANEL_W_RANGE.start)
+                    (self.panel_preferred_w(), PANEL_W_RANGE.start)
                 } else {
                     (0., 0.)
                 },
@@ -2573,7 +2723,23 @@ impl Shell {
 
     /// The workspace panel is open and the window has room for it this frame.
     fn panel_shown(&self) -> bool {
-        self.has_projects() && self.panel_open && !self.side_crowded.get()[0]
+        self.panel_wanted() && !self.side_crowded.get()[0]
+    }
+
+    /// Something should sit in the workspace panel's place: the panel of a
+    /// project, or Customize, which also shows without one.
+    fn panel_wanted(&self) -> bool {
+        self.customize.is_some() || (self.has_projects() && self.panel_open)
+    }
+
+    /// The panel's dragged width, or wider while Customize is in it: its
+    /// palettes sit three to a row.
+    fn panel_preferred_w(&self) -> f32 {
+        if self.customize.is_some() {
+            self.panel_w.max(crate::customize_view::CUSTOMIZE_W)
+        } else {
+            self.panel_w
+        }
     }
 
     /// The subagents column is open and the window has room for it this frame.
@@ -2926,10 +3092,40 @@ impl Shell {
             return;
         }
         if !self.env().sessions.is_empty() || self.env().is_checkout {
-            self.quick_create_env(self.active_project, window, cx);
+            self.draft_new_session(self.active_project, window, cx);
             return;
         }
         self.show_new_session_tab(window, cx);
+    }
+
+    /// A new session in project `pi`: the New session tab of its main
+    /// checkout, ready to type in at once. The first prompt sent there makes
+    /// the worktree, so nobody waits on git before writing. On a server the
+    /// worktree is made first, as a prompt queued for it would be lost.
+    pub(super) fn draft_new_session(
+        &mut self,
+        pi: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.menu = None;
+        self.env_menu_open = false;
+        let Some(project) = self.projects.get(pi) else {
+            return;
+        };
+        let on_server = project
+            .environments
+            .get(project.active_env)
+            .is_some_and(|e| e.remote.is_some())
+            || project.is_remote();
+        let checkout = project.environments.iter().position(|e| e.is_checkout);
+        match checkout {
+            Some(ei) if !on_server => {
+                self.select_env(pi, ei, window, cx);
+                self.show_new_session_tab(window, cx);
+            }
+            _ => self.quick_create_env(pi, window, cx),
+        }
     }
 
     /// The open environment's New session tab, made when it has none.
@@ -3402,6 +3598,9 @@ impl Render for Shell {
             .on_action(cx.listener(|this, _: &ToggleDock, window, cx| this.toggle_dock(window, cx)))
             .on_action(cx.listener(|this, _: &CustomizeSidebar, window, cx| {
                 this.open_sidebar_builder(window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &OpenCustomize, window, cx| {
+                this.open_customize(CustomizeTab::Colors, window, cx)
             }))
             .on_action(cx.listener(|this, _: &ZoomIn, window, cx| {
                 this.zoom_to(crate::ui_zoom::next(crate::ui_zoom::pct(), 1), window, cx)
@@ -4015,6 +4214,20 @@ mod tests {
         assert_eq!(
             crowd_out(room, rail, None, sub, SideCard::Panel),
             [false, false]
+        );
+        // Customize in the panel's place stays, even asked for after the
+        // subagents or with no room at all; without it, nothing changes.
+        assert_eq!(
+            crowd_out_keeping(room, rail, panel, sub, SideCard::Subagents, true),
+            [false, true]
+        );
+        assert_eq!(
+            crowd_out_keeping(100., rail, panel, sub, SideCard::Panel, true),
+            [false, true]
+        );
+        assert_eq!(
+            crowd_out_keeping(room, rail, panel, sub, SideCard::Subagents, false),
+            [true, false]
         );
     }
 

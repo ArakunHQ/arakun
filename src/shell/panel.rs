@@ -1,9 +1,23 @@
-//! The Workspace panel: its Sessions, Explorer and Changes tabs.
+//! The Workspace panel: its Sessions, Explorer and Changes tabs, or the
+//! Customize panel in their place while it is open.
 
 use super::*;
 
 impl Shell {
-    pub(super) fn render_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(super) fn render_panel(&self, cx: &mut Context<Self>) -> AnyElement {
+        if let Some((view, _)) = &self.customize {
+            return self
+                .side_card()
+                .id("customize-card")
+                .map(ui::stop_window_move)
+                .flex()
+                .flex_col()
+                .flex_none()
+                .w(px(self.panel_width()))
+                .h_full()
+                .child(view.clone())
+                .into_any_element();
+        }
         let env = self.env();
         let title: SharedString = if env.is_checkout {
             "Workspace".into()
@@ -181,6 +195,7 @@ impl Shell {
             .child(header)
             .child(tabs)
             .child(body)
+            .into_any_element()
     }
 
     pub(super) fn render_sessions(

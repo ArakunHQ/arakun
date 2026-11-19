@@ -4,10 +4,9 @@
 //! agent CLI turns the prompt into a name that says what the work is
 //! (`fix/terminal-tab-name`), and arakun renames the branch to it.
 
-use std::io::{Read as _, Write as _};
 use std::path::PathBuf;
 use std::process::Stdio;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::{Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
@@ -321,43 +320,22 @@ fn args(agent: AgentKind, model: &str) -> Result<Vec<String>> {
     Ok(args)
 }
 
-/// Runs `cmd` with `input` on its stdin and returns its stdout; kills it after `timeout`.
+/// Runs `cmd` with `input` on its stdin and returns its stdout; stops it, and what it
+/// started, after `timeout`.
 fn run(mut cmd: std::process::Command, input: String, timeout: Duration) -> Result<String> {
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| anyhow!("could not start the agent: {e}"))?;
-    if let Some(mut stdin) = child.stdin.take() {
-        // Dropped at the end, which closes it: the CLI reads to the end before answering.
-        std::thread::spawn(move || {
-            let _ = stdin.write_all(input.as_bytes());
-        });
-    }
-    let read = |pipe: Option<Box<dyn std::io::Read + Send>>| {
-        std::thread::spawn(move || {
-            let mut text = String::new();
-            if let Some(mut pipe) = pipe {
-                let _ = pipe.read_to_string(&mut text);
+    // The CLI reads its stdin to the end before answering; it is closed once written.
+    let output = crate::platform::output_within(&mut cmd, Some(input.as_bytes()), timeout)
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::TimedOut {
+                anyhow!("the agent did not answer within {} s", timeout.as_secs())
+            } else {
+                anyhow!("could not start the agent: {e}")
             }
-            text
-        })
-    };
-    let stdout = read(child.stdout.take().map(|p| Box::new(p) as _));
-    let stderr = read(child.stderr.take().map(|p| Box::new(p) as _));
-    let start = Instant::now();
-    let status = loop {
-        if let Some(status) = child.try_wait()? {
-            break status;
-        }
-        if start.elapsed() > timeout {
-            let _ = child.kill();
-            let _ = child.wait();
-            bail!("the agent did not answer within {} s", timeout.as_secs());
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    };
-    let out = stdout.join().unwrap_or_default();
+        })?;
+    let status = output.status;
+    let out = String::from_utf8_lossy(&output.stdout).into_owned();
     if !status.success() {
-        let err = stderr.join().unwrap_or_default();
+        let err = String::from_utf8_lossy(&output.stderr);
         let err = err
             .lines()
             .rev()
@@ -418,6 +396,20 @@ fn clean(line: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A namer that leaves a child running must not hold the call until the child ends.
+    #[cfg(unix)]
+    #[test]
+    fn a_namer_that_leaves_a_child_running_returns_when_it_ends() {
+        let mut cmd = crate::platform::command("sh");
+        cmd.args(["-c", "cat; sleep 30 &"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let started = std::time::Instant::now();
+        assert_eq!(run(cmd, "fix/x".into(), TIMEOUT).unwrap(), "fix/x");
+        assert!(started.elapsed() < Duration::from_secs(10));
+    }
 
     #[test]
     fn random_names_read_as_random() {

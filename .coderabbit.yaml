@@ -18,10 +18,12 @@ reviews:
   profile: quiet
 
   # Requests changes on blocking findings (major and critical only). Approves
-  # only pull requests it rates low risk or less, once those findings are
-  # resolved. Merging still takes a
-  # person with write access. CodeRabbit also rates security risk, but no
-  # limit is set on it: the merge-risk limit already covers the sensitive paths.
+  # pull requests it rates moderate risk or less, once those findings are
+  # resolved. Most feature pull requests rate moderate, and a person had to
+  # approve every one; the sensitive paths stay with a person through the
+  # overrides below. Merging still takes a person with write access.
+  # CodeRabbit also rates security risk, but no limit is set on it: the
+  # overrides already cover the sensitive paths.
   # The Reviewers workflow dismisses an approval of a pull request from
   # outside the team, because overrides can only match members of a team. It
   # also dismisses one when the author resolved CodeRabbit's threads in the
@@ -29,7 +31,7 @@ reviews:
   # with threads still open, and asks a person.
   auto_approvals:
     enabled: true
-    max_merge_risk: low
+    max_merge_risk: moderate
     # Minor and trivial findings stay in the review as advice and do not hold
     # back the approval. The schema accepts only `major` and `critical` here.
     min_blocking_severity: major
@@ -39,8 +41,8 @@ reviews:
     allow_author_approval: false
     # Never approve a pull request that touches one of these paths, whatever
     # its risk rating: a person approves them. A matching file applies to the
-    # whole pull request. Keep the list in step with the Moderate or higher
-    # paths in merge_risk_instructions below.
+    # whole pull request. Keep the list in step with the High paths in
+    # merge_risk_instructions below.
     overrides:
       - enabled: false
         paths:
@@ -87,7 +89,10 @@ reviews:
     or a typo or label in UI text, with no change in behavior. Low risk: a small
     UI or layout change in one view that uses the design system tokens, or a
     change to AGENTS.md, CLAUDE.md or a skill in .claude/skills (agents follow
-    those and run the commands in them). Moderate or higher: any change to
+    those and run the commands in them). Moderate: a feature or a change in
+    behavior across several files or views (new panels, menus, settings,
+    shortcuts or background work) that stays out of the paths and kinds of
+    change listed next. High or higher: any change to
     src/phone (end-to-end encryption and its wire format), relay/ or phone/;
     the headless agent sandbox, its policy and its broker (src/headless*);
     the control socket (src/control.rs); code that reads, stores or sends
@@ -135,7 +140,8 @@ reviews:
     enabled: true
     # Review drafts too, so the review runs next to CI instead of after it.
     # Agents open a pull request when its content is final and mark it ready
-    # once the required checks pass; waiting for that cost ~5-7 minutes a PR.
+    # once the required checks pass (tools/wait-checks.sh); waiting for that
+    # cost ~5-7 minutes a PR.
     drafts: true
     # Stacked pull requests target the branch below them, not main. Without
     # this, CodeRabbit reviews only the bottom one of a stack.

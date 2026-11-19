@@ -5,9 +5,7 @@
 //! on disk: nothing reaches GitHub until the user posts it.
 
 use std::collections::HashMap;
-use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 use std::sync::OnceLock;
 
 use serde::de::DeserializeOwned;
@@ -1170,9 +1168,6 @@ const CHECK_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
 fn gh_run_within(cmd: &Cmd, timeout: std::time::Duration) -> Result<Vec<u8>, Problem> {
     let mut gh = git::gh(&std::env::temp_dir());
     gh.args(&cmd.args);
-    if cmd.stdin.is_none() {
-        gh.stdin(Stdio::null());
-    }
     let input = cmd.stdin.as_ref().map(|t| t.as_bytes());
     let out = crate::headless::sandbox::run_with_timeout(gh, input, timeout)
         .map_err(|e| Problem::Other(format!("could not run gh: {e}")))?;
@@ -2483,28 +2478,16 @@ fn state_cmd(item: &ItemRef, verb: &str) -> Cmd {
 
 fn gh_run(cmd: &Cmd) -> Result<Vec<u8>, Problem> {
     let mut gh = git::gh(&std::env::temp_dir());
-    gh.args(&cmd.args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    gh.stdin(if cmd.stdin.is_some() {
-        Stdio::piped()
-    } else {
-        Stdio::null()
-    });
-    let mut child = gh.spawn().map_err(|e| {
-        if e.kind() == std::io::ErrorKind::NotFound {
-            Problem::NoGh
-        } else {
-            Problem::Other(format!("could not run gh: {e}"))
-        }
-    })?;
-    if let (Some(text), Some(mut pipe)) = (&cmd.stdin, child.stdin.take()) {
-        // gh may give up before it reads everything; what it wrote says why.
-        let _ = pipe.write_all(text.as_bytes());
-    }
-    let out = child
-        .wait_with_output()
-        .map_err(|e| Problem::Other(format!("could not run gh: {e}")))?;
+    gh.args(&cmd.args);
+    // gh may give up before it reads all of stdin; what it wrote says why.
+    let input = cmd.stdin.as_deref().map(str::as_bytes);
+    let out = crate::platform::output_within(&mut gh, input, crate::platform::GIT_REMOTE).map_err(
+        |e| match e.kind() {
+            std::io::ErrorKind::NotFound => Problem::NoGh,
+            std::io::ErrorKind::TimedOut => Problem::Other(e.to_string()),
+            _ => Problem::Other(format!("could not run gh: {e}")),
+        },
+    )?;
     if !out.status.success() {
         return Err(super::problem(&String::from_utf8_lossy(&out.stderr)));
     }

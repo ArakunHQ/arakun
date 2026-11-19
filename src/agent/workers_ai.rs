@@ -1062,7 +1062,12 @@ fn edit_file(cwd: &Path, args: &Value) -> Result<String, String> {
     ))
 }
 
-fn grep(cwd: &Path, args: &Value) -> Result<String, String> {
+/// How long a search may run. Outside the sandbox it reads every file under `path`,
+/// which on a slow network drive could otherwise never end.
+const GREP_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// The `grep` tool: rg when installed, else grep. Stops when the turn is stopped.
+fn grep(cwd: &Path, args: &Value, cancel: &AtomicBool) -> Result<String, String> {
     let pattern = args["pattern"].as_str().ok_or("pattern is missing")?;
     let path = args["path"]
         .as_str()
@@ -1094,27 +1099,25 @@ fn grep(cwd: &Path, args: &Value) -> Result<String, String> {
             c
         }
     };
-    cmd.args(["-e", pattern, "--", path])
-        .current_dir(cwd)
-        .stdin(Stdio::null());
-    let out = match sandbox() {
+    cmd.args(["-e", pattern, "--", path]);
+    let mut cmd = match sandbox() {
         Some(j) => {
             let mut inner = vec![cmd.get_program().to_string_lossy().into_owned()];
             inner.extend(cmd.get_args().map(|a| a.to_string_lossy().into_owned()));
-            j.sandbox
-                .as_ref()
-                .unwrap()
-                .output(cwd, &inner, None, Duration::from_secs(120))?
+            j.sandbox.as_ref().unwrap().command(cwd, &inner)
         }
-        None => cmd
-            .output()
-            .map_err(|e| format!("cannot run the search: {e}"))?,
+        None => cmd,
     };
-    let found = String::from_utf8_lossy(&out.stdout);
-    match out.status.code() {
-        Some(0) => Ok(clip_middle(&found, tool_chars())),
+    let ran = run_streaming(&mut cmd, cwd, GREP_TIMEOUT, cancel, |_| {})
+        .map_err(|e| format!("cannot run the search: {e}"))?;
+    if let Some(why) = ran.stopped {
+        return Err(format!("the search {why}"));
+    }
+    // rg and grep exit 2 on an error, so output with 0 has only matches in it.
+    match ran.exit {
+        Some(0) => Ok(clip_middle(&ran.output, tool_chars())),
         Some(1) => Ok("No matches.".into()),
-        _ => Err(String::from_utf8_lossy(&out.stderr).trim().to_string()),
+        _ => Err(clip_middle(ran.output.trim(), tool_chars())),
     }
 }
 
@@ -1248,7 +1251,7 @@ fn run_bash(
     command: &str,
     timeout: Duration,
     cancel: &AtomicBool,
-    mut live: impl FnMut(&str),
+    live: impl FnMut(&str),
 ) -> Result<Ran, String> {
     let shell = if launch::which("bash").is_some() {
         "bash"
@@ -1269,17 +1272,31 @@ fn run_bash(
             c
         }
     };
+    run_streaming(&mut cmd, cwd, timeout, cancel, live)
+        .map_err(|e| format!("cannot start {shell}: {e}"))
+}
+
+/// Runs `cmd` in `cwd`, stdout and stderr together, handing its output to `live` as
+/// it comes and keeping only its head and tail; ends it and what it started after
+/// `timeout`, or when `cancel` is set.
+fn run_streaming(
+    cmd: &mut std::process::Command,
+    cwd: &Path,
+    timeout: Duration,
+    cancel: &AtomicBool,
+    mut live: impl FnMut(&str),
+) -> std::io::Result<Ran> {
     cmd.current_dir(cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    crate::platform::ProcessTree::prepare(&mut cmd);
-    crate::platform::lower_priority(&mut cmd);
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| format!("cannot start {shell}: {e}"))?;
+    crate::platform::ProcessTree::prepare(cmd);
+    crate::platform::lower_priority(cmd);
+    let mut child = cmd.spawn()?;
     let tree = crate::platform::ProcessTree::adopt(&child);
-    let (tx, rx) = mpsc::channel::<Vec<u8>>();
+    // Bounded, so a command that writes faster than this keeps up waits rather than
+    // pile up chunks; the readers end when `rx` goes with the return.
+    let (tx, rx) = mpsc::sync_channel::<Vec<u8>>(64);
     let pipes: [Option<Box<dyn std::io::Read + Send>>; 2] = [
         child
             .stdout
@@ -1354,6 +1371,9 @@ fn run_bash(
         };
         if let Some(why) = why {
             tree.kill();
+            // The tree may not hold the child (on Windows the job object can fail to
+            // take it), and the wait would then last as long as the child.
+            let _ = child.kill();
             let _ = child.wait();
             stopped = Some(why);
             break;
@@ -2395,7 +2415,7 @@ impl Agent {
             "read_file" => read_file(cwd, &args),
             "write_file" => write_file(cwd, &args),
             "edit_file" => edit_file(cwd, &args),
-            "grep" => grep(cwd, &args),
+            "grep" => grep(cwd, &args, &self.cancel),
             "list" => list(cwd, &args),
             "web_fetch" => super::web::fetch(&args).map(|t| clip_middle(&t, tool_chars())),
             "web_search" => super::web::search(&args).map(|t| clip_middle(&t, tool_chars())),
@@ -2420,7 +2440,10 @@ impl Agent {
             clip_middle(&text, tool_chars())
         };
         self.update(sid, json!({"sessionUpdate": "tool_call_update", "toolCallId": id, "status": status, "rawOutput": shown_output}));
-        (text, None)
+        // A stopped search stops the turn, like a stopped command: without the
+        // halt the calls queued after it still run.
+        let halt = (call.name == "grep" && self.cancelled()).then_some("the turn was stopped");
+        (text, halt)
     }
 
     fn run_command(
@@ -3344,13 +3367,23 @@ mod tests {
         );
         assert_eq!(list(&dir, &json!({})).unwrap(), "src/");
         assert!(
-            grep(&dir, &json!({"pattern": "thr"}))
+            grep(&dir, &json!({"pattern": "thr"}), &AtomicBool::new(false))
                 .unwrap()
                 .contains("x.txt:3:three")
         );
         assert_eq!(
-            grep(&dir, &json!({"pattern": "nothing-here"})).unwrap(),
+            grep(
+                &dir,
+                &json!({"pattern": "nothing-here"}),
+                &AtomicBool::new(false)
+            )
+            .unwrap(),
             "No matches."
+        );
+        // A stopped turn stops its search.
+        assert_eq!(
+            grep(&dir, &json!({"pattern": "thr"}), &AtomicBool::new(true)),
+            Err("the search stopped".to_string())
         );
         let ran = run_bash(
             &dir,

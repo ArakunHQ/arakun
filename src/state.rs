@@ -595,6 +595,19 @@ pub fn onboarding_path() -> PathBuf {
     file().with_extension("onboarding.json")
 }
 
+/// Held by the one Arakun that loads and saves this state; next to it, so a
+/// second Arakun with its own state (`ARAKUN_STATE`) runs beside it.
+pub fn lock_path() -> PathBuf {
+    lock_for(&file())
+}
+
+/// `state.json.lock`: the whole name, so `a.json` and `a.alt` get two locks.
+fn lock_for(state: &Path) -> PathBuf {
+    let mut name = state.as_os_str().to_owned();
+    name.push(".lock");
+    PathBuf::from(name)
+}
+
 /// Whether Arakun saved its state here before: not a first launch.
 pub fn exists() -> bool {
     file().exists()
@@ -1775,6 +1788,18 @@ mod tests {
             uuid(),
         );
         assert_eq!(back.to_bounds(), gpui::WindowBounds::Windowed(plain));
+    }
+
+    #[test]
+    fn each_state_file_has_its_own_lock() {
+        assert_eq!(
+            lock_for(Path::new("/w/state.json")),
+            PathBuf::from("/w/state.json.lock")
+        );
+        assert_ne!(
+            lock_for(Path::new("/w/state.json")),
+            lock_for(Path::new("/w/state.alt"))
+        );
     }
 
     #[test]

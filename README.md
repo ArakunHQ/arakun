@@ -77,8 +77,8 @@ copy of it, rename it back, and start a version that can read it.
   project's list below holds the rest, so nothing shows twice. Move or remove it in
   the sidebar builder.
 - **One session, one worktree.** **New session** at the top of the sidebar's list, or
-  `Ctrl+T`, gives a session its own worktree on a random branch, and the first prompt
-  names the branch. An open worktree is used only while it has no session yet; `Alt`+click
+  `Ctrl+T`, opens a composer at once and gives the session its own worktree on a random
+  branch when you send the first prompt, which names the branch. An open worktree is used only while it has no session yet; `Alt`+click
   on New session asks for the branch. A prompt written in the main checkout, such as on
   a project's start screen, starts its session in a new worktree too (on a server, it
   starts where it was written). The sidebar lists each worktree by its session's title.
@@ -195,7 +195,8 @@ terminal-only. The status line and keybindings from your settings don't apply in
   turn that edits files; on failure the tail of the output goes back to the agent, up to
   three times in a row. Checks run one at a time across all sessions, at low priority and
   with half the cores for builds (`CARGO_BUILD_JOBS`), so several agents finishing
-  together don't stall the computer. Arakun also notices when an agent loops (the same
+  together don't stall the computer. Set it, and the setup script new environments run,
+  in Settings › Project or the project's menu. Arakun also notices when an agent loops (the same
   failing command or the same edit over and over) and offers to stop and rethink.
 - **Memory.** Agents save what they learn (`arakun mem`), and every new session starts
   with an index of it in the system prompt. Plain JSON files, one per repository plus a
@@ -226,10 +227,11 @@ terminal-only. The status line and keybindings from your settings don't apply in
   pull request template, else the commit messages). It opens as a draft unless you turn
   that off, pushes the branch first when it has commits GitHub doesn't, and then shows
   the new pull request in the GitHub tab. "Open GitHub's form" opens the page in your
-  browser instead, to write the description there. "Write with AI" has Claude Code
+  browser instead, to write the description there. "Write with Claude Code" has Claude Code
   write the title and the description from the branch's commits, its diff (up to 60,000
   characters) and the template, when it is the environment's agent or the one picked for
-  naming branches. It answers once with its tools off, so it reads nothing else, and
+  naming branches; the button names the agent, so you see where the diff goes before
+  you click. It answers once with its tools off, so it reads nothing else, and
   nothing goes to GitHub until you create the pull request. Other agents don't write it:
   they can read files while they answer.
 - **Queue.** The GitHub tab opens on one line that says how many things need you,
@@ -386,8 +388,8 @@ after a week).
   saved in `~/.local/share/arakun/cliproxy-management-key`, and the last limits read
   in `cliproxy-plan.json` next to it.
 - **Marketplace.** Plugins and MCP servers to add, and the MCP servers, plugins, skills
-  and permission rules the agents load now. Under Arakun › Extensions you turn on the
-  tabs the sidebar shows besides Inbox, Runs, Branches and Marketplace: GitHub, Notes,
+  and permission rules the agents load now. Under Arakun › Extensions (or Settings ›
+  General › Sidebar) you turn on the tabs the sidebar shows besides Inbox, Runs, Branches and Marketplace: GitHub, Notes,
   Memory, Usage, Cloudflare, PostHog, Isometric, Phone, Servers and Automations. The
   palette and the sidebar builder list only the tabs that are on. A new install starts
   with none on, except what you set up in the first-run setup: GitHub once the GitHub
@@ -403,24 +405,33 @@ after a week).
 
 ### Make it yours
 
-- **Color palettes.** Settings › Appearance has built-in palettes (Arakun Black, the
-  default, then Calma, Arakun Night, Graphite, Midnight, Forest, Rosé). Only the center
-  of the window is a sheet; the sidebar, the workspace panel and the status line sit on
-  the window itself, and the accent is kept for what needs you. Customize one to change
-  its tint, background and accent; Arakun warns when text or the accent gets hard to
-  read. A palette fits in one line (`arakun:palette/v1:…`) that anyone can paste there to
-  get it. The choice and your palettes are kept in `palettes.json` next to the state.
+How the app looks is changed in the **Customize** panel, at the right of the window where
+the workspace panel is, so the work stays in view while you change it. Open it from the
+palette (`Customize`), View › Customize… or Settings › Appearance › Open Customize, which
+only sums up what is chosen. It opens without a project too.
 
-  <img src="docs/screenshots/palettes.png" alt="The six built-in palettes in Settings › Appearance" width="520">
-- **Dark and light.** Settings › Appearance › Mode draws the palette on black or on a
-  white background with dark text. The choice is kept in `palettes.json`.
-- **Corners and spacing.** Settings › Appearance also sets the shape of the whole app,
-  live. Corners makes cards, buttons and fields sharper or rounder (0 to 200%; presets
-  Sharp, Default, Round). Spacing makes the room inside and between things tighter or
-  roomier (60 to 160%; Compact, Default, Roomy). Window gap is the space around and
-  between the sidebar, the main area, the panel and the dock (0 to 20 px; None, Default,
-  Wide). The defaults (100%, 100%, 8 px) look as before. These are kept in
-  `palettes.json` too.
+- **Colors.** Mode draws the palette on black or on a white background with dark text.
+  There are built-in palettes (Arakun Black, the default, then Calma, Arakun Night,
+  Graphite, Midnight, Forest, Rosé). Only the center of the window is a sheet; the
+  sidebar, the workspace panel and the status line sit on the window itself, and the
+  accent is kept for what needs you. Duplicate one to change its tint, background and
+  accent; Arakun warns when text or the accent gets hard to read. Grays sets how bright
+  secondary text and borders are, and Diff colors how added and removed lines look. A
+  palette fits in one line (`arakun:palette/v1:…`): Export copies it and Import pastes
+  one. Reset colors goes back to Arakun Black, dark, and keeps your palettes. The mode,
+  the choice and your palettes are kept in `palettes.json` next to the state.
+
+  <img src="docs/screenshots/palettes.png" alt="The built-in palettes" width="520">
+- **Shape.** Corners makes cards, buttons and fields sharper or rounder (0 to 200%;
+  presets Sharp, Default, Round). Spacing makes the room inside and between things
+  tighter or roomier (60 to 160%; Compact, Default, Roomy). Window gap is the space
+  around and between the sidebar, the main area, the panel and the dock (0 to 20 px;
+  None, Default, Wide). The defaults (100%, 100%, 8 px) look as before and are kept in
+  `palettes.json` too. Text size and Glass are here as well. Reset shape goes back to
+  the defaults.
+- **Design system.** The card at the foot of the panel opens the Design system tab:
+  every color, type style and component, live, so a change can be judged on all of
+  them at once.
 
 ### Redacted mode
 
@@ -843,6 +854,12 @@ directory, over a local control socket (`$XDG_RUNTIME_DIR/arakun/control.sock`, 
 get `ARAKUN_SOCKET` and `arakun` on their `PATH`, and the agents get a note in their
 system prompt about it (`ARAKUN_AGENT_HINT=off` removes it).
 
+One Arakun runs per state. `arakun` started again brings the running window up and
+exits (`arakun <dir>` adds the project there), since two windows on one state would
+save over each other and run the same automations twice. The running one holds
+`state.json.lock` next to `state.json`; an Arakun with its own `ARAKUN_STATE`, such as
+`arakun dev`, has its own lock and runs beside it.
+
 ```sh
 arakun .                          # add this project (or switch to it); starts Arakun if needed
 arakun browse -s localhost:3000   # open a page in the side pane
@@ -1039,7 +1056,7 @@ On macOS, `Cmd` takes the place of `Ctrl` in the shortcuts below, except for
 forward through tabs, `Ctrl+Cmd+F` toggles full screen, and `Cmd+H`, `Cmd+M` and
 `Cmd+Q` hide, minimize and quit.
 
-- `Ctrl+T` new session (in a new worktree unless the open one is a worktree without one), `Ctrl+J` toggle the terminal dock, `Ctrl+B` toggle the sidebar
+- `Ctrl+T` new session (in a new worktree, made when you send the first prompt, unless the open one is a worktree without one), `Ctrl+J` toggle the terminal dock, `Ctrl+B` toggle the sidebar
 - `Ctrl+Alt+B` toggle the workspace panel, `Ctrl+Alt+S` toggle the subagents panel
 - `Ctrl+D` / `Ctrl+Shift+D` split right / down, `Ctrl+Alt+arrows` move between panes
 - `Ctrl+Tab`, `Ctrl+1...9` switch tabs, across environments; `Alt+Up` / `Alt+Down`
@@ -1078,7 +1095,8 @@ forward through tabs, `Ctrl+Cmd+F` toggles full screen, and `Cmd+H`, `Cmd+M` and
   `Enter` ticking one off. Pins are kept in `pins.json`, rules (reminders too) in
   `rules.json`, to-dos in `todos.json` and what you open in `palette-frecency.json`,
   next to the state file.
-- `Ctrl+=` / `Ctrl+-` / `Ctrl+0` zoom the whole interface (in a browser tab, the page)
+- `Ctrl+=` / `Ctrl+-` / `Ctrl+0` zoom the whole interface (in a browser tab, the page);
+  Settings › Appearance › Zoom does it too
 - `Ctrl+Shift+H` turns [redacted mode](#redacted-mode) on or off
 - In the composer: `Enter` sends, `Shift+Enter` new line, `Up` on an empty composer
   recalls earlier prompts; paste or drop images to attach them. While the agent works,

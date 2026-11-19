@@ -999,11 +999,52 @@ impl Shell {
                     .and_then(|p| p.environments.get(ei))
                     .is_some_and(|e| e.remote.is_some()) =>
             {
+                let server = self.projects[pi].environments[ei]
+                    .remote
+                    .as_ref()
+                    .map(|r| r.server.clone())
+                    .unwrap_or_default();
+                let machine = self.projects[pi].environments[ei]
+                    .remote
+                    .as_ref()
+                    .map(|r| r.machine.to_string())
+                    .unwrap_or_default();
                 panel = panel.child(
-                    ui::menu_item("cm-servers", "computer", "Open Servers", false, true).on_click(
-                        cx.listener(|this, _, window, cx| this.open_servers_tab(window, cx)),
-                    ),
+                    ui::menu_item(
+                        "cm-server-new-env",
+                        "add01",
+                        format!("New environment on {machine}"),
+                        false,
+                        true,
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.menu = None;
+                        this.servers_new_env(pi, ei, cx)
+                    })),
                 );
+                panel =
+                    panel
+                        .child(
+                            ui::menu_item(
+                                "cm-server-add-place",
+                                "folder01",
+                                "Clone or add a folder on this server…",
+                                false,
+                                true,
+                            )
+                            .on_click(cx.listener(
+                                move |this, _, window, cx| {
+                                    this.menu = None;
+                                    this.servers_add_place(&server, window, cx)
+                                },
+                            )),
+                        )
+                        .child(
+                            ui::menu_item("cm-servers", "computer", "Open Servers", false, true)
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.open_servers_tab(window, cx)
+                                })),
+                        );
             }
             MenuTarget::Env(pi, ei) => {
                 let env = self.projects.get(pi).and_then(|p| p.environments.get(ei));

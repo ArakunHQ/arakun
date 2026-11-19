@@ -54,12 +54,20 @@ pub type ClientId = u64;
 #[derive(Deserialize, Debug, Clone, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClientMsg {
-    /// Watch a session: its last entries now, then every change.
+    /// Watch a session: its last entries now, then every change. It takes the
+    /// place of the one watched before, unless `keep` (a desktop following
+    /// several): then both are watched.
     Open {
         session: String,
+        #[serde(default)]
+        keep: bool,
     },
-    /// Back to the inbox: stop watching.
-    Close,
+    /// Stop watching `session`, or every session when it says none (back to
+    /// the inbox).
+    Close {
+        #[serde(default)]
+        session: Option<String>,
+    },
     /// Older entries of the watched session, `from..to`.
     Entries {
         session: String,
@@ -145,6 +153,30 @@ pub enum ClientMsg {
         session: String,
         #[serde(default)]
         from: usize,
+    },
+    /// Makes a folder already on the server one sessions can start in. `~/`
+    /// stands for the home folder there. Answered with `place_added`.
+    AddPlace {
+        path: String,
+    },
+    /// Clones a repository on the server and makes its folder a place: a URL,
+    /// a `git clone` line or a GitHub `owner/repo`. Answered with `place_added`
+    /// once the clone is done.
+    Clone {
+        url: String,
+    },
+    /// A new worktree of the repository `from` is a checkout of, on a new
+    /// `branch`, made a place. Answered with `place_added`.
+    NewEnv {
+        from: String,
+        branch: String,
+    },
+    /// Renames the branch checked out at place `place` from `from` to `to`,
+    /// unless it was renamed meanwhile. Answered with the inbox.
+    RenameBranch {
+        place: String,
+        from: String,
+        to: String,
     },
     /// Both agents' plan limits, as the desktop knows them.
     Usage,
@@ -1807,7 +1839,7 @@ mod tests {
                     server.send(id, "hello".into());
                     got.push("connected");
                 }
-                Some(Incoming::Message(_, ClientMsg::Open { session })) => {
+                Some(Incoming::Message(_, ClientMsg::Open { session, .. })) => {
                     assert_eq!(session, "s1");
                     got.push("open");
                 }

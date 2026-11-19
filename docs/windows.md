@@ -129,6 +129,7 @@ start `arakun-server serve` from Task Scheduler, with the trigger "At log on".
 | Settle threads after merge (Settings › Branches), and the merges settled | `%LOCALAPPDATA%\arakun\settle-after-merge`; by default `%LOCALAPPDATA%\arakun\settled.json`, with `ARAKUN_STATE` set `settled.json` next to that state file |
 | Remove old environments (Settings › Branches) | `%LOCALAPPDATA%\arakun\env-cleanup` |
 | Control socket | `%LOCALAPPDATA%\arakun\control.sock` |
+| Lock held by the running Arakun (a second `arakun` hands off to it and exits) | `%LOCALAPPDATA%\arakun\state.json.lock`; with `ARAKUN_STATE` set, `<that file>.lock` next to it |
 | `arakun server`: its settings, sessions and socket | `%LOCALAPPDATA%\arakun\server\` |
 | Servers the app is paired with (Servers tab) | `%LOCALAPPDATA%\arakun\servers.json` |
 | What each paired server listed last | `%LOCALAPPDATA%\arakun\servers-inbox.json` |
@@ -292,6 +293,7 @@ Manager (Windows Credentials, Generic Credentials).
 - **`LNK` errors about missing libraries:** the *Desktop development with C++* workload or
   the Windows SDK is not installed.
 - **"Access denied (os error 5)" when opening a file:** Windows does not allow opening a
-  file that another process has locked. Arakun does not lock its own files; if it
-  happens, note which file it was and open an issue, since this is exactly the kind of
-  failure that only shows up on Windows.
+  file that another process has locked. The running Arakun locks only
+  `state.json.lock`, which nothing needs to read. If it happens with another file,
+  note which file it was and open an issue, since this is exactly the kind of failure
+  that only shows up on Windows.

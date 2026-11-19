@@ -847,6 +847,12 @@ directory, over a local control socket (`$XDG_RUNTIME_DIR/arakun/control.sock`, 
 get `ARAKUN_SOCKET` and `arakun` on their `PATH`, and the agents get a note in their
 system prompt about it (`ARAKUN_AGENT_HINT=off` removes it).
 
+One Arakun runs per state. `arakun` started again brings the running window up and
+exits (`arakun <dir>` adds the project there), since two windows on one state would
+save over each other and run the same automations twice. The running one holds
+`state.json.lock` next to `state.json`; an Arakun with its own `ARAKUN_STATE`, such as
+`arakun dev`, has its own lock and runs beside it.
+
 ```sh
 arakun .                          # add this project (or switch to it); starts Arakun if needed
 arakun browse -s localhost:3000   # open a page in the side pane

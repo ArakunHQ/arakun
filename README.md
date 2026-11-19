@@ -73,6 +73,12 @@ with "Show onboarding" in the palette (`Ctrl+K`). That it was done is kept in
   random branch, and the first prompt names the branch. The open environment is used
   only while it has no session yet. The sidebar lists each worktree by its session's
   title, and the main checkout by its branch.
+- **Several at once.** `Ctrl`+click (`Cmd`+click on macOS) rows of the sidebar's list
+  to pick them, and `Shift`+click to pick a run of them. In the Active list, either
+  picks the session's worktree. A bar under them settles their
+  sessions, closes them (their tabs close and idle agents stop; the worktrees stay), or
+  deletes the worktrees after one question. Branches stay. The main checkout and
+  worktrees on a server are deleted one at a time. `Esc` clears the pick.
 - **Projects and worktrees.** A rail of projects, each with its environments (the main
   checkout plus git worktrees). The default sidebar shows the open project, with the
   others in its dropdown, and its sessions as a flat list: a status dot, the title,

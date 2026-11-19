@@ -10,7 +10,9 @@
 //! fed with the entries the server sends whole (`transcript`), and what the
 //! user does in it goes back as the phone's messages ([`RemoteAction`]).
 //!
-//! The app connects at start when any server is paired.
+//! The app connects at start when any server is paired. Until a server
+//! answers, its environments are the ones it listed last
+//! (`servers::load_inboxes`), so a restart or a server that is away loses none.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -111,6 +113,10 @@ pub(super) struct ServersLink {
     events: Events,
     /// The servers' sessions followed, each for whoever looks at it.
     following: Vec<Following>,
+    /// What each server listed last, as kept on disk (`servers::kept_inbox`).
+    inboxes: HashMap<String, Value>,
+    /// The last write of `inboxes` failed: the next inbox writes them again.
+    inboxes_unsaved: bool,
     /// What each local project's repository is known by (`repo_key`), read once.
     origins: HashMap<PathBuf, Option<String>>,
     /// Sessions asked of servers, until each says its session's id.
@@ -380,6 +386,24 @@ fn in_the_clear(s: &Saved) -> bool {
     s.way == servers::Way::Direct && s.origin.starts_with("http://")
 }
 
+/// Whether building the link connects this server: at start, not over plain http.
+fn connects_now(s: &Saved, startup: bool) -> bool {
+    !startup || !in_the_clear(s)
+}
+
+/// The kept lists shown when the link is built: those of the servers it connects.
+fn seeded_inboxes(
+    saved: &[Saved],
+    inboxes: &HashMap<String, Value>,
+    startup: bool,
+) -> Vec<(String, Value)> {
+    saved
+        .iter()
+        .filter(|s| connects_now(s, startup))
+        .filter_map(|s| Some((s.id.clone(), inboxes.get(&s.id)?.clone())))
+        .collect()
+}
+
 /// Who asked a server for a session, and so hears its id.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Asker {
@@ -644,9 +668,10 @@ impl Shell {
         cx.notify();
     }
 
-    /// At start: the paired servers are connected, so their projects show.
-    /// Not one reached over plain http: its token would cross whatever
-    /// network this is now in the clear. It waits for the Servers tab.
+    /// At start: the paired servers are connected, and their projects show
+    /// what they listed last until they answer. Not one reached over plain
+    /// http: its token would cross whatever network this is now in the clear.
+    /// It waits for the Servers tab.
     pub(super) fn restore_servers(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if servers::load().iter().any(|s| !in_the_clear(s)) {
             self.servers_connect_with(true, window, cx);
@@ -661,13 +686,22 @@ impl Shell {
     /// With `startup`, only the servers whose link is encrypted.
     fn servers_connect_with(&mut self, startup: bool, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(link) = &mut self.servers {
+            let mut late = Vec::new();
             if !startup {
                 for s in &link.saved {
                     if !link.conns.contains_key(&s.id) {
                         let client = Client::connect(s.clone(), link.events.clone());
                         link.conns.insert(s.id.clone(), Conn::new(client));
+                        late.extend(link.inboxes.get(&s.id).map(|i| (s.id.clone(), i.clone())));
                     }
                 }
+            }
+            // Left out at start: what it listed last shows until it answers.
+            for (id, inbox) in &late {
+                self.servers_inbox(id, inbox);
+            }
+            if !late.is_empty() {
+                self.sync_remote_projects(window, cx);
             }
             return;
         }
@@ -685,9 +719,13 @@ impl Shell {
             }
         });
         let saved = servers::load();
+        let mut inboxes = servers::load_inboxes();
+        // A server forgotten while it was kept is not shown again.
+        inboxes.retain(|id, _| saved.iter().any(|s| s.id == *id));
+        let seeded = seeded_inboxes(&saved, &inboxes, startup);
         let conns = saved
             .iter()
-            .filter(|s| !startup || !in_the_clear(s))
+            .filter(|s| connects_now(s, startup))
             .map(|s| {
                 (
                     s.id.clone(),
@@ -700,6 +738,8 @@ impl Shell {
             conns,
             events,
             following: Vec::new(),
+            inboxes,
+            inboxes_unsaved: false,
             origins: HashMap::new(),
             starts: Starts::default(),
             starting_id: None,
@@ -714,6 +754,14 @@ impl Shell {
             error: None,
             _listen: listen,
         });
+        for (id, inbox) in &seeded {
+            self.servers_inbox(id, inbox);
+        }
+        // What they listed last shows until they answer, offline ones too.
+        // Not run with nothing kept: it reads every local project's origin.
+        if !seeded.is_empty() {
+            self.sync_remote_projects(window, cx);
+        }
     }
 
     /// The name a server goes by.
@@ -806,6 +854,9 @@ impl Shell {
                 }
                 link.saved.retain(|s| s.id != *id);
                 servers::save(&link.saved);
+                if link.inboxes.remove(id).is_some() || link.inboxes_unsaved {
+                    link.inboxes_unsaved = !servers::save_inboxes(&link.inboxes);
+                }
                 link.following.retain(|f| f.server != *id);
                 // What it was asked is not coming: the others' requests stay.
                 link.adding.remove(id);
@@ -1970,6 +2021,17 @@ impl Shell {
             }
             Event::Message(msg) => {
                 if msg["type"] == "inbox" {
+                    // Kept for the next start, when what it holds changed.
+                    let kept = servers::kept_inbox(&msg);
+                    // One that could not be written is tried again with the next.
+                    let changed = link
+                        .inboxes
+                        .get(id)
+                        .is_none_or(|old| !servers::same_kept(old, &kept));
+                    if link.saved.iter().any(|s| s.id == id) && (changed || link.inboxes_unsaved) {
+                        link.inboxes.insert(id.to_string(), kept);
+                        link.inboxes_unsaved = !servers::save_inboxes(&link.inboxes);
+                    }
                     self.servers_inbox(id, &msg);
                     self.sync_remote_projects(window, cx);
                 } else if msg["type"] == "place_added" {
@@ -2836,6 +2898,40 @@ mod tests {
             ticket: "t".into(),
         };
         assert!(!in_the_clear(&saved("http://10.0.0.2:7474", relay)));
+    }
+
+    #[test]
+    fn the_servers_tab_shows_what_a_plain_http_server_listed_last() {
+        let saved = |id: &str, origin: &str| Saved {
+            id: id.into(),
+            name: String::new(),
+            origin: origin.into(),
+            way: servers::Way::Direct,
+            device: "d".into(),
+            token: "t".into(),
+        };
+        let servers = [
+            saved("clear", "http://10.0.0.2:7474"),
+            saved("safe", "https://box.example"),
+            saved("new", "https://other.example"),
+        ];
+        let inbox = json!({ "places": [{ "path": "/srv/app" }], "sessions": [] });
+        let inboxes = HashMap::from([
+            ("clear".to_string(), inbox.clone()),
+            ("safe".to_string(), inbox.clone()),
+        ]);
+        let ids = |seeded: Vec<(String, Value)>| -> Vec<String> {
+            seeded.into_iter().map(|(id, _)| id).collect()
+        };
+        // At start the plain-http one is not connected, so nothing of it shows.
+        assert_eq!(ids(seeded_inboxes(&servers, &inboxes, true)), ["safe"]);
+        // Built from the Servers tab, it is, and its kept list shows.
+        assert_eq!(
+            ids(seeded_inboxes(&servers, &inboxes, false)),
+            ["clear", "safe"]
+        );
+        // Nothing kept: nothing to show, so local origins are not read.
+        assert!(seeded_inboxes(&servers, &HashMap::new(), false).is_empty());
     }
 
     #[test]

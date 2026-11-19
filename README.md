@@ -772,7 +772,10 @@ The link is good for two minutes and pairs one device. There are two ways to use
   clone goes into `~/code`. Clone takes https and ssh addresses, not plain http, and
   gives up after 20 minutes. Add offers a folder the server already has, as
   `arakun-server add` does. The app keeps what pairing gave it in `servers.json`
-  next to its state, which only your user can read. "Forget" on a server removes it
+  next to its state, which only your user can read. What each server listed last is
+  kept in `servers-inbox.json` beside it, so its environments show at start before it
+  answers, or while it cannot be reached. A server reached over plain http shows them
+  only once the Servers tab connects it. "Forget" on a server removes it
   there and has the server forget the app. A server that cannot be reached at that
   moment keeps the app in its list: remove it there with
   `arakun-server unpair <device>`.

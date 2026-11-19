@@ -373,6 +373,12 @@ after a week).
   with none on, except what you set up in the first-run setup: GitHub once the GitHub
   CLI is signed in, and Phone if you chose to pair one. An update keeps the ones your
   sidebar already had. The choice is kept in `extensions.json` next to the state.
+- **Sidebar groups.** A segment with a title folds with a click on it, and opens
+  folded next time. Folded, it says how many pieces it holds, with a dot when one of
+  them wants you (red for a failure or something waiting), so the projects get the
+  room. Right-click a title for Ungroup, which removes the segment and keeps its
+  pieces in the one above. In the sidebar builder, a segment can be set to start
+  folded or not to say what is inside; a new one is born titled and collapsible.
 - **Automations.** Scheduled shell commands or agent prompts per project.
 
 ### Make it yours

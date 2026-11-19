@@ -346,6 +346,15 @@ impl Piece {
         )
     }
 
+    /// Shapes the sidebar rather than taking you anywhere: not counted as
+    /// one of a folded segment's pieces.
+    pub fn is_decoration(&self) -> bool {
+        matches!(
+            self,
+            Piece::Separator | Piece::Title { .. } | Piece::Spacer | Piece::Mascot
+        )
+    }
+
     /// The same piece, whatever its options.
     pub fn same(&self, other: &Piece) -> bool {
         match (self, other) {
@@ -498,6 +507,10 @@ pub struct Section {
     pub collapsible: bool,
     #[serde(default)]
     pub collapsed: bool,
+    /// Folded, its title says how many pieces it holds, with a dot when one
+    /// of them wants the user.
+    #[serde(default = "yes")]
+    pub peek: bool,
     #[serde(default)]
     pub line_above: bool,
     /// Not drawn while the rail is narrowed to icons.
@@ -520,6 +533,7 @@ impl Section {
             show_title: false,
             collapsible: false,
             collapsed: false,
+            peek: true,
             line_above: false,
             hide_in_icons: false,
             row: false,
@@ -982,8 +996,9 @@ impl Sidebar {
 
     pub fn add_section(&mut self, at: usize) -> usize {
         let n = self.sections.len() + 1;
-        let mut s = Section::new(&format!("Segment {n}"), Mode::Scroll, vec![]);
-        s.show_title = true;
+        // Born titled and foldable: a group is how a long sidebar keeps
+        // room for the projects.
+        let s = Section::new(&format!("Segment {n}"), Mode::Scroll, vec![]).folding(false);
         let at = at.min(self.sections.len());
         self.sections.insert(at, s);
         at
@@ -991,6 +1006,22 @@ impl Sidebar {
 
     pub fn remove_section(&mut self, s: usize) -> Option<Section> {
         (s < self.sections.len()).then(|| self.sections.remove(s))
+    }
+
+    /// Removes segment `s` but keeps its pieces: they join the end of the
+    /// segment above it, or the start of the one below when it is the
+    /// first. False when there is no other segment to take them.
+    pub fn ungroup_section(&mut self, s: usize) -> bool {
+        if s >= self.sections.len() || self.sections.len() < 2 {
+            return false;
+        }
+        let items = self.sections.remove(s).items;
+        if s > 0 {
+            self.sections[s - 1].items.extend(items);
+        } else {
+            self.sections[0].items.splice(0..0, items);
+        }
+        true
     }
 
     /// Puts a view the rail does not hold at the end of the segment with the
@@ -1273,6 +1304,41 @@ mod tests {
         s.remove_section(1);
         assert_eq!(names(&s), names(&small()));
         assert!(s.hidden_views().contains(&View::Notes));
+    }
+
+    #[test]
+    fn a_new_segment_is_titled_and_folds() {
+        let mut s = small();
+        let at = s.add_section(0);
+        let sec = &s.sections[at];
+        assert!(sec.show_title && sec.collapsible && sec.peek);
+        assert!(!sec.collapsed);
+    }
+
+    #[test]
+    fn ungrouping_keeps_the_pieces() {
+        let mut s = small();
+        assert!(s.ungroup_section(1));
+        assert_eq!(names(&s), ["A[Search,Inbox,Projects,Runs]", "C[Settings]"]);
+        // The first segment's pieces go to the start of the next one.
+        assert!(s.ungroup_section(0));
+        assert_eq!(names(&s), ["C[Search,Inbox,Projects,Runs,Settings]"]);
+        // The last segment has nowhere to put them.
+        assert!(!s.ungroup_section(0));
+        assert!(!s.ungroup_section(5));
+        assert_eq!(s.sections.len(), 1);
+    }
+
+    #[test]
+    fn a_segment_saved_before_peek_shows_what_is_inside() {
+        let json = br#"{"sections":[{"title":"Tools","collapsible":true,"collapsed":true,"items":[{"type":"settings"}]}]}"#;
+        let s = Sidebar::parse(json).unwrap();
+        let tools = s.sections.iter().find(|x| x.title == "Tools").unwrap();
+        assert!(tools.peek);
+        let json =
+            br#"{"sections":[{"title":"Tools","peek":false,"items":[{"type":"settings"}]}]}"#;
+        let s = Sidebar::parse(json).unwrap();
+        assert!(!s.sections.iter().find(|x| x.title == "Tools").unwrap().peek);
     }
 
     #[test]

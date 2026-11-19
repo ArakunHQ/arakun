@@ -116,7 +116,8 @@ gh pr checks --watch --required --fail-fast   # or your host's way to wait on a 
   a path with `macos` in its name such as `tools/macos-*`, the macOS build config), also wait
   for the macOS jobs: `gh pr checks --watch --fail-fast`.
 - Red: use the `triage-ci` skill, push the fix, wait again.
-- Green: `gh pr ready`. That requests reviewers and starts CodeRabbit, so never
+- Green: `gh pr ready`. CodeRabbit reviews drafts too, so its review is often
+  done before the checks; marking ready asks for the reviewers, so never
   before the required checks pass.
 - The first pull request of a new contributor needs the CLA signed; only the
   person can do that.

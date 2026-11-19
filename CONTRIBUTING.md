@@ -270,9 +270,10 @@ which git ignores. Turn the hooks off with `lefthook uninstall`.
   Commits inside the pull request are not checked, because they do not reach `main`. To
   check them as you write them, turn on the [Git hooks](#git-hooks).
 - **Open it as a draft** (`gh pr create --draft`, or "Create draft pull request" on
-  GitHub). Nobody is asked to review a draft, and CodeRabbit skips it, so you can push
-  while CI runs. Once the required checks pass, mark it ready with `gh pr ready` or the
-  button on GitHub. That starts CodeRabbit's review. Don't wait for the optional checks
+  GitHub). Nobody is asked to review a draft, so you can push while CI and CodeRabbit
+  run: CodeRabbit reviews drafts too, so its comments are usually waiting when the
+  checks are. Once the required checks pass, mark it ready with `gh pr ready` or the
+  button on GitHub. Don't wait for the optional checks
   (macOS, CodeQL), which can queue for a long time, unless the change touches macOS-only
   code (`cfg(target_os = "macos")`, a path with `macos` in its name, the macOS build
   config): then wait for the macOS jobs too. Don't wait for the **Human approval**

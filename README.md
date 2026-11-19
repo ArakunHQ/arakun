@@ -90,14 +90,17 @@ with "Show onboarding" in the palette (`Ctrl+K`). That it was done is kept in
   others in its dropdown, and its sessions as a flat list: a status dot, the title,
   and one signal (Needs you, CI failed, or the diff). If you take the Active list
   out, **Other projects** under them lists the environments elsewhere that run or need
-  you. The dropdown says the same per project. `Ctrl+Shift+N` always makes a new worktree at once on a random branch from the
-  current commit; File › New Environment with Options… asks for the
-  branch and where to start from. Every environment has its own sessions, terminals
-  and draft prompt. The window has one row of tabs for all of them: a session, file,
-  diff or browser tab belongs to its environment, and going to the tab shows that
-  environment. Going to an environment shows the tab it showed last. With tabs of
-  several environments open, each run of tabs starts with its environment's name. The
-  Workspace panel shows Sessions, an Explorer and the uncommitted
+  you. The dropdown says the same per project. `Ctrl+Shift+N` always makes a new
+  worktree at once on a random branch from the current branch as it is on `origin`,
+  fetched first (or the local commit when origin has none; on a server, from that
+  server's checkout, with no fetch). File › New Environment with Options… asks for
+  the branch and where to start from, the local commit among them. Every environment
+  has its own sessions, terminals and draft prompt. The window has one row of tabs for
+  all of them: a session, file, diff or browser tab belongs to its environment, and
+  going to the tab shows that environment. Going to an environment shows the tab it
+  showed last. With tabs of several environments open, each run of tabs starts with
+  its environment's name. The Workspace panel shows Sessions, an Explorer and the
+  uncommitted
   Changes; the Branches tab draws every live branch against the default one.
 
   <img src="docs/screenshots/changes.png" alt="A file's diff in a tab, next to the Changes list with lines added and removed per file" width="760">

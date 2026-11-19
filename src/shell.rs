@@ -1695,10 +1695,11 @@ impl Shell {
                     if !git::has_commits(&repo)? {
                         return Ok(None);
                     }
+                    let base = git::origin_base(&repo);
                     let mut result = Err(anyhow::anyhow!("not tried"));
                     for _ in 0..2 {
                         let path = crate::model::worktree_path(&project_name, &name);
-                        result = git::add_worktree(&repo, &path, &name, None, true)
+                        result = git::add_worktree(&repo, &path, &name, base.as_deref(), true)
                             .map(|()| Some((path, name.clone())));
                         if result.is_ok() {
                             break;

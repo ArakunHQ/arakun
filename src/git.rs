@@ -3,7 +3,7 @@
 //! the index lock while an agent or terminal is committing in the same worktree.
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, ExitStatus, Output, Stdio};
 
 use anyhow::{Context as _, Result, anyhow, bail};
 
@@ -237,13 +237,85 @@ pub fn add_worktree(
     if exists {
         cmd.arg(path).arg(branch);
     } else {
-        cmd.arg("-b").arg(branch).arg(path);
+        // Started from origin/main, the branch would track main: `git push` and the
+        // ahead/behind count would then point at the wrong branch.
+        cmd.arg("--no-track").arg("-b").arg(branch).arg(path);
         if let Some(base) = base {
             cmd.arg(base);
         }
     }
     run(&mut cmd)?;
     Ok(())
+}
+
+/// Where a new environment starts by default: the checked-out branch as it is on
+/// origin, fetched first, so it begins from what was pushed and merged rather than a
+/// local branch that may be behind. None when there is no such remote branch; the
+/// caller then starts from the current commit.
+pub fn origin_base(repo: &Path) -> Option<String> {
+    let branch = current_branch(repo)?;
+    let remote = format!("refs/remotes/origin/{branch}");
+    // Exit code 2: origin answered and has no such branch. A copy fetched before it
+    // was deleted must not be used then.
+    let listed = status_within(
+        git(repo)
+            .args(["ls-remote", "--exit-code", "--heads", "origin"])
+            .arg(format!("refs/heads/{branch}")),
+        ORIGIN_TIMEOUT,
+    );
+    match listed.and_then(|s| s.code()) {
+        Some(2) => return None,
+        // An explicit destination: origin's fetch refspec may not cover this branch.
+        Some(0) => {
+            let _ = status_within(
+                git(repo)
+                    .args(["fetch", "--quiet", "origin"])
+                    .arg(format!("+refs/heads/{branch}:{remote}")),
+                ORIGIN_TIMEOUT,
+            );
+        }
+        // Offline, no access or too slow: a remote branch fetched earlier is still a
+        // better start.
+        _ => {}
+    }
+    // The full name: a local branch called origin/<branch> would make the short one
+    // ambiguous.
+    git(repo)
+        .args(["show-ref", "--verify", "--quiet", &remote])
+        .status()
+        .is_ok_and(|s| s.success())
+        .then_some(remote)
+}
+
+/// How long each call to origin may take while an environment is made. A new
+/// environment waits on it, so a stalled origin must not hold it up for long.
+const ORIGIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Runs `cmd` without its output and returns how it exited, or None when it could
+/// not start or ran past `limit`. Then the whole tree is ended: a stalled git fetch
+/// would otherwise leave its ssh running.
+fn status_within(cmd: &mut Command, limit: std::time::Duration) -> Option<ExitStatus> {
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    crate::platform::ProcessTree::prepare(cmd);
+    let mut child = cmd.spawn().ok()?;
+    let tree = crate::platform::ProcessTree::adopt(&child);
+    let until = std::time::Instant::now() + limit;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Some(status),
+            Ok(None) if std::time::Instant::now() < until => {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            _ => {
+                tree.kill();
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
 }
 
 pub fn remove_worktree(repo: &Path, path: &Path, delete_branch: Option<&str>) -> Result<()> {
@@ -1111,6 +1183,131 @@ mod tests {
         assert_eq!(super::current_branch(&tree).as_deref(), Some("taken"));
         let _ = std::fs::remove_dir_all(dir);
         let _ = std::fs::remove_dir_all(tree);
+    }
+
+    #[test]
+    fn a_stalled_command_is_stopped_at_the_limit() {
+        use std::time::Duration;
+        let mut cmd = crate::platform::command("git");
+        assert!(
+            super::status_within(cmd.arg("--version"), Duration::from_secs(5))
+                .is_some_and(|s| s.success())
+        );
+        #[cfg(unix)]
+        {
+            let mut sleep = Command::new("sleep");
+            sleep.arg("30");
+            let start = std::time::Instant::now();
+            assert!(super::status_within(&mut sleep, Duration::from_millis(200)).is_none());
+            assert!(start.elapsed() < Duration::from_secs(10));
+            // What the command started goes too, as ssh under git fetch would.
+            let pid_file =
+                std::env::temp_dir().join(format!("arakun-status-within-{}", std::process::id()));
+            let mut sh = Command::new("sh");
+            sh.arg("-c")
+                .arg("sleep 30 & echo $! > \"$1\"; wait")
+                .arg("sh")
+                .arg(&pid_file);
+            assert!(super::status_within(&mut sh, Duration::from_millis(500)).is_none());
+            let pid = std::fs::read_to_string(&pid_file).unwrap();
+            let _ = std::fs::remove_file(&pid_file);
+            std::thread::sleep(Duration::from_millis(200));
+            let alive = Command::new("kill")
+                .args(["-0", pid.trim()])
+                .status()
+                .unwrap()
+                .success();
+            assert!(!alive, "the grandchild still runs");
+        }
+    }
+
+    #[test]
+    fn new_environments_start_from_origin() {
+        let dir = repo();
+        assert_eq!(super::origin_base(&dir), None);
+        let remote = dir.with_extension("remote");
+        let tree = dir.with_extension("tree");
+        let git = |args: &[&str]| {
+            super::unpinned(&mut Command::new("git"))
+                .args(args)
+                .status()
+                .unwrap()
+                .success()
+        };
+        let d = dir.to_str().unwrap();
+        assert!(git(&["init", "-q", "--bare", remote.to_str().unwrap()]));
+        assert!(git(&[
+            "-C",
+            d,
+            "remote",
+            "add",
+            "origin",
+            remote.to_str().unwrap()
+        ]));
+        assert!(git(&["-C", d, "push", "-q", "origin", "env/brave-otter"]));
+        // A local commit that is not on origin must not be in the new environment.
+        assert!(git(&[
+            "-C",
+            d,
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "local",
+        ]));
+        // A local branch with the remote branch's short name must not confuse it.
+        assert!(git(&["-C", d, "branch", "origin/env/brave-otter"]));
+        // Origin's fetch refspec leaves the branch out: it is fetched all the same.
+        assert!(git(&[
+            "-C",
+            d,
+            "config",
+            "remote.origin.fetch",
+            "+refs/heads/other:refs/remotes/origin/other"
+        ]));
+        assert!(git(&[
+            "-C",
+            d,
+            "update-ref",
+            "-d",
+            "refs/remotes/origin/env/brave-otter"
+        ]));
+        let base = super::origin_base(&dir);
+        assert_eq!(base.as_deref(), Some("refs/remotes/origin/env/brave-otter"));
+        super::add_worktree(&dir, &tree, "fresh", base.as_deref(), true).unwrap();
+        let rev = |dir: &std::path::Path, r: &str| {
+            super::stdout(super::git(dir).args(["rev-parse", r])).unwrap()
+        };
+        assert_eq!(
+            rev(&tree, "HEAD"),
+            rev(&dir, "refs/remotes/origin/env/brave-otter")
+        );
+        assert_ne!(rev(&tree, "HEAD"), rev(&dir, "HEAD"));
+        // Not tracking origin/env/brave-otter: a push must not go there.
+        assert!(
+            super::git(&tree)
+                .args(["rev-parse", "@{u}"])
+                .output()
+                .is_ok_and(|o| !o.status.success())
+        );
+        // Deleted on origin: the copy fetched earlier is stale, so start locally.
+        assert!(git(&[
+            "--git-dir",
+            remote.to_str().unwrap(),
+            "branch",
+            "-D",
+            "env/brave-otter"
+        ]));
+        assert_eq!(super::origin_base(&dir), None);
+        let _ = std::fs::remove_dir_all(&tree);
+        let _ = std::fs::remove_dir_all(dir);
+        let _ = std::fs::remove_dir_all(remote);
     }
 
     #[test]

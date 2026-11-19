@@ -90,14 +90,17 @@ with "Show onboarding" in the palette (`Ctrl+K`). That it was done is kept in
   others in its dropdown, and its sessions as a flat list: a status dot, the title,
   and one signal (Needs you, CI failed, or the diff). If you take the Active list
   out, **Other projects** under them lists the environments elsewhere that run or need
-  you. The dropdown says the same per project. `Ctrl+Shift+N` always makes a new worktree at once on a random branch from the
-  current commit; File › New Environment with Options… asks for the
-  branch and where to start from. Every environment has its own sessions, terminals
-  and draft prompt. The window has one row of tabs for all of them: a session, file,
-  diff or browser tab belongs to its environment, and going to the tab shows that
-  environment. Going to an environment shows the tab it showed last. With tabs of
-  several environments open, each run of tabs starts with its environment's name. The
-  Workspace panel shows Sessions, an Explorer and the uncommitted
+  you. The dropdown says the same per project. `Ctrl+Shift+N` always makes a new
+  worktree at once on a random branch from the current branch as it is on `origin`,
+  fetched first (or the local commit when origin has none; on a server, from that
+  server's checkout, with no fetch). File › New Environment with Options… asks for
+  the branch and where to start from, the local commit among them. Every environment
+  has its own sessions, terminals and draft prompt. The window has one row of tabs for
+  all of them: a session, file, diff or browser tab belongs to its environment, and
+  going to the tab shows that environment. Going to an environment shows the tab it
+  showed last. With tabs of several environments open, each run of tabs starts with
+  its environment's name. The Workspace panel shows Sessions, an Explorer and the
+  uncommitted
   Changes; the Branches tab draws every live branch against the default one.
 
   <img src="docs/screenshots/changes.png" alt="A file's diff in a tab, next to the Changes list with lines added and removed per file" width="760">
@@ -168,7 +171,14 @@ terminal-only. The status line and keybindings from your settings don't apply in
 
 - **Agent sessions.** Transcripts render markdown, diffs, tool calls and images;
   sessions can be resumed, and per-turn diffs show what each turn changed, including
-  changes made by shell commands.
+  changes made by shell commands (files over 1 MB are left out). Each transcript is kept
+  in `sessions/` in Arakun's data folder until you delete the session or remove its
+  environment or project, which deletes it at once. At startup, Arakun also deletes the
+  files of a session its state has not listed for a week, such as one whose worktree was
+  removed outside Arakun. It keeps the sessions it has seen in `state.json.seen`, next to
+  the state file (the `ARAKUN_STATE` file when that is set), and never deletes a file
+  whose session it hasn't seen listed. A headless session keeps its file while its folder
+  under `headless/` in Arakun's data folder is there.
 - **Project check.** A per-project command (`cargo test`, `npm test`...) runs after each
   turn that edits files; on failure the tail of the output goes back to the agent, up to
   three times in a row. Checks run one at a time across all sessions, at low priority and
@@ -197,6 +207,19 @@ terminal-only. The status line and keybindings from your settings don't apply in
 
 - **CI and checks.** GitHub Actions runs for each project, with jobs, annotations and
   the failing log, read through the `gh` CLI.
+- **Create a pull request.** The pull request chip of the Changes panel opens the
+  branch's pull request, or a dialog that creates one: the title (from the first
+  commit), the branch it merges into (the remote's default one; type another for a
+  stack), and the description GitHub's own form would start with (the repository's
+  pull request template, else the commit messages). It opens as a draft unless you turn
+  that off, pushes the branch first when it has commits GitHub doesn't, and then shows
+  the new pull request in the GitHub tab. "Open GitHub's form" opens the page in your
+  browser instead, to write the description there. "Write with AI" has Claude Code
+  write the title and the description from the branch's commits, its diff (up to 60,000
+  characters) and the template, when it is the environment's agent or the one picked for
+  naming branches. It answers once with its tools off, so it reads nothing else, and
+  nothing goes to GitHub until you create the pull request. Other agents don't write it:
+  they can read files while they answer.
 - **Queue.** The GitHub tab opens on one line that says how many things need you,
   then a quiet list grouped by where each pull request stands (Needs you, Stuck,
   pilot is on it, Waiting on CI, Waiting on others, Ready to merge), stacked pull
@@ -221,6 +244,12 @@ terminal-only. The status line and keybindings from your settings don't apply in
   (`gh run rerun --failed`) once their run has finished. "Fix with agent" starts a
   session with the failed checks and the logs you opened; the agent fixes it in the
   checkout and doesn't push.
+- **Review comments.** Under each thread on the diff, "Reply" answers it and "Resolve"
+  (or "Reopen") marks it. In the Files tab, the open threads show under their lines,
+  and a click on a line writes a comment on it. Those comments are kept as pending
+  (only until you quit) and "Submit review" posts them together as one review;
+  "Discard" drops them. After new commits, submit or discard the pending ones before
+  you comment on the new diff.
 - **Agent reviews.** An agent can review a pull request for you and leave a draft
   (`arakun github draft`) that you post, edit or discard. Posting a draft asks a second
   time, and an approval goes out only for the commit the agent read: after new commits
@@ -642,6 +671,13 @@ the package, the folder and the npm command, so you can run it yourself instead.
 adapter is installed, Arakun updates it to the pinned version without asking.
 `ARAKUN_CLAUDE_ACP` and `ARAKUN_CODEX_ACP` start another adapter instead.
 
+What each agent prints to stderr goes to `<agent>.log` in that `agents` folder, and
+what each turn used goes to `usage.jsonl` in Arakun's data folder (or the file
+`ARAKUN_USAGE_LOG` names). Once a log passes its limit (8 MB for an agent log, 16 MB for
+the usage log), it moves to `<agent>.old.log` or `usage.old.jsonl` (`<name>.old.<ext>`
+next to an `ARAKUN_USAGE_LOG` file) and a new one starts. Arakun keeps only that one
+older copy: each move replaces the previous one.
+
 Optional tools: `git` (Changes, worktrees, branches), `gh` (CI, GitHub tab), `bwrap`
 (headless agents), `secret-tool` from libsecret (stored logins on Linux), `tailscale`
 (phone over Tailscale), `cf` (Cloudflare tab).
@@ -847,7 +883,11 @@ The link is good for two minutes and pairs one device. There are two ways to use
   you ask. A repository's main folder is never deleted. A phone paired with this app sees and works in the
   servers' sessions too. Git, terminals and the file tree stay with this machine's folders;
   `/stage`, fork, rewind and "Continue with" are not available for a server's session
-  yet. To add a folder on a server, press the folder button on it in the Servers tab,
+  yet. In the Marketplace, "Install on" picks a paired server: Discover then lists
+  the plugins its marketplaces offer, and Install adds a plugin or MCP server for
+  Claude Code there, for every project. An MCP server that wants a sign-in is signed
+  in to on that machine (`claude mcp login <name>`), since that opens a browser.
+  To add a folder on a server, press the folder button on it in the Servers tab,
   or right-click one of its environments. Clone runs that machine's git, with its
   logins, and puts the repository in the folder that holds most of the server's
   folders. Folders right in the home folder do not count; with none elsewhere, the

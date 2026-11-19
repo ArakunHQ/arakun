@@ -178,6 +178,7 @@ enum Modal {
     Account(Entity<AccountDialog>),
     Commit(Entity<crate::git_dialogs::CommitDialog>),
     GitConfirm(Entity<crate::git_dialogs::ConfirmDialog>),
+    PullRequest(Entity<crate::git_dialogs::PullRequestDialog>),
     Palette(Entity<crate::palette::Palette>),
     Settings(Entity<SettingsDialog>),
     Automations(Entity<crate::automations_view::AutomationsDialog>),
@@ -1024,6 +1025,19 @@ impl Shell {
         this.ensure_terminal(window, cx);
         this.ensure_active_live(window, cx);
         this.resume_after_restart(window, cx);
+        // Taken from the state as loaded: a refresh can save one without a
+        // worktree removed outside Arakun before the sweep reads it.
+        let listed = this
+            .projects
+            .iter()
+            .flat_map(|p| &p.environments)
+            .flat_map(|e| &e.sessions)
+            .flat_map(sessions::session_file_ids)
+            .collect();
+        cx.background_spawn(crate::guard::task(
+            async move { state::sweep_orphans(listed) },
+        ))
+        .detach();
         this.warm_droid_catalog(cx);
         this.listen_for_commands(window, cx);
         // The compositor's close (Super+W, Alt+F4) hides too when the setting is on.
@@ -1513,7 +1527,13 @@ impl Shell {
         if pi >= self.projects.len() {
             return;
         }
-        self.projects.remove(pi);
+        let project = self.projects.remove(pi);
+        let sessions = project
+            .environments
+            .into_iter()
+            .flat_map(|e| e.sessions)
+            .collect();
+        self.forget_sessions(sessions, cx);
         if self.active_project >= pi && self.active_project > 0 {
             self.active_project -= 1;
         }
@@ -1703,10 +1723,11 @@ impl Shell {
                     if !git::has_commits(&repo)? {
                         return Ok(None);
                     }
+                    let base = git::origin_base(&repo);
                     let mut result = Err(anyhow::anyhow!("not tried"));
                     for _ in 0..2 {
                         let path = crate::model::worktree_path(&project_name, &name);
-                        result = git::add_worktree(&repo, &path, &name, None, true)
+                        result = git::add_worktree(&repo, &path, &name, base.as_deref(), true)
                             .map(|()| Some((path, name.clone())));
                         if result.is_ok() {
                             break;
@@ -2076,6 +2097,14 @@ impl Shell {
         let path = env.path.clone();
         let branch = (env.branch.as_ref() != "detached HEAD").then(|| env.branch.to_string());
         let dirty = env.changes.len();
+        // Taken now: a refresh that sees the worktree gone can drop the
+        // environment, sessions and all, before `Deleted` arrives.
+        let own_ids: Vec<String> = env.sessions.iter().map(|s| s.id.to_string()).collect();
+        let session_ids: Vec<String> = env
+            .sessions
+            .iter()
+            .flat_map(sessions::session_file_ids)
+            .collect();
         let dialog = cx.new(|cx| DeleteEnvDialog::new(repo, path, branch, dirty, window, cx));
         let sub = cx.subscribe_in(
             &dialog,
@@ -2084,6 +2113,26 @@ impl Shell {
                 DialogEvent::Deleted(path) => {
                     let path = path.clone();
                     this.close_modal(window, cx);
+                    if this.find_env(&path).is_none() {
+                        // A refresh dropped the environment first, and a
+                        // headless scan may have put its sessions in another
+                        // one meanwhile: they go too.
+                        for id in &own_ids {
+                            while let Some(i) = this.strip.session_tab(id) {
+                                this.discard_tab(i, window, cx);
+                            }
+                        }
+                        let mut moved = Vec::new();
+                        for env in this.projects.iter_mut().flat_map(|p| &mut p.environments) {
+                            let (gone, kept) = std::mem::take(&mut env.sessions)
+                                .into_iter()
+                                .partition(|s| own_ids.iter().any(|id| *id == *s.id));
+                            env.sessions = kept;
+                            moved.extend::<Vec<_>>(gone);
+                        }
+                        this.forget_sessions(moved, cx);
+                        sessions::discard_session_files(own_ids.clone(), session_ids.clone(), cx);
+                    }
                     this.forget_envs(&[path], window, cx);
                 }
                 _ => this.close_modal(window, cx),
@@ -2103,6 +2152,15 @@ impl Shell {
         if paths.is_empty() {
             return;
         }
+        // Their sessions stop, and their transcripts go from disk.
+        let sessions = self
+            .projects
+            .iter_mut()
+            .flat_map(|p| &mut p.environments)
+            .filter(|e| paths.contains(&e.path))
+            .flat_map(|e| std::mem::take(&mut e.sessions))
+            .collect();
+        self.forget_sessions(sessions, cx);
         let before = self.projects.len();
         let touched = drop_envs(&mut self.projects, &mut self.active_project, paths);
         if self.projects.len() != before {
@@ -3188,6 +3246,7 @@ impl Render for Shell {
             Modal::Account(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),
             Modal::Commit(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),
             Modal::GitConfirm(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),
+            Modal::PullRequest(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),
             Modal::Palette(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),
             Modal::Settings(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),
             Modal::Automations(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),

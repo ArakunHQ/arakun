@@ -266,6 +266,11 @@ after a week).
   computer is offline (the Phone tab says so and offers Use Relay). The relay defaults
   to the hosted one at `arakun.dev`; you can run your own from [`relay/`](relay)
   (a Cloudflare Worker) and point `relay_base` in `phone.json` at it.
+  The page keeps shortcuts, phrases you send often, as a row of buttons over the box.
+  One that sends right away shows while the agent waits for you; the others show while
+  you write and fill the box. `{number}` in a shortcut is a blank you type each time,
+  on the number keyboard. Hold a message you sent to keep it, or tap **+** in the row.
+  Shortcuts stay in that phone's browser.
 
 ### More tabs
 

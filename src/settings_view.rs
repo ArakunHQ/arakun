@@ -70,6 +70,8 @@ pub struct ProjectSettings {
     pub name: SharedString,
     pub setup: Option<String>,
     pub check: Option<String>,
+    /// The project lives on a server: its commands are not saved here.
+    pub remote: bool,
 }
 
 /// Where a section sits in the list: Arakun's own settings, then the agents'.
@@ -544,14 +546,16 @@ impl SettingsDialog {
                 },
             );
         let setup_input = cx.new(|cx| {
-            let mut i = TextInput::new("npm install && cp .env.example .env", cx).mono();
+            let mut i = TextInput::new("npm install && cp .env.example .env", cx)
+                .mono()
+                .redacted();
             if let Some(c) = project.as_ref().and_then(|p| p.setup.as_ref()) {
                 i.set_text(c.clone(), cx);
             }
             i
         });
         let check_input = cx.new(|cx| {
-            let mut i = TextInput::new("cargo test", cx).mono();
+            let mut i = TextInput::new("cargo test", cx).mono().redacted();
             if let Some(c) = project.as_ref().and_then(|p| p.check.as_ref()) {
                 i.set_text(c.clone(), cx);
             }
@@ -655,7 +659,7 @@ impl SettingsDialog {
             InputEvent::Cancel => return cx.emit(SettingsEvent::Dismissed),
             _ => return,
         }
-        let Some(project) = self.project.as_mut() else {
+        let Some(project) = self.project.as_mut().filter(|p| !p.remote) else {
             return;
         };
         let input = if check {
@@ -2569,6 +2573,19 @@ impl SettingsDialog {
                 .into_any_element(),
             ]);
         };
+        if project.remote {
+            return stack(vec![titled(
+                &project.name,
+                vec![
+                    row(
+                        "On a server",
+                        "This project comes from a server, which keeps its own settings. A setup script and a check command are set on a project on this computer.",
+                        div().into_any_element(),
+                    )
+                    .into_any_element(),
+                ],
+            )]);
+        }
         stack(vec![titled(
             &project.name,
             vec![

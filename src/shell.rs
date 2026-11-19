@@ -2133,6 +2133,7 @@ impl Shell {
                 name: p.name.clone(),
                 setup: p.setup.clone(),
                 check: p.check.clone(),
+                remote: p.is_remote(),
             }
         });
         let dialog = cx.new(|cx| {

@@ -220,10 +220,7 @@ jobs:
   ci:
     name: CI
     needs: [version, main-ci]
-    # Runs even when main-ci failed: then nothing is reused and every job runs.
-    if: >-
-      !cancelled() && inputs.version == ''
-      && needs.version.result == 'success' && needs.version.outputs.skip != 'true'
+    if: inputs.version == '' && needs.version.outputs.skip != 'true'
     uses: $/.github/workflows/ci.yml
     with:
       main-passed: ${{ needs.main-ci.outputs.passed == 'true' }}
@@ -315,7 +312,6 @@ jobs:
     needs: version
     if: inputs.version == '' && needs.version.outputs.skip != 'true'
     runs-on: depot-ubuntu-24.04
-    timeout-minutes: 100
     outputs:
       # "true" when ci.yml already passed on main for this commit.
       passed: ${{ steps.main-ci.outputs.passed }}
@@ -325,6 +321,11 @@ jobs:
     steps:
       - name: Look up main's CI run
         id: main-ci
+        # The job must not fail: the jobs that publish need ci, and a failed
+        # job skips everything that needs it, even through ci. An error or a
+        # timeout here only means ci runs every job.
+        continue-on-error: true
+        timeout-minutes: 95
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}

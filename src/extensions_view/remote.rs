@@ -19,6 +19,8 @@ pub struct ServerTarget {
     pub id: String,
     pub name: String,
     pub reach: Reach,
+    /// Reached over plain http: what goes to it can be read on the way.
+    pub in_the_clear: bool,
 }
 
 /// What one server said its marketplace holds.
@@ -430,6 +432,7 @@ mod tests {
             id: id.into(),
             name: format!("server {id}"),
             reach: Reach::Connected,
+            in_the_clear: false,
         }
     }
 

@@ -817,6 +817,7 @@ impl Shell {
                 s.name.clone()
             },
             reach,
+            in_the_clear: in_the_clear(s),
         };
         match &self.servers {
             Some(link) => link

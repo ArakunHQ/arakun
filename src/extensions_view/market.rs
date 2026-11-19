@@ -292,6 +292,25 @@ impl ExtensionsView {
         let login = claude_ext::login_command(&name);
         let n = name.clone();
         let sign_in = matches!(&method, Install::Remote { headers, .. } if headers.is_empty());
+        // Secrets do not go to a server over plain http, where they could be read on the way.
+        let clear = self
+            .target_server()
+            .filter(|s| s.in_the_clear)
+            .map(|s| s.name.clone());
+        let secret = ins
+            .fields
+            .iter()
+            .any(|(i, f)| i.secret && !f.read(cx).text().is_empty());
+        if let Some(server) = clear.filter(|_| secret) {
+            self.error = Some(
+                format!(
+                    "{server} is reached over plain http, so its secrets could be read on the way. Reach it over https or the relay to add this there."
+                )
+                .into(),
+            );
+            cx.notify();
+            return;
+        }
         if self.targets.target.is_some() {
             // Its sign-in opens a browser, so it is done on that machine.
             let mut done = format!("was added{} for every project there.", self.on_target());

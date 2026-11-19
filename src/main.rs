@@ -66,8 +66,10 @@ mod picker;
 mod platform;
 mod posthog;
 mod posthog_view;
+mod pr_writer;
 mod prompts;
 mod redact;
+mod rotate;
 mod runs_view;
 mod schedule;
 mod server;
@@ -84,6 +86,7 @@ mod site;
 #[cfg(feature = "coderlabs")]
 mod site_view;
 mod state;
+mod stored;
 #[cfg(feature = "coderlabs")]
 mod tasks_view;
 #[cfg(feature = "team")]

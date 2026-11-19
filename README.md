@@ -62,6 +62,13 @@ skipped, and "Skip setup" leaves it at once. Adding a project ends it. Open it a
 with "Show onboarding" in the palette (`Ctrl+K`). That it was done is kept in
 `state.onboarding.json`, next to `state.json` in Arakun's data folder.
 
+If Arakun can't read one of its files there (`state.json`, `history.json`,
+`prompts.json`, the palette's to-dos, rules and pins, the sidebar layout or a memory
+store), say one written by a newer version or edited by hand, it renames it to
+`<name>.corrupt-<time>` and starts that part fresh, with a notice that says so. Nothing
+saves over the copy. To restore it, quit Arakun first (it saves on quit), keep a second
+copy of it, rename it back, and start a version that can read it.
+
 ### Workspace
 
 - **Active.** The top of the sidebar lists the sessions of every project that need
@@ -90,14 +97,17 @@ with "Show onboarding" in the palette (`Ctrl+K`). That it was done is kept in
   others in its dropdown, and its sessions as a flat list: a status dot, the title,
   and one signal (Needs you, CI failed, or the diff). If you take the Active list
   out, **Other projects** under them lists the environments elsewhere that run or need
-  you. The dropdown says the same per project. `Ctrl+Shift+N` always makes a new worktree at once on a random branch from the
-  current commit; File › New Environment with Options… asks for the
-  branch and where to start from. Every environment has its own sessions, terminals
-  and draft prompt. The window has one row of tabs for all of them: a session, file,
-  diff or browser tab belongs to its environment, and going to the tab shows that
-  environment. Going to an environment shows the tab it showed last. With tabs of
-  several environments open, each run of tabs starts with its environment's name. The
-  Workspace panel shows Sessions, an Explorer and the uncommitted
+  you. The dropdown says the same per project. `Ctrl+Shift+N` always makes a new
+  worktree at once on a random branch from the current branch as it is on `origin`,
+  fetched first (or the local commit when origin has none; on a server, from that
+  server's checkout, with no fetch). File › New Environment with Options… asks for
+  the branch and where to start from, the local commit among them. Every environment
+  has its own sessions, terminals and draft prompt. The window has one row of tabs for
+  all of them: a session, file, diff or browser tab belongs to its environment, and
+  going to the tab shows that environment. Going to an environment shows the tab it
+  showed last. With tabs of several environments open, each run of tabs starts with
+  its environment's name. The Workspace panel shows Sessions, an Explorer and the
+  uncommitted
   Changes; the Branches tab draws every live branch against the default one.
 
   <img src="docs/screenshots/changes.png" alt="A file's diff in a tab, next to the Changes list with lines added and removed per file" width="760">
@@ -160,7 +170,14 @@ terminal-only. The status line and keybindings from your settings don't apply in
 
 - **Agent sessions.** Transcripts render markdown, diffs, tool calls and images;
   sessions can be resumed, and per-turn diffs show what each turn changed, including
-  changes made by shell commands.
+  changes made by shell commands (files over 1 MB are left out). Each transcript is kept
+  in `sessions/` in Arakun's data folder until you delete the session or remove its
+  environment or project, which deletes it at once. At startup, Arakun also deletes the
+  files of a session its state has not listed for a week, such as one whose worktree was
+  removed outside Arakun. It keeps the sessions it has seen in `state.json.seen`, next to
+  the state file (the `ARAKUN_STATE` file when that is set), and never deletes a file
+  whose session it hasn't seen listed. A headless session keeps its file while its folder
+  under `headless/` in Arakun's data folder is there.
 - **Project check.** A per-project command (`cargo test`, `npm test`...) runs after each
   turn that edits files; on failure the tail of the output goes back to the agent, up to
   three times in a row. Checks run one at a time across all sessions, at low priority and
@@ -189,6 +206,19 @@ terminal-only. The status line and keybindings from your settings don't apply in
 
 - **CI and checks.** GitHub Actions runs for each project, with jobs, annotations and
   the failing log, read through the `gh` CLI.
+- **Create a pull request.** The pull request chip of the Changes panel opens the
+  branch's pull request, or a dialog that creates one: the title (from the first
+  commit), the branch it merges into (the remote's default one; type another for a
+  stack), and the description GitHub's own form would start with (the repository's
+  pull request template, else the commit messages). It opens as a draft unless you turn
+  that off, pushes the branch first when it has commits GitHub doesn't, and then shows
+  the new pull request in the GitHub tab. "Open GitHub's form" opens the page in your
+  browser instead, to write the description there. "Write with AI" has Claude Code
+  write the title and the description from the branch's commits, its diff (up to 60,000
+  characters) and the template, when it is the environment's agent or the one picked for
+  naming branches. It answers once with its tools off, so it reads nothing else, and
+  nothing goes to GitHub until you create the pull request. Other agents don't write it:
+  they can read files while they answer.
 - **Queue.** The GitHub tab opens on one line that says how many things need you,
   then a quiet list grouped by where each pull request stands (Needs you, Stuck,
   pilot is on it, Waiting on CI, Waiting on others, Ready to merge), stacked pull
@@ -350,6 +380,12 @@ after a week).
   with none on, except what you set up in the first-run setup: GitHub once the GitHub
   CLI is signed in, and Phone if you chose to pair one. An update keeps the ones your
   sidebar already had. The choice is kept in `extensions.json` next to the state.
+- **Sidebar groups.** A segment with a title folds with a click on it, and opens
+  folded next time. Folded, it says how many pieces it holds, with a dot when one of
+  them wants you (red for a failure or something waiting), so the projects get the
+  room. Right-click a title for Ungroup, which removes the segment and keeps its
+  pieces in the one above. In the sidebar builder, a segment can be set to start
+  folded or not to say what is inside; a new one is born titled and collapsible.
 - **Automations.** Scheduled shell commands or agent prompts per project.
 
 ### Make it yours
@@ -640,6 +676,13 @@ the package, the folder and the npm command, so you can run it yourself instead.
 adapter is installed, Arakun updates it to the pinned version without asking.
 `ARAKUN_CLAUDE_ACP` and `ARAKUN_CODEX_ACP` start another adapter instead.
 
+What each agent prints to stderr goes to `<agent>.log` in that `agents` folder, and
+what each turn used goes to `usage.jsonl` in Arakun's data folder (or the file
+`ARAKUN_USAGE_LOG` names). Once a log passes its limit (8 MB for an agent log, 16 MB for
+the usage log), it moves to `<agent>.old.log` or `usage.old.jsonl` (`<name>.old.<ext>`
+next to an `ARAKUN_USAGE_LOG` file) and a new one starts. Arakun keeps only that one
+older copy: each move replaces the previous one.
+
 Optional tools: `git` (Changes, worktrees, branches), `gh` (CI, GitHub tab), `bwrap`
 (headless agents), `secret-tool` from libsecret (stored logins on Linux), `tailscale`
 (phone over Tailscale), `cf` (Cloudflare tab).
@@ -699,12 +742,23 @@ The default `browser` feature needs CEF at build time and at run time.
   This puts the runtime in `~/.local/share/arakun/cef` (loaded on the first browser tab)
   and links the build-time SDK at `.cef-sdk`, which `.cargo/config.toml` points `CEF_PATH`
   at.
-- **Windows and macOS:** the first build downloads CEF into `.cef-sdk` by itself. It
-  also needs CMake and Ninja (on macOS, `brew install cmake ninja`); for Windows, see
-  [docs/windows.md](docs/windows.md). If that download fails with "the response body is
-  larger than request limit", the `cef` crate can no longer read the CDN's index. Fetch
-  the archive with `tools/fetch-cef.py` instead and point `CEF_PATH` at it, as the
-  release workflow does (it has the archive names and checksums).
+- **macOS:** the build also needs CMake and Ninja (`brew install cmake ninja`), and the
+  download needs Python 3.12 or newer (`brew install python`; the `python3` macOS ships
+  is too old). Run:
+
+  ```sh
+  tools/setup-dev.sh --browser
+  cargo build --release
+  ```
+
+  This downloads the CEF archive the release uses, checks its SHA-1, keeps it in
+  `~/.local/share/arakun/cef-sdk` for every checkout, and links it at `.cef-sdk`. The
+  `cef` crate's own download no longer works: the CDN's index is larger than it reads
+  ("the response body is larger than request limit").
+- **Windows:** see [docs/windows.md](docs/windows.md). If the build's own CEF download
+  fails with "the response body is larger than request limit", fetch the archive with
+  `tools/fetch-cef.py` and point `CEF_PATH` at it, as the release workflow does (it has
+  the archive names and checksums).
 
 ### Browser tabs on Ubuntu
 

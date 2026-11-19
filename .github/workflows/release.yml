@@ -47,11 +47,13 @@ name: Release
 # - The version job fails a tag that is not `v` plus the version in
 #   Cargo.toml, since `arakun --version` and the crash reports print that
 #   version. It also fails when the app and arakun-server versions differ.
-# - The CI jobs (ci.yml) run first; the builds wait for them, so a tag on a
-#   commit that fails them never publishes. For a tag, every CI job runs,
-#   unless they already ran and passed on main for the same commit (see the
-#   version job). They restore main's cache like any CI run, but nothing
-#   they build goes into the archives.
+# - The CI jobs (ci.yml) run next to the builds, and the notarize and publish
+#   jobs wait for them, so a tag on a commit that fails them never publishes.
+#   The builds take 7-13 minutes and CI about 3 (longer when the macOS job
+#   queues), so waiting for CI before building only made each run longer. For
+#   a tag, every CI job runs, unless they already ran and passed on main for
+#   the same commit (see the version job). They restore main's cache like any
+#   CI run, but nothing they build goes into the archives.
 # - A dry run (a pull request that changes this file, or a manual run) builds,
 #   smoke-tests and uploads the archives as `arakun-dev-<short sha>-…`, and
 #   does not publish. Only a pushed tag publishes; a manual run never does,
@@ -343,7 +345,7 @@ jobs:
 
   linux:
     name: Build (Linux ${{ matrix.arch }})
-    needs: [ci, version]
+    needs: version
     if: needs.version.outputs.skip != 'true'
     strategy:
       fail-fast: false
@@ -514,7 +516,7 @@ jobs:
 
   windows:
     name: Build (Windows x86_64)
-    needs: [ci, version]
+    needs: version
     if: needs.version.outputs.skip != 'true'
     runs-on: depot-windows-2025-8
     env:
@@ -612,7 +614,7 @@ jobs:
 
   macos:
     name: Build (macOS arm64)
-    needs: [ci, version]
+    needs: version
     if: needs.version.outputs.skip != 'true'
     # A fixed image rather than macos-latest, so the toolchain does not change
     # under a release. arm64. On GitHub's runners, like ci.yml's macOS job: on
@@ -739,7 +741,8 @@ jobs:
   #   APPLE_API_ISSUER_ID         the issuer ID shown above the keys list
   macos-notarize:
     name: Notarize (macOS arm64)
-    needs: macos
+    # CI too, so Apple never notarizes a commit that fails it.
+    needs: [ci, macos]
     if: github.event_name != 'pull_request'
     # Same image as the build job. Depot's macOS 15 runners left this job
     # queued with no runner.
@@ -976,7 +979,7 @@ jobs:
 
   release:
     name: Publish GitHub Release
-    needs: [linux, windows, macos-notarize]
+    needs: [ci, linux, windows, macos-notarize]
     # Not on a manual run, even one started on a tag: that is a dry run.
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: depot-ubuntu-24.04
@@ -1109,7 +1112,7 @@ jobs:
   # it can only sign nightlies, never a release.
   nightly:
     name: Publish nightly
-    needs: [version, linux, windows, macos-notarize]
+    needs: [ci, version, linux, windows, macos-notarize]
     if: needs.version.outputs.nightly != ''
     runs-on: depot-ubuntu-24.04
     environment: nightly-signing

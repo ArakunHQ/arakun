@@ -51,18 +51,10 @@ pub fn log_path(kind: AgentKind) -> PathBuf {
     agents_dir().join(format!("{}.log", kind.id()))
 }
 
-/// Opens the agent's log for appending, starting over once it passes 8 MB.
-pub fn open_log(kind: AgentKind) -> Option<std::fs::File> {
-    let path = log_path(kind);
-    std::fs::create_dir_all(path.parent()?).ok()?;
-    let too_big = std::fs::metadata(&path).is_ok_and(|m| m.len() > 8 << 20);
-    std::fs::OpenOptions::new()
-        .create(true)
-        .append(!too_big)
-        .write(true)
-        .truncate(too_big)
-        .open(&path)
-        .ok()
+/// Opens the agent's log for appending. It moves aside to `<agent>.old.log`
+/// once it passes 8 MB, checked as it is written.
+pub fn open_log(kind: AgentKind) -> Option<crate::rotate::Writer> {
+    crate::rotate::Writer::open(log_path(kind), 8 << 20).ok()
 }
 
 /// Apps started from a compositor keybinding often get a bare PATH without

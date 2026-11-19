@@ -112,7 +112,15 @@ impl Shell {
     /// Puts keyboard focus where typing makes sense for the active tab, unless a
     /// dock terminal has it (switching tabs from a shell keeps typing in the shell).
     pub(super) fn focus_active_content(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let env = self.env();
+        // Render queues this for the next frame; the last project can be
+        // removed before it runs, and `env()` would then index nothing.
+        let Some(env) = self
+            .projects
+            .get(self.active_project)
+            .and_then(|p| p.environments.get(p.active_env))
+        else {
+            return;
+        };
         if env
             .terminals
             .iter()

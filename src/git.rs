@@ -292,14 +292,15 @@ pub fn origin_base(repo: &Path) -> Option<String> {
 const ORIGIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// Runs `cmd` without its output and returns how it exited, or None when it could
-/// not start or ran past `limit`; it is killed then.
+/// not start or ran past `limit`. Then the whole tree is ended: a stalled git fetch
+/// would otherwise leave its ssh running.
 fn status_within(cmd: &mut Command, limit: std::time::Duration) -> Option<ExitStatus> {
-    let mut child = cmd
-        .stdin(Stdio::null())
+    cmd.stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
+        .stderr(Stdio::null());
+    crate::platform::ProcessTree::prepare(cmd);
+    let mut child = cmd.spawn().ok()?;
+    let tree = crate::platform::ProcessTree::adopt(&child);
     let until = std::time::Instant::now() + limit;
     loop {
         match child.try_wait() {
@@ -308,6 +309,7 @@ fn status_within(cmd: &mut Command, limit: std::time::Duration) -> Option<ExitSt
                 std::thread::sleep(std::time::Duration::from_millis(50));
             }
             _ => {
+                tree.kill();
                 let _ = child.kill();
                 let _ = child.wait();
                 return None;
@@ -1186,7 +1188,6 @@ mod tests {
     #[test]
     fn a_stalled_command_is_stopped_at_the_limit() {
         use std::time::Duration;
-        let start = std::time::Instant::now();
         let mut cmd = crate::platform::command("git");
         assert!(
             super::status_within(cmd.arg("--version"), Duration::from_secs(5))
@@ -1196,8 +1197,27 @@ mod tests {
         {
             let mut sleep = Command::new("sleep");
             sleep.arg("30");
+            let start = std::time::Instant::now();
             assert!(super::status_within(&mut sleep, Duration::from_millis(200)).is_none());
             assert!(start.elapsed() < Duration::from_secs(10));
+            // What the command started goes too, as ssh under git fetch would.
+            let pid_file =
+                std::env::temp_dir().join(format!("arakun-status-within-{}", std::process::id()));
+            let mut sh = Command::new("sh");
+            sh.arg("-c")
+                .arg("sleep 30 & echo $! > \"$1\"; wait")
+                .arg("sh")
+                .arg(&pid_file);
+            assert!(super::status_within(&mut sh, Duration::from_millis(500)).is_none());
+            let pid = std::fs::read_to_string(&pid_file).unwrap();
+            let _ = std::fs::remove_file(&pid_file);
+            std::thread::sleep(Duration::from_millis(200));
+            let alive = Command::new("kill")
+                .args(["-0", pid.trim()])
+                .status()
+                .unwrap()
+                .success();
+            assert!(!alive, "the grandchild still runs");
         }
     }
 

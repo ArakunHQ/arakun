@@ -163,7 +163,14 @@ terminal-only. The status line and keybindings from your settings don't apply in
 
 - **Agent sessions.** Transcripts render markdown, diffs, tool calls and images;
   sessions can be resumed, and per-turn diffs show what each turn changed, including
-  changes made by shell commands.
+  changes made by shell commands (files over 1 MB are left out). Each transcript is kept
+  in `sessions/` in Arakun's data folder until you delete the session or remove its
+  environment or project, which deletes it at once. At startup, Arakun also deletes the
+  files of a session its state has not listed for a week, such as one whose worktree was
+  removed outside Arakun. It keeps the sessions it has seen in `state.json.seen`, next to
+  the state file (the `ARAKUN_STATE` file when that is set), and never deletes a file
+  whose session it hasn't seen listed. A headless session keeps its file while its folder
+  under `headless/` in Arakun's data folder is there.
 - **Project check.** A per-project command (`cargo test`, `npm test`...) runs after each
   turn that edits files; on failure the tail of the output goes back to the agent, up to
   three times in a row. Checks run one at a time across all sessions, at low priority and
@@ -642,6 +649,13 @@ The first session with Claude Code or Codex asks before it installs the adapter,
 the package, the folder and the npm command, so you can run it yourself instead. Once an
 adapter is installed, Arakun updates it to the pinned version without asking.
 `ARAKUN_CLAUDE_ACP` and `ARAKUN_CODEX_ACP` start another adapter instead.
+
+What each agent prints to stderr goes to `<agent>.log` in that `agents` folder, and
+what each turn used goes to `usage.jsonl` in Arakun's data folder (or the file
+`ARAKUN_USAGE_LOG` names). Once a log passes its limit (8 MB for an agent log, 16 MB for
+the usage log), it moves to `<agent>.old.log` or `usage.old.jsonl` (`<name>.old.<ext>`
+next to an `ARAKUN_USAGE_LOG` file) and a new one starts. Arakun keeps only that one
+older copy: each move replaces the previous one.
 
 Optional tools: `git` (Changes, worktrees, branches), `gh` (CI, GitHub tab), `bwrap`
 (headless agents), `secret-tool` from libsecret (stored logins on Linux), `tailscale`

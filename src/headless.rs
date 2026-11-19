@@ -186,7 +186,7 @@ pub fn root() -> PathBuf {
 // a running Arakun would list a leftover one as a session.
 #[cfg(test)]
 thread_local! {
-    static TEST_ROOT: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+    pub(crate) static TEST_ROOT: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
 }
 
 fn valid(id: &str) -> bool {

@@ -3,9 +3,10 @@
 //! or still busy; everything else lives in its saved transcript.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{LazyLock, Mutex, PoisonError};
 
 use gpui::{App, AppContext as _, Context, Entity, SharedString, Window};
 
@@ -1067,9 +1068,7 @@ impl Shell {
                 id: old_id.to_string(),
                 agent_session,
             });
-            let linked = state::data_dir()
-                .join("linked")
-                .join(format!("{old_id}.md"));
+            let linked = state::linked_path(&old_id);
             let markdown =
                 crate::agent::notes::transcript_markdown(&old.title, from.label(), &entries);
             if let Err(e) = std::fs::create_dir_all(state::data_dir().join("linked"))
@@ -1943,38 +1942,23 @@ impl Shell {
         let removed = self
             .find_env_mut(&path)
             .and_then(|env| env.session_index(id).map(|i| env.sessions.remove(i)));
-        if let Some(live) = removed.as_ref().and_then(|s| s.live.as_ref()) {
+        self.forget_sessions(removed.into_iter().collect(), cx);
+        self.save(cx);
+        cx.notify();
+    }
+
+    /// Stops sessions taken off the list and deletes what they left on disk:
+    /// their transcripts, the transcripts of the sessions they continue, and
+    /// the notes linked from either. Otherwise private chats outlive the
+    /// environment or project the user removed.
+    pub(super) fn forget_sessions(&mut self, sessions: Vec<Session>, cx: &mut Context<Self>) {
+        for live in sessions.iter().filter_map(|s| s.live.as_ref()) {
             report_failure(&live.thread, true, cx);
             live.thread.update(cx, |t, _| t.shutdown());
         }
-        let mut paths = vec![state::transcript_path(id)];
-        for earlier in removed.iter().flat_map(|s| &s.continues) {
-            paths.push(state::transcript_path(&earlier.id));
-            paths.push(
-                state::data_dir()
-                    .join("linked")
-                    .join(format!("{}.md", earlier.id)),
-            );
-        }
-        // A headless session lives in its own folder, which the app scans every
-        // second; it has to go too or the session comes back.
-        let headless = crate::headless::shown(id).then(|| id.to_string());
-        if headless.is_some() {
-            crate::headless::begin_discard(id);
-            crate::headless::set_shown(id, false);
-        }
-        cx.background_spawn(crate::guard::task(async move {
-            for path in paths {
-                let _ = std::fs::remove_file(path);
-            }
-            if let Some(id) = headless {
-                crate::headless::discard(&id);
-            }
-        }))
-        .detach();
-        forget_alerts(id);
-        self.save(cx);
-        cx.notify();
+        let own = sessions.iter().map(|s| s.id.to_string()).collect();
+        let ids = sessions.iter().flat_map(session_file_ids).collect();
+        discard_session_files(own, ids, cx);
     }
 
     /// Droid session ids arakun already lists, in any environment.
@@ -2198,10 +2182,65 @@ fn forget_alerts(id: &str) {
     }
 }
 
+/// Ids of sessions whose files were deleted. A save queued before the
+/// removal, such as the one a closing tab starts, must not write the chat
+/// back, so saves and deletions take turns under this lock.
+static REMOVED: LazyLock<Mutex<HashSet<String>>> = LazyLock::new(Mutex::default);
+
+/// The ids whose transcripts and linked notes belong to `s`: its own and those
+/// of the sessions it continues.
+pub(super) fn session_file_ids(s: &Session) -> impl Iterator<Item = String> + '_ {
+    std::iter::once(s.id.to_string()).chain(s.continues.iter().map(|e| e.id.clone()))
+}
+
+/// Deletes what removed sessions left on disk: `ids` are theirs (`own`) and
+/// those of the sessions they continue. The ones run headless are stopped too.
+pub(super) fn discard_session_files(own: Vec<String>, ids: Vec<String>, cx: &mut gpui::App) {
+    let mut headless = Vec::new();
+    for id in own {
+        forget_alerts(&id);
+        // A headless session lives in its own folder, which the app scans
+        // every second; it has to go too or the session comes back.
+        if crate::headless::shown(&id) {
+            crate::headless::begin_discard(&id);
+            crate::headless::set_shown(&id, false);
+            headless.push(id);
+        }
+    }
+    if ids.is_empty() {
+        return;
+    }
+    cx.background_spawn(crate::guard::task(async move {
+        delete_session_files(ids);
+        for id in headless {
+            crate::headless::discard(&id);
+        }
+    }))
+    .detach();
+}
+
+/// Deletes the transcripts and linked notes of `ids`, and keeps later saves
+/// from writing them back. Blocking.
+fn delete_session_files(ids: Vec<String>) {
+    let mut removed = REMOVED.lock().unwrap_or_else(PoisonError::into_inner);
+    for id in ids {
+        for path in state::session_files(&id) {
+            let _ = std::fs::remove_file(path);
+        }
+        removed.insert(id);
+    }
+}
+
 /// Written so only the owner can read it: it holds the whole chat, tool
 /// output included.
 fn write_transcript(path: &Path, t: &crate::agent::Transcript) -> std::io::Result<()> {
-    crate::durable::write_private(path, &serde_json::to_vec(t)?)
+    let bytes = serde_json::to_vec(t)?;
+    let removed = REMOVED.lock().unwrap_or_else(PoisonError::into_inner);
+    let id = path.file_stem().and_then(|s| s.to_str());
+    if id.is_some_and(|id| removed.contains(id)) {
+        return Ok(());
+    }
+    crate::durable::write_private(path, &bytes)
 }
 
 /// The Codex settings an environment's next session starts with, the model first:

@@ -182,14 +182,23 @@ impl Shell {
     /// work finishes in the background.
     fn close_picked(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let mut sessions = Vec::new();
+        let mut remote = Vec::new();
         for (pi, ei) in self.picked() {
             let env = &mut self.projects[pi].environments[ei];
+            // A server keeps asking until it settles them itself.
+            let on_server = env.remote.is_some();
+            if on_server {
+                remote.push(env.path.clone());
+            }
             for s in &mut env.sessions {
-                if let Some(status) = settled(s.status) {
+                if !on_server && let Some(status) = settled(s.status) {
                     s.status = status;
                 }
                 sessions.push((env.path.clone(), s.id.clone()));
             }
+        }
+        for path in remote {
+            self.servers_settle_env(&path, cx);
         }
         for (path, id) in sessions {
             while let Some(i) = self.strip.session_tab(&id) {
@@ -289,21 +298,35 @@ impl Shell {
             d
         });
         let paths: Vec<PathBuf> = targets.into_iter().map(|(_, p, _, _)| p).collect();
-        // Done, or closed after some failed: the ones gone from disk go from the list.
-        let sub = cx.subscribe_in(
+        // What is gone from disk leaves the list once the dialog shows the
+        // result: on success it closes, and after a partial failure it stays
+        // open on the error, which only redraws it.
+        let kept = paths.clone();
+        let observed = cx.observe_in(&dialog, window, move |this, _, window, cx| {
+            this.forget_gone(&kept, window, cx)
+        });
+        let events = cx.subscribe_in(
             &dialog,
             window,
-            move |this, _, ev: &GitDialogEvent, window, cx| {
-                let gone: Vec<PathBuf> = paths.iter().filter(|p| !p.exists()).cloned().collect();
-                this.forget_envs(&gone, window, cx);
-                if matches!(ev, GitDialogEvent::Done | GitDialogEvent::Dismissed) {
-                    this.close_modal(window, cx);
-                }
+            move |this, _, _: &GitDialogEvent, window, cx| {
+                this.forget_gone(&paths, window, cx);
+                this.close_modal(window, cx);
             },
         );
+        let sub = gpui::Subscription::join(observed, events);
         self.menu = None;
         self.modal = Some((Modal::GitConfirm(dialog), sub));
         cx.notify();
+    }
+
+    /// Takes the worktrees of `paths` that are gone from disk off the list.
+    fn forget_gone(&mut self, paths: &[PathBuf], window: &mut Window, cx: &mut Context<Self>) {
+        let gone: Vec<PathBuf> = paths
+            .iter()
+            .filter(|p| !p.exists() && self.find_env(p).is_some())
+            .cloned()
+            .collect();
+        self.forget_envs(&gone, window, cx);
     }
 
     /// The bar under the picked rows: how many, and what to do with them.

@@ -507,29 +507,18 @@ impl Shell {
                 if only_open {
                     envs = envs.child(self.render_env_heading(pi, cx));
                 }
-                // What waits or runs is in the Active list above; here the rest.
-                // The main checkout stays: it is how you get to it.
                 let active_above = self.active_list_shown();
-                for (ei, env) in project.environments.iter().enumerate() {
-                    // A worktree from before one session per worktree stays
-                    // while any of its sessions is idle.
-                    let all_above = !env.sessions.is_empty()
-                        && env
-                            .sessions
-                            .iter()
-                            .all(|s| super::active::is_active(s.status));
-                    if active_above && !env.is_checkout && all_above {
-                        continue;
-                    }
+                for ei in self.listed_envs(pi) {
                     envs = envs.child(self.render_env_row(
                         pi,
                         ei,
-                        env,
+                        &project.environments[ei],
                         show_changes,
                         active_above,
                         cx,
                     ));
                 }
+                envs = envs.children(self.render_pick_bar(cx));
                 for (i, name) in self
                     .pending_envs
                     .iter()
@@ -917,6 +906,7 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let active = self.projects.get(pi).is_some_and(|p| p.active_env == ei);
+        let picked = self.is_picked(&env.path);
         let status = env.aggregate_status();
         let ci = self.env_ci(pi, ei, cx);
         let ci_failed = ci.as_ref().is_some_and(|(s, _)| *s == ci::State::Failed);
@@ -937,7 +927,11 @@ impl Shell {
         // A click opens the session the row is named after: going to the
         // worktree would show the tab it showed last, maybe another session's.
         let opens = label.as_ref().map(|(_, _, i)| named[*i].id.clone());
-        let lead: AnyElement = if env.is_checkout && status == Status::Idle {
+        let lead: AnyElement = if picked {
+            icon("tick02", 14.)
+                .text_color(theme::content())
+                .into_any_element()
+        } else if env.is_checkout && status == Status::Idle {
             icon("folder01", 14.)
                 .text_color(if active {
                     theme::text_muted()
@@ -1016,8 +1010,12 @@ impl Shell {
             } else {
                 theme::text_muted()
             })
-            .when(active, |d| d.bg(theme::selection()))
-            .when(!active, |d| {
+            // Picked rows are set apart from the open one, which may not be picked.
+            .when(active && !picked, |d| d.bg(theme::selection()))
+            .when(picked, |d| {
+                d.bg(theme::selection_strong()).text_color(theme::content())
+            })
+            .when(!active && !picked, |d| {
                 d.hover(|s| s.bg(theme::hover()).text_color(theme::content()))
             })
             .child(lead)
@@ -1048,9 +1046,8 @@ impl Shell {
             })
             .children(self.render_machine(env, pi * 1000 + ei))
             .children(end.map(|e| div().flex_none().child(e)))
-            .on_click(cx.listener(move |this, _, window, cx| match &opens {
-                Some(id) => this.open_session_at(pi, ei, id.clone(), window, cx),
-                None => this.select_env(pi, ei, window, cx),
+            .on_click(cx.listener(move |this, ev: &gpui::ClickEvent, window, cx| {
+                this.click_env(pi, ei, opens.clone(), ev.modifiers(), window, cx)
             }))
     }
 }

@@ -52,6 +52,7 @@ mod phone;
 mod posthog;
 mod rail;
 mod rail_blocks;
+mod rail_pick;
 mod runs;
 mod servers;
 mod session_actions;
@@ -310,6 +311,10 @@ pub struct Shell {
     /// The background read of `repo_slugs`; a new one replaces it.
     repo_slugs_read: Option<Task<()>>,
     menu: Option<ContextMenu>,
+    /// Rows of the sidebar picked with Ctrl or Shift+click (`rail_pick`), by path.
+    rail_pick: Vec<std::path::PathBuf>,
+    /// The row Shift+click picks from.
+    rail_pick_anchor: Option<std::path::PathBuf>,
     /// Polls `git status` of the visible environment while the window is active.
     poll: Option<Task<()>>,
     /// The last background `git fetch`, so the network is asked rarely.
@@ -846,6 +851,8 @@ impl Shell {
             repo_slugs: Default::default(),
             repo_slugs_read: None,
             menu: None,
+            rail_pick: Vec::new(),
+            rail_pick_anchor: None,
             poll: None,
             last_fetch: None,
             stale_diffs: Vec::new(),
@@ -2036,25 +2043,54 @@ impl Shell {
                 DialogEvent::Deleted(path) => {
                     let path = path.clone();
                     this.close_modal(window, cx);
-                    if let Some(project) = this.projects.get_mut(pi) {
-                        project.environments.retain(|e| e.path != path);
-                        project.active_env = project
-                            .active_env
-                            .min(project.environments.len().saturating_sub(1));
-                    }
-                    // Its tabs, and the pages of its browser tabs, go with it.
-                    this.settle_strip(cx);
-                    this.unfloat_github(cx);
-                    this.servers_tab_closed(cx);
-                    this.save(cx);
-                    this.refresh_project(pi, cx);
-                    this.ensure_terminal(window, cx);
-                    cx.notify();
+                    this.forget_envs(&[path], window, cx);
                 }
                 _ => this.close_modal(window, cx),
             },
         );
         self.modal = Some((Modal::DeleteEnv(dialog), sub));
+        cx.notify();
+    }
+
+    /// Takes deleted worktrees off their projects' lists.
+    fn forget_envs(
+        &mut self,
+        paths: &[std::path::PathBuf],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        //PLACEHOLDER window: &mut Window, cx: &mut Context<Self>) {
+        if paths.is_empty() {
+            return;
+        }
+        let mut touched = Vec::new();
+        for (pi, project) in self.projects.iter_mut().enumerate() {
+            let open = project
+                .environments
+                .get(project.active_env)
+                .map(|e| e.path.clone());
+            let before = project.environments.len();
+            project.environments.retain(|e| !paths.contains(&e.path));
+            if project.environments.len() == before {
+                continue;
+            }
+            // The open row stays open; when it went, the one at its place.
+            project.active_env = open
+                .and_then(|o| project.environments.iter().position(|e| e.path == o))
+                .unwrap_or(project.active_env)
+                .min(project.environments.len().saturating_sub(1));
+            touched.push(pi);
+        }
+        self.rail_pick.retain(|p| !paths.contains(p));
+        // Their tabs, and the pages of their browser tabs, go with them.
+        self.settle_strip(cx);
+        self.unfloat_github(cx);
+        self.servers_tab_closed(cx);
+        self.save(cx);
+        for pi in touched {
+            self.refresh_project(pi, cx);
+        }
+        self.ensure_terminal(window, cx);
         cx.notify();
     }
 
@@ -3304,7 +3340,10 @@ impl Render for Shell {
                 if ev.keystroke.key == "escape" {
                     if this.cancel_session_drag(window, cx) {
                         cx.stop_propagation();
-                    } else if this.drop_menu.take().is_some() || this.menu.take().is_some() {
+                    } else if this.drop_menu.take().is_some()
+                        || this.menu.take().is_some()
+                        || this.drop_pick()
+                    {
                         cx.stop_propagation();
                         cx.notify();
                     }

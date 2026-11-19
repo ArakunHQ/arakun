@@ -1,0 +1,443 @@
+//! Several rows of the open project's list picked at once, with Ctrl+click
+//! (Cmd on macOS) and Shift+click, and what to do with all of them: settle
+//! their sessions, close them, or delete the worktrees.
+//!
+//! Rows are kept by path: deleting or adding a worktree shifts the indices.
+
+use std::path::{Path, PathBuf};
+
+use gpui::{
+    AnyElement, AppContext, Context, IntoElement, ParentElement, StatefulInteractiveElement,
+    Styled, Window, div, prelude::FluentBuilder, px,
+};
+
+use super::{Modal, Shell};
+use crate::git_dialogs::{ConfirmDialog, GitDialogEvent};
+use crate::model::Status;
+use crate::{git, theme, ui};
+
+/// The rows from `anchor` to `to`, both included, in the order `order` lists
+/// them. Without the anchor in the list, `to` alone.
+pub(super) fn range(order: &[PathBuf], anchor: Option<&Path>, to: &Path) -> Vec<PathBuf> {
+    let end = order.iter().position(|p| p == to);
+    let start = anchor.and_then(|a| order.iter().position(|p| p == a));
+    match (start, end) {
+        (Some(a), Some(b)) => order[a.min(b)..=a.max(b)].to_vec(),
+        _ => vec![to.to_path_buf()],
+    }
+}
+
+/// What settling turns a session's status into; None leaves it. Running
+/// agents keep running.
+fn settled(status: Status) -> Option<Status> {
+    matches!(status, Status::NeedsInput | Status::Error).then_some(Status::Idle)
+}
+
+impl Shell {
+    /// The open project's rows as the list shows them, by index.
+    pub(super) fn listed_envs(&self, pi: usize) -> Vec<usize> {
+        let Some(project) = self.projects.get(pi) else {
+            return Vec::new();
+        };
+        // What waits or runs is in the Active list above; here the rest.
+        // The main checkout stays: it is how you get to it. A worktree from
+        // before one session per worktree stays while any session is idle.
+        let active_above = self.active_list_shown();
+        project
+            .environments
+            .iter()
+            .enumerate()
+            .filter(|(_, env)| {
+                let all_above = !env.sessions.is_empty()
+                    && env
+                        .sessions
+                        .iter()
+                        .all(|s| super::active::is_active(s.status));
+                !(active_above && !env.is_checkout && all_above)
+            })
+            .map(|(ei, _)| ei)
+            .collect()
+    }
+
+    pub(super) fn is_picked(&self, path: &Path) -> bool {
+        self.rail_pick.iter().any(|p| p == path)
+    }
+
+    /// A click on row `ei` of project `pi`. Ctrl (Cmd) adds or takes it out,
+    /// Shift picks the rows from the last one clicked; a plain click opens it,
+    /// on session `opens` when the row is named after one, and drops the pick.
+    pub(super) fn click_env(
+        &mut self,
+        pi: usize,
+        ei: usize,
+        opens: Option<gpui::SharedString>,
+        modifiers: gpui::Modifiers,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(path) = self
+            .projects
+            .get(pi)
+            .and_then(|p| p.environments.get(ei))
+            .map(|e| e.path.clone())
+        else {
+            return;
+        };
+        if modifiers.shift {
+            let order: Vec<PathBuf> = self
+                .listed_envs(pi)
+                .into_iter()
+                .map(|i| self.projects[pi].environments[i].path.clone())
+                .collect();
+            // From the open row when nothing was clicked yet.
+            let anchor = self
+                .rail_pick_anchor
+                .clone()
+                .or_else(|| Some(self.env().path.clone()));
+            self.rail_pick = range(&order, anchor.as_deref(), &path);
+            self.rail_pick_anchor = anchor;
+        } else if modifiers.secondary() {
+            if self.rail_pick.is_empty() {
+                // The open row is part of it, as in a file manager; not the
+                // main checkout, which most of these leave alone.
+                let open = self.env().path.clone();
+                if open != path
+                    && !self.env().is_checkout
+                    && self
+                        .listed_envs(pi)
+                        .iter()
+                        .any(|&i| self.projects[pi].environments[i].path == open)
+                {
+                    self.rail_pick.push(open);
+                }
+            }
+            if let Some(i) = self.rail_pick.iter().position(|p| *p == path) {
+                self.rail_pick.remove(i);
+            } else {
+                self.rail_pick.push(path.clone());
+            }
+            self.rail_pick_anchor = Some(path);
+        } else {
+            self.drop_pick();
+            self.rail_pick_anchor = Some(path);
+            match opens {
+                Some(id) => self.open_session_at(pi, ei, id, window, cx),
+                None => self.select_env(pi, ei, window, cx),
+            }
+            return;
+        }
+        cx.notify();
+    }
+
+    /// Returns whether anything was picked.
+    pub(super) fn drop_pick(&mut self) -> bool {
+        self.rail_pick_anchor = None;
+        !std::mem::take(&mut self.rail_pick).is_empty()
+    }
+
+    /// The picked rows that still exist, as (project, environment).
+    fn picked(&self) -> Vec<(usize, usize)> {
+        let mut out = Vec::new();
+        for (pi, p) in self.projects.iter().enumerate() {
+            for (ei, e) in p.environments.iter().enumerate() {
+                if self.is_picked(&e.path) {
+                    out.push((pi, ei));
+                }
+            }
+        }
+        out
+    }
+
+    /// The waiting and failed sessions of the picked rows stop asking for
+    /// attention. On a server, the server settles them.
+    fn settle_picked(&mut self, cx: &mut Context<Self>) {
+        let mut retire = Vec::new();
+        let mut remote = Vec::new();
+        for (pi, ei) in self.picked() {
+            let env = &mut self.projects[pi].environments[ei];
+            if env.remote.is_some() {
+                remote.push(env.path.clone());
+                continue;
+            }
+            for s in &mut env.sessions {
+                if let Some(status) = settled(s.status) {
+                    s.status = status;
+                    retire.push((env.path.clone(), s.id.clone()));
+                }
+            }
+        }
+        for path in remote {
+            self.servers_settle_env(&path, cx);
+        }
+        for (path, id) in retire {
+            self.retire_if_hidden(&path, &id, cx);
+        }
+        self.drop_pick();
+        self.save(cx);
+        cx.notify();
+    }
+
+    /// Closes the tabs of the picked rows' sessions and stops their agents,
+    /// settled first. The worktrees and transcripts stay; an agent still at
+    /// work finishes in the background.
+    fn close_picked(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let mut sessions = Vec::new();
+        for (pi, ei) in self.picked() {
+            let env = &mut self.projects[pi].environments[ei];
+            for s in &mut env.sessions {
+                if let Some(status) = settled(s.status) {
+                    s.status = status;
+                }
+                sessions.push((env.path.clone(), s.id.clone()));
+            }
+        }
+        for (path, id) in sessions {
+            while let Some(i) = self.strip.session_tab(&id) {
+                self.discard_tab(i, window, cx);
+            }
+            self.retire_if_hidden(&path, &id, cx);
+        }
+        self.drop_pick();
+        self.save(cx);
+        cx.notify();
+    }
+
+    /// Asks once, then deletes the picked worktrees on this computer. Their
+    /// branches stay. The main checkout and a server's worktrees are left out:
+    /// a server answers each deletion on its own.
+    fn open_delete_picked(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let mut targets = Vec::new();
+        let mut skipped = 0;
+        for (pi, ei) in self.picked() {
+            let project = &self.projects[pi];
+            let env = &project.environments[ei];
+            if env.is_checkout || env.remote.is_some() {
+                skipped += 1;
+                continue;
+            }
+            let title = env
+                .sessions
+                .iter()
+                .max_by_key(|s| s.updated)
+                .map_or_else(|| env.name.to_string(), |s| s.title.to_string());
+            targets.push((
+                project.path.clone(),
+                env.path.clone(),
+                title,
+                env.changes.len(),
+            ));
+        }
+        if targets.is_empty() {
+            return;
+        }
+        let n = targets.len();
+        let warn: gpui::Hsla = theme::warn().into();
+        let muted = theme::mix(0.45);
+        let mut details = Vec::new();
+        for (_, _, title, dirty) in &targets {
+            let text = if *dirty > 0 {
+                format!(
+                    "{title}: {dirty} uncommitted change{} discarded",
+                    plural(*dirty)
+                )
+            } else {
+                title.clone()
+            };
+            details.push((if *dirty > 0 { warn } else { muted }, text));
+        }
+        let mut body = format!(
+            "This removes the folder{s} of {n} worktree{s}. Their branches and commits stay.",
+            s = plural(n)
+        );
+        if skipped > 0 {
+            body.push_str(&format!(
+                " {skipped} picked row{} can't go this way: the main checkout stays, and a \
+                 server's worktree is deleted from its own menu.",
+                plural(skipped)
+            ));
+        }
+        let work: Vec<(PathBuf, PathBuf)> = targets
+            .iter()
+            .map(|(r, p, _, _)| (r.clone(), p.clone()))
+            .collect();
+        let dialog = cx.new(|cx| {
+            let mut d = ConfirmDialog::new(
+                format!("Delete {n} worktree{}?", plural(n)),
+                body,
+                "Delete",
+                true,
+                move || {
+                    // One that fails does not stop the rest.
+                    let mut failed = Vec::new();
+                    for (repo, path) in &work {
+                        if let Err(e) = git::remove_worktree(repo, path, None) {
+                            failed.push(format!("{}: {e}", path.display()));
+                        }
+                    }
+                    if failed.is_empty() {
+                        Ok(())
+                    } else {
+                        Err(anyhow::anyhow!(failed.join("\n")))
+                    }
+                },
+                window,
+                cx,
+            );
+            for (color, text) in details {
+                d = d.detail("folder01", color, text);
+            }
+            d
+        });
+        let paths: Vec<PathBuf> = targets.into_iter().map(|(_, p, _, _)| p).collect();
+        // Done, or closed after some failed: the ones gone from disk go from the list.
+        let sub = cx.subscribe_in(
+            &dialog,
+            window,
+            move |this, _, ev: &GitDialogEvent, window, cx| {
+                let gone: Vec<PathBuf> = paths.iter().filter(|p| !p.exists()).cloned().collect();
+                this.forget_envs(&gone, window, cx);
+                if matches!(ev, GitDialogEvent::Done | GitDialogEvent::Dismissed) {
+                    this.close_modal(window, cx);
+                }
+            },
+        );
+        self.menu = None;
+        self.modal = Some((Modal::GitConfirm(dialog), sub));
+        cx.notify();
+    }
+
+    /// The bar under the picked rows: how many, and what to do with them.
+    pub(super) fn render_pick_bar(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let picked = self.picked();
+        if picked.is_empty() {
+            return None;
+        }
+        let n = picked.len();
+        let envs = || {
+            picked
+                .iter()
+                .map(|&(pi, ei)| &self.projects[pi].environments[ei])
+        };
+        let can_settle = envs().any(|e| e.sessions.iter().any(|s| settled(s.status).is_some()));
+        let can_close = envs().any(|e| !e.sessions.is_empty());
+        let can_delete = envs().any(|e| !e.is_checkout && e.remote.is_none());
+        let action = |id: &'static str, icon_name: &'static str, tip: &'static str, on: bool| {
+            ui::icon_button(id, icon_name, 14.)
+                .tooltip(ui::tip(tip))
+                .when(!on, |d| d.opacity(0.4).cursor_default())
+        };
+        Some(
+            div()
+                .flex()
+                .items_center()
+                .gap(ui::sp(4.))
+                .mt(ui::sp(4.))
+                .h(px(28.))
+                .pl(ui::sp(8.))
+                .pr(ui::sp(4.))
+                .rounded(ui::rad(8.))
+                .bg(theme::selection_strong())
+                .text_size(px(ui::TEXT_SM))
+                .text_color(theme::content())
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .child(format!("{n} selected")),
+                )
+                .child(
+                    action(
+                        "pick-settle",
+                        "checkmark-circle02",
+                        "Settle their sessions",
+                        can_settle,
+                    )
+                    .when(can_settle, |d| {
+                        d.on_click(cx.listener(|this, _, _, cx| this.settle_picked(cx)))
+                    }),
+                )
+                .child(
+                    action(
+                        "pick-close",
+                        "cancel-circle",
+                        "Close their sessions; the worktrees stay",
+                        can_close,
+                    )
+                    .when(can_close, |d| {
+                        d.on_click(cx.listener(|this, _, window, cx| this.close_picked(window, cx)))
+                    }),
+                )
+                .child(
+                    action(
+                        "pick-delete",
+                        "delete02",
+                        "Delete the worktrees…",
+                        can_delete,
+                    )
+                    .when(can_delete, |d| {
+                        d.on_click(
+                            cx.listener(|this, _, window, cx| this.open_delete_picked(window, cx)),
+                        )
+                    }),
+                )
+                .child(
+                    ui::icon_button("pick-clear", "cancel01", 14.)
+                        .tooltip(ui::tip("Clear the selection (Esc)"))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.drop_pick();
+                            cx.notify();
+                        })),
+                )
+                .into_any_element(),
+        )
+    }
+}
+
+fn plural(n: usize) -> &'static str {
+    if n == 1 { "" } else { "s" }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn paths(names: &[&str]) -> Vec<PathBuf> {
+        names.iter().map(PathBuf::from).collect()
+    }
+
+    #[test]
+    fn shift_picks_from_the_anchor_either_way() {
+        let order = paths(&["a", "b", "c", "d"]);
+        assert_eq!(
+            range(&order, Some(Path::new("b")), Path::new("d")),
+            paths(&["b", "c", "d"])
+        );
+        assert_eq!(
+            range(&order, Some(Path::new("c")), Path::new("a")),
+            paths(&["a", "b", "c"])
+        );
+        assert_eq!(
+            range(&order, Some(Path::new("c")), Path::new("c")),
+            paths(&["c"])
+        );
+    }
+
+    #[test]
+    fn without_a_listed_anchor_shift_picks_one() {
+        let order = paths(&["a", "b"]);
+        assert_eq!(range(&order, None, Path::new("b")), paths(&["b"]));
+        assert_eq!(
+            range(&order, Some(Path::new("gone")), Path::new("a")),
+            paths(&["a"])
+        );
+    }
+
+    #[test]
+    fn settling_leaves_running_and_idle_sessions() {
+        assert_eq!(settled(Status::NeedsInput), Some(Status::Idle));
+        assert_eq!(settled(Status::Error), Some(Status::Idle));
+        assert_eq!(settled(Status::Working), None);
+        assert_eq!(settled(Status::Idle), None);
+    }
+}

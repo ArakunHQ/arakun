@@ -164,10 +164,7 @@ impl Shell {
             let shell = shell.clone();
             let active = i == strip_tabs.active_tab;
             let shown_beside = in_other_pane == Some(i);
-            // Closing an environment's only tab gives it a blank one: a blank
-            // one that is alone has nothing to close.
-            let closable = !matches!(tab.kind, TabKind::NewSession)
-                || strip_tabs.tabs.iter().filter(|t| t.env == tab.env).count() > 1;
+            let closable = self.can_close_tab(i);
             let tab_icon: AnyElement = match &tab.kind {
                 TabKind::Session { agent, .. } => agent_icon(*agent, 14.).into_any_element(),
                 TabKind::NewSession => agent_icon(self.tab_env(tab).agent, 14.).into_any_element(),
@@ -480,7 +477,7 @@ impl Shell {
                         .child(max_button(maximized))
                         .child(
                             window_button("win-close", "cancel01", 14., true)
-                                .on_click(|_, _, cx| cx.quit()),
+                                .on_click(|_, window, cx| crate::background::close(window, cx)),
                         ),
                 )
             })

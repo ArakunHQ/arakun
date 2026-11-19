@@ -134,6 +134,11 @@ impl Shell {
         {
             readings.extend(plan_readings(&go, "OpenCode Go", now));
         }
+        if account_view::rail_shows(AgentKind::Devin)
+            && let Some(devin) = crate::agent::devin_plan::latest()
+        {
+            readings.extend(plan_readings(&devin, "Devin", now));
+        }
         let first = !self.limits_seen;
         self.limits_seen = true;
         for (title, body, critical) in alerts(readings, &mut self.limit_alerts, first) {
@@ -171,8 +176,11 @@ impl Shell {
             }
             // A full Go plan doesn't stop OpenCode: other providers, or Go's
             // extra usage, may still take the prompt; the provider says so if not.
-            // Codex says so itself when its ChatGPT limits run out.
-            model::Agent::OpenCode | model::Agent::Codex | model::Agent::WorkersAi => None,
+            // Codex says so itself when its ChatGPT limits run out, and so does Devin.
+            model::Agent::OpenCode
+            | model::Agent::Codex
+            | model::Agent::Devin
+            | model::Agent::WorkersAi => None,
         }
     }
 }

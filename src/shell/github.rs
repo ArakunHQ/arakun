@@ -51,9 +51,9 @@ impl Shell {
         let g = self.github.read(cx);
         let p = self.pilot.read(cx);
         // With pilot's board, what it says needs the user, what waits on the
-        // user where pilot doesn't look, and the cards that aren't one of its
-        // questions (those are in `te_necesita` already). The cards show in
-        // the tab, so they make it urgent as they did before the board.
+        // user where pilot doesn't look, and the cards that ask something
+        // nothing else counts yet, once per pull request. Notices only show
+        // in the tab. The cards still make it urgent as before the board.
         let focus = g.focus();
         if let Some(b) = p.board() {
             let cards = || github::board::visible_cards(b, p.shown(), focus);
@@ -62,7 +62,7 @@ impl Shell {
                 b.verdict.te_necesita > 0 || g.wants_attention() || cards().any(pilot::Item::pops);
             return (n > 0).then_some((n, urgent));
         }
-        let on_you = g.on_you() + p.count(focus);
+        let on_you = github::board::waiting_without_board(g.queue(), p.shown_in(focus));
         (on_you > 0).then(|| (on_you, g.wants_attention() || p.urgent(focus)))
     }
 

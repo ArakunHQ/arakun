@@ -59,6 +59,9 @@ pub struct State {
     /// The Dynamic Island was turned off in Settings (`island`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub island_off: bool,
+    /// Closing the window hides it instead of quitting (`background`, Linux).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub background: bool,
     /// Where the window was when the app last saved, so it opens there again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window: Option<WindowState>,
@@ -262,8 +265,8 @@ pub struct Layout {
     pub glass: bool,
     pub grays: crate::theme::Grays,
     pub type_scale: crate::ui::TypeScale,
-    /// Whether the rail's usage card shows Claude, Droid and OpenCode.
-    pub rail_usage: [bool; 3],
+    /// Whether the rail's usage card shows Claude, Droid, OpenCode and Devin.
+    pub rail_usage: [bool; 4],
     pub ui_zoom: u32,
     pub window: Option<WindowState>,
 }
@@ -324,6 +327,9 @@ pub struct EnvState {
     /// Codex settings for the next session, as (key, value).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub codex_settings: Vec<(String, String)>,
+    /// Devin settings for the next session, as (key, value).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub devin_settings: Vec<(String, String)>,
     /// Workers AI settings for the next session, as (key, value).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub workers_ai_settings: Vec<(String, String)>,
@@ -393,6 +399,8 @@ pub struct SessionState {
     pub auto_allow: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub continues: Vec<crate::model::Earlier>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub settled: bool,
 }
 
 fn is_session(t: &Tab) -> bool {
@@ -751,6 +759,11 @@ pub fn snapshot_with(
                             .iter()
                             .map(|(s, v)| (s.key().to_string(), v.clone()))
                             .collect(),
+                        devin_settings: e
+                            .devin_settings
+                            .iter()
+                            .map(|(s, v)| (s.key().to_string(), v.clone()))
+                            .collect(),
                         workers_ai_settings: e
                             .workers_ai_settings
                             .iter()
@@ -774,6 +787,7 @@ pub fn snapshot_with(
                                 cli_model: s.cli_model.clone(),
                                 auto_allow: s.auto_allow,
                                 continues: s.continues.clone(),
+                                settled: s.settled,
                             })
                             .collect(),
                         open: tabs_of(strip, e)
@@ -820,6 +834,7 @@ pub fn snapshot_with(
             ("claude", layout.rail_usage[0]),
             ("droid", layout.rail_usage[1]),
             ("opencode", layout.rail_usage[2]),
+            ("devin", layout.rail_usage[3]),
         ]
         .into_iter()
         .filter(|(_, shown)| !shown)
@@ -828,6 +843,7 @@ pub fn snapshot_with(
         ui_zoom: layout.ui_zoom,
         last_agent: crate::model::default_agent().key().to_string(),
         island_off: !crate::island::enabled(),
+        background: crate::background::enabled(),
         window: layout.window,
     };
     serde_json::to_vec_pretty(&state).unwrap_or_default()
@@ -840,6 +856,7 @@ pub fn restore(state: State) -> (Vec<Project>, usize, Layout, TabStrip) {
     let mut splits: Vec<(PathBuf, Split, u64)> = Vec::new();
     let last_agent = state.last_agent.clone();
     crate::island::set_enabled(!state.island_off);
+    crate::background::set_enabled(state.background);
     let projects: Vec<Project> = state
         .projects
         .into_iter()
@@ -875,6 +892,11 @@ pub fn restore(state: State) -> (Vec<Project>, usize, Layout, TabStrip) {
                         .into_iter()
                         .filter_map(|(k, v)| Setting::from_key(&k).map(|s| (s, v)))
                         .collect();
+                    env.devin_settings = e
+                        .devin_settings
+                        .into_iter()
+                        .filter_map(|(k, v)| Setting::from_key(&k).map(|s| (s, v)))
+                        .collect();
                     env.workers_ai_settings = e
                         .workers_ai_settings
                         .into_iter()
@@ -903,6 +925,7 @@ pub fn restore(state: State) -> (Vec<Project>, usize, Layout, TabStrip) {
                             session.cli_model = s.cli_model;
                             session.auto_allow = s.auto_allow;
                             session.continues = s.continues;
+                            session.settled = s.settled;
                             session.status = Status::Idle;
                             session
                         })
@@ -1020,7 +1043,7 @@ pub fn restore(state: State) -> (Vec<Project>, usize, Layout, TabStrip) {
         glass: state.glass,
         grays: crate::theme::Grays::from_id(&state.grays),
         type_scale: crate::ui::TypeScale::from_id(&state.type_scale),
-        rail_usage: ["claude", "droid", "opencode"]
+        rail_usage: ["claude", "droid", "opencode", "devin"]
             .map(|k| !state.rail_hidden.iter().any(|h| h == k)),
         // 0 only comes from `State::default()`, when there is no state file.
         ui_zoom: if state.ui_zoom == 0 {
@@ -1125,6 +1148,18 @@ mod tests {
         let disk = disk.into_inner().unwrap();
         assert_eq!(disk.last().unwrap(), &[31]);
         assert!(disk.windows(2).all(|w| w[0] < w[1]), "{disk:?}");
+    }
+
+    #[test]
+    fn a_settled_session_stays_settled() {
+        let old: SessionState =
+            serde_json::from_str(r#"{"id":"s1","title":"T","agent":"droid","updated":1}"#).unwrap();
+        assert!(!old.settled, "older state files have nothing settled");
+        assert!(serde_json::to_value(&old).unwrap().get("settled").is_none());
+        let json = r#"{"id":"s1","title":"T","agent":"droid","updated":1,"settled":true}"#;
+        let s: SessionState = serde_json::from_str(json).unwrap();
+        assert!(s.settled);
+        assert_eq!(serde_json::to_value(&s).unwrap()["settled"], true);
     }
 
     #[test]
@@ -1262,7 +1297,7 @@ mod tests {
             glass: false,
             grays: crate::theme::Grays::Crisp,
             type_scale: crate::ui::TypeScale::Compact,
-            rail_usage: [true, true, true],
+            rail_usage: [true, true, true, true],
             ui_zoom: 100,
             window: None,
         };
@@ -1296,7 +1331,7 @@ mod tests {
             glass: false,
             grays: crate::theme::Grays::Crisp,
             type_scale: crate::ui::TypeScale::Compact,
-            rail_usage: [true, true, true],
+            rail_usage: [true, true, true, true],
             ui_zoom: 100,
             window: None,
         };
@@ -1329,12 +1364,12 @@ mod tests {
             glass: false,
             grays: crate::theme::Grays::Soft,
             type_scale: crate::ui::TypeScale::Comfortable,
-            rail_usage: [true, false, true],
+            rail_usage: [true, false, true, false],
             ui_zoom: 100,
             window: None,
         };
         let (_, _, layout, _) = restore(serde_json::from_slice(&snapshot(&[], 0, layout)).unwrap());
-        assert_eq!(layout.rail_usage, [true, false, true]);
+        assert_eq!(layout.rail_usage, [true, false, true, false]);
         assert_eq!(
             (layout.grays, layout.type_scale),
             (crate::theme::Grays::Soft, crate::ui::TypeScale::Comfortable)
@@ -1365,7 +1400,7 @@ mod tests {
             glass: false,
             grays: crate::theme::Grays::Crisp,
             type_scale: crate::ui::TypeScale::Compact,
-            rail_usage: [true, true, true],
+            rail_usage: [true, true, true, true],
             ui_zoom: 100,
             window: None,
         };
@@ -1398,7 +1433,7 @@ mod tests {
             glass: false,
             grays: crate::theme::Grays::Crisp,
             type_scale: crate::ui::TypeScale::Compact,
-            rail_usage: [true, true, true],
+            rail_usage: [true, true, true, true],
             ui_zoom: 100,
             window: None,
         };
@@ -1435,7 +1470,7 @@ mod tests {
             glass: false,
             grays: crate::theme::Grays::Crisp,
             type_scale: crate::ui::TypeScale::Compact,
-            rail_usage: [true, true, true],
+            rail_usage: [true, true, true, true],
             ui_zoom: 100,
             window: None,
         };
@@ -1501,7 +1536,7 @@ mod tests {
             glass: false,
             grays: crate::theme::Grays::Crisp,
             type_scale: crate::ui::TypeScale::Compact,
-            rail_usage: [true, true, true],
+            rail_usage: [true, true, true, true],
             ui_zoom: 100,
             window: None,
         };

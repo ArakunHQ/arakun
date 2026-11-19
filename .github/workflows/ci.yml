@@ -324,13 +324,29 @@ jobs:
   # macOS builds other code (cfg(target_os = "macos"), no /proc, BSD tools), so
   # Linux passing says little about it. No runner-usage step: it supports only
   # Linux and Windows, and Depot's macOS runners come in one size (8 CPUs).
-  clippy-macos:
-    name: Clippy (macOS)
+  #
+  # Clippy and the tests share one job because Depot has few macOS machines. On
+  # 18 Nov 2026 the macOS jobs waited a median of 4 and up to 100 minutes for
+  # one, while each ran in 1-3 minutes; one job asks for half as many machines.
+  #
+  # On GitHub's runners for now: on 19 Nov 2026 Depot's macOS runners took no
+  # job for hours and held up a release. Free here, as the repository is public.
+  macos:
+    name: Clippy and tests (macOS, no browser)
     needs: changes
     permissions:
       contents: read
     if: ${{ !cancelled() && needs.changes.outputs.rust != 'false' }}
-    runs-on: depot-macos-latest
+    runs-on: macos-latest
+    # Several merges in a row queued a macOS job for every commit on main. Here
+    # one runs and only the newest waits; GitHub cancels the older waiting ones.
+    # The newest tests what they changed too, and saves the cache. Every other
+    # run gets a group per run, so it never cancels or is cancelled here: pull
+    # requests, tags, and release.yml's nightlies, which run on main but by
+    # schedule or by hand and fail if this job is cancelled.
+    concurrency:
+      group: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'ci-macos-main' || format('ci-macos-{0}', github.run_id) }}
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -342,34 +358,15 @@ jobs:
 
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          shared-key: clippy-macos
+          shared-key: macos
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: cargo clippy
         run: cargo clippy --locked --all-targets --no-default-features --config "$CI_CARGO_CONFIG" -- -D warnings
 
-  test-macos:
-    name: Tests (macOS, no browser)
-    needs: changes
-    permissions:
-      contents: read
-    if: ${{ !cancelled() && needs.changes.outputs.rust != 'false' }}
-    runs-on: depot-macos-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      # The version and components in rust-toolchain.toml. Runner images ship rustup.
-      - name: Rust toolchain
-        run: rustup toolchain install --no-self-update
-
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        with:
-          shared-key: test-macos
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-
+      # Also after a Clippy warning, so one push shows both results.
       - name: cargo test
+        if: ${{ !cancelled() }}
         run: cargo test --locked --no-default-features --config "$CI_CARGO_CONFIG"
 
   # The phone relay (Cloudflare Worker) is TypeScript apart from the app; its

@@ -789,10 +789,6 @@ impl Pilot {
         self.shown().filter(|i| i.in_focus(focus))
     }
 
-    pub fn count(&self, focus: &[String]) -> usize {
-        self.shown_in(focus).count()
-    }
-
     /// Whether a card in focus waits that would have popped the island.
     pub fn urgent(&self, focus: &[String]) -> bool {
         self.shown_in(focus).any(Item::pops)

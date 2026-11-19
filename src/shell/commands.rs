@@ -66,11 +66,26 @@ impl Shell {
         if req.cmd == "add" {
             return self.add_or_show(Path::new(&arg), window, cx);
         }
+        if req.cmd == "show" {
+            crate::background::show(window);
+            return Reply::ok("");
+        }
+        if req.cmd == "quit" {
+            // A moment later, once this answer is on its way.
+            cx.spawn(async move |_, cx| {
+                cx.background_executor()
+                    .timer(Duration::from_millis(300))
+                    .await;
+                cx.update(|cx| cx.quit());
+            })
+            .detach();
+            return Reply::ok("");
+        }
         if req.cmd == "ls" {
             return Reply::ok(self.listing());
         }
         if req.cmd == "palette" {
-            window.activate_window();
+            crate::background::show(window);
             if !matches!(self.modal, Some((super::Modal::Palette(_), _))) {
                 self.open_palette(window, cx);
             }
@@ -481,7 +496,7 @@ impl Shell {
                 Reply::ok(format!("added {}", dir.display()))
             }
         };
-        window.activate_window();
+        crate::background::show(window);
         reply
     }
 

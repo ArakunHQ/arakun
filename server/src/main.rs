@@ -6,6 +6,8 @@
 //!   cargo build --release --locked -p arakun-server
 //!   arakun-server help
 
+#[path = "../../src/accept.rs"]
+mod accept;
 #[allow(dead_code)]
 #[path = "../../src/account.rs"]
 mod account;

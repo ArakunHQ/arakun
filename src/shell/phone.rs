@@ -565,6 +565,7 @@ impl Shell {
                 session,
                 text,
                 uploads,
+                now,
             } => {
                 let Some((env_path, sid)) = self.phone_session(&session) else {
                     self.phone_send(client, wire::error("that session is gone"));
@@ -586,13 +587,19 @@ impl Shell {
                 // that does not get there is said to this phone, not put in
                 // the desktop's composer.
                 if let Some(server) = server {
-                    self.servers_phone_send(&server, &sid, &text, client, cx);
+                    self.servers_phone_send(&server, &sid, &text, now, client, cx);
                     if let Some(s) = self.session_mut(&env_path, &sid) {
                         s.updated = crate::model::unix_now();
                     }
                     cx.notify();
                 } else if let Some(thread) = self.phone_thread(&env_path, &sid) {
-                    thread.update(cx, |t, cx| t.send(text, cx));
+                    thread.update(cx, |t, cx| {
+                        if now {
+                            t.interrupt_with(text, cx)
+                        } else {
+                            t.send(text, cx)
+                        }
+                    });
                     if let Some(s) = self.session_mut(&env_path, &sid) {
                         s.updated = crate::model::unix_now();
                     }
@@ -842,6 +849,16 @@ impl Shell {
                         link.hidden.insert(client);
                     }
                 }
+            }
+            // What the app asks of a server, to install there. A phone has
+            // the Marketplace tab of this computer for that.
+            ClientMsg::Market
+            | ClientMsg::InstallPlugin { .. }
+            | ClientMsg::InstallServer { .. } => {
+                self.phone_send(
+                    client,
+                    wire::error("Install from the Marketplace tab of this computer."),
+                );
             }
             // The desktop's projects are added in its own window, not from a device.
             ClientMsg::AddPlace { .. }
@@ -1286,9 +1303,13 @@ fn relay_address(status: relay::Status, page: &str) -> Address {
         relay::Status::Connecting => Address::Pending("Connecting to the relay…".into()),
         relay::Status::Connected => Address::Ready(page.to_string()),
         relay::Status::Reconnecting { why, retry_in } => Address::Pending(format!(
-            "{why} Trying again in {} s.",
-            retry_in.as_secs().max(1)
+            "{why} Trying again in {}.",
+            relay::wait_text(retry_in)
         )),
+        relay::Status::Refused { why, retry_in } => Address::Problem {
+            what: format!("{why} Trying again in {}.", relay::wait_text(retry_in)),
+            link: None,
+        },
         relay::Status::Rejected(why) => Address::Problem {
             what: why,
             link: None,

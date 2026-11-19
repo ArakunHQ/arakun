@@ -1323,6 +1323,14 @@ impl Shell {
             "Opens a terminal with Codex's ChatGPT login.",
             Target::SignIn(crate::agent::AgentKind::Codex),
         );
+        add(
+            "signin-devin",
+            "square-lock02",
+            "Sign in to Devin",
+            &[],
+            "Opens a terminal with Devin's login.",
+            Target::SignIn(crate::agent::AgentKind::Devin),
+        );
         // The settings pilot read last (every minute, off this thread's
         // drawing): the palette never waits on the disk.
         items.extend(cloud_command(self.pilot.read(cx).config()));

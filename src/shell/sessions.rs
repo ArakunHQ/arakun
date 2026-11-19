@@ -85,6 +85,20 @@ fn new_session_id() -> SharedString {
     format!("{millis:x}-{n}").into()
 }
 
+/// A first prompt waiting for the worktree it will start in.
+pub(super) struct QueuedPrompt {
+    text: String,
+    /// Where it was written: what it mentions is found there.
+    from: PathBuf,
+    agent: model::Agent,
+    draft_settings: Vec<(Setting, String)>,
+    claude_settings: Vec<(Setting, String)>,
+    opencode_settings: Vec<(Setting, String)>,
+    codex_settings: Vec<(Setting, String)>,
+    devin_settings: Vec<(Setting, String)>,
+    workers_ai_settings: Vec<(Setting, String)>,
+}
+
 pub(super) fn summary(text: &str) -> SharedString {
     let text = crate::agent::attach::title_text(text);
     let line = text
@@ -396,6 +410,10 @@ impl Shell {
                 {
                     s.status = status;
                     s.updated = model::unix_now();
+                    // Used again after its merge: back in the list.
+                    if status == Status::Working {
+                        s.settled = false;
+                    }
                     cx.notify();
                 }
             }
@@ -515,6 +533,66 @@ impl Shell {
                 self.servers_unfollow(&server, id);
             }
         }
+    }
+
+    /// A first prompt that waits for its worktree, with the agent and settings
+    /// picked where it was written.
+    pub(super) fn queue_prompt(&self, text: String) -> QueuedPrompt {
+        let env = self.env();
+        QueuedPrompt {
+            text,
+            from: env.path.clone(),
+            agent: env.agent,
+            draft_settings: env.draft_settings.clone(),
+            claude_settings: env.claude_settings.clone(),
+            // What it uses now: one it inherits could change while it waits.
+            opencode_settings: opencode_draft(env),
+            codex_settings: env.codex_settings.clone(),
+            devin_settings: env.devin_settings.clone(),
+            workers_ai_settings: env.workers_ai_settings.clone(),
+        }
+    }
+
+    /// Starts the session a queued prompt waited for, in the new worktree.
+    pub(super) fn start_queued(
+        &mut self,
+        env_path: &Path,
+        p: QueuedPrompt,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(env) = self.find_env_mut(env_path) else {
+            return;
+        };
+        env.agent = p.agent;
+        env.draft_settings = p.draft_settings;
+        env.claude_settings = p.claude_settings;
+        env.opencode_settings = p.opencode_settings;
+        env.codex_settings = p.codex_settings;
+        env.devin_settings = p.devin_settings;
+        env.workers_ai_settings = p.workers_ai_settings;
+        let text = crate::agent::attach::move_mentions(&p.text, &p.from, env_path);
+        let title = summary(&text);
+        self.start_session_in(env_path, p.agent, title, text, true, window, cx);
+    }
+
+    /// The worktree a queued prompt waited for could not be made: the text
+    /// goes back into the composer it was written in, before anything typed since.
+    pub(super) fn unqueue(&mut self, p: QueuedPrompt, cx: &mut Context<Self>) {
+        let here = self.has_projects() && self.env().path == p.from;
+        let Some(env) = self.find_env_mut(&p.from) else {
+            return;
+        };
+        let typed = env.draft.trim().to_string();
+        if typed.is_empty() {
+            env.draft.set(&p.text);
+        } else {
+            env.draft.set(format!("{}\n\n{typed}", p.text));
+        }
+        if here {
+            self.composer_changed(cx);
+        }
+        cx.notify();
     }
 
     /// Sends the composer text: to the open session, or as the first prompt of a new one.
@@ -700,6 +778,16 @@ impl Shell {
             return;
         }
 
+        // One session per worktree: a first prompt in the main checkout, or
+        // in a New session tab left where a session already is, starts its
+        // session in a worktree of its own. Not on a server, which makes the
+        // worktree without a prompt to start there: the text would be lost.
+        let env = self.env();
+        if (env.is_checkout || !env.sessions.is_empty()) && env.remote.is_none() {
+            let prompt = self.queue_prompt(text);
+            self.quick_create_env_then(self.active_project, Some(prompt), window, cx);
+            return;
+        }
         let (env_path, agent) = (self.env().path.clone(), self.env().agent);
         self.start_session_in(&env_path, agent, summary(&text), text, true, window, cx);
     }
@@ -772,6 +860,8 @@ impl Shell {
         };
         s.updated = model::unix_now();
         s.status = Status::Working;
+        // The status handler sees no change after this, so it can't clear it.
+        s.settled = false;
         thread.update(cx, |t, cx| t.send(text, cx));
         self.save(cx);
         cx.notify();
@@ -886,6 +976,7 @@ impl Shell {
             (model::Agent::Claude, Some(env)) => env.claude_settings.clone(),
             (model::Agent::OpenCode, Some(env)) => opencode_draft(env),
             (model::Agent::Codex, Some(env)) => codex_draft(env),
+            (model::Agent::Devin, Some(env)) => devin_draft(env),
             (model::Agent::WorkersAi, Some(env)) => env.workers_ai_settings.clone(),
             _ => Vec::new(),
         };
@@ -903,7 +994,7 @@ impl Shell {
         claude_settings.sort_by_key(|(s, _)| *s != Setting::Model);
         thread.update(cx, |t, cx| {
             // Queued until the session exists, then sent with `initialize_session`
-            // (Droid) or one by one before the first prompt (Claude, OpenCode, Codex).
+            // (Droid) or one by one before the first prompt (the ACP agents).
             if let Some(settings) = &settings {
                 for s in Setting::ALL {
                     let value = settings.get(s);
@@ -1088,7 +1179,7 @@ impl Shell {
 
     /// Loads Droid's defaults and model list off the main thread; the list is
     /// cached, so Droid is only asked when the cache is missing or old.
-    /// Claude's, OpenCode's and Codex's options are cached the same way; the agent
+    /// Claude's, OpenCode's, Codex's and Devin's options are cached the same way; the agent
     /// is only asked when none of its sessions has reported them yet.
     pub(super) fn warm_droid_catalog(&mut self, cx: &mut Context<Self>) {
         let droid = catalog::droid_native();
@@ -1105,6 +1196,9 @@ impl Shell {
                 .await;
             let _ = this.update(cx, |_, cx| cx.notify());
             cx.background_spawn(crate::guard::task(async { catalog::refresh_codex() }))
+                .await;
+            let _ = this.update(cx, |_, cx| cx.notify());
+            cx.background_spawn(crate::guard::task(async { catalog::refresh_devin() }))
                 .await;
             let _ = this.update(cx, |_, cx| cx.notify());
         })
@@ -1274,6 +1368,20 @@ impl Shell {
                 }
                 Some((current, choices))
             }
+            // Devin's mode and model; it has no reasoning levels.
+            model::Agent::Devin => {
+                let options = catalog::devin_options();
+                let draft = devin_draft(env);
+                let o = crate::agent::acp_option(&options, s)?;
+                let (mut current, choices) = crate::agent::acp_setting_options(o, s);
+                if let Some((_, v)) = draft
+                    .iter()
+                    .find(|(d, v)| *d == s && choices.iter().any(|c| c.id == *v))
+                {
+                    current = v.clone();
+                }
+                Some((current, choices))
+            }
             model::Agent::WorkersAi => {
                 let options = crate::agent::workers_ai::draft_options(&env.workers_ai_settings);
                 crate::agent::acp_option(&options, s)
@@ -1300,6 +1408,7 @@ impl Shell {
             model::Agent::Claude
             | model::Agent::OpenCode
             | model::Agent::Codex
+            | model::Agent::Devin
             | model::Agent::WorkersAi => crate::agent::acp_label(s, &current, &options),
         })
     }
@@ -1359,6 +1468,7 @@ impl Shell {
             model::Agent::Claude => &mut env.claude_settings,
             model::Agent::OpenCode => &mut env.opencode_settings,
             model::Agent::Codex => &mut env.codex_settings,
+            model::Agent::Devin => &mut env.devin_settings,
             model::Agent::WorkersAi => &mut env.workers_ai_settings,
         };
         put_in_draft(
@@ -1502,6 +1612,7 @@ impl Shell {
                     catalog::remember_opencode_pick(Vec::new());
                 }
                 model::Agent::Codex => env.codex_settings.retain(|(s, _)| !model_menu(s)),
+                model::Agent::Devin => env.devin_settings.retain(|(s, _)| !model_menu(s)),
                 model::Agent::WorkersAi => env.workers_ai_settings.retain(|(s, _)| !model_menu(s)),
             }
         }
@@ -1519,11 +1630,11 @@ impl Shell {
                         .filter(|(_, v)| !v.is_empty())
                         .collect()
                 }
-                model::Agent::Claude | model::Agent::Codex => {
-                    let options = if agent == model::Agent::Claude {
-                        catalog::claude_options()
-                    } else {
-                        catalog::codex_options()
+                model::Agent::Claude | model::Agent::Codex | model::Agent::Devin => {
+                    let options = match agent {
+                        model::Agent::Claude => catalog::claude_options(),
+                        model::Agent::Codex => catalog::codex_options(),
+                        _ => catalog::devin_options(),
                     };
                     [Setting::Model, Setting::Effort, Setting::Fast]
                         .into_iter()
@@ -1883,6 +1994,7 @@ impl Shell {
                 AgentKind::Droid => model::Agent::Droid,
                 AgentKind::OpenCode => model::Agent::OpenCode,
                 AgentKind::Codex => model::Agent::Codex,
+                AgentKind::Devin => model::Agent::Devin,
                 AgentKind::WorkersAi => model::Agent::WorkersAi,
             };
             let mut session = Session::new(new_session_id(), d.title.clone().into(), agent);
@@ -2135,9 +2247,22 @@ fn write_transcript(path: &Path, t: &crate::agent::Transcript) -> std::io::Resul
 /// the reasoning levels on offer depend on it. A model Codex no longer offers is
 /// dropped, since setting it would only fail.
 pub(super) fn codex_draft(env: &model::Environment) -> Vec<(Setting, String)> {
-    let mut draft = env.codex_settings.clone();
-    let options = catalog::codex_options();
-    if let Some(o) = crate::agent::acp_option(&options, Setting::Model) {
+    offered_draft(&env.codex_settings, &catalog::codex_options())
+}
+
+/// The Devin settings an environment's next session starts with. Signed out,
+/// Devin offers no models, so a remembered one waits until it does.
+pub(super) fn devin_draft(env: &model::Environment) -> Vec<(Setting, String)> {
+    offered_draft(&env.devin_settings, &catalog::devin_options())
+}
+
+/// `picked`, the model first, without a model the agent no longer offers.
+fn offered_draft(
+    picked: &[(Setting, String)],
+    options: &[crate::agent::ConfigOption],
+) -> Vec<(Setting, String)> {
+    let mut draft = picked.to_vec();
+    if let Some(o) = crate::agent::acp_option(options, Setting::Model) {
         draft.retain(|(s, v)| *s != Setting::Model || o.options.iter().any(|c| c.id == *v));
     }
     draft.sort_by_key(|(s, _)| *s != Setting::Model);

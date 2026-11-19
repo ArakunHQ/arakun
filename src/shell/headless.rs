@@ -36,6 +36,7 @@ fn app_agent(kind: AgentKind) -> model::Agent {
         AgentKind::Droid => model::Agent::Droid,
         AgentKind::OpenCode => model::Agent::OpenCode,
         AgentKind::Codex => model::Agent::Codex,
+        AgentKind::Devin => model::Agent::Devin,
         AgentKind::WorkersAi => model::Agent::WorkersAi,
     }
 }

@@ -16,6 +16,7 @@ pub mod claude_auth;
 pub mod claude_ext;
 pub mod cli_login;
 pub mod cliproxy;
+pub mod devin_plan;
 pub mod diff;
 pub mod extensions;
 mod kind;
@@ -48,8 +49,9 @@ pub use launch::claude_code_binary;
 #[allow(unused_imports)]
 pub use launch::{
     adapter_install, child_path_env, claude_cli, codex_cli, codex_env_key, codex_sign_in,
-    droid_bin, install_codex, login_command, logout_command, opencode_all_models, opencode_bin,
-    opencode_go_login_command, opencode_models, opencode_providers, which,
+    devin_bin, devin_env_key, devin_signed_in, droid_bin, install_codex, login_command,
+    logout_command, opencode_all_models, opencode_bin, opencode_go_login_command, opencode_models,
+    opencode_providers, which,
 };
 #[allow(unused_imports)]
 pub use markdown::{copy_with_feedback, was_copied};

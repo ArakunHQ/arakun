@@ -187,6 +187,11 @@ impl Shell {
                     current(Setting::Mode).as_deref() == Some("agent-full-access"),
                 ))
             }
+            // Devin's mode: Code, Smart, Ask, Plan or Bypass; bypass never asks.
+            model::Agent::Devin => {
+                let label = self.setting_value_label(Setting::Mode, cx)?;
+                Some((label, current(Setting::Mode).as_deref() == Some("bypass")))
+            }
             // It asks before commands and edits; `arakun agent new` sessions don't.
             model::Agent::WorkersAi => None,
             model::Agent::Droid => {
@@ -285,8 +290,7 @@ impl Shell {
         match key {
             MenuKey::Choice(agent, s, id, enabled) => {
                 if enabled {
-                    // Reasoning is a row of levels: it stays open to compare them.
-                    if s != Setting::Effort {
+                    if closes_on_pick(s, agent, self.composer_agent()) {
                         self.menu = None;
                     }
                     self.pick_setting(agent, s, &id, window, cx);
@@ -452,9 +456,10 @@ impl Shell {
     fn permission_sections(&self, cx: &App) -> Vec<crate::agent::Setting> {
         use crate::agent::Setting;
         match self.composer_agent() {
-            model::Agent::Claude | model::Agent::OpenCode | model::Agent::Codex => {
-                vec![Setting::Mode]
-            }
+            model::Agent::Claude
+            | model::Agent::OpenCode
+            | model::Agent::Codex
+            | model::Agent::Devin => vec![Setting::Mode],
             model::Agent::WorkersAi => Vec::new(),
             model::Agent::Droid => [Setting::Mode, Setting::Autonomy]
                 .into_iter()
@@ -506,6 +511,7 @@ impl Shell {
         let current = self.composer_agent();
         let shown = self.menu_agent();
         let agents = self.menu_agents();
+        let switchable = agents.len() > 1;
         let in_session = self.composer_in_session();
         let models = self.choice_rows(shown, Setting::Model, false, 0, cx);
         let n_models = models.len();
@@ -618,6 +624,7 @@ impl Shell {
                         .flex_col()
                         .gap(crate::ui::sp(1.))
                         .max_h(px(MODEL_LIST_MAX_H))
+                        .min_h(px(0.))
                         .overflow_y_scroll()
                         .track_scroll(&self.menu_scroll)
                         .children(models),
@@ -682,6 +689,21 @@ impl Shell {
                         })),
                 )
             });
+
+        // The menu opens upward, so a height that followed the hovered agent's
+        // options would move the agents under the cursor and hover another.
+        // With more than one agent the agent column sets the height, and the
+        // options fit in it, the model list scrolling.
+        let options = if switchable {
+            div()
+                .relative()
+                .flex_1()
+                .min_w_0()
+                .self_stretch()
+                .child(options.absolute().top_0().left_0().right_0().bottom_0())
+        } else {
+            options
+        };
 
         ui::menu_panel("model-menu", MODEL_MENU_W)
             .flex_row()
@@ -805,13 +827,46 @@ impl Shell {
                     .map(|p| p.path.clone())
                     .unwrap_or_default();
                 let reveal = path.clone();
-                panel = panel
-                    .child(
-                        ui::menu_item("cm-new-env", "git-branch", "New environment…", false, true)
+                // The main checkout is not in the list while no session is
+                // there. A project can have one here and one on each server
+                // that shares its origin: each gets its own entry, by machine.
+                let checkouts: Vec<(usize, String)> = self
+                    .projects
+                    .get(pi)
+                    .map(|p| {
+                        p.environments
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, e)| e.is_checkout)
+                            .map(|(ei, e)| {
+                                let label = match &e.remote {
+                                    Some(r) => format!(
+                                        "Open main checkout on {}",
+                                        crate::redact::text(&r.machine)
+                                    ),
+                                    None => "Open main checkout".to_string(),
+                                };
+                                (ei, label)
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                panel = panel.child(
+                    ui::menu_item("cm-new-env", "git-branch", "New environment…", false, true)
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.open_create_env(pi, window, cx)
+                        })),
+                );
+                for (ei, label) in checkouts {
+                    panel = panel.child(
+                        ui::menu_item(("cm-checkout", ei), "folder01", label, false, true)
                             .on_click(cx.listener(move |this, _, window, cx| {
-                                this.open_create_env(pi, window, cx)
+                                this.menu = None;
+                                this.select_env(pi, ei, window, cx)
                             })),
-                    )
+                    );
+                }
+                panel = panel
                     .child(
                         ui::menu_item(
                             "cm-reveal",
@@ -1177,9 +1232,37 @@ fn effort_tip(id: &str) -> Option<&'static str> {
     })
 }
 
+/// Whether picking `agent`'s choice of `s` closes the menu. Reasoning stays
+/// open to compare levels, and so does a model of the agent in use: the
+/// reasoning row sits below the models and may change with them, so it comes
+/// next. Another agent's model switches the agent or hands the session over.
+fn closes_on_pick(
+    s: crate::agent::Setting,
+    agent: model::Agent,
+    composer_agent: model::Agent,
+) -> bool {
+    use crate::agent::Setting;
+    match s {
+        Setting::Effort => false,
+        Setting::Model => agent != composer_agent,
+        _ => true,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::Setting;
+
+    #[test]
+    fn model_menu_stays_open_for_the_same_agent() {
+        let (claude, codex) = (model::Agent::Claude, model::Agent::Codex);
+        assert!(!closes_on_pick(Setting::Model, claude, claude));
+        assert!(closes_on_pick(Setting::Model, codex, claude));
+        assert!(!closes_on_pick(Setting::Effort, claude, claude));
+        assert!(!closes_on_pick(Setting::Effort, codex, claude));
+        assert!(closes_on_pick(Setting::Mode, claude, claude));
+    }
 
     #[test]
     fn effort_levels_fit_a_segment() {

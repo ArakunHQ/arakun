@@ -2,21 +2,26 @@
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, Context, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _,
-    StatefulInteractiveElement as _, Styled as _, div, px,
+    AnyElement, AppContext as _, Context, FontWeight, Hsla, InteractiveElement as _, IntoElement,
+    ParentElement as _, StatefulInteractiveElement as _, Styled as _, div, px,
 };
 
 use std::rc::Rc;
 
+use super::threads::Writing;
 use super::timeline::code_line;
-use super::{Diff, DiffState, GitHubView};
-use crate::github::pr::{self, CheckState, FileDiff, FileStatus, Pull};
+use super::{CheckLog, Diff, DiffState, GitHubView};
+use crate::ci::{LineKind as LogKind, LogLine};
+use crate::github::pr::{self, CheckState, FileDiff, FileStatus, ItemRef, Pull};
 use crate::github::queue::Details;
 use crate::theme;
 use crate::ui::{self, Type, Typography as _, icon};
 
 /// Lines a file shows before "Show more".
 const FILE_LINES: usize = 200;
+/// Room for a file's lines in the ids of the Files list: more than a diff
+/// read whole can hold.
+const LINE_IDS: usize = 1 << 22;
 /// Past this many lines in all, the files after it start folded.
 const OPEN_LINES: usize = 1500;
 
@@ -148,7 +153,9 @@ impl GitHubView {
             .pt(crate::ui::sp(if ix == 0 { 14. } else { 10. }))
             .when(ix == files.len(), |d| d.pb(crate::ui::sp(14.)));
         if ix == 0 {
-            return row
+            // The row stays a block, so what is in it gets the list's whole
+            // width: the pending bar puts its buttons at the far end.
+            let head = div()
                 .flex()
                 .flex_col()
                 .gap(crate::ui::sp(10.))
@@ -170,16 +177,26 @@ impl GitHubView {
                             theme::diff_del().into(),
                         )),
                 )
+                .child(self.render_pending_bar(cx))
                 .when(*cut, |d| {
                     d.child(ui::text(Type::Caption, theme::text_muted(), "The diff was too large to read whole: the files after the last one here are missing."))
-                })
-                .into_any_element();
+                });
+            return row.child(head).into_any_element();
         }
         let fi = ix - 1;
         let (Some(f), Some(&folded_default)) = (files.get(fi), rows.folded_default.get(fi)) else {
             return div().into_any_element();
         };
-        row.child(self.render_file(p, f, fi, folded_default, cx))
+        // The open threads still on a line of today's diff show under it.
+        let threads: Vec<pr::Thread> = if p.inline.iter().any(|c| c.path == f.path) {
+            pr::threads(&p.inline)
+                .into_iter()
+                .filter(|t| t.path == f.path && t.place.is_some() && t.resolved != Some(true))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        row.child(self.render_file(p, f, fi, folded_default, &threads, cx))
             .into_any_element()
     }
 
@@ -189,6 +206,7 @@ impl GitHubView {
         f: &FileDiff,
         fi: usize,
         folded_default: bool,
+        threads: &[pr::Thread],
         cx: &Context<Self>,
     ) -> gpui::Div {
         let lines: usize = f.hunks.iter().map(|h| h.lines.len()).sum();
@@ -308,7 +326,34 @@ impl GitHubView {
                     if shown >= cap {
                         break 'hunks;
                     }
-                    body = body.child(code_line(l.kind, l.new_no.or(l.old_no), &l.text));
+                    // A removed line is commented on the old side.
+                    let place = match l.kind {
+                        pr::LineKind::Del => l.old_no.map(|n| (n, true)),
+                        _ => l.new_no.map(|n| (n, false)),
+                    };
+                    let line = code_line(l.kind, l.new_no.or(l.old_no), &l.text);
+                    let Some(place) = place else {
+                        body = body.child(line);
+                        shown += 1;
+                        continue;
+                    };
+                    let path = f.path.clone();
+                    body = body.child(
+                        div()
+                            .id(("gh-line", fi * LINE_IDS + shown))
+                            .cursor_pointer()
+                            .child(line)
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                let what = Writing::Line {
+                                    path: path.clone(),
+                                    line: place.0,
+                                    left: place.1,
+                                };
+                                this.start_writing(what, window, cx)
+                            })),
+                    );
+                    let key = format!("gh-f{fi}-{}{}", if place.1 { "l" } else { "r" }, place.0);
+                    body = body.children(self.render_under_line(&key, threads, &f.path, place, cx));
                     shown += 1;
                 }
             }
@@ -337,6 +382,217 @@ impl GitHubView {
         block
     }
 
+    /// Shows or hides the end of a failed check's log, reading it the first
+    /// time (and again after a read that failed).
+    fn toggle_check_log(&mut self, job: u64, cx: &mut Context<Self>) {
+        if !self.checks_open.remove(&job) {
+            self.checks_open.insert(job);
+            let read = matches!(
+                self.check_logs.get(&job),
+                Some(CheckLog::Loading | CheckLog::Ready(_))
+            );
+            if !read && let Some(item) = self.item() {
+                self.load_check_log(item, job, cx);
+            }
+        }
+        cx.notify();
+    }
+
+    fn load_check_log(&mut self, item: ItemRef, job: u64, cx: &mut Context<Self>) {
+        self.check_logs.insert(job, CheckLog::Loading);
+        cx.spawn(async move |this, cx| {
+            let read = cx
+                .background_spawn(async move { pr::check_log(&item, job) })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                let log = match read {
+                    Ok(lines) => CheckLog::Ready(Rc::new(lines)),
+                    Err(p) => CheckLog::Failed(p.text()),
+                };
+                this.check_logs.insert(job, log);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// "Re-run failed": the failed jobs of every finished run start again.
+    fn rerun_failed_checks(&mut self, cx: &mut Context<Self>) {
+        let Some(item) = self.item() else { return };
+        let runs = match self.github.read(cx).details(&item) {
+            Some(Details::Pull(p)) => {
+                pr::rerunnable(&pr::checks_summary(p), &item.repo, &pr::gh_host())
+            }
+            _ => return,
+        };
+        let started_on = item.clone();
+        self.write(
+            "rerun",
+            "Failed jobs started again.".into(),
+            move |item| {
+                pr::rerun_failed(item, &runs)?;
+                // GitHub takes a moment to show the new attempt; the read
+                // that follows would still see the failed one.
+                std::thread::sleep(std::time::Duration::from_secs(3));
+                Ok(())
+            },
+            // The jobs that start now are new ones: no log of theirs is open.
+            // Another pull request selected since keeps the logs opened there.
+            move |this, _| {
+                if this.item().as_ref() == Some(&started_on) {
+                    this.checks_open.clear();
+                }
+            },
+            cx,
+        );
+    }
+
+    /// "Fix with agent": the failed checks, with the logs read so far.
+    fn fix_checks(&mut self, cx: &mut Context<Self>) {
+        let Some(item) = self.item() else { return };
+        let title = self.title(cx);
+        let host = pr::gh_host();
+        let prompt = {
+            let Some(Details::Pull(p)) = self.github.read(cx).details(&item) else {
+                return;
+            };
+            let sum = pr::checks_summary(p);
+            let failed: Vec<(&pr::CheckRun, Option<&[LogLine]>)> = sum
+                .checks
+                .iter()
+                .filter(|c| c.state == CheckState::Failed)
+                .map(|c| {
+                    let log = match c
+                        .failed_job(&item.repo, &host)
+                        .and_then(|j| self.check_logs.get(&j))
+                    {
+                        Some(CheckLog::Ready(lines)) => Some(&lines[..]),
+                        _ => None,
+                    };
+                    (c, log)
+                })
+                .collect();
+            if failed.is_empty() {
+                return;
+            }
+            pr::fix_checks_prompt(&item, &title, p, &failed)
+        };
+        self.ask(format!("Fix checks: {title}"), prompt, cx);
+    }
+
+    /// The line over the checks when some failed: how many, and what to do
+    /// about them.
+    fn render_checks_head(
+        &self,
+        p: &Pull,
+        sum: &pr::ChecksSummary,
+        cx: &Context<Self>,
+    ) -> gpui::Div {
+        let repo = self.item().map(|i| i.repo).unwrap_or_default();
+        let host = pr::gh_host();
+        let runs = pr::rerunnable(sum, &repo, &host);
+        let (can, why) = if !p.open() {
+            (false, "The pull request is not open")
+        } else if runs.is_empty() && sum.running > 0 {
+            (false, "Wait for the run to finish")
+        } else if runs.is_empty() {
+            (
+                false,
+                "These checks aren't GitHub Actions jobs of this repository",
+            )
+        } else if self.busy.is_some() {
+            (false, "Still sending the last action")
+        } else {
+            (true, "Start the failed jobs again")
+        };
+        let rerun = ui::button_with(
+            "gh-checks-rerun",
+            Some("refresh01"),
+            if self.busy == Some("rerun") {
+                "Starting…"
+            } else {
+                "Re-run failed"
+            },
+            ui::ButtonKind::Outline,
+            can,
+        )
+        .tooltip(ui::tip(why))
+        .when(can, |b| {
+            b.on_click(cx.listener(|this, _, _, cx| this.rerun_failed_checks(cx)))
+        });
+        let fix = ui::button_with(
+            "gh-checks-fix",
+            Some("sparkles"),
+            "Fix with agent",
+            ui::ButtonKind::Outline,
+            true,
+        )
+        .tooltip(ui::tip("Start an agent on the failed checks"))
+        .on_click(cx.listener(|this, _, _, cx| this.fix_checks(cx)));
+        div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap(crate::ui::sp(8.))
+            .px(crate::ui::sp(8.))
+            .pb(crate::ui::sp(8.))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .ty(Type::Label)
+                    .text_color(theme::error())
+                    .child(format!("{} failed", sum.failed)),
+            )
+            .child(fix)
+            .child(rerun)
+    }
+
+    /// The end of a failed check's log, under its row.
+    fn render_check_log(&self, job: u64, cx: &Context<Self>) -> gpui::Div {
+        let block = div()
+            .flex()
+            .flex_col()
+            .mx(crate::ui::sp(8.))
+            .mb(crate::ui::sp(6.))
+            .px(crate::ui::sp(12.))
+            .py(crate::ui::sp(8.))
+            .rounded(crate::ui::rad(ui::RADIUS))
+            .border_1()
+            .border_color(theme::border_subtle())
+            .bg(theme::background());
+        match self.check_logs.get(&job) {
+            None | Some(CheckLog::Loading) => {
+                block.child(ui::loading(("gh-check-log", job), "Reading the log…"))
+            }
+            Some(CheckLog::Failed(e)) => block
+                .gap(crate::ui::sp(8.))
+                .child(ui::text(Type::Caption, theme::error().into(), e.clone()))
+                .child(
+                    div().flex().child(
+                        ui::button(
+                            ("gh-check-log-retry", job),
+                            "Try again",
+                            ui::ButtonKind::Outline,
+                            true,
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if let Some(item) = this.item() {
+                                this.load_check_log(item, job, cx);
+                            }
+                        })),
+                    ),
+                ),
+            Some(CheckLog::Ready(lines)) if lines.is_empty() => block.child(ui::text(
+                Type::Caption,
+                theme::text_subtle(),
+                "The log is empty.",
+            )),
+            Some(CheckLog::Ready(lines)) => block.children(lines.iter().map(log_line)),
+        }
+    }
+
     pub(super) fn render_checks(&self, p: &Pull, cx: &Context<Self>) -> AnyElement {
         let sum = pr::checks_summary(p);
         if sum.checks.is_empty() {
@@ -348,11 +604,16 @@ impl GitHubView {
             )
             .into_any_element();
         }
+        let repo = self.item().map(|i| i.repo).unwrap_or_default();
+        let host = pr::gh_host();
         let mut list = div()
             .flex()
             .flex_col()
             .px(crate::ui::sp(10.))
             .py(crate::ui::sp(10.));
+        if sum.failed > 0 {
+            list = list.child(self.render_checks_head(p, &sum, cx));
+        }
         for (i, c) in sum.checks.iter().enumerate() {
             let (name, color) = match c.state {
                 CheckState::Passed => ("tick02", theme::success().into()),
@@ -361,6 +622,25 @@ impl GitHubView {
                 CheckState::Skipped => ("minus-sign", theme::text_subtle()),
             };
             let url = c.url.clone();
+            // A failed Actions job opens its log here; its page is one more
+            // click, on the link at the end of the row.
+            let job = c.failed_job(&repo, &host);
+            let open = job.is_some_and(|j| self.checks_open.contains(&j));
+            let link = (!url.is_empty()).then(|| {
+                let url = url.clone();
+                match job {
+                    Some(_) => ui::icon_button(("gh-check-link", i), "link-square02", 13.)
+                        .tooltip(ui::tip("Open on GitHub"))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.open_url(url.clone(), cx)
+                        }))
+                        .into_any_element(),
+                    None => icon("link-square02", 13.)
+                        .text_color(theme::text_faint())
+                        .into_any_element(),
+                }
+            });
             list =
                 list.child(
                     div()
@@ -371,7 +651,7 @@ impl GitHubView {
                         .px(crate::ui::sp(8.))
                         .py(crate::ui::sp(7.))
                         .rounded(crate::ui::rad(ui::RADIUS))
-                        .when(!url.is_empty(), |d| {
+                        .when(job.is_some() || !url.is_empty(), |d| {
                             d.cursor_pointer().hover(|s| s.bg(theme::fill_hover()))
                         })
                         .child(ui::icon_chip(name, 26., Some(color)))
@@ -395,15 +675,33 @@ impl GitHubView {
                                     )))
                                 }),
                         )
-                        .when(!url.is_empty(), |d| {
-                            d.child(icon("link-square02", 13.).text_color(theme::text_faint()))
-                        })
-                        .when(!url.is_empty(), |d| {
-                            d.on_click(
-                                cx.listener(move |this, _, _, cx| this.open_url(url.clone(), cx)),
+                        .when(job.is_some(), |d| {
+                            d.child(
+                                icon(
+                                    if open {
+                                        "arrow-down01"
+                                    } else {
+                                        "arrow-right01"
+                                    },
+                                    12.,
+                                )
+                                .text_color(theme::text_subtle()),
                             )
+                        })
+                        .children(link)
+                        .map(|d| match job {
+                            Some(job) => d.on_click(
+                                cx.listener(move |this, _, _, cx| this.toggle_check_log(job, cx)),
+                            ),
+                            None if !url.is_empty() => d.on_click(
+                                cx.listener(move |this, _, _, cx| this.open_url(url.clone(), cx)),
+                            ),
+                            None => d,
                         }),
                 );
+            if let Some(job) = job.filter(|_| open) {
+                list = list.child(self.render_check_log(job, cx));
+            }
         }
         list.into_any_element()
     }
@@ -463,4 +761,23 @@ impl GitHubView {
         }
         list.into_any_element()
     }
+}
+
+/// One line of a job's log, colored by what the runner said it is.
+fn log_line(l: &LogLine) -> gpui::Div {
+    let (color, text): (Hsla, String) = match l.kind {
+        LogKind::Group => (theme::text(), format!("▸ {}", l.text)),
+        LogKind::Command => (theme::text_muted(), format!("$ {}", l.text)),
+        LogKind::Error => (theme::error().into(), l.text.clone()),
+        LogKind::Warning => (theme::warn().into(), l.text.clone()),
+        LogKind::Notice => (theme::accent(), l.text.clone()),
+        LogKind::Setup => (theme::text_subtle(), l.text.clone()),
+        LogKind::Plain => (theme::text_muted(), l.text.clone()),
+    };
+    div()
+        .min_w_0()
+        .ty(Type::Mono)
+        .line_height(px(18.))
+        .text_color(color)
+        .child(text.replace('\t', "    "))
 }

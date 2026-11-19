@@ -498,7 +498,11 @@ pub enum ThreadEvent {
 /// Something the user did in a server's session, which goes to the server.
 #[derive(Clone, Debug, PartialEq)]
 pub enum RemoteAction {
-    Send(String),
+    /// `now` stops the running turn for the prompt instead of queueing it.
+    Send {
+        text: String,
+        now: bool,
+    },
     Cancel,
     /// The option picked for the permission asked.
     Permission(String),
@@ -1807,10 +1811,15 @@ impl Thread {
                 if fresh && t.kind == AgentKind::OpenCode {
                     super::catalog::remember_opencode_options(&v["configOptions"]);
                 }
-                if fresh && t.kind == AgentKind::Codex {
+                if fresh && matches!(t.kind, AgentKind::Codex | AgentKind::Devin) {
                     let raw = v["configOptions"].clone();
+                    let kind = t.kind;
                     cx.background_spawn(crate::guard::task(async move {
-                        super::catalog::remember_codex_options(&raw)
+                        if kind == AgentKind::Codex {
+                            super::catalog::remember_codex_options(&raw)
+                        } else {
+                            super::catalog::remember_devin_options(&raw)
+                        }
                     }))
                     .detach();
                 }
@@ -2037,7 +2046,10 @@ impl Thread {
             return;
         }
         if self.remote {
-            cx.emit(ThreadEvent::Remote(RemoteAction::Send(prompt)));
+            cx.emit(ThreadEvent::Remote(RemoteAction::Send {
+                text: prompt,
+                now: false,
+            }));
             return;
         }
         if !self.title_locked && self.meta.title.is_empty() {
@@ -2715,9 +2727,13 @@ impl Thread {
         if prompt.is_empty() {
             return;
         }
-        // The server queues what comes while a turn runs.
+        // The server holds the queue and the turn: it stops one for the other.
         if self.remote {
-            return self.send(prompt, cx);
+            cx.emit(ThreadEvent::Remote(RemoteAction::Send {
+                text: prompt,
+                now: true,
+            }));
+            return;
         }
         if !self.is_busy() {
             return self.send(prompt, cx);

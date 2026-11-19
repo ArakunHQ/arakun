@@ -364,15 +364,18 @@ impl Render for AccountDialog {
 static RAIL_CLAUDE: AtomicBool = AtomicBool::new(true);
 static RAIL_DROID: AtomicBool = AtomicBool::new(true);
 static RAIL_OPENCODE: AtomicBool = AtomicBool::new(true);
+static RAIL_DEVIN: AtomicBool = AtomicBool::new(true);
 
 /// Whether the rail's usage card shows this provider. The Usage tab always
 /// shows them all; the card is for a glance, so a plan that is used up or not
-/// used can leave it. OpenCode shows its Go plan, only when a Go key exists.
+/// used can leave it. OpenCode shows its Go plan, only when a Go key exists,
+/// and Devin its quota, only on a plan that has one.
 pub fn rail_shows(agent: AgentKind) -> bool {
     match agent {
         AgentKind::Claude => RAIL_CLAUDE.load(Ordering::Relaxed),
         AgentKind::Droid => RAIL_DROID.load(Ordering::Relaxed),
         AgentKind::OpenCode => RAIL_OPENCODE.load(Ordering::Relaxed),
+        AgentKind::Devin => RAIL_DEVIN.load(Ordering::Relaxed),
         // Pay as you go: no plan to keep an eye on. Codex's ChatGPT limits are
         // not read yet.
         AgentKind::Codex | AgentKind::WorkersAi => false,
@@ -384,6 +387,7 @@ pub fn set_rail_shows(agent: AgentKind, on: bool) {
         AgentKind::Claude => RAIL_CLAUDE.store(on, Ordering::Relaxed),
         AgentKind::Droid => RAIL_DROID.store(on, Ordering::Relaxed),
         AgentKind::OpenCode => RAIL_OPENCODE.store(on, Ordering::Relaxed),
+        AgentKind::Devin => RAIL_DEVIN.store(on, Ordering::Relaxed),
         AgentKind::Codex | AgentKind::WorkersAi => {}
     }
 }
@@ -407,11 +411,12 @@ pub fn rail_card(
     account: &Account,
     seats: Option<&Seats>,
     go: Option<&PlanUsage>,
+    devin: Option<&PlanUsage>,
     on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
     on_options: impl Fn(gpui::Point<gpui::Pixels>, &mut Window, &mut App) + 'static,
 ) -> Option<AnyElement> {
     let plan = seats.and_then(Seats::active);
-    if !account.ready() && plan.is_none() && go.is_none() && seats.is_none() {
+    if !account.ready() && plan.is_none() && go.is_none() && devin.is_none() && seats.is_none() {
         return None;
     }
     let now = account::unix_now();
@@ -431,6 +436,7 @@ pub fn rail_card(
     let show_claude = rail_shows(AgentKind::Claude);
     let show_droid = rail_shows(AgentKind::Droid);
     let show_go = rail_shows(AgentKind::OpenCode);
+    let show_devin = rail_shows(AgentKind::Devin);
     #[cfg(feature = "coderlabs")]
     let (own, borrowed) = (
         seats.and_then(|s| s.own.as_ref()),
@@ -447,6 +453,7 @@ pub fn rail_card(
         show_claude && (own.is_some() || borrowed.is_some()),
         show_droid,
         show_go && go.is_some(),
+        show_devin && devin.is_some(),
     ]
     .iter()
     .filter(|b| **b)
@@ -679,7 +686,26 @@ pub fn rail_card(
             ));
         }
     }
-    if !show_claude && !show_droid && !show_go {
+    if show_devin && let Some(devin) = devin {
+        if !compact {
+            let name = match devin.subscription.as_str() {
+                "" => "Devin".to_string(),
+                plan => format!("Devin · {plan}"),
+            };
+            card = card.child(provider(AgentKind::Devin, name));
+        }
+        for (i, w) in devin.windows.iter().enumerate() {
+            card = card.child(row(
+                AgentKind::Devin,
+                i,
+                w.short_label(),
+                w.percent as f32,
+                false,
+                w.resets_at,
+            ));
+        }
+    }
+    if !show_claude && !show_droid && !show_go && !show_devin {
         card = card.child(
             div()
                 .text_size(px(ui::TEXT_XS))

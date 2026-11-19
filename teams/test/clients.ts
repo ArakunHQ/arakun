@@ -141,6 +141,11 @@ export class Presence {
     return this.got.length;
   }
 
+  /// The last list received, if any.
+  get latest(): number[] | undefined {
+    return this.got.at(-1);
+  }
+
   push(v: unknown): void {
     this.got.push(v as number[]);
     for (const w of this.waiting.splice(0)) w();

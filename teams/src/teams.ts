@@ -252,10 +252,18 @@ async function listTeams(c: Ctx): Promise<Response> {
 }
 
 async function getTeam(c: Ctx, teamId: string): Promise<Response> {
-  const team = await teamOf(c, teamId);
-  if (!team) return notFound();
+  if (!ULID.test(teamId)) return notFound();
   const db = c.env.DB;
-  const [members, channels] = await db.batch([
+  // One snapshot: a removal that lands between reads would otherwise list
+  // members that no longer match the epoch and rotation status reported.
+  const [team, members, channels] = await db.batch([
+    db
+      .prepare(
+        `SELECT t.team_id, t.name, t.epoch, t.keyed_epoch, m.role
+         FROM members m JOIN teams t ON t.team_id = m.team_id
+         WHERE m.team_id = ? AND m.github_id = ?`,
+      )
+      .bind(teamId, c.me.githubId),
     db
       .prepare(
         `SELECT m.github_id, u.login, m.role, m.joined_at FROM members m JOIN users u ON u.github_id = m.github_id
@@ -264,11 +272,13 @@ async function getTeam(c: Ctx, teamId: string): Promise<Response> {
       .bind(teamId),
     db.prepare("SELECT channel_id, name_ct, created_at FROM channels WHERE team_id = ? ORDER BY channel_id").bind(teamId),
   ]);
+  const row = team!.results[0] as Team | undefined;
+  if (!row) return notFound();
   return Response.json({
-    team_id: team.team_id,
-    name: team.name,
-    epoch: team.epoch,
-    rotation_pending: team.keyed_epoch < team.epoch,
+    team_id: row.team_id,
+    name: row.name,
+    epoch: row.epoch,
+    rotation_pending: row.keyed_epoch < row.epoch,
     members: members!.results,
     channels: (channels!.results as { channel_id: string; name_ct: string; created_at: number }[]).map((ch) => ({
       channel_id: ch.channel_id,
@@ -378,20 +388,25 @@ async function accept(c: Ctx, inviteId: string): Promise<Response> {
   if (!inv || inv.login !== c.me.login.toLowerCase() || inv.expires_at <= now()) return error(404, "no such invite");
   const member = await db.prepare("SELECT 1 FROM members WHERE team_id = ? AND github_id = ?").bind(inv.team_id, c.me.githubId).first();
   if (member) return error(409, "already a member of this team");
-  // The invite is checked again in the batch: one replaced or expired since
-  // the read above makes no pending row.
+  // The invite and the membership are checked again in the batch: a replaced
+  // or expired invite makes no pending row, and an approval that landed since
+  // the read above must not leave the user in members and pending at once.
+  // The insert's outcome, not the invite's deletion, says it was accepted.
   const t = now();
   const valid = "FROM invites WHERE invite_id = ?1 AND login = ?2 AND expires_at > ?3";
   const results = await db.batch([
     db
       .prepare(
         `INSERT INTO pending (team_id, github_id, invited_by, requested_at, request_id, invited_login)
-         SELECT team_id, ?4, invited_by, ?3, invite_id, login ${valid} ON CONFLICT DO NOTHING`,
+         SELECT team_id, ?4, invited_by, ?3, invite_id, login ${valid}
+           AND NOT EXISTS (SELECT 1 FROM members m WHERE m.team_id = invites.team_id AND m.github_id = ?4)
+         ON CONFLICT DO NOTHING`,
       )
       .bind(inviteId, inv.login, t, c.me.githubId),
     db.prepare(`DELETE ${valid}`).bind(inviteId, inv.login, t),
   ]);
   if (results[1]!.meta.changes !== 1) return error(404, "no such invite");
+  if (results[0]!.meta.changes !== 1) return error(409, "already a member of this team");
   return Response.json({ team_id: inv.team_id, status: "pending" });
 }
 
@@ -656,7 +671,8 @@ async function putEnvelopes(c: Ctx, teamId: string): Promise<Response> {
   if (!isAdmin(team.role)) return notAdmin();
   const device = await callerDevice(c);
   if (device instanceof Response) return device;
-  const envelopes = await signedEnvelopes(await jsonBody(c.request, MAX_BODY), teamId, device);
+  const body = await jsonBody(c.request, MAX_BODY);
+  const envelopes = await signedEnvelopes(body, teamId, device);
   if (envelopes instanceof Response) return envelopes;
 
   const db = c.env.DB;
@@ -666,6 +682,16 @@ async function putEnvelopes(c: Ctx, teamId: string): Promise<Response> {
     .all<{ device_id: string }>();
   const memberDevices = new Set(results.map((d) => d.device_id));
   const newKey = team.epoch > team.keyed_epoch;
+  // The keyed_epoch the client saw when it made these envelopes. A rotation
+  // upload is one made while the epoch was not keyed; arriving after it was,
+  // it is a loser, not a rewrap, and must not replace the envelopes of the
+  // key that won. Rewraps and grants to new devices name the keyed_epoch
+  // they saw, which is the current one, and go through. Without the field
+  // the old behavior stays, which is why clients send it.
+  const expectedKeyed = isObject(body) && typeof body["keyed_epoch"] === "number" ? body["keyed_epoch"] : null;
+  if (expectedKeyed !== null && expectedKeyed > team.keyed_epoch) return error(400, `keyed_epoch ${expectedKeyed} is ahead of the team's`);
+  if (expectedKeyed !== null && expectedKeyed < team.keyed_epoch && envelopes.some((e) => e.epoch === team.epoch))
+    return error(409, `another upload made the key for epoch ${team.epoch}: fetch it`);
   const keyed = await keyedEpochs(db, teamId, 1, team.keyed_epoch);
   const covered = new Set<string>();
   for (const e of envelopes) {
@@ -795,17 +821,23 @@ async function createChannel(c: Ctx, teamId: string): Promise<Response> {
   if (typeof name === "string") return error(400, name);
   if (!epochAllowed(name.epoch, team.keyed_epoch)) return error(400, `name_ct: ${epochRefused(name.epoch, team.epoch, team.keyed_epoch)}`);
   const db = c.env.DB;
+  // The name's epoch is checked in the insert too, as in renameChannel: a
+  // rotation that ends between the read above and this write would store a
+  // name sealed with the retired key.
   const result = await db
     .prepare(
       `INSERT INTO channels (team_id, channel_id, name_ct, created_by, created_at)
        SELECT ?1, ?2, ?3, ?4, ?5 WHERE (SELECT COUNT(*) FROM channels WHERE team_id = ?1) < ${MAX_CHANNELS}
+         AND (SELECT keyed_epoch FROM teams WHERE team_id = ?1) = ?6
        ON CONFLICT DO NOTHING`,
     )
-    .bind(teamId, channelId, JSON.stringify(name), c.me.githubId, now())
+    .bind(teamId, channelId, JSON.stringify(name), c.me.githubId, now(), name.epoch)
     .run();
   if (result.meta.changes === 1) return Response.json({ channel_id: channelId }, { status: 201 });
   const exists = await db.prepare("SELECT 1 FROM channels WHERE team_id = ? AND channel_id = ?").bind(teamId, channelId).first();
-  return error(409, exists ? "a channel with this ID exists" : `at most ${MAX_CHANNELS} channels per team`);
+  if (exists) return error(409, "a channel with this ID exists");
+  const still = await db.prepare("SELECT keyed_epoch FROM teams WHERE team_id = ?").bind(teamId).first<{ keyed_epoch: number }>();
+  return error(409, still?.keyed_epoch !== name.epoch ? "the team's key changed: fetch it and seal the name again" : `at most ${MAX_CHANNELS} channels per team`);
 }
 
 /// Seals a channel's name again: after a rotation, so members approved

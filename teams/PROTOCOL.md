@@ -179,7 +179,10 @@ An envelope carries one epoch's team key to one device:
   asks an admin, whose device seals that epoch again for it (an upload replaces an
   envelope whose sender is no longer an admin's device).
 - `PUT /teams/<team_id>/envelopes` `{ "envelopes": [...] }` (admin) stores them →
-  `200 { stored, epoch, rotation_pending }`. At most 500 per request. Each
+  `200 { stored, epoch, rotation_pending }`. The optional `keyed_epoch` is the
+  one the client saw when it made the envelopes; an upload carrying the current
+  epoch whose `keyed_epoch` is behind is a rotation that lost, answered `409`,
+  not a rewrap that may replace the envelopes in use. At most 500 per request. Each
   envelope's `from` is the calling device and its `sig` must check out; each
   recipient is a device of a member; its epoch already has envelopes or is the
   current one. The first upload for the current epoch must cover every device of
@@ -315,7 +318,7 @@ in `Authorization`, device in `X-Arakun-Device`). Frames are JSON text:
     When the server could not run its checks (D1 or the rate limiter failed),
     `error` ends in "send it again", and the client may send the same message
     again, with the same `id`;
-  - `{ "type": "presence", "here": [66887635, ...] }` to every socket on the
+  - `{ "type": "presence", "here": [<github-id>, ...] }` to every socket on the
     channel when one opens or closes: the GitHub IDs with a socket open on this
     channel, sorted, each once. A new socket gets one right away. A socket whose
     session ended, or whose user is no longer a member or lost the `teams` flag,

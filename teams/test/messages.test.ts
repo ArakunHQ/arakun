@@ -472,13 +472,22 @@ describe("presence", () => {
     const b = await openChannel(m.user, m.device, t.teamId, t.channelId);
     await until("heldNew");
     await expectJson(call("DELETE", `/admin/users/${m.user.id}/flags/teams`, ADMIN), 200);
+    // The list the new run sends must be a new frame: the owner-only list it
+    // reports was already received above, so `until` alone could pass on it.
+    const had = a.inbox.here.count;
     await runInDurableObject<Channel, void>(stub, (ch) => (ch as any).releaseNew());
-    await a.inbox.here.until([t.owner.user.id]);
+    const deadline = Date.now() + 2000;
+    while (a.inbox.here.count <= had) {
+      if (Date.now() > deadline) throw new Error("the newer run sent no presence frame");
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    expect(a.inbox.here.latest).toEqual([t.owner.user.id]);
     await runInDurableObject<Channel, void>(stub, (ch) => (ch as any).releaseOld());
     // A send is a barrier: its ack comes after any presence sent before it.
     a.send(await message(t.teamId, t.channelId, t.owner.device, 1, t.keys.get(1)!, "barrier"));
     await stored(a);
-    await a.inbox.here.until([t.owner.user.id], 0);
+    // The older run sent nothing: no frame past the newer run's.
+    expect(a.inbox.here.count).toBe(had + 1);
     expect(b.inbox.here.count).toBe(0);
     for (const s of [a, a2]) s.ws.close();
   });

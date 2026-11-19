@@ -528,7 +528,17 @@ impl Shell {
                 .detach();
             }
             report_failure(&live.thread, true, cx);
-            live.thread.update(cx, |t, _| t.shutdown());
+            // A note no prompt took yet goes back to the environment, or
+            // reopening the session would lose it.
+            let note = live.thread.update(cx, |t, _| {
+                t.shutdown();
+                t.take_notes().pop()
+            });
+            if let Some(note) = note {
+                self.rename_notes
+                    .entry(env_path.to_path_buf())
+                    .or_insert(note);
+            }
             if let Some(server) = remote {
                 self.servers_unfollow(&server, id);
             }
@@ -862,7 +872,15 @@ impl Shell {
         s.status = Status::Working;
         // The status handler sees no change after this, so it can't clear it.
         s.settled = false;
-        thread.update(cx, |t, cx| t.send(text, cx));
+        // This session may have started on the branch's old name, as in
+        // `send_prompt`.
+        let note = self.rename_notes.remove(env_path);
+        thread.update(cx, |t, cx| {
+            if let Some(note) = note {
+                t.add_note(note);
+            }
+            t.send(text, cx)
+        });
         self.save(cx);
         cx.notify();
         true

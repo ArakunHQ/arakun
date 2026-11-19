@@ -252,6 +252,13 @@ after a week).
   process. If it reads the cutout wrong, set
   `ARAKUN_ISLAND_EDGE` to `flat`, `notch:<width>x<height>` or
   `pill:<width>x<height>+<gap to the top>`, in points.
+- **Keep running in the background** (Linux). Off by default; turn it on in Settings ›
+  General. Closing the window then hides it instead of quitting, so agents, terminals and
+  the island go on. On Hyprland the window waits in the special workspace `arakun`, on
+  Sway in the scratchpad, and elsewhere it is minimized. Run `arakun` (or `arakun show`,
+  or open it from the app launcher) to bring it back, and `arakun quit` to quit.
+  A desktop other than Hyprland and Sway may not raise a minimized window when asked
+  (GNOME and KDE on Wayland can refuse); click Arakun in the dock or task bar then.
 - **Notification history.** Every notice Arakun shows (on the island or as a desktop
   notification) also lands in the sidebar's Inbox, under the sessions waiting on you,
   grouped by day. Click one to open what it is about. The Inbox is the button at the end
@@ -735,6 +742,8 @@ arakun page screenshot            # PNG of the environment's browser tab
 arakun notify "done"              # desktop notification
 arakun notices --unseen           # notifications you haven't read yet
 arakun ls                         # projects, environments and sessions
+arakun show                       # bring the window up (running `arakun` again does too)
+arakun quit                       # quit Arakun, also when its window is hidden
 arakun palette                    # bring the window up with Ctrl+K open
 arakun mem search <words>         # search what agents remember about this project
 arakun github draft o/r#12 --verdict approve --head <sha> --body-file - --agent Claude < review.md

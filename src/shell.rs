@@ -1011,6 +1011,8 @@ impl Shell {
         this.resume_after_restart(window, cx);
         this.warm_droid_catalog(cx);
         this.listen_for_commands(window, cx);
+        // The compositor's close (Super+W, Alt+F4) hides too when the setting is on.
+        window.on_window_should_close(cx, |window, _| crate::background::should_close(window));
         this.watch_headless(window, cx);
         this.start_scheduler(window, cx);
         this.start_rule_ticker(window, cx);
@@ -2160,6 +2162,11 @@ impl Shell {
                     window.set_background_appearance(theme::window_background());
                     this.save(cx);
                     cx.refresh_windows();
+                }
+                #[cfg(target_os = "linux")]
+                SettingsEvent::Background(on) => {
+                    crate::background::set_enabled(*on);
+                    this.save(cx);
                 }
                 SettingsEvent::Island(on) => {
                     crate::island::set_enabled(*on);

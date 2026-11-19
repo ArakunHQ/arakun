@@ -480,7 +480,7 @@ impl Shell {
                         .child(max_button(maximized))
                         .child(
                             window_button("win-close", "cancel01", 14., true)
-                                .on_click(|_, _, cx| cx.quit()),
+                                .on_click(|_, window, cx| crate::background::close(window, cx)),
                         ),
                 )
             })

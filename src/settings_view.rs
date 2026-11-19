@@ -41,6 +41,9 @@ pub enum SettingsEvent {
     DiffPalette(DiffPalette),
     Glass(bool),
     Island(bool),
+    /// Only Linux has the switch.
+    #[cfg(target_os = "linux")]
+    Background(bool),
     /// Quit and start again, which installs the downloaded update.
     RestartToUpdate,
     OpenAccount,
@@ -188,11 +191,11 @@ impl Section {
         match self {
             #[cfg(feature = "coderlabs")]
             Section::General => {
-                "raccoon mascot animation motion new session dynamic island notch top bar agents alerts oye arakun wake word voice microphone"
+                "raccoon mascot animation motion new session dynamic island notch top bar agents alerts background close hide tray oye arakun wake word voice microphone"
             }
             #[cfg(not(feature = "coderlabs"))]
             Section::General => {
-                "raccoon mascot animation motion new session dynamic island notch top bar agents alerts sidebar usage card plans browser web page drive click type scripts"
+                "raccoon mascot animation motion new session dynamic island notch top bar agents alerts background close hide tray sidebar usage card plans browser web page drive click type scripts"
             }
             Section::Appearance => {
                 "theme palette color colors accent tint corners radius rounded round sharp spacing gap padding compact roomy density window custom share night graphite midnight forest rose diff colors colorblind high contrast glass blur transparent translucent grays gray text size font scale design system mode dark light"
@@ -895,6 +898,19 @@ impl SettingsDialog {
                     .cursor_pointer()
                     .on_click(cx.listener(|_, _, _, cx| {
                         cx.emit(SettingsEvent::Island(!crate::island::enabled()));
+                        cx.notify();
+                    }))
+                    .into_any_element(),
+                    #[cfg(target_os = "linux")]
+                    row(
+                        "Keep running in the background",
+                        "Closing the window hides it; agents, terminals and the island go on. Run arakun to bring it back, arakun quit to quit.",
+                        switch(crate::background::enabled()).into_any_element(),
+                    )
+                    .id("set-background")
+                    .cursor_pointer()
+                    .on_click(cx.listener(|_, _, _, cx| {
+                        cx.emit(SettingsEvent::Background(!crate::background::enabled()));
                         cx.notify();
                     }))
                     .into_any_element(),

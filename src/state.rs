@@ -59,6 +59,9 @@ pub struct State {
     /// The Dynamic Island was turned off in Settings (`island`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub island_off: bool,
+    /// Closing the window hides it instead of quitting (`background`, Linux).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub background: bool,
     /// Where the window was when the app last saved, so it opens there again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window: Option<WindowState>,
@@ -735,6 +738,7 @@ pub fn snapshot_with(
         ui_zoom: layout.ui_zoom,
         last_agent: crate::model::default_agent().key().to_string(),
         island_off: !crate::island::enabled(),
+        background: crate::background::enabled(),
         window: layout.window,
     };
     serde_json::to_vec_pretty(&state).unwrap_or_default()
@@ -747,6 +751,7 @@ pub fn restore(state: State) -> (Vec<Project>, usize, Layout, TabStrip) {
     let mut splits: Vec<(PathBuf, Split, u64)> = Vec::new();
     let last_agent = state.last_agent.clone();
     crate::island::set_enabled(!state.island_off);
+    crate::background::set_enabled(state.background);
     let projects: Vec<Project> = state
         .projects
         .into_iter()

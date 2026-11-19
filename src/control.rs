@@ -297,6 +297,9 @@ Usage:
                              turn curl away (arakun fetch --help)
   arakun crawl [--limit N] [--depth N] <url>
                              a site's pages as Markdown, through Browser Run
+  arakun show                  bring the window up, also when it was closed
+                             with Keep running in the background on
+  arakun quit                  quit Arakun
   arakun restart               quit and start again, on the installed build;
                              agent turns running go on by themselves after it
   arakun update [--check]      download the latest release and install it (a
@@ -366,7 +369,18 @@ pub fn run_cli() -> bool {
 
 fn cli(args: Vec<String>) -> Cli {
     let Some(first) = args.first() else {
-        return Cli::App;
+        // One window: launching it again (the app launcher) shows the running one,
+        // hidden or not, rather than starting a second Arakun.
+        let req = Request {
+            cmd: "show".into(),
+            args: Vec::new(),
+            cwd: PathBuf::from("/"),
+            side: false,
+        };
+        return match send(&req) {
+            Ok(reply) if reply.ok => Cli::Exit(0),
+            _ => Cli::App,
+        };
     };
     // Needs no display or running window, so the release workflow can run the
     // packaged binary with it.
@@ -546,6 +560,10 @@ fn cli(args: Vec<String>) -> Cli {
         "notify" if !rest.is_empty() => request("notify", vec![rest.join(" ")]),
         "notify" => return usage("arakun notify <message…>"),
         "ls" => request("ls", Vec::new()),
+        "show" if rest.is_empty() => request("show", Vec::new()),
+        "show" => return usage("arakun show"),
+        "quit" if rest.is_empty() => request("quit", Vec::new()),
+        "quit" => return usage("arakun quit"),
         "restart" if rest.is_empty() => request("restart", Vec::new()),
         "restart" => return usage("arakun restart"),
         "add" => match rest.as_slice() {

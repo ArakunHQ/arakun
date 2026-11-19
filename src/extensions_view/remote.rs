@@ -31,6 +31,9 @@ pub(super) struct RemoteMarket {
     loading: bool,
     at: Option<Instant>,
     pub(super) error: Option<SharedString>,
+    /// Why it turned down what Discover asked, such as an older server not
+    /// knowing the message. About the server, so the MCP list shows it too.
+    refused: Option<SharedString>,
     /// The install it is doing for us.
     pending: Option<Pending>,
 }
@@ -55,6 +58,48 @@ pub(super) struct Targets {
     pub(super) remote: HashMap<String, RemoteMarket>,
 }
 
+impl Targets {
+    /// Forgets what the servers no longer in `servers` said. Gives the name of
+    /// an install one of them was doing: its answer will not come.
+    fn retire(&mut self, servers: &[ServerTarget]) -> Option<(String, String)> {
+        let gone: Vec<String> = self
+            .remote
+            .keys()
+            .filter(|id| !servers.iter().any(|s| s.id == **id))
+            .cloned()
+            .collect();
+        let mut lost = None;
+        for id in gone {
+            if let Some(p) = self.remote.remove(&id).and_then(|r| r.pending) {
+                let name = self
+                    .servers
+                    .iter()
+                    .find(|s| s.id == id)
+                    .map_or_else(|| "the server".to_string(), |s| s.name.clone());
+                lost = Some((name, p.name));
+            }
+        }
+        lost
+    }
+}
+
+/// Whether a server's `error` is about what Discover asked. The server answers
+/// those with `market` and `market_done`; only one that cannot read the
+/// message says `error`, without saying what about. Errors about sessions and
+/// the rest stay with the shell.
+fn about_market(msg: &Value) -> bool {
+    let message = msg["message"].as_str().unwrap_or("");
+    if !msg["about"].is_null() || !message.starts_with("bad message") {
+        return false;
+    }
+    match message.strip_prefix("bad message: unknown variant `") {
+        Some(rest) => ["market`", "install_plugin`", "install_server`"]
+            .iter()
+            .any(|k| rest.starts_with(k)),
+        None => true,
+    }
+}
+
 impl ExtensionsView {
     /// The paired servers and how each is reached: Discover offers to install on them.
     pub fn set_servers(&mut self, servers: Vec<ServerTarget>, cx: &mut Context<Self>) {
@@ -65,6 +110,17 @@ impl ExtensionsView {
             && !servers.iter().any(|s| s.id == *id)
         {
             self.pick_target(None, cx);
+        }
+        // A server forgotten while it installs: its answer will not come.
+        if let Some((server, name)) = self.targets.retire(&servers) {
+            self.op = None;
+            self.error = Some(
+                format!(
+                    "{server} was removed while installing {}. Whether it was installed there is not known.",
+                    display_name(&name)
+                )
+                .into(),
+            );
         }
         for s in servers.iter().filter(|s| s.reach != Reach::Connected) {
             let Some(r) = self.targets.remote.get_mut(&s.id) else {
@@ -126,12 +182,19 @@ impl ExtensionsView {
         if self.targets.target.is_none() {
             return self.ms.catalog_error.clone();
         }
-        self.reach_error()
+        self.server_refused()
             .or_else(|| self.target_market().and_then(|r| r.error.clone()))
     }
 
+    /// Why the picked server cannot do what Discover asks: it is out of
+    /// reach, or turned the request down.
+    pub(super) fn server_refused(&self) -> Option<SharedString> {
+        self.reach_error()
+            .or_else(|| self.target_market().and_then(|r| r.refused.clone()))
+    }
+
     /// Why the picked server cannot be asked anything right now.
-    pub(super) fn reach_error(&self) -> Option<SharedString> {
+    fn reach_error(&self) -> Option<SharedString> {
         let server = self.target_server()?;
         match &server.reach {
             Reach::Away(why) | Reach::Refused(why) => {
@@ -200,11 +263,13 @@ impl ExtensionsView {
         }
         r.loading = true;
         r.error = None;
+        r.refused = None;
         cx.emit(ExtensionsEvent::Server(id, json!({ "type": "market" })));
         cx.notify();
     }
 
     /// Sends an install to the picked server. `key` is what its answer names.
+    /// False when it was not sent.
     pub(super) fn install_remote(
         &mut self,
         name: String,
@@ -212,18 +277,18 @@ impl ExtensionsView {
         msg: Value,
         done: String,
         cx: &mut Context<Self>,
-    ) {
+    ) -> bool {
         if self.op.is_some() {
-            return;
+            return false;
         }
         let Some(server) = self.target_server().cloned() else {
-            return;
+            return false;
         };
         (self.error, self.notice) = (None, None);
         if server.reach != Reach::Connected {
             self.error = Some(format!("{} is not connected right now.", server.name).into());
             cx.notify();
-            return;
+            return false;
         }
         let id = server.id;
         self.op = Some(name.clone());
@@ -231,6 +296,7 @@ impl ExtensionsView {
             Some(Pending { key, name, done });
         cx.emit(ExtensionsEvent::Server(id, msg));
         cx.notify();
+        true
     }
 
     /// A server's answer to what Discover asked of it.
@@ -267,7 +333,9 @@ impl ExtensionsView {
                     Some(e) => self.error = Some(format!("{}: {e}", display_name(&p.name)).into()),
                     None => {
                         self.notice = Some(format!("{} {}", display_name(&p.name), p.done).into());
-                        self.ask_remote(true, cx);
+                        // What that server said is old now, even when another is picked.
+                        r.at = None;
+                        self.ask_remote(false, cx);
                     }
                 }
             }
@@ -276,9 +344,13 @@ impl ExtensionsView {
         cx.notify();
     }
 
-    /// An error a server sent. Taken (true) when Discover was waiting on that
-    /// server, since it is then most likely about what Discover asked.
-    pub fn server_error(&mut self, server: &str, message: &str, cx: &mut Context<Self>) -> bool {
+    /// An error a server sent. Taken (true) when it is about what Discover
+    /// asked and Discover was waiting on that server.
+    pub fn server_error(&mut self, server: &str, msg: &Value, cx: &mut Context<Self>) -> bool {
+        if !about_market(msg) {
+            return false;
+        }
+        let message = msg["message"].as_str().unwrap_or("");
         let name = self
             .targets
             .servers
@@ -303,7 +375,7 @@ impl ExtensionsView {
         if r.loading {
             r.loading = false;
             r.at = Some(Instant::now());
-            r.error = Some(why.clone());
+            r.refused = Some(why.clone());
         }
         if r.pending.take().is_some() {
             self.op = None;
@@ -346,5 +418,60 @@ impl ExtensionsView {
             out = out.child(row);
         }
         Some(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn target(id: &str) -> ServerTarget {
+        ServerTarget {
+            id: id.into(),
+            name: format!("server {id}"),
+            reach: Reach::Connected,
+        }
+    }
+
+    #[test]
+    fn only_errors_about_the_marketplace_are_taken() {
+        let old = |m: &str| json!({ "type": "error", "message": m });
+        assert!(about_market(&old(
+            "bad message: unknown variant `market`, expected one of `open`"
+        )));
+        assert!(about_market(&old(
+            "bad message: unknown variant `install_server`, expected one of `open`"
+        )));
+        assert!(about_market(&old("bad message: missing field `id`")));
+        // Errors about sessions, starts and other requests are the shell's.
+        assert!(!about_market(&old("no such session")));
+        assert!(!about_market(&old("that project is gone")));
+        assert!(!about_market(&old(
+            "bad message: unknown variant `settle_env`, expected one of `open`"
+        )));
+        assert!(!about_market(
+            &json!({ "type": "error", "about": "start", "message": "bad message: x" })
+        ));
+    }
+
+    #[test]
+    fn a_removed_server_gives_up_its_install() {
+        let mut t = Targets {
+            servers: vec![target("a"), target("b")],
+            ..Default::default()
+        };
+        for id in ["a", "b"] {
+            t.remote.entry(id.into()).or_default().pending = Some(Pending {
+                key: "k".into(),
+                name: format!("plugin {id}"),
+                done: String::new(),
+            });
+        }
+        let lost = t.retire(&[target("b")]);
+        assert_eq!(lost, Some(("server a".into(), "plugin a".into())));
+        assert!(!t.remote.contains_key("a"));
+        // The one still there keeps waiting for its answer.
+        assert!(t.remote["b"].pending.is_some());
+        assert_eq!(t.retire(&[target("b")]), None);
     }
 }

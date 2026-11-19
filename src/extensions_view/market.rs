@@ -301,8 +301,10 @@ impl ExtensionsView {
             let msg = json!({
                 "type": "install_server", "name": n, "install": method, "values": values,
             });
-            self.ms.installing = None;
-            self.install_remote(name, n, msg, done, cx);
+            // A server it could not be sent to keeps the form as it was filled in.
+            if self.install_remote(name, n, msg, done, cx) {
+                self.ms.installing = None;
+            }
             return;
         }
         let Some(cwd) = self.cwd.clone() else { return };
@@ -926,7 +928,7 @@ impl ExtensionsView {
         let error = match self.market {
             Market::Plugins => self.catalog_error(),
             // The registry is read from here; installing from it needs the server.
-            Market::Registry => self.reach_error().or(self.ms.registry_error.clone()),
+            Market::Registry => self.server_refused().or(self.ms.registry_error.clone()),
         };
         let title = match (self.market, &self.ms.category) {
             (_, Some(c)) if self.market == Market::Plugins => capitalize(c),

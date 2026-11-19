@@ -2069,14 +2069,14 @@ impl Shell {
                         .update(cx, |v, cx| v.server_said(id, &msg, cx));
                     return;
                 }
-                if kind == "error" {
-                    let message = text(&msg, "message");
-                    let taken = self
+                // Only an error about what the Marketplace asked is taken
+                // there; a start's goes on to whoever asked for it.
+                if kind == "error"
+                    && self
                         .extensions_view
-                        .update(cx, |v, cx| v.server_error(id, &message, cx));
-                    if taken {
-                        return;
-                    }
+                        .update(cx, |v, cx| v.server_error(id, &msg, cx))
+                {
+                    return;
                 }
                 if msg["type"] == "inbox" {
                     // Kept for the next start, when what it holds changed.

@@ -264,6 +264,11 @@ pub struct Shell {
     /// A line for the next prompt to an environment's sessions after arakun renamed
     /// its branch: they started on the old name.
     rename_notes: std::collections::HashMap<std::path::PathBuf, String>,
+    /// Sessions whose transcript is being read off the main thread, to show them.
+    restoring: std::collections::HashSet<SharedString>,
+    /// Reads in `restoring` an `ensure_live` beat: when one ends, its older
+    /// transcript is dropped instead of put back over the newer session.
+    restoring_stale: std::collections::HashSet<SharedString>,
     active_project: usize,
     panel_tab: PanelTab,
     dock_open: bool,
@@ -824,6 +829,8 @@ impl Shell {
             env_followed: false,
             refresh_gen: Default::default(),
             rename_notes: Default::default(),
+            restoring: Default::default(),
+            restoring_stale: Default::default(),
             active_project,
             panel_tab: PanelTab::Sessions,
             dock_open: layout.dock_open,

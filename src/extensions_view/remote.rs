@@ -31,6 +31,9 @@ pub(super) struct RemoteMarket {
     servers: Vec<String>,
     /// A `market` was asked for and has not come back.
     loading: bool,
+    /// Something was installed while that `market` was on the way, so its
+    /// answer is old when it comes.
+    outdated: bool,
     at: Option<Instant>,
     pub(super) error: Option<SharedString>,
     /// Why it turned down what Discover asked, such as an older server not
@@ -38,6 +41,39 @@ pub(super) struct RemoteMarket {
     refused: Option<SharedString>,
     /// The install it is doing for us.
     pending: Option<Pending>,
+}
+
+impl RemoteMarket {
+    /// An install there worked, so what it said is old.
+    fn changed(&mut self) {
+        self.at = None;
+        self.outdated = self.loading;
+    }
+
+    /// Reads a `market` answer. False when it was asked before the last
+    /// install there, so it has to be asked again.
+    fn read(&mut self, msg: &Value) -> bool {
+        self.loading = false;
+        self.at = Some(Instant::now());
+        match serde_json::from_value::<Vec<PluginEntry>>(msg["plugins"].clone()) {
+            Ok(list) => self.catalog = Some(list),
+            Err(e) => self.error = Some(format!("Could not read its answer: {e}").into()),
+        }
+        self.servers = msg["servers"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|s| s.as_str().map(str::to_string))
+            .collect();
+        if let Some(e) = msg["error"].as_str() {
+            self.error = Some(e.to_string().into());
+        }
+        if std::mem::take(&mut self.outdated) {
+            self.at = None;
+            return false;
+        }
+        true
+    }
 }
 
 /// An install sent to a server, waiting for its `market_done`.
@@ -308,20 +344,8 @@ impl ExtensionsView {
         };
         match msg["type"].as_str().unwrap_or("") {
             "market" => {
-                r.loading = false;
-                r.at = Some(Instant::now());
-                match serde_json::from_value::<Vec<PluginEntry>>(msg["plugins"].clone()) {
-                    Ok(list) => r.catalog = Some(list),
-                    Err(e) => r.error = Some(format!("Could not read its answer: {e}").into()),
-                }
-                r.servers = msg["servers"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|s| s.as_str().map(str::to_string))
-                    .collect();
-                if let Some(e) = msg["error"].as_str() {
-                    r.error = Some(e.to_string().into());
+                if !r.read(msg) && self.targets.target.as_deref() == Some(server) {
+                    self.ask_remote(false, cx);
                 }
             }
             "market_done" => {
@@ -335,8 +359,9 @@ impl ExtensionsView {
                     Some(e) => self.error = Some(format!("{}: {e}", display_name(&p.name)).into()),
                     None => {
                         self.notice = Some(format!("{} {}", display_name(&p.name), p.done).into());
-                        // What that server said is old now, even when another is picked.
-                        r.at = None;
+                        // What that server said is old now, even when another is
+                        // picked or a `market` is already on the way.
+                        r.changed();
                         self.ask_remote(false, cx);
                     }
                 }
@@ -376,6 +401,7 @@ impl ExtensionsView {
         };
         if r.loading {
             r.loading = false;
+            r.outdated = false;
             r.at = Some(Instant::now());
             r.refused = Some(why.clone());
         }
@@ -476,5 +502,24 @@ mod tests {
         // The one still there keeps waiting for its answer.
         assert!(t.remote["b"].pending.is_some());
         assert_eq!(t.retire(&[target("b")]), None);
+    }
+
+    #[test]
+    fn an_install_during_a_load_asks_again() {
+        let mut r = RemoteMarket {
+            loading: true,
+            ..Default::default()
+        };
+        let before = json!({ "type": "market", "plugins": [], "servers": [] });
+        // The install's `market_done` comes before the `market` sent earlier.
+        r.changed();
+        assert!(!r.read(&before));
+        assert!(r.at.is_none());
+        r.loading = true;
+        assert!(r.read(&before));
+        assert!(r.at.is_some());
+        // With nothing on the way, the next ask reads it fresh.
+        r.changed();
+        assert!(r.at.is_none() && !r.outdated);
     }
 }

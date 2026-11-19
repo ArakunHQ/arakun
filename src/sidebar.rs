@@ -895,7 +895,17 @@ impl Sidebar {
     /// Reads a layout, skipping pieces this version does not know (from a
     /// newer Arakun, or edited by hand) instead of dropping it all.
     pub fn parse(bytes: &[u8]) -> Option<Self> {
-        let mut v: serde_json::Value = serde_json::from_slice(bytes).ok()?;
+        Self::parse_value(serde_json::from_slice(bytes).ok()?)
+    }
+
+    fn parse_value(mut v: serde_json::Value) -> Option<Self> {
+        // The layout from before the trial is read the same forgiving way; one
+        // that still fails only loses "Go back", not the layout in use.
+        let trial_of = v
+            .as_object_mut()?
+            .remove("trial_of")
+            .and_then(Self::parse_value)
+            .map(Box::new);
         let sections = v.get_mut("sections")?.as_array_mut()?;
         for s in sections.iter_mut() {
             if let Some(items) = s.get_mut("items").and_then(|i| i.as_array_mut()) {
@@ -906,6 +916,7 @@ impl Sidebar {
             known.retain(|k| serde_json::from_value::<View>(k.clone()).is_ok());
         }
         let mut s: Sidebar = serde_json::from_value(v).ok()?;
+        s.trial_of = trial_of;
         s.tidy();
         s.offer_active();
         Some(s)
@@ -1655,6 +1666,20 @@ mod tests {
         let back = s.trial_of.as_deref().unwrap();
         assert_eq!(back.sections, old.sections);
         assert!(!back.offers_switcher());
+        // A piece this version does not know, in either layout, is skipped
+        // without losing the layout or the way back.
+        let mut v: serde_json::Value = serde_json::from_str(&s.to_json()).unwrap();
+        let unknown = serde_json::json!({"type": "from-a-newer-arakun"});
+        for path in ["/sections/0/items", "/trial_of/sections/0/items"] {
+            v.pointer_mut(path)
+                .unwrap()
+                .as_array_mut()
+                .unwrap()
+                .push(unknown.clone());
+        }
+        let s = Sidebar::parse(v.to_string().as_bytes()).unwrap();
+        assert!(s.has(&pin));
+        assert!(s.trial_of.as_deref().unwrap().has(&pin));
         // Without pins it is the template as it is.
         assert_eq!(
             small().as_switcher().sections,

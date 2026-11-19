@@ -227,6 +227,9 @@ pub enum Document {
     /// A spreadsheet, drawn as a grid.
     Sheet(Arc<crate::sheet::Workbook>),
     Failed(SharedString),
+    /// A diff too large to load unless asked: building it on every change of
+    /// a growing file would stall the app.
+    TooLarge(SharedString),
 }
 
 /// A load that panicked shows as one that failed.
@@ -272,6 +275,8 @@ pub struct Tab {
     pub markdown: Option<std::rc::Rc<Vec<crate::agent::markdown::Block>>>,
     /// The sheet shown by a spreadsheet tab.
     pub sheet: usize,
+    /// A diff tab loads its diff even past the size limit ("Show anyway").
+    pub large: bool,
 }
 
 impl Tab {
@@ -293,6 +298,7 @@ impl Tab {
             preview: false,
             markdown: None,
             sheet: 0,
+            large: false,
         }
     }
 

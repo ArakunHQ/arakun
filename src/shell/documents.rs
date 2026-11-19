@@ -193,24 +193,36 @@ impl Shell {
             .detach();
             return;
         }
+        let large = self
+            .doc_tab_mut(&env_path, &kind)
+            .is_some_and(|tab| tab.large);
         cx.spawn(async move |this, cx| {
             let k = kind.clone();
             let ep = env_path.clone();
             let doc = cx
                 .background_spawn(crate::guard::task(async move {
+                    if let TabKind::Diff { path, .. } = &k
+                        && !large
+                        && let Some(size) = diff_too_large(&ep, path, None)
+                    {
+                        return Document::TooLarge(size);
+                    }
                     let result: Result<(String, Vec<SharedString>), String> = match &k {
                         TabKind::File { path } => explorer::read_lines(path)
                             .map(|lines| (path.display().to_string(), lines)),
-                        TabKind::Diff { path, untracked } => git::diff(&ep, path, *untracked)
-                            .map(|d| {
-                                (
-                                    path.clone(),
-                                    d.lines()
-                                        .map(|l| SharedString::from(l.replace('\t', "    ")))
-                                        .collect(),
-                                )
-                            })
-                            .map_err(|e| e.to_string()),
+                        TabKind::Diff { path, untracked } => {
+                            let d = match git::diff(&ep, path, *untracked) {
+                                Ok(d) => d,
+                                Err(e) => return Document::Failed(e.to_string().into()),
+                            };
+                            if !large && let Some(size) = diff_too_large(&ep, path, Some(d.len())) {
+                                return Document::TooLarge(size);
+                            }
+                            let lines = d
+                                .lines()
+                                .map(|l| SharedString::from(l.replace('\t', "    ")));
+                            Ok((path.clone(), lines.collect()))
+                        }
                         _ => Ok((String::new(), Vec::new())),
                     };
                     match result {
@@ -289,6 +301,26 @@ impl Shell {
             .iter_mut()
             .find(|t| t.is_in(env_path) && same_doc(&t.kind, kind))
     }
+}
+
+/// How large a diff is, when it is over the limit for a file tab. Checks the
+/// working file before running git, and the diff's own size after.
+fn diff_too_large(
+    env: &std::path::Path,
+    path: &str,
+    diff_len: Option<usize>,
+) -> Option<SharedString> {
+    let size = match diff_len {
+        Some(len) => len as u64,
+        None => std::fs::metadata(env.join(path)).ok()?.len(),
+    };
+    (size > explorer::MAX_VIEW_BYTES).then(|| {
+        format!(
+            "This diff is too large to show ({:.1} MB)",
+            size as f64 / 1e6
+        )
+        .into()
+    })
 }
 
 /// A file tab whose file is markdown, so it can be shown rendered.
@@ -642,7 +674,9 @@ impl Shell {
             });
         let body: AnyElement = match &tab.doc {
             None | Some(Document::Loading) => panel_empty("Loading…").into_any_element(),
-            Some(Document::Failed(e)) => {
+            Some(Document::Failed(e) | Document::TooLarge(e)) => {
+                let too_large = matches!(tab.doc, Some(Document::TooLarge(_)));
+                let (env, kind) = (tab.env.clone(), tab.kind.clone());
                 let file = match &tab.kind {
                     TabKind::File { path } if path.is_file() => Some(path.clone()),
                     _ => None,
@@ -667,6 +701,27 @@ impl Shell {
                             )
                             .h(px(28.))
                             .on_click(move |_, _, cx| cx.open_with_system(&file)),
+                        )
+                    })
+                    .when_some(env.filter(|_| too_large), |d, env| {
+                        d.child(
+                            ui::button(
+                                "doc-show-large",
+                                "Show anyway",
+                                ui::ButtonKind::Ghost,
+                                true,
+                            )
+                            .h(px(28.))
+                            .on_click(cx.listener(
+                                move |this, _, _, cx| {
+                                    if let Some(tab) = this.doc_tab_mut(&env, &kind) {
+                                        tab.large = true;
+                                        tab.doc = Some(Document::Loading);
+                                    }
+                                    this.reload_doc(env.clone(), kind.clone(), cx);
+                                    cx.notify();
+                                },
+                            )),
                         )
                     })
                     .into_any_element()
@@ -1075,4 +1130,25 @@ pub(super) fn editor_command(path: &std::path::Path, line: Option<usize>) -> Opt
         _ => cmd.push(file),
     }
     Some(cmd)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_diff_over_the_file_limit_is_held_back() {
+        let dir = std::env::temp_dir().join(format!("arakun-large-diff-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("build.log");
+        let file = std::fs::File::create(&log).unwrap();
+        file.set_len(explorer::MAX_VIEW_BYTES).unwrap();
+        assert!(diff_too_large(&dir, "build.log", None).is_none());
+        file.set_len(explorer::MAX_VIEW_BYTES + 1).unwrap();
+        assert!(diff_too_large(&dir, "build.log", None).is_some());
+        // A file that is gone (deleted) is checked by the size of its diff.
+        assert!(diff_too_large(&dir, "gone.txt", None).is_none());
+        assert!(diff_too_large(&dir, "gone.txt", Some(9 << 20)).is_some());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

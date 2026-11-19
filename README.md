@@ -398,24 +398,33 @@ after a week).
 
 ### Make it yours
 
-- **Color palettes.** Settings › Appearance has built-in palettes (Arakun Black, the
-  default, then Calma, Arakun Night, Graphite, Midnight, Forest, Rosé). Only the center
-  of the window is a sheet; the sidebar, the workspace panel and the status line sit on
-  the window itself, and the accent is kept for what needs you. Customize one to change
-  its tint, background and accent; Arakun warns when text or the accent gets hard to
-  read. A palette fits in one line (`arakun:palette/v1:…`) that anyone can paste there to
-  get it. The choice and your palettes are kept in `palettes.json` next to the state.
+How the app looks is changed in the **Customize** panel, at the right of the window where
+the workspace panel is, so the work stays in view while you change it. Open it from the
+palette (`Customize`), View › Customize… or Settings › Appearance › Open Customize, which
+only sums up what is chosen. It opens without a project too.
 
-  <img src="docs/screenshots/palettes.png" alt="The six built-in palettes in Settings › Appearance" width="520">
-- **Dark and light.** Settings › Appearance › Mode draws the palette on black or on a
-  white background with dark text. The choice is kept in `palettes.json`.
-- **Corners and spacing.** Settings › Appearance also sets the shape of the whole app,
-  live. Corners makes cards, buttons and fields sharper or rounder (0 to 200%; presets
-  Sharp, Default, Round). Spacing makes the room inside and between things tighter or
-  roomier (60 to 160%; Compact, Default, Roomy). Window gap is the space around and
-  between the sidebar, the main area, the panel and the dock (0 to 20 px; None, Default,
-  Wide). The defaults (100%, 100%, 8 px) look as before. These are kept in
-  `palettes.json` too.
+- **Colors.** Mode draws the palette on black or on a white background with dark text.
+  There are built-in palettes (Arakun Black, the default, then Calma, Arakun Night,
+  Graphite, Midnight, Forest, Rosé). Only the center of the window is a sheet; the
+  sidebar, the workspace panel and the status line sit on the window itself, and the
+  accent is kept for what needs you. Duplicate one to change its tint, background and
+  accent; Arakun warns when text or the accent gets hard to read. Grays sets how bright
+  secondary text and borders are, and Diff colors how added and removed lines look. A
+  palette fits in one line (`arakun:palette/v1:…`): Export copies it and Import pastes
+  one. Reset colors goes back to Arakun Black, dark, and keeps your palettes. The mode,
+  the choice and your palettes are kept in `palettes.json` next to the state.
+
+  <img src="docs/screenshots/palettes.png" alt="The built-in palettes" width="520">
+- **Shape.** Corners makes cards, buttons and fields sharper or rounder (0 to 200%;
+  presets Sharp, Default, Round). Spacing makes the room inside and between things
+  tighter or roomier (60 to 160%; Compact, Default, Roomy). Window gap is the space
+  around and between the sidebar, the main area, the panel and the dock (0 to 20 px;
+  None, Default, Wide). The defaults (100%, 100%, 8 px) look as before and are kept in
+  `palettes.json` too. Text size and Glass are here as well. Reset shape goes back to
+  the defaults.
+- **Design system.** The card at the foot of the panel opens the Design system tab:
+  every color, type style and component, live, so a change can be judged on all of
+  them at once.
 
 ### Redacted mode
 

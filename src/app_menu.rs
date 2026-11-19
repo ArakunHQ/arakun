@@ -93,6 +93,7 @@ pub fn install(cx: &mut App) {
                 MenuItem::action("Go to…", shell::QuickSwitch),
                 MenuItem::separator(),
                 MenuItem::action("Toggle Sidebar", shell::ToggleSidebar),
+                MenuItem::action("Customize…", shell::OpenCustomize),
                 MenuItem::action("Customize Sidebar…", shell::CustomizeSidebar),
                 MenuItem::action("Toggle Terminal", shell::ToggleDock),
                 MenuItem::separator(),

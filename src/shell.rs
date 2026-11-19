@@ -84,6 +84,7 @@ use crate::ci::{self, Ci};
 use crate::cloudflare_view::CloudflareView;
 #[cfg(feature = "coderlabs")]
 use crate::coderspace::CoderSpace;
+use crate::customize_view::{CustomizeEvent, CustomizeTab, CustomizeView};
 use crate::dialogs::{CreateEnvDialog, DeleteEnvDialog, DialogEvent};
 use crate::explorer;
 use crate::extensions_view::ExtensionsView;
@@ -158,7 +159,8 @@ gpui::actions!(
         ZoomIn,
         ZoomOut,
         ZoomReset,
-        CustomizeSidebar
+        CustomizeSidebar,
+        OpenCustomize
     ]
 );
 
@@ -453,7 +455,8 @@ pub struct Shell {
     iso_view: Entity<crate::iso_view::IsoView>,
     #[cfg(feature = "coderlabs")]
     canvas_view: Entity<crate::canvas_view::CanvasView>,
-    _gallery_view: Subscription,
+    /// The Customize panel, while it is open in the workspace panel's place.
+    customize: Option<(Entity<CustomizeView>, Subscription)>,
     _usage_view: Subscription,
     /// (project root, branch) → the fix session whose push CI is judging.
     fix_loops: std::collections::HashMap<(std::path::PathBuf, String), runs::FixLoop>,
@@ -725,13 +728,6 @@ impl Shell {
         let iso_view = cx.new(crate::iso_view::IsoView::new);
         #[cfg(feature = "coderlabs")]
         let canvas_view = cx.new(crate::canvas_view::CanvasView::new);
-        let gallery_sub = cx.subscribe(
-            &gallery_view,
-            |this, _, _: &crate::gallery_view::GalleryChanged, cx| {
-                this.save(cx);
-                cx.refresh_windows();
-            },
-        );
         let usage_sub = cx.subscribe_in(
             &usage_view,
             window,
@@ -955,7 +951,7 @@ impl Shell {
             _usage_view: usage_sub,
             usage_view,
             gallery_view,
-            _gallery_view: gallery_sub,
+            customize: None,
             iso_view,
             #[cfg(feature = "coderlabs")]
             canvas_view,
@@ -2303,10 +2299,15 @@ impl Shell {
                 }
             })
         };
+        let look = crate::customize_view::Summary::of(&match &self.customize {
+            Some((view, _)) => view.read(cx).saved().clone(),
+            None => crate::palettes::load(),
+        });
         let dialog = cx.new(|cx| {
             SettingsDialog::new(
                 arcade,
                 droid,
+                look,
                 #[cfg(feature = "coderlabs")]
                 coderspace,
                 window,
@@ -2323,31 +2324,10 @@ impl Shell {
                     this.save(cx);
                     cx.refresh_windows();
                 }
-                SettingsEvent::DiffPalette(p) => {
-                    theme::set_diff_palette(*p);
-                    this.save(cx);
-                    cx.refresh_windows();
-                }
                 SettingsEvent::RailUsage(agent, on) => {
                     account_view::set_rail_shows(*agent, *on);
                     this.save(cx);
                     cx.notify();
-                }
-                SettingsEvent::Grays(g) => {
-                    theme::set_grays(*g);
-                    this.save(cx);
-                    cx.refresh_windows();
-                }
-                SettingsEvent::TypeScale(t) => {
-                    crate::ui::set_type_scale(*t);
-                    this.save(cx);
-                    cx.refresh_windows();
-                }
-                SettingsEvent::Glass(on) => {
-                    theme::set_glass(*on);
-                    window.set_background_appearance(theme::window_background());
-                    this.save(cx);
-                    cx.refresh_windows();
                 }
                 #[cfg(target_os = "linux")]
                 SettingsEvent::Background(on) => {
@@ -2380,9 +2360,9 @@ impl Shell {
                     this.close_modal(window, cx);
                     this.open_usage_tab(window, cx);
                 }
-                SettingsEvent::OpenGallery => {
+                SettingsEvent::OpenCustomize => {
                     this.close_modal(window, cx);
-                    this.open_gallery_tab(window, cx);
+                    this.open_customize(CustomizeTab::Colors, window, cx);
                 }
                 SettingsEvent::ClaudeSignIn => {
                     this.close_modal(window, cx);
@@ -2453,6 +2433,66 @@ impl Shell {
             self.side_prefer = SideCard::Panel;
         }
         self.save(cx);
+        cx.notify();
+    }
+
+    /// Opens the Customize panel in the workspace panel's place, on `tab`, or
+    /// moves the open one to it. It shows without a project too, so how the
+    /// app looks is always changed from the same place.
+    pub(super) fn open_customize(
+        &mut self,
+        tab: CustomizeTab,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if matches!(self.modal, Some((Modal::Settings(_), _))) {
+            self.close_modal(window, cx);
+        }
+        self.menu = None;
+        if let Some((view, _)) = &self.customize {
+            view.update(cx, |v, cx| v.set_tab(tab, cx));
+        } else {
+            let view = cx.new(|cx| CustomizeView::new(tab, window, cx));
+            let sub =
+                cx.subscribe_in(
+                    &view,
+                    window,
+                    |this, _, ev: &CustomizeEvent, window, cx| match ev {
+                        CustomizeEvent::Close => this.close_customize(cx),
+                        CustomizeEvent::OpenGallery => this.open_gallery_tab(window, cx),
+                        CustomizeEvent::Grays(g) => {
+                            theme::set_grays(*g);
+                            this.save(cx);
+                            cx.refresh_windows();
+                        }
+                        CustomizeEvent::TypeScale(t) => {
+                            crate::ui::set_type_scale(*t);
+                            this.save(cx);
+                            cx.refresh_windows();
+                        }
+                        CustomizeEvent::DiffPalette(p) => {
+                            theme::set_diff_palette(*p);
+                            this.save(cx);
+                            cx.refresh_windows();
+                        }
+                        CustomizeEvent::Glass(on) => {
+                            theme::set_glass(*on);
+                            window.set_background_appearance(theme::window_background());
+                            this.save(cx);
+                            cx.refresh_windows();
+                        }
+                    },
+                );
+            self.customize = Some((view, sub));
+        }
+        // It takes the workspace panel's place, so that place must be shown.
+        self.side_prefer = SideCard::Panel;
+        cx.notify();
+    }
+
+    /// Closes the Customize panel; its last edit is saved as it goes.
+    fn close_customize(&mut self, cx: &mut Context<Self>) {
+        self.customize = None;
         cx.notify();
     }
 
@@ -2535,7 +2575,7 @@ impl Shell {
         let crowded = crowd_out(
             viewport_w - 2. * gap() - MAIN_FLOOR_W,
             if rail { rail_card.1 + gap() } else { 0. },
-            (has_projects && self.panel_open).then(|| PANEL_W_RANGE.start + gap()),
+            self.panel_wanted().then(|| PANEL_W_RANGE.start + gap()),
             (has_projects && self.subagents_open).then(|| SUBAGENTS_W_RANGE.start + gap()),
             self.side_prefer,
         );
@@ -2550,7 +2590,7 @@ impl Shell {
             [
                 rail_card,
                 if panel {
-                    (self.panel_w, PANEL_W_RANGE.start)
+                    (self.panel_preferred_w(), PANEL_W_RANGE.start)
                 } else {
                     (0., 0.)
                 },
@@ -2570,7 +2610,23 @@ impl Shell {
 
     /// The workspace panel is open and the window has room for it this frame.
     fn panel_shown(&self) -> bool {
-        self.has_projects() && self.panel_open && !self.side_crowded.get()[0]
+        self.panel_wanted() && !self.side_crowded.get()[0]
+    }
+
+    /// Something should sit in the workspace panel's place: the panel of a
+    /// project, or Customize, which also shows without one.
+    fn panel_wanted(&self) -> bool {
+        self.customize.is_some() || (self.has_projects() && self.panel_open)
+    }
+
+    /// The panel's dragged width, or wider while Customize is in it: its
+    /// palettes sit three to a row.
+    fn panel_preferred_w(&self) -> f32 {
+        if self.customize.is_some() {
+            self.panel_w.max(crate::customize_view::CUSTOMIZE_W)
+        } else {
+            self.panel_w
+        }
     }
 
     /// The subagents column is open and the window has room for it this frame.
@@ -3396,6 +3452,9 @@ impl Render for Shell {
             .on_action(cx.listener(|this, _: &ToggleDock, window, cx| this.toggle_dock(window, cx)))
             .on_action(cx.listener(|this, _: &CustomizeSidebar, window, cx| {
                 this.open_sidebar_builder(window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &OpenCustomize, window, cx| {
+                this.open_customize(CustomizeTab::Colors, window, cx)
             }))
             .on_action(cx.listener(|this, _: &ZoomIn, window, cx| {
                 this.zoom_to(crate::ui_zoom::next(crate::ui_zoom::pct(), 1), window, cx)

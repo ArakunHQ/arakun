@@ -9,7 +9,7 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable,
     FontWeight, InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window, div, px,
+    StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, px,
 };
 
 use crate::agent::AgentKind;
@@ -17,7 +17,7 @@ use crate::agent::claude_auth;
 use crate::agent::plan::{self, PlanUsage};
 use crate::env_name;
 use crate::input::{InputEvent, TextInput};
-use crate::theme::{self, DiffPalette};
+use crate::theme;
 use crate::ui::{self, ButtonKind, icon};
 use crate::voice::{self, Lang, Tone};
 
@@ -33,13 +33,10 @@ pub enum SettingsEvent {
     DevinSignIn,
     DevinSignOut,
     OpenUsage,
-    OpenGallery,
+    /// Close Settings and open the Customize panel.
+    OpenCustomize,
     RailUsage(crate::agent::AgentKind, bool),
-    Grays(crate::theme::Grays),
-    TypeScale(crate::ui::TypeScale),
     Arcade(bool),
-    DiffPalette(DiffPalette),
-    Glass(bool),
     Island(bool),
     /// Only Linux has the switch.
     #[cfg(target_os = "linux")]
@@ -167,7 +164,9 @@ impl Section {
     fn description(self) -> &'static str {
         match self {
             Section::General => "How Arakun behaves when nothing is going on.",
-            Section::Appearance => "Colors and surfaces. Changes apply right away.",
+            Section::Appearance => {
+                "Colors and shape are edited beside the app, not in this dialog."
+            }
             Section::Branches => {
                 "A new environment starts on a random branch name; an agent can rename it after the task. A merged pull request settles its threads."
             }
@@ -341,9 +340,6 @@ const SHORTCUTS: &[Shortcut] = &[
 
 /// The queue key of the "Test voice" sample.
 const TEST_KEY: &str = "settings-test";
-/// How long a palette edit waits for the next before it is saved.
-const PALETTE_SAVE_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
-
 const DIALOG_W: f32 = 880.;
 /// The section list's column, search included.
 const LIST_W: f32 = 224.;
@@ -385,26 +381,10 @@ pub struct SettingsDialog {
     /// What the last save or test did, and whether it failed.
     voice_note: Option<(SharedString, bool)>,
     voice_busy: bool,
-    /// The palette in use and the user's own.
-    palettes: crate::palettes::Saved,
-    /// Where a shared palette's line is pasted.
-    share_input: Entity<TextInput>,
-    /// What the last paste or copy did, and whether it failed.
-    palette_note: Option<(SharedString, bool)>,
-    /// Delete was clicked once on the palette in use.
-    confirm_delete: bool,
+    /// What Colors and Shape are set to, for the Appearance summary.
+    look: crate::customize_view::Summary,
     /// The nightly switch was clicked and its warning is showing.
     confirm_nightly: bool,
-    /// The name of the user's palette in use.
-    name_input: Entity<TextInput>,
-    /// Whether the field to paste a shared palette is open.
-    show_import: bool,
-    /// The save of a palette edit that waits for the slider to stop.
-    palette_save: Option<Task<()>>,
-    /// A palette edit is shown but not saved yet.
-    palette_dirty: bool,
-    /// The save being written off the UI thread, if one is.
-    palette_writing: Option<Task<()>>,
     /// The settings pane's scroll, so a slider that moves the layout can stay
     /// under the pointer.
     pane_scroll: gpui::ScrollHandle,
@@ -413,7 +393,7 @@ pub struct SettingsDialog {
     namer_input: Entity<TextInput>,
     /// Why the last crash report or usage count choice could not be saved.
     telemetry_error: Option<SharedString>,
-    _subs: [Subscription; 8],
+    _subs: [Subscription; 4],
 }
 
 impl EventEmitter<SettingsEvent> for SettingsDialog {}
@@ -422,6 +402,7 @@ impl SettingsDialog {
     pub fn new(
         arcade: bool,
         droid: bool,
+        look: crate::customize_view::Summary,
         #[cfg(feature = "coderlabs")] coderspace: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -455,39 +436,6 @@ impl SettingsDialog {
                 window,
                 |this: &mut Self, _, ev, _, cx| match ev {
                     InputEvent::Changed => this.voice_id_changed(cx),
-                    InputEvent::Cancel => cx.emit(SettingsEvent::Dismissed),
-                    _ => {}
-                },
-            );
-        let share_input =
-            cx.new(|cx| TextInput::new("Paste a palette: arakun:palette/v1:…", cx).mono());
-        let share_sub =
-            cx.subscribe_in(
-                &share_input,
-                window,
-                |this: &mut Self, _, ev, _, cx| match ev {
-                    InputEvent::Submit => this.import_palette(cx),
-                    InputEvent::Cancel => cx.emit(SettingsEvent::Dismissed),
-                    _ => {}
-                },
-            );
-        let palettes = crate::palettes::load();
-        let name_input = cx.new(|cx| {
-            let mut i = TextInput::new("Name this palette", cx);
-            i.set_text(palettes.active().name, cx);
-            i
-        });
-        let name_sub =
-            cx.subscribe_in(
-                &name_input,
-                window,
-                |this: &mut Self, input, ev, _, cx| match ev {
-                    InputEvent::Changed => {
-                        let name = input.read(cx).text().trim().to_string();
-                        if !name.is_empty() && name != this.palettes.active().name {
-                            this.edit_palette(|p| p.name = name, cx);
-                        }
-                    }
                     InputEvent::Cancel => cx.emit(SettingsEvent::Dismissed),
                     _ => {}
                 },
@@ -563,32 +511,10 @@ impl SettingsDialog {
             namer,
             namer_input,
             telemetry_error: None,
-            palettes,
-            share_input,
-            palette_note: None,
-            confirm_delete: false,
+            look,
             confirm_nightly: false,
-            name_input,
-            show_import: false,
-            palette_save: None,
-            palette_dirty: false,
-            palette_writing: None,
             pane_scroll: gpui::ScrollHandle::new(),
-            _subs: [
-                sub,
-                key_sub,
-                voice_sub,
-                share_sub,
-                name_sub,
-                namer_sub,
-                // An edit made just before the dialog closes or the app quits
-                // is saved then rather than lost with its wait.
-                cx.on_release(|this, _| this.flush_palette()),
-                cx.on_app_quit(|this, _| {
-                    this.flush_palette();
-                    async {}
-                }),
-            ],
+            _subs: [sub, key_sub, voice_sub, namer_sub],
         }
     }
 
@@ -1583,853 +1509,46 @@ impl SettingsDialog {
             .into_any_element()
     }
 
-    fn use_palette(&mut self, id: &str, cx: &mut Context<Self>) {
-        self.palettes.current = id.to_string();
-        self.confirm_delete = false;
-        self.apply_palette(cx);
-    }
-
-    fn apply_palette(&mut self, cx: &mut Context<Self>) {
-        self.palette_save = None;
-        self.palette_dirty = true;
-        self.write_palette(cx);
-        self.show_palette(cx);
-    }
-
-    /// Shows the palette in use across the app without saving it.
-    fn show_palette(&mut self, cx: &mut Context<Self>) {
-        crate::palettes::apply(&self.palettes);
-        // The name field follows the palette in use, unless it is what changed.
-        let name = self.palettes.active().name;
-        if self.name_input.read(cx).text().trim() != name {
-            self.name_input.update(cx, |i, cx| i.set_text(name, cx));
-        }
-        cx.refresh_windows();
-        cx.notify();
-    }
-
-    /// Changes the palette in use, which is one of the user's (the editor
-    /// shows only for those).
-    fn edit_palette(&mut self, change: impl FnOnce(&mut theme::Palette), cx: &mut Context<Self>) {
-        let mut p = self.palettes.active();
-        if !self.palettes.is_custom(&p.id) {
-            return;
-        }
-        change(&mut p);
-        self.palettes.update(p);
-        self.save_palette_later(cx);
-    }
-
-    /// Shows a change now and saves it once changes settle: a slider drag or
-    /// typing a name changes the palette many times a second, and each save
-    /// is a synced write.
-    fn save_palette_later(&mut self, cx: &mut Context<Self>) {
-        self.show_palette(cx);
-        self.palette_dirty = true;
-        self.palette_save = Some(cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(PALETTE_SAVE_DELAY).await;
-            let _ = this.update(cx, |this, cx| this.write_palette(cx));
-        }));
-    }
-
-    /// Saves the palettes off the UI thread: each save is a synced write,
-    /// which can take long enough to stall typing and drawing. One save at a
-    /// time; an edit made while it writes is saved when it is done. A failed
-    /// save stays dirty, so closing Settings or quitting tries again.
-    fn write_palette(&mut self, cx: &mut Context<Self>) {
-        if !self.palette_dirty || self.palette_writing.is_some() {
-            return;
-        }
-        self.palette_dirty = false;
-        let (saved, version) = (self.palettes.clone(), crate::palettes::next_version());
-        self.palette_writing = Some(cx.spawn(async move |this, cx| {
-            let ok = cx
-                .background_executor()
-                .spawn(async move { crate::palettes::store_version(&saved, version) })
-                .await;
-            let _ = this.update(cx, |this, cx| {
-                this.palette_writing = None;
-                if !ok {
-                    this.palette_dirty = true;
-                } else if this.palette_dirty {
-                    this.write_palette(cx);
-                }
-            });
-        }));
-    }
-
-    /// Saves a palette edit that is still waiting, if there is one, right
-    /// away: Settings is closing or the app is quitting, and a save left to
-    /// a task would be dropped with it.
-    fn flush_palette(&mut self) {
-        // A save still writing may not finish once its task is dropped.
-        if self.palette_dirty || self.palette_writing.take().is_some() {
-            let version = crate::palettes::next_version();
-            self.palette_dirty = !crate::palettes::store_version(&self.palettes, version);
-        }
-    }
-
-    /// A copy of the palette in use that the user can change.
-    fn customize_palette(&mut self, cx: &mut Context<Self>) {
-        let from = self.palettes.active();
-        self.palettes.add(&from);
-        self.palette_note = None;
-        self.apply_palette(cx);
-    }
-
-    fn import_palette(&mut self, cx: &mut Context<Self>) {
-        let code = self.share_input.read(cx).text().to_string();
-        match theme::Palette::from_share_code(&code) {
-            Some(p) => {
-                self.palettes.add(&p);
-                self.share_input.update(cx, |i, cx| i.set_text("", cx));
-                self.show_import = false;
-                // A Delete armed for the old palette must not delete the new one.
-                self.confirm_delete = false;
-                self.palette_note = Some(("Added and in use.".into(), false));
-                self.apply_palette(cx);
-            }
-            None => {
-                self.palette_note = Some((
-                    "That isn't a palette line. It starts with arakun:palette/v1:".into(),
-                    true,
-                ));
-                cx.notify();
-            }
-        }
-    }
-
-    fn render_palettes(&self, cx: &mut Context<Self>) -> AnyElement {
-        let active = self.palettes.active();
-        let all = self.palettes.all();
-        let card = |i: usize, p: &theme::Palette, cx: &mut Context<Self>| {
-            let on = p.id == active.id;
-            let id = p.id.clone();
-            let bar =
-                |w: f32, c: gpui::Hsla| div().h(px(4.)).w(gpui::relative(w)).rounded_full().bg(c);
-            // 6 px (padding and border) inside the card's 12 px corner; the
-            // strip on its left rounds the same, as nothing clips it.
-            let preview = div()
-                .flex()
-                .h(px(54.))
-                .rounded(ui::nested(ui::RADIUS_LG, 6.))
-                .overflow_hidden()
-                .bg(p.background())
-                .child(
-                    div()
-                        .w(gpui::relative(0.34))
-                        .h_full()
-                        .flex()
-                        .flex_col()
-                        .gap(crate::ui::sp(5.))
-                        .p(crate::ui::sp(7.))
-                        .rounded_l(ui::nested(ui::RADIUS_LG, 6.))
-                        .bg(p.surface(0.07))
-                        .child(bar(0.6, p.accent()))
-                        .child(bar(0.85, p.content().opacity(0.22)))
-                        .child(bar(0.7, p.content().opacity(0.22))),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .flex()
-                        .flex_col()
-                        .gap(crate::ui::sp(5.))
-                        .p(crate::ui::sp(8.))
-                        .child(bar(0.8, p.content().opacity(0.8)))
-                        .child(bar(0.55, p.content().opacity(0.25)))
-                        .child(
-                            div()
-                                .mt(px(2.))
-                                .flex()
-                                .items_center()
-                                .gap(crate::ui::sp(5.))
-                                .p(crate::ui::sp(5.))
-                                .rounded(crate::ui::rad(ui::RADIUS_SM))
-                                .bg(p.surface(0.12))
-                                .child(div().size(px(7.)).rounded_full().bg(p.accent()))
-                                .child(bar(0.6, p.content().opacity(0.25))),
-                        ),
-                );
+    /// What Colors and Shape are set to, and the way to the Customize panel
+    /// where they are changed: there the app stays in view, not under a dialog.
+    fn render_appearance(&self, cx: &mut Context<Self>) -> AnyElement {
+        let value = |text: String| {
             div()
-                .id(("palette", i))
-                .flex_1()
-                .min_w_0()
-                .flex()
-                .flex_col()
-                .gap(crate::ui::sp(6.))
-                .p(crate::ui::sp(5.))
-                .rounded(crate::ui::rad(ui::RADIUS_LG))
-                .border_1()
-                .border_color(if on {
-                    theme::active().opacity(0.55)
-                } else {
-                    theme::stroke()
-                })
-                .cursor_pointer()
-                .hover(|s| s.bg(theme::fill_hover()))
-                .child(preview)
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(crate::ui::sp(6.))
-                        .px(crate::ui::sp(3.))
-                        .pb(crate::ui::sp(1.))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .truncate()
-                                .text_size(px(ui::TEXT_SM))
-                                .font_weight(FontWeight::MEDIUM)
-                                .text_color(if on {
-                                    theme::text()
-                                } else {
-                                    theme::text_muted()
-                                })
-                                .child(p.name.clone()),
-                        )
-                        .when(on, |d| {
-                            d.child(icon("tick02", 13.).text_color(theme::active()))
-                        }),
-                )
-                .on_click(cx.listener(move |this, _, _, cx| this.use_palette(&id, cx)))
+                .flex_none()
+                .max_w(px(360.))
+                .truncate()
+                .text_size(px(ui::TEXT_SM))
+                .text_color(theme::text())
+                .child(text)
+                .into_any_element()
         };
-        let mut grid = div().flex().flex_col().gap(crate::ui::sp(8.));
-        let cards: Vec<_> = all
-            .iter()
-            .enumerate()
-            .map(|(i, p)| card(i, p, cx).into_any_element())
-            .collect();
-        let mut cards = cards.into_iter();
-        loop {
-            let row: Vec<_> = cards.by_ref().take(3).collect();
-            if row.is_empty() {
-                break;
-            }
-            let pad = 3 - row.len();
-            grid = grid.child(
-                div()
-                    .flex()
-                    .gap(crate::ui::sp(8.))
-                    .children(row)
-                    .children((0..pad).map(|_| div().flex_1())),
-            );
-        }
-        let custom = self.palettes.is_custom(&active.id);
-        let head = div()
+        let open = div()
             .flex()
             .items_center()
             .gap(crate::ui::sp(12.))
-            .child(label_block(
-                "Palette",
-                "The colors of the whole app. Customize one to make it yours.",
-            ))
             .child(
-                ui::button("palette-paste", "Paste a palette", ButtonKind::Ghost, true).on_click(
-                    cx.listener(|this, _, window, cx| {
-                        this.show_import = !this.show_import;
-                        this.palette_note = None;
-                        if this.show_import {
-                            window.focus(&this.share_input.focus_handle(cx), cx);
-                        }
-                        cx.notify();
-                    }),
-                ),
-            )
-            .when(!custom, |d| {
-                d.child(
-                    ui::button("palette-customize", "Customize", ButtonKind::Outline, true)
-                        .on_click(cx.listener(|this, _, _, cx| this.customize_palette(cx))),
+                ui::button_with(
+                    "set-customize",
+                    Some("paint-board"),
+                    "Open Customize",
+                    ButtonKind::Primary,
+                    true,
                 )
-            });
-        div()
-            .flex()
-            .flex_col()
-            .gap(crate::ui::sp(12.))
-            .px(crate::ui::sp(14.))
-            .py(crate::ui::sp(12.))
-            .child(head)
-            .when(self.show_import, |d| {
-                d.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(crate::ui::sp(8.))
-                        .child(field(self.share_input.clone(), 0.).flex_1())
-                        .child(
-                            ui::button("palette-import", "Add", ButtonKind::Outline, true)
-                                .on_click(cx.listener(|this, _, _, cx| this.import_palette(cx))),
-                        ),
-                )
-            })
-            .when_some(self.palette_note.clone(), |d, (note, bad)| {
-                d.child(
-                    div()
-                        .text_size(px(ui::TEXT_XS))
-                        .text_color(if bad {
-                            theme::error().into()
-                        } else {
-                            theme::text_subtle()
-                        })
-                        .child(note),
-                )
-            })
-            .child(grid)
-            .when(custom, |d| d.child(self.render_palette_editor(&active, cx)))
-            .into_any_element()
-    }
-
-    fn render_palette_editor(&self, p: &theme::Palette, cx: &mut Context<Self>) -> AnyElement {
-        const ACCENTS: [u32; 8] = [
-            theme::AMBER,
-            0xff7a59,
-            0xff8fab,
-            0xb394f5,
-            0x8b9dff,
-            0x86a6f2,
-            0x5fd4c4,
-            0x5fd38d,
-        ];
-        let this = cx.entity().downgrade();
-        let setter = move |f: fn(&mut theme::Palette, f32)| {
-            let this = this.clone();
-            move |t: f32, _: &mut Window, cx: &mut App| {
-                let _ = this.update(cx, |this, cx| this.edit_palette(|p| f(p, t), cx));
-            }
-        };
-        let line = |title: &'static str, value: String, control: AnyElement| {
-            div()
-                .flex()
-                .flex_col()
-                .gap(crate::ui::sp(6.))
-                .child(
-                    div()
-                        .flex()
-                        .justify_between()
-                        .text_size(px(ui::TEXT_SM))
-                        .text_color(theme::text_muted())
-                        .child(title)
-                        .child(
-                            div()
-                                .font_family(theme::FONT_MONO)
-                                .text_size(px(ui::TEXT_XS))
-                                .text_color(theme::text_subtle())
-                                .child(value),
-                        ),
-                )
-                .child(control)
-        };
-        let dark = theme::Palette {
-            bg: 0.03,
-            ..p.clone()
-        };
-        let light = theme::Palette {
-            bg: 0.16,
-            ..p.clone()
-        };
-        let gray = theme::Palette {
-            tint: 0.,
-            ..p.clone()
-        };
-        let full = theme::Palette {
-            tint: 0.6,
-            ..p.clone()
-        };
-        // Colors that wouldn't read are adjusted when drawn; say so, since
-        // the slider or swatch then shows something a little different.
-        let text_ok = p.readable_bg() >= p.bg;
-        let accent_ok = p.readable_accent() == p.accent;
-        let readable: (&str, gpui::Hsla) = match (text_ok, accent_ok) {
-            (true, true) => ("Text and accent read well", theme::success().into()),
-            (false, true) => (
-                "The background is drawn darker so text stays readable",
-                theme::attention().into(),
-            ),
-            (true, false) => (
-                "The accent is drawn lighter so it stays readable",
-                theme::attention().into(),
-            ),
-            (false, false) => (
-                "Drawn with a darker background and a lighter accent so text stays readable",
-                theme::attention().into(),
-            ),
-        };
-        let copied = p.share_code();
-        let id = p.id.clone();
-        let armed = self.confirm_delete;
-        div()
-            .flex()
-            .flex_col()
-            .gap(crate::ui::sp(14.))
-            .p(crate::ui::sp(14.))
-            .rounded(crate::ui::rad(ui::RADIUS_LG))
-            .bg(theme::fill_raised())
-            .border_1()
-            .border_color(theme::stroke())
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(crate::ui::sp(6.))
-                    .child(
-                        div()
-                            .text_size(px(ui::TEXT_SM))
-                            .text_color(theme::text_muted())
-                            .child("Name"),
-                    )
-                    .child(field(self.name_input.clone(), 0.).w_full()),
-            )
-            .child(line(
-                "Tint",
-                format!("{}°", p.hue.round()),
-                ui::slider(
-                    "pal-hue",
-                    p.hue / 360.,
-                    ui::hue_track(0.6, 0.55),
-                    gpui::hsla(p.hue / 360., 0.6, 0.55, 1.),
-                    setter(|p, t| p.hue = hue_at(t)),
-                )
-                .into_any_element(),
-            ))
-            .child(line(
-                "Background",
-                format!("{:.1}%", p.bg * 100.),
-                ui::slider(
-                    "pal-bg",
-                    (p.bg - 0.03) / 0.13,
-                    ui::blend_track(dark.background(), light.background()),
-                    p.background(),
-                    setter(|p, t| p.bg = 0.03 + t * 0.13),
-                )
-                .into_any_element(),
-            ))
-            .child(line(
-                "Tint strength",
-                format!("{}%", (p.tint / 0.6 * 100.).round()),
-                ui::slider(
-                    "pal-tint",
-                    p.tint / 0.6,
-                    ui::blend_track(gray.surface(0.2), full.surface(0.2)),
-                    p.surface(0.2),
-                    setter(|p, t| p.tint = t * 0.6),
-                )
-                .into_any_element(),
-            ))
-            .child(line(
-                "Accent",
-                format!("#{:06x}", p.accent),
-                div()
-                    .flex()
-                    .gap(crate::ui::sp(8.))
-                    .children(ACCENTS.into_iter().enumerate().map(|(i, c)| {
-                        ui::swatch(("pal-accent", i), gpui::rgb(c), p.accent == c).on_click(
-                            cx.listener(move |this, _, _, cx| {
-                                this.edit_palette(|p| p.accent = c, cx)
-                            }),
-                        )
-                    }))
-                    .into_any_element(),
-            ))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(crate::ui::sp(6.))
-                    .text_size(px(ui::TEXT_XS))
-                    .text_color(readable.1)
-                    .child(
-                        icon(
-                            if text_ok && accent_ok {
-                                "checkmark-circle01"
-                            } else {
-                                "alert-circle"
-                            },
-                            13.,
-                        )
-                        .text_color(readable.1),
-                    )
-                    .child(readable.0),
+                .on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::OpenCustomize))),
             )
             .child(
                 div()
-                    .flex()
-                    .items_center()
-                    .gap(crate::ui::sp(8.))
-                    .child(
-                        ui::button("pal-copy", "Copy share line", ButtonKind::Outline, true)
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                cx.write_to_clipboard(gpui::ClipboardItem::new_string(
-                                    copied.clone(),
-                                ));
-                                this.palette_note = Some((
-                                    "Copied. Anyone can paste it here to get this palette.".into(),
-                                    false,
-                                ));
-                                cx.notify();
-                            })),
-                    )
-                    .child(div().flex_1())
-                    .child(
-                        ui::button(
-                            "pal-delete",
-                            if armed { "Delete it?" } else { "Delete" },
-                            ButtonKind::Danger,
-                            true,
-                        )
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            if this.confirm_delete {
-                                this.palettes.remove(&id);
-                                this.confirm_delete = false;
-                                this.apply_palette(cx);
-                            } else {
-                                this.confirm_delete = true;
-                                cx.notify();
-                            }
-                        })),
-                    ),
-            )
-            .into_any_element()
-    }
-
-    /// Changes how round, roomy or spread out the app is, everywhere at once.
-    fn set_shape(
-        &mut self,
-        change: impl FnOnce(&mut crate::palettes::Saved),
-        cx: &mut Context<Self>,
-    ) {
-        change(&mut self.palettes);
-        self.save_palette_later(cx);
-    }
-
-    /// The Corners, Spacing and Window gap rows.
-    fn render_shape(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        let s = &self.palettes;
-        let this = cx.entity().downgrade();
-        let setter = move |f: fn(&mut crate::palettes::Saved, f32)| {
-            let this = this.clone();
-            move |t: f32, _: &mut Window, cx: &mut App| {
-                let _ = this.update(cx, |this, cx| this.set_shape(|s| f(s, t), cx));
-            }
-        };
-        let presets = |id: &'static str,
-                       items: [(&'static str, f32); 3],
-                       now: f32,
-                       set: fn(&mut crate::palettes::Saved, f32),
-                       cx: &mut Context<Self>| {
-            let mut seg = ui::segmented();
-            for (i, (label, v)) in items.into_iter().enumerate() {
-                seg = seg.child(
-                    ui::segment((id, i), None, label, (now - v).abs() < 0.01).on_click(
-                        cx.listener(move |this, _, _, cx| this.set_shape(|s| set(s, v), cx)),
-                    ),
-                );
-            }
-            seg
-        };
-        let line = |title: &'static str,
-                    hint: &'static str,
-                    value: String,
-                    seg: gpui::Div,
-                    slider: gpui::Stateful<gpui::Div>| {
-            div()
-                .flex()
-                .flex_col()
-                .gap(crate::ui::sp(8.))
-                .px(crate::ui::sp(14.))
-                .py(crate::ui::sp(12.))
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(crate::ui::sp(12.))
-                        .child(label_block(title, hint))
-                        .child(
-                            div()
-                                .font_family(theme::FONT_MONO)
-                                .text_size(px(ui::TEXT_XS))
-                                .text_color(theme::text_subtle())
-                                .child(value),
-                        )
-                        .child(seg),
-                )
-                .child(slider)
-                .into_any_element()
-        };
-        let track = || ui::blend_track(theme::fill_raised(), theme::fill_selected());
-        vec![
-            line(
-                "Corners",
-                "How round cards, buttons and fields are.",
-                format!("{:.0}%", s.radius * 100.),
-                presets(
-                    "shape-radius",
-                    [("Sharp", 0.5), ("Default", 1.), ("Round", 1.5)],
-                    s.radius,
-                    |s, v| s.radius = v,
-                    cx,
-                ),
-                ui::pinned_slider(
-                    "shape-radius-slider",
-                    s.radius / 2.,
-                    track(),
-                    theme::active(),
-                    &self.pane_scroll,
-                    setter(|s, t| s.radius = (t * 2. * 20.).round() / 20.),
-                ),
-            ),
-            line(
-                "Spacing",
-                "The room inside and between things.",
-                format!("{:.0}%", s.space * 100.),
-                presets(
-                    "shape-space",
-                    [("Compact", 0.8), ("Default", 1.), ("Roomy", 1.25)],
-                    s.space,
-                    |s, v| s.space = v,
-                    cx,
-                ),
-                ui::pinned_slider(
-                    "shape-space-slider",
-                    s.space - 0.6,
-                    track(),
-                    theme::active(),
-                    &self.pane_scroll,
-                    setter(|s, t| s.space = ((0.6 + t) * 20.).round() / 20.),
-                ),
-            ),
-            line(
-                "Window gap",
-                "The space around and between the sidebar, the main area and the panel.",
-                format!("{:.0} px", s.window_gap),
-                presets(
-                    "shape-gap",
-                    [("None", 0.), ("Default", 8.), ("Wide", 14.)],
-                    s.window_gap,
-                    |s, v| s.window_gap = v,
-                    cx,
-                ),
-                ui::pinned_slider(
-                    "shape-gap-slider",
-                    s.window_gap / 20.,
-                    track(),
-                    theme::active(),
-                    &self.pane_scroll,
-                    setter(|s, t| s.window_gap = (t * 20.).round()),
-                ),
-            ),
-        ]
-    }
-
-    fn render_appearance(&self, cx: &mut Context<Self>) -> AnyElement {
-        let palette = theme::diff_palette();
-        let glass = theme::glass();
-        let segments = ui::segmented().children(DiffPalette::ALL.into_iter().map(|p| {
-            let active = p == palette;
-            let (add, del) = p.swatch();
-            div()
-                .id(p.id())
-                .flex()
-                .flex_none()
-                .items_center()
-                .gap(crate::ui::sp(4.))
-                .h(px(ui::CONTROL_H - 4.))
-                .px(crate::ui::sp(8.))
-                .rounded(crate::ui::rad(ui::RADIUS_SM))
-                .text_size(px(ui::TEXT_SM))
-                .font_weight(FontWeight::MEDIUM)
-                .cursor_pointer()
-                .when(active, |d| {
-                    d.bg(theme::fill_selected()).text_color(theme::content())
-                })
-                .when(!active, |d| {
-                    d.text_color(theme::text_subtle())
-                        .hover(|st| st.text_color(theme::content()))
-                })
-                .child(div().size(px(8.)).rounded_full().bg(add))
-                .child(div().size(px(8.)).rounded_full().bg(del))
-                .child(div().ml(px(2.)).child(p.label()))
-                .on_click(cx.listener(move |_, _, _, cx| {
-                    cx.emit(SettingsEvent::DiffPalette(p));
-                    cx.notify();
-                }))
-        }));
-        let preview_line = |mark: &'static str, text: &'static str, add: bool| {
-            let (fg, bg, bar) = if add {
-                (
-                    theme::diff_add(),
-                    theme::diff_add_bg(),
-                    theme::diff_add_bar(),
-                )
-            } else {
-                (
-                    theme::diff_del(),
-                    theme::diff_del_bg(),
-                    theme::diff_del_bar(),
-                )
-            };
-            div()
-                .flex()
-                .items_center()
-                .h(px(20.))
-                .bg(bg)
-                .border_l_2()
-                .border_color(bar)
-                .child(
-                    div()
-                        .w(px(20.))
-                        .flex()
-                        .justify_center()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(fg)
-                        .child(mark),
-                )
-                .child(div().text_color(theme::text_muted()).child(text))
-        };
-        let preview = div()
-            .flex()
-            .flex_col()
-            .py(crate::ui::sp(4.))
-            .rounded(crate::ui::rad(ui::RADIUS_LG))
-            .overflow_hidden()
-            .border_1()
-            .border_color(theme::stroke())
-            .bg(theme::background())
-            .font_family(theme::FONT_MONO)
-            .text_size(px(ui::TEXT_XS))
-            .child(
-                div()
-                    .h(px(20.))
-                    .border_l_2()
-                    .border_color(gpui::transparent_black())
-                    .pl(crate::ui::sp(20.))
-                    .flex()
-                    .items_center()
+                    .text_size(px(ui::TEXT_SM))
                     .text_color(theme::text_subtle())
-                    .child("fn retry(n: u32) {"),
+                    .child("Closes Settings and opens the panel at the right."),
             )
-            .child(preview_line("−", "    let wait = 100;", false))
-            .child(preview_line("+", "    let wait = 100 * 2u64.pow(n);", true))
-            .child(
-                div()
-                    .h(px(20.))
-                    .border_l_2()
-                    .border_color(gpui::transparent_black())
-                    .pl(crate::ui::sp(20.))
-                    .flex()
-                    .items_center()
-                    .text_color(theme::text_subtle())
-                    .child("}"),
-            );
-        let mode = {
-            let mut seg = ui::segmented();
-            for (i, m) in crate::theme::Mode::ALL.into_iter().enumerate() {
-                seg = seg.child(
-                    ui::segment(("set-mode", i), None, m.label(), crate::theme::mode() == m)
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.set_shape(|s| s.light = m == crate::theme::Mode::Light, cx);
-                        })),
-                );
-            }
-            row(
-                "Mode",
-                "Dark draws the palette on black; Light on white with dark text.",
-                seg.into_any_element(),
-            )
-            .into_any_element()
-        };
-        let grays = {
-            let mut seg = ui::segmented();
-            for (i, g) in crate::theme::Grays::ALL.into_iter().enumerate() {
-                seg = seg.child(
-                    ui::segment(
-                        ("set-grays", i),
-                        None,
-                        g.label(),
-                        crate::theme::grays() == g,
-                    )
-                    .on_click(cx.listener(move |_, _, _, cx| {
-                        cx.emit(SettingsEvent::Grays(g));
-                        cx.notify();
-                    })),
-                );
-            }
-            row(
-                "Grays",
-                "How bright secondary text and borders are. Crisp lifts labels on the dark background; Soft quiets them.",
-                seg.into_any_element(),
-            )
-            .into_any_element()
-        };
-        let text_size = {
-            let mut seg = ui::segmented();
-            for (i, t) in crate::ui::TypeScale::ALL.into_iter().enumerate() {
-                seg = seg.child(
-                    ui::segment(
-                        ("set-type", i),
-                        None,
-                        t.label(),
-                        crate::ui::type_scale() == t,
-                    )
-                    .on_click(cx.listener(move |_, _, _, cx| {
-                        cx.emit(SettingsEvent::TypeScale(t));
-                        cx.notify();
-                    })),
-                );
-            }
-            row(
-                "Text size",
-                "Comfortable sets body text at 14 instead of 13.",
-                seg.into_any_element(),
-            )
-            .into_any_element()
-        };
-        let diffs = div()
-            .flex()
-            .flex_col()
-            .gap(crate::ui::sp(10.))
-            .px(crate::ui::sp(14.))
-            .py(crate::ui::sp(12.))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(crate::ui::sp(16.))
-                    .child(label_block(
-                        "Diff colors",
-                        "Colorblind uses blue and orange. Lines keep their + and − marks.",
-                    ))
-                    .child(segments),
-            )
-            .child(preview)
             .into_any_element();
-        let glass_row = row(
-            "Glass",
-            "See-through window and sidebar; the compositor blurs what is behind (KDE, Hyprland).",
-            switch(glass).into_any_element(),
-        )
-        .id("set-glass")
-        .cursor_pointer()
-        .on_click(cx.listener(move |_, _, _, cx| {
-            cx.emit(SettingsEvent::Glass(!glass));
-            cx.notify();
-        }))
-        .into_any_element();
-        let gallery = row(
-            "Design system",
-            "Every color, type style and component Arakun is built from, with the gray and type choices.",
-            ui::button("set-gallery", "Open", ButtonKind::Outline, true)
-                .on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::OpenGallery)))
-                .into_any_element(),
-        )
-        .into_any_element();
         stack(vec![
-            titled("Colors", vec![self.render_palettes(cx), mode]),
-            titled("Text", vec![text_size, grays]),
-            titled("Shape", self.render_shape(cx)),
-            titled("Code", vec![diffs]),
-            titled("Window", vec![glass_row, gallery]),
+            group(vec![
+                row("Colors", "", value(self.look.colors.clone())).into_any_element(),
+                row("Shape", "", value(self.look.shape.clone())).into_any_element(),
+            ]),
+            open,
         ])
     }
 
@@ -2944,22 +2063,9 @@ impl Render for SettingsDialog {
     }
 }
 
-/// The tint at slider position `t`. 360° is 0° again, which would send the
-/// thumb back to the left end, so the right end stops just short of it.
-fn hue_at(t: f32) -> f32 {
-    (t * 360.).clamp(0., 359.)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_tint_slider_stops_short_of_360() {
-        assert_eq!(hue_at(0.), 0.);
-        assert_eq!(hue_at(0.5), 180.);
-        assert_eq!(hue_at(1.), 359.);
-    }
 
     /// The link setting is in General in every build, whichever keyword list it has.
     #[test]

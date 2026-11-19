@@ -25,6 +25,7 @@ mod cloudflare_view;
 mod coderspace;
 mod control;
 mod crash;
+mod customize_view;
 #[cfg(test)]
 mod design_lint;
 mod dev;

@@ -1,6 +1,6 @@
 //! The Design system tab: every token and component of `ui` and `theme` on
-//! one page, live. The gray ramp and type scale switches at the top change
-//! the whole app, so a choice can be judged where it matters.
+//! one page, live. It is the full preview of the Customize panel: a change
+//! there shows here on every component at once.
 
 use std::rc::Rc;
 
@@ -11,13 +11,8 @@ use gpui::{
     StatefulInteractiveElement as _, Styled as _, Window, div, px,
 };
 
-use crate::theme::{self, Grays};
-use crate::ui::{self, AreaChart, ButtonKind, Series, Tone, Type, TypeScale, Typography as _};
-
-/// A choice the shell saves with the layout.
-pub struct GalleryChanged;
-
-impl gpui::EventEmitter<GalleryChanged> for GalleryView {}
+use crate::theme;
+use crate::ui::{self, AreaChart, ButtonKind, Series, Tone, Type, Typography as _};
 
 pub struct GalleryView {
     chart: Entity<AreaChart>,
@@ -211,55 +206,15 @@ impl Render for GalleryView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let r = theme::grays().ramp();
 
-        // ---- the choices -----------------------------------------------------
-        let mut grays = ui::segmented();
-        for (i, g) in Grays::ALL.into_iter().enumerate() {
-            grays = grays.child(
-                ui::segment(("ds-grays", i), None, g.label(), theme::grays() == g).on_click(
-                    cx.listener(move |_, _, window, cx| {
-                        theme::set_grays(g);
-                        cx.emit(GalleryChanged);
-                        window.refresh();
-                        cx.notify();
-                    }),
-                ),
-            );
-        }
-        let mut scale = ui::segmented();
-        for (i, t) in TypeScale::ALL.into_iter().enumerate() {
-            scale = scale.child(
-                ui::segment(("ds-scale", i), None, t.label(), ui::type_scale() == t).on_click(
-                    cx.listener(move |_, _, window, cx| {
-                        ui::set_type_scale(t);
-                        cx.emit(GalleryChanged);
-                        window.refresh();
-                        cx.notify();
-                    }),
-                ),
-            );
-        }
         let header = div()
-            .flex()
             .flex_none()
-            .flex_wrap()
-            .items_end()
-            .justify_between()
-            .gap(crate::ui::sp(16.))
             .px(crate::ui::sp(ui::PAGE_PAD))
             .pt(crate::ui::sp(ui::PAGE_PAD))
             .pb(crate::ui::sp(20.))
             .child(ui::page_title(
                 "Design system",
-                Some("The tokens and components every view builds from. The choices on the right change the whole app, live.".into_any_element()),
-            ))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(crate::ui::sp(16.))
-                    .child(div().flex().items_center().gap(crate::ui::sp(8.)).child(ui::overline("Grays")).child(grays))
-                    .child(div().flex().items_center().gap(crate::ui::sp(8.)).child(ui::overline("Type")).child(scale)),
-            );
+                Some("The tokens and components every view builds from. Change them in Customize and they change here, live.".into_any_element()),
+            ));
 
         // ---- color -------------------------------------------------------------
         let text_roles = div()

@@ -833,6 +833,7 @@ impl Preset {
             known: View::ALL.to_vec(),
             offered_active: true,
             switcher_offered: true,
+            trial_of: None,
         }
     }
 }
@@ -854,6 +855,11 @@ pub struct Sidebar {
     /// before the Switcher was the default lacks it, so the rail offers it once.
     #[serde(default)]
     pub switcher_offered: bool,
+    /// The layout from before "Try it" on the Switcher offer, until the user
+    /// keeps the Switcher or goes back. Saved with the Switcher so a restart
+    /// in between still offers the way back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trial_of: Option<Box<Sidebar>>,
 }
 
 impl Default for Sidebar {
@@ -920,11 +926,16 @@ impl Sidebar {
             })
     }
 
-    /// The Switcher, keeping this layout's style and pins: they are the
-    /// person's own, and the Switcher has nowhere else for pins.
+    /// The Switcher on trial, keeping this layout's style and pins: they are
+    /// the person's own, and the Switcher has nowhere else for pins. The
+    /// layout itself rides along in `trial_of` for "Go back".
     pub fn as_switcher(&self) -> Sidebar {
         let mut s = Preset::Switcher.layout();
         s.style = self.style;
+        let mut old = self.clone();
+        old.switcher_offered = true;
+        old.trial_of = None;
+        s.trial_of = Some(Box::new(old));
         let pins: Vec<Item> = self
             .sections
             .iter()
@@ -1284,6 +1295,7 @@ mod tests {
             known: View::ALL.to_vec(),
             offered_active: true,
             switcher_offered: false,
+            trial_of: None,
         }
     }
 
@@ -1543,6 +1555,7 @@ mod tests {
             known: View::ALL.to_vec(),
             offered_active: true,
             switcher_offered: false,
+            trial_of: None,
         };
         assert!(bare.place(View::Notes));
         assert_eq!(names(&bare), ["A[Search]", "B[Projects,Notes]"]);
@@ -1552,6 +1565,7 @@ mod tests {
             known: vec![],
             offered_active: true,
             switcher_offered: false,
+            trial_of: None,
         };
         assert!(!none.place(View::Notes));
     }
@@ -1636,6 +1650,11 @@ mod tests {
         assert_eq!(s.sections[1].title, "Pinned");
         assert!(s.has(&pin));
         assert!(!s.offers_switcher());
+        // The way back survives a save and load, and is answered.
+        let s = Sidebar::parse(s.to_json().as_bytes()).unwrap();
+        let back = s.trial_of.as_deref().unwrap();
+        assert_eq!(back.sections, old.sections);
+        assert!(!back.offers_switcher());
         // Without pins it is the template as it is.
         assert_eq!(
             small().as_switcher().sections,

@@ -369,9 +369,6 @@ pub struct Shell {
     panel_open: bool,
     /// What the rail shows, in the user's order.
     sidebar: crate::sidebar::Sidebar,
-    /// The layout from before "Try it" on the Switcher offer, until the user
-    /// keeps the Switcher or goes back to it.
-    sidebar_trial: Option<crate::sidebar::Sidebar>,
     /// The sidebar builder tab's selection, fields and undo.
     builder: sidebar_builder::Builder,
     /// Dragged widths of the side cards; state::RAIL_W / PANEL_W until dragged.
@@ -895,7 +892,6 @@ impl Shell {
             rail_open: layout.rail_open,
             panel_open: layout.panel_open,
             sidebar,
-            sidebar_trial: None,
             builder: Default::default(),
             rail_w: layout.rail_w,
             panel_w: layout.panel_w,

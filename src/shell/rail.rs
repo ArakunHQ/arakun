@@ -356,7 +356,7 @@ impl Shell {
     /// Offers the Switcher to someone whose layout predates it, once: "Try it"
     /// swaps it in and asks whether to keep it, "Go back" restores theirs.
     fn render_switcher_offer(&self, cx: &mut Context<Self>) -> Option<gpui::Div> {
-        let trying = self.sidebar_trial.is_some();
+        let trying = self.sidebar.trial_of.is_some();
         if !trying && !self.sidebar.offers_switcher() {
             return None;
         }
@@ -378,20 +378,15 @@ impl Shell {
         let yes = ui::button("switcher-yes", yes, ui::ButtonKind::Primary, true).on_click(
             cx.listener(move |this, _, _, cx| {
                 if trying {
-                    this.sidebar_trial = None;
-                    cx.notify();
+                    this.change_sidebar(cx, |s| s.trial_of = None);
                 } else {
-                    this.sidebar_trial = Some(this.sidebar.clone());
                     this.change_sidebar(cx, |s| *s = s.as_switcher());
                 }
             }),
         );
         let no = ui::button("switcher-no", no, ui::ButtonKind::Ghost, true).on_click(cx.listener(
-            move |this, _, _, cx| match this.sidebar_trial.take() {
-                Some(mut old) => {
-                    old.switcher_offered = true;
-                    this.change_sidebar(cx, |s| *s = old);
-                }
+            move |this, _, _, cx| match this.sidebar.trial_of.clone() {
+                Some(old) => this.change_sidebar(cx, |s| *s = *old),
                 None => this.change_sidebar(cx, |s| s.switcher_offered = true),
             },
         ));

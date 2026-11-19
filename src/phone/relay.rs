@@ -52,6 +52,14 @@ const MAX_REQ_BODY: usize = 4096;
 /// The first wait after a drop; each failure doubles it up to `RETRY_MAX`.
 const RETRY_MIN: Duration = Duration::from_secs(1);
 const RETRY_MAX: Duration = Duration::from_secs(60);
+/// How long to wait after the relay turned us away for a reason that may pass,
+/// such as a block the operator lifts again. Long, so a blocked computer does
+/// not knock all day; short in tests, which wait for the next dial.
+const REFUSED_WAIT: Duration = if cfg!(test) {
+    Duration::from_millis(300)
+} else {
+    Duration::from_secs(10 * 60)
+};
 /// How long dialing and the handshakes may take together.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 /// The relay hears from us this often while nothing else is said, and is
@@ -73,9 +81,16 @@ pub enum Status {
         why: String,
         retry_in: Duration,
     },
+    /// The relay turned this computer away: the operator blocked it, or
+    /// another computer with this very key took the place. That can change,
+    /// so it asks again, but only after a long wait.
+    Refused {
+        why: String,
+        retry_in: Duration,
+    },
     /// The relay will not have this computer, and asking again would not
-    /// change that: the label belongs to another key, the operator blocked it,
-    /// or another computer with this very key took the place.
+    /// change that: the label belongs to another key, or the relay does not
+    /// accept its signature.
     Rejected(String),
 }
 
@@ -140,6 +155,7 @@ impl RelayClient {
         let tickets = access.lock().unwrap().ticket_hashes();
         let link = Link {
             url: endpoint(base, &label),
+            page: page_url(base, &label),
             identity,
             access,
             tickets,
@@ -254,6 +270,17 @@ impl Drop for RelayClient {
     }
 }
 
+/// How long until the next dial, as people say it: seconds, or minutes once
+/// it is that long.
+pub fn wait_text(wait: Duration) -> String {
+    let secs = wait.as_secs().max(1);
+    if secs < 120 {
+        format!("{secs} s")
+    } else {
+        format!("{} min", secs.div_ceil(60))
+    }
+}
+
 /// The WebSocket address of this computer's place on the relay. A base at a
 /// bare address or `localhost` is a relay run by hand (`wrangler dev`), which
 /// takes the label from its configuration: no label in front, no TLS.
@@ -290,6 +317,8 @@ fn origin(base: &str, label: &str) -> (bool, String) {
 
 struct Link {
     url: String,
+    /// The page phones open, whose `_relay` says whether the label is blocked.
+    page: String,
     identity: Identity,
     access: Shared,
     tickets: Vec<String>,
@@ -323,6 +352,8 @@ enum Peer {
 enum Ended {
     /// Dial again after a wait.
     Retry(String),
+    /// Turned away; dial again after `REFUSED_WAIT`.
+    Refused(String),
     /// Do not come back until the user changes something.
     Rejected(String),
     /// The client was dropped.
@@ -360,23 +391,41 @@ impl Link {
                     self.set_status(Status::Rejected(why));
                     return;
                 }
+                Ended::Refused(why) => {
+                    self.set_status(Status::Refused {
+                        why,
+                        retry_in: REFUSED_WAIT,
+                    });
+                    if !self.pause(REFUSED_WAIT) {
+                        return;
+                    }
+                }
                 Ended::Retry(why) => {
                     self.set_status(Status::Reconnecting {
                         why,
                         retry_in: wait,
                     });
-                    let until = Instant::now() + wait;
-                    while Instant::now() < until {
-                        if self.stop.load(Ordering::Relaxed) {
-                            return;
-                        }
-                        self.drain_commands_offline();
-                        std::thread::sleep(WAIT_TICK);
+                    if !self.pause(wait) {
+                        return;
                     }
                     wait = (wait * 2).min(RETRY_MAX);
                 }
             }
         }
+    }
+
+    /// Waits between dials, keeping what the shell asks for meanwhile. False
+    /// when the client was dropped during the wait.
+    fn pause(&mut self, wait: Duration) -> bool {
+        let until = Instant::now() + wait;
+        while Instant::now() < until {
+            if self.stop.load(Ordering::Relaxed) {
+                return false;
+            }
+            self.drain_commands_offline();
+            std::thread::sleep(WAIT_TICK);
+        }
+        true
     }
 
     fn set_status(&mut self, status: Status) {
@@ -449,9 +498,14 @@ impl Link {
                 } else {
                     body
                 };
-                match res.status().as_u16() {
-                    403 => Ended::Rejected(text),
-                    _ => Ended::Retry(text),
+                // A 403 may come from a firewall in front of the relay, which
+                // can let the next attempt through. Only the relay's own word
+                // makes it a block: the body here is whatever arrived with the
+                // head, raw, so `_relay` is asked instead.
+                if res.status().as_u16() == 403 && self.blocked_at_door() {
+                    refused("blocked")
+                } else {
+                    Ended::Retry(text)
                 }
             }
             tungstenite::HandshakeError::Failure(e) => {
@@ -469,6 +523,24 @@ impl Link {
             let _ = s.get_ref().set_read_timeout(Some(READ_TICK));
         }
         Ok(ws)
+    }
+
+    /// Whether the relay itself says this label is blocked. Anything else,
+    /// including no answer, is not a block.
+    fn blocked_at_door(&self) -> bool {
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .timeout_global(Some(CONNECT_TIMEOUT))
+            .http_status_as_error(false)
+            .build()
+            .into();
+        let Ok(mut res) = agent.get(format!("{}_relay", self.page)).call() else {
+            return false;
+        };
+        let Ok(body) = res.body_mut().with_config().limit(4096).read_to_string() else {
+            return false;
+        };
+        res.status().as_u16() == 403
+            && serde_json::from_str::<Value>(&body).is_ok_and(|v| v["blocked"] == true)
     }
 
     /// Answers the challenge with the signature of `nonce ‖ label`, then tells
@@ -1016,9 +1088,11 @@ fn refused(reason: &str) -> Ended {
         "bad_signature" => {
             Ended::Rejected("The relay did not accept this computer's signature.".into())
         }
-        "blocked" => Ended::Rejected("The relay operator blocked this address.".into()),
+        // The operator may lift a block, and the other computer may go away:
+        // keep asking, slowly, so a server comes back without a restart.
+        "blocked" => Ended::Refused("The relay operator blocked this address.".into()),
         "replaced" => {
-            Ended::Rejected("Another computer with this key connected to the relay.".into())
+            Ended::Refused("Another computer with this key connected to the relay.".into())
         }
         other => Ended::Retry(format!("The relay hung up: {other}")),
     }
@@ -1825,5 +1899,107 @@ mod tests {
         relay.listener.set_nonblocking(true).unwrap();
         std::thread::sleep(Duration::from_millis(300));
         assert!(relay.listener.accept().is_err());
+    }
+
+    #[test]
+    fn a_block_is_asked_about_again_after_a_long_wait() {
+        let me = Identity::generate();
+        let public = me.public_raw().to_vec();
+        let relay = FakeRelay::start(&me.label());
+        let (_client, mut rx) = RelayClient::start(&relay.base(), me, access_with_tickets(&[]));
+        let (mut ws, _) = relay.accept_and_claim(&public);
+        assert_eq!(next_status(&mut rx), Status::Connecting);
+        assert_eq!(next_status(&mut rx), Status::Connected);
+        tell(&mut ws, json!({"type": "bye", "reason": "blocked"}));
+        ws.close(Some(tungstenite::protocol::CloseFrame {
+            code: CloseCode::from(4403),
+            reason: "blocked".into(),
+        }))
+        .unwrap();
+        let _ = ws.flush();
+        assert_eq!(
+            next_status(&mut rx),
+            Status::Refused {
+                why: "The relay operator blocked this address.".into(),
+                retry_in: REFUSED_WAIT,
+            }
+        );
+        // The operator lifted the block: the next dial gets back in.
+        let (_ws, _) = relay.accept_and_claim(&public);
+        assert_eq!(next_status(&mut rx), Status::Connecting);
+        assert_eq!(next_status(&mut rx), Status::Connected);
+    }
+
+    /// Answers the next request with a plain HTTP response, the head and the
+    /// body apart, as a slow network may deliver them. Gives back the path asked.
+    fn answer_http(relay: &FakeRelay, status: &str, body: &str) -> String {
+        use std::io::{Read as _, Write as _};
+        let (mut stream, _) = relay.listener.accept().unwrap();
+        let mut request = Vec::new();
+        let mut buf = [0u8; 4096];
+        while !request.windows(4).any(|w| w == b"\r\n\r\n") {
+            let n = stream.read(&mut buf).unwrap();
+            assert!(n > 0, "the request ended early");
+            request.extend_from_slice(&buf[..n]);
+        }
+        let head = format!(
+            "HTTP/1.1 {status}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+            body.len()
+        );
+        stream.write_all(head.as_bytes()).unwrap();
+        stream.flush().unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+        stream.write_all(body.as_bytes()).unwrap();
+        let request = String::from_utf8_lossy(&request).to_string();
+        request.split(' ').nth(1).unwrap_or_default().to_string()
+    }
+
+    #[test]
+    fn a_403_from_a_firewall_is_dialed_again_soon() {
+        let me = Identity::generate();
+        let public = me.public_raw().to_vec();
+        let relay = FakeRelay::start(&me.label());
+        let (_client, mut rx) = RelayClient::start(&relay.base(), me, access_with_tickets(&[]));
+        assert_eq!(answer_http(&relay, "403 Forbidden", ""), "/pc");
+        // The relay itself does not know of a block.
+        assert_eq!(answer_http(&relay, "200 OK", r#"{"label":"x"}"#), "/_relay");
+        assert_eq!(next_status(&mut rx), Status::Connecting);
+        assert_eq!(
+            next_status(&mut rx),
+            Status::Reconnecting {
+                why: "The relay answered 403 Forbidden".into(),
+                retry_in: RETRY_MIN,
+            }
+        );
+        let (_ws, _) = relay.accept_and_claim(&public);
+        assert_eq!(next_status(&mut rx), Status::Connecting);
+        assert_eq!(next_status(&mut rx), Status::Connected);
+    }
+
+    #[test]
+    fn a_blocked_label_at_the_door_waits_long() {
+        let me = Identity::generate();
+        let relay = FakeRelay::start(&me.label());
+        let (_client, mut rx) = RelayClient::start(&relay.base(), me, access_with_tickets(&[]));
+        assert_eq!(answer_http(&relay, "403 Forbidden", "blocked"), "/pc");
+        assert_eq!(
+            answer_http(&relay, "403 Forbidden", r#"{"label":"x","blocked":true}"#),
+            "/_relay"
+        );
+        assert_eq!(next_status(&mut rx), Status::Connecting);
+        assert_eq!(
+            next_status(&mut rx),
+            Status::Refused {
+                why: "The relay operator blocked this address.".into(),
+                retry_in: REFUSED_WAIT,
+            }
+        );
+    }
+
+    #[test]
+    fn waits_read_in_seconds_then_minutes() {
+        assert_eq!(wait_text(Duration::from_millis(200)), "1 s");
+        assert_eq!(wait_text(Duration::from_secs(60)), "60 s");
+        assert_eq!(wait_text(Duration::from_secs(600)), "10 min");
     }
 }

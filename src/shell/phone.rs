@@ -1286,9 +1286,13 @@ fn relay_address(status: relay::Status, page: &str) -> Address {
         relay::Status::Connecting => Address::Pending("Connecting to the relay…".into()),
         relay::Status::Connected => Address::Ready(page.to_string()),
         relay::Status::Reconnecting { why, retry_in } => Address::Pending(format!(
-            "{why} Trying again in {} s.",
-            retry_in.as_secs().max(1)
+            "{why} Trying again in {}.",
+            relay::wait_text(retry_in)
         )),
+        relay::Status::Refused { why, retry_in } => Address::Problem {
+            what: format!("{why} Trying again in {}.", relay::wait_text(retry_in)),
+            link: None,
+        },
         relay::Status::Rejected(why) => Address::Problem {
             what: why,
             link: None,

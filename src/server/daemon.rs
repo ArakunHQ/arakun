@@ -495,8 +495,12 @@ fn relay_address(status: relay::Status, page: &str) -> Address {
         relay::Status::Connecting => Address::Pending("connecting to the relay".into()),
         relay::Status::Connected => Address::Ready(page.to_string()),
         relay::Status::Reconnecting { why, retry_in } => Address::Pending(format!(
-            "{why} Trying again in {} s.",
-            retry_in.as_secs().max(1)
+            "{why} Trying again in {}.",
+            relay::wait_text(retry_in)
+        )),
+        relay::Status::Refused { why, retry_in } => Address::Problem(format!(
+            "{why} Trying again in {}.",
+            relay::wait_text(retry_in)
         )),
         relay::Status::Rejected(why) => Address::Problem(why),
     }
@@ -1415,6 +1419,10 @@ impl Daemon {
                         relay::Status::Reconnecting { why, .. } => {
                             Some(format!("the relay is away: {why}"))
                         }
+                        relay::Status::Refused { why, retry_in } => Some(format!(
+                            "the relay turned this server away: {why} Trying again in {}.",
+                            relay::wait_text(*retry_in)
+                        )),
                         relay::Status::Rejected(why) => {
                             Some(format!("the relay turned this server away: {why}"))
                         }
@@ -4434,8 +4442,18 @@ hB4c5Ctl3gH87t2sYgahkwsrsgaPmTiVB9bYTD52y70dAtxVNNOhFsNf\n\
             Address::Pending("The relay closed the connection. Trying again in 1 s.".into())
         );
         assert_eq!(
-            relay_address(relay::Status::Rejected("Blocked.".into()), "x"),
-            Address::Problem("Blocked.".into())
+            relay_address(
+                relay::Status::Refused {
+                    why: "Blocked.".into(),
+                    retry_in: Duration::from_secs(600),
+                },
+                "x"
+            ),
+            Address::Problem("Blocked. Trying again in 10 min.".into())
+        );
+        assert_eq!(
+            relay_address(relay::Status::Rejected("Not ours.".into()), "x"),
+            Address::Problem("Not ours.".into())
         );
     }
 

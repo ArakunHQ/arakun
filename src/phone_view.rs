@@ -111,6 +111,9 @@ pub struct PhoneView {
     focus: FocusHandle,
 }
 
+/// Said next to the way in when the page comes from this computer.
+const AWAKE_NOTE: &str = "In this mode the page comes from this computer, so it only opens while the computer is on and awake. Relay works from anywhere and says when the computer is offline.";
+
 impl EventEmitter<PhoneEvent> for PhoneView {}
 
 impl PhoneView {
@@ -315,6 +318,29 @@ impl PhoneView {
                     .text_color(theme::text_faint())
                     .child(explain),
             )
+            .when(reach != Reach::Relay, |d| {
+                // The page is served by this computer in these two modes, so a
+                // sleeping computer leaves the phone with a blank page and no hint why.
+                d.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .items_start()
+                        .gap(crate::ui::sp(8.))
+                        .child(
+                            div()
+                                .text_size(px(ui::TEXT_XS))
+                                .text_color(theme::text_muted())
+                                .child(AWAKE_NOTE),
+                        )
+                        .child(
+                            ui::button("phone-use-relay", "Use Relay", ButtonKind::Outline, true)
+                                .on_click(cx.listener(|_, _, _, cx| {
+                                    cx.emit(PhoneEvent::SetReach(Reach::Relay))
+                                })),
+                        ),
+                )
+            })
     }
 
     /// This computer's address on the relay, and the way to change it.

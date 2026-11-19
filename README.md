@@ -260,7 +260,10 @@ after a week).
   `notices.json` next to its state. `arakun notices [--unseen]` prints them.
 - **Phone remote.** A web page served by Arakun lets a paired phone follow sessions, send
   prompts and answer the agent. Phones reach the computer over the local network (the
-  default), over Tailscale, or through an end-to-end encrypted relay. The relay defaults
+  default), over Tailscale, or through an end-to-end encrypted relay. On the local
+  network and over Tailscale the page comes from the computer itself, so it only opens
+  while the computer is on and awake; the relay works from anywhere and says when the
+  computer is offline (the Phone tab says so and offers Use Relay). The relay defaults
   to the hosted one at `arakun.dev`; you can run your own from [`relay/`](relay)
   (a Cloudflare Worker) and point `relay_base` in `phone.json` at it.
 

@@ -19,6 +19,7 @@ use gpui::{
     div, fill, img, point, px, relative, size, uniform_list,
 };
 
+mod active;
 pub(crate) mod agent_cli;
 mod automations;
 mod branches;
@@ -1611,6 +1612,18 @@ impl Shell {
     /// commit, as the dialog would fill in. Its row shows at once and the
     /// worktree follows; the agent names the branch after the first prompt.
     fn quick_create_env(&mut self, pi: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.quick_create_env_then(pi, None, window, cx)
+    }
+
+    /// [`Self::quick_create_env`], then `prompt` starts the worktree's session:
+    /// a first prompt sent where a session already is.
+    fn quick_create_env_then(
+        &mut self,
+        pi: usize,
+        prompt: Option<sessions::QueuedPrompt>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.menu = None;
         self.env_menu_open = false;
         let Some(project) = self.projects.get(pi) else {
@@ -1690,16 +1703,24 @@ impl Shell {
                     // The project can have moved in the list since.
                     Ok((path, branch)) => {
                         if let Some(pi) = this.projects.iter().position(|p| p.path == key) {
-                            this.environment_created(pi, path, branch, true, window, cx);
+                            this.environment_created(pi, path.clone(), branch, true, window, cx);
+                            if let Some(prompt) = prompt {
+                                this.start_queued(&path, prompt, window, cx);
+                            }
                         }
                     }
-                    Err(e) => this.notify(
-                        crate::island::AlertKind::Failure,
-                        "Could not create the environment",
-                        &e.to_string(),
-                        None,
-                        cx,
-                    ),
+                    Err(e) => {
+                        if let Some(prompt) = prompt {
+                            this.unqueue(prompt, cx);
+                        }
+                        this.notify(
+                            crate::island::AlertKind::Failure,
+                            "Could not create the environment",
+                            &e.to_string(),
+                            None,
+                            cx,
+                        )
+                    }
                 }
                 cx.notify();
             });
@@ -1737,6 +1758,8 @@ impl Shell {
             env.follow_branch();
         }
         self.select_env(pi, ei, window, cx);
+        // It opens on its New session tab, ready for the first prompt.
+        window.focus(&self.composer_focus, cx);
         self.refresh_project(pi, cx);
         // The project's setup script runs in a terminal of the new environment.
         let setup = self.projects.get(pi).and_then(|p| p.setup.clone());
@@ -2686,8 +2709,14 @@ impl Shell {
         cx.notify();
     }
 
+    /// One thread per worktree: a new session gets a worktree of its own,
+    /// unless the open environment has no thread yet.
     fn new_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.has_projects() {
+            return;
+        }
+        if !self.env().sessions.is_empty() {
+            self.quick_create_env(self.active_project, window, cx);
             return;
         }
         let path = self.env().path.clone();

@@ -7,7 +7,7 @@ use crate::servers_view::Reach;
 const ENV_ROW_H: f32 = 28.;
 const ENV_GAP: f32 = 2.;
 
-const NEW_ENV_TIP: &str = "New environment (Ctrl+Shift+N). Alt+click for options";
+const NEW_ENV_TIP: &str = "New session in its own worktree (Ctrl+Shift+N). Alt+click for options";
 
 /// The one thing an environment row says at its end, the most urgent first.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -83,7 +83,7 @@ fn pending_env_row(id: usize, name: String) -> gpui::Stateful<gpui::Div> {
                 .flex_none()
                 .text_size(px(ui::TEXT_XS))
                 .text_color(theme::text_faint())
-                .child("Creating"),
+                .child("Making worktree"),
         )
 }
 
@@ -153,6 +153,26 @@ pub(super) fn away_envs(statuses: &[Vec<Status>], open: usize) -> Vec<(usize, us
     // Stable: the sidebar order holds within each group.
     away.sort_by_key(|(_, _, s)| *s != Status::NeedsInput);
     away
+}
+
+/// What a worktree's row is called: its thread, the newest when it holds
+/// more than one (from before one thread per worktree), with how many more.
+/// `None` for the main checkout, a scratch place known by its branch, and for
+/// a worktree with no thread yet. `sessions` is `(title, last activity)`;
+/// the last value is the index of the one named, which a click opens.
+pub(super) fn thread_label(
+    is_checkout: bool,
+    sessions: &[(&str, u64)],
+) -> Option<(String, usize, usize)> {
+    if is_checkout {
+        return None;
+    }
+    let (i, (title, _)) = sessions
+        .iter()
+        .enumerate()
+        .filter(|(_, (t, _))| !t.trim().is_empty())
+        .max_by_key(|(_, (_, updated))| *updated)?;
+    Some((title.to_string(), sessions.len() - 1, i))
 }
 
 /// A worktree is often named after its project (`beta-fix-login`); next to
@@ -487,8 +507,28 @@ impl Shell {
                 if only_open {
                     envs = envs.child(self.render_env_heading(pi, cx));
                 }
+                // What waits or runs is in the Active list above; here the rest.
+                // The main checkout stays: it is how you get to it.
+                let active_above = self.active_list_shown();
                 for (ei, env) in project.environments.iter().enumerate() {
-                    envs = envs.child(self.render_env_row(pi, ei, env, show_changes, cx));
+                    // A worktree from before one session per worktree stays
+                    // while any of its sessions is idle.
+                    let all_above = !env.sessions.is_empty()
+                        && env
+                            .sessions
+                            .iter()
+                            .all(|s| super::active::is_active(s.status));
+                    if active_above && !env.is_checkout && all_above {
+                        continue;
+                    }
+                    envs = envs.child(self.render_env_row(
+                        pi,
+                        ei,
+                        env,
+                        show_changes,
+                        active_above,
+                        cx,
+                    ));
                 }
                 for (i, name) in self
                     .pending_envs
@@ -523,7 +563,7 @@ impl Shell {
                                 theme::mix(0.7),
                                 "env-add-row",
                             ))
-                            .child("New environment")
+                            .child("New session")
                             .on_click(cx.listener(
                                 move |this, ev: &gpui::ClickEvent, window, cx| {
                                     this.new_env_click(pi, ev, window, cx)
@@ -532,7 +572,8 @@ impl Shell {
                     );
                 }
                 projects = projects.child(envs);
-                if only_open {
+                // The Active list already shows what runs elsewhere.
+                if only_open && !active_above {
                     projects = projects.children(self.render_elsewhere(cx));
                 }
             }
@@ -835,7 +876,7 @@ impl Shell {
         )
     }
 
-    /// "Environments", with the + that makes one, over the open project's list.
+    /// "Sessions", with the + that makes one in a new worktree, over the open project's list.
     fn render_env_heading(&self, pi: usize, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .flex()
@@ -845,7 +886,7 @@ impl Shell {
             .pl(crate::ui::sp(8.))
             .text_size(px(ui::TEXT_SM))
             .text_color(theme::text_subtle())
-            .child(div().flex_1().min_w_0().truncate().child("Environments"))
+            .child(div().flex_1().min_w_0().truncate().child("Sessions"))
             .child(
                 div()
                     .id(("env-add", pi))
@@ -872,6 +913,7 @@ impl Shell {
         ei: usize,
         env: &Environment,
         show_changes: bool,
+        active_above: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let active = self.projects.get(pi).is_some_and(|p| p.active_env == ei);
@@ -881,6 +923,20 @@ impl Shell {
         // The diff of the open row; the others show theirs on hover.
         let changes = show_changes.then(|| env.diff_totals());
         let signal = env_signal(status, ci_failed, changes);
+        // The sessions in the Active list are named there; this row names the rest.
+        let named: Vec<&model::Session> = env
+            .sessions
+            .iter()
+            .filter(|s| !active_above || !super::active::is_active(s.status))
+            .collect();
+        let titles: Vec<(&str, u64)> = named
+            .iter()
+            .map(|s| (s.title.as_ref(), s.updated))
+            .collect();
+        let label = thread_label(env.is_checkout, &titles);
+        // A click opens the session the row is named after: going to the
+        // worktree would show the tab it showed last, maybe another session's.
+        let opens = label.as_ref().map(|(_, _, i)| named[*i].id.clone());
         let lead: AnyElement = if env.is_checkout && status == Status::Idle {
             icon("folder01", 14.)
                 .text_color(if active {
@@ -965,10 +1021,37 @@ impl Shell {
                 d.hover(|s| s.bg(theme::hover()).text_color(theme::content()))
             })
             .child(lead)
-            .child(div().flex_1().min_w_0().truncate().child(env.name.clone()))
+            .when_some(label.clone(), |d, (title, more, _)| {
+                d.tooltip(ui::tip_text(format!("{} · {}", title, env.branch)))
+                    .child(div().flex_1().min_w_0().truncate().child(title))
+                    .when(more > 0, |d| {
+                        d.child(
+                            div()
+                                .flex_none()
+                                .text_size(px(ui::TEXT_XS))
+                                .text_color(theme::text_faint())
+                                .child(format!("+{more}")),
+                        )
+                    })
+            })
+            .when(label.is_none(), |d| {
+                // A worktree made for a new session, still on its random branch:
+                // the first prompt names both.
+                let fresh = env.placeholder.is_some() && env.sessions.is_empty();
+                d.when(fresh, |d| {
+                    d.tooltip(ui::tip_text(env.branch.clone()))
+                        .child(div().flex_1().min_w_0().truncate().child("New session"))
+                })
+                .when(!fresh, |d| {
+                    d.child(div().flex_1().min_w_0().truncate().child(env.name.clone()))
+                })
+            })
             .children(self.render_machine(env, pi * 1000 + ei))
             .children(end.map(|e| div().flex_none().child(e)))
-            .on_click(cx.listener(move |this, _, window, cx| this.select_env(pi, ei, window, cx)))
+            .on_click(cx.listener(move |this, _, window, cx| match &opens {
+                Some(id) => this.open_session_at(pi, ei, id.clone(), window, cx),
+                None => this.select_env(pi, ei, window, cx),
+            }))
     }
 }
 
@@ -990,6 +1073,26 @@ mod tests {
             vec![(2, 1, NeedsInput), (1, 1, Working), (2, 0, Working)]
         );
         assert!(away_envs(&[vec![Working]], 0).is_empty());
+    }
+
+    #[test]
+    fn a_worktree_is_called_by_its_thread() {
+        assert_eq!(
+            thread_label(false, &[("Fix login", 5)]),
+            Some(("Fix login".into(), 0, 0))
+        );
+        // From before one thread per worktree: the newest, and how many more.
+        assert_eq!(
+            thread_label(false, &[("Old", 1), ("New", 9), ("Mid", 4)]),
+            Some(("New".into(), 2, 1))
+        );
+        assert_eq!(
+            thread_label(false, &[("", 9), ("Named", 2)]),
+            Some(("Named".into(), 1, 1))
+        );
+        // No thread yet, or the main checkout: known by the branch.
+        assert_eq!(thread_label(false, &[]), None);
+        assert_eq!(thread_label(true, &[("Fix login", 5)]), None);
     }
 
     #[test]

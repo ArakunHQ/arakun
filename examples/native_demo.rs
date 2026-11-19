@@ -30,6 +30,10 @@ mod durable;
 #[path = "../src/fetch.rs"]
 #[allow(dead_code)]
 mod fetch;
+#[path = "../src/guard.rs"]
+mod guard;
+#[path = "../src/rotate.rs"]
+mod rotate;
 #[allow(dead_code)]
 #[path = "../src/headless/sandbox.rs"]
 mod sandbox;
@@ -501,7 +505,8 @@ fn main() {
                 | ThreadEvent::LoginRequested
                 | ThreadEvent::SubagentsChanged { .. }
                 | ThreadEvent::ShellChanges
-                | ThreadEvent::CheckOffer { .. } => {}
+                | ThreadEvent::CheckOffer { .. }
+                | ThreadEvent::Remote(_) => {}
                 ThreadEvent::Finished { stop_reason } => {
                     let t = thread.read(cx);
                     let mut r = run.borrow_mut();

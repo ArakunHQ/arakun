@@ -509,7 +509,9 @@ fn build(
 }
 
 fn copy(state: gpui::Entity<Zoom>, path: PathBuf, cx: &mut App) {
-    let task = cx.background_spawn(async move { crate::platform::copy_image(&path) });
+    let task = cx.background_spawn(crate::guard::task(async move {
+        crate::platform::copy_image(&path)
+    }));
     state.update(cx, |_, cx| {
         cx.spawn(async move |this, cx| {
             let note = if task.await.is_ok() {

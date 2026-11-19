@@ -24,6 +24,7 @@ impl Shell {
                     .update_in(cx, |this, window, cx| {
                         this.run_due_automations(window, cx);
                         this.watch_merges(cx);
+                        this.clean_up_envs(window, cx);
                         cx.notify();
                     })
                     .is_err()

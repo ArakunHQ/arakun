@@ -1,7 +1,9 @@
-//! `arakun dev`: a second arakun, started from this binary inside a virtual X
-//! display (Xvfb), for checking arakun's own UI. Screenshots read that display
-//! and input is dispatched inside the app, so the user's screen, pointer and
-//! focus are never touched.
+//! `arakun dev`: a second arakun, started from this binary, for checking
+//! arakun's own UI. On Linux it runs inside a virtual X display (Xvfb) and
+//! screenshots read that display. On macOS it runs in a window of its own that
+//! never takes the focus, and screenshots capture that window alone. Input is
+//! dispatched inside the app, so the user's pointer and keyboard are never
+//! touched.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -16,9 +18,11 @@ use serde::{Deserialize, Serialize};
 use crate::control::{self, Reply, Request};
 
 pub const USAGE: &str = "\
-arakun dev start [dir] [--size WxH]  start a fresh test arakun on a virtual display, with
+arakun dev start [dir] [--size WxH]  start a fresh test arakun (Linux: on a virtual display;
+                                  macOS: in a window that never takes the focus), with
                                   dir (default: here) as its project; restarts one
-arakun dev shot [file.png]          screenshot it (window at 0,0, 1 px = 1 point)
+arakun dev shot [file.png]          screenshot its window, in the pixels click takes
+                                  (on a Retina Mac, 2 a point)
 arakun dev click <x> <y> [--right] [--double]
 arakun dev click <text> [--nth N] [--right] [--double]
                                   click the text where it shows (read with OCR)
@@ -43,6 +47,7 @@ const ENV: &str = "ARAKUN_DEV";
 
 #[derive(Serialize, Deserialize, Debug)]
 struct Instance {
+    /// The Xvfb display and process; 0 on macOS, which has none.
     display: u32,
     xvfb: u32,
     arakun: u32,
@@ -264,8 +269,8 @@ fn spawn_detached(cmd: &mut Command, log: &Path) -> std::io::Result<u32> {
 }
 
 fn start(args: &[String]) -> Result<String, String> {
-    if !cfg!(target_os = "linux") {
-        return Err("arakun dev runs arakun on an Xvfb display, which only Linux has".into());
+    if !cfg!(any(target_os = "linux", target_os = "macos")) {
+        return Err("arakun dev runs on Linux (with Xvfb) and macOS only".into());
     }
     let (dir, (width, height)) = start_args(args)?;
     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
@@ -298,48 +303,30 @@ fn start(args: &[String]) -> Result<String, String> {
     });
     std::fs::write(state_file(), state.to_string()).map_err(|e| e.to_string())?;
 
-    let display = free_display().ok_or("no free X display number")?;
-    let xvfb = spawn_detached(
-        Command::new("Xvfb").args([
-            format!(":{display}"),
-            "-screen".into(),
-            "0".into(),
-            format!("{width}x{height}x24"),
-            "-nolisten".into(),
-            "tcp".into(),
-        ]),
-        &root.join("xvfb.log"),
-    )
-    .map_err(|e| format!("could not start Xvfb ({e}); install it (xorg-server-xvfb / xvfb)"))?;
-    let up = Instant::now();
-    while !Path::new(&format!("/tmp/.X11-unix/X{display}")).exists() {
-        if up.elapsed() > Duration::from_secs(5) || !alive(xvfb) {
-            return Err(
-                "Xvfb did not start; see its log in `arakun dev socket`'s directory".into(),
-            );
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
+    let (display, xvfb) = if cfg!(target_os = "linux") {
+        start_xvfb(&root, width, height)?
+    } else {
+        (0, 0)
+    };
 
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let arakun = spawn_detached(
-        Command::new(exe)
-            .current_dir(&project)
-            .env_remove("ARAKUN_SOCKET")
-            .env_remove("WAYLAND_DISPLAY")
+    let mut cmd = Command::new(exe);
+    cmd.current_dir(&project)
+        .env_remove("ARAKUN_SOCKET")
+        .env("ARAKUN_STATE", state_file())
+        .env("XDG_DATA_HOME", root.join("data"))
+        .env("XDG_RUNTIME_DIR", root.join("run"))
+        .env("ARAKUN_CI", "off")
+        // The test Arakun runs with the person's own gh session: it may show
+        // their notifications but must not mark them read.
+        .env("ARAKUN_GITHUB", "readonly")
+        .env(ENV, format!("{width}x{height}"));
+    if cfg!(target_os = "linux") {
+        cmd.env_remove("WAYLAND_DISPLAY")
             .env_remove("WAYLAND_SOCKET")
-            .env("DISPLAY", format!(":{display}"))
-            .env("ARAKUN_STATE", state_file())
-            .env("XDG_DATA_HOME", root.join("data"))
-            .env("XDG_RUNTIME_DIR", root.join("run"))
-            .env("ARAKUN_CI", "off")
-            // The test Arakun runs with the person's own gh session: it may show
-            // their notifications but must not mark them read.
-            .env("ARAKUN_GITHUB", "readonly")
-            .env(ENV, format!("{width}x{height}")),
-        &root.join("arakun.log"),
-    )
-    .map_err(|e| e.to_string())?;
+            .env("DISPLAY", format!(":{display}"));
+    }
+    let arakun = spawn_detached(&mut cmd, &root.join("arakun.log")).map_err(|e| e.to_string())?;
     let started = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
@@ -379,13 +366,48 @@ fn start(args: &[String]) -> Result<String, String> {
         }
         std::thread::sleep(Duration::from_millis(100));
     }
-    let _ = focus(display);
+    if cfg!(target_os = "linux") {
+        let _ = focus(display);
+    }
     // The first frames are still being laid out when the socket answers.
     std::thread::sleep(Duration::from_millis(600));
+    let place = if cfg!(target_os = "linux") {
+        format!("on display :{display}")
+    } else {
+        "in its own window".into()
+    };
     Ok(format!(
-        "test arakun running on display :{display} ({width}x{height}) with {path}\n\
+        "test arakun running {place} ({width}x{height}) with {path}\n\
          `arakun dev shot` screenshots it; `arakun dev stop` ends it"
     ))
+}
+
+/// Starts Xvfb on a free display the size of the test arakun's window; gives
+/// the display number and Xvfb's pid.
+fn start_xvfb(root: &Path, width: u32, height: u32) -> Result<(u32, u32), String> {
+    let display = free_display().ok_or("no free X display number")?;
+    let xvfb = spawn_detached(
+        Command::new("Xvfb").args([
+            format!(":{display}"),
+            "-screen".into(),
+            "0".into(),
+            format!("{width}x{height}x24"),
+            "-nolisten".into(),
+            "tcp".into(),
+        ]),
+        &root.join("xvfb.log"),
+    )
+    .map_err(|e| format!("could not start Xvfb ({e}); install it (xorg-server-xvfb / xvfb)"))?;
+    let up = Instant::now();
+    while !Path::new(&format!("/tmp/.X11-unix/X{display}")).exists() {
+        if up.elapsed() > Duration::from_secs(5) || !alive(xvfb) {
+            return Err(
+                "Xvfb did not start; see its log in `arakun dev socket`'s directory".into(),
+            );
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    Ok((display, xvfb))
 }
 
 /// Gives the app's window the X input focus, so it acts as the active window
@@ -410,9 +432,31 @@ fn focus(display: u32) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn shot(file: Option<PathBuf>) -> Result<String, String> {
+    let inst = running().ok_or("no test arakun is running; start one with `arakun dev start`")?;
+    #[cfg(target_os = "macos")]
+    let img = {
+        // A covered window draws nothing on its own: input since the last frame
+        // would not show.
+        input(&["draw".to_string()])?;
+        mac::shot(inst.arakun, &root().join("raw-shot.png"))?
+    };
+    #[cfg(not(target_os = "macos"))]
+    let img = x_shot(&inst)?;
+    let file = file.unwrap_or_else(|| {
+        let secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_millis());
+        root().join("shots").join(format!("shot-{secs}.png"))
+    });
+    img.save(&file).map_err(|e| e.to_string())?;
+    Ok(file.display().to_string())
+}
+
+/// The whole Xvfb screen, which the test arakun's window fills.
+#[cfg(not(target_os = "macos"))]
+fn x_shot(inst: &Instance) -> Result<image::RgbImage, String> {
     use x11rb::connection::Connection as _;
     use x11rb::protocol::xproto::{ConnectionExt as _, ImageFormat};
-    let inst = running().ok_or("no test arakun is running; start one with `arakun dev start`")?;
     let (conn, screen) =
         x11rb::connect(Some(&format!(":{}", inst.display))).map_err(|e| e.to_string())?;
     let screen = &conn.setup().roots[screen];
@@ -423,15 +467,7 @@ fn shot(file: Option<PathBuf>) -> Result<String, String> {
         .reply()
         .map_err(|e| e.to_string())?;
     let rgb = bgrx_to_rgb(&reply.data, w as usize * h as usize).ok_or("unexpected image format")?;
-    let img = image::RgbImage::from_raw(w as u32, h as u32, rgb).ok_or("bad image size")?;
-    let file = file.unwrap_or_else(|| {
-        let secs = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_millis());
-        root().join("shots").join(format!("shot-{secs}.png"))
-    });
-    img.save(&file).map_err(|e| e.to_string())?;
-    Ok(file.display().to_string())
+    image::RgbImage::from_raw(w as u32, h as u32, rgb).ok_or_else(|| "bad image size".into())
 }
 
 // ---- reading the screen ----------------------------------------------------
@@ -702,6 +738,7 @@ fn wait(args: &[String]) -> Result<String, String> {
 }
 
 /// A 24-bit X image comes as 4 bytes a pixel, blue first.
+#[cfg(any(test, not(target_os = "macos")))]
 fn bgrx_to_rgb(data: &[u8], pixels: usize) -> Option<Vec<u8>> {
     (data.len() >= pixels * 4).then(|| {
         data.as_chunks::<4>()
@@ -826,6 +863,8 @@ pub fn parse_input(args: &[String]) -> Result<Vec<Synth>, String> {
             })
             .collect(),
         Some("type") if !rest.is_empty() => Ok(vec![Synth::Text(rest.join(" "))]),
+        // No input, only a fresh frame: `shot` asks for one first on macOS.
+        Some("draw") if rest.is_empty() => Ok(Vec::new()),
         Some(cmd) => Err(format!("usage: see `arakun dev help` ({cmd})")),
         None => Err("no input".into()),
     }
@@ -976,6 +1015,8 @@ pub fn play(steps: Vec<Synth>, window: &mut gpui::Window, cx: &mut gpui::App) {
         }
     }
     window.refresh();
+    #[cfg(target_os = "macos")]
+    mac::redraw(window);
 }
 
 /// Answers a `dev` request: only a test arakun takes synthetic input.
@@ -986,6 +1027,149 @@ pub fn handle(req: &Request) -> Result<Vec<Synth>, Reply> {
         ));
     }
     parse_input(&req.args).map_err(Reply::err)
+}
+
+/// The test arakun's window on macOS, found by its process in the window
+/// server's list and captured alone with `screencapture`, even when another
+/// window covers it.
+#[cfg(target_os = "macos")]
+mod mac {
+    use std::ffi::c_void;
+    use std::path::Path;
+    use std::process::{Command, Stdio};
+
+    type CfRef = *const c_void;
+
+    #[repr(C)]
+    #[derive(Default)]
+    struct Rect {
+        x: f64,
+        y: f64,
+        w: f64,
+        h: f64,
+    }
+
+    #[link(name = "CoreFoundation", kind = "framework")]
+    unsafe extern "C" {
+        fn CFArrayGetCount(array: CfRef) -> isize;
+        fn CFArrayGetValueAtIndex(array: CfRef, index: isize) -> CfRef;
+        fn CFDictionaryGetValue(dict: CfRef, key: CfRef) -> CfRef;
+        fn CFNumberGetValue(number: CfRef, kind: isize, out: *mut c_void) -> bool;
+        fn CFRelease(value: CfRef);
+    }
+
+    #[link(name = "CoreGraphics", kind = "framework")]
+    unsafe extern "C" {
+        fn CGWindowListCopyWindowInfo(option: u32, relative_to: u32) -> CfRef;
+        fn CGRectMakeWithDictionaryRepresentation(dict: CfRef, rect: *mut Rect) -> bool;
+        static kCGWindowOwnerPID: CfRef;
+        static kCGWindowNumber: CfRef;
+        static kCGWindowLayer: CfRef;
+        static kCGWindowBounds: CfRef;
+    }
+
+    const ALL_WINDOWS: u32 = 0;
+    const SINT64: isize = 4;
+
+    /// # Safety
+    /// `dict` is a live CFDictionary.
+    unsafe fn number(dict: CfRef, key: CfRef) -> Option<i64> {
+        let mut n = 0i64;
+        // SAFETY: CFDictionaryGetValue returns a borrowed value or null, and
+        // CFNumberGetValue writes one i64 into `n`.
+        unsafe {
+            let v = CFDictionaryGetValue(dict, key);
+            (!v.is_null() && CFNumberGetValue(v, SINT64, (&raw mut n).cast())).then_some(n)
+        }
+    }
+
+    /// The number of the largest normal window (layer 0) of `pid`.
+    fn window(pid: u32) -> Option<u32> {
+        let mut best: Option<(u32, f64)> = None;
+        // SAFETY: the list is ours (Copy) and released below; its entries and their
+        // values are borrowed from it while it lives.
+        unsafe {
+            let list = CGWindowListCopyWindowInfo(ALL_WINDOWS, 0);
+            if list.is_null() {
+                return None;
+            }
+            for i in 0..CFArrayGetCount(list) {
+                let w = CFArrayGetValueAtIndex(list, i);
+                if number(w, kCGWindowOwnerPID) != Some(pid as i64)
+                    || number(w, kCGWindowLayer) != Some(0)
+                {
+                    continue;
+                }
+                let mut rect = Rect::default();
+                let bounds = CFDictionaryGetValue(w, kCGWindowBounds);
+                let Some(id) = number(w, kCGWindowNumber) else {
+                    continue;
+                };
+                if bounds.is_null() || !CGRectMakeWithDictionaryRepresentation(bounds, &mut rect) {
+                    continue;
+                }
+                if best.is_none_or(|(_, area)| rect.w * rect.h > area) {
+                    best = Some((id as u32, rect.w * rect.h));
+                }
+            }
+            CFRelease(list);
+        }
+        best.map(|(id, _)| id)
+    }
+
+    /// The window of `pid` at its full resolution (twice its size in points on
+    /// a Retina screen), which is what `arakun dev click` takes.
+    pub(super) fn shot(pid: u32, raw: &Path) -> Result<image::RgbImage, String> {
+        let id = window(pid).ok_or("the test arakun has no window on screen yet")?;
+        let _ = std::fs::remove_file(raw);
+        // -o leaves out the shadow, -x the sound.
+        let out = Command::new("screencapture")
+            .args(["-o", "-x", "-t", "png", &format!("-l{id}")])
+            .arg(raw)
+            .stdin(Stdio::null())
+            .output()
+            .map_err(|e| format!("screencapture: {e}"))?;
+        if !out.status.success() || !raw.exists() {
+            return Err(format!(
+                "screencapture could not capture the test arakun's window ({}); give the app \
+                 you run this from Screen Recording permission (System Settings > Privacy & \
+                 Security > Screen & System Audio Recording)",
+                String::from_utf8_lossy(&out.stderr).trim()
+            ));
+        }
+        Ok(image::open(raw).map_err(|e| e.to_string())?.to_rgb8())
+    }
+
+    #[link(name = "objc")]
+    unsafe extern "C" {
+        fn sel_registerName(name: *const std::ffi::c_char) -> *mut c_void;
+        fn objc_msgSend();
+    }
+
+    /// Asks AppKit to draw the window. gpui stops drawing a window that is
+    /// covered, as the test arakun's mostly is, and draws one frame when its
+    /// layer is asked to display.
+    pub(super) fn redraw(window: &gpui::Window) {
+        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        let Ok(RawWindowHandle::AppKit(handle)) =
+            HasWindowHandle::window_handle(window).map(|h| h.as_raw())
+        else {
+            return;
+        };
+        // SAFETY: `ns_view` is gpui's live view, on the main thread; objc_msgSend
+        // is cast to the signature of `-[NSView setNeedsDisplay:]`.
+        unsafe {
+            let set_needs_display = std::mem::transmute::<
+                *const c_void,
+                extern "C" fn(*mut c_void, *mut c_void, bool),
+            >(objc_msgSend as *const c_void);
+            set_needs_display(
+                handle.ns_view.as_ptr(),
+                sel_registerName(c"setNeedsDisplay:".as_ptr()),
+                true,
+            );
+        }
+    }
 }
 
 #[cfg(test)]

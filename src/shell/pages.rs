@@ -133,8 +133,8 @@ impl Shell {
                         .push_browser_tab(&env_path, url.clone(), false, false, window, cx)
                         .ok_or_else(|| Reply::err("could not open a browser tab"))?;
                     fresh = true;
-                    self.find_env(&env_path)
-                        .and_then(|e| e.tabs.iter().position(|t| t.id == id))
+                    self.strip
+                        .position(id)
                         .ok_or_else(|| Reply::err("could not open a browser tab"))?
                 }
                 (None, _) => {
@@ -158,7 +158,7 @@ impl Shell {
             },
         };
         let view = self
-            .ensure_page_in(&env_path, index, window, cx)
+            .ensure_page(index, window, cx)
             .ok_or_else(|| Reply::err("could not open the page"))?;
         let url = view.read(cx).url();
         if action.drives() && !is_local(&url) && !drive_any_page() {
@@ -172,46 +172,46 @@ impl Shell {
 
     /// Indices of an environment's browser tabs, in tab order.
     fn browser_tabs(&self, env_path: &Path) -> Vec<usize> {
-        let Some(env) = self.find_env(env_path) else {
-            return Vec::new();
-        };
-        (0..env.tabs.len())
-            .filter(|&i| matches!(env.tabs[i].kind, TabKind::Browser { .. }))
+        let tabs = &self.strip.tabs;
+        (0..tabs.len())
+            .filter(|&i| tabs[i].is_in(env_path) && matches!(tabs[i].kind, TabKind::Browser { .. }))
             .collect()
     }
 
     /// The browser tab commands act on by default: the one on screen in that
     /// environment, else the one used last.
     fn current_browser_tab(&self, env_path: &Path) -> Option<usize> {
-        let env = self.find_env(env_path)?;
+        let strip = &self.strip;
         let is_browser = |i: &usize| {
-            env.tabs
+            strip
+                .tabs
                 .get(*i)
-                .is_some_and(|t| matches!(t.kind, TabKind::Browser { .. }))
+                .is_some_and(|t| t.is_in(env_path) && matches!(t.kind, TabKind::Browser { .. }))
         };
-        let recent = env
+        let recent = strip
             .tab_back
             .iter()
             .rev()
-            .filter_map(|id| env.tabs.iter().position(|t| t.id == *id));
-        std::iter::once(env.active_tab)
-            .chain(env.split_other())
+            .filter_map(|id| strip.position(*id));
+        std::iter::once(strip.active_tab)
+            .chain(strip.split_other(env_path))
+            .chain(strip.front_of(env_path))
             .chain(recent)
             .find(is_browser)
-            .or_else(|| (0..env.tabs.len()).rev().find(is_browser))
+            .or_else(|| (0..strip.tabs.len()).rev().find(is_browser))
     }
 
     fn page_listing(&self, env_path: &Path, place: &str, cx: &gpui::App) -> String {
         let tabs = self.browser_tabs(env_path);
-        let Some(env) = self.find_env(env_path).filter(|_| !tabs.is_empty()) else {
+        if tabs.is_empty() {
             return format!(
                 "no browser tabs are open in {place}; `arakun page open <url>` opens one"
             );
-        };
+        }
         let current = self.current_browser_tab(env_path);
         let mut out = format!("browser tabs in {place}:\n");
         for (n, &i) in tabs.iter().enumerate() {
-            let tab = &env.tabs[i];
+            let tab = &self.strip.tabs[i];
             let (title, url, state) = match (&tab.browser, &tab.kind) {
                 (Some(b), _) => {
                     let view = b.view.read(cx);

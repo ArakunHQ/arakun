@@ -2,7 +2,8 @@ name: Review submitted
 
 # Only a trigger. When a review is submitted or dismissed, its completion
 # starts the Human approval workflow (workflow_run), which updates the "Human
-# approval" status.
+# approval" status, and the Reviewers workflow, which judges CodeRabbit's
+# approval and asks a person if needed.
 #
 # The work can't happen here: on a pull request from a fork, this runs the
 # fork's copy of this file with a read-only token, and a fork could change it
@@ -10,7 +11,7 @@ name: Review submitted
 # branch and reads the reviews from the API itself, so it trusts nothing from
 # this run.
 # If a fork deletes this file, the status stays pending; run the Human
-# approval workflow by hand then.
+# approval and Reviewers workflows by hand then.
 
 on:
   pull_request_review:
@@ -20,7 +21,8 @@ permissions: {}
 
 jobs:
   trigger:
-    name: Trigger the Human approval workflow
+    name: Trigger the review workflows
     runs-on: depot-ubuntu-24.04
+    timeout-minutes: 5
     steps:
-      - run: echo "Human approval updates the Human approval status."
+      - run: echo "Human approval and Reviewers handle the review."

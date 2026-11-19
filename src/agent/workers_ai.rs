@@ -14,7 +14,7 @@ use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, mpsc};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, mpsc};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -1062,7 +1062,12 @@ fn edit_file(cwd: &Path, args: &Value) -> Result<String, String> {
     ))
 }
 
-fn grep(cwd: &Path, args: &Value) -> Result<String, String> {
+/// How long a search may run. Outside the sandbox it reads every file under `path`,
+/// which on a slow network drive could otherwise never end.
+const GREP_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// The `grep` tool: rg when installed, else grep. Stops when the turn is stopped.
+fn grep(cwd: &Path, args: &Value, cancel: &AtomicBool) -> Result<String, String> {
     let pattern = args["pattern"].as_str().ok_or("pattern is missing")?;
     let path = args["path"]
         .as_str()
@@ -1094,27 +1099,25 @@ fn grep(cwd: &Path, args: &Value) -> Result<String, String> {
             c
         }
     };
-    cmd.args(["-e", pattern, "--", path])
-        .current_dir(cwd)
-        .stdin(Stdio::null());
-    let out = match sandbox() {
+    cmd.args(["-e", pattern, "--", path]);
+    let mut cmd = match sandbox() {
         Some(j) => {
             let mut inner = vec![cmd.get_program().to_string_lossy().into_owned()];
             inner.extend(cmd.get_args().map(|a| a.to_string_lossy().into_owned()));
-            j.sandbox
-                .as_ref()
-                .unwrap()
-                .output(cwd, &inner, None, Duration::from_secs(120))?
+            j.sandbox.as_ref().unwrap().command(cwd, &inner)
         }
-        None => cmd
-            .output()
-            .map_err(|e| format!("cannot run the search: {e}"))?,
+        None => cmd,
     };
-    let found = String::from_utf8_lossy(&out.stdout);
-    match out.status.code() {
-        Some(0) => Ok(clip_middle(&found, tool_chars())),
+    let ran = run_streaming(&mut cmd, cwd, GREP_TIMEOUT, cancel, |_| {})
+        .map_err(|e| format!("cannot run the search: {e}"))?;
+    if let Some(why) = ran.stopped {
+        return Err(format!("the search {why}"));
+    }
+    // rg and grep exit 2 on an error, so output with 0 has only matches in it.
+    match ran.exit {
+        Some(0) => Ok(clip_middle(&ran.output, tool_chars())),
         Some(1) => Ok("No matches.".into()),
-        _ => Err(String::from_utf8_lossy(&out.stderr).trim().to_string()),
+        _ => Err(clip_middle(ran.output.trim(), tool_chars())),
     }
 }
 
@@ -1248,7 +1251,7 @@ fn run_bash(
     command: &str,
     timeout: Duration,
     cancel: &AtomicBool,
-    mut live: impl FnMut(&str),
+    live: impl FnMut(&str),
 ) -> Result<Ran, String> {
     let shell = if launch::which("bash").is_some() {
         "bash"
@@ -1269,17 +1272,31 @@ fn run_bash(
             c
         }
     };
+    run_streaming(&mut cmd, cwd, timeout, cancel, live)
+        .map_err(|e| format!("cannot start {shell}: {e}"))
+}
+
+/// Runs `cmd` in `cwd`, stdout and stderr together, handing its output to `live` as
+/// it comes and keeping only its head and tail; ends it and what it started after
+/// `timeout`, or when `cancel` is set.
+fn run_streaming(
+    cmd: &mut std::process::Command,
+    cwd: &Path,
+    timeout: Duration,
+    cancel: &AtomicBool,
+    mut live: impl FnMut(&str),
+) -> std::io::Result<Ran> {
     cmd.current_dir(cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    crate::platform::ProcessTree::prepare(&mut cmd);
-    crate::platform::lower_priority(&mut cmd);
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| format!("cannot start {shell}: {e}"))?;
+    crate::platform::ProcessTree::prepare(cmd);
+    crate::platform::lower_priority(cmd);
+    let mut child = cmd.spawn()?;
     let tree = crate::platform::ProcessTree::adopt(&child);
-    let (tx, rx) = mpsc::channel::<Vec<u8>>();
+    // Bounded, so a command that writes faster than this keeps up waits rather than
+    // pile up chunks; the readers end when `rx` goes with the return.
+    let (tx, rx) = mpsc::sync_channel::<Vec<u8>>(64);
     let pipes: [Option<Box<dyn std::io::Read + Send>>; 2] = [
         child
             .stdout
@@ -1354,6 +1371,9 @@ fn run_bash(
         };
         if let Some(why) = why {
             tree.kill();
+            // The tree may not hold the child (on Windows the job object can fail to
+            // take it), and the wait would then last as long as the child.
+            let _ = child.kill();
             let _ = child.wait();
             stopped = Some(why);
             break;
@@ -1495,9 +1515,7 @@ impl Lane {
 }
 /// Takes a slot under `model`'s per-minute limit, or says how long until one frees.
 pub(crate) fn lane_wait(model: &str) -> Option<Duration> {
-    lanes()
-        .lock()
-        .unwrap()
+    lock(lanes())
         .entry(model.to_string())
         .or_default()
         .take(rpm(), Instant::now())
@@ -1546,7 +1564,7 @@ pub(crate) fn http() -> &'static ureq::Agent {
             .timeout_recv_body(Some(Duration::from_secs(3600)))
             .http_status_as_error(false)
             // Cloudflare's bot rule turns some default user agents away (error 1010).
-            .user_agent(concat!("arakun/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!("arakun/", env!("ARAKUN_VERSION")))
             .build()
             .into()
     })
@@ -1602,6 +1620,14 @@ struct Agent {
     turns: AtomicU64,
 }
 
+/// A turn that panicked while it held a lock (`guard`) must not take every later
+/// request down with it: the session is then as its last save left it, or a little ahead.
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 /// Serves one connection: what arakun writes comes in on `rx`, answers go to `out`.
 pub fn serve(rx: mpsc::Receiver<String>, out: Out) {
     let agent = Arc::new(Agent {
@@ -1619,12 +1645,20 @@ pub fn serve(rx: mpsc::Receiver<String>, out: Out) {
         };
         let id = msg.get("id").cloned().filter(|v| !v.is_null());
         match msg["method"].as_str() {
-            Some(method) => agent.handle(method, id, &msg["params"]),
+            Some(method) => {
+                // A request that panics is answered with an error; the connection stays.
+                let handled = crate::guard::run("a Workers AI request", || {
+                    agent.handle(method, id.clone(), &msg["params"])
+                });
+                if let (Err(panicked), Some(id)) = (handled, id) {
+                    agent.reply(id, Err((-32603, panicked.to_string())));
+                }
+            }
             None => {
                 let waiting = id
                     .as_ref()
                     .and_then(Value::as_u64)
-                    .and_then(|n| agent.asks.lock().unwrap().remove(&n));
+                    .and_then(|n| lock(&agent.asks).remove(&n));
                 if let Some(tx) = waiting {
                     let _ = tx.send(msg);
                 }
@@ -1633,7 +1667,7 @@ pub fn serve(rx: mpsc::Receiver<String>, out: Out) {
     }
     agent.cancel.store(true, Ordering::SeqCst);
     agent.turns.fetch_add(1, Ordering::SeqCst);
-    agent.asks.lock().unwrap().clear();
+    lock(&agent.asks).clear();
 }
 
 fn prompt_text(blocks: &Value) -> String {
@@ -1689,21 +1723,21 @@ impl Agent {
     }
 
     fn current(&self) -> Option<Arc<Mutex<Session>>> {
-        self.session.lock().unwrap().clone()
+        lock(&self.session).clone()
     }
 
     /// A request to arakun, answered by the user; `None` once the turn is stopped.
     fn ask(&self, method: &str, params: Value) -> Option<Value> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = mpsc::channel();
-        self.asks.lock().unwrap().insert(id, tx);
+        lock(&self.asks).insert(id, tx);
         self.send(json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}));
         loop {
             match rx.recv_timeout(Duration::from_millis(200)) {
                 Ok(v) => return Some(v),
                 Err(mpsc::RecvTimeoutError::Timeout) if !self.cancelled() => {}
                 _ => {
-                    self.asks.lock().unwrap().remove(&id);
+                    lock(&self.asks).remove(&id);
                     return None;
                 }
             }
@@ -1725,7 +1759,7 @@ impl Agent {
                     "sessionCapabilities": {"resume": {}},
                     "promptCapabilities": {"image": true},
                 },
-                "agentInfo": {"name": "workers-ai", "title": "Workers AI", "version": env!("CARGO_PKG_VERSION")},
+                "agentInfo": {"name": "workers-ai", "title": "Workers AI", "version": env!("ARAKUN_VERSION")},
             }))),
             "session/new" => {
                 knobs::log_once();
@@ -1736,7 +1770,7 @@ impl Agent {
                 let s = Session::new(cwd);
                 s.save();
                 let result = json!({"sessionId": s.id, "configOptions": s.config()});
-                *self.session.lock().unwrap() = Some(Arc::new(Mutex::new(s)));
+                *lock(&self.session) = Some(Arc::new(Mutex::new(s)));
                 reply(Ok(result))
             }
             // The transcript already shows the history, so loading replays nothing.
@@ -1745,7 +1779,7 @@ impl Agent {
                     Some(s) => {
                         knobs::log_once();
                         let result = json!({"configOptions": s.config()});
-                        *self.session.lock().unwrap() = Some(Arc::new(Mutex::new(s)));
+                        *lock(&self.session) = Some(Arc::new(Mutex::new(s)));
                         reply(Ok(result))
                     }
                     None => reply(Err((
@@ -1758,7 +1792,7 @@ impl Agent {
                 let Some(session) = self.current() else {
                     return reply(no_session());
                 };
-                let mut s = session.lock().unwrap();
+                let mut s = lock(&session);
                 let value = params["value"]
                     .as_str()
                     .or(params["modelId"].as_str())
@@ -1807,7 +1841,11 @@ impl Agent {
                 let spawned = std::thread::Builder::new()
                     .name("workers-ai-turn".into())
                     .spawn(move || {
-                        let result = agent.turn(&session, text, images);
+                        // A turn that panics still answers, and the next prompt can run.
+                        let result = crate::guard::run("the Workers AI turn", || {
+                            agent.turn(&session, text, images)
+                        })
+                        .unwrap_or_else(|panicked| Err((-32603, panicked.to_string())));
                         let ended = matches!(&result, Ok(v) if v["stopReason"] == "end_turn");
                         agent.busy.store(false, Ordering::SeqCst);
                         agent.reply(id, result);
@@ -1855,7 +1893,7 @@ impl Agent {
             }
             // The request the turn's last call made: the history up to what the model answered.
             let (sid, model, mut body) = {
-                let s = session.lock().unwrap();
+                let s = lock(session);
                 let m = s.model();
                 let asked = s
                     .messages
@@ -1916,7 +1954,7 @@ impl Agent {
                 n(&u["cache_creation_input_tokens"]),
             );
             let (cost, context) = {
-                let mut s = session.lock().unwrap();
+                let mut s = lock(session);
                 s.cost += model.cost(prompt.saturating_sub(cached + written), cached, written, 0);
                 s.save();
                 (s.cost, s.context)
@@ -2002,7 +2040,7 @@ impl Agent {
         images: Vec<(String, String)>,
     ) -> Result<Value, (i64, String)> {
         let (sid, cwd) = {
-            let s = session.lock().unwrap();
+            let s = lock(session);
             (s.id.clone(), s.cwd.clone())
         };
         let mut used = Used::default();
@@ -2019,7 +2057,7 @@ impl Agent {
                 format!("{} has no API key", m.api.name()),
             ))
         };
-        let first = session.lock().unwrap().model();
+        let first = lock(session).model();
         if let Err(how) = endpoint_for(first) {
             return no_key(how, first);
         }
@@ -2059,7 +2097,7 @@ impl Agent {
             ));
         }
         {
-            let mut s = session.lock().unwrap();
+            let mut s = lock(session);
             // A retried prompt is already there, unanswered.
             let prompt = if seen.is_empty() {
                 json!({"role": "user", "content": text})
@@ -2091,7 +2129,7 @@ impl Agent {
                 return Ok(Self::done("cancelled", &used));
             }
             let (body, model) = {
-                let mut s = session.lock().unwrap();
+                let mut s = lock(session);
                 if let Some(p) = &knobs.prune
                     && knobs::prune(&mut s.messages, p) > 0
                 {
@@ -2125,7 +2163,7 @@ impl Agent {
                 Ok(r) => r,
                 Err(Failed::Cancelled(partial)) => {
                     if !partial.content.is_empty() {
-                        let mut s = session.lock().unwrap();
+                        let mut s = lock(session);
                         s.messages
                             .push(json!({"role": "assistant", "content": partial.content}));
                         s.save();
@@ -2160,7 +2198,7 @@ impl Agent {
                 .and_then(|u| u["completion_tokens_details"]["reasoning_tokens"].as_u64())
                 .unwrap_or(0);
             let cost = {
-                let mut s = session.lock().unwrap();
+                let mut s = lock(session);
                 s.cost += model.cost(prompt - cached - written, cached, written, output);
                 if prompt > 0 {
                     s.context = prompt + output;
@@ -2186,7 +2224,7 @@ impl Agent {
                     "end_turn"
                 };
                 if knobs.self_test && stop == "end_turn" && progress.self_test_due() {
-                    let mut s = session.lock().unwrap();
+                    let mut s = lock(session);
                     s.messages
                         .push(json!({"role": "user", "content": knobs::SELF_TEST_REMINDER}));
                     s.save();
@@ -2262,7 +2300,7 @@ impl Agent {
                         content.push_str("\n\n");
                         content.push_str(&rem);
                     }
-                    let mut s = session.lock().unwrap();
+                    let mut s = lock(session);
                     s.messages
                         .push(json!({"role": "tool", "tool_call_id": call.id, "content": content}));
                     s.save();
@@ -2271,7 +2309,7 @@ impl Agent {
                 }
             }
             if knobs.adaptive_effort || knobs.self_test {
-                let s = session.lock().unwrap();
+                let s = lock(session);
                 let tail = s.messages.len().saturating_sub(calls.len());
                 let results: Vec<(&str, &str)> = calls
                     .iter()
@@ -2332,7 +2370,7 @@ impl Agent {
         shown["toolCallId"] = json!(id);
         self.update(sid, shown.clone());
         if let Some(group) = permission_group(&call.name)
-            && !session.lock().unwrap().always.iter().any(|g| g == group)
+            && !lock(session).always.iter().any(|g| g == group)
         {
             match self.permit(sid, Some(session), group, &shown) {
                 Permit::Allowed => {}
@@ -2377,7 +2415,7 @@ impl Agent {
             "read_file" => read_file(cwd, &args),
             "write_file" => write_file(cwd, &args),
             "edit_file" => edit_file(cwd, &args),
-            "grep" => grep(cwd, &args),
+            "grep" => grep(cwd, &args, &self.cancel),
             "list" => list(cwd, &args),
             "web_fetch" => super::web::fetch(&args).map(|t| clip_middle(&t, tool_chars())),
             "web_search" => super::web::search(&args).map(|t| clip_middle(&t, tool_chars())),
@@ -2402,7 +2440,10 @@ impl Agent {
             clip_middle(&text, tool_chars())
         };
         self.update(sid, json!({"sessionUpdate": "tool_call_update", "toolCallId": id, "status": status, "rawOutput": shown_output}));
-        (text, None)
+        // A stopped search stops the turn, like a stopped command: without the
+        // halt the calls queued after it still run.
+        let halt = (call.name == "grep" && self.cancelled()).then_some("the turn was stopped");
+        (text, halt)
     }
 
     fn run_command(
@@ -2582,7 +2623,7 @@ impl Agent {
         match (outcome["outcome"].as_str(), outcome["optionId"].as_str()) {
             (Some("selected"), Some("allow")) => Permit::Allowed,
             (Some("selected"), Some("always")) if session.is_some() => {
-                let mut s = session.unwrap().lock().unwrap();
+                let mut s = lock(session.unwrap());
                 s.always.push(group.to_string());
                 s.save();
                 Permit::Allowed
@@ -2616,7 +2657,7 @@ impl Agent {
                 other => return other,
             };
             if let Some(w) = wait {
-                let mut lanes = lanes().lock().unwrap();
+                let mut lanes = lock(lanes());
                 let l = lanes.entry(lane.clone()).or_default();
                 let until = Instant::now() + Duration::from_secs(w.clamp(1, 300));
                 l.hold = Some(l.hold.map_or(until, |h| h.max(until)));
@@ -2660,9 +2701,7 @@ impl Agent {
     fn wait_for_lane(&self, sid: &str, lane: &str) -> Result<(), Failed> {
         let mut told = false;
         loop {
-            let Some(wait) = lanes()
-                .lock()
-                .unwrap()
+            let Some(wait) = lock(lanes())
                 .entry(lane.to_string())
                 .or_default()
                 .take(rpm(), Instant::now())
@@ -3328,13 +3367,23 @@ mod tests {
         );
         assert_eq!(list(&dir, &json!({})).unwrap(), "src/");
         assert!(
-            grep(&dir, &json!({"pattern": "thr"}))
+            grep(&dir, &json!({"pattern": "thr"}), &AtomicBool::new(false))
                 .unwrap()
                 .contains("x.txt:3:three")
         );
         assert_eq!(
-            grep(&dir, &json!({"pattern": "nothing-here"})).unwrap(),
+            grep(
+                &dir,
+                &json!({"pattern": "nothing-here"}),
+                &AtomicBool::new(false)
+            )
+            .unwrap(),
             "No matches."
+        );
+        // A stopped turn stops its search.
+        assert_eq!(
+            grep(&dir, &json!({"pattern": "thr"}), &AtomicBool::new(true)),
+            Err("the search stopped".to_string())
         );
         let ran = run_bash(
             &dir,

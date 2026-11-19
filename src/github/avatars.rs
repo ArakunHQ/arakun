@@ -112,9 +112,15 @@ pub fn cached(dir: &Path, login: &str) -> Option<(PathBuf, bool)> {
 /// Falls back on the plain address, which works for people but not for bots.
 fn address(login: &str) -> String {
     for name in candidates(login) {
-        let out = crate::git::gh(&std::env::temp_dir())
-            .args(["api", &format!("users/{name}"), "--jq", ".avatar_url"])
-            .output();
+        let out = crate::git::output(
+            crate::git::gh(&std::env::temp_dir()).args([
+                "api",
+                &format!("users/{name}"),
+                "--jq",
+                ".avatar_url",
+            ]),
+            crate::platform::GIT_REMOTE,
+        );
         if let Ok(out) = out
             && out.status.success()
         {
@@ -133,7 +139,7 @@ pub fn download(dir: &Path, login: &str) -> Result<PathBuf, String> {
     let url = sized(&address(login), SIZE);
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(20)))
-        .user_agent(concat!("arakun/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("arakun/", env!("ARAKUN_VERSION")))
         .build()
         .into();
     let mut answer = agent.get(&url).call().map_err(|e| e.to_string())?;

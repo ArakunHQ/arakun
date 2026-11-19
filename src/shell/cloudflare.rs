@@ -61,6 +61,17 @@ impl Shell {
                     );
                     return;
                 }
+                // The card is hidden for Devin; this covers a state from before.
+                if *agent == model::Agent::Devin {
+                    self.notify(
+                        AlertKind::Warning,
+                        "Connect Cloudflare to Devin",
+                        "Arakun can't connect Cloudflare's MCP server to Devin yet. Add it with devin mcp in a terminal.",
+                        Some(Open::Cloudflare),
+                        cx,
+                    );
+                    return;
+                }
                 self.run_in_terminal(
                     &env_path,
                     &cloudflare::mcp_connect_command(*agent, state),

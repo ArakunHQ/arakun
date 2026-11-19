@@ -242,7 +242,7 @@ impl GitHubView {
                     id: group_id(group),
                     label: group.label().to_string(),
                     color: match group {
-                        Group::NeedsReview | Group::Mentions => theme::needs_you(),
+                        Group::NeedsReview | Group::Mentions | Group::Issues => theme::needs_you(),
                         Group::Ready | Group::Done => theme::success().into(),
                         _ => theme::text_subtle(),
                     },
@@ -425,7 +425,7 @@ impl GitHubView {
                 };
                 // The badge counts pilot's cards too.
                 (
-                    q.on_you + self.pilot.read(cx).count(g.focus()),
+                    board::waiting_without_board(q, self.pilot.read(cx).shown_in(g.focus())),
                     rest,
                     String::new(),
                 )
@@ -929,6 +929,7 @@ fn group_id(g: Group) -> &'static str {
         Group::NeedsReview => "q-review",
         Group::Mentions => "q-mentions",
         Group::Yours => "q-yours",
+        Group::Issues => "q-issues",
         Group::Ready => "q-ready",
         Group::Other => "q-other",
         Group::Done => "hecho",

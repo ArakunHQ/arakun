@@ -42,6 +42,8 @@ impl Shell {
         let pending = env.awaits_name();
         env.placeholder = None;
         let old = env.branch.to_string();
+        // A server's folder: the name is picked here, and git there renames it.
+        let remote = env.remote.is_some();
         self.save(cx);
         let namer = env_name::namer();
         let Some((agent, model)) = namer.pick(session).filter(|_| pending) else {
@@ -54,15 +56,31 @@ impl Shell {
             let d = dir.clone();
             let o = old.clone();
             let renamed = cx
-                .background_spawn(async move {
+                .background_spawn(crate::guard::task(async move {
                     if quiet && !env_name::installed(agent) {
                         return Ok(None);
                     }
                     let name = env_name::suggest(agent, &model, &task)?;
+                    if remote {
+                        return Ok(Some(name));
+                    }
                     git::rename_branch(&d, &o, &name, true).map(Some)
-                })
+                }))
                 .await;
             let _ = this.update(cx, |this, cx| match renamed {
+                // On a server the name shows, and the agent hears of it, once
+                // the server has renamed it: it may turn the name down.
+                Ok(Some(name)) if remote => {
+                    if !this.servers_rename_branch(&dir, &old, &name) {
+                        this.notify(
+                            AlertKind::Warning,
+                            "Could not name the branch",
+                            &format!("The server is not connected. It stays {old}."),
+                            None,
+                            cx,
+                        );
+                    }
+                }
                 Ok(Some(name)) => this.branch_renamed(&dir, &old, name, cx),
                 Ok(None) => {}
                 Err(e) => this.notify(
@@ -109,12 +127,12 @@ impl Shell {
             let d = dir.clone();
             // `env.branch` only changes on a project refresh; a terminal may have switched since.
             let renamed = cx
-                .background_spawn(async move {
+                .background_spawn(crate::guard::task(async move {
                     let old = git::current_branch(&d).ok_or_else(|| {
                         anyhow::anyhow!("HEAD is detached; there is no branch to rename")
                     })?;
                     git::rename_branch(&d, &old, &new, false).map(|name| (old, name))
-                })
+                }))
                 .await;
             let reply = match renamed {
                 Ok((old, name)) => {
@@ -134,14 +152,38 @@ impl Shell {
 
     /// Shows the environment at `dir` by its new branch name, and has the next
     /// prompt to one of its sessions say so: they started on the old name.
-    fn branch_renamed(&mut self, dir: &Path, old: &str, name: String, cx: &mut Context<Self>) {
-        self.rename_notes.insert(
-            dir.to_path_buf(),
-            format!(
-                "(Arakun renamed this environment's branch from `{old}` to `{name}`; \
-                 use the new name for pushes and pull requests.)"
-            ),
+    pub(super) fn branch_renamed(
+        &mut self,
+        dir: &Path,
+        old: &str,
+        name: String,
+        cx: &mut Context<Self>,
+    ) {
+        let note = format!(
+            "(Arakun renamed this environment's branch from `{old}` to `{name}`; \
+             use the new name for pushes and pull requests.)"
         );
+        // The namer usually finishes while the first prompt still waits for its
+        // agent to start. Given to the sessions running here, the note goes out
+        // with that prompt, not a turn late with the next one.
+        let threads: Vec<_> = self
+            .find_env(dir)
+            .map(|e| {
+                e.sessions
+                    .iter()
+                    .filter_map(|s| s.live.as_ref().map(|l| l.thread.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if threads.is_empty() {
+            self.rename_notes.insert(dir.to_path_buf(), note);
+        } else {
+            for thread in threads {
+                thread.update(cx, |t, _| t.add_note(note.clone()));
+            }
+            // An older rename's note would say the wrong name.
+            self.rename_notes.remove(dir);
+        }
         if let Some(env) = self.find_env_mut(dir) {
             env.placeholder = None;
             env.set_branch(Some(name));

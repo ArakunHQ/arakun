@@ -276,17 +276,11 @@ pub struct PullRequestDialog {
     /// The branch has commits GitHub doesn't: they are pushed first.
     needs_push: bool,
     plan: git::PrPlan,
-    /// The description that goes out: the plan's, or what the agent wrote.
-    body: String,
+    desc: Description,
     /// The agent "Write with AI" asks; None when none can answer here.
     writer: Option<AgentKind>,
-    /// Who wrote the description shown, once an agent did.
-    written_by: Option<AgentKind>,
     /// The agent is writing.
     writing: bool,
-    /// Counts the times the agent was asked: a reading of the commits
-    /// started before leaves the description to what the agent wrote since.
-    writes: u32,
     title: Entity<TextInput>,
     base: Entity<TextInput>,
     draft: bool,
@@ -360,12 +354,10 @@ impl PullRequestDialog {
             remote,
             branch,
             needs_push,
-            body: plan.body.clone(),
+            desc: Description::new(plan.body.clone()),
             plan,
             writer,
-            written_by: None,
             writing: false,
-            writes: 0,
             title,
             base,
             draft: true,
@@ -386,7 +378,7 @@ impl PullRequestDialog {
             return;
         }
         self.planning = Some(base.clone());
-        let writes = self.writes;
+        let asks = self.desc.asks;
         let (dir, remote, branch) = (self.dir.clone(), self.remote.clone(), self.branch.clone());
         cx.spawn(async move |this, cx| {
             let onto = base.clone();
@@ -407,13 +399,7 @@ impl PullRequestDialog {
                     let title = plan.title.clone();
                     this.title.update(cx, |input, cx| input.set_text(title, cx));
                 }
-                // What was written for the other base, by an agent too, goes
-                // with it. Not what the agent was asked for after this read
-                // began: that is for this base, and newer.
-                if this.writes == writes {
-                    this.body = plan.body.clone();
-                    this.written_by = None;
-                }
+                this.desc.planned(asks, plan.body.clone(), this.writing);
                 this.plan = plan;
                 cx.notify();
             });
@@ -457,7 +443,7 @@ impl PullRequestDialog {
         self.error = None;
         cx.notify();
         let (dir, remote, branch) = (self.dir.clone(), self.remote.clone(), self.branch.clone());
-        let (draft, body) = (self.draft, self.body.clone());
+        let (draft, body) = (self.draft, self.desc.body.clone());
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_spawn(crate::guard::task(async move {
@@ -513,6 +499,69 @@ impl PullRequestDialog {
     }
 }
 
+/// The pull request's description, and who wrote it. A reading of the
+/// commits for a new base and the agent can finish in either order; this
+/// decides which text is shown.
+#[derive(Debug)]
+struct Description {
+    /// What goes out: the plan's, or what the agent wrote.
+    body: String,
+    /// Who wrote the description shown, once an agent did.
+    written_by: Option<AgentKind>,
+    /// Counts the times the agent was asked.
+    asks: u32,
+    /// The ask whose answer is shown; 0 for the plan's.
+    shown: u32,
+    /// The plan read while the agent was writing: shown if it fails, so
+    /// the description is never the one of the base before.
+    fallback: Option<String>,
+}
+
+impl Description {
+    fn new(body: String) -> Self {
+        Self {
+            body,
+            written_by: None,
+            asks: 0,
+            shown: 0,
+            fallback: None,
+        }
+    }
+
+    /// A reading of the commits, begun when the agent had been asked
+    /// `asks` times, found `body`.
+    fn planned(&mut self, asks: u32, body: String, writing: bool) {
+        if asks == self.asks || (!writing && self.shown <= asks) {
+            // What was written for the other base, by an agent too, goes
+            // with it.
+            self.body = body;
+            self.written_by = None;
+            self.shown = 0;
+            self.fallback = None;
+        } else if writing {
+            // The agent was asked since, for this base: its answer is newer.
+            self.fallback = Some(body);
+        }
+        // Otherwise the agent answered since, for this base: that stays.
+    }
+
+    fn wrote(&mut self, agent: AgentKind, body: String) {
+        self.body = body;
+        self.written_by = Some(agent);
+        self.shown = self.asks;
+        self.fallback = None;
+    }
+
+    /// The agent wrote nothing that fits.
+    fn failed(&mut self) {
+        if let Some(body) = self.fallback.take() {
+            self.body = body;
+            self.written_by = None;
+            self.shown = 0;
+        }
+    }
+}
+
 /// Whether what an agent wrote for the base `asked` still fits the base in
 /// the dialog `now`.
 fn written_for(asked: &str, now: &str) -> bool {
@@ -530,7 +579,7 @@ impl PullRequestDialog {
             return;
         }
         self.writing = true;
-        self.writes += 1;
+        self.desc.asks += 1;
         self.error = None;
         cx.notify();
         let (dir, remote, branch) = (self.dir.clone(), self.remote.clone(), self.branch.clone());
@@ -558,6 +607,7 @@ impl PullRequestDialog {
                     // It describes the commits of another base than the one
                     // the pull request would now merge into.
                     Ok(_) if !written_for(&for_base, &now.0) => {
+                        this.desc.failed();
                         this.error = Some(
                             format!(
                                 "\"Merge into\" changed while {} wrote. Write it again for {}.",
@@ -572,10 +622,10 @@ impl PullRequestDialog {
                         if now.1 == old_title {
                             this.title.update(cx, |i, cx| i.set_text(title, cx));
                         }
-                        this.body = body;
-                        this.written_by = Some(agent);
+                        this.desc.wrote(agent, body);
                     }
                     Err(e) => {
+                        this.desc.failed();
                         this.error = Some(format!("{} couldn't write it: {e}", agent.label()).into())
                     }
                 }
@@ -588,7 +638,7 @@ impl PullRequestDialog {
     /// The button beside the description's label.
     fn write_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let can = self.writer.is_some() && !self.writing && self.busy.is_none();
-        let label = match (self.writing, self.written_by) {
+        let label = match (self.writing, self.desc.written_by) {
             (true, _) => "Writing…",
             (false, Some(_)) => "Write again",
             (false, None) => "Write with AI",
@@ -660,12 +710,12 @@ impl Render for PullRequestDialog {
                 ""
             }
         );
-        let body_label = match self.written_by {
+        let body_label = match self.desc.written_by {
             Some(agent) => format!("Description (written by {})", agent.label()),
             None if self.plan.template => "Description (the repository's template)".to_string(),
             None => "Description (from the commits)".to_string(),
         };
-        let body = if self.body.trim().is_empty() {
+        let body = if self.desc.body.trim().is_empty() {
             ui::text(
                 ui::Type::Caption,
                 theme::text_subtle(),
@@ -675,7 +725,7 @@ impl Render for PullRequestDialog {
             div()
                 .ty(ui::Type::Mono)
                 .text_color(theme::text_muted())
-                .child(self.body.clone())
+                .child(self.desc.body.clone())
         };
         let create = if self.draft {
             "Create draft"
@@ -1044,5 +1094,58 @@ impl Render for ConfirmDialog {
                             }),
                     ),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const AGENT: AgentKind = AgentKind::Claude;
+
+    #[test]
+    fn a_read_that_lands_while_the_agent_writes_is_kept_for_a_failure() {
+        let mut d = Description::new("old base".into());
+        let began = d.asks;
+        d.asks += 1;
+        d.planned(began, "new base".into(), true);
+        assert_eq!(d.body, "old base");
+        d.failed();
+        assert_eq!(d.body, "new base");
+        assert_eq!(d.written_by, None);
+    }
+
+    #[test]
+    fn the_agent_answer_beats_a_read_that_began_before_it() {
+        let mut d = Description::new("old base".into());
+        let began = d.asks;
+        d.asks += 1;
+        d.planned(began, "new base".into(), true);
+        d.wrote(AGENT, "agent".into());
+        assert_eq!(d.body, "agent");
+        // Landing after the answer changes nothing either.
+        d.planned(began, "new base".into(), false);
+        assert_eq!(d.body, "agent");
+        assert_eq!(d.written_by, Some(AGENT));
+    }
+
+    #[test]
+    fn a_read_that_lands_after_a_failed_write_is_shown() {
+        let mut d = Description::new("old base".into());
+        let began = d.asks;
+        d.asks += 1;
+        d.failed();
+        d.planned(began, "new base".into(), false);
+        assert_eq!(d.body, "new base");
+    }
+
+    #[test]
+    fn a_read_begun_after_the_ask_replaces_the_answer() {
+        let mut d = Description::new("plan".into());
+        d.asks += 1;
+        d.wrote(AGENT, "agent".into());
+        d.planned(d.asks, "other base".into(), false);
+        assert_eq!(d.body, "other base");
+        assert_eq!(d.written_by, None);
     }
 }

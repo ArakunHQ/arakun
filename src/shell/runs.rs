@@ -48,10 +48,16 @@ impl Shell {
         let projects = self
             .projects
             .iter()
+            // CI is read from git here; a server's folders are not.
+            .filter(|p| !p.is_remote())
             .map(|p| {
                 (
                     p.path.clone(),
-                    p.environments.iter().map(|e| e.path.clone()).collect(),
+                    p.environments
+                        .iter()
+                        .filter(|e| e.remote.is_none())
+                        .map(|e| e.path.clone())
+                        .collect(),
                 )
             })
             .collect();

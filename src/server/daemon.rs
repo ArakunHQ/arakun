@@ -1112,13 +1112,21 @@ impl Daemon {
             .iter()
             .map(|p| {
                 let name = p.name();
-                wire::inbox_place(
-                    &p.path,
-                    &name,
-                    &name,
-                    store::branch(&p.path).as_deref(),
-                    p.agent.id(),
-                )
+                let repo = store::repo(&p.path);
+                // Worktrees of one repository are one project, named for it.
+                let project = repo
+                    .as_ref()
+                    .and_then(|(root, _)| root.file_name())
+                    .map_or_else(|| name.clone(), |n| n.to_string_lossy().into_owned());
+                wire::inbox_place(wire::InboxPlace {
+                    path: &p.path,
+                    project: &project,
+                    env: &name,
+                    branch: store::branch(&p.path).as_deref(),
+                    agent: p.agent.id(),
+                    repo: repo.as_ref().map(|(root, _)| root.as_path()),
+                    origin: repo.as_ref().and_then(|(_, o)| o.as_deref()),
+                })
             })
             .collect();
         let sessions = self
@@ -1141,6 +1149,7 @@ impl Daemon {
                     removed: s.removed,
                     project: &project,
                     env: &project,
+                    place: &s.place,
                     pr: s.meta.as_ref().and_then(|m| m.pr.as_deref()),
                     asks: self
                         .live
@@ -1311,11 +1320,11 @@ impl Daemon {
     }
 
     fn message(&mut self, client: ClientId, msg: ClientMsg, cx: &mut Context<Self>) {
-        let gone = || wire::error("that session is gone");
+        let gone = |session: &str| session_error(session, "that session is gone");
         match msg {
             ClientMsg::Open { session } => {
                 let Some(record) = self.store.session(&session) else {
-                    self.transport.send(client, gone());
+                    self.transport.send(client, gone(&session));
                     return;
                 };
                 let place = Self::place_label(&record.place);
@@ -1368,7 +1377,7 @@ impl Daemon {
             } => {
                 let text = self.uploads.attach(text, &uploads);
                 if let Err(e) = self.send_to_session(&session, text, cx) {
-                    self.transport.send(client, wire::error(&e));
+                    self.transport.send(client, session_error(&session, &e));
                 }
             }
             ClientMsg::Upload {
@@ -1466,13 +1475,15 @@ impl Daemon {
                 let Some(s) = device_setting(&key) else {
                     self.transport.send(
                         client,
-                        wire::error("that setting is not one a device changes"),
+                        session_error(&session, "that setting is not one a device changes"),
                     );
                     return;
                 };
                 let Some(thread) = self.thread(&session) else {
-                    self.transport
-                        .send(client, wire::error("that session is not running"));
+                    self.transport.send(
+                        client,
+                        session_error(&session, "that session is not running"),
+                    );
                     return;
                 };
                 thread.update(cx, |t, cx| t.set_setting(s, &value, cx));
@@ -1505,7 +1516,7 @@ impl Daemon {
                 if let Some(thread) = self.thread(&session)
                     && let Err(e) = answer_question(&thread, answers, cx)
                 {
-                    self.transport.send(client, wire::error(&e));
+                    self.transport.send(client, session_error(&session, &e));
                 }
             }
             ClientMsg::SkipQuestion { session } => {
@@ -1515,7 +1526,7 @@ impl Daemon {
             }
             ClientMsg::Changes { session } => {
                 if self.store.session(&session).is_none() {
-                    self.transport.send(client, gone());
+                    self.transport.send(client, gone(&session));
                     return;
                 }
                 let mut msg = self.with_entries(&session, cx, wire::changes);
@@ -1528,7 +1539,7 @@ impl Daemon {
                 index,
             } => {
                 if self.store.session(&session).is_none() {
-                    self.transport.send(client, gone());
+                    self.transport.send(client, gone(&session));
                     return;
                 }
                 let diff = self.with_entries(&session, cx, |all, cwd| {
@@ -1539,13 +1550,13 @@ impl Daemon {
                         msg["id"] = json!(session);
                         msg.to_string()
                     }
-                    None => wire::error("that change is gone"),
+                    None => session_error(&session, "that change is gone"),
                 };
                 self.transport.send(client, reply);
             }
             ClientMsg::Transcript { session, from } => {
                 let Some(record) = self.store.session(&session) else {
-                    self.transport.send(client, gone());
+                    self.transport.send(client, gone(&session));
                     return;
                 };
                 let (agent, place) = (record.agent.id(), record.place.clone());
@@ -2139,6 +2150,12 @@ impl Daemon {
         self.inbox_changed(cx);
         Ok(format!("removed {id}"))
     }
+}
+
+/// An error about session `session`, which a device shows in that session.
+/// A device that does not look for `id` shows it as any other error.
+fn session_error(session: &str, message: &str) -> String {
+    json!({ "type": "error", "id": session, "message": message }).to_string()
 }
 
 fn unknown_agent(agent: &str) -> String {

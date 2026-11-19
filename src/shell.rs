@@ -659,7 +659,8 @@ impl Shell {
         let notes_input_sub = cx.subscribe(&notes_input, |this, input, ev: &InputEvent, cx| {
             if let InputEvent::Submit = ev {
                 let text = input.read(cx).text().trim().to_string();
-                if !text.is_empty() && this.has_projects() {
+                // A server's own project is not saved, so its notes would be lost.
+                if !text.is_empty() && this.has_projects() && !this.project().is_remote() {
                     this.projects[this.active_project].notes.push(text);
                     this.save(cx);
                 }
@@ -1006,6 +1007,7 @@ impl Shell {
         this.start_scheduler(window, cx);
         this.start_rule_ticker(window, cx);
         this.restore_phone(window, cx);
+        this.restore_servers(window, cx);
         this.start_updates(window, cx);
         this
     }
@@ -1094,6 +1096,10 @@ impl Shell {
         let Some(root) = self.projects.get(pi).map(|p| p.path.clone()) else {
             return;
         };
+        // Only servers have it: there is no folder here to ask git about.
+        if crate::model::Remote::is_path(&root) {
+            return;
+        }
         let gen_ = self.refresh_gen.entry(root.clone()).or_default();
         *gen_ += 1;
         let gen_ = *gen_;
@@ -1132,6 +1138,10 @@ impl Shell {
     }
 
     fn refresh_status(&mut self, env_path: &std::path::Path, cx: &mut Context<Self>) {
+        // A server's folder: its changes are on that machine.
+        if crate::model::Remote::is_path(env_path) {
+            return;
+        }
         let path = env_path.to_path_buf();
         cx.spawn(async move |this, cx| {
             let p = path.clone();
@@ -1356,6 +1366,10 @@ impl Shell {
         let Some(project) = self.projects.get(pi) else {
             return;
         };
+        // Only servers have it: a worktree cannot be made here.
+        if project.is_remote() {
+            return;
+        }
         let (repo, name) = (project.path.clone(), project.name.clone());
         let setup = project.setup.clone();
         let dialog = cx.new(|cx| CreateEnvDialog::new(repo, name, setup, window, cx));
@@ -1388,6 +1402,10 @@ impl Shell {
         let Some(project) = self.projects.get(pi) else {
             return;
         };
+        // Only servers have it: a worktree cannot be made here.
+        if project.is_remote() {
+            return;
+        }
         let (repo, project_name) = (project.path.clone(), project.name.clone());
         let pending: Vec<String> = self
             .pending_envs
@@ -3174,6 +3192,7 @@ impl Shell {
     /// The Notes tab: the active project's scratch list.
     fn render_notes(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let notes = &self.project().notes;
+        let remote = self.project().is_remote();
         let mut list = div()
             .id("notes-list")
             .flex()
@@ -3183,7 +3202,14 @@ impl Shell {
             .overflow_y_scroll()
             .p(crate::ui::sp(16.))
             .gap(crate::ui::sp(6.));
-        if notes.is_empty() {
+        if remote {
+            list = list.child(ui::empty_state(
+                "note01",
+                "No notes here",
+                "This project is only on your servers, and Arakun does not save it. Add notes in a project on this machine.",
+                None,
+            ));
+        } else if notes.is_empty() {
             list = list.child(ui::empty_state(
                 "note01",
                 "No notes yet",
@@ -3254,26 +3280,28 @@ impl Shell {
                             .child(format!("{}", self.project().name)),
                     ),
             )
-            .child(
-                div()
-                    .flex_none()
-                    .p(crate::ui::sp(10.))
-                    .border_b_1()
-                    .border_color(theme::stroke())
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .h(px(34.))
-                            .px(crate::ui::sp(10.))
-                            .rounded(crate::ui::rad(8.))
-                            .border_1()
-                            .border_color(theme::border())
-                            .bg(theme::background())
-                            .text_size(px(ui::TEXT_MD))
-                            .child(self.notes_input.clone()),
-                    ),
-            )
+            .when(!remote, |d| {
+                d.child(
+                    div()
+                        .flex_none()
+                        .p(crate::ui::sp(10.))
+                        .border_b_1()
+                        .border_color(theme::stroke())
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .h(px(34.))
+                                .px(crate::ui::sp(10.))
+                                .rounded(crate::ui::rad(8.))
+                                .border_1()
+                                .border_color(theme::border())
+                                .bg(theme::background())
+                                .text_size(px(ui::TEXT_MD))
+                                .child(self.notes_input.clone()),
+                        ),
+                )
+            })
             .child(list)
     }
 }

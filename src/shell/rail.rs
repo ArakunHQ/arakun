@@ -1,6 +1,7 @@
 //! The project rail on the far left: search, views and projects with their environments.
 
 use super::*;
+use crate::servers_view::Reach;
 
 /// Height of an environment row under its project, and the space between rows.
 const ENV_ROW_H: f32 = 28.;
@@ -498,7 +499,8 @@ impl Shell {
                 {
                     envs = envs.child(pending_env_row(pi * 1000 + i, name));
                 }
-                if !only_open {
+                // A server makes its folders itself: `arakun-server add`.
+                if !only_open && !project.is_remote() {
                     envs = envs.child(
                         div()
                             .id(("env-add-row", pi))
@@ -802,6 +804,38 @@ impl Shell {
         Some(list.into_any_element())
     }
 
+    /// For an environment on a server: which machine, dimmed while it cannot
+    /// be reached.
+    fn render_machine(&self, env: &Environment, id: usize) -> Option<AnyElement> {
+        let remote = env.remote.as_ref()?;
+        let reach = self.server_reach(&remote.server);
+        let note = match &reach {
+            Some(Reach::Connected) => None,
+            Some(Reach::Away(why) | Reach::Refused(why)) => Some(why.clone()),
+            Some(Reach::Connecting) | None => Some("Connecting…".to_string()),
+        };
+        let machine = crate::redact::text(&remote.machine).into_owned();
+        Some(
+            div()
+                .id(("env-machine", id))
+                .flex()
+                .flex_none()
+                .items_center()
+                .gap(crate::ui::sp(4.))
+                .max_w(px(96.))
+                .text_size(px(ui::TEXT_XS))
+                .text_color(theme::text_faint())
+                .when(note.is_some(), |d| d.opacity(0.6))
+                .tooltip(ui::tip_text(match note {
+                    Some(why) => format!("On {machine}: {why}"),
+                    None => format!("On {machine}"),
+                }))
+                .child(icon("computer", 12.).text_color(theme::text_faint()))
+                .child(div().min_w_0().truncate().child(machine))
+                .into_any_element(),
+        )
+    }
+
     /// "Environments", with the + that makes one, over the open project's list.
     fn render_env_heading(&self, pi: usize, cx: &mut Context<Self>) -> impl IntoElement {
         div()
@@ -933,6 +967,7 @@ impl Shell {
             })
             .child(lead)
             .child(div().flex_1().min_w_0().truncate().child(env.name.clone()))
+            .children(self.render_machine(env, pi * 1000 + ei))
             .children(end.map(|e| div().flex_none().child(e)))
             .on_click(cx.listener(move |this, _, window, cx| this.select_env(pi, ei, window, cx)))
     }

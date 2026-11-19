@@ -148,8 +148,14 @@ impl Shell {
                 _ => None,
             })
             .collect();
-        for id in ids {
-            self.ensure_live(&path, &id, window, cx);
+        for id in &ids {
+            self.ensure_live(&path, id, window, cx);
+        }
+        // A server sends every change of one session: the one in front.
+        if self.env().remote.is_some()
+            && let Some(id) = self.active_session_id()
+        {
+            self.servers_follow(&path, &id);
         }
     }
 
@@ -160,11 +166,15 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let remote = self.find_env(env_path).is_some_and(|e| e.remote.is_some());
         let Some(session) = self.session_mut(env_path, id) else {
             return;
         };
         if session.live.is_some() {
             return;
+        }
+        if remote {
+            return self.view_remote(env_path, id, window, cx);
         }
         if crate::headless::shown(id) {
             return self.view_headless(env_path, id, window, cx);
@@ -291,6 +301,14 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // A server's session: what the user did goes there; the rest (checks,
+        // transcripts, the phone) is the server's to do.
+        if self.find_env(env_path).is_some_and(|e| e.remote.is_some()) {
+            if let ThreadEvent::Remote(action) = ev {
+                self.servers_remote_action(env_path, id, action, cx);
+            }
+            return;
+        }
         self.phone_thread_event(id, ev, cx);
         // A turn whose check is about to run is announced once the check is done.
         self.speak_question(env_path, id, thread, cx);
@@ -476,20 +494,28 @@ impl Shell {
         if open || busy || self.check_running(id) || self.phone_watching(id) {
             return;
         }
-        let Some(session) = self.find_env_mut(env_path).map(|e| &mut e.sessions[i]) else {
+        let Some(env) = self.find_env_mut(env_path) else {
             return;
         };
+        let remote = env.remote.is_some();
+        let session = &mut env.sessions[i];
         if let Some(live) = session.live.take() {
-            let t = live.thread.read(cx);
-            let transcript = t.transcript(cx);
-            session.meta = Some(t.meta());
-            let path = state::transcript_path(id);
-            cx.background_spawn(crate::guard::task(async move {
-                let _ = write_transcript(&path, &transcript);
-            }))
-            .detach();
+            // A server's transcript stays on the server.
+            if !remote {
+                let t = live.thread.read(cx);
+                let transcript = t.transcript(cx);
+                session.meta = Some(t.meta());
+                let path = state::transcript_path(id);
+                cx.background_spawn(crate::guard::task(async move {
+                    let _ = write_transcript(&path, &transcript);
+                }))
+                .detach();
+            }
             report_failure(&live.thread, true, cx);
             live.thread.update(cx, |t, _| t.shutdown());
+            if remote {
+                self.servers_unfollow(id);
+            }
         }
     }
 
@@ -501,6 +527,50 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // On a server: the session runs there, and nothing here is renamed,
+        // staged or checked for it.
+        if self.env().remote.is_some() {
+            let path = self.env().path.clone();
+            match self.active_session_id() {
+                Some(id) => {
+                    self.ensure_live(&path, &id, window, cx);
+                    if let Some(thread) = self.active_thread(cx) {
+                        thread.update(cx, |t, cx| {
+                            // `/stage` runs git here, on files that are on the server.
+                            if text.trim() == "/stage" {
+                                t.post_notice(
+                                    "/stage works on this machine's files; on the server, stage in its terminal.",
+                                    true,
+                                    cx,
+                                );
+                            } else {
+                                t.send(text, cx)
+                            }
+                        });
+                    }
+                }
+                None => {
+                    let agent = self.env().agent;
+                    if !self.servers_start(&path, agent, &text) {
+                        // Not sent: back into the composer, with why.
+                        self.env_mut().draft.set(&text);
+                        self.composer_changed(cx);
+                        let why = self
+                            .servers_refusal()
+                            .unwrap_or_else(|| "The server cannot be reached.".into());
+                        self.notify(
+                            crate::island::AlertKind::Warning,
+                            "The prompt did not go",
+                            &why,
+                            None,
+                            cx,
+                        );
+                    }
+                }
+            }
+            cx.notify();
+            return;
+        }
         if let Some(id) = self.active_session_id() {
             let path = self.env().path.clone();
             let agent = self
@@ -787,7 +857,8 @@ impl Shell {
         else {
             return;
         };
-        if from == agent || crate::headless::shown(&old_id) {
+        // A server's session goes on with the agent it has there.
+        if from == agent || crate::headless::shown(&old_id) || self.env().remote.is_some() {
             return;
         }
         let entries = self.session_entries(&env_path, &old_id, cx);
@@ -1776,6 +1847,10 @@ impl Shell {
     pub(super) fn save_transcripts(&self, cx: &gpui::App) {
         let mut resume = Vec::new();
         for env in self.projects.iter().flat_map(|p| &p.environments) {
+            // A server keeps its own sessions' transcripts.
+            if env.remote.is_some() {
+                continue;
+            }
             for s in env
                 .sessions
                 .iter()

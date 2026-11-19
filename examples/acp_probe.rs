@@ -522,7 +522,8 @@ fn main() {
                     | ThreadEvent::RewindChanged { .. }
                     | ThreadEvent::LoginRequested
                     | ThreadEvent::ShellChanges
-                    | ThreadEvent::CheckOffer { .. } => {}
+                    | ThreadEvent::CheckOffer { .. }
+                    | ThreadEvent::Remote(_) => {}
                 }
             }
         })

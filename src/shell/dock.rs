@@ -64,7 +64,8 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !self.has_projects() {
+        // A terminal would open here, not on the server: there is none for it.
+        if !self.has_projects() || self.env().remote.is_some() {
             return;
         }
         let cwd = self.env().path.clone();
@@ -273,6 +274,9 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<usize> {
+        if crate::model::Remote::is_path(env_path) {
+            return None;
+        }
         let visible = self.has_projects() && self.env().path == env_path;
         let cwd = env_path.to_path_buf();
         let terminal = match Terminal::spawn(cwd.clone(), command, cx) {

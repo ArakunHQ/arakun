@@ -53,7 +53,9 @@ Every commit message and pull request title follows
 - Fill in `.github/pull_request_template.md`. Under "How did you test this?", list the
   commands you actually ran. Leave a checklist item unchecked if you did not run it.
 - Always open a pull request as a draft: `gh pr create --draft --body-file -`. Run the
-  checks below, wait for CI to pass, then mark it ready with `gh pr ready`. Marking it
+  checks below, wait for the checks it needs with `tools/wait-checks.sh`, then mark it
+  ready with `gh pr ready`. That script waits for the required checks, and for macOS
+  only when the diff touches macOS code; don't wait for the rest. Marking it
   ready starts CodeRabbit, and the reviewers are asked once it finishes without
   approving or with a review thread still open, so don't do it before then.
 - Answer every CodeRabbit comment: fix it and push, or reply with the reason you

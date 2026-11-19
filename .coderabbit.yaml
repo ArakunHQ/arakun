@@ -83,7 +83,8 @@ reviews:
 
   auto_review:
     enabled: true
-    # Agents open pull requests as drafts and mark them ready once checks pass.
+    # Agents open pull requests as drafts and mark them ready once the required
+    # checks pass (tools/wait-checks.sh).
     drafts: false
     # Stacked pull requests target the branch below them, not main. Without
     # this, CodeRabbit reviews only the bottom one of a stack.

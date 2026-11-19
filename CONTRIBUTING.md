@@ -271,11 +271,12 @@ which git ignores. Turn the hooks off with `lefthook uninstall`.
   check them as you write them, turn on the [Git hooks](#git-hooks).
 - **Open it as a draft** (`gh pr create --draft`, or "Create draft pull request" on
   GitHub). Nobody is asked to review a draft, and CodeRabbit skips it, so you can push
-  while CI runs. Once the checks pass, mark it ready with `gh pr ready` or the button on
-  GitHub. That starts CodeRabbit's review. When it finishes, people are asked to review
-  unless CodeRabbit approved and every review thread is resolved. A pull request from
-  outside the team always needs a
-  maintainer's approval: a workflow dismisses CodeRabbit's, and the **Human approval**
+  while CI runs. Once the required checks pass, mark it ready with `gh pr ready` or the
+  button on GitHub. `tools/wait-checks.sh` waits for them, and for the macOS job only
+  when the diff touches macOS code. The other checks can still be running. Marking it
+  ready starts CodeRabbit's review. When it finishes, people are asked to review unless
+  CodeRabbit approved and every review thread is resolved. A pull request from outside
+  the team always needs a maintainer's approval: a workflow dismisses CodeRabbit's, and the **Human approval**
   status waits for a person.
 - **Answer every CodeRabbit comment.** Fix it and push, or reply with the reason you
   won't. CodeRabbit reviews each push and resolves the comments it sees fixed. It

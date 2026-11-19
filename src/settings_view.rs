@@ -41,6 +41,16 @@ pub enum SettingsEvent {
     DiffPalette(DiffPalette),
     Glass(bool),
     Island(bool),
+    /// The whole UI's zoom, in percent.
+    Zoom(u32),
+    /// An extension view turned on or off in the sidebar.
+    SidebarView(crate::sidebar::View, bool),
+    /// A project's setup script (`check` false) or check command; `None` clears it.
+    ProjectCommand {
+        project: std::path::PathBuf,
+        check: bool,
+        command: Option<String>,
+    },
     /// Only Linux has the switch.
     #[cfg(target_os = "linux")]
     Background(bool),
@@ -52,6 +62,14 @@ pub enum SettingsEvent {
     OpenTasks,
     #[cfg(feature = "coderlabs")]
     DisconnectCoderSpace,
+}
+
+/// The project open when the dialog opened, for its Project section.
+pub struct ProjectSettings {
+    pub path: std::path::PathBuf,
+    pub name: SharedString,
+    pub setup: Option<String>,
+    pub check: Option<String>,
 }
 
 /// Where a section sits in the list: Arakun's own settings, then the agents'.
@@ -76,6 +94,7 @@ impl Group {
 enum Section {
     General,
     Appearance,
+    Project,
     Branches,
     Voice,
     Privacy,
@@ -94,6 +113,7 @@ impl Section {
     const ALL: &[Section] = &[
         Section::General,
         Section::Appearance,
+        Section::Project,
         Section::Branches,
         Section::Voice,
         Section::Privacy,
@@ -131,6 +151,7 @@ impl Section {
         match self {
             Section::General => "General",
             Section::Appearance => "Appearance",
+            Section::Project => "Project",
             Section::Branches => "Branches",
             Section::Voice => "Voice",
             Section::Privacy => "Privacy",
@@ -150,6 +171,7 @@ impl Section {
         match self {
             Section::General => "settings01",
             Section::Appearance => "paint-board",
+            Section::Project => "folder01",
             Section::Branches => "git-branch",
             Section::Voice => "volume-high",
             Section::Privacy => "shield-alert",
@@ -168,6 +190,7 @@ impl Section {
         match self {
             Section::General => "How Arakun behaves when nothing is going on.",
             Section::Appearance => "Colors and surfaces. Changes apply right away.",
+            Section::Project => "The open project's commands, on this computer.",
             Section::Branches => {
                 "A new environment starts on a random branch name; an agent can rename it after the task. A merged pull request settles its threads."
             }
@@ -198,7 +221,10 @@ impl Section {
                 "raccoon mascot animation motion new session dynamic island notch top bar agents alerts background close hide tray sidebar usage card plans browser web page drive click type scripts"
             }
             Section::Appearance => {
-                "theme palette color colors accent tint corners radius rounded round sharp spacing gap padding compact roomy density window custom share night graphite midnight forest rose diff colors colorblind high contrast glass blur transparent translucent grays gray text size font scale design system mode dark light"
+                "theme palette color colors accent tint corners radius rounded round sharp spacing gap padding compact roomy density window custom share night graphite midnight forest rose diff colors colorblind high contrast glass blur transparent translucent grays gray text size font scale design system mode dark light zoom bigger smaller"
+            }
+            Section::Project => {
+                "setup script install new environment worktree check command test lint build verify"
             }
             Section::Branches => {
                 "branch name naming environment worktree rename model haiku agent merge merged \
@@ -234,7 +260,8 @@ impl Section {
         // their words are added here rather than to each build's keyword list.
         let general = if self == Section::General {
             "update updates automatic automatically auto version release upgrade nightly channel beta testers \
-             links open system default external"
+             links open system default external \
+             sidebar views extensions rail github notes memory usage cloudflare posthog isometric phone servers automations"
         } else {
             ""
         };
@@ -406,16 +433,25 @@ pub struct SettingsDialog {
     namer_input: Entity<TextInput>,
     /// Why the last crash report or usage count choice could not be saved.
     telemetry_error: Option<SharedString>,
-    _subs: [Subscription; 8],
+    /// The extension views the sidebar shows.
+    views_on: Vec<crate::sidebar::View>,
+    /// The open project, if there is one.
+    project: Option<ProjectSettings>,
+    setup_input: Entity<TextInput>,
+    check_input: Entity<TextInput>,
+    _subs: [Subscription; 10],
 }
 
 impl EventEmitter<SettingsEvent> for SettingsDialog {}
 
 impl SettingsDialog {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         arcade: bool,
         droid: bool,
         #[cfg(feature = "coderlabs")] coderspace: Option<String>,
+        views_on: Vec<crate::sidebar::View>,
+        project: Option<ProjectSettings>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -507,6 +543,26 @@ impl SettingsDialog {
                     _ => {}
                 },
             );
+        let setup_input = cx.new(|cx| {
+            let mut i = TextInput::new("npm install && cp .env.example .env", cx).mono();
+            if let Some(c) = project.as_ref().and_then(|p| p.setup.as_ref()) {
+                i.set_text(c.clone(), cx);
+            }
+            i
+        });
+        let check_input = cx.new(|cx| {
+            let mut i = TextInput::new("cargo test", cx).mono();
+            if let Some(c) = project.as_ref().and_then(|p| p.check.as_ref()) {
+                i.set_text(c.clone(), cx);
+            }
+            i
+        });
+        let setup_sub = cx.subscribe_in(&setup_input, window, |this: &mut Self, _, ev, _, cx| {
+            this.on_command_input(false, ev, cx)
+        });
+        let check_sub = cx.subscribe_in(&check_input, window, |this: &mut Self, _, ev, _, cx| {
+            this.on_command_input(true, ev, cx)
+        });
         cx.spawn(async move |this, cx| {
             let (plan, access) = cx
                 .background_spawn(crate::guard::task(async move {
@@ -556,6 +612,10 @@ impl SettingsDialog {
             namer,
             namer_input,
             telemetry_error: None,
+            views_on,
+            project,
+            setup_input,
+            check_input,
             palettes,
             share_input,
             palette_note: None,
@@ -574,6 +634,8 @@ impl SettingsDialog {
                 share_sub,
                 name_sub,
                 namer_sub,
+                setup_sub,
+                check_sub,
                 // An edit made just before the dialog closes or the app quits
                 // is saved then rather than lost with its wait.
                 cx.on_release(|this, _| this.flush_palette()),
@@ -583,6 +645,40 @@ impl SettingsDialog {
                 }),
             ],
         }
+    }
+
+    /// Saves the project's setup script or check as it is typed, like the
+    /// naming model, so closing the dialog keeps what the field shows.
+    fn on_command_input(&mut self, check: bool, ev: &InputEvent, cx: &mut Context<Self>) {
+        match ev {
+            InputEvent::Changed => {}
+            InputEvent::Cancel => return cx.emit(SettingsEvent::Dismissed),
+            _ => return,
+        }
+        let Some(project) = self.project.as_mut() else {
+            return;
+        };
+        let input = if check {
+            &self.check_input
+        } else {
+            &self.setup_input
+        };
+        let text = input.read(cx).text().trim().to_string();
+        let command = (!text.is_empty()).then_some(text);
+        let saved = if check {
+            &mut project.check
+        } else {
+            &mut project.setup
+        };
+        if *saved == command {
+            return;
+        }
+        *saved = command.clone();
+        cx.emit(SettingsEvent::ProjectCommand {
+            project: project.path.clone(),
+            check,
+            command,
+        });
     }
 
     fn set_voice_enabled(&mut self, on: bool, cx: &mut Context<Self>) {
@@ -938,11 +1034,32 @@ impl SettingsDialog {
                         })),
                     );
                 }
+                let mut views = div().flex().flex_wrap().items_center().gap(crate::ui::sp(6.));
+                for (i, view) in crate::sidebar::View::EXTENSIONS.iter().copied().enumerate() {
+                    let on = self.views_on.contains(&view);
+                    views = views.child(
+                        ui::chip(("set-sidebar-view", i), view.label(), on).on_click(cx.listener(move |this, _, _, cx| {
+                            if on {
+                                this.views_on.retain(|v| *v != view);
+                            } else {
+                                this.views_on.push(view);
+                            }
+                            cx.emit(SettingsEvent::SidebarView(view, !on));
+                            cx.notify();
+                        })),
+                    );
+                }
                 stack(vec![
                     titled("Raccoon", raccoon),
                     titled(
                         "Sidebar",
                         vec![
+                            stacked_row(
+                                "Views",
+                                "The extra views the sidebar shows. The Marketplace has the same switches, with what each view does.",
+                                views.into_any_element(),
+                            )
+                            .into_any_element(),
                             stacked_row(
                                 "Usage card",
                                 "The plans the card at the bottom of the sidebar shows; OpenCode's once a Go key is connected. The Usage tab always shows them all.",
@@ -988,6 +1105,7 @@ impl SettingsDialog {
                 ])
             }
             Section::Appearance => self.render_appearance(cx),
+            Section::Project => self.render_project(),
             Section::Branches => {
                 let current = self.namer.choice;
                 let mut choices = ui::segmented();
@@ -2386,13 +2504,88 @@ impl SettingsDialog {
                 .into_any_element(),
         )
         .into_any_element();
+        let zoom = {
+            let pct = crate::ui_zoom::pct();
+            let step = |id: &'static str, icon: &'static str, steps: i32| {
+                let to = crate::ui_zoom::next(pct, steps);
+                ui::icon_button(id, icon, 13.)
+                    .when(to != pct, |b| {
+                        b.on_click(cx.listener(move |_, _, _, cx| {
+                            cx.emit(SettingsEvent::Zoom(to));
+                            cx.notify();
+                        }))
+                    })
+                    .when(to == pct, |b| b.opacity(0.4))
+            };
+            row(
+                "Zoom",
+                "Makes the whole interface bigger or smaller, like a browser's zoom. Ctrl+= and Ctrl+- do it too, Ctrl+0 goes back to 100%.",
+                div()
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .gap(crate::ui::sp(6.))
+                    .child(step("set-zoom-out", "minus-sign", -1))
+                    .child(
+                        div()
+                            .w(px(44.))
+                            .text_center()
+                            .text_size(px(ui::TEXT_SM))
+                            .child(format!("{pct}%")),
+                    )
+                    .child(step("set-zoom-in", "add01", 1))
+                    .child(
+                        ui::button("set-zoom-reset", "Reset", ButtonKind::Ghost, pct != 100).on_click(
+                            cx.listener(move |_, _, _, cx| {
+                                if pct != 100 {
+                                    cx.emit(SettingsEvent::Zoom(100));
+                                    cx.notify();
+                                }
+                            }),
+                        ),
+                    )
+                    .into_any_element(),
+            )
+            .into_any_element()
+        };
         stack(vec![
             titled("Colors", vec![self.render_palettes(cx), mode]),
             titled("Text", vec![text_size, grays]),
             titled("Shape", self.render_shape(cx)),
             titled("Code", vec![diffs]),
-            titled("Window", vec![glass_row, gallery]),
+            titled("Window", vec![zoom, glass_row, gallery]),
         ])
+    }
+
+    /// The open project's setup script and check, saved as they are typed.
+    fn render_project(&self) -> AnyElement {
+        let Some(project) = &self.project else {
+            return group(vec![
+                row(
+                    "No project open",
+                    "Add or open a project, then come back to set its setup script and check command.",
+                    div().into_any_element(),
+                )
+                .into_any_element(),
+            ]);
+        };
+        stack(vec![titled(
+            &project.name,
+            vec![
+                stacked_row(
+                    "Setup script",
+                    "Runs in a terminal of every new environment of this project on this computer, right after its worktree is created. Not on servers. Empty turns it off.",
+                    field(self.setup_input.clone(), 420.).into_any_element(),
+                )
+                .into_any_element(),
+                stacked_row(
+                    "Check command",
+                    "Runs in the environment after every agent turn that edits files. When it fails, Arakun sends the output back to the agent, up to 3 times in a row. Agents can run it themselves with arakun check. Empty turns it off.",
+                    field(self.check_input.clone(), 420.).into_any_element(),
+                )
+                .into_any_element(),
+            ],
+        )])
     }
 
     fn render_voice(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -2979,6 +3172,10 @@ mod tests {
         assert!(!found("crash").contains(&Section::General));
         assert!(found("factory").contains(&Section::Droid));
         assert!(found("ctrl+w").contains(&Section::Shortcuts));
+        assert!(found("zoom").contains(&Section::Appearance));
+        assert!(found("check command").contains(&Section::Project));
+        assert!(found("setup script").contains(&Section::Project));
+        assert!(found("github").contains(&Section::General));
         assert_eq!(found("").len(), Section::ALL.len());
         assert!(found("zzz-nothing").is_empty());
     }

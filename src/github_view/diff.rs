@@ -8,6 +8,7 @@ use gpui::{
 
 use std::rc::Rc;
 
+use super::threads::Writing;
 use super::timeline::code_line;
 use super::{CheckLog, Diff, DiffState, GitHubView};
 use crate::ci::{LineKind as LogKind, LogLine};
@@ -18,6 +19,9 @@ use crate::ui::{self, Type, Typography as _, icon};
 
 /// Lines a file shows before "Show more".
 const FILE_LINES: usize = 200;
+/// Room for a file's lines in the ids of the Files list: more than a diff
+/// read whole can hold.
+const LINE_IDS: usize = 1 << 22;
 /// Past this many lines in all, the files after it start folded.
 const OPEN_LINES: usize = 1500;
 
@@ -149,7 +153,9 @@ impl GitHubView {
             .pt(crate::ui::sp(if ix == 0 { 14. } else { 10. }))
             .when(ix == files.len(), |d| d.pb(crate::ui::sp(14.)));
         if ix == 0 {
-            return row
+            // The row stays a block, so what is in it gets the list's whole
+            // width: the pending bar puts its buttons at the far end.
+            let head = div()
                 .flex()
                 .flex_col()
                 .gap(crate::ui::sp(10.))
@@ -171,16 +177,26 @@ impl GitHubView {
                             theme::diff_del().into(),
                         )),
                 )
+                .child(self.render_pending_bar(cx))
                 .when(*cut, |d| {
                     d.child(ui::text(Type::Caption, theme::text_muted(), "The diff was too large to read whole: the files after the last one here are missing."))
-                })
-                .into_any_element();
+                });
+            return row.child(head).into_any_element();
         }
         let fi = ix - 1;
         let (Some(f), Some(&folded_default)) = (files.get(fi), rows.folded_default.get(fi)) else {
             return div().into_any_element();
         };
-        row.child(self.render_file(p, f, fi, folded_default, cx))
+        // The open threads still on a line of today's diff show under it.
+        let threads: Vec<pr::Thread> = if p.inline.iter().any(|c| c.path == f.path) {
+            pr::threads(&p.inline)
+                .into_iter()
+                .filter(|t| t.path == f.path && t.place.is_some() && t.resolved != Some(true))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        row.child(self.render_file(p, f, fi, folded_default, &threads, cx))
             .into_any_element()
     }
 
@@ -190,6 +206,7 @@ impl GitHubView {
         f: &FileDiff,
         fi: usize,
         folded_default: bool,
+        threads: &[pr::Thread],
         cx: &Context<Self>,
     ) -> gpui::Div {
         let lines: usize = f.hunks.iter().map(|h| h.lines.len()).sum();
@@ -309,7 +326,34 @@ impl GitHubView {
                     if shown >= cap {
                         break 'hunks;
                     }
-                    body = body.child(code_line(l.kind, l.new_no.or(l.old_no), &l.text));
+                    // A removed line is commented on the old side.
+                    let place = match l.kind {
+                        pr::LineKind::Del => l.old_no.map(|n| (n, true)),
+                        _ => l.new_no.map(|n| (n, false)),
+                    };
+                    let line = code_line(l.kind, l.new_no.or(l.old_no), &l.text);
+                    let Some(place) = place else {
+                        body = body.child(line);
+                        shown += 1;
+                        continue;
+                    };
+                    let path = f.path.clone();
+                    body = body.child(
+                        div()
+                            .id(("gh-line", fi * LINE_IDS + shown))
+                            .cursor_pointer()
+                            .child(line)
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                let what = Writing::Line {
+                                    path: path.clone(),
+                                    line: place.0,
+                                    left: place.1,
+                                };
+                                this.start_writing(what, window, cx)
+                            })),
+                    );
+                    let key = format!("gh-f{fi}-{}{}", if place.1 { "l" } else { "r" }, place.0);
+                    body = body.children(self.render_under_line(&key, threads, &f.path, place, cx));
                     shown += 1;
                 }
             }

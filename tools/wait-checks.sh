@@ -38,8 +38,9 @@ required=$(gh api "repos/{owner}/{repo}/rules/branches/main" \
 wanted=$(grep -vxF "$SKIP_CHECK" <<< "$required" || true)
 
 # macOS builds code behind cfg(target_os = "macos") and macOS-only files, and
-# a new dependency or toolchain can break only there. A changed line inside a
-# macOS function but far from its cfg is not seen; such files are named *mac*.
+# a new dependency or toolchain can break only there. Only changed lines in .rs
+# files count, so docs that quote the cfg don't. A changed line inside a macOS
+# function but far from its cfg is not seen; such files are named *mac*.
 macos_reason=""
 if ! files=$(gh pr diff ${pr:+"$pr"} --name-only); then
   macos_reason="could not list the changed files"
@@ -47,7 +48,7 @@ elif hit=$(grep -iE 'macos|(^|/)mac(\.rs$|/)|^Cargo\.(toml|lock)$|(^|/)build\.rs
   macos_reason="$hit changed"
 elif ! diff=$(gh pr diff ${pr:+"$pr"}); then
   macos_reason="could not read the diff"
-elif grep -E '^[-+]' <<< "$diff" | grep -vE '^(\+\+\+|---) ' |
+elif awk '/^diff --git / { rs = ($NF ~ /\.rs$/) } rs && /^[-+]/ && !/^(\+\+\+|---) /' <<< "$diff" |
   grep -qE 'target_os *= *"macos"|target_vendor *= *"apple"'; then
   macos_reason="the diff changes code behind target_os = \"macos\""
 fi

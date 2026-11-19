@@ -506,6 +506,22 @@ describe("presence", () => {
 });
 
 describe("history", () => {
+  it("keeps older history when a message cannot be inserted", async () => {
+    const t = await team();
+    const a = await openChannel(t.owner.user, t.owner.device, t.teamId, t.channelId);
+    const stub = env.CHANNEL.get(env.CHANNEL.idFromName(`${t.teamId}/${t.channelId}`)) as DurableObjectStub;
+    await runInDurableObject<Channel, void>(stub, (_, state) => {
+      const sql = state.storage.sql;
+      // Two rows straddling the old error-recovery cutoff.
+      sql.exec("INSERT INTO messages VALUES (1, 'first', 0, 'd', '{}'), (10000, 'last', 0, 'd', '{}')");
+      sql.exec("CREATE TRIGGER refuse_insert BEFORE INSERT ON messages BEGIN SELECT RAISE(ABORT, 'test insert failure'); END");
+    });
+    a.send(await message(t.teamId, t.channelId, t.owner.device, 1, t.keys.get(1)!, "not stored"));
+    expect((await refused(a)).error).toBe("the channel could not store the message");
+    expect(await storedCount(t)).toBe(2);
+    a.ws.close();
+  });
+
   it("pages with after and limit, oldest first", async () => {
     const t = await team();
     const a = await openChannel(t.owner.user, t.owner.device, t.teamId, t.channelId);

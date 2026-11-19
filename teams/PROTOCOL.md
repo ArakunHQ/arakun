@@ -338,6 +338,12 @@ away: `GET /teams/<team_id>/channels/<channel_id>/messages?after=<seq>&limit=200
 → `[{ seq, at, message }]`, oldest first. `after` defaults to 0, `limit` to 200,
 its maximum.
 
+A channel keeps at most 10,000 messages. Once its sequence exceeds 10,000,
+each successful send keeps the newest 9,000. If the first history row has a
+`seq` greater than `after + 1`, the missing prefix is no longer available on
+the server. Mark the gap, keep any local copies, and resume from the first
+returned row instead of requesting the missing prefix again.
+
 A client keeps the highest `seq` it holds with no gap before it. Once its socket
 is open, it reads the history after that `seq`. When a live frame's `seq` is more
 than one past it, it reads the history in between. A message stored while a socket

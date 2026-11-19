@@ -286,20 +286,11 @@ export class Channel extends DurableObject<Env> {
     const last = this.sql.exec<{ epoch: number }>("SELECT json_extract(message, '$.epoch') AS epoch FROM messages ORDER BY seq DESC LIMIT 1").toArray()[0];
     if (last && msg.epoch < last.epoch) return this.refuse(ws, msg.id, epochRefused(msg.epoch, last.epoch, last.epoch));
     const at = now();
-    const insert = () =>
-      this.sql
-        .exec<{ seq: number }>("INSERT INTO messages (id, at, device_id, message) VALUES (?, ?, ?, ?) RETURNING seq", msg.id, at, msg.device_id, JSON.stringify(msg))
-        .one().seq;
     let seq: number;
     try {
-      try {
-        seq = insert();
-      } catch {
-        // A channel from before the cap can be out of room already: drop the
-        // oldest messages and try once more.
-        this.sql.exec("DELETE FROM messages WHERE seq <= (SELECT MAX(seq) FROM messages) - ?", TRIM_TO);
-        seq = insert();
-      }
+      seq = this.sql
+        .exec<{ seq: number }>("INSERT INTO messages (id, at, device_id, message) VALUES (?, ?, ?, ?) RETURNING seq", msg.id, at, msg.device_id, JSON.stringify(msg))
+        .one().seq;
     } catch (e) {
       // The sender hears it rather than waiting for an ack that never comes.
       console.error("channel insert failed:", e);

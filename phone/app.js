@@ -572,8 +572,12 @@ function md(src) {
       const code = [];
       i++;
       while (i < lines.length && !/^\s*```/.test(lines[i])) code.push(lines[i++]);
+      const closed = i < lines.length;
       i++;
-      out += `<pre><code>${esc(code.join("\n"))}</code></pre>`;
+      // Charts and mermaid blocks are drawn (diagrams.js), once their fence has
+      // closed: a block still streaming in would redraw on every word.
+      const drawn = closed && window.Diagrams ? Diagrams.render(fence[1], code.join("\n")) : null;
+      out += drawn || `<pre><code>${esc(code.join("\n"))}</code></pre>`;
       continue;
     }
     const h = line.match(/^(#{1,6})\s+(.*)/);
@@ -775,20 +779,42 @@ document.addEventListener("click", (ev) => {
 
 // A table over everything, at full width, scrolling both ways; the phone can turn.
 function openTable(table) {
-  if (!table) return;
+  if (table) openView("Table", table.cloneNode(true));
+}
+
+// The same full-screen view for tables and drawings: `node` under a bar with
+// `title` and a close button.
+function openView(title, node) {
   let view = document.getElementById("tableview");
   if (!view) {
     view = document.createElement("div");
     view.id = "tableview";
     document.body.appendChild(view);
   }
-  view.innerHTML = `<div class="tvbar"><span>Table</span><button type="button" class="iconbtn" aria-label="Close">${ICONS.close}</button></div><div class="tvbody"></div>`;
-  view.querySelector(".tvbody").appendChild(table.cloneNode(true));
+  view.innerHTML = `<div class="tvbar"><span>${esc(title)}</span><button type="button" class="iconbtn" aria-label="Close">${ICONS.close}</button></div><div class="tvbody"></div>`;
+  view.querySelector(".tvbody").appendChild(node);
   view.querySelector("button").addEventListener("click", () => {
     view.hidden = true;
     view.replaceChildren();
   });
   view.hidden = false;
+}
+
+// A drawing's footer: "Code" swaps the drawing for its source and back,
+// "Open" shows the drawing full screen.
+function diagramTapped(target, card) {
+  const code = target.closest(".dgcode");
+  if (code) {
+    const on = card.classList.toggle("showcode");
+    code.setAttribute("aria-pressed", String(on));
+    code.querySelector("span").textContent = on ? code.dataset.back : "Code";
+    // The entry changed height with no picture or details to tell the list.
+    let n = card;
+    while (n && n.idx == null) n = n.parentElement;
+    if (n) list.measure(n.idx, n);
+    return;
+  }
+  if (target.closest(".dgopen")) openView(card.dataset.title || "Diagram", card.querySelector(".dgview").cloneNode(true));
 }
 
 async function openPic(img) {
@@ -852,6 +878,12 @@ function estimate(e) {
     case "notice":
     case "compacted":
       return 28;
+    case "agent": {
+      // A drawing is much taller than the lines of its source.
+      const drawn = (e.text || "").match(/^\s*```(chart|mermaid)\b[\s\S]*?^\s*```/gim) || [];
+      const rest = len - drawn.reduce((a, b) => a + b.length, 0);
+      return 30 + 21 * Math.ceil(rest / 42) + 330 * drawn.length;
+    }
     case "user": {
       const pics = e.images ? (e.images.length === 1 ? 228 : 128 * Math.ceil(e.images.length / 2)) : 0;
       const pastes = e.pastes ? 34 * e.pastes.length : 0;
@@ -2304,6 +2336,8 @@ function renderSession() {
     if (ev.target.closest(".tchip")) openChanges();
     const tx = ev.target.closest(".tablex");
     if (tx) openTable(tx.closest(".tablewrap").querySelector("table"));
+    const card = ev.target.closest(".diagram");
+    if (card) diagramTapped(ev.target, card);
   });
   list.mount(log);
   state.unseen = 0;

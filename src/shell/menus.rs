@@ -1074,7 +1074,7 @@ impl Shell {
                     )
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.menu = None;
-                        this.servers_new_env(pi, ei, cx)
+                        this.servers_new_env(pi, ei, None, cx)
                     })),
                 );
                 panel =

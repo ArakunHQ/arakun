@@ -107,6 +107,13 @@ pub(super) struct QueuedPrompt {
     workers_ai_settings: Vec<(Setting, String)>,
 }
 
+impl QueuedPrompt {
+    /// Where it was written.
+    pub(super) fn from(&self) -> &Path {
+        &self.from
+    }
+}
+
 pub(super) fn summary(text: &str) -> SharedString {
     let text = crate::agent::attach::title_text(text);
     let line = text
@@ -725,6 +732,18 @@ impl Shell {
                 cx.notify();
                 return;
             }
+            // One session per worktree there too: a first prompt in the main
+            // folder, or where a session already is, waits for a worktree
+            // the server makes for it.
+            let env = self.env();
+            if self.active_session_id().is_none()
+                && (env.is_checkout || !env.sessions.is_empty())
+                && !self.servers_start_in_place(&path)
+            {
+                let prompt = self.queue_prompt(text);
+                self.quick_create_env_then(self.active_project, Some(prompt), window, cx);
+                return;
+            }
             // The rename note goes to the agent only; it stays for the next
             // prompt when this one does not go.
             let note = self.rename_notes.remove(&path);
@@ -757,38 +776,11 @@ impl Shell {
                     reachable && thread.is_some()
                 }
                 None => {
-                    let sent = self.servers_start(
-                        &path,
-                        agent,
-                        &prompt,
-                        &[],
-                        super::servers::Asker::Desktop,
-                    );
-                    // Until the server answers: it names the branch once the
-                    // session started, and comes back here if it did not.
-                    if let Some(reference) = sent {
-                        let first = super::servers::FirstPrompt {
-                            env: path.clone(),
-                            text: text.clone(),
-                            agent: agent.kind(),
-                            note: note.clone(),
-                            desktop: true,
-                        };
-                        self.servers_first_prompt(reference, first);
+                    if self.servers_start_first(&path, agent, &text, note.clone(), cx) {
                         self.composer_changed(cx);
                         cx.notify();
                         return;
                     }
-                    let why = self
-                        .servers_refusal()
-                        .unwrap_or_else(|| "The server cannot be reached.".into());
-                    self.notify(
-                        crate::island::AlertKind::Warning,
-                        "The prompt did not go",
-                        &why,
-                        None,
-                        cx,
-                    );
                     false
                 }
             };
@@ -890,6 +882,74 @@ impl Shell {
         }
         let (env_path, agent) = (self.env().path.clone(), self.env().agent);
         self.start_session_in(&env_path, agent, summary(&text), text, true, window, cx);
+    }
+
+    /// Asks the server of the environment at `path` to start a session there
+    /// with `text`, and `note` for the agent only. The server's answer opens
+    /// it and names the branch; the island says why when it could not be asked.
+    pub(super) fn servers_start_first(
+        &mut self,
+        path: &Path,
+        agent: model::Agent,
+        text: &str,
+        note: Option<String>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let prompt = match &note {
+            Some(note) => format!("{text}{}", crate::agent::chart::hint(note)),
+            None => text.to_string(),
+        };
+        let sent = self.servers_start(path, agent, &prompt, &[], super::servers::Asker::Desktop);
+        // Until the server answers: it names the branch once the session
+        // started, and the prompt comes back if it did not.
+        if let Some(reference) = sent {
+            let first = super::servers::FirstPrompt {
+                env: path.to_path_buf(),
+                text: text.to_string(),
+                agent: agent.kind(),
+                note,
+                desktop: true,
+            };
+            self.servers_first_prompt(reference, first);
+            return true;
+        }
+        let why = self
+            .servers_refusal()
+            .unwrap_or_else(|| "The server cannot be reached.".into());
+        self.notify(
+            crate::island::AlertKind::Warning,
+            "The prompt did not go",
+            &why,
+            None,
+            cx,
+        );
+        false
+    }
+
+    /// Starts the session a queued prompt waited for, in the worktree a
+    /// server made for it. When it cannot be asked, the text waits in that
+    /// worktree's composer.
+    pub(super) fn start_queued_on_server(
+        &mut self,
+        env_path: &Path,
+        p: QueuedPrompt,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(env) = self.find_env_mut(env_path) else {
+            return;
+        };
+        env.agent = p.agent;
+        let note = self.rename_notes.remove(env_path);
+        if !self.servers_start_first(env_path, p.agent, &p.text, note.clone(), cx) {
+            if let Some(env) = self.find_env_mut(env_path) {
+                env.draft.set(&p.text);
+            }
+            if let Some(note) = note {
+                self.rename_notes.insert(env_path.to_path_buf(), note);
+            }
+        }
+        self.composer_changed(cx);
+        cx.notify();
     }
 
     /// Stages, with `git add`, only the files session `id` changed, then calls

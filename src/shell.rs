@@ -1721,7 +1721,7 @@ impl Shell {
                     let (branch, auto_name) = (branch.clone(), *auto_name);
                     // The dialog stays until the server answers.
                     let asked = Some(dialog.entity_id());
-                    this.servers_new_env_on(&server, &from, branch, auto_name, asked, cx);
+                    this.servers_new_env_on(&server, &from, branch, auto_name, asked, None, cx);
                 }
                 _ => this.close_modal(window, cx),
             },
@@ -1761,6 +1761,9 @@ impl Shell {
         if on_server {
             let from = server_source(project, |p| self.server_env_retired(p));
             let Some(from) = from else {
+                if let Some(prompt) = prompt {
+                    self.unqueue(prompt, cx);
+                }
                 self.notify(
                     crate::island::AlertKind::Warning,
                     "Could not make the environment",
@@ -1770,7 +1773,7 @@ impl Shell {
                 );
                 return;
             };
-            self.servers_new_env(pi, from, cx);
+            self.servers_new_env(pi, from, prompt, cx);
             return;
         }
         let (repo, project_name) = (project.path.clone(), project.name.clone());

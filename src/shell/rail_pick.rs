@@ -248,16 +248,17 @@ impl Shell {
         cx.notify();
     }
 
-    /// Asks once, then deletes the picked worktrees on this computer. Their
-    /// branches stay. The main checkout and a server's worktrees are left out:
-    /// a server answers each deletion on its own.
+    /// Asks once, then deletes the picked worktrees: this computer's here,
+    /// a server's by asking the server, which answers each on its own. Their
+    /// branches stay. The main checkout is left out.
     fn open_delete_picked(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let mut targets = Vec::new();
+        let mut remote = Vec::new();
         let mut skipped = 0;
         for (pi, ei) in self.picked() {
             let project = &self.projects[pi];
             let env = &project.environments[ei];
-            if env.is_checkout || env.remote.is_some() {
+            if env.is_checkout {
                 skipped += 1;
                 continue;
             }
@@ -266,6 +267,10 @@ impl Shell {
                 .iter()
                 .max_by_key(|s| s.updated)
                 .map_or_else(|| env.name.to_string(), |s| s.title.to_string());
+            if let Some(r) = &env.remote {
+                remote.push((r.clone(), format!("{title} (on {})", r.machine)));
+                continue;
+            }
             targets.push((
                 project.path.clone(),
                 env.path.clone(),
@@ -273,10 +278,10 @@ impl Shell {
                 env.changes.len(),
             ));
         }
-        if targets.is_empty() {
+        if targets.is_empty() && remote.is_empty() {
             return;
         }
-        let n = targets.len();
+        let n = targets.len() + remote.len();
         let warn: gpui::Hsla = theme::warn().into();
         let muted = theme::mix(0.45);
         let mut details = Vec::new();
@@ -291,16 +296,20 @@ impl Shell {
             };
             details.push((if *dirty > 0 { warn } else { muted }, text));
         }
+        for (_, title) in &remote {
+            details.push((muted, title.clone()));
+        }
         let mut body = format!(
             "This removes the folder{s} of {n} worktree{s}. Their branches and commits stay.",
             s = plural(n)
         );
+        if !remote.is_empty() {
+            body.push_str(
+                " A server deletes its own, with everything in it, uncommitted changes too.",
+            );
+        }
         if skipped > 0 {
-            body.push_str(&format!(
-                " {skipped} picked row{} can't go this way: the main checkout stays, and a \
-                 server's worktree is deleted from its own menu.",
-                plural(skipped)
-            ));
+            body.push_str(" The main checkout stays.");
         }
         let work: Vec<(PathBuf, PathBuf)> = targets
             .iter()
@@ -345,9 +354,15 @@ impl Shell {
         let events = cx.subscribe_in(
             &dialog,
             window,
-            move |this, _, _: &GitDialogEvent, window, cx| {
+            move |this, dialog, ev: &GitDialogEvent, window, cx| {
                 this.forget_gone(&paths, window, cx);
                 this.close_modal(window, cx);
+                // Asked once the ones here are gone. Each server answers on
+                // its own; one that cannot is said by the island.
+                if matches!(ev, GitDialogEvent::Done) {
+                    this.servers_delete_envs(&remote, dialog.entity_id(), cx);
+                    this.drop_pick();
+                }
             },
         );
         let sub = gpui::Subscription::join(observed, events);
@@ -380,7 +395,7 @@ impl Shell {
         };
         let can_settle = envs().any(|e| e.sessions.iter().any(|s| settled(s.status).is_some()));
         let can_close = envs().any(|e| !e.sessions.is_empty());
-        let can_delete = envs().any(|e| !e.is_checkout && e.remote.is_none());
+        let can_delete = envs().any(|e| !e.is_checkout);
         let action = |id: &'static str, icon_name: &'static str, tip: &'static str, on: bool| {
             ui::icon_button(id, icon_name, 14.)
                 .tooltip(ui::tip(tip))

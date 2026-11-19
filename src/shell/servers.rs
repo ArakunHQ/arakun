@@ -133,6 +133,9 @@ pub(super) struct ServersLink {
     added: Option<(String, String)>,
     /// A new environment asked of each server, until it answers.
     new_env: HashMap<String, NewEnv>,
+    /// Servers from before they made worktrees: a first prompt starts where
+    /// it is written there, the main folder too.
+    no_new_env: HashSet<String>,
     /// The first prompts of sessions asked of servers, by the start's `ref`,
     /// until the server answers: they name the branch once it started, and
     /// go back in the composer if it did not. Each with its server.
@@ -237,6 +240,8 @@ struct NewEnv {
     /// The New environment dialog that asked, which waits on the answer. One
     /// opened after it was dismissed is not told about it.
     dialog: Option<gpui::EntityId>,
+    /// The first prompt that waits for it: its session starts there.
+    prompt: Option<super::sessions::QueuedPrompt>,
 }
 
 /// `who` no longer looks at what it followed, but for `keep` (server and
@@ -748,6 +753,7 @@ impl Shell {
             adding: HashSet::new(),
             added: None,
             new_env: HashMap::new(),
+            no_new_env: HashSet::new(),
             first_prompts: HashMap::new(),
             deleting: Vec::new(),
             pairing: None,
@@ -915,7 +921,7 @@ impl Shell {
                 self.sync_remote_projects(window, cx);
                 if let Some(new) = new {
                     let why = "The server was forgotten before it made the environment.";
-                    self.servers_new_env_failed(&new, why.into(), cx);
+                    self.servers_new_env_failed(new, why.into(), cx);
                 }
                 for client in waiting {
                     self.phone_send(client, wire::error("that server was forgotten"));
@@ -1594,12 +1600,18 @@ impl Shell {
             {
                 self.close_modal(window, cx);
             }
-            let named = new.and_then(|n| n.auto_name.then_some(n.branch));
+            let (named, prompt) = match new {
+                Some(n) => (n.auto_name.then_some(n.branch), n.prompt),
+                None => (None, None),
+            };
             let env = &mut self.projects[pi].environments[ei];
             if let Some(branch) = named.filter(|b| env.branch.as_ref() == b) {
                 env.placeholder = Some(branch);
             }
             self.select_env(pi, ei, window, cx);
+            if let Some(prompt) = prompt {
+                self.start_queued_on_server(&env_path, prompt, cx);
+            }
         }
     }
 
@@ -1632,15 +1644,23 @@ impl Shell {
     /// A new environment in project `pi` on the server of its environment
     /// `from`: a worktree there on a new branch with a random name, which its
     /// first prompt names, as here.
-    pub(super) fn servers_new_env(&mut self, pi: usize, from: usize, cx: &mut Context<Self>) {
-        let Some(project) = self.projects.get(pi) else {
-            return;
-        };
-        let Some(remote) = project
-            .environments
-            .get(from)
-            .and_then(|e| e.remote.clone())
-        else {
+    /// With `prompt`, its session starts in the new environment.
+    pub(super) fn servers_new_env(
+        &mut self,
+        pi: usize,
+        from: usize,
+        prompt: Option<super::sessions::QueuedPrompt>,
+        cx: &mut Context<Self>,
+    ) {
+        let remote = self
+            .projects
+            .get(pi)
+            .and_then(|p| p.environments.get(from))
+            .and_then(|e| e.remote.clone());
+        let (Some(project), Some(remote)) = (self.projects.get(pi), remote) else {
+            if let Some(prompt) = prompt {
+                self.unqueue(prompt, cx);
+            }
             return;
         };
         let taken: Vec<String> = project
@@ -1649,7 +1669,31 @@ impl Shell {
             .map(|e| e.branch.to_string())
             .collect();
         let branch = crate::env_name::random(|n| taken.iter().any(|t| t == n));
-        self.servers_new_env_on(&remote.server, &remote.place, branch, true, None, cx);
+        self.servers_new_env_on(
+            &remote.server,
+            &remote.place,
+            branch,
+            true,
+            None,
+            prompt,
+            cx,
+        );
+    }
+
+    /// Whether a first prompt in the server environment at `env_path` starts
+    /// right there, the main folder too: its server makes no worktrees yet,
+    /// or the folder is no repository to make one of.
+    pub(super) fn servers_start_in_place(&self, env_path: &Path) -> bool {
+        let server = self.find_env(env_path).and_then(|e| e.remote.as_ref());
+        let (Some(link), Some(r)) = (&self.servers, server) else {
+            return false;
+        };
+        link.no_new_env.contains(&r.server)
+            || link.conns.get(&r.server).is_some_and(|c| {
+                c.places
+                    .iter()
+                    .any(|p| p.path == r.place && p.repo.is_empty())
+            })
     }
 
     /// A worktree on `branch` made on `server`, of the repository its folder
@@ -1662,6 +1706,7 @@ impl Shell {
         branch: String,
         auto_name: bool,
         dialog: Option<gpui::EntityId>,
+        prompt: Option<super::sessions::QueuedPrompt>,
         cx: &mut Context<Self>,
     ) {
         let Some(link) = &mut self.servers else {
@@ -1688,9 +1733,10 @@ impl Shell {
             branch,
             auto_name,
             dialog,
+            prompt,
         };
         if let Some(why) = problem {
-            self.servers_new_env_failed(&new, why, cx);
+            self.servers_new_env_failed(new, why, cx);
             return;
         }
         let Some(conn) = link.conns.get(server) else {
@@ -1705,7 +1751,11 @@ impl Shell {
 
     /// A new environment did not come: said in the dialog that asked, or by
     /// the island when the sidebar did.
-    fn servers_new_env_failed(&mut self, new: &NewEnv, why: String, cx: &mut Context<Self>) {
+    /// A prompt that waited for it goes back in its composer.
+    fn servers_new_env_failed(&mut self, new: NewEnv, why: String, cx: &mut Context<Self>) {
+        if let Some(prompt) = new.prompt {
+            self.unqueue(prompt, cx);
+        }
         if let Some(dialog) = self
             .create_env_dialog()
             .filter(|d| new.dialog == Some(d.entity_id()))
@@ -1835,6 +1885,22 @@ impl Shell {
         );
         self.modal = Some((Modal::DeleteEnv(dialog), sub));
         cx.notify();
+    }
+
+    /// Asks their servers to delete the environments of `remotes`, picked
+    /// together in the sidebar and confirmed in the dialog `asked`. Their
+    /// branches stay.
+    pub(super) fn servers_delete_envs(
+        &mut self,
+        remotes: &[(Remote, String)],
+        asked: gpui::EntityId,
+        cx: &mut Context<Self>,
+    ) {
+        for (remote, title) in remotes {
+            if let Err(why) = self.servers_ask_delete(remote, None, asked) {
+                self.servers_delete_failed(asked, format!("{title}: {why}"), cx);
+            }
+        }
     }
 
     fn servers_ask_delete(
@@ -2062,7 +2128,7 @@ impl Shell {
                 }
                 if let Some(new) = lost_env {
                     let why = "The connection dropped before the server said whether it made the environment. Check its environments before you try again.";
-                    self.servers_new_env_failed(&new, why.into(), cx);
+                    self.servers_new_env_failed(new, why.into(), cx);
                 }
                 // Its answer would have come on the connection that dropped.
                 for asked in lost_delete {
@@ -2115,7 +2181,7 @@ impl Shell {
                         let message = text(&msg, "message");
                         // A new environment: said to whoever asked for it.
                         match link.new_env.remove(id) {
-                            Some(new) => self.servers_new_env_failed(&new, message, cx),
+                            Some(new) => self.servers_new_env_failed(new, message, cx),
                             None => link.error = Some(message),
                         }
                     }
@@ -2257,10 +2323,22 @@ impl Shell {
             }
             _ if link.new_env.contains_key(id) && older_server_refused(&message, &["new_env"]) => {
                 link.adding.remove(id);
-                if let Some(new) = link.new_env.remove(id) {
-                    let why =
-                        "This server runs an older Arakun. Update it to make environments there.";
-                    self.servers_new_env_failed(&new, why.into(), cx);
+                link.no_new_env.insert(id.to_string());
+                match link.new_env.remove(id) {
+                    // A prompt that waited for the worktree starts where it
+                    // was written, as on that server before.
+                    Some(NewEnv {
+                        prompt: Some(prompt),
+                        ..
+                    }) => {
+                        let from = prompt.from().to_path_buf();
+                        self.start_queued_on_server(&from, prompt, cx);
+                    }
+                    Some(new) => {
+                        let why = "This server runs an older Arakun. Update it to make environments there.";
+                        self.servers_new_env_failed(new, why.into(), cx);
+                    }
+                    None => {}
                 }
                 true
             }

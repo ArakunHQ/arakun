@@ -406,6 +406,8 @@ pub struct SessionState {
     pub auto_allow: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub continues: Vec<crate::model::Earlier>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub settled: bool,
 }
 
 fn is_session(t: &Tab) -> bool {
@@ -692,6 +694,7 @@ pub fn snapshot_with(
                                 cli_model: s.cli_model.clone(),
                                 auto_allow: s.auto_allow,
                                 continues: s.continues.clone(),
+                                settled: s.settled,
                             })
                             .collect(),
                         open: tabs_of(strip, e)
@@ -834,6 +837,7 @@ pub fn restore(state: State) -> (Vec<Project>, usize, Layout, TabStrip) {
                             session.cli_model = s.cli_model;
                             session.auto_allow = s.auto_allow;
                             session.continues = s.continues;
+                            session.settled = s.settled;
                             session.status = Status::Idle;
                             session
                         })
@@ -1056,6 +1060,18 @@ mod tests {
         let disk = disk.into_inner().unwrap();
         assert_eq!(disk.last().unwrap(), &[31]);
         assert!(disk.windows(2).all(|w| w[0] < w[1]), "{disk:?}");
+    }
+
+    #[test]
+    fn a_settled_session_stays_settled() {
+        let old: SessionState =
+            serde_json::from_str(r#"{"id":"s1","title":"T","agent":"droid","updated":1}"#).unwrap();
+        assert!(!old.settled, "older state files have nothing settled");
+        assert!(serde_json::to_value(&old).unwrap().get("settled").is_none());
+        let json = r#"{"id":"s1","title":"T","agent":"droid","updated":1,"settled":true}"#;
+        let s: SessionState = serde_json::from_str(json).unwrap();
+        assert!(s.settled);
+        assert_eq!(serde_json::to_value(&s).unwrap()["settled"], true);
     }
 
     #[test]

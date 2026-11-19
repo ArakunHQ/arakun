@@ -110,7 +110,7 @@ impl Shell {
                 let _ = this.update_in(cx, |this, window, cx| {
                     this.cleanup.removing = None;
                     if gone.is_ok() {
-                        this.env_removed(&path, window, cx);
+                        this.forget_envs(std::slice::from_ref(&path), window, cx);
                     }
                 });
                 if gone.is_ok() {

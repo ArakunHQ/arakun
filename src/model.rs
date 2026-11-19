@@ -344,6 +344,9 @@ pub struct Session {
     /// The sessions it took over from other agents ("Continue with"), oldest
     /// first; their history is already in this one's transcript.
     pub continues: Vec<Earlier>,
+    /// Its pull request merged (`crate::settle`): the sessions list leaves it
+    /// out until it is used again.
+    pub settled: bool,
     pub live: Option<LiveSession>,
 }
 
@@ -380,6 +383,7 @@ impl Session {
             cli_model: None,
             auto_allow: false,
             continues: Vec::new(),
+            settled: false,
             live: None,
         }
     }
@@ -576,6 +580,17 @@ impl TabStrip {
         self.tabs
             .iter()
             .position(|t| matches!(&t.kind, TabKind::Session { id: tid, .. } if tid.as_ref() == id))
+    }
+
+    /// Whether the tab at `index` is the active one and `env`, the environment
+    /// on screen, has no other tab. Closing it leaves `env` nothing to show.
+    pub fn is_last_on_screen(&self, index: usize, env: &Path) -> bool {
+        index == self.active_tab
+            && !self
+                .tabs
+                .iter()
+                .enumerate()
+                .any(|(i, t)| i != index && t.is_in(env))
     }
 
     /// The tab to show for the environment at `env`: the one it showed last,
@@ -914,6 +929,9 @@ impl Environment {
             Status::NeedsInput
         } else if any(Status::Working) {
             Status::Working
+        } else if any(Status::Error) {
+            // With one thread per worktree, a failed thread is the row's state.
+            Status::Error
         } else {
             Status::Idle
         }
@@ -1325,6 +1343,26 @@ mod tests {
                 None => "view".into(),
             })
             .collect()
+    }
+
+    #[test]
+    fn only_the_active_tab_can_be_last_on_screen() {
+        let a = Path::new("a");
+        let mut strip = strip_of(&["a", "b"]);
+        strip.tabs.push(Tab::new("Notes", TabKind::Notes));
+        // a's only tab, on screen.
+        assert!(strip.is_last_on_screen(0, a));
+        // b's only tab, but another tab is on screen.
+        assert!(!strip.is_last_on_screen(1, Path::new("b")));
+        // A view on screen while a has no tab of its own.
+        strip.tabs.remove(0);
+        strip.active_tab = 1;
+        assert!(strip.is_last_on_screen(1, a));
+        // A second tab of a: either one can go.
+        let mut strip = strip_of(&["a", "a", "b"]);
+        assert!(!strip.is_last_on_screen(0, a));
+        strip.active_tab = 1;
+        assert!(!strip.is_last_on_screen(1, a));
     }
 
     #[test]

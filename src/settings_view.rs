@@ -1037,7 +1037,7 @@ impl SettingsDialog {
                 .into_any_element();
                 let settle = row(
                     "Settle threads after merge",
-                    "Once an environment's pull request is merged: its open review threads are resolved on GitHub, its notifications are marked read, and the environment's sessions stop asking for you. The GitHub tab marks read the notifications of every merged pull request.",
+                    "Once an environment's pull request is merged: its open review threads are resolved on GitHub, its notifications are marked read, and the environment's sessions stop asking for you and leave the sessions list. The GitHub tab marks read the notifications of every merged pull request.",
                     switch(crate::settle::on()).into_any_element(),
                 )
                 .id("set-settle-after-merge")

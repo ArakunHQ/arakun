@@ -1,4 +1,4 @@
-//! The title bar: back and forward, the tabs of the environment and the window buttons.
+//! The title bar: back and forward, the one row of tabs and the window buttons.
 
 use super::*;
 
@@ -8,7 +8,6 @@ impl Shell {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let env = self.env();
         // The tabs take what they need and the centred title what is left.
         let mut strip = div()
             .flex()
@@ -75,7 +74,7 @@ impl Shell {
                     .bg(theme::fill_selected()),
             );
         }
-        // Back/forward through the tab history of this environment; the rail has
+        // Back/forward through the tab history; the rail has
         // its own pair while it shows.
         let (back, fwd) = (self.can_go_back(), self.can_go_forward());
         let history = [
@@ -114,7 +113,8 @@ impl Shell {
                     }))),
             );
         }
-        let in_other_pane = env.split_other();
+        let strip_tabs = &self.strip;
+        let in_other_pane = self.split_other();
         let shell = cx.entity();
         let lifted = self.lifted_tab(cx);
         // Tabs past the bar's width scroll instead of running under the title and the
@@ -128,19 +128,49 @@ impl Shell {
             .gap(crate::ui::sp(2.))
             .overflow_x_scroll()
             .track_scroll(&self.tab_scroll);
-        let active_id = env.tabs.get(env.active_tab).map(|t| t.id);
+        let active_id = strip_tabs.active().map(|t| t.id);
         if self.tab_revealed.replace(active_id) != active_id {
-            self.tab_scroll.scroll_to_item(env.active_tab);
+            self.tab_scroll.scroll_to_item(strip_tabs.active_tab);
         }
-        for (i, tab) in env.tabs.iter().enumerate() {
+        // With tabs of several environments in the row, the first tab of each
+        // run says which environment the run works in.
+        let mut envs = strip_tabs.tabs.iter().filter_map(|t| t.env.as_ref());
+        let labelled = envs
+            .next()
+            .is_some_and(|first| envs.any(|other| other != first));
+        let projects = self
+            .projects
+            .iter()
+            .filter(|p| {
+                strip_tabs
+                    .tabs
+                    .iter()
+                    .any(|t| t.env.as_deref().is_some_and(|e| p.env_index(e).is_some()))
+            })
+            .count();
+        for (i, tab) in strip_tabs.tabs.iter().enumerate() {
+            let starts_run = labelled
+                && i.checked_sub(1)
+                    .is_none_or(|b| strip_tabs.tabs[b].env != tab.env);
+            let run_label: Option<SharedString> =
+                tab.env
+                    .as_deref()
+                    .filter(|_| starts_run)
+                    .map(|path| match self.find_env(path) {
+                        Some(env) if projects < 2 => env.name.clone(),
+                        _ => self.env_label(path).into(),
+                    });
             let dragged = drag::DraggedTab::new(tab.id, tab.title.clone());
             let shell = shell.clone();
-            let active = i == env.active_tab;
+            let active = i == strip_tabs.active_tab;
             let shown_beside = in_other_pane == Some(i);
-            let closable = env.tabs.len() > 1 || !matches!(tab.kind, TabKind::NewSession);
+            // Closing an environment's only tab gives it a blank one: a blank
+            // one that is alone has nothing to close.
+            let closable = !matches!(tab.kind, TabKind::NewSession)
+                || strip_tabs.tabs.iter().filter(|t| t.env == tab.env).count() > 1;
             let tab_icon: AnyElement = match &tab.kind {
                 TabKind::Session { agent, .. } => agent_icon(*agent, 14.).into_any_element(),
-                TabKind::NewSession => agent_icon(env.agent, 14.).into_any_element(),
+                TabKind::NewSession => agent_icon(self.tab_env(tab).agent, 14.).into_any_element(),
                 TabKind::Browser { .. } => {
                     let page = tab.browser.as_ref().map(|b| b.view.read(cx));
                     match (
@@ -223,91 +253,121 @@ impl Shell {
                     .into_any_element(),
             };
             let group: SharedString = format!("tab-{i}").into();
+            // One child per tab, so `tab_scroll` finds a tab by its index.
+            let mut slot = div()
+                .flex()
+                .flex_none()
+                .items_center()
+                .gap(crate::ui::sp(2.));
+            if starts_run && i > 0 {
+                slot = slot.child(
+                    div()
+                        .flex_none()
+                        .w(px(1.))
+                        .h(px(16.))
+                        .mx(px(4.))
+                        .bg(theme::fill_selected()),
+                );
+            }
+            if let Some(label) = run_label {
+                slot = slot.child(
+                    div()
+                        .flex_none()
+                        .max_w(px(140.))
+                        .truncate()
+                        .px(crate::ui::sp(4.))
+                        .text_size(px(ui::TEXT_XS))
+                        .text_color(theme::text_faint())
+                        .child(crate::redact::text(&label).into_owned()),
+                );
+            }
             list = list.child(
-                ui::tab(("tab", i), active)
-                    .group(group.clone())
-                    // The close button keeps its size; only the air beside it scales.
-                    .when(closable, |d| {
-                        d.pr(crate::ui::sp(4.) + px(ui::TAB_CLOSE_ROOM))
-                    })
-                    // The tab on screen in the other pane.
-                    .when(shown_beside, |d| {
-                        d.border_1()
-                            .border_color(theme::border_strong())
-                            .text_color(theme::text_muted())
-                    })
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    // A middle click closes the tab, as in a browser.
-                    .when(closable, |d| {
-                        d.on_mouse_down(MouseButton::Middle, |_, _, cx| cx.stop_propagation())
-                            .on_mouse_up(
-                                MouseButton::Middle,
-                                cx.listener(move |this, _, window, cx| {
-                                    cx.stop_propagation();
-                                    this.close_tab(i, window, cx)
-                                }),
-                            )
-                    })
-                    .on_mouse_down(
-                        MouseButton::Right,
-                        cx.listener(move |this, ev: &gpui::MouseDownEvent, _, cx| {
-                            cx.stop_propagation();
-                            this.tab_menu(i, ev.position, cx)
-                        }),
-                    )
-                    .child(
-                        div()
-                            .flex_none()
-                            .when(!active, |d| d.opacity(0.55))
-                            .child(tab_icon),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .when(tab.preview, |d| d.italic())
-                            // A terminal's title is often `user@host:~/path`.
-                            .child(crate::redact::text(&tab.title).into_owned()),
-                    )
-                    .when(closable, |d| {
-                        d.child(
-                            div()
-                                .id(("tab-close", i))
-                                .absolute()
-                                .right(px(4.))
-                                .top(px(ui::TAB_CLOSE_TOP))
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .size(px(20.))
-                                .rounded(crate::ui::rad(4.))
-                                .invisible()
-                                .group_hover(group.clone(), |s| s.visible())
-                                .hover(|s| s.bg(theme::fill_selected()))
-                                .child(icon("cancel01", 12.).text_color(theme::text_subtle()))
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    cx.stop_propagation();
-                                    this.close_tab(i, window, cx)
-                                })),
+                slot.child(
+                    ui::tab(("tab", i), active)
+                        .group(group.clone())
+                        // The close button keeps its size; only the air beside it scales.
+                        .when(closable, |d| {
+                            d.pr(crate::ui::sp(4.) + px(ui::TAB_CLOSE_ROOM))
+                        })
+                        // The tab on screen in the other pane.
+                        .when(shown_beside, |d| {
+                            d.border_1()
+                                .border_color(theme::border_strong())
+                                .text_color(theme::text_muted())
+                        })
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        // A middle click closes the tab, as in a browser.
+                        .when(closable, |d| {
+                            d.on_mouse_down(MouseButton::Middle, |_, _, cx| cx.stop_propagation())
+                                .on_mouse_up(
+                                    MouseButton::Middle,
+                                    cx.listener(move |this, _, window, cx| {
+                                        cx.stop_propagation();
+                                        this.close_tab(i, window, cx)
+                                    }),
+                                )
+                        })
+                        .on_mouse_down(
+                            MouseButton::Right,
+                            cx.listener(move |this, ev: &gpui::MouseDownEvent, _, cx| {
+                                cx.stop_propagation();
+                                this.tab_menu(i, ev.position, cx)
+                            }),
                         )
-                    })
-                    .on_click(cx.listener(move |this, ev: &gpui::ClickEvent, window, cx| {
-                        this.select_tab(i, window, cx);
-                        // A double click keeps a preview tab.
-                        if ev.click_count() >= 2 {
-                            this.pin_preview(cx);
-                        }
-                    }))
-                    .on_drag(dragged, move |d, offset, _, cx| {
-                        shell.update(cx, |this, cx| this.start_tab_drag(d, offset, cx))
-                    })
-                    // Dropping a tab on another moves it there.
-                    .drag_over::<drag::DraggedTab>(|s, _, _, _| s.bg(theme::fill_selected()))
-                    .on_drop(cx.listener(move |this, d: &drag::DraggedTab, _, cx| {
-                        this.drop_tab_at(d.id, i, cx)
-                    }))
-                    .when(lifted == Some(tab.id), |d| d.opacity(0.4)),
+                        .child(
+                            div()
+                                .flex_none()
+                                .when(!active, |d| d.opacity(0.55))
+                                .child(tab_icon),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .when(tab.preview, |d| d.italic())
+                                // A terminal's title is often `user@host:~/path`.
+                                .child(crate::redact::text(&tab.title).into_owned()),
+                        )
+                        .when(closable, |d| {
+                            d.child(
+                                div()
+                                    .id(("tab-close", i))
+                                    .absolute()
+                                    .right(px(4.))
+                                    .top(px(ui::TAB_CLOSE_TOP))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .size(px(20.))
+                                    .rounded(crate::ui::rad(4.))
+                                    .invisible()
+                                    .group_hover(group.clone(), |s| s.visible())
+                                    .hover(|s| s.bg(theme::fill_selected()))
+                                    .child(icon("cancel01", 12.).text_color(theme::text_subtle()))
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        cx.stop_propagation();
+                                        this.close_tab(i, window, cx)
+                                    })),
+                            )
+                        })
+                        .on_click(cx.listener(move |this, ev: &gpui::ClickEvent, window, cx| {
+                            this.select_tab(i, window, cx);
+                            // A double click keeps a preview tab.
+                            if ev.click_count() >= 2 {
+                                this.pin_preview(cx);
+                            }
+                        }))
+                        .on_drag(dragged, move |d, offset, _, cx| {
+                            shell.update(cx, |this, cx| this.start_tab_drag(d, offset, cx))
+                        })
+                        // Dropping a tab on another moves it there.
+                        .drag_over::<drag::DraggedTab>(|s, _, _, _| s.bg(theme::fill_selected()))
+                        .on_drop(cx.listener(move |this, d: &drag::DraggedTab, _, cx| {
+                            this.drop_tab_at(d.id, i, cx)
+                        }))
+                        .when(lifted == Some(tab.id), |d| d.opacity(0.4)),
+                ),
             );
         }
         strip = strip.child(list);
@@ -346,7 +406,7 @@ impl Shell {
                         "Split right (Ctrl+D)"
                     }))
                     .on_click(cx.listener(|this, _, window, cx| {
-                        if this.env().split_other().is_some() {
+                        if this.split_other().is_some() {
                             this.close_split(cx)
                         } else {
                             this.split_with(None, model::SplitDir::Right, window, cx)
@@ -420,7 +480,7 @@ impl Shell {
                         .child(max_button(maximized))
                         .child(
                             window_button("win-close", "cancel01", 14., true)
-                                .on_click(|_, _, cx| cx.quit()),
+                                .on_click(|_, window, cx| crate::background::close(window, cx)),
                         ),
                 )
             })

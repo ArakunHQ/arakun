@@ -503,7 +503,8 @@ fn main() {
                 | ThreadEvent::LoginRequested
                 | ThreadEvent::SubagentsChanged { .. }
                 | ThreadEvent::ShellChanges
-                | ThreadEvent::CheckOffer { .. } => {}
+                | ThreadEvent::CheckOffer { .. }
+                | ThreadEvent::Remote(_) => {}
                 ThreadEvent::Finished { stop_reason } => {
                     let t = thread.read(cx);
                     let mut r = run.borrow_mut();

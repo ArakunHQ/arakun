@@ -425,7 +425,7 @@ impl GitHubView {
                 };
                 // The badge counts pilot's cards too.
                 (
-                    q.on_you + self.pilot.read(cx).count(g.focus()),
+                    board::waiting_without_board(q, self.pilot.read(cx).shown_in(g.focus())),
                     rest,
                     String::new(),
                 )

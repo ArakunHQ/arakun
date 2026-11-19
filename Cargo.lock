@@ -282,7 +282,7 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
 name = "arakun"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "aes-gcm",
  "alacritty_terminal",
@@ -293,6 +293,7 @@ dependencies = [
  "cef",
  "cef-dll-sys",
  "dunce",
+ "embed-resource",
  "futures",
  "getrandom 0.4.3",
  "gpui",
@@ -310,6 +311,7 @@ dependencies = [
  "rhai",
  "ring",
  "rust-embed",
+ "rustls",
  "serde",
  "serde_json",
  "sha2 0.11.1",
@@ -328,7 +330,7 @@ dependencies = [
 
 [[package]]
 name = "arakun-server"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "aes-gcm",
  "anyhow",

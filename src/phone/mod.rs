@@ -62,12 +62,20 @@ pub type ClientId = u64;
 #[derive(Deserialize, Debug, Clone, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClientMsg {
-    /// Watch a session: its last entries now, then every change.
+    /// Watch a session: its last entries now, then every change. It takes the
+    /// place of the one watched before, unless `keep` (a desktop following
+    /// several): then both are watched.
     Open {
         session: String,
+        #[serde(default)]
+        keep: bool,
     },
-    /// Back to the inbox: stop watching.
-    Close,
+    /// Stop watching `session`, or every session when it says none (back to
+    /// the inbox).
+    Close {
+        #[serde(default)]
+        session: Option<String>,
+    },
     /// Older entries of the watched session, `from..to`.
     Entries {
         session: String,
@@ -153,6 +161,49 @@ pub enum ClientMsg {
         session: String,
         #[serde(default)]
         from: usize,
+    },
+    /// Makes a folder already on the server one sessions can start in. `~/`
+    /// stands for the home folder there. Answered with `place_added`.
+    AddPlace {
+        path: String,
+    },
+    /// Clones a repository on the server and makes its folder a place: a URL,
+    /// a `git clone` line or a GitHub `owner/repo`. Answered with `place_added`
+    /// once the clone is done.
+    Clone {
+        url: String,
+    },
+    /// A new worktree of the repository `from` is a checkout of, on a new
+    /// `branch`, made a place. Answered with `place_added`.
+    NewEnv {
+        from: String,
+        branch: String,
+    },
+    /// Renames the branch checked out at place `place` from `from` to `to`,
+    /// unless it was renamed meanwhile. Answered with the inbox.
+    RenameBranch {
+        place: String,
+        from: String,
+        to: String,
+    },
+    /// The sessions at place `place` stop asking for attention: those not
+    /// working go idle, and their agents stop unless a device has them open.
+    /// Answered with the inbox.
+    SettleEnv {
+        place: String,
+    },
+    /// Removes the worktree at place `place`, its folder, and its sessions;
+    /// with `delete_branch`, its branch too. A repository's main folder is
+    /// never removed. Answered with `env_deleted`: whether the folder is gone
+    /// (`deleted`), and what went wrong (`error`).
+    DeleteEnv {
+        place: String,
+        #[serde(default)]
+        delete_branch: bool,
+        /// The branch the user agreed to delete. One checked out there
+        /// since is not deleted, and neither is the folder.
+        #[serde(default)]
+        branch: Option<String>,
     },
     /// Both agents' plan limits, as the desktop knows them.
     Usage,
@@ -1431,6 +1482,33 @@ mod tests {
     }
 
     #[test]
+    fn a_delete_keeps_the_branch_unless_asked() {
+        let read = |json: &str| serde_json::from_str::<ClientMsg>(json).unwrap();
+        assert_eq!(
+            read(r#"{"type":"delete_env","place":"/w/fix"}"#),
+            ClientMsg::DeleteEnv {
+                place: "/w/fix".into(),
+                delete_branch: false,
+                branch: None,
+            }
+        );
+        assert_eq!(
+            read(r#"{"type":"delete_env","place":"/w/fix","delete_branch":true,"branch":"fix"}"#),
+            ClientMsg::DeleteEnv {
+                place: "/w/fix".into(),
+                delete_branch: true,
+                branch: Some("fix".into()),
+            }
+        );
+        assert_eq!(
+            read(r#"{"type":"settle_env","place":"/w/fix"}"#),
+            ClientMsg::SettleEnv {
+                place: "/w/fix".into()
+            }
+        );
+    }
+
+    #[test]
     fn settings_that_cannot_be_read_are_an_error_not_the_defaults() {
         let dir = std::env::temp_dir().join(format!("arakun-phone-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -1866,7 +1944,7 @@ mod tests {
                     server.send(id, "hello".into());
                     got.push("connected");
                 }
-                Some(Incoming::Message(_, ClientMsg::Open { session })) => {
+                Some(Incoming::Message(_, ClientMsg::Open { session, .. })) => {
                     assert_eq!(session, "s1");
                     got.push("open");
                 }

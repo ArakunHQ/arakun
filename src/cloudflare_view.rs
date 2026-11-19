@@ -531,6 +531,7 @@ impl CloudflareView {
             Agent::Droid => "Starts a Droid session with what Arakun sees",
             Agent::OpenCode => "Starts an OpenCode session with what Arakun sees",
             Agent::Codex => "Starts a Codex session with what Arakun sees",
+            Agent::Devin => "Starts a Devin session with what Arakun sees",
             Agent::WorkersAi => "Starts a Workers AI session with what Arakun sees",
         };
         ui::button_with(
@@ -649,6 +650,7 @@ impl CloudflareView {
             Agent::Droid => "Cloudflare MCP for Droid",
             Agent::OpenCode => "Cloudflare MCP for OpenCode",
             Agent::Codex => "Cloudflare MCP for Codex",
+            Agent::Devin => "Cloudflare MCP for Devin",
             Agent::WorkersAi => "Cloudflare MCP",
         })
         .child(
@@ -2062,9 +2064,11 @@ impl CloudflareView {
                 div()
                     .flex()
                     .gap(crate::ui::sp(10.))
-                    .when(self.agent != Agent::WorkersAi, |d| {
-                        d.child(self.render_mcp(cx))
-                    })
+                    // Workers AI has no MCP client; Arakun cannot connect Devin's yet.
+                    .when(
+                        !matches!(self.agent, Agent::WorkersAi | Agent::Devin),
+                        |d| d.child(self.render_mcp(cx)),
+                    )
                     .child(self.render_share(cx)),
             )
     }
@@ -2259,6 +2263,7 @@ fn agent_name(agent: Agent) -> &'static str {
         Agent::Droid => "Droid",
         Agent::OpenCode => "OpenCode",
         Agent::Codex => "Codex",
+        Agent::Devin => "Devin",
         Agent::WorkersAi => "Workers AI",
     }
 }

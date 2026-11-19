@@ -289,14 +289,8 @@ fn read_checked(cwd: &Path) -> Checked {
 
 fn save_checked(cwd: &Path, checked: &Checked) {
     let file = cache_file(cwd);
-    if let Some(dir) = file.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
     if let Ok(json) = serde_json::to_vec(checked) {
-        let tmp = file.with_extension("tmp");
-        if std::fs::write(&tmp, json).is_ok() {
-            let _ = std::fs::rename(tmp, file);
-        }
+        let _ = crate::durable::write(&file, &json);
     }
 }
 

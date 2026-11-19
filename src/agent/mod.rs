@@ -48,8 +48,9 @@ pub use launch::claude_code_binary;
 #[allow(unused_imports)]
 pub use launch::{
     adapter_install, child_path_env, claude_cli, codex_cli, codex_env_key, codex_sign_in,
-    droid_bin, install_codex, login_command, logout_command, opencode_all_models, opencode_bin,
-    opencode_go_login_command, opencode_models, opencode_providers, which,
+    devin_bin, devin_env_key, devin_signed_in, droid_bin, install_codex, login_command,
+    logout_command, opencode_all_models, opencode_bin, opencode_go_login_command, opencode_models,
+    opencode_providers, which,
 };
 #[allow(unused_imports)]
 pub use markdown::{copy_with_feedback, was_copied};
@@ -61,10 +62,10 @@ pub use shell_diff::ShellChange;
 pub use thread::{
     AskUserRequest, Backend, CheckAnswer, Choice, ConfigOption, Entry, FailedAt, ModelInfo,
     NativeSettings, NoticeMark, NoticePlace, PermissionOption, PermissionRequest, PlanEntry,
-    PlanLimit, Question, RewindPlan, SessionMeta, Setting, SettingOption, SpecPlan, Subagent,
-    SubagentRecord, SubagentState, Thread, ThreadEvent, ThreadStatus, ToolCall, ToolContent,
-    ToolStatus, Transcript, Usage, acp_label, acp_option, acp_setting_options, apply_setting,
-    fmt_cost, fmt_count, setting_label, setting_options,
+    PlanLimit, Question, RemoteAction, RewindPlan, SessionMeta, Setting, SettingOption, SpecPlan,
+    Subagent, SubagentRecord, SubagentState, Thread, ThreadEvent, ThreadStatus, ToolCall,
+    ToolContent, ToolStatus, Transcript, Usage, acp_label, acp_option, acp_setting_options,
+    apply_setting, fmt_cost, fmt_count, setting_label, setting_options,
 };
 #[allow(unused_imports)]
 pub use view::{ThreadView, ThreadViewEvent};

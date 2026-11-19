@@ -108,8 +108,7 @@ impl Shell {
         if !self.has_projects() {
             return None;
         }
-        let env = self.env();
-        match env.tabs.get(env.active_tab).map(|t| &t.kind) {
+        match self.strip.active().map(|t| &t.kind) {
             Some(TabKind::Session { id, .. }) => Some(id.clone()),
             _ => None,
         }
@@ -138,18 +137,26 @@ impl Shell {
         if !self.has_projects() {
             return;
         }
-        let env = self.env();
-        let path = env.path.clone();
-        let ids: Vec<SharedString> = self
+        let ids: Vec<(std::path::PathBuf, SharedString)> = self
             .visible_tabs()
             .into_iter()
-            .filter_map(|i| match &env.tabs.get(i)?.kind {
-                TabKind::Session { id, .. } => Some(id.clone()),
-                _ => None,
+            .filter_map(|i| {
+                let tab = self.strip.tabs.get(i)?;
+                match &tab.kind {
+                    TabKind::Session { id, .. } => Some((tab.env.clone()?, id.clone())),
+                    _ => None,
+                }
             })
             .collect();
-        for id in ids {
-            self.ensure_live(&path, &id, window, cx);
+        for (path, id) in &ids {
+            self.ensure_live(path, id, window, cx);
+        }
+        // A server sends every change of one session: the one in front.
+        if self.env().remote.is_some()
+            && let Some(id) = self.active_session_id()
+        {
+            let path = self.env().path.clone();
+            self.servers_follow(&path, &id, super::servers::Watcher::Desktop, cx);
         }
     }
 
@@ -160,11 +167,15 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let remote = self.find_env(env_path).is_some_and(|e| e.remote.is_some());
         let Some(session) = self.session_mut(env_path, id) else {
             return;
         };
         if session.live.is_some() {
             return;
+        }
+        if remote {
+            return self.view_remote(env_path, id, window, cx);
         }
         if crate::headless::shown(id) {
             return self.view_headless(env_path, id, window, cx);
@@ -291,7 +302,16 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.phone_thread_event(id, ev, cx);
+        // A server's session: what the user did goes there; the rest (checks,
+        // transcripts, the phone) is the server's to do.
+        let pid = self.phone_id(env_path, id);
+        self.phone_thread_event(&pid, ev, cx);
+        if self.find_env(env_path).is_some_and(|e| e.remote.is_some()) {
+            if let ThreadEvent::Remote(action) = ev {
+                self.servers_remote_action(env_path, id, action, cx);
+            }
+            return;
+        }
         // A turn whose check is about to run is announced once the check is done.
         self.speak_question(env_path, id, thread, cx);
         let checking = matches!(ev, ThreadEvent::Finished { stop_reason }
@@ -354,15 +374,13 @@ impl Shell {
                 if title.is_empty() {
                     return;
                 }
-                if let Some(env) = self.find_env_mut(env_path) {
-                    if let Some(i) = env.session_index(id) {
-                        env.sessions[i].title = title.clone();
-                    }
-                    for tab in &mut env.tabs {
-                        if matches!(&tab.kind, TabKind::Session { id: tid, .. } if tid == id) {
-                            tab.title = title.clone();
-                        }
-                    }
+                if let Some(env) = self.find_env_mut(env_path)
+                    && let Some(i) = env.session_index(id)
+                {
+                    env.sessions[i].title = title.clone();
+                }
+                if let Some(i) = self.strip.session_tab(id) {
+                    self.strip.tabs[i].title = title.clone();
                 }
                 self.save(cx);
                 cx.notify();
@@ -458,13 +476,10 @@ impl Shell {
 
     /// Stops the agent of a session nobody is looking at once it has nothing to do.
     pub(super) fn retire_if_hidden(&mut self, env_path: &Path, id: &str, cx: &mut Context<Self>) {
+        let open = self.strip.session_tab(id).is_some();
         let Some(env) = self.find_env_mut(env_path) else {
             return;
         };
-        let open = env
-            .tabs
-            .iter()
-            .any(|t| matches!(&t.kind, TabKind::Session { id: tid, .. } if tid.as_ref() == id));
         let Some(i) = env.session_index(id) else {
             return;
         };
@@ -473,23 +488,31 @@ impl Shell {
                 .live
                 .as_ref()
                 .is_some_and(|l| l.thread.read(cx).in_background());
-        if open || busy || self.check_running(id) || self.phone_watching(id) {
+        if open || busy || self.check_running(id) || self.phone_watching(env_path, id) {
             return;
         }
-        let Some(session) = self.find_env_mut(env_path).map(|e| &mut e.sessions[i]) else {
+        let Some(env) = self.find_env_mut(env_path) else {
             return;
         };
+        let remote = env.remote.as_ref().map(|r| r.server.clone());
+        let session = &mut env.sessions[i];
         if let Some(live) = session.live.take() {
-            let t = live.thread.read(cx);
-            let transcript = t.transcript(cx);
-            session.meta = Some(t.meta());
-            let path = state::transcript_path(id);
-            cx.background_spawn(crate::guard::task(async move {
-                let _ = write_transcript(&path, &transcript);
-            }))
-            .detach();
+            // A server's transcript stays on the server.
+            if remote.is_none() {
+                let t = live.thread.read(cx);
+                let transcript = t.transcript(cx);
+                session.meta = Some(t.meta());
+                let path = state::transcript_path(id);
+                cx.background_spawn(crate::guard::task(async move {
+                    let _ = write_transcript(&path, &transcript);
+                }))
+                .detach();
+            }
             report_failure(&live.thread, true, cx);
             live.thread.update(cx, |t, _| t.shutdown());
+            if let Some(server) = remote {
+                self.servers_unfollow(&server, id);
+            }
         }
     }
 
@@ -501,6 +524,115 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // On a server: the session runs there, and nothing here is renamed,
+        // staged or checked for it.
+        if self.env().remote.is_some() {
+            let path = self.env().path.clone();
+            let agent = self.env().agent;
+            // `/stage` runs git here, on files that are on the server.
+            if let Some(id) = self.active_session_id()
+                && text.trim() == "/stage"
+            {
+                self.ensure_live(&path, &id, window, cx);
+                if let Some(thread) = self.active_thread(cx) {
+                    thread.update(cx, |t, cx| {
+                        t.post_notice(
+                            "/stage works on this machine's files; on the server, stage in its terminal.",
+                            true,
+                            cx,
+                        )
+                    });
+                }
+                cx.notify();
+                return;
+            }
+            // The rename note goes to the agent only; it stays for the next
+            // prompt when this one does not go.
+            let note = self.rename_notes.remove(&path);
+            let prompt = match &note {
+                Some(note) => format!("{text}{}", crate::agent::chart::hint(note)),
+                None => text.clone(),
+            };
+            // A remote thread hands the prompt on without saying whether it
+            // went: whether it can go is asked first.
+            let reachable = self.env().remote.as_ref().is_some_and(|r| {
+                self.server_reach(&r.server) == Some(crate::servers_view::Reach::Connected)
+            });
+            let sent = match self.active_session_id() {
+                Some(id) => {
+                    self.ensure_live(&path, &id, window, cx);
+                    let thread = self.active_thread(cx);
+                    if let Some(thread) = &thread {
+                        thread.update(cx, |t, cx| {
+                            if reachable {
+                                t.send(prompt, cx);
+                            } else {
+                                t.post_notice(
+                                    "The server is not connected, so this did not reach it.",
+                                    true,
+                                    cx,
+                                );
+                            }
+                        });
+                    }
+                    reachable && thread.is_some()
+                }
+                None => {
+                    let sent = self.servers_start(
+                        &path,
+                        agent,
+                        &prompt,
+                        &[],
+                        super::servers::Asker::Desktop,
+                    );
+                    // Until the server answers: it names the branch once the
+                    // session started, and comes back here if it did not.
+                    if let Some(reference) = sent {
+                        let first = super::servers::FirstPrompt {
+                            env: path.clone(),
+                            text: text.clone(),
+                            agent: agent.kind(),
+                            note: note.clone(),
+                            desktop: true,
+                        };
+                        self.servers_first_prompt(reference, first);
+                        self.composer_changed(cx);
+                        cx.notify();
+                        return;
+                    }
+                    let why = self
+                        .servers_refusal()
+                        .unwrap_or_else(|| "The server cannot be reached.".into());
+                    self.notify(
+                        crate::island::AlertKind::Warning,
+                        "The prompt did not go",
+                        &why,
+                        None,
+                        cx,
+                    );
+                    false
+                }
+            };
+            if sent {
+                // The branch is named after the first prompt that went, there
+                // as here, by the agent of the session it went to.
+                let session_agent = self.active_session_id().and_then(|id| {
+                    let env = self.find_env(&path)?;
+                    Some(env.sessions[env.session_index(&id)?].agent)
+                });
+                let agent = session_agent.unwrap_or(agent);
+                self.name_after_first_prompt(&path, &text, agent.kind(), cx);
+            } else {
+                // Not sent: back into the composer, as the user wrote it.
+                self.env_mut().draft.set(&text);
+                self.composer_changed(cx);
+                if let Some(note) = note {
+                    self.rename_notes.insert(path, note);
+                }
+            }
+            cx.notify();
+            return;
+        }
         if let Some(id) = self.active_session_id() {
             let path = self.env().path.clone();
             let agent = self
@@ -645,6 +777,35 @@ impl Shell {
         true
     }
 
+    /// Puts a session's tab in the strip: in place of its environment's blank
+    /// New session tab when that one is in front there, else after its other
+    /// tabs. It comes to the front when the environment is `visible`; otherwise
+    /// it is what the environment shows the next time.
+    fn open_session_tab(
+        &mut self,
+        env_path: &Path,
+        tab: Tab,
+        visible: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let id = tab.id;
+        let strip = &mut self.strip;
+        let front = strip.front_of(env_path);
+        let index = match front.filter(|i| matches!(strip.tabs[*i].kind, TabKind::NewSession)) {
+            Some(i) => {
+                strip.tabs[i] = tab;
+                i
+            }
+            None => strip.add(tab),
+        };
+        if visible {
+            strip.active_tab = index;
+            self.note_active_tab(cx);
+        } else {
+            strip.front.insert(env_path.to_path_buf(), id);
+        }
+    }
+
     /// Starts a session in any environment with `text` as its first prompt; `show`
     /// opens it in a tab (the active one of that environment).
     pub(super) fn start_session_in(
@@ -681,25 +842,15 @@ impl Shell {
         session.status = Status::Working;
         env.sessions.insert(0, session);
         if show {
-            let tab = Tab::new(
+            let tab = Tab::of(
+                env_path,
                 title,
                 TabKind::Session {
                     agent,
                     id: id.clone(),
                 },
             );
-            if matches!(
-                env.tabs.get(env.active_tab).map(|t| &t.kind),
-                Some(TabKind::NewSession)
-            ) {
-                env.tabs[env.active_tab] = tab;
-            } else {
-                env.tabs.push(tab);
-                env.active_tab = env.tabs.len() - 1;
-            }
-            if visible {
-                self.note_active_tab(cx);
-            }
+            self.open_session_tab(env_path, tab, visible, cx);
         }
         crate::telemetry::capture(
             crate::telemetry::events::SESSION_STARTED,
@@ -734,6 +885,7 @@ impl Shell {
             (model::Agent::Claude, Some(env)) => env.claude_settings.clone(),
             (model::Agent::OpenCode, Some(env)) => opencode_draft(env),
             (model::Agent::Codex, Some(env)) => codex_draft(env),
+            (model::Agent::Devin, Some(env)) => devin_draft(env),
             (model::Agent::WorkersAi, Some(env)) => env.workers_ai_settings.clone(),
             _ => Vec::new(),
         };
@@ -751,7 +903,7 @@ impl Shell {
         claude_settings.sort_by_key(|(s, _)| *s != Setting::Model);
         thread.update(cx, |t, cx| {
             // Queued until the session exists, then sent with `initialize_session`
-            // (Droid) or one by one before the first prompt (Claude, OpenCode, Codex).
+            // (Droid) or one by one before the first prompt (the ACP agents).
             if let Some(settings) = &settings {
                 for s in Setting::ALL {
                     let value = settings.get(s);
@@ -780,14 +932,15 @@ impl Shell {
             agent: from,
             id: old_id,
         }) = self
-            .env()
+            .strip
             .tabs
             .get(self.composer_tab())
             .map(|t| t.kind.clone())
         else {
             return;
         };
-        if from == agent || crate::headless::shown(&old_id) {
+        // A server's session goes on with the agent it has there.
+        if from == agent || crate::headless::shown(&old_id) || self.env().remote.is_some() {
             return;
         }
         let entries = self.session_entries(&env_path, &old_id, cx);
@@ -861,7 +1014,7 @@ impl Shell {
         drop(old);
         let env = self.env_mut();
         env.sessions.insert(ix, session);
-        for tab in &mut env.tabs {
+        for tab in &mut self.strip.tabs {
             if matches!(&tab.kind, TabKind::Session { id: tid, .. } if *tid == old_id) {
                 tab.kind = TabKind::Session {
                     agent,
@@ -888,31 +1041,31 @@ impl Shell {
         let Some(i) = env.session_index(&id) else {
             return;
         };
-        let existing = env
-            .tabs
-            .iter()
-            .position(|t| matches!(&t.kind, TabKind::Session { id: tid, .. } if *tid == id));
-        env.active_tab = match existing {
+        let s = &env.sessions[i];
+        let tab = Tab::of(
+            &env.path,
+            s.title.clone(),
+            TabKind::Session {
+                agent: s.agent,
+                id: id.clone(),
+            },
+        );
+        let strip = &mut self.strip;
+        strip.active_tab = match strip.session_tab(&id) {
             Some(t) => t,
             None => {
-                let s = &env.sessions[i];
-                let tab = Tab::new(
-                    s.title.clone(),
-                    TabKind::Session {
-                        agent: s.agent,
-                        id: id.clone(),
-                    },
-                );
-                if matches!(
-                    env.tabs.get(env.active_tab).map(|t| &t.kind),
-                    Some(TabKind::NewSession)
-                ) && env.tabs.len() == 1
-                {
-                    env.tabs[0] = tab;
-                    0
-                } else {
-                    env.tabs.push(tab);
-                    env.tabs.len() - 1
+                // The environment's only tab, a blank one, turns into the session.
+                let mut own = strip
+                    .tabs
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, t)| t.env == tab.env);
+                match (own.next(), own.next()) {
+                    (Some((only, t)), None) if matches!(t.kind, TabKind::NewSession) => {
+                        strip.tabs[only] = tab;
+                        only
+                    }
+                    _ => strip.add(tab),
                 }
             }
         };
@@ -937,7 +1090,7 @@ impl Shell {
 
     /// Loads Droid's defaults and model list off the main thread; the list is
     /// cached, so Droid is only asked when the cache is missing or old.
-    /// Claude's, OpenCode's and Codex's options are cached the same way; the agent
+    /// Claude's, OpenCode's, Codex's and Devin's options are cached the same way; the agent
     /// is only asked when none of its sessions has reported them yet.
     pub(super) fn warm_droid_catalog(&mut self, cx: &mut Context<Self>) {
         let droid = catalog::droid_native();
@@ -954,6 +1107,9 @@ impl Shell {
                 .await;
             let _ = this.update(cx, |_, cx| cx.notify());
             cx.background_spawn(crate::guard::task(async { catalog::refresh_codex() }))
+                .await;
+            let _ = this.update(cx, |_, cx| cx.notify());
+            cx.background_spawn(crate::guard::task(async { catalog::refresh_devin() }))
                 .await;
             let _ = this.update(cx, |_, cx| cx.notify());
         })
@@ -1008,7 +1164,8 @@ impl Shell {
             return None;
         }
         let env = self.env();
-        let Some(TabKind::Session { id, .. }) = env.tabs.get(self.composer_tab()).map(|t| &t.kind)
+        let Some(TabKind::Session { id, .. }) =
+            self.strip.tabs.get(self.composer_tab()).map(|t| &t.kind)
         else {
             return None;
         };
@@ -1021,16 +1178,15 @@ impl Shell {
     /// The agent of the composer's session, or the one picked for the next session.
     pub(super) fn composer_agent(&self) -> model::Agent {
         let env = self.env();
-        match env.tabs.get(self.composer_tab()).map(|t| &t.kind) {
+        match self.strip.tabs.get(self.composer_tab()).map(|t| &t.kind) {
             Some(TabKind::Session { agent, .. }) => *agent,
             _ => env.agent,
         }
     }
 
     pub(super) fn composer_in_session(&self) -> bool {
-        let env = self.env();
         matches!(
-            env.tabs.get(self.composer_tab()).map(|t| &t.kind),
+            self.strip.tabs.get(self.composer_tab()).map(|t| &t.kind),
             Some(TabKind::Session { .. })
         )
     }
@@ -1123,6 +1279,20 @@ impl Shell {
                 }
                 Some((current, choices))
             }
+            // Devin's mode and model; it has no reasoning levels.
+            model::Agent::Devin => {
+                let options = catalog::devin_options();
+                let draft = devin_draft(env);
+                let o = crate::agent::acp_option(&options, s)?;
+                let (mut current, choices) = crate::agent::acp_setting_options(o, s);
+                if let Some((_, v)) = draft
+                    .iter()
+                    .find(|(d, v)| *d == s && choices.iter().any(|c| c.id == *v))
+                {
+                    current = v.clone();
+                }
+                Some((current, choices))
+            }
             model::Agent::WorkersAi => {
                 let options = crate::agent::workers_ai::draft_options(&env.workers_ai_settings);
                 crate::agent::acp_option(&options, s)
@@ -1149,6 +1319,7 @@ impl Shell {
             model::Agent::Claude
             | model::Agent::OpenCode
             | model::Agent::Codex
+            | model::Agent::Devin
             | model::Agent::WorkersAi => crate::agent::acp_label(s, &current, &options),
         })
     }
@@ -1208,6 +1379,7 @@ impl Shell {
             model::Agent::Claude => &mut env.claude_settings,
             model::Agent::OpenCode => &mut env.opencode_settings,
             model::Agent::Codex => &mut env.codex_settings,
+            model::Agent::Devin => &mut env.devin_settings,
             model::Agent::WorkersAi => &mut env.workers_ai_settings,
         };
         put_in_draft(
@@ -1278,9 +1450,8 @@ impl Shell {
     /// Whether the composer may move to another agent: a session another
     /// process runs can't be handed over from here.
     pub(super) fn can_switch_agent(&self) -> bool {
-        let env = self.env();
         !matches!(
-            env.tabs.get(self.composer_tab()).map(|t| &t.kind),
+            self.strip.tabs.get(self.composer_tab()).map(|t| &t.kind),
             Some(TabKind::Session { id, .. }) if crate::headless::shown(id)
         )
     }
@@ -1352,6 +1523,7 @@ impl Shell {
                     catalog::remember_opencode_pick(Vec::new());
                 }
                 model::Agent::Codex => env.codex_settings.retain(|(s, _)| !model_menu(s)),
+                model::Agent::Devin => env.devin_settings.retain(|(s, _)| !model_menu(s)),
                 model::Agent::WorkersAi => env.workers_ai_settings.retain(|(s, _)| !model_menu(s)),
             }
         }
@@ -1369,11 +1541,11 @@ impl Shell {
                         .filter(|(_, v)| !v.is_empty())
                         .collect()
                 }
-                model::Agent::Claude | model::Agent::Codex => {
-                    let options = if agent == model::Agent::Claude {
-                        catalog::claude_options()
-                    } else {
-                        catalog::codex_options()
+                model::Agent::Claude | model::Agent::Codex | model::Agent::Devin => {
+                    let options = match agent {
+                        model::Agent::Claude => catalog::claude_options(),
+                        model::Agent::Codex => catalog::codex_options(),
+                        _ => catalog::devin_options(),
                     };
                     [Setting::Model, Setting::Effort, Setting::Fast]
                         .into_iter()
@@ -1543,7 +1715,8 @@ impl Shell {
         // the session is not the one on screen.
         let at_computer = window.is_window_active();
         if !at_computer {
-            self.notify_phones(id, kind, &title, &body, cx);
+            let pid = self.phone_id(env_path, id);
+            self.notify_phones(&pid, kind, &title, &body, cx);
         }
         let visible = at_computer
             && self.has_projects()
@@ -1607,10 +1780,8 @@ impl Shell {
             self.open_session(id, window, cx);
         } else {
             // Forked from a session of another environment: its tab waits there.
-            if let Some(env) = self.find_env_mut(env_path) {
-                env.tabs
-                    .push(Tab::new(title, TabKind::Session { agent, id }));
-            }
+            self.strip
+                .add(Tab::of(env_path, title, TabKind::Session { agent, id }));
             self.save(cx);
             cx.notify();
         }
@@ -1631,10 +1802,8 @@ impl Shell {
         // passes the rename on the next time the session starts.
         session.title = new_title.clone();
         let thread = session.live.as_ref().map(|l| l.thread.clone());
-        for tab in &mut env.tabs {
-            if matches!(&tab.kind, TabKind::Session { id: tid, .. } if tid.as_ref() == id) {
-                tab.title = new_title.clone();
-            }
+        if let Some(i) = self.strip.session_tab(id) {
+            self.strip.tabs[i].title = new_title.clone();
         }
         if let Some(thread) = thread {
             thread.update(cx, |t, cx| t.rename(title, cx));
@@ -1675,15 +1844,15 @@ impl Shell {
         if !self.has_projects() {
             return;
         }
-        while let Some(i) =
-            self.env().tabs.iter().position(
-                |t| matches!(&t.kind, TabKind::Session { id: tid, .. } if tid.as_ref() == id),
-            )
-        {
+        // Closing its tab may bring another environment on screen: the session
+        // is taken off the one that was on screen when this was asked.
+        let path = self.env().path.clone();
+        while let Some(i) = self.strip.session_tab(id) {
             self.discard_tab(i, window, cx);
         }
-        let env = self.env_mut();
-        let removed = env.session_index(id).map(|i| env.sessions.remove(i));
+        let removed = self
+            .find_env_mut(&path)
+            .and_then(|env| env.session_index(id).map(|i| env.sessions.remove(i)));
         if let Some(live) = removed.as_ref().and_then(|s| s.live.as_ref()) {
             report_failure(&live.thread, true, cx);
             live.thread.update(cx, |t, _| t.shutdown());
@@ -1751,6 +1920,7 @@ impl Shell {
                 AgentKind::Droid => model::Agent::Droid,
                 AgentKind::OpenCode => model::Agent::OpenCode,
                 AgentKind::Codex => model::Agent::Codex,
+                AgentKind::Devin => model::Agent::Devin,
                 AgentKind::WorkersAi => model::Agent::WorkersAi,
             };
             let mut session = Session::new(new_session_id(), d.title.clone().into(), agent);
@@ -1776,6 +1946,10 @@ impl Shell {
     pub(super) fn save_transcripts(&self, cx: &gpui::App) {
         let mut resume = Vec::new();
         for env in self.projects.iter().flat_map(|p| &p.environments) {
+            // A server keeps its own sessions' transcripts.
+            if env.remote.is_some() {
+                continue;
+            }
             for s in env
                 .sessions
                 .iter()
@@ -1792,9 +1966,9 @@ impl Shell {
             }
         }
         if self.restarting {
-            let _ = std::fs::write(
-                state::resume_path(),
-                serde_json::to_vec(&resume).unwrap_or_default(),
+            let _ = crate::durable::write(
+                &state::resume_path(),
+                &serde_json::to_vec(&resume).unwrap_or_default(),
             );
         }
     }
@@ -1944,9 +2118,22 @@ fn write_transcript(path: &Path, t: &crate::agent::Transcript) -> std::io::Resul
 /// the reasoning levels on offer depend on it. A model Codex no longer offers is
 /// dropped, since setting it would only fail.
 pub(super) fn codex_draft(env: &model::Environment) -> Vec<(Setting, String)> {
-    let mut draft = env.codex_settings.clone();
-    let options = catalog::codex_options();
-    if let Some(o) = crate::agent::acp_option(&options, Setting::Model) {
+    offered_draft(&env.codex_settings, &catalog::codex_options())
+}
+
+/// The Devin settings an environment's next session starts with. Signed out,
+/// Devin offers no models, so a remembered one waits until it does.
+pub(super) fn devin_draft(env: &model::Environment) -> Vec<(Setting, String)> {
+    offered_draft(&env.devin_settings, &catalog::devin_options())
+}
+
+/// `picked`, the model first, without a model the agent no longer offers.
+fn offered_draft(
+    picked: &[(Setting, String)],
+    options: &[crate::agent::ConfigOption],
+) -> Vec<(Setting, String)> {
+    let mut draft = picked.to_vec();
+    if let Some(o) = crate::agent::acp_option(options, Setting::Model) {
         draft.retain(|(s, v)| *s != Setting::Model || o.options.iter().any(|c| c.id == *v));
     }
     draft.sort_by_key(|(s, _)| *s != Setting::Model);

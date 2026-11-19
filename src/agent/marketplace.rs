@@ -63,11 +63,8 @@ pub fn plugins(cwd: &Path) -> Result<Vec<PluginEntry>> {
     )?;
     let v: Value = serde_json::from_str(&out).context("reading claude plugin list")?;
     let list = parse_plugins(&v, &manifests());
-    if let Some(dir) = cache_file().parent() {
-        let _ = std::fs::create_dir_all(dir);
-        if let Ok(json) = serde_json::to_vec(&list) {
-            let _ = std::fs::write(cache_file(), json);
-        }
+    if let Ok(json) = serde_json::to_vec(&list) {
+        let _ = crate::durable::write(&cache_file(), &json);
     }
     Ok(list)
 }
@@ -453,11 +450,8 @@ pub fn official_servers() -> Result<Vec<RegistryServer>> {
             .then_with(|| a.title.to_lowercase().cmp(&b.title.to_lowercase()))
     });
     found.dedup_by(|a, b| a.name == b.name);
-    if let Some(dir) = official_file().parent() {
-        let _ = std::fs::create_dir_all(dir);
-        if let Ok(json) = serde_json::to_vec(&found) {
-            let _ = std::fs::write(official_file(), json);
-        }
+    if let Ok(json) = serde_json::to_vec(&found) {
+        let _ = crate::durable::write(&official_file(), &json);
     }
     Ok(found)
 }

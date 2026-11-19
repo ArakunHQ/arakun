@@ -64,7 +64,8 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !self.has_projects() {
+        // A terminal would open here, not on the server: there is none for it.
+        if !self.has_projects() || self.env().remote.is_some() {
             return;
         }
         let cwd = self.env().path.clone();
@@ -159,7 +160,11 @@ impl Shell {
         match cmd {
             Some(cmd) => self.spawn_terminal_command(Some(cmd), true, window, cx),
             None => {
-                let body = format!("{} was not found. Install it first.", kind.label());
+                let body = match kind {
+                    // Arakun does not install Devin, so say where it comes from.
+                    crate::agent::AgentKind::Devin => "The devin CLI was not found. Install the Devin CLI first (https://docs.devin.ai/work-with-devin/devin-cli).".to_string(),
+                    _ => format!("{} was not found. Install it first.", kind.label()),
+                };
                 self.notify(crate::island::AlertKind::Failure, title, &body, None, cx);
             }
         }
@@ -273,6 +278,9 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<usize> {
+        if crate::model::Remote::is_path(env_path) {
+            return None;
+        }
         let visible = self.has_projects() && self.env().path == env_path;
         let cwd = env_path.to_path_buf();
         let terminal = match Terminal::spawn(cwd.clone(), command, cx) {

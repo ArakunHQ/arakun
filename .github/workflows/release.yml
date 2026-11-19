@@ -52,7 +52,7 @@ name: Release
 #   The builds take 7-13 minutes and CI about 3 (longer when the macOS job
 #   queues), so waiting for CI before building only made each run longer. For
 #   a tag, every CI job runs, unless they already ran and passed on main for
-#   the same commit (see the version job). They restore main's cache like any
+#   the same commit (see the main-ci job). They restore main's cache like any
 #   CI run, but nothing they build goes into the archives.
 # - A dry run (a pull request that changes this file, or a manual run) builds,
 #   smoke-tests and uploads the archives as `arakun-dev-<short sha>-…`, and
@@ -219,11 +219,14 @@ jobs:
 
   ci:
     name: CI
-    needs: version
-    if: inputs.version == '' && needs.version.outputs.skip != 'true'
+    needs: [version, main-ci]
+    # Runs even when main-ci failed: then nothing is reused and every job runs.
+    if: >-
+      !cancelled() && inputs.version == ''
+      && needs.version.result == 'success' && needs.version.outputs.skip != 'true'
     uses: $/.github/workflows/ci.yml
     with:
-      main-passed: ${{ needs.version.outputs.ci-passed == 'true' }}
+      main-passed: ${{ needs.main-ci.outputs.passed == 'true' }}
     # A called workflow gets at most what its caller job allows; the "What
     # changed" job in ci.yml lists a pull request's files.
     permissions:
@@ -246,12 +249,8 @@ jobs:
       # The nightly before this one, for the release notes.
       last-nightly: ${{ steps.nightly.outputs.last }}
       skip: ${{ steps.nightly.outputs.skip }}
-      # "true" when ci.yml already passed on main for this commit.
-      ci-passed: ${{ steps.main-ci.outputs.passed }}
     permissions:
       contents: read
-      # Reads main's CI runs and their jobs.
-      actions: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -302,16 +301,30 @@ jobs:
           echo "::notice::building nightly $version from $SHA (last nightly: ${last:-none})"
           { echo "version=$version"; echo "last=$last"; } >> "$GITHUB_OUTPUT"
 
-      # A tag or a nightly is on a commit that main's CI already checked. If
-      # that run passed with every Rust job run (none skipped because the
-      # commit changed no Rust), the ci job skips its jobs instead of running
-      # them again. The relay job may have skipped: the archives hold no relay
-      # code, and relay changes pass it before they merge. A run still going is waited for: starting another would queue a
-      # second macOS job behind it. A cancelled or failed run, or none (a tag
-      # pushed by hand on another branch), runs CI here as before.
-      - name: Main's CI for this commit
+  # A tag or a nightly is on a commit that main's CI already checked. If
+  # that run passed with every Rust job run (none skipped because the commit
+  # changed no Rust), the ci job skips its jobs instead of running them
+  # again. The relay job may have skipped: the archives hold no relay code,
+  # and relay changes pass it before they merge. A run still going is waited
+  # for: starting another would queue a second macOS job behind it. A
+  # cancelled or failed run, or none (a tag pushed by hand on another
+  # branch), runs CI here as before. This is its own job, not a step of
+  # version, because the builds need version and must not wait for this.
+  main-ci:
+    name: Main's CI for this commit
+    needs: version
+    if: inputs.version == '' && needs.version.outputs.skip != 'true'
+    runs-on: depot-ubuntu-24.04
+    timeout-minutes: 100
+    outputs:
+      # "true" when ci.yml already passed on main for this commit.
+      passed: ${{ steps.main-ci.outputs.passed }}
+    permissions:
+      # Reads main's CI runs and their jobs.
+      actions: read
+    steps:
+      - name: Look up main's CI run
         id: main-ci
-        if: steps.nightly.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}

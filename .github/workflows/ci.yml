@@ -248,11 +248,14 @@ jobs:
   # really needs no desktop library. So this job installs none of them, builds it
   # alone, as someone setting up a server would, and reads what the binary needs.
   # Built together with the app it would get the app's GPUI, display code and all.
+  # 2 CPUs, not the other Linux Rust jobs' 4: on 4 they were 29% busy and never
+  # 90%+, and it finishes well before Clippy (Windows) anyway (runner sizing,
+  # #428).
   server:
     name: Server (Linux, no display libraries)
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.rust != 'false' }}
-    runs-on: depot-ubuntu-24.04-4
+    runs-on: depot-ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

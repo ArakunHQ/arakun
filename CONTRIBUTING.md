@@ -275,7 +275,10 @@ which git ignores. Turn the hooks off with `lefthook uninstall`.
   button on GitHub. That starts CodeRabbit's review. Don't wait for the optional checks
   (macOS, CodeQL), which can queue for a long time, unless the change touches macOS-only
   code (`cfg(target_os = "macos")`, a path with `macos` in its name, the macOS build
-  config): then wait for the macOS jobs too. When CodeRabbit finishes, people are asked to review
+  config): then wait for the macOS jobs too. Don't wait for the **Human approval**
+  status either: for a pull request from outside the team it is required, but it only
+  resolves after a person approves, and marking ready is what asks for the review. It
+  stays a merge gate, not a pre-ready one. When CodeRabbit finishes, people are asked to review
   unless CodeRabbit approved and every review thread is resolved. A pull request from
   outside the team always needs a
   maintainer's approval: a workflow dismisses CodeRabbit's, and the **Human approval**

@@ -109,7 +109,9 @@ gh pr checks --watch --required --fail-fast   # or your host's way to wait on a 
 ```
 
 - Wait only for the required checks. Optional ones (macOS, CodeQL) can queue for
-  tens of minutes and do not block a merge.
+  tens of minutes and do not block a merge. The required **Human approval** status
+  is not part of the wait either: it is a merge gate that only resolves after a
+  person approves, and marking ready is what asks for the review.
 - If the diff touches macOS-only code (`cfg(target_os = "macos")`,
   a path with `macos` in its name such as `tools/macos-*`, the macOS build config), also wait
   for the macOS jobs: `gh pr checks --watch --fail-fast`.

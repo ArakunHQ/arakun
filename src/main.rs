@@ -187,11 +187,18 @@ fn main() {
                 bind("alt-up", shell::PrevEnvironment, "Shell && !Terminal"),
                 bind("ctrl-o", shell::AddProject, "Shell && !Terminal"),
                 bind("ctrl-shift-n", shell::NewEnvironment, "Shell"),
+                bind(
+                    "ctrl-alt-n",
+                    shell::NewEnvironmentWithOptions,
+                    "Shell && !Terminal",
+                ),
                 bind("ctrl-shift-b", shell::NewBrowserTab, "Shell"),
                 bind("ctrl-w", shell::CloseTab, "Shell && !Terminal"),
                 bind("ctrl-k", shell::QuickSwitch, "Shell && !Terminal"),
                 bind("ctrl-p", shell::QuickSwitch, "Shell && !Terminal"),
                 bind("ctrl-b", shell::ToggleSidebar, "Shell && !Terminal"),
+                bind("ctrl-alt-b", shell::TogglePanel, "Shell && !Terminal"),
+                bind("ctrl-alt-s", shell::ToggleSubagents, "Shell && !Terminal"),
                 bind(
                     "ctrl-f",
                     shell::FindInChat,

@@ -1221,7 +1221,7 @@ impl Shell {
                 "toggle-panel",
                 "layout-align-right",
                 "Toggle workspace panel",
-                &[],
+                &["Ctrl", "Alt", "B"],
                 "Sessions, files and changes of the environment.",
                 Target::TogglePanel,
             );
@@ -1229,7 +1229,7 @@ impl Shell {
                 "toggle-subagents",
                 "bot",
                 "Toggle subagents panel",
-                &[],
+                &["Ctrl", "Alt", "S"],
                 "What the agent's helpers are doing.",
                 Target::ToggleSubagents,
             );

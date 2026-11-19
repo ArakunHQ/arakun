@@ -110,6 +110,10 @@ windows-sys = { version = "0.61", features = [
 # The rustls ureq already builds.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 
+[build-dependencies]
+# the Windows app icon in arakun.exe (build.rs); gpui already pulls it in
+embed-resource = "3"
+
 [[bin]]
 name = "arakun-helper"
 required-features = ["browser"]

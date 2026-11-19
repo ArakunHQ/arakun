@@ -3087,10 +3087,40 @@ impl Shell {
             return;
         }
         if !self.env().sessions.is_empty() || self.env().is_checkout {
-            self.quick_create_env(self.active_project, window, cx);
+            self.draft_new_session(self.active_project, window, cx);
             return;
         }
         self.show_new_session_tab(window, cx);
+    }
+
+    /// A new session in project `pi`: the New session tab of its main
+    /// checkout, ready to type in at once. The first prompt sent there makes
+    /// the worktree, so nobody waits on git before writing. On a server the
+    /// worktree is made first, as a prompt queued for it would be lost.
+    pub(super) fn draft_new_session(
+        &mut self,
+        pi: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.menu = None;
+        self.env_menu_open = false;
+        let Some(project) = self.projects.get(pi) else {
+            return;
+        };
+        let on_server = project
+            .environments
+            .get(project.active_env)
+            .is_some_and(|e| e.remote.is_some())
+            || project.is_remote();
+        let checkout = project.environments.iter().position(|e| e.is_checkout);
+        match checkout {
+            Some(ei) if !on_server => {
+                self.select_env(pi, ei, window, cx);
+                self.show_new_session_tab(window, cx);
+            }
+            _ => self.quick_create_env(pi, window, cx),
+        }
     }
 
     /// The open environment's New session tab, made when it has none.

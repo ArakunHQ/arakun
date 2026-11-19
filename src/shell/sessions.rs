@@ -84,6 +84,20 @@ fn new_session_id() -> SharedString {
     format!("{millis:x}-{n}").into()
 }
 
+/// A first prompt waiting for the worktree it will start in.
+pub(super) struct QueuedPrompt {
+    text: String,
+    /// Where it was written: what it mentions is found there.
+    from: PathBuf,
+    agent: model::Agent,
+    draft_settings: Vec<(Setting, String)>,
+    claude_settings: Vec<(Setting, String)>,
+    opencode_settings: Vec<(Setting, String)>,
+    codex_settings: Vec<(Setting, String)>,
+    devin_settings: Vec<(Setting, String)>,
+    workers_ai_settings: Vec<(Setting, String)>,
+}
+
 pub(super) fn summary(text: &str) -> SharedString {
     let text = crate::agent::attach::title_text(text);
     let line = text
@@ -395,6 +409,10 @@ impl Shell {
                 {
                     s.status = status;
                     s.updated = model::unix_now();
+                    // Used again after its merge: back in the list.
+                    if status == Status::Working {
+                        s.settled = false;
+                    }
                     cx.notify();
                 }
             }
@@ -514,6 +532,66 @@ impl Shell {
                 self.servers_unfollow(&server, id);
             }
         }
+    }
+
+    /// A first prompt that waits for its worktree, with the agent and settings
+    /// picked where it was written.
+    pub(super) fn queue_prompt(&self, text: String) -> QueuedPrompt {
+        let env = self.env();
+        QueuedPrompt {
+            text,
+            from: env.path.clone(),
+            agent: env.agent,
+            draft_settings: env.draft_settings.clone(),
+            claude_settings: env.claude_settings.clone(),
+            // What it uses now: one it inherits could change while it waits.
+            opencode_settings: opencode_draft(env),
+            codex_settings: env.codex_settings.clone(),
+            devin_settings: env.devin_settings.clone(),
+            workers_ai_settings: env.workers_ai_settings.clone(),
+        }
+    }
+
+    /// Starts the session a queued prompt waited for, in the new worktree.
+    pub(super) fn start_queued(
+        &mut self,
+        env_path: &Path,
+        p: QueuedPrompt,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(env) = self.find_env_mut(env_path) else {
+            return;
+        };
+        env.agent = p.agent;
+        env.draft_settings = p.draft_settings;
+        env.claude_settings = p.claude_settings;
+        env.opencode_settings = p.opencode_settings;
+        env.codex_settings = p.codex_settings;
+        env.devin_settings = p.devin_settings;
+        env.workers_ai_settings = p.workers_ai_settings;
+        let text = crate::agent::attach::move_mentions(&p.text, &p.from, env_path);
+        let title = summary(&text);
+        self.start_session_in(env_path, p.agent, title, text, true, window, cx);
+    }
+
+    /// The worktree a queued prompt waited for could not be made: the text
+    /// goes back into the composer it was written in, before anything typed since.
+    pub(super) fn unqueue(&mut self, p: QueuedPrompt, cx: &mut Context<Self>) {
+        let here = self.has_projects() && self.env().path == p.from;
+        let Some(env) = self.find_env_mut(&p.from) else {
+            return;
+        };
+        let typed = env.draft.trim().to_string();
+        if typed.is_empty() {
+            env.draft.set(&p.text);
+        } else {
+            env.draft.set(format!("{}\n\n{typed}", p.text));
+        }
+        if here {
+            self.composer_changed(cx);
+        }
+        cx.notify();
     }
 
     /// Sends the composer text: to the open session, or as the first prompt of a new one.
@@ -699,6 +777,16 @@ impl Shell {
             return;
         }
 
+        // One session per worktree: a first prompt in the main checkout, or
+        // in a New session tab left where a session already is, starts its
+        // session in a worktree of its own. Not on a server, which makes the
+        // worktree without a prompt to start there: the text would be lost.
+        let env = self.env();
+        if (env.is_checkout || !env.sessions.is_empty()) && env.remote.is_none() {
+            let prompt = self.queue_prompt(text);
+            self.quick_create_env_then(self.active_project, Some(prompt), window, cx);
+            return;
+        }
         let (env_path, agent) = (self.env().path.clone(), self.env().agent);
         self.start_session_in(&env_path, agent, summary(&text), text, true, window, cx);
     }
@@ -771,6 +859,8 @@ impl Shell {
         };
         s.updated = model::unix_now();
         s.status = Status::Working;
+        // The status handler sees no change after this, so it can't clear it.
+        s.settled = false;
         thread.update(cx, |t, cx| t.send(text, cx));
         self.save(cx);
         cx.notify();

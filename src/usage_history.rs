@@ -1,7 +1,7 @@
 //! What the agents used, from their own logs rather than arakun's: Claude Code's
 //! transcripts (`~/.claude/projects/**/*.jsonl`, one usage per API response) and
-//! Droid's session settings (`~/.factory/sessions/*/<id>.settings.json`, one
-//! running total per session, dated by its transcript's last write). Sessions
+//! Droid's session settings (one running total per session, dated by its
+//! transcript's last write), and Devin's SQLite response metrics. Sessions
 //! run outside arakun count too, so the Usage tab has the whole history.
 //!
 //! Files are re-read only when they change; the first scan runs off the main
@@ -266,6 +266,7 @@ fn split_fast(model: &str) -> (String, bool) {
 struct Cached {
     modified: Option<SystemTime>,
     len: u64,
+    wal: Option<(Option<SystemTime>, u64)>,
     records: Vec<Record>,
     /// Claude: the (message id, request id) of each record, for dropping the
     /// copies a resumed or forked transcript repeats.
@@ -309,6 +310,10 @@ pub fn scan() -> Vec<Record> {
             }
         }
     }
+    let devin = devin_dir().join("sessions.db");
+    if std::env::var("DEVIN_SESSION_STORE").as_deref() != Ok("files") && devin.is_file() {
+        files.push((devin, AgentKind::Devin));
+    }
     files.sort_by(|a, b| a.0.cmp(&b.0));
     files.dedup_by(|a, b| a.0 == b.0);
 
@@ -332,18 +337,29 @@ pub fn scan() -> Vec<Record> {
             | AgentKind::Devin
             | AgentKind::WorkersAi => modified,
         };
+        let wal = (*agent == AgentKind::Devin)
+            .then(|| std::fs::metadata(file.with_extension("db-wal")).ok())
+            .flatten()
+            .map(|m| (m.modified().ok(), m.len()));
         if cache
             .get(file)
-            .is_some_and(|c| c.modified == stamp && c.len == meta.len())
+            .is_some_and(|c| c.modified == stamp && c.len == meta.len() && c.wal == wal)
         {
             continue;
         }
         let (records, keys) = match agent {
             AgentKind::Claude => read_claude(file),
             AgentKind::Droid => (read_droid(file, stamp).into_iter().collect(), Vec::new()),
+            AgentKind::Devin => match read_devin(file) {
+                Ok(records) => (records, Vec::new()),
+                Err(e) => {
+                    eprintln!("arakun: could not read Devin usage: {e}");
+                    continue;
+                }
+            },
             // OpenCode keeps its history in a database arakun does not read, and
-            // Codex's rollouts and Devin's sessions are not read yet.
-            AgentKind::OpenCode | AgentKind::Codex | AgentKind::Devin | AgentKind::WorkersAi => {
+            // Codex's rollouts are not read yet.
+            AgentKind::OpenCode | AgentKind::Codex | AgentKind::WorkersAi => {
                 (Vec::new(), Vec::new())
             }
         };
@@ -352,6 +368,7 @@ pub fn scan() -> Vec<Record> {
             Cached {
                 modified: stamp,
                 len: meta.len(),
+                wal,
                 records,
                 keys,
             },
@@ -371,6 +388,95 @@ pub fn scan() -> Vec<Record> {
     }
     out.sort_by_key(|r| r.at);
     out
+}
+
+fn devin_dir() -> PathBuf {
+    std::env::var_os("DEVIN_SESSIONS_DIR")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .unwrap_or_else(|| crate::platform::data_home().join("devin/cli"))
+}
+
+fn read_devin(path: &Path) -> rusqlite::Result<Vec<Record>> {
+    let db = rusqlite::Connection::open_with_flags(
+        path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    db.busy_timeout(std::time::Duration::from_millis(250))?;
+    read_devin_db(&db)
+}
+
+fn read_devin_db(db: &rusqlite::Connection) -> rusqlite::Result<Vec<Record>> {
+    let mut query = db.prepare(
+        "WITH messages AS (
+            SELECT session_id, node_id, created_at,
+                CASE WHEN json_valid(chat_message) THEN chat_message ELSE '{}' END AS message
+            FROM message_nodes
+         )
+         SELECT s.id, s.working_directory, COALESCE(s.title, ''),
+            COALESCE(NULLIF(json_extract(m.message, '$.metadata.generation_model'), ''), s.model),
+            m.created_at, json_extract(m.message, '$.metadata.created_at'),
+            COALESCE(NULLIF(json_extract(m.message, '$.metadata.request_id'), ''),
+                NULLIF(json_extract(m.message, '$.message_id'), ''), s.id || ':' || m.node_id),
+            json_extract(m.message, '$.metadata.metrics')
+         FROM messages m JOIN sessions s ON s.id = m.session_id
+         WHERE json_extract(m.message, '$.role') = 'assistant'
+            AND json_type(m.message, '$.metadata.metrics') = 'object'
+         ORDER BY s.id, m.node_id",
+    )?;
+    let rows = query.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, i64>(4)?,
+            row.get::<_, Option<String>>(5)?,
+            row.get::<_, String>(6)?,
+            row.get::<_, String>(7)?,
+        ))
+    })?;
+    let mut seen = HashSet::new();
+    let mut records = Vec::new();
+    for row in rows {
+        let (session, cwd, title, model, created, timestamp, key, metrics) = row?;
+        let Ok(usage) = serde_json::from_str::<Value>(&metrics) else {
+            continue;
+        };
+        let n = |key: &str| usage[key].as_u64().unwrap_or(0);
+        if ![
+            "input_tokens",
+            "output_tokens",
+            "cache_read_tokens",
+            "cache_creation_tokens",
+        ]
+        .iter()
+        .any(|key| n(key) > 0)
+            || !seen.insert(key)
+        {
+            continue;
+        }
+        let (model, fast) = split_fast(&model);
+        records.push(Record {
+            at: timestamp
+                .as_deref()
+                .and_then(crate::account::parse_rfc3339)
+                .unwrap_or(created.max(0) as u64),
+            agent: Some(AgentKind::Devin),
+            session,
+            cwd: cwd.into(),
+            model,
+            fast,
+            input: n("input_tokens"),
+            output: n("output_tokens"),
+            cache_read: n("cache_read_tokens"),
+            cache_write_5m: n("cache_creation_tokens"),
+            cache_write_1h: 0,
+            credits: 0,
+            title,
+        });
+    }
+    Ok(records)
 }
 
 fn read_dir(dir: &Path) -> Vec<PathBuf> {
@@ -538,6 +644,89 @@ fn droid_start(transcript: &Path) -> Option<(PathBuf, String)> {
 mod tests {
     use super::*;
 
+    fn devin_fixture() -> rusqlite::Connection {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch(
+            "CREATE TABLE sessions (id TEXT, working_directory TEXT, model TEXT, title TEXT);
+             CREATE TABLE message_nodes (session_id TEXT, node_id INTEGER, created_at INTEGER, chat_message TEXT);
+             INSERT INTO sessions VALUES ('s', '/work', 'adaptive', 'Devin session');",
+        )
+        .unwrap();
+        db
+    }
+
+    #[test]
+    fn devin_history_counts_responses_once_without_reading_message_content() {
+        let db = devin_fixture();
+        let message = serde_json::json!({
+            "role": "assistant", "message_id": "m", "content": "private",
+            "metadata": {
+                "request_id": "r", "generation_model": "claude-opus-5-5-medium",
+                "created_at": "2026-10-25T10:00:00Z",
+                "metrics": { "input_tokens": 10, "output_tokens": 5,
+                    "cache_read_tokens": 100, "cache_creation_tokens": 40 }
+            }
+        });
+        for node in 1..=2 {
+            db.execute(
+                "INSERT INTO message_nodes VALUES ('s', ?1, 1, ?2)",
+                rusqlite::params![node, message.to_string()],
+            )
+            .unwrap();
+        }
+        db.execute(
+            "INSERT INTO message_nodes VALUES ('s', 3, 1, 'not json')",
+            [],
+        )
+        .unwrap();
+        let records = read_devin_db(&db).unwrap();
+        assert_eq!(records.len(), 1);
+        let r = &records[0];
+        assert_eq!(r.agent(), AgentKind::Devin);
+        assert_eq!(
+            (&*r.session, r.cwd.as_path(), &*r.title),
+            ("s", Path::new("/work"), "Devin session")
+        );
+        assert_eq!(r.model, "claude-opus-5-5-medium");
+        assert_eq!(r.at, 1792922400);
+        assert_eq!(
+            (r.input, r.output, r.cache_read, r.cache_write()),
+            (10, 5, 100, 40)
+        );
+        assert!(r.cost().is_some());
+    }
+
+    #[test]
+    fn devin_history_uses_message_ids_and_keeps_unknown_models_unpriced() {
+        let db = devin_fixture();
+        for (node, id) in [(1, "a"), (2, "b"), (3, "a")] {
+            let message = serde_json::json!({
+                "role": "assistant", "message_id": id,
+                "metadata": { "metrics": { "input_tokens": 12, "output_tokens": 3 } }
+            });
+            db.execute(
+                "INSERT INTO message_nodes VALUES ('s', ?1, 42, ?2)",
+                rusqlite::params![node, message.to_string()],
+            )
+            .unwrap();
+        }
+        let records = read_devin_db(&db).unwrap();
+        assert_eq!(records.len(), 2);
+        assert!(
+            records
+                .iter()
+                .all(|r| r.at == 42 && r.cost().is_none() && r.tokens() == 15)
+        );
+    }
+
+    #[test]
+    fn a_missing_devin_database_is_not_created() {
+        let dir = std::env::temp_dir().join(format!("arakun-devin-missing-{}", std::process::id()));
+        let path = dir.join("sessions.db");
+        assert!(read_devin(&path).is_err());
+        assert!(!dir.exists());
+    }
+
     #[test]
     fn prices_match_the_longest_id() {
         assert_eq!(price("claude-opus-5-5").unwrap().input, 4.);
@@ -612,6 +801,19 @@ mod tests {
 
 #[cfg(test)]
 mod real {
+    #[test]
+    #[ignore]
+    fn real_devin_history() {
+        let records = super::read_devin(&super::devin_dir().join("sessions.db")).unwrap();
+        assert!(!records.is_empty());
+        assert!(
+            records
+                .iter()
+                .all(|r| r.agent() == crate::agent::AgentKind::Devin)
+        );
+        println!("{} Devin usage records", records.len());
+    }
+
     /// `cargo test real_history -- --ignored --nocapture`: totals from this machine.
     #[test]
     #[ignore]

@@ -1353,9 +1353,15 @@ impl GitHub {
             .filter(|l| !l.is_empty())
             .find_map(|l| self.avatar(l))
             .map(std::path::Path::to_path_buf);
+        // `who` is the item's author; on the user's own item, "rik mentioned
+        // you" would name the user, so the line says it without a name.
+        let named = match self.me() {
+            Some(me) if who.eq_ignore_ascii_case(me) => "",
+            _ => who.as_str(),
+        };
         (
             n.subject.title.clone(),
-            notice_line(n, item.map(|i| i.number), &who),
+            notice_line(n, item.map(|i| i.number), named),
             image,
         )
     }

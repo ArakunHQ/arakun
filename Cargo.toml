@@ -69,6 +69,7 @@ backtrace = "0.3"
 ring = "0.17"
 # the signature of a release's SHA256SUMS (src/update.rs); no dependencies of its own
 minisign-verify = "0.3"
+rusqlite = { version = "=0.41.0", default-features = false, features = ["bundled"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

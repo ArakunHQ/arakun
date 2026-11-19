@@ -121,6 +121,50 @@ pub fn split_images(text: &str, cwd: &Path) -> (String, Vec<PathBuf>) {
     (text.trim().to_string(), found)
 }
 
+/// A prompt written in `from` that starts in `to` instead: a mention of a
+/// file that is in `from` but not in `to` (a new image, an untracked file)
+/// is written as its full path in `from`, so the agent still finds it.
+pub fn move_mentions(text: &str, from: &Path, to: &Path) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find('@') {
+        let starts_token = at == 0 || rest[..at].ends_with(char::is_whitespace);
+        let after = &rest[at + 1..];
+        // `len` is how much of `after` the mention takes. Punctuation after
+        // an unquoted one is not part of the path, and stays.
+        let (path, len) = match after.strip_prefix('"') {
+            Some(quoted) => match quoted.find('"') {
+                Some(end) => (&quoted[..end], end + 2),
+                None => ("", 0),
+            },
+            None => {
+                let end = after.find(char::is_whitespace).unwrap_or(after.len());
+                let path = after[..end].trim_end_matches([',', ';', ')']);
+                (path, path.len())
+            }
+        };
+        let moved = (starts_token
+            && !path.is_empty()
+            && !path.starts_with("~/")
+            && Path::new(path).is_relative())
+        .then(|| from.join(path))
+        .filter(|old| old.exists() && !to.join(path).exists());
+        match moved {
+            Some(old) => {
+                out.push_str(&rest[..at]);
+                out.push_str(&mention(&old.to_string_lossy()));
+                rest = &after[len..];
+            }
+            None => {
+                out.push_str(&rest[..at + 1]);
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
 /// Pastes this big go along as an attachment instead of filling the composer.
 pub fn is_large_paste(text: &str) -> bool {
     text.len() > 2000 || text.lines().count() > 40
@@ -189,6 +233,30 @@ pub fn acp_block(path: &Path) -> Result<Value, String> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_moved_prompt_points_at_files_only_its_old_place_has() {
+        let base = std::env::temp_dir().join(format!("arakun-move-{}", std::process::id()));
+        let (from, to) = (base.join("main"), base.join("wt"));
+        std::fs::create_dir_all(from.join("shots")).unwrap();
+        std::fs::create_dir_all(&to).unwrap();
+        for f in ["shots/a b.png", "new.png", "both.rs"] {
+            std::fs::write(from.join(f), "").unwrap();
+        }
+        std::fs::write(to.join("both.rs"), "").unwrap();
+        let text = "see @new.png, @\"shots/a b.png\" and @both.rs; not @gone.png or a@b.c";
+        let full = |f: &str| mention(&from.join(f).to_string_lossy());
+        assert_eq!(
+            move_mentions(text, &from, &to),
+            format!(
+                "see {}, {} and @both.rs; not @gone.png or a@b.c",
+                full("new.png"),
+                full("shots/a b.png")
+            )
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
     use super::*;
 
     #[test]

@@ -16,6 +16,7 @@ pub mod claude_auth;
 pub mod claude_ext;
 pub mod cli_login;
 pub mod cliproxy;
+pub mod devin_plan;
 pub mod diff;
 pub mod extensions;
 mod kind;

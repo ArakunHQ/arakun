@@ -119,6 +119,8 @@ impl Window {
             "Week".into()
         } else if self.label == "Monthly limit" {
             "Month".into()
+        } else if self.label == "Daily limit" {
+            "Day".into()
         } else {
             self.label
                 .strip_prefix("Weekly · ")

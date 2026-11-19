@@ -1,4 +1,4 @@
-//! The Usage tab: what Claude Code and Droid used, from their own logs
+//! The Usage tab: what agents used, from their own logs
 //! (`usage_history`), so sessions run outside arakun count too. Amounts are
 //! what the tokens would cost at API prices: the plans don't charge them, but
 //! it is the one measure both agents share. Next to it, the plans' limits
@@ -21,9 +21,9 @@ use crate::account::{Account, UsageMode};
 use crate::account_view;
 use crate::agent::claude_auth;
 use crate::agent::cliproxy;
-use crate::agent::opencode_plan;
 use crate::agent::plan::{self, PlanUsage};
 use crate::agent::{AgentKind, fmt_cost};
+use crate::agent::{devin_plan, opencode_plan};
 use crate::input::{InputEvent, TextInput};
 use crate::theme;
 use crate::ui::{self, ButtonKind};
@@ -260,6 +260,8 @@ pub struct UsageView {
     borrowed: Option<PlanUsage>,
     /// The OpenCode Go plan's windows, when a Go key is connected.
     go: Option<PlanUsage>,
+    /// The Devin plan's quota windows, on a plan that has a quota.
+    devin: Option<PlanUsage>,
     /// The accounts behind CLIProxyAPI, when Claude Code runs on another endpoint.
     proxy: Option<cliproxy::Proxy>,
     /// CLIProxyAPI's management key, typed in once.
@@ -303,11 +305,12 @@ impl UsageView {
         });
         let plan_poll = cx.spawn(async move |this, cx| {
             loop {
-                let (seats, go, access) = cx
+                let (seats, go, devin, access) = cx
                     .background_spawn(crate::guard::task_or_default(async move {
                         (
                             plan::seats(),
                             opencode_plan::refresh(),
+                            devin_plan::refresh(),
                             claude_auth::access(),
                         )
                     }))
@@ -323,7 +326,7 @@ impl UsageView {
                         let changed = false;
                         // The phone's Claude card names the key or endpoint too.
                         let changed = changed || v.access != access;
-                        if changed || v.plan != plan || v.go != go {
+                        if changed || v.plan != plan || v.go != go || v.devin != devin {
                             v.access = access;
                             v.plan = plan;
                             #[cfg(feature = "coderlabs")]
@@ -331,6 +334,7 @@ impl UsageView {
                                 v.borrowed = borrowed;
                             }
                             v.go = go;
+                            v.devin = devin;
                             cx.emit(UsageEvent::PlanUpdated);
                             cx.notify();
                         }
@@ -379,6 +383,7 @@ impl UsageView {
             #[cfg(feature = "coderlabs")]
             borrowed: None,
             go: None,
+            devin: None,
             proxy: None,
             proxy_key,
             proxy_saving: false,
@@ -726,6 +731,22 @@ impl UsageView {
             );
         }
         Some(limits_block(AgentKind::OpenCode, "OpenCode Go", None, rows))
+    }
+
+    /// Devin's quota windows, as `/usage` in the devin CLI shows them.
+    /// Nothing when signed out or on a plan billed without a quota.
+    fn devin_limits(&self) -> Option<AnyElement> {
+        let devin = self.devin.as_ref()?;
+        let at = now();
+        let mut rows = div().flex().flex_col().gap(crate::ui::sp(8.));
+        for w in &devin.windows {
+            rows = rows.child(ui::limit_line(&w.label, w.percent as f32, w.reset_text(at)));
+        }
+        let name = match devin.subscription.as_str() {
+            "" => "Devin".to_string(),
+            plan => format!("Devin · {plan}"),
+        };
+        Some(limits_block(AgentKind::Devin, &name, None, rows))
     }
 
     /// Droid's limits: the pool in use in full, the other one in a line, or
@@ -1104,8 +1125,8 @@ fn model_name(id: &str) -> String {
 }
 
 /// Which hue each agent's series and share bar wear: Anthropic's clay for
-/// Claude Code, a quiet light gray for Droid. OpenCode, Codex and Devin have no
-/// history here yet; darker grays keep them apart if they ever do.
+/// Claude Code, a quiet light gray for Droid. Darker grays keep Devin,
+/// OpenCode and Codex apart.
 fn agent_color(agent: AgentKind) -> Hsla {
     match agent {
         AgentKind::Claude => gpui::rgb(0xd97757).into(),
@@ -1417,8 +1438,7 @@ impl Render for UsageView {
             );
 
         let body: AnyElement = match &self.records {
-            None => ui::loading("usage-loading", "Reading Claude Code and Droid history…")
-                .into_any_element(),
+            None => ui::loading("usage-loading", "Reading agent usage history…").into_any_element(),
             Some(_) => self.render_body(&s, cx),
         };
         div()
@@ -1542,7 +1562,7 @@ impl UsageView {
             Some(a) => vec![a],
             None => s.agents.iter().map(|(a, _)| *a).collect(),
         };
-        let mut known: Vec<AgentKind> = vec![AgentKind::Droid, AgentKind::Claude];
+        let mut known: Vec<AgentKind> = vec![AgentKind::Droid, AgentKind::Claude, AgentKind::Devin];
         known.retain(|a| shown.contains(a) || self.agent_filter.is_some());
         for agent in known {
             let on = self.agent_filter.is_none_or(|f| f == agent);
@@ -1572,7 +1592,7 @@ impl UsageView {
                         theme::mix(0.2)
                     }))
                     .child(agent.label())
-                    .tooltip(ui::tip("Show only this agent; click again for both"))
+                    .tooltip(ui::tip("Show only this agent; click again for all"))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.agent_filter = if this.agent_filter == Some(agent) {
                             None
@@ -1774,6 +1794,10 @@ impl UsageView {
                     .child(self.droid_limits(cx))
                     .when_some(self.opencode_limits(), |d, go| {
                         d.child(div().h(px(1.)).bg(theme::fill_hover())).child(go)
+                    })
+                    .when_some(self.devin_limits(), |d, devin| {
+                        d.child(div().h(px(1.)).bg(theme::fill_hover()))
+                            .child(devin)
                     })
                     // Limits that show up without a sign-in prompt look
                     // alarming; say where they come from.

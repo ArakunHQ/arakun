@@ -19,6 +19,7 @@ use gpui::{
     div, fill, img, point, px, relative, size, uniform_list,
 };
 
+mod active;
 pub(crate) mod agent_cli;
 mod automations;
 mod branches;
@@ -51,6 +52,7 @@ mod phone;
 mod posthog;
 mod rail;
 mod rail_blocks;
+mod rail_pick;
 mod runs;
 mod servers;
 mod session_actions;
@@ -309,6 +311,10 @@ pub struct Shell {
     /// The background read of `repo_slugs`; a new one replaces it.
     repo_slugs_read: Option<Task<()>>,
     menu: Option<ContextMenu>,
+    /// Rows of the sidebar picked with Ctrl or Shift+click (`rail_pick`), by path.
+    rail_pick: Vec<std::path::PathBuf>,
+    /// The row Shift+click picks from.
+    rail_pick_anchor: Option<std::path::PathBuf>,
     /// Polls `git status` of the visible environment while the window is active.
     poll: Option<Task<()>>,
     /// The last background `git fetch`, so the network is asked rarely.
@@ -386,6 +392,8 @@ pub struct Shell {
     rules: crate::palette::rules::Rules,
     session_query: Entity<TextInput>,
     session_filter: Option<Agent>,
+    /// The sessions list shows the ones settled after a merge too.
+    show_settled: bool,
     _session_query: Subscription,
     /// Input of the Notes tab; Enter appends a note to the active project.
     notes_input: Entity<TextInput>,
@@ -637,6 +645,7 @@ impl Shell {
         account_view::set_rail_shows(crate::agent::AgentKind::Claude, layout.rail_usage[0]);
         account_view::set_rail_shows(crate::agent::AgentKind::Droid, layout.rail_usage[1]);
         account_view::set_rail_shows(crate::agent::AgentKind::OpenCode, layout.rail_usage[2]);
+        account_view::set_rail_shows(crate::agent::AgentKind::Devin, layout.rail_usage[3]);
         crate::ui::set_type_scale(layout.type_scale);
         if layout.ui_zoom != crate::ui_zoom::pct() {
             crate::ui_zoom::set_pct(layout.ui_zoom);
@@ -842,6 +851,8 @@ impl Shell {
             repo_slugs: Default::default(),
             repo_slugs_read: None,
             menu: None,
+            rail_pick: Vec::new(),
+            rail_pick_anchor: None,
             poll: None,
             last_fetch: None,
             stale_diffs: Vec::new(),
@@ -888,6 +899,7 @@ impl Shell {
             rules: crate::palette::rules::Rules::load(),
             session_query,
             session_filter: None,
+            show_settled: false,
             _session_query: session_query_sub,
             notes_input,
             _notes_input: notes_input_sub,
@@ -1230,6 +1242,7 @@ impl Shell {
                 account_view::rail_shows(crate::agent::AgentKind::Claude),
                 account_view::rail_shows(crate::agent::AgentKind::Droid),
                 account_view::rail_shows(crate::agent::AgentKind::OpenCode),
+                account_view::rail_shows(crate::agent::AgentKind::Devin),
             ],
             ui_zoom: crate::ui_zoom::pct(),
             window: self.window_state.clone(),
@@ -1606,6 +1619,18 @@ impl Shell {
     /// commit, as the dialog would fill in. Its row shows at once and the
     /// worktree follows; the agent names the branch after the first prompt.
     fn quick_create_env(&mut self, pi: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.quick_create_env_then(pi, None, window, cx)
+    }
+
+    /// [`Self::quick_create_env`], then `prompt` starts the worktree's session:
+    /// a first prompt sent where a session already is.
+    fn quick_create_env_then(
+        &mut self,
+        pi: usize,
+        prompt: Option<sessions::QueuedPrompt>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.menu = None;
         self.env_menu_open = false;
         let Some(project) = self.projects.get(pi) else {
@@ -1665,11 +1690,16 @@ impl Shell {
                     if local.contains(&name) {
                         name = crate::env_name::random(|n| taken(n, ""));
                     }
+                    // Before the first commit there is nothing to branch from:
+                    // None, and the session starts in the main checkout.
+                    if !git::has_commits(&repo)? {
+                        return Ok(None);
+                    }
                     let mut result = Err(anyhow::anyhow!("not tried"));
                     for _ in 0..2 {
                         let path = crate::model::worktree_path(&project_name, &name);
                         result = git::add_worktree(&repo, &path, &name, None, true)
-                            .map(|()| (path, name.clone()));
+                            .map(|()| Some((path, name.clone())));
                         if result.is_ok() {
                             break;
                         }
@@ -1683,23 +1713,59 @@ impl Shell {
                     .retain(|p| !(p.repo == key && p.name == shown));
                 match made {
                     // The project can have moved in the list since.
-                    Ok((path, branch)) => {
+                    Ok(Some((path, branch))) => {
                         if let Some(pi) = this.projects.iter().position(|p| p.path == key) {
-                            this.environment_created(pi, path, branch, true, window, cx);
+                            this.environment_created(pi, path.clone(), branch, true, window, cx);
+                            if let Some(prompt) = prompt {
+                                this.start_queued(&path, prompt, window, cx);
+                            }
                         }
                     }
-                    Err(e) => this.notify(
-                        crate::island::AlertKind::Failure,
-                        "Could not create the environment",
-                        &e.to_string(),
-                        None,
-                        cx,
-                    ),
+                    Ok(None) => this.use_checkout(&key, prompt, window, cx),
+                    Err(e) => {
+                        if let Some(prompt) = prompt {
+                            this.unqueue(prompt, cx);
+                        }
+                        this.notify(
+                            crate::island::AlertKind::Failure,
+                            "Could not create the environment",
+                            &e.to_string(),
+                            None,
+                            cx,
+                        )
+                    }
                 }
                 cx.notify();
             });
         })
         .detach();
+    }
+
+    /// A repository without commits has no worktrees: a new session goes to
+    /// the main checkout of the project at `repo`, with `prompt` when one waits.
+    fn use_checkout(
+        &mut self,
+        repo: &std::path::Path,
+        prompt: Option<sessions::QueuedPrompt>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((pi, ei)) = self.projects.iter().enumerate().find_map(|(pi, p)| {
+            (p.path == repo)
+                .then(|| p.environments.iter().position(|e| e.is_checkout))
+                .flatten()
+                .map(|ei| (pi, ei))
+        }) else {
+            return;
+        };
+        let checkout = self.projects[pi].environments[ei].path.clone();
+        match prompt {
+            Some(prompt) => self.start_queued(&checkout, prompt, window, cx),
+            None => {
+                self.select_env(pi, ei, window, cx);
+                self.show_new_session_tab(window, cx);
+            }
+        }
     }
 
     /// Shows the new worktree right away and lets `git worktree list` fill in details.
@@ -1732,6 +1798,8 @@ impl Shell {
             env.follow_branch();
         }
         self.select_env(pi, ei, window, cx);
+        // It opens on its New session tab, ready for the first prompt.
+        window.focus(&self.composer_focus, cx);
         self.refresh_project(pi, cx);
         // The project's setup script runs in a terminal of the new environment.
         let setup = self.projects.get(pi).and_then(|p| p.setup.clone());
@@ -2008,25 +2076,41 @@ impl Shell {
                 DialogEvent::Deleted(path) => {
                     let path = path.clone();
                     this.close_modal(window, cx);
-                    if let Some(project) = this.projects.get_mut(pi) {
-                        project.environments.retain(|e| e.path != path);
-                        project.active_env = project
-                            .active_env
-                            .min(project.environments.len().saturating_sub(1));
-                    }
-                    // Its tabs, and the pages of its browser tabs, go with it.
-                    this.settle_strip(cx);
-                    this.unfloat_github(cx);
-                    this.servers_tab_closed(cx);
-                    this.save(cx);
-                    this.refresh_project(pi, cx);
-                    this.ensure_terminal(window, cx);
-                    cx.notify();
+                    this.forget_envs(&[path], window, cx);
                 }
                 _ => this.close_modal(window, cx),
             },
         );
         self.modal = Some((Modal::DeleteEnv(dialog), sub));
+        cx.notify();
+    }
+
+    /// Takes deleted worktrees off their projects' lists.
+    fn forget_envs(
+        &mut self,
+        paths: &[std::path::PathBuf],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if paths.is_empty() {
+            return;
+        }
+        let before = self.projects.len();
+        let touched = drop_envs(&mut self.projects, &mut self.active_project, paths);
+        if self.projects.len() != before {
+            self.sync_ci_roots(cx);
+            self.sync_poll(window, cx);
+        }
+        self.rail_pick.retain(|p| !paths.contains(p));
+        // Their tabs, and the pages of their browser tabs, go with them.
+        self.settle_strip(cx);
+        self.unfloat_github(cx);
+        self.servers_tab_closed(cx);
+        self.save(cx);
+        for pi in touched {
+            self.refresh_project(pi, cx);
+        }
+        self.ensure_terminal(window, cx);
         cx.notify();
     }
 
@@ -2455,6 +2539,15 @@ impl Shell {
         self.open_session(id, window, cx);
     }
 
+    /// The open dialog runs work that must not lose its result.
+    fn modal_busy(&self, cx: &App) -> bool {
+        match &self.modal {
+            Some((Modal::GitConfirm(d), _)) => d.read(cx).busy(),
+            Some((Modal::DeleteEnv(d), _)) => d.read(cx).busy(),
+            _ => false,
+        }
+    }
+
     fn close_modal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some((Modal::Attach(picker), _)) = self.modal.take() {
             picker.update(cx, |picker, cx| picker.release(cx));
@@ -2608,7 +2701,19 @@ impl Shell {
 
     /// Closes a tab the user asked to close; Reopen closed tab can bring it back.
     fn close_tab(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
-        self.remove_tab(index, true, window, cx);
+        if self.can_close_tab(index) {
+            self.remove_tab(index, true, window, cx);
+        }
+    }
+
+    /// Whether the user may close the tab at `index`. Not the active tab when
+    /// the environment on screen has no other: `remove_tab` would only put a
+    /// blank New session tab in its place, which the user can open themselves.
+    fn can_close_tab(&self, index: usize) -> bool {
+        if !self.has_projects() || index >= self.strip.tabs.len() {
+            return false;
+        }
+        !self.strip.is_last_on_screen(index, &self.env().path)
     }
 
     /// Closes a tab that went away by itself (its session or diff is gone, the
@@ -2669,10 +2774,22 @@ impl Shell {
         cx.notify();
     }
 
+    /// One thread per worktree: a new session gets a worktree of its own,
+    /// unless the open one is a worktree with no thread yet. The main
+    /// checkout takes none.
     fn new_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.has_projects() {
             return;
         }
+        if !self.env().sessions.is_empty() || self.env().is_checkout {
+            self.quick_create_env(self.active_project, window, cx);
+            return;
+        }
+        self.show_new_session_tab(window, cx);
+    }
+
+    /// The open environment's New session tab, made when it has none.
+    fn show_new_session_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let path = self.env().path.clone();
         let blank = self
             .strip
@@ -3258,7 +3375,10 @@ impl Render for Shell {
                 if ev.keystroke.key == "escape" {
                     if this.cancel_session_drag(window, cx) {
                         cx.stop_propagation();
-                    } else if this.drop_menu.take().is_some() || this.menu.take().is_some() {
+                    } else if this.drop_menu.take().is_some()
+                        || this.menu.take().is_some()
+                        || this.drop_pick()
+                    {
                         cx.stop_propagation();
                         cx.notify();
                     }
@@ -3355,7 +3475,13 @@ impl Render for Shell {
                         .occlude()
                         .on_mouse_down(
                             MouseButton::Left,
-                            cx.listener(|this, _, window, cx| this.close_modal(window, cx)),
+                            cx.listener(|this, _, window, cx| {
+                                // A running deletion still has to report what
+                                // went, which its event does.
+                                if !this.modal_busy(cx) {
+                                    this.close_modal(window, cx)
+                                }
+                            }),
                         )
                         .child(
                             // Keyed by the dialog, so one opened over another
@@ -3621,6 +3747,52 @@ fn server_source(
     .or_else(|| envs.iter().position(usable))
 }
 
+/// Takes `paths` off every project's list and returns the projects that kept
+/// rows, by their new index. A project left with no rows goes: it was opened
+/// on a deleted worktree, and `env()` needs a row in every project.
+fn drop_envs(
+    projects: &mut Vec<Project>,
+    active_project: &mut usize,
+    paths: &[std::path::PathBuf],
+) -> Vec<usize> {
+    let mut touched = Vec::new();
+    let mut emptied = Vec::new();
+    for (pi, project) in projects.iter_mut().enumerate() {
+        let open = project
+            .environments
+            .get(project.active_env)
+            .map(|e| e.path.clone());
+        let before = project.environments.len();
+        project.environments.retain(|e| !paths.contains(&e.path));
+        if project.environments.len() == before {
+            continue;
+        }
+        if project.environments.is_empty() {
+            emptied.push(pi);
+            continue;
+        }
+        // The open row stays open; when it went, the one at its place.
+        project.active_env = open
+            .and_then(|o| project.environments.iter().position(|e| e.path == o))
+            .unwrap_or(project.active_env)
+            .min(project.environments.len() - 1);
+        touched.push(pi);
+    }
+    for &pi in emptied.iter().rev() {
+        projects.remove(pi);
+        if *active_project >= pi && *active_project > 0 {
+            *active_project -= 1;
+        }
+        for t in &mut touched {
+            if *t > pi {
+                *t -= 1;
+            }
+        }
+    }
+    *active_project = (*active_project).min(projects.len().saturating_sub(1));
+    touched
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3737,5 +3909,34 @@ mod tests {
         assert_eq!(hunk_start("@@ -10,4 +12,6 @@ fn main() {"), Some(12));
         assert_eq!(hunk_start("@@ -1 +1 @@"), Some(1));
         assert_eq!(hunk_start("+@@ not a hunk"), None);
+    }
+
+    #[test]
+    fn deleting_a_worktree_drops_a_project_opened_on_it() {
+        use std::path::PathBuf;
+        let repo = PathBuf::from("/r/repo");
+        let tree = PathBuf::from("/r/tree");
+        let other = PathBuf::from("/r/other");
+        let mut parent = crate::state::new_project(&repo);
+        parent
+            .environments
+            .push(Environment::new(tree.clone(), None, false));
+        parent.active_env = 1;
+        // The worktree opened as its own project before its parent listed it.
+        let mut projects = vec![
+            crate::state::new_project(&tree),
+            parent,
+            crate::state::new_project(&other),
+        ];
+        let mut active = 2;
+        let touched = drop_envs(&mut projects, &mut active, &[tree]);
+        assert_eq!(projects.len(), 2);
+        assert!(projects.iter().all(|p| !p.environments.is_empty()));
+        assert_eq!(projects[0].path, repo);
+        assert_eq!(projects[0].active_env, 0);
+        assert_eq!(touched, vec![0]);
+        // The open project stays open at its new index.
+        assert_eq!(active, 1);
+        assert_eq!(projects[active].path, other);
     }
 }

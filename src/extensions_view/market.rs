@@ -292,19 +292,18 @@ impl ExtensionsView {
         let login = claude_ext::login_command(&name);
         let n = name.clone();
         let sign_in = matches!(&method, Install::Remote { headers, .. } if headers.is_empty());
-        // Secrets do not go to a server over plain http, where they could be read on the way.
+        // What was filled in does not go to a server over plain http, where it
+        // could be read on the way. Not only fields marked secret: registry
+        // entries do not always mark an API key as one.
         let clear = self
             .target_server()
             .filter(|s| s.in_the_clear)
             .map(|s| s.name.clone());
-        let secret = ins
-            .fields
-            .iter()
-            .any(|(i, f)| i.secret && !f.read(cx).text().is_empty());
-        if let Some(server) = clear.filter(|_| secret) {
+        let filled = values.values().any(|v| !v.trim().is_empty());
+        if let Some(server) = clear.filter(|_| filled) {
             self.error = Some(
                 format!(
-                    "{server} is reached over plain http, so its secrets could be read on the way. Reach it over https or the relay to add this there."
+                    "{server} is reached over plain http, so what you filled in could be read on the way. Reach it over https or the relay to add this there."
                 )
                 .into(),
             );

@@ -106,6 +106,32 @@ fn notice(error: &str) -> String {
 /// gone, gpui panics in its X11 or Wayland setup.
 #[cfg(target_os = "linux")]
 pub fn check_display() -> Result<(), String> {
+    within(PROBE_LIMIT, probe_display)
+}
+
+/// A server that takes the connection but never answers would hold the probe forever.
+#[cfg(target_os = "linux")]
+const PROBE_LIMIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Runs `probe` on its own thread and gives up after `limit`. A probe still stuck then
+/// is left behind: arakun exits on the error right after.
+#[cfg(target_os = "linux")]
+fn within(
+    limit: std::time::Duration,
+    probe: impl FnOnce() -> Result<(), String> + Send + 'static,
+) -> Result<(), String> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || tx.send(probe()));
+    rx.recv_timeout(limit).unwrap_or_else(|_| {
+        Err(format!(
+            "no display server: it did not answer within {} seconds",
+            limit.as_secs()
+        ))
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn probe_display() -> Result<(), String> {
     let var = |name: &str| std::env::var_os(name).filter(|v| !v.is_empty());
     // gpui's own switch to its headless platform, for its tests.
     if var("ZED_HEADLESS").is_some() {
@@ -325,6 +351,19 @@ mod tests {
             Some(PathBuf::from("/tmp/wl"))
         );
         assert_eq!(wayland_socket(OsStr::new("wayland-1"), None), None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_display_that_never_answers_is_given_up_on() {
+        use std::time::Duration;
+        assert_eq!(within(Duration::from_secs(5), || Ok(())), Ok(()));
+        let stuck = within(Duration::from_millis(50), || {
+            std::thread::sleep(Duration::from_secs(5));
+            Ok(())
+        });
+        let error = stuck.expect_err("a stuck probe is an error");
+        assert_eq!(help(&error), Some(DISPLAY_HELP));
     }
 
     #[test]

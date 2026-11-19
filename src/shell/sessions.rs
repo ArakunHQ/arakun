@@ -92,6 +92,7 @@ pub(super) struct QueuedPrompt {
     claude_settings: Vec<(Setting, String)>,
     opencode_settings: Vec<(Setting, String)>,
     codex_settings: Vec<(Setting, String)>,
+    devin_settings: Vec<(Setting, String)>,
     workers_ai_settings: Vec<(Setting, String)>,
 }
 
@@ -542,6 +543,7 @@ impl Shell {
             claude_settings: env.claude_settings.clone(),
             opencode_settings: env.opencode_settings.clone(),
             codex_settings: env.codex_settings.clone(),
+            devin_settings: env.devin_settings.clone(),
             workers_ai_settings: env.workers_ai_settings.clone(),
         }
     }
@@ -562,6 +564,7 @@ impl Shell {
         env.claude_settings = p.claude_settings;
         env.opencode_settings = p.opencode_settings;
         env.codex_settings = p.codex_settings;
+        env.devin_settings = p.devin_settings;
         env.workers_ai_settings = p.workers_ai_settings;
         let title = summary(&p.text);
         self.start_session_in(env_path, p.agent, title, p.text, true, window, cx);

@@ -749,6 +749,30 @@ impl Link {
         channel: u32,
         payload: Vec<u8>,
     ) -> Result<(), Ended> {
+        let was_ready = matches!(self.peers.get(&channel), Some(Peer::Ready { .. }));
+        let said = self.peer_said(ws, kind, channel, payload);
+        // A failed write leaves the peer out of `peers`, so `forget_channels`
+        // would not tell the shell this client left. A channel still listed was
+        // not closed (and told) by `peer_said` itself.
+        if said.is_err()
+            && was_ready
+            && !self.peers.contains_key(&channel)
+            && self.channels.lock().unwrap().remove(&channel).is_some()
+        {
+            let _ = self
+                .tx
+                .unbounded_send(Incoming::Disconnected(ClientId::from(channel)));
+        }
+        said
+    }
+
+    fn peer_said(
+        &mut self,
+        ws: &mut Socket,
+        kind: u8,
+        channel: u32,
+        payload: Vec<u8>,
+    ) -> Result<(), Ended> {
         let Some(peer) = self.peers.remove(&channel) else {
             return Ok(());
         };

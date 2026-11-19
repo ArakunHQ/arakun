@@ -783,12 +783,29 @@ pub fn install_server(
 }
 
 fn run(bin: &Path, cwd: &Path, args: &[&str], timeout: Duration) -> Result<String> {
-    super::claude_ext::run_cli(bin, cwd, args, timeout)
+    super::claude_ext::run_cli(bin, &workdir(cwd), args, timeout)
+}
+
+/// Everything here is for the user, not the project, so a folder that is gone
+/// (an environment deleted outside arakun) must not stop it: use home instead.
+fn workdir(cwd: &Path) -> PathBuf {
+    if cwd.is_dir() {
+        cwd.to_path_buf()
+    } else {
+        launch::home()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_folder_runs_from_home() {
+        let here = std::env::temp_dir();
+        assert_eq!(workdir(&here), here);
+        assert_eq!(workdir(&here.join("arakun-no-such-folder")), launch::home());
+    }
 
     fn sample() -> Value {
         json!({"servers": [

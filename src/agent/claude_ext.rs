@@ -1219,7 +1219,14 @@ fn run(bin: &Path, cwd: &Path, args: &[&str], timeout: Duration) -> Result<Strin
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let mut child = cmd.spawn()?;
+    let mut child = cmd.spawn().map_err(|e| {
+        // Both a missing program and a missing folder are "os error 2"; say which.
+        if cwd.is_dir() {
+            anyhow!("could not start {}: {e}", bin.display())
+        } else {
+            anyhow!("{} does not exist", cwd.display())
+        }
+    })?;
     let mut stdout = child.stdout.take().ok_or_else(|| anyhow!("no stdout"))?;
     let mut stderr = child.stderr.take().ok_or_else(|| anyhow!("no stderr"))?;
     let reader = std::thread::spawn(move || {
@@ -1319,6 +1326,17 @@ fn looks_secret(w: &str) -> bool {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn spawn_errors_say_what_is_missing() {
+        let here = std::env::temp_dir();
+        let gone = here.join("arakun-no-such-folder");
+        let t = Duration::from_secs(5);
+        let err = run(Path::new("arakun-no-such-program"), &gone, &[], t).unwrap_err();
+        assert!(err.to_string().ends_with("does not exist"), "{err}");
+        let err = run(Path::new("arakun-no-such-program"), &here, &[], t).unwrap_err();
+        assert!(err.to_string().starts_with("could not start"), "{err}");
+    }
 
     #[test]
     fn masks_tokens() {

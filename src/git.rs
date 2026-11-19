@@ -45,7 +45,8 @@ pub(crate) fn unpinned(cmd: &mut Command) -> &mut Command {
 pub(crate) fn output(cmd: &mut Command, limit: Duration) -> Result<Output> {
     crate::platform::output_within(cmd, None, limit).map_err(|e| {
         if e.kind() == std::io::ErrorKind::TimedOut {
-            anyhow!("{e}")
+            // Kept whole, so `timed_out` can tell it apart.
+            anyhow::Error::new(e)
         } else {
             let program = Path::new(cmd.get_program())
                 .file_stem()
@@ -55,6 +56,13 @@ pub(crate) fn output(cmd: &mut Command, limit: Duration) -> Result<Output> {
             anyhow!("could not run {program}: {e}")
         }
     })
+}
+
+/// Whether `err` is a git or gh call that ran past its limit and was stopped.
+pub fn timed_out(err: &anyhow::Error) -> bool {
+    err.chain()
+        .filter_map(|e| e.downcast_ref::<std::io::Error>())
+        .any(|e| e.kind() == std::io::ErrorKind::TimedOut)
 }
 
 /// Whether `cmd` ran and succeeded within `limit`.
@@ -381,16 +389,26 @@ pub fn rename_branch(dir: &Path, old: &str, new: &str, next_free: bool) -> Resul
         return Ok(new.to_string());
     }
     // A push without --set-upstream leaves no upstream, only the remote-tracking ref.
-    let upstream = succeeds(
+    // A check that failed or timed out says nothing, and must not let the rename go on.
+    let unsure = || format!("could not check whether {old} was pushed");
+    let upstream = output(
         git(dir).args(["config", "--get", &format!("branch.{old}.merge")]),
         GIT_LOCAL,
-    );
+    )
+    .with_context(unsure)?;
+    // `config --get` exits 1 only when the key is not set.
+    let upstream = match upstream.status.code() {
+        Some(0) => true,
+        Some(1) => false,
+        _ => bail!("{}", unsure()),
+    };
     let tracked = stdout(git(dir).args([
         "for-each-ref",
         "--format=%(refname)",
         &format!("refs/remotes/*/{old}"),
     ]))
-    .is_ok_and(|refs| !refs.trim().is_empty());
+    .with_context(unsure)?;
+    let tracked = !tracked.trim().is_empty();
     if upstream || tracked {
         bail!("{old} was already pushed; rename it on the remote too, or keep the name");
     }
@@ -973,7 +991,7 @@ pub fn merge_into_main(main: &Path, branch: &str) -> Result<()> {
         GIT_LONG,
     ) {
         // Long too: an abort stopped halfway would leave the checkout worse off.
-        let _ = output(git(main).args(["merge", "--abort"]), GIT_LONG);
+        abort(main, "merge").map_err(|abort| anyhow!("{e}\n{abort}"))?;
         bail!("{e}\nThe merge was aborted; nothing changed.");
     }
     Ok(())
@@ -997,10 +1015,25 @@ pub(crate) fn read(dir: &Path, args: &[&str]) -> Result<String> {
 /// `git revert --no-edit <sha>` in a checkout; a revert that conflicts is aborted.
 pub fn revert(dir: &Path, sha: &str) -> Result<()> {
     if let Err(e) = run_loud(git(dir).args(["revert", "--no-edit", sha]), GIT_LONG) {
-        let _ = output(git(dir).args(["revert", "--abort"]), GIT_LONG);
+        abort(dir, "revert").map_err(|abort| anyhow!("{e}\n{abort}"))?;
         bail!("{e}\nThe revert was aborted; nothing changed.");
     }
     Ok(())
+}
+
+/// `git <op> --abort` after `op` stopped halfway. An error that says the checkout is
+/// left mid-way when the abort failed or timed out: "nothing changed" would be wrong.
+fn abort(dir: &Path, op: &str) -> Result<()> {
+    let why = match output(git(dir).args([op, "--abort"]), GIT_LONG) {
+        Ok(out) if out.status.success() => return Ok(()),
+        Ok(out) => String::from_utf8_lossy(&out.stderr).trim().to_string(),
+        Err(e) => e.to_string(),
+    };
+    bail!(
+        "The {op} stopped halfway and could not be aborted ({why}). \
+         Run `git {op} --abort` in {} before you go on.",
+        dir.display()
+    )
 }
 
 /// A file as it was at `rev`; None when the commit isn't in the local clone.

@@ -3398,15 +3398,27 @@ fn rename_branch(place: &Path, from: &str, to: &str) -> Result<bool, String> {
     }
     // Pushed: the remote keeps the old name, as the app's own rename knows.
     // A push without --set-upstream leaves only the remote-tracking ref.
+    // A check that failed or timed out says nothing, and must not let the rename go on.
+    let unsure = |e: std::io::Error| format!("could not check whether {from} was pushed: {e}");
     let upstream =
         local_output(git(place).args(["config", "--get", &format!("branch.{from}.merge")]))
-            .is_ok_and(|o| o.status.success());
+            .map_err(unsure)?;
+    // `config --get` exits 1 only when the key is not set.
+    let upstream = match upstream.status.code() {
+        Some(0) => true,
+        Some(1) => false,
+        _ => return Err(format!("could not check whether {from} was pushed")),
+    };
     let tracked = local_output(
         git(place)
             .args(["for-each-ref", "--format=%(refname)"])
             .arg(format!("refs/remotes/*/{from}")),
     )
-    .is_ok_and(|o| !o.stdout.trim_ascii().is_empty());
+    .map_err(unsure)?;
+    if !tracked.status.success() {
+        return Err(format!("could not check whether {from} was pushed"));
+    }
+    let tracked = !tracked.stdout.trim_ascii().is_empty();
     if upstream || tracked {
         return Err(format!(
             "{from} was already pushed; rename it on the remote too, or keep the name"

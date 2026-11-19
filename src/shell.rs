@@ -1373,6 +1373,24 @@ impl Shell {
                 }))
                 .await;
             let _ = this.update(cx, |this, cx| {
+                let timed_out = changes.as_ref().err().or(sync.as_ref().err());
+                let timed_out = timed_out.filter(|e| git::timed_out(e));
+                let recovered = this.git_reads.status_ended(&path, timed_out.is_some());
+                if let Some(env) = this.find_env_mut(&path) {
+                    if let Some(e) = timed_out {
+                        env.git_error = Some(
+                            format!(
+                                "{e}. Arakun looks again in {} minutes.",
+                                git_actions::STATUS_PAUSE.as_secs() / 60
+                            )
+                            .into(),
+                        );
+                        cx.notify();
+                    } else if recovered && env.git_error.is_some() {
+                        env.git_error = None;
+                        cx.notify();
+                    }
+                }
                 if this.git_reads.end(&path, git_actions::GitRead::Status) {
                     this.refresh_status(&path, cx);
                 }

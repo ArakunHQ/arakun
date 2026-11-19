@@ -1294,7 +1294,9 @@ fn run_streaming(
     crate::platform::lower_priority(cmd);
     let mut child = cmd.spawn()?;
     let tree = crate::platform::ProcessTree::adopt(&child);
-    let (tx, rx) = mpsc::channel::<Vec<u8>>();
+    // Bounded, so a command that writes faster than this keeps up waits rather than
+    // pile up chunks; the readers end when `rx` goes with the return.
+    let (tx, rx) = mpsc::sync_channel::<Vec<u8>>(64);
     let pipes: [Option<Box<dyn std::io::Read + Send>>; 2] = [
         child
             .stdout
@@ -1369,6 +1371,9 @@ fn run_streaming(
         };
         if let Some(why) = why {
             tree.kill();
+            // The tree may not hold the child (on Windows the job object can fail to
+            // take it), and the wait would then last as long as the child.
+            let _ = child.kill();
             let _ = child.wait();
             stopped = Some(why);
             break;

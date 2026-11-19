@@ -1,7 +1,7 @@
 //! The git workflow of the Changes panel: commit, push, pull, pull requests, merging
 //! a worktree into the main checkout, and per-file stage / unstage / discard.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -40,11 +40,26 @@ pub(super) struct GitReads {
     /// Environments whose status was asked for while one was running. That one may
     /// have read the files before the change that asked, so status runs once more.
     status_again: HashSet<PathBuf>,
+    /// Environments whose last status ran past its limit, and when it timed out. A
+    /// status that always takes longer would otherwise be killed and start again at
+    /// once, keeping a core busy for nothing.
+    status_timed_out: HashMap<PathBuf, Instant>,
 }
+
+/// How long status rests after it ran past its limit.
+pub(super) const STATUS_PAUSE: Duration = Duration::from_secs(5 * 60);
 
 impl GitReads {
     /// Marks `read` of `path` as running; false when it already is.
     pub(super) fn start(&mut self, path: &Path, read: GitRead) -> bool {
+        if read == GitRead::Status
+            && self
+                .status_timed_out
+                .get(path)
+                .is_some_and(|at| at.elapsed() < STATUS_PAUSE)
+        {
+            return false;
+        }
         let started = self.running.insert((path.to_path_buf(), read));
         if !started && read == GitRead::Status {
             self.status_again.insert(path.to_path_buf());
@@ -56,6 +71,19 @@ impl GitReads {
     pub(super) fn end(&mut self, path: &Path, read: GitRead) -> bool {
         self.running.remove(&(path.to_path_buf(), read));
         read == GitRead::Status && self.status_again.remove(path)
+    }
+
+    /// Notes how the status of `path` that just ended went: one that timed out does not
+    /// run again for [`STATUS_PAUSE`]. True when it worked after one that timed out.
+    pub(super) fn status_ended(&mut self, path: &Path, timed_out: bool) -> bool {
+        if timed_out {
+            self.status_again.remove(path);
+            self.status_timed_out
+                .insert(path.to_path_buf(), Instant::now());
+            false
+        } else {
+            self.status_timed_out.remove(path).is_some()
+        }
     }
 }
 
@@ -939,5 +967,26 @@ mod tests {
         assert!(reads.end(a, GitRead::Status));
         assert!(reads.start(a, GitRead::Status));
         assert!(!reads.end(a, GitRead::Status));
+    }
+
+    #[test]
+    fn status_that_timed_out_rests_before_it_runs_again() {
+        let mut reads = GitReads::default();
+        let (a, b) = (Path::new("/a"), Path::new("/b"));
+        assert!(reads.start(a, GitRead::Status));
+        // Asked for again while it ran, then it timed out: no new run at once.
+        assert!(!reads.start(a, GitRead::Status));
+        assert!(!reads.status_ended(a, true));
+        assert!(!reads.end(a, GitRead::Status));
+        assert!(!reads.start(a, GitRead::Status));
+        assert!(reads.start(b, GitRead::Status));
+        assert!(reads.start(a, GitRead::PullRequest));
+        // Once the pause is over it runs, and a status that works ends it.
+        reads
+            .status_timed_out
+            .insert(a.to_path_buf(), Instant::now() - STATUS_PAUSE);
+        assert!(reads.start(a, GitRead::Status));
+        assert!(reads.status_ended(a, false));
+        assert!(!reads.status_ended(a, false));
     }
 }

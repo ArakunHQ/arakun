@@ -1275,10 +1275,14 @@ impl Rules {
     }
 
     pub fn load() -> Self {
-        let mut rules: Self = std::fs::read(file())
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or_default();
+        Self::load_from(&file())
+    }
+
+    /// Rules this build can't read (a trigger from a newer Arakun) are set
+    /// aside: saved over, their record of having run would be lost and they
+    /// would run again once the file was restored.
+    fn load_from(path: &Path) -> Self {
+        let mut rules: Self = crate::stored::load(path).unwrap_or_default();
         rules.interrupted();
         rules
     }
@@ -1299,7 +1303,7 @@ impl Rules {
     /// Writes the rules to disk. A rule's state counts only once it is there:
     /// after a restart the file is all that is left.
     pub fn save(&mut self) -> Result<(), String> {
-        self.save_with(|bytes| crate::durable::write(&file(), bytes))
+        self.save_with(|bytes| crate::stored::write(&file(), bytes))
     }
 
     fn save_with(
@@ -1318,7 +1322,7 @@ impl Rules {
     /// Waiting, and after a restart it would run again. When the save fails
     /// they go back to Waiting, and the next check tries again.
     pub fn save_fired(&mut self, fired: &[u64]) -> Result<(), String> {
-        self.save_fired_with(fired, |bytes| crate::durable::write(&file(), bytes))
+        self.save_fired_with(fired, |bytes| crate::stored::write(&file(), bytes))
     }
 
     fn save_fired_with(
@@ -2174,5 +2178,20 @@ mod tests {
             Some("fix it")
         );
         assert_eq!(after_any("İ", &["ask an agent to "]), None);
+    }
+
+    #[test]
+    fn rules_from_a_newer_arakun_are_kept() {
+        let dir = crate::stored::tests::scratch("rules");
+        let path = dir.join("rules.json");
+        let newer = r#"{"next_id":2,"items":[{"id":1,"trigger":{"kind":"from-the-future"}}]}"#;
+        std::fs::write(&path, newer).unwrap();
+        let mut rules = Rules::load_from(&path);
+        assert!(rules.items.is_empty());
+        rules
+            .save_with(|bytes| crate::stored::write(&path, bytes))
+            .unwrap();
+        assert_eq!(crate::stored::tests::kept(&path).as_deref(), Some(newer));
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

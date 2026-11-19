@@ -1,0 +1,41 @@
+{
+  "note": "Written by `WRITE_VECTORS=1 cargo test phone::relay::tests::part_vectors`; checked by phone/test/relay.test.mjs.",
+  "message": "{\"type\":\"entries\",\"text\":\"aé€😀 aé€😀 aé€😀 aé€😀 aé€😀 aé€😀 aé€😀 aé€😀 \"}",
+  "cases": [
+    {
+      "chunk": 7,
+      "parts": [
+        "{\"part\":{\"body\":\"eyJ0eXBlIg\",\"more\":true}}",
+        "{\"part\":{\"body\":\"OiJlbnRyaQ\",\"more\":true}}",
+        "{\"part\":{\"body\":\"ZXMiLCJ0ZQ\",\"more\":true}}",
+        "{\"part\":{\"body\":\"eHQiOiJhww\",\"more\":true}}",
+        "{\"part\":{\"body\":\"qeKCrPCfmA\",\"more\":true}}",
+        "{\"part\":{\"body\":\"gCBhw6nigg\",\"more\":true}}",
+        "{\"part\":{\"body\":\"rPCfmIAgYQ\",\"more\":true}}",
+        "{\"part\":{\"body\":\"w6nigqzwnw\",\"more\":true}}",
+        "{\"part\":{\"body\":\"mIAgYcOp4g\",\"more\":true}}",
+        "{\"part\":{\"body\":\"gqzwn5iAIA\",\"more\":true}}",
+        "{\"part\":{\"body\":\"YcOp4oKs8A\",\"more\":true}}",
+        "{\"part\":{\"body\":\"n5iAIGHDqQ\",\"more\":true}}",
+        "{\"part\":{\"body\":\"4oKs8J-YgA\",\"more\":true}}",
+        "{\"part\":{\"body\":\"IGHDqeKCrA\",\"more\":true}}",
+        "{\"part\":{\"body\":\"8J-YgCBhww\",\"more\":true}}",
+        "{\"part\":{\"body\":\"qeKCrPCfmA\",\"more\":true}}",
+        "{\"part\":{\"body\":\"gCAifQ\",\"more\":false}}"
+      ]
+    },
+    {
+      "chunk": 64,
+      "parts": [
+        "{\"part\":{\"body\":\"eyJ0eXBlIjoiZW50cmllcyIsInRleHQiOiJhw6nigqzwn5iAIGHDqeKCrPCfmIAgYcOp4oKs8J-YgCBhw6nigg\",\"more\":true}}",
+        "{\"part\":{\"body\":\"rPCfmIAgYcOp4oKs8J-YgCBhw6nigqzwn5iAIGHDqeKCrPCfmIAgYcOp4oKs8J-YgCAifQ\",\"more\":false}}"
+      ]
+    },
+    {
+      "chunk": 4096,
+      "parts": [
+        "{\"part\":{\"body\":\"eyJ0eXBlIjoiZW50cmllcyIsInRleHQiOiJhw6nigqzwn5iAIGHDqeKCrPCfmIAgYcOp4oKs8J-YgCBhw6nigqzwn5iAIGHDqeKCrPCfmIAgYcOp4oKs8J-YgCBhw6nigqzwn5iAIGHDqeKCrPCfmIAgIn0\",\"more\":false}}"
+      ]
+    }
+  ]
+}

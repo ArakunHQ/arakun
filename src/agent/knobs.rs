@@ -606,22 +606,10 @@ impl ReadBudget {
         if diff.trim().is_empty() {
             return None;
         }
-        let cut = (0..=diff.len().min(14_000))
-            .rev()
-            .find(|&i| diff.is_char_boundary(i))
-            .unwrap_or(0);
-        let tail_start = (diff.len().saturating_sub(6_000)..=diff.len())
-            .find(|&i| diff.is_char_boundary(i))
-            .unwrap_or(diff.len());
-        let diff_excerpt = if cut < tail_start {
-            format!("{}\n…\n{}", &diff[..cut.min(8_000)], &diff[tail_start..])
-        } else {
-            diff[..cut].to_string()
-        };
         let body = json!({
             "model": "clef",
             "state": {
-                "git_diff": diff_excerpt,
+                "git_diff": diff_excerpt(&diff),
                 "test_output": &content[..(0..=content.len().min(2000)).rev().find(|&i| content.is_char_boundary(i)).unwrap_or(0)],
             },
             "questions": {
@@ -665,6 +653,27 @@ impl ReadBudget {
         } else {
             None
         }
+    }
+}
+
+/// What Clef is sent of a diff: its first 14,000 bytes, or its head and tail
+/// when it is longer than about 20,000.
+fn diff_excerpt(diff: &str) -> String {
+    let cut = (0..=diff.len().min(14_000))
+        .rev()
+        .find(|&i| diff.is_char_boundary(i))
+        .unwrap_or(0);
+    let tail_start = (diff.len().saturating_sub(6_000)..=diff.len())
+        .find(|&i| diff.is_char_boundary(i))
+        .unwrap_or(diff.len());
+    if cut < tail_start {
+        format!(
+            "{}\n…\n{}",
+            &diff[..diff.floor_char_boundary(cut.min(8_000))],
+            &diff[tail_start..]
+        )
+    } else {
+        diff[..cut].to_string()
     }
 }
 
@@ -1028,5 +1037,15 @@ mod tests {
         assert_eq!(m[11]["content"].as_str().unwrap().len(), 90_000);
         assert_eq!(m[1]["content"], "do it");
         assert!(prune_plan(&m, &p).is_empty(), "stubs are not pruned again");
+    }
+
+    #[test]
+    fn diff_excerpt_cuts_the_head_at_a_char() {
+        // A long diff of non-ASCII text, with a char across byte 8,000.
+        let diff = format!("{}{}", "x".repeat(7_999), "é".repeat(10_000));
+        let excerpt = diff_excerpt(&diff);
+        let (head, tail) = excerpt.split_once("\n…\n").unwrap();
+        assert_eq!(head, "x".repeat(7_999));
+        assert!(diff.ends_with(tail) && tail.len() <= 6_000);
     }
 }

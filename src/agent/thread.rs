@@ -46,6 +46,66 @@ pub enum ThreadStatus {
     Error(String),
 }
 
+/// Where a session failed, for crash reports. Only fixed labels and numbers,
+/// never the message: that can hold a project's name or a credential.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FailedAt {
+    /// Finding or installing the agent's program.
+    Resolve,
+    /// Starting its process.
+    Spawn,
+    /// The `initialize` request, with the error's JSON-RPC code.
+    Initialize(i64),
+    /// Opening the session; the code is `None` when the reply had no session id.
+    Session(Option<i64>),
+    /// A turn, with the error's JSON-RPC code.
+    Turn(i64),
+    /// The process stopped answering during a turn.
+    Disconnected,
+    /// The process exited; its exit code, or the signal that ended it (negative).
+    Exited(Option<i64>),
+}
+
+impl FailedAt {
+    pub fn stage(self) -> &'static str {
+        match self {
+            FailedAt::Resolve => "resolve",
+            FailedAt::Spawn => "spawn",
+            FailedAt::Initialize(_) => "initialize",
+            FailedAt::Session(_) => "session",
+            FailedAt::Turn(_) => "turn",
+            FailedAt::Disconnected => "disconnected",
+            FailedAt::Exited(_) => "exited",
+        }
+    }
+
+    /// The JSON-RPC error code, or the exit code for [`FailedAt::Exited`].
+    pub fn code(self) -> Option<i64> {
+        match self {
+            FailedAt::Initialize(c) | FailedAt::Turn(c) => Some(c),
+            FailedAt::Session(c) | FailedAt::Exited(c) => c,
+            _ => None,
+        }
+    }
+}
+
+/// The code in a process's exit status as Rust prints it: `exit status: 1` on
+/// Unix, `exit code: 1` on Windows, and `signal: 9 (SIGKILL)` as -9. Windows
+/// prints a crash's NTSTATUS in hex (`exit code: 0xc0000005`).
+fn exit_code(status: &str) -> Option<i64> {
+    let (head, rest) = status.split_once(':')?;
+    let word = rest.split_whitespace().next()?;
+    let n = match word.strip_prefix("0x") {
+        Some(hex) => i64::from_str_radix(hex, 16).ok()?,
+        None => word.parse().ok()?,
+    };
+    match head.trim() {
+        "exit status" | "exit code" => Some(n),
+        "signal" => Some(-n),
+        _ => None,
+    }
+}
+
 /// What the shell persists in its session list.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SessionMeta {
@@ -430,6 +490,24 @@ pub enum ThreadEvent {
     SubagentsChanged {
         spawned: Option<String>,
     },
+    /// What the user did in a session that runs on a server (see
+    /// [`Thread::set_remote`]): it is for the server to carry out.
+    Remote(RemoteAction),
+}
+
+/// Something the user did in a server's session, which goes to the server.
+#[derive(Clone, Debug, PartialEq)]
+pub enum RemoteAction {
+    /// `now` stops the running turn for the prompt instead of queueing it.
+    Send {
+        text: String,
+        now: bool,
+    },
+    Cancel,
+    /// The option picked for the permission asked.
+    Permission(String),
+    Answer(Vec<String>),
+    SkipQuestion,
 }
 
 /// What the user made of the offer to set up a check (see [`Thread::offer_check`]).
@@ -470,6 +548,9 @@ pub struct Transcript {
     pub subagents: Vec<SubagentRecord>,
 }
 
+/// A saved transcript made ready to show by [`Thread::read_restored`].
+pub struct Restored(Transcript);
+
 /// What a session interrupted by `arakun restart` is told when it comes back.
 const RESTARTED: &str =
     "Arakun restarted while you were working (a new build). Continue where you left off.";
@@ -488,6 +569,9 @@ struct Caps {
 pub struct Thread {
     kind: AgentKind,
     backend: Backend,
+    /// The session runs on a server: this thread shows it, and what the user
+    /// does goes out as [`ThreadEvent::Remote`].
+    remote: bool,
     native: native::State,
     cwd: PathBuf,
     meta: SessionMeta,
@@ -549,6 +633,10 @@ pub struct Thread {
     retry_status: Option<String>,
     /// The last error the agent reported as a session failure, used to explain a failed turn.
     failure: Option<String>,
+    /// Where the last failure happened, for crash reports.
+    failed_at: Option<FailedAt>,
+    /// Whether crash reports have yet to hear of [`Self::failed_at`].
+    failure_unreported: bool,
     /// The running turn seems to be going in circles.
     stuck: Option<Stuck>,
     /// Patterns the user chose to keep going past this turn.
@@ -827,12 +915,19 @@ impl Thread {
     /// Reopens a saved transcript: its history shows at once, and the agent's
     /// session is resumed underneath without replaying it again.
     pub fn restore(path: &Path, cx: &mut App) -> Result<Entity<Thread>> {
-        let t = Self::read_transcript(path)?;
-        let mut entries = t.entries;
-        fill_replaced_history(&mut entries, &t.meta.cwd);
+        Ok(Self::restored(Self::read_restored(path)?, cx))
+    }
+
+    /// The slow half of [`Thread::restore`]: reads and parses the transcript,
+    /// and rebuilds older diffs with git. It needs no `App`, so it can run off
+    /// the main thread; [`Thread::restored`] then shows it.
+    pub fn read_restored(path: &Path) -> Result<Restored> {
+        let mut t = Self::read_transcript(path)?;
+        let entries = &mut t.entries;
+        fill_replaced_history(entries, &t.meta.cwd);
         if t.interrupted {
             // Tools cut off with the turn never finish now.
-            for e in &mut entries {
+            for e in entries.iter_mut() {
                 if let Entry::Tool(tool) = e
                     && matches!(tool.status, ToolStatus::Pending | ToolStatus::InProgress)
                 {
@@ -850,9 +945,14 @@ impl Thread {
                 });
             }
         }
-        Ok(cx.new(|cx| {
+        Ok(Restored(t))
+    }
+
+    /// Shows a transcript [`Thread::read_restored`] read, and resumes its agent.
+    pub fn restored(Restored(t): Restored, cx: &mut App) -> Entity<Thread> {
+        cx.new(|cx| {
             let mut this = Thread::new(t.meta.agent, t.meta.cwd.clone(), Some(t.meta));
-            this.set_entries(entries);
+            this.set_entries(t.entries);
             this.load_subagents(t.subagents, true, cx);
             this.restore_usage(t.usage);
             this.fork_point = t.fork_point;
@@ -866,7 +966,7 @@ impl Thread {
             }
             this.connect(cx);
             this
-        }))
+        })
     }
 
     /// `kind` taking over a conversation another agent had in `cwd`: `earlier`
@@ -959,6 +1059,7 @@ impl Thread {
         Thread {
             kind,
             backend,
+            remote: false,
             native: native::State::default(),
             session_id: meta.session_id.clone(),
             title_locked: !meta.title.is_empty(),
@@ -1013,6 +1114,8 @@ impl Thread {
             turn_tree: None,
             shell_pending: None,
             failure: None,
+            failed_at: None,
+            failure_unreported: false,
             auto_allow: false,
             handoff: None,
             handoff_sent: false,
@@ -1493,8 +1596,10 @@ impl Thread {
         self.post_marked_notice(text, error, None, cx);
     }
 
-    fn fail(&mut self, message: String, cx: &mut Context<Self>) {
+    fn fail(&mut self, at: FailedAt, message: String, cx: &mut Context<Self>) {
         self.status_detail = None;
+        self.failed_at = Some(at);
+        self.failure_unreported = true;
         self.set_status(ThreadStatus::Error(message), cx);
     }
 
@@ -1543,7 +1648,7 @@ impl Thread {
                 Ok(spec) => t.launch(spec, cx),
                 Err(e) => {
                     t.needs_install = e.downcast_ref::<launch::AdapterInstall>().cloned();
-                    t.fail(format!("{e:#}"), cx)
+                    t.fail(FailedAt::Resolve, format!("{e:#}"), cx)
                 }
             });
         }));
@@ -1563,7 +1668,7 @@ impl Thread {
         };
         let (conn, mut rx) = match spawned {
             Ok(c) => c,
-            Err(e) => return self.fail(format!("{e:#}"), cx),
+            Err(e) => return self.fail(FailedAt::Spawn, format!("{e:#}"), cx),
         };
         let conn = Rc::new(conn);
         self.conn = Some(conn.clone());
@@ -1615,14 +1720,17 @@ impl Thread {
                                 "jetbrains": {"air": {"version": 1, "capabilities": ["sessionFailure", "sessionIndex"]}}
                             }
                         },
-                        "clientInfo": {"name": "arakun", "title": "arakun", "version": env!("CARGO_PKG_VERSION")}
+                        "clientInfo": {"name": "arakun", "title": "arakun", "version": env!("ARAKUN_VERSION")}
                     }),
                 )
                 .await;
             let init = match init {
                 Ok(v) => v,
                 Err(e) => {
-                    let _ = this.update(cx, |t, cx| t.fail(format!("initialize failed: {e}"), cx));
+                    let _ = this.update(cx, |t, cx| {
+                        let msg = format!("initialize failed: {e}");
+                        t.fail(FailedAt::Initialize(e.code), msg, cx)
+                    });
                     return;
                 }
             };
@@ -1697,7 +1805,8 @@ impl Thread {
                         Some(id) => session = Some((id, v)),
                         None => {
                             let _ = this.update(cx, |t, cx| {
-                                t.fail("session/new returned no sessionId".into(), cx)
+                                let msg = "session/new returned no sessionId".into();
+                                t.fail(FailedAt::Session(None), msg, cx)
                             });
                             return;
                         }
@@ -1705,7 +1814,7 @@ impl Thread {
                     Err(e) => {
                         let _ = this.update(cx, |t, cx| {
                             let msg = t.describe_error(&e, "Starting the session failed");
-                            t.fail(msg, cx)
+                            t.fail(FailedAt::Session(Some(e.code)), msg, cx)
                         });
                         return;
                     }
@@ -1717,11 +1826,16 @@ impl Thread {
                 if fresh && t.kind == AgentKind::OpenCode {
                     super::catalog::remember_opencode_options(&v["configOptions"]);
                 }
-                if fresh && t.kind == AgentKind::Codex {
+                if fresh && matches!(t.kind, AgentKind::Codex | AgentKind::Devin) {
                     let raw = v["configOptions"].clone();
-                    cx.background_spawn(async move {
-                        super::catalog::remember_codex_options(&raw)
-                    })
+                    let kind = t.kind;
+                    cx.background_spawn(crate::guard::task(async move {
+                        if kind == AgentKind::Codex {
+                            super::catalog::remember_codex_options(&raw)
+                        } else {
+                            super::catalog::remember_devin_options(&raw)
+                        }
+                    }))
                     .detach();
                 }
                 t.session_ready(id, &v, cx)
@@ -1778,6 +1892,24 @@ impl Thread {
         } else {
             format!("{what}: {e}")
         }
+    }
+
+    /// Where the session failed, while it shows the error.
+    pub fn failed_at(&self) -> Option<FailedAt> {
+        self.failed_at
+            .filter(|_| matches!(self.status, ThreadStatus::Error(_)))
+    }
+
+    /// The failure to send to crash reports, once each. A disconnect waits: the
+    /// process's exit follows it within moments and brings the exit code. When
+    /// `closing`, nothing will follow, so a waiting disconnect goes out as it is.
+    pub fn take_failure_report(&mut self, closing: bool) -> Option<FailedAt> {
+        let at = self.failed_at()?;
+        if !self.failure_unreported || (at == FailedAt::Disconnected && !closing) {
+            return None;
+        }
+        self.failure_unreported = false;
+        Some(at)
     }
 
     pub fn needs_login(&self) -> bool {
@@ -1838,7 +1970,16 @@ impl Thread {
     /// Has the next prompt the user sends tell the agent `note`, without the
     /// chat showing it.
     pub fn add_note(&mut self, note: String) {
-        self.notes.push(note);
+        // A note handed back by `take_notes` can reach the same thread twice.
+        if !self.notes.contains(&note) {
+            self.notes.push(note);
+        }
+    }
+
+    /// The notes no prompt has taken yet. The transcript doesn't keep them, so
+    /// whoever stops this thread has to.
+    pub fn take_notes(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.notes)
     }
 
     /// `text` with the notes waiting for the next prompt, each in a hint the
@@ -1850,10 +1991,89 @@ impl Thread {
         text
     }
 
+    /// Makes this viewer the face of a session on a server.
+    pub fn set_remote(&mut self) {
+        self.remote = true;
+    }
+
+    pub fn is_remote(&self) -> bool {
+        self.remote
+    }
+
+    /// What the user did did not reach the server: the questionnaire can be
+    /// answered again.
+    pub fn remote_undelivered(&mut self) {
+        self.native.remote_answered = None;
+    }
+
+    /// Says in the session that `what` is not done for a server's session:
+    /// the agent and its history are on that machine.
+    fn remote_cannot(&mut self, what: &str, cx: &mut Context<Self>) {
+        self.post_notice(
+            format!("{what} is not available for a session on a server yet."),
+            true,
+            cx,
+        );
+    }
+
+    /// What a server's session waits on, as the server words it
+    /// (`phone::wire::permission` and `question`): shown with the same cards
+    /// as a session here, and answered through [`ThreadEvent::Remote`].
+    pub fn set_remote_asks(
+        &mut self,
+        permission: &Value,
+        question: &Value,
+        cx: &mut Context<Self>,
+    ) {
+        let text = |v: &Value, k: &str| v[k].as_str().unwrap_or("").to_string();
+        let permission = permission["options"]
+            .as_array()
+            .map(|options| PermissionRequest {
+                rpc_id: Value::Null,
+                tool_call_id: text(permission, "tool_call_id"),
+                title: text(permission, "title"),
+                options: options
+                    .iter()
+                    .map(|o| PermissionOption {
+                        id: text(o, "id"),
+                        name: text(o, "name"),
+                        kind: text(o, "kind"),
+                    })
+                    .collect(),
+                plan: None,
+                session: None,
+            });
+        let question = native::remote_question(question);
+        let asked = permission.is_some() && self.permissions.is_empty();
+        self.permissions = permission.into_iter().collect();
+        self.native.questions = question.into_iter().collect();
+        // Another questionnaire, or none: the one answered is done with.
+        let front = self
+            .native
+            .questions
+            .front()
+            .map(native::AskUserRequest::remote_key);
+        if self.native.remote_answered != front {
+            self.native.remote_answered = None;
+        }
+        if asked {
+            cx.emit(ThreadEvent::NeedsPermission);
+        }
+        cx.emit(ThreadEvent::Changed);
+        cx.notify();
+    }
+
     /// Sends a prompt, or queues it while the agent is busy or still starting.
     pub fn send(&mut self, prompt: String, cx: &mut Context<Self>) {
         let prompt = prompt.trim().to_string();
         if prompt.is_empty() {
+            return;
+        }
+        if self.remote {
+            cx.emit(ThreadEvent::Remote(RemoteAction::Send {
+                text: prompt,
+                now: false,
+            }));
             return;
         }
         if !self.title_locked && self.meta.title.is_empty() {
@@ -1945,8 +2165,10 @@ impl Thread {
         if push_user || self.turn_tree.is_none() {
             let cwd = self.cwd.clone();
             self.turn_tree = Some(
-                cx.background_spawn(async move { shell_diff::snapshot(&cwd) })
-                    .shared(),
+                cx.background_spawn(crate::guard::task(
+                    async move { shell_diff::snapshot(&cwd) },
+                ))
+                .shared(),
             );
         }
         self.turn_tokens = self.usage.total_tokens();
@@ -1991,12 +2213,12 @@ impl Thread {
         let seq = self.prompt_seq;
         self._prompt = Some(cx.spawn(async move |this, cx| {
             let blocks = cx
-                .background_spawn(async move {
+                .background_spawn(crate::guard::task(async move {
                     images
                         .iter()
                         .map(|p| attach::acp_block(p))
                         .collect::<Vec<_>>()
-                })
+                }))
                 .await;
             let mut prompt = vec![json!({"type": "text", "text": text})];
             if !hint.is_empty() {
@@ -2170,7 +2392,7 @@ impl Thread {
             }
             self.forget_in_child(&req, cx);
         }
-        self.native_drop_questions();
+        self.drop_questions(true, cx);
     }
 
     /// Stamps the turn's duration and usage on its prompt.
@@ -2231,11 +2453,11 @@ impl Thread {
                 return;
             };
             let changes = cx
-                .background_spawn(async move {
+                .background_spawn(crate::guard::task(async move {
                     shell_diff::snapshot(&cwd)
                         .map(|after| shell_diff::changes(&before, &after))
                         .unwrap_or_default()
-                })
+                }))
                 .await;
             let _ = this.update(cx, |t, cx| t.set_shell_changes(ix, changes, cx));
         });
@@ -2377,11 +2599,11 @@ impl Thread {
         if turn.is_empty() {
             return;
         }
-        cx.background_spawn(async move {
+        cx.background_spawn(crate::guard::task(async move {
             if let Err(e) = ledger::append(&turn) {
                 eprintln!("arakun: could not log usage: {e}");
             }
-        })
+        }))
         .detach();
     }
     fn finish_turn(&mut self, result: Result<Value, RpcError>, cx: &mut Context<Self>) {
@@ -2421,12 +2643,16 @@ impl Thread {
                 "cancelled".into()
             }
             Err(e) => {
-                let msg = if e.code == RpcError::DISCONNECTED {
-                    format!("{} stopped responding.", self.kind.label())
+                let (at, msg) = if e.code == RpcError::DISCONNECTED {
+                    let msg = format!("{} stopped responding.", self.kind.label());
+                    (FailedAt::Disconnected, msg)
                 } else {
-                    self.describe_error(&e, "The turn failed")
+                    (
+                        FailedAt::Turn(e.code),
+                        self.describe_error(&e, "The turn failed"),
+                    )
                 };
-                self.fail(msg, cx);
+                self.fail(at, msg, cx);
                 "error".into()
             }
         };
@@ -2463,6 +2689,10 @@ impl Thread {
     /// the background with it. Queued prompts wait until resumed, those sent
     /// now too: they stay in the queue.
     pub fn cancel(&mut self, cx: &mut Context<Self>) {
+        if self.remote {
+            cx.emit(ThreadEvent::Remote(RemoteAction::Cancel));
+            return;
+        }
         self.urgent = 0;
         if !self.queue.is_empty() {
             self.queue_paused = true;
@@ -2483,6 +2713,9 @@ impl Thread {
             conn.respond(req.rpc_id.clone(), reply.clone());
             self.forget_in_child(&req, cx);
         }
+        // ACP asks the client to answer what it still waits on once it cancels;
+        // an AskUserQuestion form left open would hold the turn.
+        self.drop_questions(false, cx);
         if self.auto_turn && !self.prompting {
             // No response ends a turn the agent took by itself.
             self.notice("Stopped", false, cx);
@@ -2516,6 +2749,14 @@ impl Thread {
     pub fn interrupt_with(&mut self, prompt: String, cx: &mut Context<Self>) {
         let prompt = prompt.trim().to_string();
         if prompt.is_empty() {
+            return;
+        }
+        // The server holds the queue and the turn: it stops one for the other.
+        if self.remote {
+            cx.emit(ThreadEvent::Remote(RemoteAction::Send {
+                text: prompt,
+                now: true,
+            }));
             return;
         }
         if !self.is_busy() {
@@ -2632,6 +2873,13 @@ impl Thread {
         let Some(req) = self.permissions.pop_front() else {
             return;
         };
+        if self.remote {
+            cx.emit(ThreadEvent::Remote(RemoteAction::Permission(
+                option_id.into(),
+            )));
+            cx.notify();
+            return;
+        }
         let reply = match self.backend {
             Backend::Acp => json!({"outcome": {"outcome": "selected", "optionId": option_id}}),
             Backend::Native => json!({"selectedOption": option_id}),
@@ -2933,7 +3181,7 @@ impl Thread {
                     msg.push('\n');
                     msg.push_str(&tail.join("\n"));
                 }
-                self.fail(msg, cx);
+                self.fail(FailedAt::Exited(exit_code(&status)), msg, cx);
             }
         }
     }
@@ -2947,11 +3195,7 @@ impl Thread {
                 let tool = &params["toolCall"];
                 let tool_call_id = str_of(tool, "toolCallId").unwrap_or_default();
                 // A subagent's call is in its own transcript; the request shows in both.
-                let child = params["sessionId"]
-                    .as_str()
-                    .filter(|s| self.session_id.as_deref() != Some(*s))
-                    .and_then(|s| self.subagents.iter().find(|c| c.id == s))
-                    .map(|c| (c.id.clone(), c.thread.clone()));
+                let child = self.asking_child(&params);
                 let known = |t: &Thread| {
                     t.tool_index
                         .get(&tool_call_id)
@@ -3038,11 +3282,24 @@ impl Thread {
                 cx.notify();
             }
             "elicitation/create" => {
-                let Some(req) = AskUserRequest::from_form(id.clone(), &params) else {
+                let Some(mut req) = AskUserRequest::from_form(id.clone(), &params) else {
                     conn.respond(id, json!({"action": "decline"}));
                     return;
                 };
                 let tool_call_id = req.tool_call_id.clone();
+                // A subagent's question shows in its own transcript too.
+                if let Some((session, thread)) = self.asking_child(&params) {
+                    req.session = Some(session);
+                    let copy = req.clone();
+                    thread.update(cx, |c, cx| {
+                        c.native.questions.push_back(copy);
+                        if let Some(&ix) = c.tool_index.get(&tool_call_id) {
+                            c.entries_changed(ix, cx);
+                        }
+                        c.set_status(ThreadStatus::NeedsInput, cx);
+                        cx.emit(ThreadEvent::NeedsPermission);
+                    });
+                }
                 self.native.questions.push_back(req);
                 if let Some(&ix) = self.tool_index.get(&tool_call_id) {
                     self.entries_changed(ix, cx);
@@ -3051,10 +3308,27 @@ impl Thread {
                 cx.emit(ThreadEvent::NeedsPermission);
                 cx.notify();
             }
-            "fs/read_text_file" => match self.read_file(&params) {
-                Ok(content) => conn.respond(id, json!({"content": content})),
-                Err(e) => conn.respond_error(id, -32002, &format!("{e:#}")),
-            },
+            // Off the main thread: a big file, or one on a slow disk, would freeze the window.
+            "fs/read_text_file" => {
+                let cwd = self.cwd.clone();
+                let conn = Rc::downgrade(&conn);
+                cx.spawn(async move |_, cx| {
+                    let read = cx
+                        .background_spawn(crate::guard::task(
+                            async move { read_file(&cwd, &params) },
+                        ))
+                        .await;
+                    // The agent may have gone in the meantime.
+                    let Some(conn) = conn.upgrade() else {
+                        return;
+                    };
+                    match read {
+                        Ok(content) => conn.respond(id, json!({"content": content})),
+                        Err(e) => conn.respond_error(id, -32002, &format!("{e:#}")),
+                    }
+                })
+                .detach();
+            }
             "fs/write_text_file" => match self.write_file(&params) {
                 Ok(()) => conn.respond(id, json!({})),
                 Err(e) => conn.respond_error(id, -32002, &format!("{e:#}")),
@@ -3063,54 +3337,17 @@ impl Thread {
         }
     }
 
-    /// Resolves an agent-supplied path, refusing anything outside the session cwd
-    /// (including through symlinks).
-    fn confine(&self, raw: &str) -> Result<PathBuf> {
-        let path = Path::new(raw);
-        let path = lexical_normalize(&if path.is_absolute() {
-            path.to_path_buf()
-        } else {
-            self.cwd.join(path)
-        });
-        let root = crate::platform::canonicalize(&self.cwd).unwrap_or_else(|_| self.cwd.clone());
-        let mut existing = path.as_path();
-        while !existing.exists() {
-            existing = existing.parent().ok_or_else(|| anyhow!("bad path {raw}"))?;
-        }
-        let mut real = crate::platform::canonicalize(existing)?;
-        // `join("")` would append a trailing slash and break reads of existing files.
-        let rest = path.strip_prefix(existing).unwrap_or(Path::new(""));
-        if !rest.as_os_str().is_empty() {
-            real = real.join(rest);
-        }
-        if !real.starts_with(&root) {
-            return Err(anyhow!(
-                "{raw} is outside the session folder {}",
-                root.display()
-            ));
-        }
-        Ok(real)
-    }
-
-    fn read_file(&self, params: &Value) -> Result<String> {
-        let path = self.confine(params["path"].as_str().unwrap_or(""))?;
-        let text = std::fs::read_to_string(&path)
-            .with_context(|| format!("reading {}", path.display()))?;
-        let line = params["line"].as_u64().map(|l| l.max(1) as usize);
-        let limit = params["limit"].as_u64().map(|l| l as usize);
-        if line.is_none() && limit.is_none() {
-            return Ok(text);
-        }
-        let start = line.unwrap_or(1) - 1;
-        let lines = text.split_inclusive('\n').skip(start);
-        Ok(match limit {
-            Some(n) => lines.take(n).collect(),
-            None => lines.collect(),
-        })
+    /// The subagent whose session a request came on, when it is not this one.
+    fn asking_child(&self, params: &Value) -> Option<(String, Entity<Thread>)> {
+        params["sessionId"]
+            .as_str()
+            .filter(|s| self.session_id.as_deref() != Some(*s))
+            .and_then(|s| self.subagents.iter().find(|c| c.id == s))
+            .map(|c| (c.id.clone(), c.thread.clone()))
     }
 
     fn write_file(&self, params: &Value) -> Result<()> {
-        let path = self.confine(params["path"].as_str().unwrap_or(""))?;
+        let path = confine(&self.cwd, params["path"].as_str().unwrap_or(""))?;
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
@@ -3509,6 +3746,116 @@ impl Thread {
     }
 }
 
+/// Resolves an agent-supplied path, refusing anything outside the session folder
+/// `cwd` (including through symlinks).
+fn confine(cwd: &Path, raw: &str) -> Result<PathBuf> {
+    let path = Path::new(raw);
+    let path = lexical_normalize(&if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        cwd.join(path)
+    });
+    let root = crate::platform::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
+    let mut existing = path.as_path();
+    while !existing.exists() {
+        existing = existing.parent().ok_or_else(|| anyhow!("bad path {raw}"))?;
+    }
+    let mut real = crate::platform::canonicalize(existing)?;
+    // `join("")` would append a trailing slash and break reads of existing files.
+    let rest = path.strip_prefix(existing).unwrap_or(Path::new(""));
+    if !rest.as_os_str().is_empty() {
+        real = real.join(rest);
+    }
+    if !real.starts_with(&root) {
+        return Err(anyhow!(
+            "{raw} is outside the session folder {}",
+            root.display()
+        ));
+    }
+    Ok(real)
+}
+
+/// Most of a file the agent gets in one answer. A bigger file would freeze the
+/// window while the reply is built, and the agent can read it in parts.
+const READ_MAX: usize = 8 << 20;
+
+/// Answers the agent's `fs/read_text_file`: the whole file, or `limit` lines
+/// from `line` (1-based). Runs off the main thread.
+fn read_file(cwd: &Path, params: &Value) -> Result<String> {
+    let path = confine(cwd, params["path"].as_str().unwrap_or(""))?;
+    let line = params["line"].as_u64().map(|l| l.max(1) as usize);
+    let limit = params["limit"].as_u64().map(|l| l as usize);
+    read_text(&path, line, limit)
+}
+
+fn read_text(path: &Path, line: Option<usize>, limit: Option<usize>) -> Result<String> {
+    use std::io::BufRead as _;
+    let meta = std::fs::metadata(path).with_context(|| format!("reading {}", path.display()))?;
+    // Reading a FIFO or a device could wait or go on for good.
+    if !meta.is_file() {
+        return Err(anyhow!("{} is not a regular file", path.display()));
+    }
+    let mb = |n: u64| n.div_ceil(1 << 20);
+    let too_big = || match (line, limit) {
+        (None, None) => anyhow!(
+            "{} is {} MB, more than the {} MB arakun reads at once. Read it in parts with `line` and `limit`.",
+            path.display(),
+            mb(meta.len()),
+            mb(READ_MAX as u64)
+        ),
+        _ => anyhow!(
+            "The lines asked for from {} are more than the {} MB arakun reads at once. Ask for fewer with `limit`.",
+            path.display(),
+            mb(READ_MAX as u64)
+        ),
+    };
+    if line.is_none() && limit.is_none() && meta.len() > READ_MAX as u64 {
+        return Err(too_big());
+    }
+    let file = std::fs::File::open(path).with_context(|| format!("reading {}", path.display()))?;
+    let mut r = std::io::BufReader::new(file);
+    let read = |e| anyhow::Error::new(e).context(format!("reading {}", path.display()));
+    // Lines before `line` are skipped without keeping them.
+    let mut skipped = 0;
+    while skipped + 1 < line.unwrap_or(1) {
+        let buf = r.fill_buf().map_err(read)?;
+        if buf.is_empty() {
+            break;
+        }
+        let n = match buf.iter().position(|&b| b == b'\n') {
+            Some(i) => {
+                skipped += 1;
+                i + 1
+            }
+            None => buf.len(),
+        };
+        r.consume(n);
+    }
+    let mut out = Vec::new();
+    let mut taken = 0;
+    while limit.is_none_or(|n| taken < n) {
+        let buf = r.fill_buf().map_err(read)?;
+        if buf.is_empty() {
+            break;
+        }
+        let n = match buf.iter().position(|&b| b == b'\n') {
+            Some(i) => {
+                taken += 1;
+                i + 1
+            }
+            None => buf.len(),
+        };
+        // The file grew past the check above, or the lines asked for are too many.
+        if out.len() + n > READ_MAX {
+            return Err(too_big());
+        }
+        out.extend_from_slice(&buf[..n]);
+        r.consume(n);
+    }
+    String::from_utf8(out)
+        .map_err(|e| read(std::io::Error::new(std::io::ErrorKind::InvalidData, e)))
+}
+
 fn recount(t: &mut ToolCall) {
     let (mut added, mut removed) = (0, 0);
     for c in &t.content {
@@ -3730,6 +4077,49 @@ fn take_next(queue: &mut Vec<String>, urgent: &mut usize, paused: bool) -> Optio
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_disconnect_waits_for_the_exit_unless_closing() {
+        let failed = |at| {
+            let mut t = Thread::new(AgentKind::Claude, "/p".into(), None);
+            t.status = ThreadStatus::Error("x".into());
+            (t.failed_at, t.failure_unreported) = (Some(at), true);
+            t
+        };
+        let mut t = failed(FailedAt::Disconnected);
+        assert_eq!(t.take_failure_report(false), None);
+        // The exit replaces the disconnect and is sent, once.
+        t.failed_at = Some(FailedAt::Exited(Some(1)));
+        assert_eq!(
+            t.take_failure_report(false),
+            Some(FailedAt::Exited(Some(1)))
+        );
+        assert_eq!(t.take_failure_report(false), None);
+        assert_eq!(t.take_failure_report(true), None);
+
+        let mut t = failed(FailedAt::Disconnected);
+        assert_eq!(t.take_failure_report(true), Some(FailedAt::Disconnected));
+        assert_eq!(t.take_failure_report(true), None);
+
+        let mut t = failed(FailedAt::Turn(-32603));
+        assert_eq!(t.take_failure_report(false), Some(FailedAt::Turn(-32603)));
+
+        // A thread that is no longer in error has nothing to send.
+        let mut t = failed(FailedAt::Spawn);
+        t.status = ThreadStatus::Idle;
+        assert_eq!(t.take_failure_report(true), None);
+    }
+
+    #[test]
+    fn exit_codes_come_from_the_status() {
+        use super::exit_code;
+        assert_eq!(exit_code("exit status: 127"), Some(127));
+        assert_eq!(exit_code("exit code: 1"), Some(1));
+        assert_eq!(exit_code("exit code: 0xc0000005"), Some(0xc000_0005));
+        assert_eq!(exit_code("signal: 9 (SIGKILL)"), Some(-9));
+        assert_eq!(exit_code("stopped"), None);
+        assert_eq!(exit_code("No such file or directory (os error 2)"), None);
+    }
+
     use super::*;
 
     #[test]
@@ -3745,6 +4135,18 @@ mod tests {
         assert_eq!(shown, "fix it");
         // Used up: the prompt after it goes out as typed.
         assert_eq!(t.with_notes("and test it".into()), "and test it");
+    }
+
+    #[test]
+    fn a_stopped_thread_hands_back_only_the_notes_no_prompt_took() {
+        let mut t = Thread::new(AgentKind::Claude, "/p".into(), None);
+        t.add_note("(renamed from a to b)".into());
+        // Handed back and given again, it is still one note.
+        t.add_note("(renamed from a to b)".into());
+        assert_eq!(t.take_notes(), ["(renamed from a to b)"]);
+        t.add_note("(renamed from b to c)".into());
+        t.with_notes("fix it".into());
+        assert!(t.take_notes().is_empty());
     }
 
     #[test]
@@ -3966,6 +4368,100 @@ mod tests {
             .collect();
         assert_eq!(counts, vec![(1, 1), (1, 1), (1, 1), (2, 0)]);
         let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("arakun-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn agent_reads_take_the_lines_asked_for() {
+        let dir = scratch("agent-read");
+        let file = dir.join("a.txt");
+        std::fs::write(&file, "one\ntwo\nthree").unwrap();
+        let read = |line, limit| read_text(&file, line, limit).unwrap();
+        assert_eq!(read(None, None), "one\ntwo\nthree");
+        assert_eq!(read(Some(2), None), "two\nthree");
+        assert_eq!(read(Some(2), Some(1)), "two\n");
+        assert_eq!(read(None, Some(2)), "one\ntwo\n");
+        assert_eq!(read(Some(3), Some(5)), "three");
+        assert_eq!(read(Some(9), None), "");
+        assert_eq!(read(None, Some(0)), "");
+        let params = json!({"path": "a.txt", "line": 0, "limit": 1});
+        assert_eq!(read_file(&dir, &params).unwrap(), "one\n");
+        let outside = json!({"path": "../elsewhere.txt"});
+        assert!(read_file(&dir, &outside).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn agent_reads_refuse_big_files_whole_but_not_in_parts() {
+        let dir = scratch("agent-read-big");
+        let file = dir.join("big.log");
+        std::fs::write(&file, "first\nsecond\n").unwrap();
+        // Sparse, so the test writes almost nothing.
+        let f = std::fs::OpenOptions::new().write(true).open(&file).unwrap();
+        f.set_len(2 * READ_MAX as u64).unwrap();
+        let whole = read_text(&file, None, None).unwrap_err().to_string();
+        assert!(whole.contains("`line` and `limit`"), "{whole}");
+        assert_eq!(read_text(&file, Some(2), Some(1)).unwrap(), "second\n");
+        // The rest is one long line, too long to send even when asked for by lines.
+        let part = read_text(&file, Some(3), Some(1)).unwrap_err().to_string();
+        assert!(part.contains("`limit`"), "{part}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn agent_reads_refuse_what_is_not_a_file() {
+        let dir = scratch("agent-read-fifo");
+        let fifo = dir.join("pipe");
+        let made = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap()
+            .success();
+        assert!(made);
+        // Opening the FIFO would wait for a writer forever.
+        let err = read_text(&fifo, None, None).unwrap_err().to_string();
+        assert!(err.contains("not a regular file"), "{err}");
+        assert!(read_text(&dir, None, None).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_transcript_cut_off_mid_turn_reopens_with_its_tools_failed() {
+        let dir = scratch("restore");
+        let path = dir.join("s.json");
+        let saved = |resume: bool| {
+            let mut tool = match write("1", &dir.join("a.txt"), Some("a"), "b") {
+                Entry::Tool(t) => t,
+                _ => unreachable!(),
+            };
+            tool.status = ToolStatus::InProgress;
+            let t = json!({
+                "version": 1,
+                "meta": {"agent": "claude", "title": "", "cwd": dir, "created": 1, "updated": 1},
+                "entries": [Entry::Tool(tool)],
+                "interrupted": true,
+                "resume": resume,
+            });
+            std::fs::write(&path, t.to_string()).unwrap();
+            Thread::read_restored(&path).unwrap().0
+        };
+        let t = saved(false);
+        assert!(matches!(&t.entries[0], Entry::Tool(t) if t.status == ToolStatus::Failed));
+        assert!(
+            matches!(&t.entries[1], Entry::Notice { text, .. } if text.starts_with("Arakun closed"))
+        );
+        // `arakun restart` picks the turn up by itself, so there is nothing to say.
+        let t = saved(true);
+        assert_eq!(t.entries.len(), 1);
+        assert!(Thread::read_restored(&dir.join("missing.json")).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn q(items: &[&str]) -> Vec<String> {

@@ -643,6 +643,9 @@ pub fn run_with_timeout(
         }
         if start.elapsed() > timeout {
             tree.kill();
+            // The tree may not hold the child (on Windows the job object can
+            // fail to take it), and the wait below would then never end.
+            let _ = child.kill();
             let _ = child.wait();
             return Err(format!("timed out after {}s", timeout.as_secs()));
         }
@@ -989,6 +992,23 @@ pub fn current() -> Option<Arc<Jail>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn a_command_that_outlives_its_timeout_is_stopped() {
+        let mut cmd = Command::new("sleep");
+        cmd.arg("30");
+        let start = Instant::now();
+        let out = run_with_timeout(cmd, None, Duration::from_millis(200));
+        assert!(out.unwrap_err().contains("timed out"));
+        // Killed and reaped, not waited out.
+        assert!(start.elapsed() < Duration::from_secs(10));
+        // One that ends in time gives its output.
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "printf hi"]);
+        let out = run_with_timeout(cmd, None, Duration::from_secs(10)).unwrap();
+        assert_eq!(out.stdout, b"hi");
+    }
 
     fn sb(caps: &[Cap]) -> Sandbox {
         Sandbox {

@@ -2,19 +2,20 @@
 # Sets up a Linux or macOS machine to build Arakun and run the checks CI runs.
 # For contributors and for coding agents. Windows: tools/setup-dev.ps1.
 #
-#   tools/setup-dev.sh [--yes] [--check] [--relay] [--display] [--hooks] [--build]
+#   tools/setup-dev.sh [--yes] [--check] [--relay] [--display] [--browser] [--hooks] [--build]
 #
 #   --yes      do not ask before installing (implied when stdin is not a terminal)
 #   --check    only report what is missing; exit 1 if anything is
 #   --relay    also Node 24+ and the npm packages of relay/
 #   --display  also Xvfb and tesseract, for `arakun dev` (Linux only)
+#   --browser  also the CEF SDK a build with the browser needs, linked at .cef-sdk (macOS only)
 #   --hooks    turn on the Git hooks in lefthook.yml (lefthook install)
 #   --build    build the tests once, so the first clippy or test run is quick
 #
 # Always: the system libraries GPUI needs (apt or pacman; on macOS the Xcode Command
 # Line Tools), and the Rust version in rust-toolchain.toml with clippy and rustfmt, through rustup.
-# It builds without the browser, as CI does; for CEF see "With the browser" in the
-# README. Running it again is safe.
+# It builds without the browser, as CI does; for CEF see --browser and "With the browser"
+# in the README. Running it again is safe.
 set -eu
 
 here=$(cd "$(dirname "$0")/.." && pwd)
@@ -22,6 +23,7 @@ yes=0
 check=0
 relay=0
 display=0
+browser=0
 hooks=0
 build=0
 while [ $# -gt 0 ]; do
@@ -30,9 +32,10 @@ while [ $# -gt 0 ]; do
     --check) check=1 ;;
     --relay) relay=1 ;;
     --display) display=1 ;;
+    --browser) browser=1 ;;
     --hooks) hooks=1 ;;
     --build) build=1 ;;
-    -h|--help) sed -n '2,16p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,18p' "$0"; exit 0 ;;
     *) echo "setup-dev: unknown option $1" >&2; exit 2 ;;
   esac
   shift
@@ -234,6 +237,74 @@ if [ $display = 1 ]; then
     for t in Xvfb tesseract; do
       if command -v $t >/dev/null; then ok $t; else lack $t; fi
     done
+  fi
+fi
+
+# --- browser (CEF) ---
+# The `cef` crate's own download reads the CDN's index first, which has grown past what its
+# HTTP client accepts. So this fetches the archive the release workflow pins, checks its
+# SHA-1, and links it where .cargo/config.toml points CEF_PATH. The SDK lives outside the
+# checkout so every worktree shares one copy. Keep the version and checksums in step with
+# .github/workflows/release.yml and ci.yml.
+if [ $browser = 1 ]; then
+  say "browser (CEF 156.0.15)"
+  if [ "$os" != Darwin ]; then
+    say "on Linux, see \"With the browser\" in the README; skipped"
+  else
+    for t in cmake ninja; do
+      if command -v $t >/dev/null; then ok $t; else lack "$t (brew install cmake ninja)"; fi
+    done
+    # The hardware, not `uname -m`: that says x86_64 in a shell under Rosetta.
+    if [ "$(sysctl -n hw.optional.arm64 2>/dev/null || echo 0)" = 1 ]; then
+      plat=macosarm64 sha1=bcdd1877edb300b0fb91d8f71c0b14aae256cd0f
+    else
+      plat=macosx64 sha1=13756e3029307720fe00898d54aef8a64c9b4043
+    fi
+    archive=cef_binary_156.0.15+gcf671c0+chromium-156.0.8078.80_${plat}_minimal.tar.bz2
+    sdk=${XDG_DATA_HOME:-$HOME/.local/share}/arakun/cef-sdk/156.0.15-$plat
+    link=$here/.cef-sdk
+    # fetch-cef.py unpacks with tarfile's extraction filters (Python 3.12, or 3.9.17+ and
+    # 3.10.12+ and 3.11.4+). The python3 macOS ships is 3.9.6, so look for a newer one.
+    py=
+    for p in python3 python3.14 python3.13 python3.12 /opt/homebrew/bin/python3 /usr/local/bin/python3; do
+      if command -v "$p" >/dev/null &&
+        "$p" -I -c 'import sys, tarfile; sys.exit(not hasattr(tarfile, "data_filter"))' 2>/dev/null; then
+        py=$p
+        break
+      fi
+    done
+    if [ -d "$link" ] && [ ! -L "$link" ]; then
+      # A folder the crate's own download left; replacing it is the user's call.
+      ok ".cef-sdk is a folder, left as it is (remove it to use the shared SDK)"
+    elif [ -f "$sdk/archive.json" ] && [ "$(readlink "$link" || true)" = "$sdk" ]; then
+      ok "CEF SDK at .cef-sdk"
+    elif [ $check = 1 ]; then
+      [ -f "$sdk/archive.json" ] || [ -n "$py" ] ||
+        lack "Python 3.12+ to fetch the CEF SDK (brew install python)"
+      lack "CEF SDK at .cef-sdk (tools/setup-dev.sh --browser)"
+    elif [ ! -f "$sdk/archive.json" ] && [ -z "$py" ]; then
+      lack "Python 3.12+ to fetch the CEF SDK (brew install python), then run tools/setup-dev.sh --browser again"
+    else
+      # Worktrees share the SDK, and fetch-cef.py clears a fixed <sdk>.work folder when it
+      # starts, so two setups at once would delete each other's download. mkdir is the
+      # lock, as macOS has no flock.
+      lock=$sdk.lock
+      mkdir -p "$(dirname "$sdk")"
+      waited=0
+      until mkdir "$lock" 2>/dev/null; do
+        [ $waited = 1 ] || say "waiting for another setup-dev to fetch the CEF SDK (if none runs, remove $lock)"
+        waited=1
+        sleep 2
+      done
+      trap 'rmdir "$lock" 2>/dev/null || true' EXIT
+      trap 'exit 130' INT TERM
+      # Another setup may have fetched it while this one waited.
+      [ -f "$sdk/archive.json" ] || "$py" -I "$here/tools/fetch-cef.py" "$archive" "$sha1" "$sdk"
+      rmdir "$lock"
+      trap - EXIT INT TERM
+      ln -sfn "$sdk" "$link"
+      ok "CEF SDK at .cef-sdk"
+    fi
   fi
 fi
 

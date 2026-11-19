@@ -66,6 +66,21 @@ impl Shell {
         if req.cmd == "add" {
             return self.add_or_show(Path::new(&arg), window, cx);
         }
+        if req.cmd == "show" {
+            crate::background::show(window);
+            return Reply::ok("");
+        }
+        if req.cmd == "quit" {
+            // A moment later, once this answer is on its way.
+            cx.spawn(async move |_, cx| {
+                cx.background_executor()
+                    .timer(Duration::from_millis(300))
+                    .await;
+                cx.update(|cx| cx.quit());
+            })
+            .detach();
+            return Reply::ok("");
+        }
         if req.cmd == "ls" {
             return Reply::ok(self.listing());
         }
@@ -76,7 +91,7 @@ impl Shell {
             return Reply::ok("arakun is already running; brought its window up");
         }
         if req.cmd == "palette" {
-            window.activate_window();
+            crate::background::show(window);
             if !matches!(self.modal, Some((super::Modal::Palette(_), _))) {
                 self.open_palette(window, cx);
             }
@@ -440,16 +455,18 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(env) = self.find_env_mut(env_path) else {
-            return;
-        };
-        if env.tabs.get(env.active_tab).is_some_and(|t| t.id == id) {
+        // The window has one split, for the environment on screen.
+        if !self.has_projects() || self.env().path != env_path {
             return;
         }
-        let (dir, ratio, focus_first) = env.split.map_or((SplitDir::Right, 0.5, true), |s| {
+        let strip = &mut self.strip;
+        if strip.active().is_some_and(|t| t.id == id) {
+            return;
+        }
+        let (dir, ratio, focus_first) = strip.split.map_or((SplitDir::Right, 0.5, true), |s| {
             (s.dir, s.ratio, s.focus_first)
         });
-        env.split = Some(Split {
+        strip.split = Some(Split {
             other: id,
             dir,
             ratio,
@@ -485,7 +502,7 @@ impl Shell {
                 Reply::ok(format!("added {}", dir.display()))
             }
         };
-        window.activate_window();
+        crate::background::show(window);
         reply
     }
 

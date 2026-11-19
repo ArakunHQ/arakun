@@ -18,7 +18,9 @@
 //!
 //! Events go to PostHog's capture API over the `ureq` client the app already
 //! has, from one background thread; a panic is sent right away from the
-//! panicking thread, since the process may not outlive it.
+//! panicking thread, since the process may not outlive it. The panic hook
+//! itself is `crash`'s, which also keeps a crash log on this machine whatever
+//! the answer was.
 
 use std::cell::Cell;
 use std::path::PathBuf;
@@ -209,14 +211,13 @@ fn apply(choice: Consent) {
     USAGE.store(choice.usage, Ordering::Relaxed);
     // What was queued while a choice was on is not sent once it is off.
     lock(&queue().events).retain(|e| allowed(e, choice));
-    if (choice.crashes || choice.usage) && STARTED.set(()).is_ok() {
-        install_panic_hook();
-        if let Err(e) = std::thread::Builder::new()
+    if (choice.crashes || choice.usage)
+        && STARTED.set(()).is_ok()
+        && let Err(e) = std::thread::Builder::new()
             .name("telemetry".into())
             .spawn(send_loop)
-        {
-            eprintln!("arakun: telemetry not started: {e}");
-        }
+    {
+        eprintln!("arakun: telemetry not started: {e}");
     }
 }
 
@@ -282,14 +283,15 @@ pub fn quit() {
 /// Reports an error Arakun handled, such as an agent that stopped with one:
 /// `kind` is its type in PostHog (`AgentError`). Only a fixed category of
 /// `message` is sent (`category`), never its text: an agent's error can hold
-/// a project's name or a credential no scrubbing would recognise.
-pub fn error(kind: &'static str, message: &str, props: &[(&str, &str)]) {
+/// a project's name or a credential no scrubbing would recognise. `props` must
+/// hold only fixed labels, numbers and flags for the same reason.
+pub fn error(kind: &'static str, message: &str, props: &[(&str, Value)]) {
     if !CRASHES.load(Ordering::Relaxed) {
         return;
     }
     let mut map: Map<String, Value> = props
         .iter()
-        .map(|(k, v)| (k.to_string(), Value::from(*v)))
+        .map(|(k, v)| (k.to_string(), v.clone()))
         .collect();
     map.insert("$exception_level".into(), "error".into());
     map.insert(
@@ -362,13 +364,12 @@ fn category(message: &str) -> &'static str {
         "unreachable",
     ]) {
         "network error"
-    } else if has(&[
-        "was not found on path",
-        "no such file",
-        "not found",
-        "not installed",
-    ]) {
+    // Only Arakun's own wording for a missing CLI. A bare "not found" is also in
+    // a provider's 404, a missing model, an adapter's stderr and a deleted folder.
+    } else if has(&["was not found on path", "own binary is missing"]) {
         "agent not found"
+    } else if has(&["npm was not found"]) {
+        "npm not found"
     } else if has(&["stopped responding"]) {
         "stopped responding"
     } else if has(&[" exited ("]) {
@@ -377,6 +378,9 @@ fn category(message: &str) -> &'static str {
         "initialize failed"
     } else if has(&["starting the session failed", "returned no sessionid"]) {
         "session start failed"
+    // The CLI was found but did not run: often the session's folder is gone.
+    } else if m.starts_with("starting ") {
+        "failed to start"
     } else if m.starts_with("the turn failed") {
         "turn failed"
     } else {
@@ -413,9 +417,9 @@ fn event_json(name: &str, mut props: Map<String, Value>) -> Value {
     };
     for (k, v) in [
         ("$lib", Value::from("arakun")),
-        ("$lib_version", env!("CARGO_PKG_VERSION").into()),
+        ("$lib_version", env!("ARAKUN_VERSION").into()),
         ("$app_name", "Arakun".into()),
-        ("$app_version", env!("CARGO_PKG_VERSION").into()),
+        ("$app_version", env!("ARAKUN_VERSION").into()),
         ("$os", os.into()),
         ("arch", std::env::consts::ARCH.into()),
         ("build", build.into()),
@@ -439,7 +443,7 @@ fn event_json(name: &str, mut props: Map<String, Value>) -> Value {
 }
 
 /// `unix_ms` as RFC 3339 in UTC, as PostHog's capture API takes it.
-fn timestamp(unix_ms: u64) -> String {
+pub fn timestamp(unix_ms: u64) -> String {
     let secs = (unix_ms / 1000) as i64;
     let (y, m, d) = crate::platform::civil_from_days(secs.div_euclid(86_400));
     let s = secs.rem_euclid(86_400);
@@ -548,7 +552,7 @@ fn send(batch: &[Value], agent: &ureq::Agent) {
 fn agent_with(timeout: Duration) -> ureq::Agent {
     ureq::Agent::config_builder()
         .timeout_global(Some(timeout))
-        .user_agent(concat!("arakun/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("arakun/", env!("ARAKUN_VERSION")))
         .build()
         .into()
 }
@@ -566,18 +570,18 @@ fn quick_agent() -> &'static ureq::Agent {
 
 // ---- panics -----------------------------------------------------------------
 
-fn install_panic_hook() {
-    let previous = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |info| {
-        if CRASHES.load(Ordering::Relaxed) && !SENDING.with(Cell::get) {
-            let event = panic_event(info);
-            send(&[event], quick_agent());
-        }
-        previous(info);
-    }));
+/// Sends a panic right away, from the panicking thread, if the user agreed
+/// to crash reports. `props` come from `panic_props`.
+pub fn send_panic(props: Map<String, Value>) {
+    if CRASHES.load(Ordering::Relaxed) && !SENDING.with(Cell::get) {
+        send(&[event_json("$exception", props)], quick_agent());
+    }
 }
 
-fn panic_event(info: &std::panic::PanicHookInfo<'_>) -> Value {
+/// What is known about the panic on this thread, for the crash log and for
+/// PostHog. `fatal` is false when only a thread or a task died and the app
+/// carried on (`guard`): that is an error, not a crash.
+pub fn panic_props(info: &std::panic::PanicHookInfo<'_>, fatal: bool) -> Map<String, Value> {
     let message = info
         .payload()
         .downcast_ref::<&str>()
@@ -596,17 +600,18 @@ fn panic_event(info: &std::panic::PanicHookInfo<'_>) -> Value {
     if let Some(name) = std::thread::current().name() {
         props.insert("thread".into(), name.into());
     }
-    props.insert("$exception_level".into(), "fatal".into());
+    let level = if fatal { "fatal" } else { "error" };
+    props.insert("$exception_level".into(), level.into());
     props.insert(
         "$exception_list".into(),
         json!([{
             "type": "Panic",
             "value": scrub(&message, &home),
-            "mechanism": {"type": "panic", "handled": false, "synthetic": false},
+            "mechanism": {"type": "panic", "handled": !fatal, "synthetic": false},
             "stacktrace": {"type": "raw", "frames": frames(&home)},
         }]),
     );
-    event_json("$exception", props)
+    props
 }
 
 /// The panicking thread's stack, outermost first, without this hook and the
@@ -878,8 +883,29 @@ mod tests {
                 "agent not found",
             ),
             (
+                "Claude Code's own binary is missing: /x is not there",
+                "agent not found",
+            ),
+            (
+                "npm was not found; it is needed once to install x",
+                "npm not found",
+            ),
+            (
                 "Droid exited (exit status: 1).\nat /srv/acme/x.rs",
                 "process exited",
+            ),
+            (
+                "Claude Code exited (exit status: 127).\nenv: node: No such file or directory",
+                "process exited",
+            ),
+            (
+                "starting /usr/bin/droid exec: No such file or directory (os error 2)",
+                "failed to start",
+            ),
+            ("The turn failed: model gpt-9 not found", "turn failed"),
+            (
+                "Starting the session failed: Session not found",
+                "session start failed",
             ),
             ("Codex stopped responding.", "stopped responding"),
             ("initialize failed: bad version", "initialize failed"),
@@ -928,7 +954,7 @@ mod tests {
         let stack = [
             "backtrace::backtrace::trace",
             "arakun::telemetry::frames",
-            "arakun::telemetry::install_panic_hook::{{closure}}",
+            "arakun::crash::install::{{closure}}",
             "std::panicking::rust_panic_with_hook",
             "std::sys::backtrace::__rust_end_short_backtrace",
             "rust_begin_unwind",

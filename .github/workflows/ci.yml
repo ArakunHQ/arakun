@@ -4,8 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
-  # release.yml runs these jobs before it builds, so a tag on a commit that
-  # fails them never publishes.
+  # release.yml runs these jobs next to its builds and publishes only when
+  # they pass, so a tag on a commit that fails them never publishes.
   workflow_call:
 
 # github.workflow is the caller's name when release.yml calls this file, so
@@ -179,14 +179,28 @@ jobs:
 
       - uses: $/.github/actions/gpui-libs
 
+      # Clippy needs only the build-time SDK that tools/install-cef.sh makes
+      # (headers and a stub libcef.so, a few MB). Unpacking the 330 MB archive
+      # for it took 27-36 s a run. Like the Rust cache, only main saves it: any
+      # branch could save an entry under this key, and a cache hit skips the
+      # SHA-1 check below.
+      - name: Restore the CEF SDK
+        id: cef-sdk
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/cef/sdk
+          key: cef-sdk-${{ env.CEF_ARCHIVE }}-${{ hashFiles('tools/install-cef.sh') }}
+
       # 330 MB that never changes for a given version.
       - name: Cache the CEF archive
+        if: steps.cef-sdk.outputs.cache-hit != 'true'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/cef-archive
           key: ${{ env.CEF_ARCHIVE }}
 
       - name: Prepare CEF
+        if: steps.cef-sdk.outputs.cache-hit != 'true'
         run: |
           archive="$RUNNER_TEMP/cef-archive/$CEF_ARCHIVE"
           if [ ! -f "$archive" ]; then
@@ -198,6 +212,18 @@ jobs:
           mkdir -p "$RUNNER_TEMP/cef-dist"
           tar -xjf "$archive" -C "$RUNNER_TEMP/cef-dist" --strip-components=1
           tools/install-cef.sh "$RUNNER_TEMP/cef-dist" "$RUNNER_TEMP/cef"
+
+      - name: Save the CEF SDK
+        if: steps.cef-sdk.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/cef/sdk
+          key: ${{ steps.cef-sdk.outputs.cache-primary-key }}
+
+      # install-cef.sh makes this link, but not on a cache hit. CEF_PATH in
+      # .cargo/config.toml points at it.
+      - name: Link the CEF SDK
+        run: ln -sfn "$RUNNER_TEMP/cef/sdk" .cef-sdk
 
       # The version and components in rust-toolchain.toml. Runner images ship rustup.
       - name: Rust toolchain
@@ -248,11 +274,14 @@ jobs:
   # really needs no desktop library. So this job installs none of them, builds it
   # alone, as someone setting up a server would, and reads what the binary needs.
   # Built together with the app it would get the app's GPUI, display code and all.
+  # 2 CPUs, not the other Linux Rust jobs' 4: on 4 they were 29% busy and never
+  # 90%+, and it finishes well before Clippy (Windows) anyway (runner sizing,
+  # #428).
   server:
     name: Server (Linux, no display libraries)
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.rust != 'false' }}
-    runs-on: depot-ubuntu-24.04-4
+    runs-on: depot-ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -324,13 +353,29 @@ jobs:
   # macOS builds other code (cfg(target_os = "macos"), no /proc, BSD tools), so
   # Linux passing says little about it. No runner-usage step: it supports only
   # Linux and Windows, and Depot's macOS runners come in one size (8 CPUs).
-  clippy-macos:
-    name: Clippy (macOS)
+  #
+  # Clippy and the tests share one job because Depot has few macOS machines. On
+  # 18 Nov 2026 the macOS jobs waited a median of 4 and up to 100 minutes for
+  # one, while each ran in 1-3 minutes; one job asks for half as many machines.
+  #
+  # On GitHub's runners for now: on 19 Nov 2026 Depot's macOS runners took no
+  # job for hours and held up a release. Free here, as the repository is public.
+  macos:
+    name: Clippy and tests (macOS, no browser)
     needs: changes
     permissions:
       contents: read
     if: ${{ !cancelled() && needs.changes.outputs.rust != 'false' }}
-    runs-on: depot-macos-latest
+    runs-on: macos-latest
+    # Several merges in a row queued a macOS job for every commit on main. Here
+    # one runs and only the newest waits; GitHub cancels the older waiting ones.
+    # The newest tests what they changed too, and saves the cache. Every other
+    # run gets a group per run, so it never cancels or is cancelled here: pull
+    # requests, tags, and release.yml's nightlies, which run on main but by
+    # schedule or by hand and fail if this job is cancelled.
+    concurrency:
+      group: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'ci-macos-main' || format('ci-macos-{0}', github.run_id) }}
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -342,34 +387,15 @@ jobs:
 
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          shared-key: clippy-macos
+          shared-key: macos
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: cargo clippy
         run: cargo clippy --locked --all-targets --no-default-features --config "$CI_CARGO_CONFIG" -- -D warnings
 
-  test-macos:
-    name: Tests (macOS, no browser)
-    needs: changes
-    permissions:
-      contents: read
-    if: ${{ !cancelled() && needs.changes.outputs.rust != 'false' }}
-    runs-on: depot-macos-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      # The version and components in rust-toolchain.toml. Runner images ship rustup.
-      - name: Rust toolchain
-        run: rustup toolchain install --no-self-update
-
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        with:
-          shared-key: test-macos
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-
+      # Also after a Clippy warning, so one push shows both results.
       - name: cargo test
+        if: ${{ !cancelled() }}
         run: cargo test --locked --no-default-features --config "$CI_CARGO_CONFIG"
 
   # The phone relay (Cloudflare Worker) is TypeScript apart from the app; its

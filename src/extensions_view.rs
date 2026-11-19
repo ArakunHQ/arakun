@@ -31,8 +31,10 @@ use crate::ui::Typography as _;
 use crate::ui::{self, ButtonKind, Tone, Type, icon};
 
 mod market;
+mod remote;
 
 use market::{Market, MarketState};
+pub use remote::ServerTarget;
 
 /// Reopening the tab rereads what is older than this.
 const STALE: Duration = Duration::from_secs(5 * 60);
@@ -50,6 +52,11 @@ pub enum ExtensionsEvent {
     Open(PathBuf),
     /// An extension was turned on or off: the sidebar shows it, or not.
     Toggled(View, bool),
+    /// Connect to the paired servers, if that has not happened yet: Discover
+    /// is about to install on one.
+    ConnectServers,
+    /// A message for the paired server with this id (the phone's `ClientMsg`).
+    Server(String, serde_json::Value),
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -231,6 +238,8 @@ pub struct ExtensionsView {
 
     /// The extensions turned on, which the sidebar shows.
     views: sidebar::Extensions,
+    /// Where Discover installs, and what the paired servers said they hold.
+    targets: remote::Targets,
 }
 
 impl EventEmitter<ExtensionsEvent> for ExtensionsView {}
@@ -302,6 +311,7 @@ impl ExtensionsView {
             _plugins_task: None,
             _query: sub,
             views,
+            targets: remote::Targets::default(),
         }
     }
 
@@ -315,7 +325,8 @@ impl ExtensionsView {
         self.set_kind(Kind::Arakun, cx);
     }
 
-    fn set_view(&mut self, view: View, on: bool, cx: &mut Context<Self>) {
+    /// Turns an extension tab on or off, as its switch here does.
+    pub fn set_view(&mut self, view: View, on: bool, cx: &mut Context<Self>) {
         if self.views.set(view, on) {
             self.views.save();
             cx.emit(ExtensionsEvent::Toggled(view, on));
@@ -366,6 +377,9 @@ impl ExtensionsView {
     }
 
     fn refresh(&mut self, cx: &mut Context<Self>) {
+        if self.which == Which::Claude && self.kind == Kind::Marketplace {
+            self.ask_remote(true, cx);
+        }
         match self.which {
             Which::Claude => self.load_claude(cx),
             Which::Droid => self.load_droid(cx),
@@ -384,7 +398,9 @@ impl ExtensionsView {
             if first {
                 let dir = cwd.clone();
                 let quick = cx
-                    .background_spawn(async move { claude_ext::load_quick(&dir) })
+                    .background_spawn(crate::guard::task_or_default(async move {
+                        claude_ext::load_quick(&dir)
+                    }))
                     .await;
                 let ok = this.update(cx, |this, cx| {
                     if this.cwd.as_ref() == Some(&cwd) && this.claude.is_none() {
@@ -398,7 +414,9 @@ impl ExtensionsView {
             }
             let dir = cwd.clone();
             let found = cx
-                .background_spawn(async move { claude_ext::load(&dir) })
+                .background_spawn(crate::guard::task_or_default(async move {
+                    claude_ext::load(&dir)
+                }))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 if this.cwd.as_ref() != Some(&cwd) {
@@ -419,7 +437,9 @@ impl ExtensionsView {
         cx.spawn(async move |this, cx| {
             let dir = cwd.clone();
             let mut quick = cx
-                .background_spawn(async move { claude_ext::load_quick(&dir) })
+                .background_spawn(crate::guard::task_or_default(async move {
+                    claude_ext::load_quick(&dir)
+                }))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 if this.cwd.as_ref() != Some(&cwd) {
@@ -442,7 +462,9 @@ impl ExtensionsView {
         self.error = None;
         cx.spawn(async move |this, cx| {
             let result = cx
-                .background_spawn(async move { claude_ext::set_plugin(&cwd, &id, enabled) })
+                .background_spawn(crate::guard::task(async move {
+                    claude_ext::set_plugin(&cwd, &id, enabled)
+                }))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.plugin_busy = None;
@@ -477,7 +499,9 @@ impl ExtensionsView {
         self.notice = None;
         self.confirm_remove = None;
         cx.spawn(async move |this, cx| {
-            let result = cx.background_spawn(async move { job() }).await;
+            let result = cx
+                .background_spawn(crate::guard::task(async move { job() }))
+                .await;
             let _ = this.update(cx, |this, cx| {
                 this.op = None;
                 match result {
@@ -606,7 +630,11 @@ impl ExtensionsView {
         }
         self.run_droid(None, move || extensions::load(&cwd), cx);
         self._plugins_task = Some(cx.spawn(async move |this, cx| {
-            let found = cx.background_spawn(async move { plugins::load() }).await;
+            let found = cx
+                .background_spawn(crate::guard::task_or_default(
+                    async move { plugins::load() },
+                ))
+                .await;
             let _ = this.update(cx, |this, cx| {
                 this.plugins = Some(found);
                 cx.notify();
@@ -623,7 +651,9 @@ impl ExtensionsView {
         self.droid_busy = busy;
         self.droid_error = None;
         self._droid_task = Some(cx.spawn(async move |this, cx| {
-            let result = cx.background_spawn(async move { job() }).await;
+            let result = cx
+                .background_spawn(crate::guard::task(async move { job() }))
+                .await;
             let _ = this.update(cx, |this, cx| {
                 this.droid_busy = None;
                 this._droid_task = None;
@@ -2593,6 +2623,7 @@ impl ExtensionsView {
             );
 
         if which == Which::Claude {
+            nav = nav.children(self.render_targets(cx));
             nav = nav.child(nav_heading("Discover", false));
             for (i, (m, label, icon_name)) in [
                 (Market::Plugins, "Plugins", "cube"),

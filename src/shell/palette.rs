@@ -93,6 +93,8 @@ impl Shell {
         self.read_repo_slugs(cx);
         let seed = self.palette_seed(cx);
         let palette = cx.new(|cx| Palette::new(seed, window, cx));
+        // The palette reads its pins, to-dos and frecency as it opens.
+        self.report_unreadable(cx);
         let sub = cx.subscribe_in(&palette, window, Self::on_palette_event);
         // What GitHub brings in while it is open shows up in it.
         let weak = palette.downgrade();
@@ -125,14 +127,14 @@ impl Shell {
         dirs.dedup();
         self.repo_slugs_read = Some(cx.spawn(async move |this, cx| {
             let read = cx
-                .background_spawn(async move {
+                .background_spawn(crate::guard::task_or_default(async move {
                     dirs.into_iter()
                         .map(|d| {
                             let slug = repo_slug(&d);
                             (d, slug)
                         })
                         .collect::<std::collections::HashMap<_, _>>()
-                })
+                }))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 if this.repo_slugs == read {
@@ -327,9 +329,9 @@ impl Shell {
                             "its latest commit isn't loaded yet; open it in the GitHub tab".into(),
                         ))
                     } else {
-                        cx.background_spawn(async move {
+                        cx.background_spawn(crate::guard::task(async move {
                             pr::merge(&it, pr::MergeMethod::Squash, &head)
-                        })
+                        }))
                         .await
                     };
                     let (text, ok) = match result {
@@ -356,11 +358,11 @@ impl Shell {
                 cx.spawn_in(window, async move |this, cx| {
                     // Read again: the admin token is only taken when a task goes.
                     let result = cx
-                        .background_spawn(async move {
+                        .background_spawn(crate::guard::task(async move {
                             let cfg = pilot::load_config()
                                 .ok_or("couldn't find arakun-pilot's client.json")?;
                             pilot::send_task(&cfg, &req)
-                        })
+                        }))
                         .await;
                     let shown = weak
                         .update_in(cx, |p, window, cx| p.cloud_sent(result.clone(), window, cx));
@@ -542,7 +544,7 @@ impl Shell {
         self.palette_github(cx, &mut items);
         self.palette_runs(cx, &mut items);
         self.palette_places(cx, &mut items);
-        self.palette_views(&mut items);
+        self.palette_views(&mut items, cx);
         self.palette_commands(&mut items, cx);
         self.palette_settings(&mut items);
         // CoderSpace tasks waiting on the person, as the old switcher listed them.
@@ -1084,9 +1086,14 @@ impl Shell {
         }
     }
 
-    fn palette_views(&self, items: &mut Vec<Item>) {
+    fn palette_views(&self, items: &mut Vec<Item>, cx: &App) {
         let has = self.has_projects();
         for &v in View::ALL {
+            // The Marketplace switch decides for the palette too, so the two
+            // never disagree on which tabs there are.
+            if !self.rail_shows(&crate::sidebar::Piece::view(v), cx) {
+                continue;
+            }
             let target = match v {
                 View::Inbox => continue,
                 View::Runs => Target::Runs,
@@ -1207,14 +1214,14 @@ impl Shell {
                 "sidebar-left",
                 "Toggle sidebar",
                 &["Ctrl", "B"],
-                "Hides the sidebar and the workspace panel, or brings them back.",
+                "Shows or hides the sidebar. The workspace panel has its own toggle.",
                 Target::ToggleSidebar,
             );
             add(
                 "toggle-panel",
                 "layout-align-right",
                 "Toggle workspace panel",
-                &[],
+                &["Ctrl", "Alt", "B"],
                 "Sessions, files and changes of the environment.",
                 Target::TogglePanel,
             );
@@ -1222,7 +1229,7 @@ impl Shell {
                 "toggle-subagents",
                 "bot",
                 "Toggle subagents panel",
-                &[],
+                &["Ctrl", "Alt", "S"],
                 "What the agent's helpers are doing.",
                 Target::ToggleSubagents,
             );
@@ -1318,6 +1325,14 @@ impl Shell {
             "Opens a terminal with Codex's ChatGPT login.",
             Target::SignIn(crate::agent::AgentKind::Codex),
         );
+        add(
+            "signin-devin",
+            "square-lock02",
+            "Sign in to Devin",
+            &[],
+            "Opens a terminal with Devin's login.",
+            Target::SignIn(crate::agent::AgentKind::Devin),
+        );
         // The settings pilot read last (every minute, off this thread's
         // drawing): the palette never waits on the disk.
         items.extend(cloud_command(self.pilot.read(cx).config()));
@@ -1364,7 +1379,7 @@ impl Shell {
                 Setting::Sidebar,
                 "Sidebar",
                 "Layout",
-                "The rail at the left.",
+                "Projects and views, at the side of the window.",
                 self.rail_open,
             ),
             (
@@ -1432,7 +1447,7 @@ impl Shell {
             Target::AddProject => self.open_picker(window, cx),
             Target::Onboarding => self.start_onboarding(window, cx),
             Target::ToggleDock => self.toggle_dock(window, cx),
-            Target::ToggleSidebar => self.toggle_sidebar(cx),
+            Target::ToggleSidebar => self.toggle_rail(cx),
             Target::TogglePanel => self.toggle_panel(cx),
             Target::ToggleSubagents => self.toggle_subagents(cx),
             Target::Account => self.open_account(window, cx),
@@ -1811,7 +1826,9 @@ impl Shell {
                                 };
                                 let it = item.clone();
                                 let sent = cx
-                                    .background_spawn(async move { pr::merge(&it, method, &head) })
+                                    .background_spawn(crate::guard::task(async move {
+                                        pr::merge(&it, method, &head)
+                                    }))
                                     .await;
                                 // A merge that GitHub refused was already told.
                                 this.update(cx, |this, cx| {

@@ -47,8 +47,8 @@ always checks the signature.
   SDK: gpui compiles its HLSL shaders with it. If it is not found automatically, point
   `GPUI_FXC_PATH` at `C:\Program Files (x86)\Windows Kits\10\bin\<version>\x64\fxc.exe`.
 - **Git for Windows**: the Changes panel, worktrees and the CI graph use `git`.
-- For the agents: **Node.js** (with `npm`) for the Claude Code and Codex adapters, and Factory's
-  `droid` CLI for Droid. `gh` if you want the CI panel.
+- For the agents: **Node.js** (with `npm`) for the Claude Code and Codex adapters, Factory's
+  `droid` CLI for Droid, and the Devin CLI for Devin. `gh` if you want the CI panel.
 - For browser tabs: **CMake** and **Ninja**. They come with the *C++ CMake tools for
   Windows* component of Visual Studio Build Tools (selected by default in *Desktop
   development with C++*) and are on the `PATH` of the Developer PowerShell.
@@ -122,13 +122,17 @@ start `arakun-server serve` from Task Scheduler, with the trigger "At log on".
 | That the first-launch setup was done | `%LOCALAPPDATA%\arakun\state.onboarding.json` |
 | Agent adapters (npm) | `%LOCALAPPDATA%\arakun\agents\` |
 | Log (when started without a terminal) | `%LOCALAPPDATA%\arakun\arakun.log` |
+| Agent logs and the usage log, each with one older copy once full | `%LOCALAPPDATA%\arakun\agents\<agent>.log` and `<agent>.old.log`; `%LOCALAPPDATA%\arakun\usage.jsonl` and `usage.old.jsonl` (or the file `ARAKUN_USAGE_LOG` names and its `.old` copy) |
+| Sessions the startup clean-up has seen listed | `%LOCALAPPDATA%\arakun\state.json.seen`; with `ARAKUN_STATE` set, `<state file>.seen` next to it |
 | Branch naming agent and model (Settings › Branches) | `%LOCALAPPDATA%\arakun\branch-namer.json` |
 | Where links open (Settings › General) | `%LOCALAPPDATA%\arakun\open-links` |
 | Settle threads after merge (Settings › Branches), and the merges settled | `%LOCALAPPDATA%\arakun\settle-after-merge`; by default `%LOCALAPPDATA%\arakun\settled.json`, with `ARAKUN_STATE` set `settled.json` next to that state file |
+| Remove old environments (Settings › Branches) | `%LOCALAPPDATA%\arakun\env-cleanup` |
 | Control socket | `%LOCALAPPDATA%\arakun\control.sock` |
 | Lock held by the running Arakun (a second `arakun` hands off to it and exits) | `%LOCALAPPDATA%\arakun\state.json.lock`; with `ARAKUN_STATE` set, `<that file>.lock` next to it |
 | `arakun server`: its settings, sessions and socket | `%LOCALAPPDATA%\arakun\server\` |
 | Servers the app is paired with (Servers tab) | `%LOCALAPPDATA%\arakun\servers.json` |
+| What each paired server listed last | `%LOCALAPPDATA%\arakun\servers-inbox.json` |
 | `arakun.exe` for the command line | `%LOCALAPPDATA%\arakun\bin\arakun.exe` |
 | Factory sessions | Credential Manager, as `arakun:<account>` |
 | GitHub tab settings, review drafts | `%LOCALAPPDATA%\arakun\github.json`, `%LOCALAPPDATA%\arakun\github\drafts\` |
@@ -138,7 +142,7 @@ start `arakun-server serve` from Task Scheduler, with the trigger "At log on".
 | CLIProxyAPI management key and its accounts' last limits (Usage tab) | `cliproxy-management-key`, `cliproxy-plan.json` in `%LOCALAPPDATA%\arakun\` |
 | Crash reports and usage counts: the random install id, and your answer (Settings › Privacy) | `telemetry-id`, `telemetry.json` in `%LOCALAPPDATA%\arakun\` |
 | Redacted mode, while it is on (Settings › Privacy) | `redacted` in `%LOCALAPPDATA%\arakun\` |
-| Updates: the version waiting, the lock, the switch while it is off, the download (Settings › General) | `update.json`, `update.lock`, `no-auto-update`, `update-download\` in `%LOCALAPPDATA%\arakun\` |
+| Updates: the version waiting, the lock, the switch while it is off, the download (Settings › General) | `update.json`, `update.lock`, `no-auto-update`, `update-channel`, `update-channel.lock`, `update-download\` in `%LOCALAPPDATA%\arakun\` |
 | A downloaded update, until Arakun quits | `.arakun.exe.update` next to `arakun.exe` |
 
 On Linux those sessions live in the keyring (`secret-tool`); on Windows, in the Credential
@@ -209,13 +213,46 @@ Manager (Windows Credentials, Generic Credentials).
 - **Opening external files and links:** with the Windows default program.
 - **Updates:** a release build downloads a new release as `.arakun.exe.update` next to
   `arakun.exe`. Windows does not let a running `.exe` be replaced, so when Arakun quits
-  it renames `arakun.exe` to `.arakun.exe.old` and puts the new one in its place. The
-  next start deletes the old one. Settings has no **Restart now** button on Windows:
-  quit Arakun and open it again. Not tested on real Windows yet.
+  it renames `arakun.exe` to `.arakun.exe.old` and puts the new one in its place. Then
+  it restarts the Dynamic Island with the new version. A later start deletes the old
+  file once nothing runs it; an old file still in use is moved aside, with a number
+  after its name, and deleted the same way. Settings has no **Restart now** button on
+  Windows: quit Arakun and open it again. Not tested on real Windows yet.
+- **Dynamic Island:** an always-on-top window at the top center of the main display's
+  work area, where Linux uses a layer-shell surface. Clicks around its shape reach the
+  windows below, and clicking it never takes the focus from the window you type in.
+  Arakun starts `arakun island-host` when it opens, and the island stays up after
+  Arakun closes. Its socket is `island.sock` in `%LOCALAPPDATA%\arakun`, next to
+  `control.sock`, and `arakun island …` works as on Linux. It shows no headless agents,
+  since they don't run on Windows, and no notifications from other apps. After a
+  change of the display's scale in Settings, the island keeps its old size until it
+  restarts: Windows doesn't tell it about the change.
+- **Agents outside Arakun on the island (Windows only for now):** Claude Code running
+  in another terminal or an editor can show on the island through its hooks.
+  `arakun island hook` reads the JSON a hook gets on stdin. It lists the session while
+  it works, and shows a card when it waits for you or finishes. It never fails the
+  hook, even when the island is not running. Add this to `~\.claude\settings.json`,
+  with your own path to `arakun.exe`:
+
+  ```json
+  {
+    "hooks": {
+      "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "\"C:/Users/<you>/AppData/Local/arakun/bin/arakun.exe\" island hook" }] }],
+      "PostToolUse": [{ "hooks": [{ "type": "command", "command": "\"C:/Users/<you>/AppData/Local/arakun/bin/arakun.exe\" island hook" }] }],
+      "Notification": [{ "hooks": [{ "type": "command", "command": "\"C:/Users/<you>/AppData/Local/arakun/bin/arakun.exe\" island hook" }] }],
+      "Stop": [{ "hooks": [{ "type": "command", "command": "\"C:/Users/<you>/AppData/Local/arakun/bin/arakun.exe\" island hook" }] }],
+      "SessionEnd": [{ "hooks": [{ "type": "command", "command": "\"C:/Users/<you>/AppData/Local/arakun/bin/arakun.exe\" island hook" }] }]
+    }
+  }
+  ```
+
+  `arakun island hook <name>` shows another name than "Claude Code". Any other agent
+  can tell the island by hand:
+  `arakun island session <id> <working|waiting|done|error|ended> [project] [doing]`.
+  "Ver" on such a card only puts it away, since Arakun has nothing to open for it.
 
 ## Not available on Windows
 
-- **Dynamic Island:** it runs on Linux (a Wayland layer shell) and on macOS only.
 - **Headless agents (`arakun agent run`):** their sandbox is bubblewrap, which is
   Linux-only.
 - **`arakun dev`** (the test instance in Xvfb) and the **Claude SEO** installer in the
@@ -244,6 +281,10 @@ Manager (Windows Credentials, Generic Credentials).
 - **The window does not open or closes by itself:** start it from a terminal with
   `$env:RUST_BACKTRACE = 1; target\release\arakun.exe` and read the output, or check
   `%LOCALAPPDATA%\arakun\arakun.log`.
+- **`could not open its window` with Direct3D in the error:** no graphics device could
+  be used. Started from the Start menu or Explorer, this shows as a notification too, and
+  the whole error is in `arakun.log`. Update the graphics driver, or turn on 3D acceleration in a VM. If the error
+  names DirectComposition, set `GPUI_DISABLE_DIRECT_COMPOSITION=1`.
 - **The build fails on a C dependency:** the MSVC environment is missing (see above).
 - **`Failed to find fxc.exe`:** the Windows SDK is missing, or set `GPUI_FXC_PATH`.
 - **The build fails in `cef-dll-sys`:** CMake or Ninja is missing (see above), or CEF

@@ -72,6 +72,84 @@ fn write_in(path: &Path, bytes: &[u8], make_dir: bool, private: bool) -> io::Res
     Ok(())
 }
 
+/// `write` on a background thread, for saves made on the UI thread, where the
+/// disk flushes would stall the window (a settings switch, a field saved on
+/// every key). One thread writes them in the order they came, so the file ends
+/// with the last one. A failure is logged after `what`.
+#[allow(dead_code)] // most examples that include this file write nothing
+pub fn write_soon(path: std::path::PathBuf, bytes: Vec<u8>, what: &'static str) {
+    let save = Soon::Write(path, bytes, what);
+    if let Err(std::sync::mpsc::SendError(Soon::Write(path, bytes, what))) = soon().send(save) {
+        write_logged(&path, &bytes, what);
+    }
+}
+
+/// Waits until every `write_soon` so far is on disk (before quitting).
+#[allow(dead_code)] // the examples that include this file don't quit through it
+pub fn flush() {
+    let (done, wait) = std::sync::mpsc::channel();
+    if soon().send(Soon::Flush(done)).is_ok() {
+        let _ = wait.recv();
+    }
+}
+
+enum Soon {
+    Write(std::path::PathBuf, Vec<u8>, &'static str),
+    Flush(std::sync::mpsc::Sender<()>),
+}
+
+fn soon() -> &'static std::sync::mpsc::Sender<Soon> {
+    static WRITER: std::sync::OnceLock<std::sync::mpsc::Sender<Soon>> = std::sync::OnceLock::new();
+    WRITER.get_or_init(|| {
+        let (tx, rx) = std::sync::mpsc::channel::<Soon>();
+        let spawned = std::thread::Builder::new()
+            .name("durable-writer".into())
+            .spawn(move || {
+                while let Ok(first) = rx.recv() {
+                    let mut batch = vec![first];
+                    batch.extend(rx.try_iter());
+                    write_batch(batch);
+                }
+            });
+        if let Err(e) = spawned {
+            // The receiver is gone with the closure: sends fail, and
+            // `write_soon` writes on the spot.
+            eprintln!("arakun: could not start the file writer: {e}");
+        }
+        tx
+    })
+}
+
+/// Writes only the last of the queued saves to each file, since each one
+/// replaces the whole file: a field saved on every key leaves no backlog for
+/// the quit to wait on. Flushes are answered after, when what they waited for
+/// (or something newer) is on disk.
+fn write_batch(batch: Vec<Soon>) {
+    let mut writes: Vec<(std::path::PathBuf, Vec<u8>, &'static str)> = Vec::new();
+    let mut flushes = Vec::new();
+    for save in batch {
+        match save {
+            Soon::Write(path, bytes, what) => {
+                writes.retain(|(p, ..)| *p != path);
+                writes.push((path, bytes, what));
+            }
+            Soon::Flush(done) => flushes.push(done),
+        }
+    }
+    for (path, bytes, what) in writes {
+        write_logged(&path, &bytes, what);
+    }
+    for done in flushes {
+        let _ = done.send(());
+    }
+}
+
+fn write_logged(path: &Path, bytes: &[u8], what: &str) {
+    if let Err(e) = write(path, bytes) {
+        eprintln!("arakun: {what}: {e}");
+    }
+}
+
 /// How many taken temp names `create_temp` skips before it gives up.
 const TEMP_TRIES: u32 = 64;
 
@@ -199,6 +277,37 @@ mod tests {
         assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
         assert!(!err.to_string().contains("4f9c2e"), "{err}");
         assert_eq!(std::fs::read(&planted).unwrap(), b"x");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn writes_soon_in_order_and_flushes() {
+        let dir = scratch("soon");
+        let path = dir.join("settle-after-merge");
+        for n in 0..50 {
+            super::write_soon(path.clone(), format!("{n}").into_bytes(), "test");
+        }
+        super::flush();
+        assert_eq!(std::fs::read(&path).unwrap(), b"49");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_batch_writes_each_file_once_with_its_last_save() {
+        let dir = scratch("batch");
+        std::fs::create_dir_all(&dir).unwrap();
+        let (a, b) = (dir.join("a"), dir.join("b"));
+        let (done, wait) = std::sync::mpsc::channel();
+        super::write_batch(vec![
+            super::Soon::Write(a.clone(), b"a1".to_vec(), "test"),
+            super::Soon::Write(b.clone(), b"b1".to_vec(), "test"),
+            super::Soon::Flush(done),
+            super::Soon::Write(a.clone(), b"a2".to_vec(), "test"),
+        ]);
+        assert!(wait.try_recv().is_ok(), "the flush is answered");
+        assert_eq!(std::fs::read(&a).unwrap(), b"a2");
+        assert_eq!(std::fs::read(&b).unwrap(), b"b1");
+        assert_eq!(entries(&dir), ["a", "b"]);
         let _ = std::fs::remove_dir_all(dir);
     }
 

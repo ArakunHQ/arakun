@@ -1890,6 +1890,7 @@ const AGENTS = [
   ["droid", "Droid"],
   ["opencode", "OpenCode"],
   ["codex", "Codex"],
+  ["devin", "Devin"],
 ];
 
 // The New session form starts on the place used last, with the agent that place picks.
@@ -2279,6 +2280,7 @@ function renderSession() {
     <div id="ask"></div>
     <div class="stoprow" id="stoprow" hidden></div>
     <div id="shots" hidden></div>
+    <div class="cuts" id="cuts" hidden></div>
     <form class="composer" id="composer">
       <textarea id="draft" rows="1" placeholder="Message ${esc(s.agent || "the agent")}…"></textarea>
       <div class="cbar">
@@ -2327,6 +2329,7 @@ function renderSession() {
     grow();
     renderComposer();
   });
+  wireCuts(draft, log);
   // The keyboard's return key writes a new line: a prompt often has several, and
   // a half-written one sent by accident sets the agent to work. Only the button
   // sends, and sending puts the keyboard away so the reply has the screen.
@@ -2390,7 +2393,8 @@ function keepDraft(id, text) {
   }
 }
 
-function submit() {
+// `now` stops a running turn for this prompt instead of queueing it behind.
+function submit(now = false) {
   const s = state.session;
   if (!s) return;
   const text = state.draft.trim();
@@ -2404,6 +2408,7 @@ function submit() {
     return;
   }
   const msg = { type: "send", session: s.id, text };
+  if (now) msg.now = true;
   if (shots.length) {
     msg.uploads = shots.map((sh, i) => {
       const id = `${Date.now()}-${i}-${Math.random().toString(36).slice(2, 7)}`;
@@ -2482,6 +2487,7 @@ function renderPending() {
 }
 
 // Stopping takes two taps a few seconds apart: a thumb brushes the screen too easily.
+// With something written, Stop stops the turn and sends it.
 const STOP_WINDOW = 3000;
 let stopTimer;
 function stopTapped() {
@@ -2491,8 +2497,12 @@ function stopTapped() {
     state.stopArmed = 0;
     clearTimeout(stopTimer);
     if (!stillLinked()) return;
-    send({ type: "cancel", session: s.id });
-    toast("Stopping…");
+    if (hasDraft()) {
+      submit(true);
+    } else {
+      send({ type: "cancel", session: s.id });
+      toast("Stopping…");
+    }
   } else {
     state.stopArmed = Date.now();
     clearTimeout(stopTimer);
@@ -2502,6 +2512,10 @@ function stopTapped() {
     }, STOP_WINDOW);
   }
   renderStopRow();
+}
+
+function hasDraft() {
+  return state.draft.trim().length > 0 || state.shots.length > 0;
 }
 
 // mm:ss, hours when it comes to that.
@@ -2537,8 +2551,11 @@ function renderStopRow() {
   if (ms != null) bits.push(fmtClock(ms));
   if (s.usage && s.usage.summary) bits.push(s.usage.summary);
   const armed = state.stopArmed && Date.now() - state.stopArmed < STOP_WINDOW;
+  const [word, again, hint] = hasDraft()
+    ? ["Stop and send", "Send now?", "Tap again to stop and send"]
+    : ["Stop", "Stop?", "Tap again to stop"];
   row.innerHTML = `<span class="live" id="live">${esc(bits.join(" · ")) || "Working…"}</span>
-    <button class="btn danger small${armed ? " armed" : ""}" id="stop" aria-label="${armed ? "Tap again to stop" : "Stop"}">${ICONS.stop}<span>${armed ? "Stop?" : "Stop"}</span></button>`;
+    <button class="btn danger small${armed ? " armed" : ""}" id="stop" aria-label="${armed ? hint : word}">${ICONS.stop}<span>${armed ? again : word}</span></button>`;
 }
 
 function syncHeader() {
@@ -2667,9 +2684,12 @@ function renderSheet() {
   if (!sh) {
     el.innerHTML = "";
     el.hidden = true;
+    renderCuts();
     return;
   }
   el.hidden = false;
+  if (sh.kind === "cuts") return renderCutsSheet(el);
+  if (sh.kind === "cut") return renderCutSheet(el, sh);
   if (sh.kind === "settings") {
     const list = sh.settings;
     const body = !list
@@ -3064,6 +3084,300 @@ function renderComposer() {
   if (!go || !s) return;
   go.disabled = state.draft.trim().length === 0 && !state.shots.length;
   renderStopRow();
+  renderCuts();
+}
+
+// ---- shortcuts --------------------------------------------------------------
+// Phrases kept on this phone, to send without typing them again. One either
+// fills the box (shown while writing) or sends at once (shown while the agent
+// waits). The order is the user's own: a finger learns where each one sits.
+const CUTS_KEY = "arakun.shortcuts";
+// Where a number goes each time the shortcut is used.
+const BLANK = "{number}";
+const CUT_SHORT = 24;
+
+function loadCuts() {
+  try {
+    const v = JSON.parse(localStorage.getItem(CUTS_KEY) || "[]");
+    return Array.isArray(v) ? v.filter((c) => c && c.id && typeof c.text === "string" && c.text) : [];
+  } catch (e) {
+    return [];
+  }
+}
+
+function storeCuts(cuts) {
+  try {
+    localStorage.setItem(CUTS_KEY, JSON.stringify(cuts));
+    return true;
+  } catch (e) {
+    toast("Could not save the shortcut");
+    return false;
+  }
+}
+
+// A blank has to be filled first, so that one never sends on a tap.
+function cutSends(c) {
+  return !!c.send && !c.text.includes(BLANK);
+}
+
+function cutName(text) {
+  const t = text.replace(BLANK, "…").replace(/\s+/g, " ").trim();
+  return t.length > 28 ? `${t.slice(0, 27).trimEnd()}…` : t;
+}
+
+function renderCuts() {
+  const row = document.getElementById("cuts");
+  const draft = document.getElementById("draft");
+  const s = state.session;
+  if (!row || !draft || !s) return;
+  const writing = document.activeElement === draft;
+  const waiting = s.status !== "working" && !state.draft.trim() && !state.shots.length;
+  if (!writing && !waiting) {
+    row.hidden = true;
+    return;
+  }
+  const cuts = loadCuts();
+  const shown = cuts.filter((c) => cutSends(c) === !writing);
+  const html =
+    shown
+      .map((c) => `<button type="button" class="chip${writing ? "" : " go"}" data-cut="${esc(c.id)}">${esc(c.name || cutName(c.text))}</button>`)
+      .join("") +
+    `<button type="button" class="chip more" data-cuts="1" aria-label="Shortcuts">${ICONS.plus}${shown.length ? "" : "<span>Shortcuts</span>"}</button>`;
+  // Typing redraws the composer on every key: the row is left alone unless it changed.
+  if (row.dataset.html !== html) {
+    row.dataset.html = html;
+    row.innerHTML = html;
+  }
+  row.hidden = false;
+}
+
+function useCut(id) {
+  const s = state.session;
+  const draft = document.getElementById("draft");
+  const cuts = loadCuts();
+  const c = cuts.find((x) => x.id === id);
+  if (!s || !draft || !c) return;
+  c.n = (c.n || 0) + 1;
+  storeCuts(cuts);
+  if (cutSends(c)) {
+    state.draft = c.text;
+    submit();
+    return;
+  }
+  const at = c.text.indexOf(BLANK);
+  const before = draft.value && !/\s$/.test(draft.value) ? `${draft.value} ` : draft.value;
+  const numeric = at >= 0;
+  // The keyboard only changes kind when the field is focused again.
+  if (numeric !== (draft.inputMode === "numeric")) {
+    state.cutSwitch = true;
+    draft.blur();
+    draft.inputMode = numeric ? "numeric" : "text";
+    state.cutSwitch = false;
+  }
+  draft.value = before + c.text.replace(BLANK, "");
+  draft.focus();
+  const pos = numeric ? before.length + at : draft.value.length;
+  draft.setSelectionRange(pos, pos);
+  draft.dispatchEvent(new Event("input"));
+}
+
+function wireCuts(draft, log) {
+  const row = document.getElementById("cuts");
+  // A tap on the row must not take the keyboard down.
+  row.addEventListener("mousedown", (ev) => ev.preventDefault());
+  row.addEventListener("click", (ev) => {
+    const chip = ev.target.closest("button");
+    if (!chip) return;
+    if (chip.dataset.cuts) openCuts();
+    else useCut(chip.dataset.cut);
+  });
+  draft.addEventListener("focus", renderCuts);
+  draft.addEventListener("blur", () => {
+    if (state.cutSwitch) return;
+    draft.inputMode = "text";
+    // After the tap that took the focus has landed on its button.
+    setTimeout(renderCuts, 200);
+  });
+  // Holding a message of yours offers to keep it.
+  let hold;
+  const drop = () => clearTimeout(hold);
+  log.addEventListener("pointerdown", (ev) => {
+    const b = ev.target.closest(".entry.user .bubble");
+    drop();
+    if (!b) return;
+    const t = b.querySelector(".text");
+    const text = t ? t.textContent.trim() : "";
+    if (!text) return;
+    hold = setTimeout(() => {
+      if (navigator.vibrate) navigator.vibrate(10);
+      openCut({ text });
+    }, 600);
+  });
+  for (const type of ["pointerup", "pointercancel", "pointerleave"]) log.addEventListener(type, drop);
+  log.addEventListener("scroll", drop, true);
+}
+
+function openCuts() {
+  if (layer() === "session") history.pushState({ layer: "changes" }, "");
+  state.sheet = { kind: "cuts" };
+  renderSheet();
+}
+
+// The form for a new shortcut, or for the one being changed.
+function openCut(seed, fromList) {
+  if (layer() === "session") history.pushState({ layer: "changes" }, "");
+  const text = seed.text || "";
+  state.sheet = {
+    kind: "cut",
+    fromList: !!fromList,
+    named: !!seed.id,
+    cut: {
+      id: seed.id || null,
+      n: seed.n || 0,
+      name: seed.name || cutName(text),
+      text,
+      send: seed.id ? !!seed.send : text.length > 0 && text.length <= CUT_SHORT,
+    },
+  };
+  renderSheet();
+}
+
+function leaveCut(sh) {
+  if (sh.fromList) {
+    state.sheet = { kind: "cuts" };
+    renderSheet();
+  } else if (layer() === "changes") history.back();
+  else {
+    state.sheet = null;
+    renderSheet();
+  }
+}
+
+function cutRows(title, note, items) {
+  if (!items.length) return "";
+  return `<div class="glabel cutlabel"><span>${title}</span><span>${note}</span></div><div class="opts">${items
+    .map(
+      (c, i) => `<div class="opt cutrow">
+        <button type="button" class="cutmain" data-edit="${esc(c.id)}"><span class="oname">${esc(c.name || cutName(c.text))}</span><span class="cuttext">${esc(c.text)}</span></button>
+        <span class="odetail">${c.n || 0}\xd7</span>
+        <button type="button" class="iconbtn" data-up="${esc(c.id)}" aria-label="Move up"${i ? "" : " disabled"}>${ICONS.send}</button>
+      </div>`
+    )
+    .join("")}</div>`;
+}
+
+function renderCutsSheet(el) {
+  const cuts = loadCuts();
+  const body = cuts.length
+    ? cutRows("When you write", "Fills the box", cuts.filter((c) => !cutSends(c))) +
+      cutRows("When the agent waits", "Sends right away", cuts.filter(cutSends)) +
+      `<div class="cutnote">Tap one to change it. The arrow moves it up its row of buttons.</div>`
+    : `<div class="empty"><div class="hint">No shortcuts yet. Hold a message you sent to keep it, or tap + to write one.</div></div>`;
+  el.innerHTML = `<div class="sheet"><div class="hdr">
+      <button class="iconbtn" id="sheet-back" aria-label="Back">${ICONS.back}</button>
+      <div class="grow"><div class="title">Shortcuts</div><div class="sub">Kept on this phone</div></div>
+      <button class="iconbtn" id="cut-new" aria-label="New shortcut">${ICONS.plus}</button>
+    </div><div class="sheet-body setform">${body}</div></div>`;
+  document.getElementById("sheet-back").addEventListener("click", () => {
+    if (layer() === "changes") history.back();
+    else closeSheet();
+  });
+  document.getElementById("cut-new").addEventListener("click", () => openCut({ text: state.draft.trim() }, true));
+  el.querySelectorAll("[data-edit]").forEach((b) =>
+    b.addEventListener("click", () => {
+      const c = loadCuts().find((x) => x.id === b.dataset.edit);
+      if (c) openCut(c, true);
+    })
+  );
+  el.querySelectorAll("[data-up]").forEach((b) =>
+    b.addEventListener("click", () => {
+      const all = loadCuts();
+      const i = all.findIndex((x) => x.id === b.dataset.up);
+      if (i < 0) return;
+      // Up within its own group: the one before it that sends the same way.
+      let j = i - 1;
+      while (j >= 0 && cutSends(all[j]) !== cutSends(all[i])) j--;
+      if (j < 0) return;
+      [all[i], all[j]] = [all[j], all[i]];
+      if (storeCuts(all)) renderSheet();
+    })
+  );
+}
+
+function renderCutSheet(el, sh) {
+  const c = sh.cut;
+  const blank = c.text.includes(BLANK);
+  const digits = /\d+/.test(c.text);
+  const sends = c.send && !blank;
+  const where = blank
+    ? "Off: it has a blank to fill first. It shows above the keyboard and fills the box."
+    : sends
+      ? "On: one tap sends it. It shows when the agent is waiting for you."
+      : "Off: it shows above the keyboard and fills the box, so you can change it first.";
+  el.innerHTML = `<div class="sheet"><div class="hdr">
+      <button class="iconbtn" id="sheet-back" aria-label="Back">${ICONS.back}</button>
+      <div class="grow"><div class="title">${c.id ? "Shortcut" : "New shortcut"}</div></div>
+    </div><div class="sheet-body setform">
+      <div class="glabel">Name on the button</div>
+      <input class="cutin" id="cut-name" maxlength="28" autocomplete="off" value="${esc(c.name)}">
+      <div class="glabel">What it sends</div>
+      <textarea class="cutin" id="cut-text" rows="3">${esc(c.text)}</textarea>
+      ${blank ? `<div class="cutnote">${esc(BLANK)} is a blank: you type the number each time.</div>` : ""}
+      ${!blank && digits ? `<button type="button" class="btn outline small cutblank" id="cut-blank">Make the number a blank</button>` : ""}
+      <div class="glabel">How it sends</div>
+      <div class="opts"><button type="button" class="opt" id="cut-send"${blank ? " disabled" : ""}>
+        <span class="oname">Send right away<span class="cuttext wrap">${where}</span></span>
+        <span class="switch${sends ? " on" : ""}"><span class="knob"></span></span>
+      </button></div>
+      <div class="cutbtns">
+        ${c.id ? `<button type="button" class="btn danger" id="cut-del">Delete</button>` : ""}
+        <button type="button" class="btn" id="cut-save">Save shortcut</button>
+      </div>
+    </div></div>`;
+  const name = document.getElementById("cut-name");
+  const text = document.getElementById("cut-text");
+  name.addEventListener("input", () => {
+    c.name = name.value;
+    sh.named = true;
+  });
+  // Until the name is typed by hand it follows the text.
+  text.addEventListener("input", () => {
+    c.text = text.value;
+    if (!sh.named) {
+      c.name = cutName(c.text);
+      name.value = c.name;
+    }
+  });
+  text.addEventListener("change", renderSheet);
+  document.getElementById("sheet-back").addEventListener("click", () => leaveCut(sh));
+  const blankBtn = document.getElementById("cut-blank");
+  if (blankBtn)
+    blankBtn.addEventListener("click", () => {
+      c.text = c.text.replace(/\d+/, BLANK);
+      if (!sh.named) c.name = cutName(c.text);
+      renderSheet();
+    });
+  document.getElementById("cut-send").addEventListener("click", () => {
+    c.send = !c.send;
+    renderSheet();
+  });
+  const del = document.getElementById("cut-del");
+  if (del)
+    del.addEventListener("click", () => {
+      if (storeCuts(loadCuts().filter((x) => x.id !== c.id))) leaveCut(sh);
+    });
+  document.getElementById("cut-save").addEventListener("click", () => {
+    const body = c.text.trim();
+    if (!body) return toast("Write what it sends first");
+    const all = loadCuts();
+    const kept = { id: c.id || `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, name: c.name.trim() || cutName(body), text: body, send: !!c.send, n: c.n || 0 };
+    const i = all.findIndex((x) => x.id === kept.id);
+    if (i >= 0) all[i] = kept;
+    else all.push(kept);
+    if (!storeCuts(all)) return;
+    if (!sh.fromList) toast("Shortcut saved");
+    leaveCut(sh);
+  });
 }
 
 // The clock in the stop row runs on the phone between the computer's updates.

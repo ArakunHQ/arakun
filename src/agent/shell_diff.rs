@@ -4,7 +4,6 @@
 //! ends, and the text files that differ become the turn's shell changes.
 
 use std::path::{Component, Path, PathBuf};
-use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
@@ -12,6 +11,10 @@ use serde::{Deserialize, Serialize};
 /// Files kept per turn, and the largest one whose text is kept.
 const MAX_FILES: usize = 20;
 const MAX_BYTES: usize = 64 * 1024;
+/// Files bigger than this stay out of the snapshot. `git add` copies each
+/// version into the checkout's `.git/objects`, where it stays until gc, so a
+/// generated file (a database, a dataset) would add a copy every turn.
+const MAX_SNAPSHOT_BYTES: u64 = 1 << 20;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ShellChange {
@@ -31,21 +34,86 @@ pub struct ShellChange {
 pub struct Snapshot {
     top: PathBuf,
     tree: String,
+    /// Files left out for their size, by their path from `top`.
+    big: Vec<String>,
 }
 
 fn git(dir: &Path, index: Option<&Path>, args: &[&str]) -> Option<Vec<u8>> {
+    git_with_input(dir, index, args, None)
+}
+
+fn git_with_input(
+    dir: &Path,
+    index: Option<&Path>,
+    args: &[&str],
+    input: Option<&[u8]>,
+) -> Option<Vec<u8>> {
     let mut cmd = crate::platform::command("git");
-    cmd.args(args)
-        .current_dir(dir)
-        .stdin(Stdio::null())
-        .stderr(Stdio::null());
+    cmd.args(args).current_dir(dir);
     if let Some(index) = index {
         cmd.env("GIT_INDEX_FILE", index);
     }
-    cmd.output()
+    crate::platform::output_within(&mut cmd, input, crate::platform::GIT_LOCAL)
         .ok()
         .filter(|o| o.status.success())
         .map(|o| o.stdout)
+}
+
+/// The changed and untracked files over `MAX_SNAPSHOT_BYTES`, by their path
+/// from `top`, for the index at `index`.
+fn too_big(top: &Path, index: &Path) -> Option<Vec<String>> {
+    let changed = git(
+        top,
+        Some(index),
+        &[
+            "ls-files",
+            "-z",
+            "--modified",
+            "--others",
+            "--exclude-standard",
+        ],
+    )?;
+    Some(
+        changed
+            .split(|&b| b == 0)
+            .filter_map(|p| std::str::from_utf8(p).ok())
+            .filter(|p| {
+                !p.is_empty()
+                    && std::fs::metadata(top.join(p)).is_ok_and(|m| m.len() > MAX_SNAPSHOT_BYTES)
+            })
+            .map(str::to_string)
+            .collect(),
+    )
+}
+
+/// Stages every file but `big` in the index at `index`, and takes `big` out of
+/// it: an exclude only stops a file being updated, so a tracked one would
+/// keep its older version.
+fn stage(top: &Path, index: &Path, big: &[String]) -> Option<()> {
+    let mut specs = b".\0".to_vec();
+    let mut paths = Vec::new();
+    for path in big {
+        specs.extend_from_slice(b":(exclude,literal)");
+        specs.extend_from_slice(path.as_bytes());
+        specs.push(0);
+        paths.extend_from_slice(path.as_bytes());
+        paths.push(0);
+    }
+    git_with_input(
+        top,
+        Some(index),
+        &["add", "-A", "--pathspec-from-file=-", "--pathspec-file-nul"],
+        Some(&specs),
+    )?;
+    if !big.is_empty() {
+        git_with_input(
+            top,
+            Some(index),
+            &["update-index", "--force-remove", "-z", "--stdin"],
+            Some(&paths),
+        )?;
+    }
+    Some(())
 }
 
 fn line(out: Vec<u8>) -> String {
@@ -91,12 +159,16 @@ pub fn snapshot(dir: &Path) -> Option<Snapshot> {
             .open(&tmp)
             .and_then(|f| f.set_modified(mtime));
     }
-    let tree =
-        git(&top, Some(&tmp), &["add", "-A"]).and_then(|_| git(&top, Some(&tmp), &["write-tree"]));
+    let staged = too_big(&top, &tmp).and_then(|big| {
+        stage(&top, &tmp, &big)?;
+        Some((git(&top, Some(&tmp), &["write-tree"])?, big))
+    });
     let _ = std::fs::remove_file(&tmp);
+    let (tree, big) = staged?;
     Some(Snapshot {
         top,
-        tree: line(tree?),
+        tree: line(tree),
+        big,
     })
 }
 
@@ -120,12 +192,18 @@ pub fn changes(from: &Snapshot, to: &Snapshot) -> Vec<ShellChange> {
     ) else {
         return Vec::new();
     };
-    let blob =
-        |tree: &str, path: &str| git(top, None, &["cat-file", "blob", &format!("{tree}:{path}")]);
-    let text = |b: Option<Vec<u8>>| match b {
-        None => Ok(None),
-        Some(b) if b.len() <= MAX_BYTES => String::from_utf8(b).map(Some).map_err(|_| ()),
-        Some(_) => Err(()),
+    // None when the tree has no such file, Err when it is too big or not text.
+    let text = |tree: &str, path: &str| -> Result<Option<String>, ()> {
+        let spec = format!("{tree}:{path}");
+        // The size first, so a big file is not read just to be dropped.
+        let Some(size) = git(top, None, &["cat-file", "-s", &spec]) else {
+            return Ok(None);
+        };
+        if line(size).parse::<usize>().map_or(true, |n| n > MAX_BYTES) {
+            return Err(());
+        }
+        let blob = git(top, None, &["cat-file", "blob", &spec]).ok_or(())?;
+        String::from_utf8(blob).map(Some).map_err(|_| ())
     };
     let mut changes = Vec::new();
     for record in String::from_utf8_lossy(&out).split('\0') {
@@ -138,9 +216,14 @@ pub fn changes(from: &Snapshot, to: &Snapshot) -> Vec<ShellChange> {
         let (Ok(added), Ok(removed)) = (added.parse(), removed.parse()) else {
             continue;
         };
-        let (Ok(old), Ok(new)) = (text(blob(&from.tree, path)), text(blob(&to.tree, path))) else {
+        let (Ok(old), Ok(new)) = (text(&from.tree, path), text(&to.tree, path)) else {
             continue;
         };
+        // A file left out of either snapshot for its size is missing there,
+        // not created or deleted.
+        if from.big.iter().chain(&to.big).any(|b| b == path) {
+            continue;
+        }
         changes.push(ShellChange {
             path: top.join(path),
             old,
@@ -217,6 +300,66 @@ mod tests {
         assert!(String::from_utf8_lossy(&status.stdout).contains("A  staged.txt"));
         assert!(String::from_utf8_lossy(&status.stdout).contains("?? new.txt"));
         assert!(changes(&after, &snapshot(&repo).unwrap()).is_empty());
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn big_files_stay_out_of_the_snapshot_and_its_objects() {
+        let repo = std::env::temp_dir().join(format!("arakun-shell-big-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&repo);
+        std::fs::create_dir_all(&repo).unwrap();
+        let git = |args: &[&str]| {
+            crate::git::unpinned(&mut Command::new("git"))
+                .args(args)
+                .current_dir(&repo)
+                .output()
+                .unwrap()
+        };
+        assert!(git(&["init", "-q"]).status.success());
+        std::fs::write(repo.join("tracked.txt"), "base\n").unwrap();
+        let commit = [
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-qam",
+            "init",
+        ];
+        assert!(git(&["add", "tracked.txt"]).status.success());
+        assert!(git(&commit).status.success());
+        std::fs::write(repo.join("tracked.txt"), "before\n").unwrap();
+        let big = vec![b'a'; MAX_SNAPSHOT_BYTES as usize + 1];
+        std::fs::write(repo.join("data.db"), &big).unwrap();
+        std::fs::write(repo.join("grows.txt"), "small\n").unwrap();
+        std::fs::write(repo.join("small.txt"), "one\n").unwrap();
+        let before = snapshot(&repo).unwrap();
+        let mut grown = big.clone();
+        grown.push(b'b');
+        let first = git(&["hash-object", "data.db"]).stdout;
+        std::fs::write(repo.join("data.db"), &grown).unwrap();
+        std::fs::write(repo.join("grows.txt"), &big).unwrap();
+        std::fs::write(repo.join("tracked.txt"), &big).unwrap();
+        std::fs::write(repo.join("small.txt"), "two\n").unwrap();
+        let after = snapshot(&repo).unwrap();
+
+        // Files that grew past the limit are not reported as deleted, nor the
+        // tracked one as gone back to its committed text.
+        // Deleted after the snapshot: what counts is that it was left out.
+        std::fs::remove_file(repo.join("grows.txt")).unwrap();
+        let got = changes(&before, &after);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].path, repo.join("small.txt"));
+        let tree = git(&["ls-tree", "--name-only", &after.tree]).stdout;
+        assert_eq!(String::from_utf8_lossy(&tree), "small.txt\n");
+        // Neither version of the big file was written as an object.
+        let second = git(&["hash-object", "data.db"]).stdout;
+        for hash in [first, second] {
+            let hash = String::from_utf8_lossy(&hash).trim().to_string();
+            assert!(!git(&["cat-file", "-e", &hash]).status.success());
+        }
         let _ = std::fs::remove_dir_all(&repo);
     }
 }

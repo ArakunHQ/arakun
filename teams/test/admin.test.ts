@@ -32,6 +32,9 @@ describe("the admin door", () => {
     expect((await call("POST", "/admin/users/1001/flags/teams", ADMIN)).status).toBe(404);
     expect((await call("PUT", "/admin/users/1001/flags", ADMIN)).status).toBe(404);
     expect((await call("PUT", "/admin/users/1001/flags/teams/x", ADMIN)).status).toBe(404);
+    expect((await call("GET", "/admin/users/1001/sessions", ADMIN)).status).toBe(404);
+    expect((await call("PUT", "/admin/users/1001/sessions", ADMIN)).status).toBe(404);
+    expect((await call("DELETE", "/admin/users/1001/sessions/x", ADMIN)).status).toBe(404);
     // Without the secret, the paths that exist are not told apart from the rest.
     expect((await call("GET", "/admin/nothing")).status).toBe(401);
   });
@@ -98,6 +101,34 @@ describe("flags", () => {
     const other = await signIn(3003, "someone-else");
     expect(other.flags).toEqual([]);
     expect(await (await call("GET", "/me", as(other.session))).json()).toEqual({ github_id: 3003, login: "someone-else", flags: [] });
+  });
+});
+
+describe("closing sessions", () => {
+  it("ends all of one user's sessions, and no one else's", async () => {
+    const one = await signIn(1001, "octocat");
+    const two = await signIn(1001, "octocat");
+    const other = await signIn(3003, "someone-else");
+    const res = await call("DELETE", "/admin/users/1001/sessions", ADMIN);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ github_id: 1001, closed: 2 });
+    expect((await call("GET", "/me", as(one.session))).status).toBe(401);
+    expect((await call("GET", "/me", as(two.session))).status).toBe(401);
+    expect((await call("GET", "/me", as(other.session))).status).toBe(200);
+    // Nothing left to close is fine too, and the user can sign in again.
+    expect(await (await call("DELETE", "/admin/users/1001/sessions", ADMIN)).json()).toEqual({ github_id: 1001, closed: 0 });
+    const again = await signIn(1001, "octocat");
+    expect((await call("GET", "/me", as(again.session))).status).toBe(200);
+  });
+
+  it("needs the secret and a positive integer GitHub ID", async () => {
+    const got = await signIn(1001, "octocat");
+    expect((await call("DELETE", "/admin/users/1001/sessions")).status).toBe(401);
+    expect((await call("DELETE", "/admin/users/1001/sessions", as(got.session))).status).toBe(401);
+    for (const id of ["0", "-1", "01", "abc", "99999999999999999"]) {
+      expect((await call("DELETE", `/admin/users/${id}/sessions`, ADMIN)).status, id).toBe(400);
+    }
+    expect((await call("GET", "/me", as(got.session))).status).toBe(200);
   });
 });
 

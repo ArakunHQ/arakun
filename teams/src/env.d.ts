@@ -5,6 +5,10 @@ declare namespace Cloudflare {
     DB: D1Database;
     /// Counts sign-ins per client IP.
     SIGN_IN_LIMIT: RateLimit;
+    /// Counts the messages each device sends on channel sockets.
+    SEND_LIMIT: RateLimit;
+    /// One object per channel: its messages and live sockets.
+    CHANNEL: DurableObjectNamespace<import("./channel").Channel>;
     /// Bearer for /admin, from `wrangler secret put ADMIN_SECRET`; unset = no admin.
     ADMIN_SECRET?: string;
     /// The GitHub OAuth App's client ID (public, in wrangler.toml).

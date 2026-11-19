@@ -48,10 +48,16 @@ impl Shell {
         let projects = self
             .projects
             .iter()
+            // CI is read from git here; a server's folders are not.
+            .filter(|p| !p.is_remote())
             .map(|p| {
                 (
                     p.path.clone(),
-                    p.environments.iter().map(|e| e.path.clone()).collect(),
+                    p.environments
+                        .iter()
+                        .filter(|e| e.remote.is_none())
+                        .map(|e| e.path.clone())
+                        .collect(),
                 )
             })
             .collect();
@@ -257,7 +263,9 @@ impl Shell {
         cx.spawn_in(window, async move |this, cx| {
             let (r, p, b) = (repo_root.clone(), wt.clone(), branch.clone());
             let result = cx
-                .background_spawn(async move { git::add_branch_worktree(&r, &p, &b) })
+                .background_spawn(crate::guard::task(async move {
+                    git::add_branch_worktree(&r, &p, &b)
+                }))
                 .await;
             let _ = this.update_in(cx, |this, window, cx| match result {
                 Ok(()) => {
@@ -314,7 +322,7 @@ impl Shell {
         cx.spawn(async move |this, cx| {
             let (d, r, b) = (dir.clone(), remote.clone(), branch.clone());
             let result = cx
-                .background_spawn(async move { git::push(&d, &r, &b) })
+                .background_spawn(crate::guard::task(async move { git::push(&d, &r, &b) }))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 let (text, error) = match result {
@@ -351,7 +359,9 @@ impl Shell {
         cx.spawn(async move |this, cx| {
             let b = branch.clone();
             let result = cx
-                .background_spawn(async move { git::pr_create_web(&dir, &b) })
+                .background_spawn(crate::guard::task(async move {
+                    git::pr_create_web(&dir, &b, "", "")
+                }))
                 .await;
             if let Err(e) = result {
                 let _ = this.update(cx, |this, cx| {
@@ -560,7 +570,7 @@ impl Shell {
         cx.spawn(async move |this, cx| {
             let (d, s) = (dir.clone(), sha.clone());
             let result = cx
-                .background_spawn(async move { git::revert(&d, &s) })
+                .background_spawn(crate::guard::task(async move { git::revert(&d, &s) }))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 let short = sha.get(..7).unwrap_or(&sha);
@@ -627,10 +637,7 @@ impl Shell {
         };
         let watching = window.is_window_active()
             && pi == self.active_project
-            && matches!(
-                self.env().tabs.get(self.env().active_tab).map(|t| &t.kind),
-                Some(TabKind::Runs)
-            );
+            && matches!(self.strip.active().map(|t| &t.kind), Some(TabKind::Runs));
         if watching {
             return;
         }

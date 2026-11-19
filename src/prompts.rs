@@ -1,7 +1,7 @@
 //! Saved prompts: text kept for reuse, inserted from the composer with `!`.
 //! Stored in `prompts.json` next to arakun's state.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -26,16 +26,20 @@ fn file() -> PathBuf {
 }
 
 pub fn load() -> Vec<SavedPrompt> {
-    std::fs::read(file())
-        .ok()
-        .and_then(|b| serde_json::from_slice(&b).ok())
-        .unwrap_or_default()
+    load_from(&file())
+}
+
+fn load_from(path: &Path) -> Vec<SavedPrompt> {
+    crate::stored::load(path).unwrap_or_default()
 }
 
 pub fn store(prompts: &[SavedPrompt]) {
-    let path = file();
-    if let Err(e) = crate::durable::write(
-        &path,
+    store_to(&file(), prompts);
+}
+
+fn store_to(path: &Path, prompts: &[SavedPrompt]) {
+    if let Err(e) = crate::stored::write(
+        path,
         &serde_json::to_vec_pretty(prompts).unwrap_or_default(),
     ) {
         eprintln!("arakun: could not save {}: {e}", path.display());
@@ -137,5 +141,19 @@ mod tests {
             "fix-the-failing-test-2"
         );
         assert_eq!(name_for("¿?", &[]), "prompt");
+    }
+
+    #[test]
+    fn unreadable_prompts_are_kept() {
+        let dir = crate::stored::tests::scratch("prompts");
+        let path = dir.join("prompts.json");
+        // A prompt that lost its `text`.
+        let edited = r#"[{"name":"review"}]"#;
+        std::fs::write(&path, edited).unwrap();
+        assert!(load_from(&path).is_empty());
+        store_to(&path, &[p("ship", "commit and push", false, 0)]);
+        assert_eq!(load_from(&path).len(), 1);
+        assert_eq!(crate::stored::tests::kept(&path).as_deref(), Some(edited));
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

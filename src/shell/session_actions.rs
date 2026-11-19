@@ -176,6 +176,7 @@ impl Render for RemoveDialog {
             Agent::Claude => "Claude Code keeps its own copy of the conversation.",
             Agent::OpenCode => "OpenCode keeps its own copy of the conversation.",
             Agent::Codex => "Codex keeps its own copy of the conversation.",
+            Agent::Devin => "Devin keeps its own copy of the conversation.",
             Agent::WorkersAi => "arakun keeps the conversation the model saw until then.",
         };
         ui::modal_panel("remove-session", 420.)
@@ -262,11 +263,11 @@ impl ImportDialog {
         let p = path.clone();
         cx.spawn(async move |this, cx| {
             let found = cx
-                .background_spawn(async move {
+                .background_spawn(crate::guard::task(async move {
                     let mut found = catalog::agent_sessions(&p);
                     found.retain(|s| !known.contains(&s.id));
                     found
-                })
+                }))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.loading = false;
@@ -679,7 +680,7 @@ impl Shell {
         at: gpui::Point<gpui::Pixels>,
         cx: &mut Context<Self>,
     ) {
-        if !self.has_projects() || index >= self.env().tabs.len() {
+        if !self.has_projects() || index >= self.strip.tabs.len() {
             return;
         }
         // Below the title bar, so the menu doesn't cover the tab it is about.

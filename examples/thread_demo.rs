@@ -23,6 +23,10 @@ mod durable;
 #[path = "../src/fetch.rs"]
 #[allow(dead_code)]
 mod fetch;
+#[path = "../src/guard.rs"]
+mod guard;
+#[path = "../src/rotate.rs"]
+mod rotate;
 #[allow(dead_code)]
 #[path = "../src/headless/sandbox.rs"]
 mod sandbox;

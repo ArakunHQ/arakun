@@ -24,17 +24,17 @@ mod mascot;
 #[path = "../src/theme.rs"]
 mod theme;
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 fn main() {
     demo::main();
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 fn main() {
-    eprintln!("island_demo needs macOS, or a Wayland compositor with layer-shell");
+    eprintln!("island_demo needs macOS, Windows, or a Wayland compositor with layer-shell");
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 mod demo {
     use std::time::{Duration, Instant};
 
@@ -304,6 +304,10 @@ mod demo {
                 cx.update(|cx| {
                     let mut options = crate::island::window_options(true);
                     options.display_id = screen.and_then(|n| cx.displays().get(n).map(|d| d.id()));
+                    #[cfg(windows)]
+                    if let Some(at) = crate::island::top_center(cx, options.display_id) {
+                        options.window_bounds = Some(gpui::WindowBounds::Windowed(at));
+                    }
                     let opened = cx.open_window(options, |window, cx| {
                         crate::island::adopt(window);
                         cx.new(|cx| Demo::new(phase, pinned, tour, cx))

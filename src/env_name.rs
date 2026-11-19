@@ -4,10 +4,9 @@
 //! agent CLI turns the prompt into a name that says what the work is
 //! (`fix/terminal-tab-name`), and arakun renames the branch to it.
 
-use std::io::{Read as _, Write as _};
 use std::path::PathBuf;
 use std::process::Stdio;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::{Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
@@ -171,7 +170,17 @@ fn namer_path() -> PathBuf {
     crate::platform::app_dir().join("branch-namer.json")
 }
 
+/// The namer set in this run. `set_namer` saves in the background, so the
+/// file can lag behind it, and waiting for the disk would stall the window.
+static SET: std::sync::Mutex<Option<Namer>> = std::sync::Mutex::new(None);
+
 pub fn namer() -> Namer {
+    let set = SET
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(namer) = set.as_ref() {
+        return namer.clone();
+    }
     std::fs::read(namer_path())
         .ok()
         .and_then(|b| serde_json::from_slice::<Namer>(&b).ok())
@@ -183,16 +192,21 @@ pub fn installed(agent: AgentKind) -> bool {
     match agent {
         AgentKind::Claude => crate::agent::claude_cli().is_some(),
         AgentKind::Droid => crate::agent::droid_bin().is_ok(),
-        AgentKind::OpenCode | AgentKind::Codex | AgentKind::WorkersAi => false,
+        AgentKind::OpenCode | AgentKind::Codex | AgentKind::Devin | AgentKind::WorkersAi => false,
     }
 }
 
 pub fn set_namer(namer: &Namer) {
-    let path = namer_path();
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    let _ = std::fs::write(path, serde_json::to_vec_pretty(namer).unwrap_or_default());
+    // Kept in memory too, so `namer` gives it back at once, and for this run
+    // even when the file cannot be written.
+    *SET.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(namer.clone());
+    // Saved on every key typed in the model field.
+    crate::durable::write_soon(
+        namer_path(),
+        serde_json::to_vec_pretty(namer).unwrap_or_default(),
+        "could not save the branch namer",
+    );
 }
 
 /// The longest part of the first prompt the model reads; the start says what the task is.
@@ -213,6 +227,14 @@ fn instruction(task: &str) -> String {
 
 /// Asks `agent` for a branch name for `task`. Blocks; run it in the background.
 pub fn suggest(agent: AgentKind, model: &str, task: &str) -> Result<String> {
+    let out = ask(agent, model, instruction(task), TIMEOUT)?;
+    parse(&out).ok_or_else(|| anyhow!("the model answered with no usable name: {}", out.trim()))
+}
+
+/// Asks `agent` one question and returns its whole answer: the CLI runs once
+/// in an empty folder, without tools, and exits. Blocks; run it in the
+/// background. Only for the [`AGENTS`].
+pub fn ask(agent: AgentKind, model: &str, input: String, timeout: Duration) -> Result<String> {
     let (program, args) = command(agent, model.trim())?;
     let mut cmd = crate::platform::command(program);
     if agent == AgentKind::Claude {
@@ -220,7 +242,7 @@ pub fn suggest(agent: AgentKind, model: &str, task: &str) -> Result<String> {
             .map_err(|e| anyhow!("could not hand Claude Code its key helper: {e}"))?;
     }
     // An empty folder: no project instructions, memory or tools to load.
-    let dir = private_dir().map_err(|e| anyhow!("could not make a folder for the namer: {e}"))?;
+    let dir = private_dir().map_err(|e| anyhow!("could not make a folder for the agent: {e}"))?;
     cmd.args(args)
         .current_dir(&dir)
         .env("PATH", crate::agent::child_path_env())
@@ -229,10 +251,9 @@ pub fn suggest(agent: AgentKind, model: &str, task: &str) -> Result<String> {
         .stderr(Stdio::piped());
     // On stdin, not in argv: other local users can read a process's arguments, and
     // Windows refuses arguments with line breaks for a `.cmd` such as npm's `claude.cmd`.
-    let out = run(cmd, instruction(task));
+    let out = run(cmd, input, timeout);
     let _ = std::fs::remove_dir_all(&dir);
-    let out = out?;
-    parse(&out).ok_or_else(|| anyhow!("the model answered with no usable name: {}", out.trim()))
+    out
 }
 
 /// A new folder only this user can open, for one naming run. A fixed name in a shared
@@ -292,50 +313,29 @@ fn args(agent: AgentKind, model: &str) -> Result<Vec<String>> {
             args.extend(model.into_iter().flatten());
             args
         }
-        AgentKind::OpenCode | AgentKind::Codex | AgentKind::WorkersAi => {
+        AgentKind::OpenCode | AgentKind::Codex | AgentKind::Devin | AgentKind::WorkersAi => {
             bail!("{} cannot name branches", agent.label())
         }
     };
     Ok(args)
 }
 
-/// Runs `cmd` with `input` on its stdin and returns its stdout; kills it after [`TIMEOUT`].
-fn run(mut cmd: std::process::Command, input: String) -> Result<String> {
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| anyhow!("could not start the namer: {e}"))?;
-    if let Some(mut stdin) = child.stdin.take() {
-        // Dropped at the end, which closes it: the CLI reads to the end before answering.
-        std::thread::spawn(move || {
-            let _ = stdin.write_all(input.as_bytes());
-        });
-    }
-    let read = |pipe: Option<Box<dyn std::io::Read + Send>>| {
-        std::thread::spawn(move || {
-            let mut text = String::new();
-            if let Some(mut pipe) = pipe {
-                let _ = pipe.read_to_string(&mut text);
+/// Runs `cmd` with `input` on its stdin and returns its stdout; stops it, and what it
+/// started, after `timeout`.
+fn run(mut cmd: std::process::Command, input: String, timeout: Duration) -> Result<String> {
+    // The CLI reads its stdin to the end before answering; it is closed once written.
+    let output = crate::platform::output_within(&mut cmd, Some(input.as_bytes()), timeout)
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::TimedOut {
+                anyhow!("the agent did not answer within {} s", timeout.as_secs())
+            } else {
+                anyhow!("could not start the agent: {e}")
             }
-            text
-        })
-    };
-    let stdout = read(child.stdout.take().map(|p| Box::new(p) as _));
-    let stderr = read(child.stderr.take().map(|p| Box::new(p) as _));
-    let start = Instant::now();
-    let status = loop {
-        if let Some(status) = child.try_wait()? {
-            break status;
-        }
-        if start.elapsed() > TIMEOUT {
-            let _ = child.kill();
-            let _ = child.wait();
-            bail!("the namer did not answer within {} s", TIMEOUT.as_secs());
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    };
-    let out = stdout.join().unwrap_or_default();
+        })?;
+    let status = output.status;
+    let out = String::from_utf8_lossy(&output.stdout).into_owned();
     if !status.success() {
-        let err = stderr.join().unwrap_or_default();
+        let err = String::from_utf8_lossy(&output.stderr);
         let err = err
             .lines()
             .rev()
@@ -343,7 +343,7 @@ fn run(mut cmd: std::process::Command, input: String) -> Result<String> {
             .unwrap_or("")
             .trim();
         bail!(
-            "the namer failed ({status}){}",
+            "the agent failed ({status}){}",
             if err.is_empty() {
                 String::new()
             } else {
@@ -396,6 +396,20 @@ fn clean(line: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A namer that leaves a child running must not hold the call until the child ends.
+    #[cfg(unix)]
+    #[test]
+    fn a_namer_that_leaves_a_child_running_returns_when_it_ends() {
+        let mut cmd = crate::platform::command("sh");
+        cmd.args(["-c", "cat; sleep 30 &"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let started = std::time::Instant::now();
+        assert_eq!(run(cmd, "fix/x".into(), TIMEOUT).unwrap(), "fix/x");
+        assert!(started.elapsed() < Duration::from_secs(10));
+    }
 
     #[test]
     fn random_names_read_as_random() {

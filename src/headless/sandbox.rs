@@ -6,9 +6,9 @@
 //! host process, outside; nothing inside can send, push or pay on its own.
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::sync::{Arc, OnceLock, RwLock};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
@@ -584,76 +584,19 @@ impl Sandbox {
         input: Option<&[u8]>,
         timeout: Duration,
     ) -> Result<std::process::Output, String> {
-        let mut cmd = self.command(cwd, inner);
-        cmd.stdin(if input.is_some() {
-            Stdio::piped()
-        } else {
-            Stdio::null()
-        });
-        run_with_timeout(cmd, input, timeout)
+        run_with_timeout(self.command(cwd, inner), input, timeout)
             .map_err(|e| format!("the sandbox did not run it: {e}"))
     }
 }
 
-/// Runs `cmd` to the end, killing it after `timeout`; `input` goes to its stdin.
+/// Runs `cmd` to the end, stopping it and what it started after `timeout`; `input` goes
+/// to its stdin. See [`crate::platform::output_within`].
 pub fn run_with_timeout(
     mut cmd: Command,
     input: Option<&[u8]>,
     timeout: Duration,
 ) -> Result<std::process::Output, String> {
-    use std::io::{Read as _, Write as _};
-    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-    if input.is_some() {
-        cmd.stdin(Stdio::piped());
-    }
-    crate::platform::ProcessTree::prepare(&mut cmd);
-    let mut child = cmd.spawn().map_err(|e| e.to_string())?;
-    let tree = crate::platform::ProcessTree::adopt(&child);
-    if let (Some(bytes), Some(mut stdin)) = (input, child.stdin.take()) {
-        let bytes = bytes.to_vec();
-        std::thread::spawn(move || {
-            let _ = stdin.write_all(&bytes);
-        });
-    }
-    let reader = |p: Option<Box<dyn std::io::Read + Send>>| {
-        std::thread::spawn(move || {
-            let mut buf = Vec::new();
-            if let Some(mut p) = p {
-                let _ = p.read_to_end(&mut buf);
-            }
-            buf
-        })
-    };
-    let out = reader(
-        child
-            .stdout
-            .take()
-            .map(|p| Box::new(p) as Box<dyn std::io::Read + Send>),
-    );
-    let err = reader(
-        child
-            .stderr
-            .take()
-            .map(|p| Box::new(p) as Box<dyn std::io::Read + Send>),
-    );
-    let start = Instant::now();
-    let status = loop {
-        if let Some(st) = child.try_wait().map_err(|e| e.to_string())? {
-            break st;
-        }
-        if start.elapsed() > timeout {
-            tree.kill();
-            let _ = child.wait();
-            return Err(format!("timed out after {}s", timeout.as_secs()));
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    };
-    tree.kill();
-    Ok(std::process::Output {
-        status,
-        stdout: out.join().unwrap_or_default(),
-        stderr: err.join().unwrap_or_default(),
-    })
+    crate::platform::output_within(&mut cmd, input, timeout).map_err(|e| e.to_string())
 }
 
 /// Paths a mail account's password command reads, one script deep.
@@ -989,6 +932,23 @@ pub fn current() -> Option<Arc<Jail>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn a_command_that_outlives_its_timeout_is_stopped() {
+        let mut cmd = Command::new("sleep");
+        cmd.arg("30");
+        let start = std::time::Instant::now();
+        let out = run_with_timeout(cmd, None, Duration::from_millis(200));
+        assert!(out.unwrap_err().contains("took longer"));
+        // Killed and reaped, not waited out.
+        assert!(start.elapsed() < Duration::from_secs(10));
+        // One that ends in time gives its output.
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "printf hi"]);
+        let out = run_with_timeout(cmd, None, Duration::from_secs(10)).unwrap();
+        assert_eq!(out.stdout, b"hi");
+    }
 
     fn sb(caps: &[Cap]) -> Sandbox {
         Sandbox {

@@ -1,7 +1,8 @@
 //! Settling after a merge: once an environment's pull request is merged, its
 //! review threads are resolved on GitHub, its notifications are marked read,
-//! and the environment's sessions stop asking for attention. On unless turned
-//! off in Settings > Branches.
+//! and the environment's sessions stop asking for attention and leave the
+//! sessions list until they are used again. On unless turned off in
+//! Settings > Branches.
 //!
 //! The merges already settled are kept in `settled.json` next to the state, so
 //! each one is settled once, even after a restart.
@@ -43,13 +44,11 @@ pub fn set(on: bool) {
     // Kept in memory too, so the switch works for this run even when the file
     // cannot be written.
     CHOICE.store(if on { ON } else { OFF }, Ordering::Relaxed);
-    let path = choice_path();
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    if let Err(e) = std::fs::write(&path, if on { "on\n" } else { "off\n" }) {
-        eprintln!("arakun: the settle-after-merge setting will not last past a restart: {e}");
-    }
+    crate::durable::write_soon(
+        choice_path(),
+        if on { "on\n" } else { "off\n" }.into(),
+        "the settle-after-merge setting will not last past a restart",
+    );
 }
 
 fn choice_path() -> PathBuf {

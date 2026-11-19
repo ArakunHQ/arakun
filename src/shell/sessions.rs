@@ -754,8 +754,10 @@ impl Shell {
         }
 
         // One session per worktree: a New session tab left where a session
-        // already is starts its session in a worktree of its own.
-        if !self.env().sessions.is_empty() {
+        // already is starts its session in a worktree of its own. Not on a
+        // server, which makes the worktree without a prompt to start there:
+        // the text would be lost.
+        if !self.env().sessions.is_empty() && self.env().remote.is_none() {
             let prompt = self.queue_prompt(text);
             self.quick_create_env_then(self.active_project, Some(prompt), window, cx);
             return;

@@ -386,6 +386,8 @@ pub struct Shell {
     rules: crate::palette::rules::Rules,
     session_query: Entity<TextInput>,
     session_filter: Option<Agent>,
+    /// The sessions list shows the ones settled after a merge too.
+    show_settled: bool,
     _session_query: Subscription,
     /// Input of the Notes tab; Enter appends a note to the active project.
     notes_input: Entity<TextInput>,
@@ -889,6 +891,7 @@ impl Shell {
             rules: crate::palette::rules::Rules::load(),
             session_query,
             session_filter: None,
+            show_settled: false,
             _session_query: session_query_sub,
             notes_input,
             _notes_input: notes_input_sub,

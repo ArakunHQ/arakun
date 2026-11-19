@@ -254,7 +254,27 @@ impl Shell {
             filter.is_none_or(|a| s.agent == a)
                 && (query.is_empty() || s.title.to_lowercase().contains(query.trim()))
         };
-        let shown = env.sessions.iter().filter(|s| matches(s)).count();
+        let active_id = self.active_session_id();
+        // The session in the other pane of a split shows too.
+        let other_id = env.split_other().and_then(|i| match &env.tabs[i].kind {
+            TabKind::Session { id, .. } => Some(id.clone()),
+            _ => None,
+        });
+        let on_screen = |s: &model::Session| {
+            active_id.as_ref() == Some(&s.id) || other_id.as_ref() == Some(&s.id)
+        };
+        // A search looks through settled sessions too.
+        let show_settled = self.show_settled || !query.trim().is_empty();
+        let listed =
+            |s: &model::Session| matches(s) && (show_settled || !s.settled || on_screen(s));
+        let shown = env.sessions.iter().filter(|s| listed(s)).count();
+        // Only the ones the row would add: an open session is listed anyway,
+        // and the agent filter hides the others either way.
+        let settled = env
+            .sessions
+            .iter()
+            .filter(|s| s.settled && matches(s) && !on_screen(s))
+            .count();
 
         let list: AnyElement = if env.sessions.is_empty() {
             div()
@@ -286,7 +306,6 @@ impl Shell {
                 )
                 .into_any_element()
         } else {
-            let active_id = self.active_session_id();
             div()
                 .id("session-list")
                 .flex()
@@ -303,14 +322,18 @@ impl Shell {
                             .text_center()
                             .text_size(px(ui::TEXT_SM))
                             .text_color(theme::text_faint())
-                            .child("No sessions match"),
+                            .child(if settled > 0 && !show_settled && filter.is_none() {
+                                "Every session here is settled"
+                            } else {
+                                "No sessions match"
+                            }),
                     )
                 })
                 .children(
                     env.sessions
                         .iter()
                         .enumerate()
-                        .filter(|(_, s)| matches(s))
+                        .filter(|(_, s)| listed(s))
                         .map(|(i, s)| {
                             let active = active_id.as_ref() == Some(&s.id);
                             let id = s.id.clone();
@@ -357,6 +380,16 @@ impl Shell {
                             self.sliding_card(i, &s.id, card)
                         }),
                 )
+                .when(settled > 0 && query.trim().is_empty(), |d| {
+                    d.child(
+                        settled_toggle(settled, self.show_settled).on_click(cx.listener(
+                            |this, _, _, cx| {
+                                this.show_settled = !this.show_settled;
+                                cx.notify();
+                            },
+                        )),
+                    )
+                })
                 .into_any_element()
         };
 
@@ -368,6 +401,32 @@ impl Shell {
             .child(search)
             .child(list)
     }
+}
+
+/// The row under the sessions list that shows or hides the settled ones.
+fn settled_toggle(n: usize, open: bool) -> gpui::Stateful<gpui::Div> {
+    let label = match (open, n) {
+        (true, _) => "Hide settled".to_string(),
+        (false, 1) => "1 settled session".to_string(),
+        (false, n) => format!("{n} settled sessions"),
+    };
+    div()
+        .id("sessions-settled")
+        .flex()
+        .items_center()
+        .gap(crate::ui::sp(6.))
+        .px(crate::ui::sp(10.))
+        .py(crate::ui::sp(6.))
+        .rounded(crate::ui::rad(8.))
+        .cursor_pointer()
+        .text_size(px(ui::TEXT_XS))
+        .text_color(theme::text_subtle())
+        .hover(|s| s.bg(theme::hover()))
+        .child(
+            icon(if open { "arrow-up01" } else { "arrow-down01" }, 12.)
+                .text_color(theme::text_subtle()),
+        )
+        .child(label)
 }
 
 pub(super) fn session_card(

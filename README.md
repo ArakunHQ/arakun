@@ -98,7 +98,9 @@ with "Show onboarding" in the palette (`Ctrl+K`). That it was done is kept in
 - **Settled after merge.** Once an environment's pull request is merged (Arakun asks
   `gh` every few minutes), its open review threads are resolved on GitHub, its
   notifications are marked read, and the environment's sessions from before the merge
-  stop asking for you; agents that are idle and not open in a tab stop. The GitHub tab
+  stop asking for you and leave the Sessions list (a "settled sessions" row at its end
+  shows them, a search finds them, and a new prompt brings one back); agents that are
+  idle and not open in a tab stop. The GitHub tab
   also marks read the notifications of every merged pull request it reads. Each merge is
   settled once, within a week of it; threads that fail to resolve are tried again at the
   next few checks. Settled merges are noted in `~/.local/share/arakun/settled.json`.

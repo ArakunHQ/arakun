@@ -395,6 +395,10 @@ impl Shell {
                 {
                     s.status = status;
                     s.updated = model::unix_now();
+                    // Used again after its merge: back in the list.
+                    if status == Status::Working {
+                        s.settled = false;
+                    }
                     cx.notify();
                 }
             }
@@ -771,6 +775,8 @@ impl Shell {
         };
         s.updated = model::unix_now();
         s.status = Status::Working;
+        // The status handler sees no change after this, so it can't clear it.
+        s.settled = false;
         thread.update(cx, |t, cx| t.send(text, cx));
         self.save(cx);
         cx.notify();

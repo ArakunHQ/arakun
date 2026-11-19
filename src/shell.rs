@@ -2742,12 +2742,13 @@ impl Shell {
     }
 
     /// One thread per worktree: a new session gets a worktree of its own,
-    /// unless the open environment has no thread yet.
+    /// unless the open one is a worktree with no thread yet. The main
+    /// checkout takes none.
     fn new_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.has_projects() {
             return;
         }
-        if !self.env().sessions.is_empty() {
+        if !self.env().sessions.is_empty() || self.env().is_checkout {
             self.quick_create_env(self.active_project, window, cx);
             return;
         }

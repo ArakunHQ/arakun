@@ -827,6 +827,11 @@ impl Shell {
                     .map(|p| p.path.clone())
                     .unwrap_or_default();
                 let reveal = path.clone();
+                // The main checkout is not in the list while no session is there.
+                let checkout = self
+                    .projects
+                    .get(pi)
+                    .and_then(|p| p.environments.iter().position(|e| e.is_checkout));
                 panel = panel
                     .child(
                         ui::menu_item("cm-new-env", "git-branch", "New environment…", false, true)
@@ -834,6 +839,23 @@ impl Shell {
                                 this.open_create_env(pi, window, cx)
                             })),
                     )
+                    .when_some(checkout, |d, ei| {
+                        d.child(
+                            ui::menu_item(
+                                "cm-checkout",
+                                "folder01",
+                                "Open main checkout",
+                                false,
+                                true,
+                            )
+                            .on_click(cx.listener(
+                                move |this, _, window, cx| {
+                                    this.menu = None;
+                                    this.select_env(pi, ei, window, cx)
+                                },
+                            )),
+                        )
+                    })
                     .child(
                         ui::menu_item(
                             "cm-reveal",

@@ -51,8 +51,9 @@ name: Release
 #   jobs wait for them, so a tag on a commit that fails them never publishes.
 #   The builds take 7-13 minutes and CI about 3 (longer when the macOS job
 #   queues), so waiting for CI before building only made each run longer. For
-#   a tag, every CI job runs. They restore main's cache like any CI run, but
-#   nothing they build goes into the archives.
+#   a tag, every CI job runs, unless they already ran and passed on main for
+#   the same commit (see the main-ci job). They restore main's cache like any
+#   CI run, but nothing they build goes into the archives.
 # - A dry run (a pull request that changes this file, or a manual run) builds,
 #   smoke-tests and uploads the archives as `arakun-dev-<short sha>-…`, and
 #   does not publish. Only a pushed tag publishes; a manual run never does,
@@ -218,9 +219,11 @@ jobs:
 
   ci:
     name: CI
-    needs: version
+    needs: [version, main-ci]
     if: inputs.version == '' && needs.version.outputs.skip != 'true'
     uses: $/.github/workflows/ci.yml
+    with:
+      main-passed: ${{ needs.main-ci.outputs.passed == 'true' }}
     # A called workflow gets at most what its caller job allows; the "What
     # changed" job in ci.yml lists a pull request's files.
     permissions:
@@ -243,6 +246,8 @@ jobs:
       # The nightly before this one, for the release notes.
       last-nightly: ${{ steps.nightly.outputs.last }}
       skip: ${{ steps.nightly.outputs.skip }}
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -292,6 +297,65 @@ jobs:
           version="$major.$minor.$((patch + 1))-nightly.$(date -u +%Y%m%d%H%M)"
           echo "::notice::building nightly $version from $SHA (last nightly: ${last:-none})"
           { echo "version=$version"; echo "last=$last"; } >> "$GITHUB_OUTPUT"
+
+  # A tag or a nightly is on a commit that main's CI already checked. If
+  # that run passed with every Rust job run (none skipped because the commit
+  # changed no Rust), the ci job skips its jobs instead of running them
+  # again. The relay job may have skipped: the archives hold no relay code,
+  # and relay changes pass it before they merge. A run still going is waited
+  # for: starting another would queue a second macOS job behind it. A
+  # cancelled or failed run, or none (a tag pushed by hand on another
+  # branch), runs CI here as before. This is its own job, not a step of
+  # version, because the builds need version and must not wait for this.
+  main-ci:
+    name: Main's CI for this commit
+    needs: version
+    if: inputs.version == '' && needs.version.outputs.skip != 'true'
+    runs-on: depot-ubuntu-24.04
+    outputs:
+      # "true" when ci.yml already passed on main for this commit.
+      passed: ${{ steps.main-ci.outputs.passed }}
+    permissions:
+      # Reads main's CI runs and their jobs.
+      actions: read
+    steps:
+      - name: Look up main's CI run
+        id: main-ci
+        # The job must not fail: the jobs that publish need ci, and a failed
+        # job skips everything that needs it, even through ci. An error or a
+        # timeout here only means ci runs as it would without the lookup.
+        continue-on-error: true
+        timeout-minutes: 95
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          runs() {
+            gh api "repos/$GH_REPO/actions/workflows/ci.yml/runs?event=push&branch=main&head_sha=$SHA" \
+              --jq "$1" || echo ""
+          }
+          # Up to 90 minutes, about the longest a macOS job has waited.
+          for _ in $(seq 180); do
+            [ -n "$(runs '.workflow_runs[] | select(.status != "completed") | .id')" ] || break
+            echo "main's CI for $SHA is still running"
+            sleep 30
+          done
+          for id in $(runs '.workflow_runs[] | select(.conclusion == "success") | .id'); do
+            # filter=latest: a job re-run after it failed counts by its last attempt.
+            other=$(gh api --paginate "repos/$GH_REPO/actions/runs/$id/jobs?filter=latest" \
+              --jq '.jobs[] | select(.conclusion != "success")
+                | select(.conclusion != "skipped" or .name != "Relay (types and tests)")
+                | "\(.name): \(.conclusion)"') || continue
+            if [ -z "$other" ]; then
+              echo "::notice::main's CI passed on $SHA ($GITHUB_SERVER_URL/$GH_REPO/actions/runs/$id); not running it again"
+              echo passed=true >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "run $id passed without running every Rust job:"
+            echo "$other"
+          done
+          echo "::notice::no run of main's CI passed every Rust job on $SHA; running CI"
 
   linux:
     name: Build (Linux ${{ matrix.arch }})

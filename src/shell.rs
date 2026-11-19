@@ -1709,13 +1709,18 @@ impl Shell {
                             }
                         }
                     }
-                    Err(e) => this.notify(
-                        crate::island::AlertKind::Failure,
-                        "Could not create the environment",
-                        &e.to_string(),
-                        None,
-                        cx,
-                    ),
+                    Err(e) => {
+                        if let Some(prompt) = prompt {
+                            this.unqueue(prompt, cx);
+                        }
+                        this.notify(
+                            crate::island::AlertKind::Failure,
+                            "Could not create the environment",
+                            &e.to_string(),
+                            None,
+                            cx,
+                        )
+                    }
                 }
                 cx.notify();
             });

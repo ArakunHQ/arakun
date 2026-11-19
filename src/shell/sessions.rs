@@ -87,6 +87,8 @@ fn new_session_id() -> SharedString {
 /// A first prompt waiting for the worktree it will start in.
 pub(super) struct QueuedPrompt {
     text: String,
+    /// Where it was written: what it mentions is found there.
+    from: PathBuf,
     agent: model::Agent,
     draft_settings: Vec<(Setting, String)>,
     claude_settings: Vec<(Setting, String)>,
@@ -538,6 +540,7 @@ impl Shell {
         let env = self.env();
         QueuedPrompt {
             text,
+            from: env.path.clone(),
             agent: env.agent,
             draft_settings: env.draft_settings.clone(),
             claude_settings: env.claude_settings.clone(),
@@ -566,8 +569,28 @@ impl Shell {
         env.codex_settings = p.codex_settings;
         env.devin_settings = p.devin_settings;
         env.workers_ai_settings = p.workers_ai_settings;
-        let title = summary(&p.text);
-        self.start_session_in(env_path, p.agent, title, p.text, true, window, cx);
+        let text = crate::agent::attach::move_mentions(&p.text, &p.from, env_path);
+        let title = summary(&text);
+        self.start_session_in(env_path, p.agent, title, text, true, window, cx);
+    }
+
+    /// The worktree a queued prompt waited for could not be made: the text
+    /// goes back into the composer it was written in, before anything typed since.
+    pub(super) fn unqueue(&mut self, p: QueuedPrompt, cx: &mut Context<Self>) {
+        let here = self.has_projects() && self.env().path == p.from;
+        let Some(env) = self.find_env_mut(&p.from) else {
+            return;
+        };
+        let typed = env.draft.trim().to_string();
+        if typed.is_empty() {
+            env.draft.set(&p.text);
+        } else {
+            env.draft.set(format!("{}\n\n{typed}", p.text));
+        }
+        if here {
+            self.composer_changed(cx);
+        }
+        cx.notify();
     }
 
     /// Sends the composer text: to the open session, or as the first prompt of a new one.

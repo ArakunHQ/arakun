@@ -199,6 +199,14 @@ terminal-only. The status line and keybindings from your settings don't apply in
 
 - **CI and checks.** GitHub Actions runs for each project, with jobs, annotations and
   the failing log, read through the `gh` CLI.
+- **Create a pull request.** The pull request chip of the Changes panel opens the
+  branch's pull request, or a dialog that creates one: the title (from the first
+  commit), the branch it merges into (the remote's default one; type another for a
+  stack), and the description GitHub's own form would start with (the repository's
+  pull request template, else the commit messages). It opens as a draft unless you turn
+  that off, pushes the branch first when it has commits GitHub doesn't, and then shows
+  the new pull request in the GitHub tab. "Open GitHub's form" opens the page in your
+  browser instead, to write the description there.
 - **Queue.** The GitHub tab opens on one line that says how many things need you,
   then a quiet list grouped by where each pull request stands (Needs you, Stuck,
   pilot is on it, Waiting on CI, Waiting on others, Ready to merge), stacked pull

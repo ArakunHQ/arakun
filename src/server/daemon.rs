@@ -3163,11 +3163,9 @@ fn git(dir: &Path) -> std::process::Command {
     git
 }
 
-/// Runs git; its last words when it fails.
+/// Runs git on the repository's files only; its last words when it fails.
 fn run_git(cmd: &mut std::process::Command) -> Result<(), String> {
-    let out = cmd
-        .output()
-        .map_err(|e| format!("could not run git: {e}"))?;
+    let out = local_output(cmd).map_err(|e| format!("could not run git: {e}"))?;
     if out.status.success() {
         return Ok(());
     }
@@ -3178,6 +3176,12 @@ fn run_git(cmd: &mut std::process::Command) -> Result<(), String> {
             .rfind(|l| !l.trim().is_empty())
             .unwrap_or("no reason given")
     ))
+}
+
+/// `cmd`'s output, stopped once it ran for [`crate::platform::GIT_LOCAL`]: a
+/// git that hangs (a stuck disk, a lock) must not hold a thread for good.
+fn local_output(cmd: &mut std::process::Command) -> std::io::Result<std::process::Output> {
+    crate::platform::output_within(cmd, None, crate::platform::GIT_LOCAL)
 }
 
 /// What `run_bounded` says when git ran out of `limit`.
@@ -3270,10 +3274,13 @@ fn remove_worktree(place: &Path, branch: Option<&str>) -> Result<Option<String>,
     // Git runs in the repository's own files, which hold every worktree's
     // and are wherever they are kept (`--separate-git-dir`, bare).
     let (_, root) = git_dirs(place).ok_or("that folder is not in a git repository")?;
-    let removed = run_git(
+    // Its hooks and a big folder get the time adding one gets.
+    let removed = run_bounded(
         git(&root)
             .args(["worktree", "remove", "--force"])
             .arg(place),
+        WORKTREE_LIMIT,
+        None,
     );
     let mut stayed = Vec::new();
     match removed {
@@ -3326,16 +3333,14 @@ fn removable(place: &Path) -> Result<(), String> {
 /// The git files of the checkout at `place` and the repository's shared
 /// ones, as git resolves them.
 fn git_dirs(place: &Path) -> Option<(PathBuf, PathBuf)> {
-    let out = git(place)
-        .args([
-            "rev-parse",
-            "--path-format=absolute",
-            "--git-dir",
-            "--git-common-dir",
-        ])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())?;
+    let out = local_output(git(place).args([
+        "rev-parse",
+        "--path-format=absolute",
+        "--git-dir",
+        "--git-common-dir",
+    ]))
+    .ok()
+    .filter(|o| o.status.success())?;
     let (own, common) = two_paths(&String::from_utf8_lossy(&out.stdout))?;
     Some((
         own.canonicalize().unwrap_or(own),
@@ -3393,15 +3398,27 @@ fn rename_branch(place: &Path, from: &str, to: &str) -> Result<bool, String> {
     }
     // Pushed: the remote keeps the old name, as the app's own rename knows.
     // A push without --set-upstream leaves only the remote-tracking ref.
-    let upstream = git(place)
-        .args(["config", "--get", &format!("branch.{from}.merge")])
-        .output()
-        .is_ok_and(|o| o.status.success());
-    let tracked = git(place)
-        .args(["for-each-ref", "--format=%(refname)"])
-        .arg(format!("refs/remotes/*/{from}"))
-        .output()
-        .is_ok_and(|o| !o.stdout.trim_ascii().is_empty());
+    // A check that failed or timed out says nothing, and must not let the rename go on.
+    let unsure = |e: std::io::Error| format!("could not check whether {from} was pushed: {e}");
+    let upstream =
+        local_output(git(place).args(["config", "--get", &format!("branch.{from}.merge")]))
+            .map_err(unsure)?;
+    // `config --get` exits 1 only when the key is not set.
+    let upstream = match upstream.status.code() {
+        Some(0) => true,
+        Some(1) => false,
+        _ => return Err(format!("could not check whether {from} was pushed")),
+    };
+    let tracked = local_output(
+        git(place)
+            .args(["for-each-ref", "--format=%(refname)"])
+            .arg(format!("refs/remotes/*/{from}")),
+    )
+    .map_err(unsure)?;
+    if !tracked.status.success() {
+        return Err(format!("could not check whether {from} was pushed"));
+    }
+    let tracked = !tracked.stdout.trim_ascii().is_empty();
     if upstream || tracked {
         return Err(format!(
             "{from} was already pushed; rename it on the remote too, or keep the name"
@@ -3560,12 +3577,12 @@ fn has_ssh_command(git: &std::process::Command) -> bool {
         };
     }
     // Outside any repository: a clone reads no repository's config either.
-    config
-        .current_dir(std::env::temp_dir())
-        .args(["config", "--get", "core.sshCommand"])
-        .stdin(std::process::Stdio::null())
-        .output()
-        .is_ok_and(|o| o.status.success() && !o.stdout.trim_ascii().is_empty())
+    local_output(config.current_dir(std::env::temp_dir()).args([
+        "config",
+        "--get",
+        "core.sshCommand",
+    ]))
+    .is_ok_and(|o| o.status.success() && !o.stdout.trim_ascii().is_empty())
 }
 
 /// Git as the server runs it. Tests leave out this machine's settings: a
@@ -3590,12 +3607,7 @@ fn git_command() -> std::process::Command {
 /// some other checkout is not one.
 fn checkout_origin(dir: &Path) -> Option<clone_source::CloneSource> {
     let git = |args: &[&str]| {
-        git_command()
-            .arg("-C")
-            .arg(dir)
-            .args(args)
-            .stdin(std::process::Stdio::null())
-            .output()
+        local_output(git_command().arg("-C").arg(dir).args(args))
             .ok()
             .filter(|o| o.status.success())
             .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())

@@ -159,6 +159,11 @@ Manager (Windows Credentials, Generic Credentials).
   `npm run typecheck && npm test` work the same; anything that is `sh` syntax does not.
 - **`arakun run` and project scripts** open their terminal in PowerShell, at
   *BelowNormal* priority, and print `[exit N]` when done, as on Linux.
+- **Time limits on `git` and `gh`:** the same as on Linux. Calls that only read the
+  repository may run for 60 s, calls to a remote for 2 min, and work you start that runs
+  hooks (commit, push, pull, merge, clone, adding a worktree) for 30 min. On Linux and
+  macOS a call past its limit gets 2 s to clean up before it is killed. Windows has no
+  such request, so there it is killed at once, and git may leave a lock file behind.
 - **Title bar:** Windows handles dragging and the minimize, maximize and close buttons as
   native system areas, not through Arakun's mouse events. The buttons look different too:
   on Windows each is 40 px wide, as tall as the title bar and square, after a thin line
@@ -292,6 +297,10 @@ Manager (Windows Credentials, Generic Credentials).
   `cargo build --release --no-default-features`.
 - **`LNK` errors about missing libraries:** the *Desktop development with C++* workload or
   the Windows SDK is not installed.
+- **A git command fails with `Unable to create '...\.git\index.lock': File exists`:**
+  a git call that ran past its time limit was killed before it could remove its lock
+  file. If no other git is running in that repository, delete the file the error names
+  (usually `.git\index.lock`, or a `.lock` file under `.git\refs\`) and try again.
 - **"Access denied (os error 5)" when opening a file:** Windows does not allow opening a
   file that another process has locked. The running Arakun locks only
   `state.json.lock`, which nothing needs to read. If it happens with another file,

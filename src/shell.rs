@@ -326,8 +326,12 @@ pub struct Shell {
     rail_pick_anchor: Option<std::path::PathBuf>,
     /// Polls `git status` of the visible environment while the window is active.
     poll: Option<Task<()>>,
-    /// The last background `git fetch`, so the network is asked rarely.
+    /// When the last background `git fetch` ended, so the network is asked rarely.
     last_fetch: Option<Instant>,
+    /// A background `git fetch` is running; one at a time.
+    fetching: bool,
+    /// The polled git reads running now, so a slow one is not started again.
+    git_reads: git_actions::GitReads,
     /// Diff tabs whose file lost its changes; closed from `render` (needs a window).
     stale_diffs: Vec<(std::path::PathBuf, String)>,
     /// Open `@`/`/` completion of the composer.
@@ -881,6 +885,8 @@ impl Shell {
             rail_pick_anchor: None,
             poll: None,
             last_fetch: None,
+            fetching: false,
+            git_reads: Default::default(),
             stale_diffs: Vec::new(),
             completion: None,
             file_index: None,
@@ -1371,6 +1377,9 @@ impl Shell {
         if crate::model::Remote::is_path(env_path) {
             return;
         }
+        if !self.git_reads.start(env_path, git_actions::GitRead::Status) {
+            return;
+        }
         let path = env_path.to_path_buf();
         cx.spawn(async move |this, cx| {
             let p = path.clone();
@@ -1380,6 +1389,27 @@ impl Shell {
                 }))
                 .await;
             let _ = this.update(cx, |this, cx| {
+                let timed_out = changes.as_ref().err().or(sync.as_ref().err());
+                let timed_out = timed_out.filter(|e| git::timed_out(e));
+                let recovered = this.git_reads.status_ended(&path, timed_out.is_some());
+                if let Some(env) = this.find_env_mut(&path) {
+                    if let Some(e) = timed_out {
+                        env.git_error = Some(
+                            format!(
+                                "{e}. Arakun looks again in {} minutes.",
+                                git_actions::STATUS_PAUSE.as_secs() / 60
+                            )
+                            .into(),
+                        );
+                        cx.notify();
+                    } else if recovered && env.git_error.is_some() {
+                        env.git_error = None;
+                        cx.notify();
+                    }
+                }
+                if this.git_reads.end(&path, git_actions::GitRead::Status) {
+                    this.refresh_status(&path, cx);
+                }
                 if let Ok(sync) = sync
                     && let Some(env) = this.find_env_mut(&path)
                     && env.sync != sync
@@ -1493,19 +1523,24 @@ impl Shell {
         if !self.has_projects() || self.env().sync.remote.is_none() {
             return;
         }
-        if self.last_fetch.is_some_and(|t| t.elapsed() < FETCH_EVERY) {
+        if self.fetching || self.last_fetch.is_some_and(|t| t.elapsed() < FETCH_EVERY) {
             return;
         }
-        self.last_fetch = Some(Instant::now());
+        self.fetching = true;
         let path = self.env().path.clone();
         cx.spawn(async move |this, cx| {
             let p = path.clone();
             let fetched = cx
                 .background_spawn(crate::guard::task(async move { git::fetch(&p) }))
                 .await;
-            if fetched.is_ok() {
-                let _ = this.update(cx, |this, cx| this.refresh_status(&path, cx));
-            }
+            let _ = this.update(cx, |this, cx| {
+                this.fetching = false;
+                // Counted from the end, so a slow fetch is not followed by another at once.
+                this.last_fetch = Some(Instant::now());
+                if fetched.is_ok() {
+                    this.refresh_status(&path, cx);
+                }
+            });
         })
         .detach();
     }

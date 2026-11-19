@@ -162,15 +162,19 @@ fn read_defaults() -> NativeSettings {
 /// session, so nothing is written to Droid's session store.
 fn fetch_models() -> Result<Value> {
     let spec = launch::resolve_droid_native(None)?;
-    let mut child = crate::platform::command(&spec.program)
-        .args(&spec.args)
+    let mut cmd = crate::platform::command(&spec.program);
+    cmd.args(&spec.args)
         .envs(spec.env.iter().map(|(k, v)| (k, v)))
         .current_dir(std::env::temp_dir())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::null());
+    // Ending droid alone would leave what it started holding stdout, and the reader with it.
+    crate::platform::ProcessTree::prepare_made(&mut cmd);
+    let mut child = cmd
         .spawn()
         .with_context(|| format!("starting {}", spec.display()))?;
+    let tree = crate::platform::ProcessTree::adopt(&child);
     let mut stdin = child.stdin.take().context("droid stdin")?;
     let stdout = child.stdout.take().context("droid stdout")?;
     let id = "arakun-list-models";
@@ -200,7 +204,7 @@ fn fetch_models() -> Result<Value> {
         rx.recv_timeout(Duration::from_secs(20))
             .map_err(|_| anyhow!("no answer"))
     });
-    let _ = child.kill();
+    tree.kill();
     let _ = child.wait();
     let reply = reply?;
     if let Some(e) = reply.get("error") {

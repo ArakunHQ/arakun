@@ -1000,6 +1000,13 @@ impl ProcessTree {
     /// Readies `cmd` before it is spawned.
     pub fn prepare(cmd: &mut Command) {
         no_window(cmd);
+        Self::prepare_made(cmd);
+    }
+
+    /// [`prepare`](Self::prepare) for a command made with [`command`] or [`agent_command`],
+    /// which already opens no window. Windows has one set of creation flags, and setting
+    /// them again would undo what [`lower_priority`] set.
+    pub fn prepare_made(cmd: &mut Command) {
         #[cfg(not(windows))]
         {
             use std::os::unix::process::CommandExt as _;
@@ -1015,6 +1022,8 @@ impl ProcessTree {
                 });
             }
         }
+        #[cfg(windows)]
+        let _ = cmd;
     }
 
     /// The tree rooted at `child`, which was spawned from a [`prepare`](Self::prepare)d command.
@@ -1061,6 +1070,38 @@ impl ProcessTree {
         }
     }
 
+    /// Whether anything in the tree still runs, a zombie the caller has not reaped
+    /// included.
+    #[cfg(not(windows))]
+    fn is_running(&self) -> bool {
+        // SAFETY: signal 0 only checks that the group exists.
+        unsafe { libc::kill(-self.group, 0) == 0 }
+    }
+
+    /// Lets what is left in the tree keep running once this is dropped. For helpers a
+    /// command starts on purpose and expects to outlive it, such as the
+    /// `fsmonitor--daemon` that `git status` starts.
+    pub fn release(self) {
+        #[cfg(windows)]
+        if self.job != 0 {
+            use windows_sys::Win32::System::JobObjects::{
+                JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
+                SetInformationJobObject,
+            };
+            // SAFETY: the handle is ours until drop, and the info struct outlives the
+            // call. No flags clears KILL_ON_JOB_CLOSE, so closing the handle ends nothing.
+            unsafe {
+                let info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+                SetInformationJobObject(
+                    self.job as _,
+                    JobObjectExtendedLimitInformation,
+                    (&raw const info).cast(),
+                    std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+                );
+            }
+        }
+    }
+
     /// Ends the whole tree now.
     pub fn kill(&self) {
         #[cfg(windows)]
@@ -1088,6 +1129,215 @@ impl Drop for ProcessTree {
                 windows_sys::Win32::Foundation::CloseHandle(self.job as _);
             }
         }
+    }
+}
+
+/// How long a git call that only reads or writes the repository on disk may run. A status
+/// scan of a big monorepo on a cold disk can take tens of seconds; one stuck on a hung
+/// network drive must still end.
+pub const GIT_LOCAL: std::time::Duration = std::time::Duration::from_secs(60);
+/// How long a git or gh call that talks to a remote may run: `git fetch`, `gh api`,
+/// `gh pr view`. A slow link gets time; a stalled transfer, or ssh waiting on a host
+/// that does not answer, does not hold a thread for good.
+pub const GIT_REMOTE: std::time::Duration = std::time::Duration::from_secs(120);
+/// How long git work the user started and watches may run when it runs hooks or moves a
+/// lot of data: clone, commit, push, pull, merge, adding a worktree. A pre-push hook may
+/// run a whole test suite, so this only makes sure a hung one ends.
+pub const GIT_LONG: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+
+/// How long a stopped command has to clean up before it is killed.
+const STOP_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// [`Command::output`], `input` on its stdin, but the command and everything it started
+/// are stopped once it has run for `limit`. Background work runs on a few shared threads,
+/// so one call that hangs (a stalled transfer, a slow disk) must not hold one for good.
+///
+/// The tree is asked to end first and killed after [`STOP_GRACE`]: git removes its lock
+/// files on SIGTERM but not when killed, and a stale `index.lock` would break the next
+/// commit. Windows has no such ask, so there the tree is killed at once.
+///
+/// Make `cmd` with [`command`] or [`agent_command`]; this leaves its window and priority
+/// as they are.
+pub fn output_within(
+    cmd: &mut Command,
+    input: Option<&[u8]>,
+    limit: std::time::Duration,
+) -> std::io::Result<std::process::Output> {
+    use std::io::{Read as _, Write as _};
+    use std::time::{Duration, Instant};
+    cmd.stdin(if input.is_some() {
+        Stdio::piped()
+    } else {
+        Stdio::null()
+    })
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped());
+    ProcessTree::prepare_made(cmd);
+    let mut child = cmd.spawn()?;
+    let tree = ProcessTree::adopt(&child);
+    if let (Some(bytes), Some(mut stdin)) = (input, child.stdin.take()) {
+        let bytes = bytes.to_vec();
+        // A thread, so a command that answers before it reads all its input can't block us.
+        std::thread::spawn(move || {
+            let _ = stdin.write_all(&bytes);
+        });
+    }
+    let (tx, rx) = std::sync::mpsc::channel::<(bool, Vec<u8>)>();
+    let pipes: [(bool, Option<Box<dyn std::io::Read + Send>>); 2] = [
+        (true, child.stdout.take().map(|p| Box::new(p) as _)),
+        (false, child.stderr.take().map(|p| Box::new(p) as _)),
+    ];
+    for (is_stdout, pipe) in pipes {
+        let tx = tx.clone();
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            if let Some(mut pipe) = pipe {
+                let _ = pipe.read_to_end(&mut buf);
+            }
+            let _ = tx.send((is_stdout, buf));
+        });
+    }
+    drop(tx);
+    let started = Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if started.elapsed() < limit => {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Ok(None) => {
+                stop(&tree, &mut child);
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    format!(
+                        "{} took longer than {} and was stopped",
+                        command_name(cmd),
+                        span(limit)
+                    ),
+                ));
+            }
+            Err(e) => {
+                tree.kill();
+                // The tree may not hold the child (on Windows the job object can fail
+                // to take it), and the wait would then last as long as the child.
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(e);
+            }
+        }
+    };
+    let (mut stdout, mut stderr) = (None, None);
+    let mut take = |is_stdout: bool, bytes: Vec<u8>| {
+        if is_stdout {
+            stdout = Some(bytes);
+        } else {
+            stderr = Some(bytes);
+        }
+    };
+    // The tree is left alone when the pipes close: git starts helpers on purpose that
+    // outlive it, such as the fsmonitor daemon, and killing them after every status
+    // would make them useless. Something it started that holds a pipe open does get
+    // killed, or the call would last as long as that does.
+    let until = Instant::now() + STOP_GRACE;
+    let mut open = 2;
+    while open > 0 {
+        match rx.recv_timeout(until.saturating_duration_since(Instant::now())) {
+            Ok((is_stdout, bytes)) => {
+                take(is_stdout, bytes);
+                open -= 1;
+            }
+            Err(_) => break,
+        }
+    }
+    if open == 0 {
+        tree.release();
+    } else {
+        tree.kill();
+        // What a process outside the tree still holds open is given up on.
+        let until = Instant::now() + KILLED_PIPES;
+        while let Ok((is_stdout, bytes)) =
+            rx.recv_timeout(until.saturating_duration_since(Instant::now()))
+        {
+            take(is_stdout, bytes);
+        }
+    }
+    Ok(std::process::Output {
+        status,
+        stdout: stdout.unwrap_or_default(),
+        stderr: stderr.unwrap_or_default(),
+    })
+}
+
+/// How long the pipes get to close once what held them was killed.
+const KILLED_PIPES: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Asks the tree to end, then kills what is left after [`STOP_GRACE`]. Windows has no
+/// such ask, so there it is killed at once.
+fn stop(tree: &ProcessTree, child: &mut std::process::Child) {
+    #[cfg(not(windows))]
+    {
+        tree.terminate();
+        let asked = std::time::Instant::now();
+        let mut reaped = false;
+        // The whole group gets the grace, not only the child: what it started may
+        // still be cleaning up after the child is gone.
+        while asked.elapsed() < STOP_GRACE {
+            reaped = reaped || matches!(child.try_wait(), Ok(Some(_)));
+            if reaped && !tree.is_running() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+    tree.kill();
+    // The tree may not hold the child (on Windows the job object can fail to take it),
+    // and the wait would then last as long as the child.
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// `git fetch` for `git fetch --all`, `gh pr list` for `gh -R o/r pr list`: the program and
+/// its subcommand, for an error that says which call hung.
+fn command_name(cmd: &Command) -> String {
+    let program = Path::new(cmd.get_program()).file_stem().map_or_else(
+        || "a command".to_string(),
+        |s| s.to_string_lossy().into_owned(),
+    );
+    let word = |a: &str| {
+        !a.starts_with('-')
+            && a.chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    };
+    let mut words = vec![program];
+    let mut args = cmd.get_args().map(|a| a.to_string_lossy());
+    while let Some(arg) = args.next() {
+        if word(&arg) {
+            words.push(arg.into_owned());
+            // `gh pr list`: the subcommand is the words that follow, up to the first option.
+            words.extend(
+                args.by_ref()
+                    .map_while(|a| word(&a).then(|| a.into_owned()))
+                    .take(1),
+            );
+            break;
+        }
+        if matches!(arg.as_ref(), "-c" | "-C" | "-R") {
+            // The value of an option before the subcommand.
+            args.next();
+        }
+    }
+    words.join(" ")
+}
+
+/// `90 s`, or `2 min` for a whole number of minutes.
+fn span(d: std::time::Duration) -> String {
+    let secs = d.as_secs();
+    if secs >= 60 && secs.is_multiple_of(60) {
+        format!("{} min", secs / 60)
+    } else if secs == 0 {
+        format!("{} ms", d.as_millis())
+    } else {
+        format!("{secs} s")
     }
 }
 
@@ -1426,6 +1676,130 @@ pub fn refresh_rate() -> Option<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use std::time::{Duration, Instant};
+
+    #[cfg(unix)]
+    #[test]
+    fn a_command_past_its_limit_is_stopped_with_what_it_started() {
+        let started = Instant::now();
+        let err = output_within(
+            Command::new("sh").args(["-c", "sleep 30 & sleep 30"]),
+            None,
+            Duration::from_millis(300),
+        )
+        .unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
+        assert!(err.to_string().starts_with("sh took longer than"), "{err}");
+        assert!(started.elapsed() < Duration::from_secs(10));
+    }
+
+    /// git removes its lock files when it gets SIGTERM, not when it is killed.
+    #[cfg(unix)]
+    #[test]
+    fn a_stopped_command_is_asked_to_end_first() {
+        let dir = std::env::temp_dir().join(format!("arakun-stop-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = "trap 'touch cleaned; exit 1' TERM; sleep 30 & wait";
+        let err = output_within(
+            Command::new("sh").args(["-c", script]).current_dir(&dir),
+            None,
+            Duration::from_millis(300),
+        )
+        .unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
+        assert!(dir.join("cleaned").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn what_a_finished_command_left_running_does_not_hold_it() {
+        let started = Instant::now();
+        let out = output_within(
+            Command::new("sh").args(["-c", "echo hi; sleep 30 &"]),
+            None,
+            Duration::from_secs(20),
+        )
+        .unwrap();
+        assert!(out.status.success());
+        assert_eq!(out.stdout, b"hi\n");
+        assert!(started.elapsed() < Duration::from_secs(10));
+    }
+
+    /// Like the fsmonitor daemon `git status` starts: it closes the pipes and is
+    /// meant to outlive the command.
+    #[cfg(unix)]
+    #[test]
+    fn a_helper_that_lets_go_of_the_pipes_keeps_running() {
+        let started = Instant::now();
+        let out = output_within(
+            Command::new("sh").args(["-c", "sleep 30 >/dev/null 2>&1 & echo $!"]),
+            None,
+            Duration::from_secs(20),
+        )
+        .unwrap();
+        assert!(started.elapsed() < STOP_GRACE);
+        let pid = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        let alive = |pid: &str| {
+            Command::new("kill")
+                .args(["-0", pid])
+                .status()
+                .is_ok_and(|s| s.success())
+        };
+        assert!(alive(&pid), "the helper was killed");
+        let _ = Command::new("kill").arg(&pid).status();
+    }
+
+    /// The grace is for the whole group: what the command started may still be
+    /// cleaning up after the command itself is gone.
+    #[cfg(unix)]
+    #[test]
+    fn what_a_stopped_command_started_gets_the_grace_too() {
+        let dir = std::env::temp_dir().join(format!("arakun-grace-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = "sh -c \"trap 'sleep 0.5; touch cleaned; exit 1' TERM; \
+                      sleep 30 & wait\" & wait";
+        let err = output_within(
+            Command::new("sh").args(["-c", script]).current_dir(&dir),
+            None,
+            Duration::from_millis(300),
+        )
+        .unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
+        assert!(dir.join("cleaned").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn input_goes_to_stdin_and_without_it_stdin_is_empty() {
+        let out = output_within(
+            &mut Command::new("cat"),
+            Some(b"abc"),
+            Duration::from_secs(10),
+        );
+        assert_eq!(out.unwrap().stdout, b"abc");
+        let out = output_within(&mut Command::new("cat"), None, Duration::from_secs(10));
+        assert_eq!(out.unwrap().stdout, b"");
+    }
+
+    #[test]
+    fn a_stopped_command_is_named_by_its_subcommand() {
+        let name = |args: &[&str]| {
+            let mut cmd = Command::new("/usr/bin/git");
+            cmd.args(args);
+            command_name(&cmd)
+        };
+        assert_eq!(name(&["fetch", "--all", "--quiet"]), "git fetch");
+        assert_eq!(name(&["-c", "alias.x=!sleep 1", "x"]), "git x");
+        assert_eq!(name(&["show", "HEAD:src/a.rs"]), "git show");
+        let mut gh = Command::new("gh");
+        gh.args(["-R", "o/r", "pr", "list", "--json", "number"]);
+        assert_eq!(command_name(&gh), "gh pr list");
+    }
 
     #[test]
     fn only_a_binary_in_an_app_bundle_counts_as_bundled() {

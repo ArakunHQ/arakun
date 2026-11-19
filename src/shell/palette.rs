@@ -95,6 +95,8 @@ impl Shell {
         self.read_repo_slugs(cx);
         let seed = self.palette_seed(cx);
         let palette = cx.new(|cx| Palette::new(seed, window, cx));
+        // The palette reads its pins, to-dos and frecency as it opens.
+        self.report_unreadable(cx);
         let sub = cx.subscribe_in(&palette, window, Self::on_palette_event);
         // What GitHub brings in while it is open shows up in it.
         let weak = palette.downgrade();
@@ -1221,7 +1223,7 @@ impl Shell {
                 "toggle-panel",
                 "layout-align-right",
                 "Toggle workspace panel",
-                &[],
+                &["Ctrl", "Alt", "B"],
                 "Sessions, files and changes of the environment.",
                 Target::TogglePanel,
             );
@@ -1229,7 +1231,7 @@ impl Shell {
                 "toggle-subagents",
                 "bot",
                 "Toggle subagents panel",
-                &[],
+                &["Ctrl", "Alt", "S"],
                 "What the agent's helpers are doing.",
                 Target::ToggleSubagents,
             );
@@ -1324,6 +1326,14 @@ impl Shell {
             &[],
             "Opens a terminal with Codex's ChatGPT login.",
             Target::SignIn(crate::agent::AgentKind::Codex),
+        );
+        add(
+            "signin-devin",
+            "square-lock02",
+            "Sign in to Devin",
+            &[],
+            "Opens a terminal with Devin's login.",
+            Target::SignIn(crate::agent::AgentKind::Devin),
         );
         // The settings pilot read last (every minute, off this thread's
         // drawing): the palette never waits on the disk.

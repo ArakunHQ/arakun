@@ -1211,7 +1211,18 @@ fn run(bin: &Path, cwd: &Path, args: &[&str], timeout: Duration) -> Result<Strin
         .env("PATH", launch::child_path_env())
         .env("NO_COLOR", "1");
     // The CLI runs node, which may start more; all of it ends on a timeout.
-    let output = crate::platform::output_within(&mut cmd, None, timeout)?;
+    let output = crate::platform::output_within(&mut cmd, None, timeout).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::TimedOut {
+            return anyhow!("{e}");
+        }
+        // Both a missing program and a missing folder are "os error 2"; say which.
+        match std::fs::metadata(cwd) {
+            Err(m) if m.kind() == std::io::ErrorKind::NotFound => {
+                anyhow!("{} does not exist", cwd.display())
+            }
+            _ => anyhow!("could not start {}: {e}", bin.display()),
+        }
+    })?;
     let out = String::from_utf8_lossy(&output.stdout).into_owned();
     let err = String::from_utf8_lossy(&output.stderr);
     if !output.status.success() {
@@ -1302,6 +1313,23 @@ mod tests {
         .unwrap();
         assert_eq!(out, "ok\n");
         assert!(started.elapsed() < Duration::from_secs(10));
+    }
+
+    #[test]
+    fn spawn_errors_say_what_is_missing() {
+        let here = std::env::temp_dir();
+        let gone = here.join("arakun-no-such-folder");
+        let t = Duration::from_secs(5);
+        let err = run(Path::new("arakun-no-such-program"), &gone, &[], t).unwrap_err();
+        assert!(err.to_string().ends_with("does not exist"), "{err}");
+        let err = run(Path::new("arakun-no-such-program"), &here, &[], t).unwrap_err();
+        assert!(err.to_string().starts_with("could not start"), "{err}");
+        // A file where the folder should be is not "missing": keep the real error.
+        let file = here.join(format!("arakun-not-a-folder-{}", std::process::id()));
+        std::fs::write(&file, "").unwrap();
+        let err = run(Path::new("arakun-no-such-program"), &file, &[], t).unwrap_err();
+        let _ = std::fs::remove_file(&file);
+        assert!(err.to_string().starts_with("could not start"), "{err}");
     }
 
     #[test]

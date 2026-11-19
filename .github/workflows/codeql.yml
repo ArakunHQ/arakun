@@ -1,8 +1,9 @@
 name: CodeQL
 
 # Static analysis for security problems. Alerts show in the repository's
-# Security tab, and on a pull request as review annotations on the lines it
-# changes.
+# Security tab. It runs on main and on a schedule, not on pull requests.
+# CodeQL is not a required check, so a run on every push only queued runners
+# ahead of the checks people wait for.
 #
 # Every language uses build-mode none: CodeQL reads the sources without
 # building them, so the Rust job needs neither the GPUI system libraries nor
@@ -15,26 +16,21 @@ name: CodeQL
 on:
   push:
     branches: [main]
-  # Skips pull requests that change no code CodeQL reads. Safe here because
-  # CodeQL is not a required check, so a skipped run leaves nothing pending
-  # (unlike ci.yml's jobs). Pushes to main always run, which keeps the results
-  # pull requests are compared against current.
-  pull_request:
-    paths-ignore: ["docs/**", "**/*.md", "iso/**"]
   # New queries ship with CodeQL releases, so main is checked weekly even when
   # nothing changes.
   schedule:
     - cron: "23 5 * * 2"
+  # To scan a branch by hand: Actions > CodeQL > Run workflow.
+  workflow_dispatch:
 
 permissions: {}
 
-# A pull request's runs share a group, so a new push cancels the old run. Other
-# runs (pushes to main, schedules) get a group per commit: they never cancel or
-# replace each other, so every commit on main keeps its own result. GitHub
-# keeps only one pending run per group, so turning off cancel-in-progress alone
-# would still drop runs when several commits land at once.
+# Each run gets a group per commit: runs never cancel or replace each other, so
+# every commit on main keeps its own result. GitHub keeps only one pending run
+# per group, so turning off cancel-in-progress alone would still drop runs when
+# several commits land at once.
 concurrency:
-  group: codeql-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  group: codeql-${{ github.sha }}
   cancel-in-progress: true
 
 jobs:

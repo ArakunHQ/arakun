@@ -444,6 +444,11 @@ pub fn run(args: &[String], cwd: &Path) -> i32 {
         print!("{USAGE}");
         return 2;
     };
+    let help = |a: &String| crate::control::is_help(a);
+    if cmd == "help" || help(cmd) || rest.iter().any(help) {
+        print!("{USAGE}");
+        return 0;
+    }
     let result = parse(rest, cwd).and_then(|o| match cmd.as_str() {
         "render" => render(&o),
         "svg" => svg(&o),

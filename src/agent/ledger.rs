@@ -2,7 +2,6 @@
 //! what the turn used (tokens, cost, credits). It outlives the sessions, so
 //! totals by day, project and model can be worked out later.
 
-use std::io::{BufRead as _, Write as _};
 use std::path::PathBuf;
 
 use anyhow::Result;
@@ -53,31 +52,32 @@ pub fn path() -> PathBuf {
         .unwrap_or_else(|| crate::platform::app_dir().join("usage.jsonl"))
 }
 
+/// About 60,000 turns. Past it the log moves to `usage.old.jsonl`, so the
+/// two keep the latest turns without growing for ever.
+const MAX_BYTES: u64 = 16 << 20;
+
 pub fn append(turn: &Turn) -> Result<()> {
-    let path = path();
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
     let mut line = serde_json::to_vec(turn)?;
     line.push(b'\n');
-    // One write per line, so lines from two sessions never interleave.
-    std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)?
-        .write_all(&line)?;
+    crate::rotate::append(&path(), &line, MAX_BYTES)?;
     Ok(())
 }
 
-/// Every turn logged so far; lines that do not parse are skipped.
+/// Every turn still logged, oldest first. A line that does not parse, such
+/// as one cut short by a crash, is skipped and the lines after it still read.
 pub fn read() -> Vec<Turn> {
-    let Ok(file) = std::fs::File::open(path()) else {
-        return Vec::new();
-    };
-    std::io::BufReader::new(file)
-        .lines()
-        .map_while(Result::ok)
-        .filter_map(|l| serde_json::from_str(&l).ok())
+    let path = path();
+    [crate::rotate::old_path(&path), path]
+        .iter()
+        .filter_map(|p| std::fs::read(p).ok())
+        .flat_map(|bytes| parse(&bytes))
+        .collect()
+}
+
+fn parse(bytes: &[u8]) -> Vec<Turn> {
+    bytes
+        .split(|&b| b == b'\n')
+        .filter_map(|l| serde_json::from_slice(l).ok())
         .collect()
 }
 
@@ -113,5 +113,12 @@ mod tests {
             (7, 0., None)
         );
         assert!(!bare.is_empty());
+    }
+
+    #[test]
+    fn a_bad_line_does_not_hide_the_turns_after_it() {
+        let ok = r#"{"at":1,"agent":"droid","session":"x","cwd":"/q","credits":1}"#;
+        let bytes = [ok.as_bytes(), b"\n{\"at\":2,\xff\n", ok.as_bytes(), b"\n"].concat();
+        assert_eq!(parse(&bytes).len(), 2);
     }
 }

@@ -23,7 +23,7 @@ impl Step {
     pub fn label(self) -> &'static str {
         match self {
             Step::Agents => "Agents",
-            Step::Look => "Look and shortcuts",
+            Step::Look => "Preferences",
             Step::Connections => "Connections",
             Step::Reports => "Crash reports",
             Step::Project => "First project",
@@ -45,7 +45,9 @@ impl Step {
             Step::Agents => {
                 "Arakun runs the agents you already have. New environments start with the one you pick, and you can switch for any session."
             }
-            Step::Look => "Pick a mode now. Palettes, corners and spacing are in Settings.",
+            Step::Look => {
+                "Pick a mode and when old environments go. Palettes, corners, spacing and the rest are in Settings."
+            }
             Step::Connections => "Both are optional, and both can wait.",
             Step::Reports => {
                 "They tell us what breaks and what gets used. Nothing is sent unless you say yes."
@@ -105,7 +107,13 @@ pub fn set_done() {
 
 /// The agents that need something on the machine, in the order shown.
 /// Workers AI is left out: it has no CLI to find.
-pub const AGENTS: [Agent; 4] = [Agent::Claude, Agent::Codex, Agent::OpenCode, Agent::Droid];
+pub const AGENTS: [Agent; 5] = [
+    Agent::Claude,
+    Agent::Codex,
+    Agent::OpenCode,
+    Agent::Droid,
+    Agent::Devin,
+];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Readiness {
@@ -124,8 +132,8 @@ pub struct AgentRow {
 }
 
 /// Claude Code and Codex run through an adapter that Arakun installs with npm
-/// and that brings the agent's own binary; `has` is that adapter. OpenCode
-/// and Droid are the user's own CLIs; `has` is the CLI.
+/// and that brings the agent's own binary; `has` is that adapter. OpenCode,
+/// Droid and Devin are the user's own CLIs; `has` is the CLI.
 fn readiness(agent: Agent, has: bool, npm: bool) -> Readiness {
     let through_npm = matches!(agent, Agent::Claude | Agent::Codex);
     match (has, through_npm && npm) {
@@ -146,6 +154,7 @@ pub fn find_agents() -> Vec<AgentRow> {
                 Agent::Codex => crate::agent::adapter_install(AgentKind::Codex).is_none(),
                 Agent::OpenCode => crate::agent::opencode_bin().is_ok(),
                 Agent::Droid => crate::agent::droid_bin().is_ok(),
+                Agent::Devin => crate::agent::devin_bin().is_ok(),
                 Agent::WorkersAi => false,
             };
             AgentRow {
@@ -162,6 +171,10 @@ pub fn install_link(agent: Agent) -> (&'static str, &'static str) {
         Agent::Claude | Agent::Codex => ("Needs Node.js for npm", "https://nodejs.org"),
         Agent::OpenCode => ("Get OpenCode", "https://opencode.ai"),
         Agent::Droid => ("Get Droid", "https://factory.ai"),
+        Agent::Devin => (
+            "Get the Devin CLI",
+            "https://docs.devin.ai/work-with-devin/devin-cli",
+        ),
         Agent::WorkersAi => ("", ""),
     }
 }
@@ -272,6 +285,7 @@ mod tests {
         assert_eq!(readiness(Agent::Claude, false, false), Readiness::Missing);
         // npm does not bring the user's own CLIs.
         assert_eq!(readiness(Agent::Droid, false, true), Readiness::Missing);
+        assert_eq!(readiness(Agent::Devin, false, true), Readiness::Missing);
         assert_eq!(readiness(Agent::OpenCode, true, false), Readiness::Ready);
     }
 

@@ -59,6 +59,9 @@ pub struct State {
     /// The Dynamic Island was turned off in Settings (`island`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub island_off: bool,
+    /// Closing the window hides it instead of quitting (`background`, Linux).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub background: bool,
     /// Where the window was when the app last saved, so it opens there again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window: Option<WindowState>,
@@ -262,8 +265,8 @@ pub struct Layout {
     pub glass: bool,
     pub grays: crate::theme::Grays,
     pub type_scale: crate::ui::TypeScale,
-    /// Whether the rail's usage card shows Claude, Droid and OpenCode.
-    pub rail_usage: [bool; 3],
+    /// Whether the rail's usage card shows Claude, Droid, OpenCode and Devin.
+    pub rail_usage: [bool; 4],
     pub ui_zoom: u32,
     pub window: Option<WindowState>,
 }
@@ -324,6 +327,9 @@ pub struct EnvState {
     /// Codex settings for the next session, as (key, value).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub codex_settings: Vec<(String, String)>,
+    /// Devin settings for the next session, as (key, value).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub devin_settings: Vec<(String, String)>,
     /// Workers AI settings for the next session, as (key, value).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub workers_ai_settings: Vec<(String, String)>,
@@ -346,6 +352,13 @@ pub struct EnvState {
     pub caret: usize,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub images: Vec<PathBuf>,
+    /// Unix seconds it was last on screen; 0 in files from before it was kept.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub used: u64,
+}
+
+fn is_zero_u64(n: &u64) -> bool {
+    *n == 0
 }
 
 fn is_zero(n: &usize) -> bool {
@@ -393,6 +406,8 @@ pub struct SessionState {
     pub auto_allow: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub continues: Vec<crate::model::Earlier>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub settled: bool,
 }
 
 fn is_session(t: &Tab) -> bool {
@@ -465,6 +480,107 @@ pub fn transcript_path(id: &str) -> PathBuf {
     data_dir().join("sessions").join(format!("{id}.json"))
 }
 
+/// Where a session is written out as markdown for another agent to read: when
+/// it is linked into a draft, or when another agent continues it.
+pub fn linked_path(id: &str) -> PathBuf {
+    data_dir().join("linked").join(format!("{id}.md"))
+}
+
+/// The files a session leaves in the data dir.
+pub fn session_files(id: &str) -> [PathBuf; 2] {
+    [transcript_path(id), linked_path(id)]
+}
+
+/// How long the files of a session its state stopped listing are kept,
+/// counted from the first startup that found it gone. Removing the session
+/// deletes them at once; the sweep is for the few that missed it, such as a
+/// worktree removed outside Arakun.
+const ORPHAN_AGE: u64 = 7 * 24 * 60 * 60;
+
+/// The sessions a state was seen listing, kept next to it: None while it
+/// still lists one, else when (Unix seconds) a startup first found it gone.
+type Seen = std::collections::BTreeMap<String, Option<u64>>;
+
+/// Where the sessions a state was seen listing are kept: next to it, named
+/// after its whole file name, so `work.json` and `work.backup` don't share.
+fn seen_path() -> PathBuf {
+    let state = file();
+    let name = state.file_name().unwrap_or_default().to_string_lossy();
+    state.with_file_name(format!("{name}.seen"))
+}
+
+/// Deletes the transcripts and linked notes of sessions this state listed
+/// before and has not listed for `ORPHAN_AGE`, such as those of an
+/// environment whose worktree was removed outside Arakun.
+///
+/// Only sessions this state was seen listing count. Another Arakun with its
+/// own state (`ARAKUN_STATE`), of any version, keeps its sessions in the same
+/// folder, and a file whose owner was never seen is never deleted. `listed`
+/// is what the state held when Arakun loaded it. Skipped when the state or
+/// the seen list can't be read, since every file would look unlisted.
+pub fn sweep_orphans(listed: std::collections::HashSet<String>) {
+    let parses = std::fs::read(file())
+        .ok()
+        .is_some_and(|b| serde_json::from_slice::<State>(&b).is_ok());
+    if !parses {
+        return;
+    }
+    let seen_path = seen_path();
+    let seen: Seen = match std::fs::read(&seen_path) {
+        Ok(bytes) => match serde_json::from_slice(&bytes) {
+            Ok(seen) => seen,
+            Err(_) => return,
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Seen::new(),
+        Err(_) => return,
+    };
+    let dirs = [
+        (data_dir().join("sessions"), "json"),
+        (data_dir().join("linked"), "md"),
+    ];
+    let seen = sweep(&dirs, seen, &listed, crate::model::unix_now());
+    if let Ok(bytes) = serde_json::to_vec(&seen) {
+        let _ = crate::durable::write(&seen_path, &bytes);
+    }
+}
+
+/// Deletes the files in `dirs` (`<id>.<ext>`) of the sessions `seen` holds
+/// that `listed` has not held for `ORPHAN_AGE`, and returns the seen list for
+/// next time. A session whose files can't be checked or deleted, or whose
+/// headless folder may still be there, stays for the next startup to retry.
+fn sweep(
+    dirs: &[(PathBuf, &str)],
+    mut seen: Seen,
+    listed: &std::collections::HashSet<String>,
+    now: u64,
+) -> Seen {
+    for id in listed {
+        seen.insert(id.clone(), None);
+    }
+    seen.retain(|id, gone| {
+        if listed.contains(id) {
+            return true;
+        }
+        let since = *gone.get_or_insert(now);
+        if now.saturating_sub(since) <= ORPHAN_AGE {
+            return true;
+        }
+        // A headless session's own folder keeps it, listed or not.
+        if !matches!(crate::headless::dir(id).try_exists(), Ok(false)) {
+            return true;
+        }
+        let mut kept = false;
+        for (dir, ext) in dirs {
+            match std::fs::remove_file(dir.join(format!("{id}.{ext}"))) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => kept = true,
+                _ => {}
+            }
+        }
+        kept
+    });
+    seen
+}
+
 /// Sessions `arakun restart` cut off mid-turn, for the next arakun to reopen.
 pub fn resume_path() -> PathBuf {
     file().with_extension("resume.json")
@@ -492,20 +608,23 @@ fn file() -> PathBuf {
 }
 
 pub fn load() -> State {
-    std::fs::read(file())
-        .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or(State {
-            dock_open: true,
-            dock_height: DOCK_HEIGHT,
-            rail_open: true,
-            panel_open: true,
-            rail_w: RAIL_W,
-            panel_w: PANEL_W,
-            subagents_w: SUBAGENTS_W,
-            arcade: true,
-            ..Default::default()
-        })
+    load_from(&file())
+}
+
+/// A file this build can't read (say, from a newer Arakun that knows more
+/// agents) is set aside, not saved over on quit.
+fn load_from(path: &Path) -> State {
+    crate::stored::load(path).unwrap_or(State {
+        dock_open: true,
+        dock_height: DOCK_HEIGHT,
+        rail_open: true,
+        panel_open: true,
+        rail_w: RAIL_W,
+        panel_w: PANEL_W,
+        subagents_w: SUBAGENTS_W,
+        arcade: true,
+        ..Default::default()
+    })
 }
 
 /// The newest state snapshot not yet on disk. Saves are written off the UI
@@ -520,8 +639,10 @@ pub fn queue(bytes: Vec<u8>) {
 }
 
 /// Writes the newest queued snapshot, if a save before this one has not.
+/// A state.json that could not be read on launch is set aside first, or
+/// kept and the save fails.
 pub fn write_queued() -> std::io::Result<()> {
-    SAVES.write(|bytes| crate::durable::write(&file(), bytes))
+    SAVES.write(|bytes| crate::stored::write(&file(), bytes))
 }
 
 struct Saves {
@@ -629,6 +750,7 @@ pub fn snapshot_with(
                         is_main: e.is_checkout,
                         placeholder: e.placeholder.clone(),
                         follow_branch: e.follow_branch,
+                        used: e.used,
                         agent: Some(e.agent.key().into()),
                         settings: e
                             .draft_settings
@@ -647,6 +769,11 @@ pub fn snapshot_with(
                             .collect(),
                         codex_settings: e
                             .codex_settings
+                            .iter()
+                            .map(|(s, v)| (s.key().to_string(), v.clone()))
+                            .collect(),
+                        devin_settings: e
+                            .devin_settings
                             .iter()
                             .map(|(s, v)| (s.key().to_string(), v.clone()))
                             .collect(),
@@ -673,6 +800,7 @@ pub fn snapshot_with(
                                 cli_model: s.cli_model.clone(),
                                 auto_allow: s.auto_allow,
                                 continues: s.continues.clone(),
+                                settled: s.settled,
                             })
                             .collect(),
                         open: tabs_of(strip, e)
@@ -719,6 +847,7 @@ pub fn snapshot_with(
             ("claude", layout.rail_usage[0]),
             ("droid", layout.rail_usage[1]),
             ("opencode", layout.rail_usage[2]),
+            ("devin", layout.rail_usage[3]),
         ]
         .into_iter()
         .filter(|(_, shown)| !shown)
@@ -727,6 +856,7 @@ pub fn snapshot_with(
         ui_zoom: layout.ui_zoom,
         last_agent: crate::model::default_agent().key().to_string(),
         island_off: !crate::island::enabled(),
+        background: crate::background::enabled(),
         window: layout.window,
     };
     serde_json::to_vec_pretty(&state).unwrap_or_default()
@@ -739,6 +869,7 @@ pub fn restore(state: State) -> (Vec<Project>, usize, Layout, TabStrip) {
     let mut splits: Vec<(PathBuf, Split, u64)> = Vec::new();
     let last_agent = state.last_agent.clone();
     crate::island::set_enabled(!state.island_off);
+    crate::background::set_enabled(state.background);
     let projects: Vec<Project> = state
         .projects
         .into_iter()
@@ -750,6 +881,11 @@ pub fn restore(state: State) -> (Vec<Project>, usize, Layout, TabStrip) {
                     let mut env = Environment::new(e.path, None, e.is_main);
                     env.placeholder = e.placeholder;
                     env.follow_branch = e.follow_branch;
+                    // Unknown in an older file: counted from now, so nothing
+                    // looks old the first time the cleanup runs.
+                    if e.used > 0 {
+                        env.used = e.used;
+                    }
                     env.set_branch(e.branch);
                     if let Some(agent) = e.agent {
                         env.agent = Agent::from_key(&agent);
@@ -771,6 +907,11 @@ pub fn restore(state: State) -> (Vec<Project>, usize, Layout, TabStrip) {
                         .collect();
                     env.codex_settings = e
                         .codex_settings
+                        .into_iter()
+                        .filter_map(|(k, v)| Setting::from_key(&k).map(|s| (s, v)))
+                        .collect();
+                    env.devin_settings = e
+                        .devin_settings
                         .into_iter()
                         .filter_map(|(k, v)| Setting::from_key(&k).map(|s| (s, v)))
                         .collect();
@@ -802,6 +943,7 @@ pub fn restore(state: State) -> (Vec<Project>, usize, Layout, TabStrip) {
                             session.cli_model = s.cli_model;
                             session.auto_allow = s.auto_allow;
                             session.continues = s.continues;
+                            session.settled = s.settled;
                             session.status = Status::Idle;
                             session
                         })
@@ -919,7 +1061,7 @@ pub fn restore(state: State) -> (Vec<Project>, usize, Layout, TabStrip) {
         glass: state.glass,
         grays: crate::theme::Grays::from_id(&state.grays),
         type_scale: crate::ui::TypeScale::from_id(&state.type_scale),
-        rail_usage: ["claude", "droid", "opencode"]
+        rail_usage: ["claude", "droid", "opencode", "devin"]
             .map(|k| !state.rail_hidden.iter().any(|h| h == k)),
         // 0 only comes from `State::default()`, when there is no state file.
         ui_zoom: if state.ui_zoom == 0 {
@@ -1027,6 +1169,18 @@ mod tests {
     }
 
     #[test]
+    fn a_settled_session_stays_settled() {
+        let old: SessionState =
+            serde_json::from_str(r#"{"id":"s1","title":"T","agent":"droid","updated":1}"#).unwrap();
+        assert!(!old.settled, "older state files have nothing settled");
+        assert!(serde_json::to_value(&old).unwrap().get("settled").is_none());
+        let json = r#"{"id":"s1","title":"T","agent":"droid","updated":1,"settled":true}"#;
+        let s: SessionState = serde_json::from_str(json).unwrap();
+        assert!(s.settled);
+        assert_eq!(serde_json::to_value(&s).unwrap()["settled"], true);
+    }
+
+    #[test]
     fn continued_sessions_keep_what_they_took_over() {
         let old: SessionState =
             serde_json::from_str(r#"{"id":"s1","title":"T","agent":"droid","updated":1}"#).unwrap();
@@ -1063,6 +1217,72 @@ mod tests {
     }
 
     #[test]
+    fn only_sessions_unlisted_for_a_week_are_swept() {
+        let dir = std::env::temp_dir().join(format!("arakun-sweep-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (sessions, linked) = (dir.join("sessions"), dir.join("linked"));
+        for d in [&sessions, &linked] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        for name in [
+            "listed.json",
+            "removed.json",
+            "recent.json",
+            "headless-run.json",
+            "theirs.json",
+        ] {
+            std::fs::write(sessions.join(name), "{}").unwrap();
+        }
+        std::fs::write(linked.join("removed.md"), "").unwrap();
+        let headless = dir.join("headless");
+        std::fs::create_dir_all(headless.join("headless-run")).unwrap();
+        crate::headless::TEST_ROOT.with(|r| *r.borrow_mut() = Some(headless));
+
+        let now = 100 * ORPHAN_AGE;
+        let long_ago = Some(now - ORPHAN_AGE - 1);
+        let seen = Seen::from([
+            ("listed".into(), None),
+            ("removed".into(), long_ago),
+            ("recent".into(), Some(now - 60)),
+            ("headless-run".into(), long_ago),
+            // Listed at the last startup: gone from now on, kept a week.
+            ("dropped".into(), None),
+        ]);
+        let listed = ["listed", "new"].map(String::from).into();
+        let dirs = [(sessions.clone(), "json"), (linked.clone(), "md")];
+        let kept = sweep(&dirs, seen, &listed, now);
+        crate::headless::TEST_ROOT.with(|r| *r.borrow_mut() = None);
+
+        assert_eq!(
+            kept,
+            Seen::from([
+                ("listed".into(), None),
+                ("new".into(), None),
+                ("recent".into(), Some(now - 60)),
+                ("headless-run".into(), long_ago),
+                ("dropped".into(), Some(now)),
+            ])
+        );
+        let mut left: Vec<_> = [&sessions, &linked]
+            .iter()
+            .flat_map(|d| std::fs::read_dir(d).unwrap())
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        left.sort();
+        // Another state's session, never seen here, stays whatever its age.
+        assert_eq!(
+            left,
+            [
+                "headless-run.json",
+                "listed.json",
+                "recent.json",
+                "theirs.json"
+            ]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn old_automations_load_as_manual_commands() {
         let json = r#"{"path":"/tmp/p","logo":1,"art":0,"automations":[{"name":"Tests","body":"cargo test"}]}"#;
         let p: ProjectState = serde_json::from_str(json).unwrap();
@@ -1095,7 +1315,7 @@ mod tests {
             glass: false,
             grays: crate::theme::Grays::Crisp,
             type_scale: crate::ui::TypeScale::Compact,
-            rail_usage: [true, true, true],
+            rail_usage: [true, true, true, true],
             ui_zoom: 100,
             window: None,
         };
@@ -1129,7 +1349,7 @@ mod tests {
             glass: false,
             grays: crate::theme::Grays::Crisp,
             type_scale: crate::ui::TypeScale::Compact,
-            rail_usage: [true, true, true],
+            rail_usage: [true, true, true, true],
             ui_zoom: 100,
             window: None,
         };
@@ -1162,12 +1382,12 @@ mod tests {
             glass: false,
             grays: crate::theme::Grays::Soft,
             type_scale: crate::ui::TypeScale::Comfortable,
-            rail_usage: [true, false, true],
+            rail_usage: [true, false, true, false],
             ui_zoom: 100,
             window: None,
         };
         let (_, _, layout, _) = restore(serde_json::from_slice(&snapshot(&[], 0, layout)).unwrap());
-        assert_eq!(layout.rail_usage, [true, false, true]);
+        assert_eq!(layout.rail_usage, [true, false, true, false]);
         assert_eq!(
             (layout.grays, layout.type_scale),
             (crate::theme::Grays::Soft, crate::ui::TypeScale::Comfortable)
@@ -1198,7 +1418,7 @@ mod tests {
             glass: false,
             grays: crate::theme::Grays::Crisp,
             type_scale: crate::ui::TypeScale::Compact,
-            rail_usage: [true, true, true],
+            rail_usage: [true, true, true, true],
             ui_zoom: 100,
             window: None,
         };
@@ -1231,7 +1451,7 @@ mod tests {
             glass: false,
             grays: crate::theme::Grays::Crisp,
             type_scale: crate::ui::TypeScale::Compact,
-            rail_usage: [true, true, true],
+            rail_usage: [true, true, true, true],
             ui_zoom: 100,
             window: None,
         };
@@ -1268,7 +1488,7 @@ mod tests {
             glass: false,
             grays: crate::theme::Grays::Crisp,
             type_scale: crate::ui::TypeScale::Compact,
-            rail_usage: [true, true, true],
+            rail_usage: [true, true, true, true],
             ui_zoom: 100,
             window: None,
         };
@@ -1334,7 +1554,7 @@ mod tests {
             glass: false,
             grays: crate::theme::Grays::Crisp,
             type_scale: crate::ui::TypeScale::Compact,
-            rail_usage: [true, true, true],
+            rail_usage: [true, true, true, true],
             ui_zoom: 100,
             window: None,
         };
@@ -1550,5 +1770,29 @@ mod tests {
             uuid(),
         );
         assert_eq!(back.to_bounds(), gpui::WindowBounds::Windowed(plain));
+    }
+
+    #[test]
+    fn a_state_from_a_newer_arakun_is_kept_not_saved_over() {
+        let dir = crate::stored::tests::scratch("state-newer");
+        let path = dir.join("state.json");
+        // A session whose agent this build doesn't know.
+        let newer = r#"{"projects":[{"path":"/p","logo":0,"art":0,"envs":[{"path":"/p",
+            "sessions":[{"id":"s1","title":"T","agent":"future","updated":1,
+            "meta":{"agent":"future","session_id":null,"title":"T","cwd":"/p",
+            "created":1,"updated":1}}]}]}]}"#;
+        std::fs::write(&path, newer).unwrap();
+        let state = load_from(&path);
+        assert!(state.projects.is_empty());
+        assert!(state.dock_open, "the defaults of a first launch");
+        // The queued save on quit writes a new file; the old one is still there.
+        let saves = Saves::new();
+        saves.queue(b"{}".to_vec());
+        saves
+            .write(|bytes| crate::stored::write(&path, bytes))
+            .unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"{}");
+        assert_eq!(crate::stored::tests::kept(&path).as_deref(), Some(newer));
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

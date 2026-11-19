@@ -30,6 +30,8 @@ pub enum SettingsEvent {
     OpenCodeSignOut,
     CodexSignIn,
     CodexSignOut,
+    DevinSignIn,
+    DevinSignOut,
     OpenUsage,
     OpenGallery,
     RailUsage(crate::agent::AgentKind, bool),
@@ -39,6 +41,9 @@ pub enum SettingsEvent {
     DiffPalette(DiffPalette),
     Glass(bool),
     Island(bool),
+    /// Only Linux has the switch.
+    #[cfg(target_os = "linux")]
+    Background(bool),
     /// Quit and start again, which installs the downloaded update.
     RestartToUpdate,
     OpenAccount,
@@ -81,6 +86,7 @@ enum Section {
     Codex,
     Droid,
     OpenCode,
+    Devin,
 }
 
 impl Section {
@@ -98,6 +104,7 @@ impl Section {
         Section::Codex,
         Section::Droid,
         Section::OpenCode,
+        Section::Devin,
     ];
 
     fn group(self) -> Group {
@@ -115,6 +122,7 @@ impl Section {
             Section::Codex => Some(AgentKind::Codex),
             Section::Droid => Some(AgentKind::Droid),
             Section::OpenCode => Some(AgentKind::OpenCode),
+            Section::Devin => Some(AgentKind::Devin),
             _ => None,
         }
     }
@@ -133,6 +141,7 @@ impl Section {
             Section::Codex => "Codex",
             Section::Droid => "Droid",
             Section::OpenCode => "OpenCode",
+            Section::Devin => "Devin",
         }
     }
 
@@ -147,7 +156,11 @@ impl Section {
             #[cfg(feature = "coderlabs")]
             Section::CoderSpace => "check-list",
             Section::Shortcuts => "keyboard",
-            Section::Claude | Section::Codex | Section::Droid | Section::OpenCode => "bot",
+            Section::Claude
+            | Section::Codex
+            | Section::Droid
+            | Section::OpenCode
+            | Section::Devin => "bot",
         }
     }
 
@@ -169,6 +182,7 @@ impl Section {
             Section::Codex => "Codex's sign-in: your ChatGPT plan or an OpenAI API key.",
             Section::Droid => "Your Factory plan, and what Droid loads in the visible environment.",
             Section::OpenCode => "The providers OpenCode signs in to, OpenCode Go among them.",
+            Section::Devin => "Devin's sign-in: your Devin account or a Windsurf API key.",
         }
     }
 
@@ -177,18 +191,19 @@ impl Section {
         match self {
             #[cfg(feature = "coderlabs")]
             Section::General => {
-                "raccoon mascot animation motion new session dynamic island notch top bar agents alerts oye arakun wake word voice microphone"
+                "raccoon mascot animation motion new session dynamic island notch top bar agents alerts background close hide tray oye arakun wake word voice microphone"
             }
             #[cfg(not(feature = "coderlabs"))]
             Section::General => {
-                "raccoon mascot animation motion new session dynamic island notch top bar agents alerts sidebar usage card plans browser web page drive click type scripts"
+                "raccoon mascot animation motion new session dynamic island notch top bar agents alerts background close hide tray sidebar usage card plans browser web page drive click type scripts"
             }
             Section::Appearance => {
                 "theme palette color colors accent tint corners radius rounded round sharp spacing gap padding compact roomy density window custom share night graphite midnight forest rose diff colors colorblind high contrast glass blur transparent translucent grays gray text size font scale design system mode dark light"
             }
             Section::Branches => {
                 "branch name naming environment worktree rename model haiku agent merge merged \
-                 settle resolve threads review notifications pull request"
+                 settle resolve threads review notifications pull request cleanup clean up \
+                 remove delete old stale environments"
             }
             Section::Voice => {
                 "elevenlabs speech speak tts read aloud audio sound api key questions tone"
@@ -207,6 +222,7 @@ impl Section {
                 "factory account plan usage api key credits skills mcp servers extensions plugins"
             }
             Section::OpenCode => "opencode go zen provider api key models sign in logout",
+            Section::Devin => "devin cognition windsurf api key sign in logout",
         }
     }
 
@@ -243,10 +259,16 @@ static LAST_SECTION: AtomicU8 = AtomicU8::new(0);
 
 /// Makes the next dialog open on General, where the link setting is.
 pub fn start_on_general() {
-    let ix = Section::ALL
-        .iter()
-        .position(|s| *s == Section::General)
-        .unwrap_or(0);
+    start_on(Section::General);
+}
+
+/// Makes the next dialog open on Branches, where the environment cleanup is.
+pub fn start_on_branches() {
+    start_on(Section::Branches);
+}
+
+fn start_on(section: Section) {
+    let ix = Section::ALL.iter().position(|s| *s == section).unwrap_or(0);
     LAST_SECTION.store(ix as u8, Ordering::Relaxed);
 }
 
@@ -349,6 +371,10 @@ pub struct SettingsDialog {
     codex: Option<&'static str>,
     /// The variable with Codex's API key, when the environment has one.
     codex_env: Option<&'static str>,
+    /// Whether `devin auth login` has signed in.
+    devin: bool,
+    /// The variable with Devin's API key, when the environment has one.
+    devin_env: Option<&'static str>,
     input: Entity<TextInput>,
     section: Section,
     voice: voice::Settings,
@@ -524,6 +550,8 @@ impl SettingsDialog {
             opencode: crate::agent::opencode_providers(),
             codex: crate::agent::codex_sign_in(),
             codex_env: crate::agent::codex_env_key(),
+            devin: crate::agent::devin_signed_in(),
+            devin_env: crate::agent::devin_env_key(),
             input,
             section,
             voice,
@@ -739,6 +767,15 @@ impl SettingsDialog {
             .collect()
     }
 
+    /// Moves an open dialog to Branches; its pending edits stay.
+    pub fn show_branches(&mut self, cx: &mut Context<Self>) {
+        // A search that leaves Branches out would show its own empty page.
+        if !Section::Branches.matches(&self.query(cx)) {
+            self.input.update(cx, |input, cx| input.set_text("", cx));
+        }
+        self.select(Section::Branches, cx);
+    }
+
     fn select(&mut self, s: Section, cx: &mut Context<Self>) {
         self.section = s;
         let ix = Section::ALL.iter().position(|x| *x == s).unwrap_or(0);
@@ -766,6 +803,16 @@ impl SettingsDialog {
         }
     }
 
+    /// Devin's own sign-in comes first; a key only in the environment is named
+    /// by its variable, never shown.
+    fn devin_status(&self) -> String {
+        match (self.devin, self.devin_env) {
+            (true, _) => "Signed in".into(),
+            (false, Some(var)) => format!("API key · {var}"),
+            (false, None) => "Not signed in".into(),
+        }
+    }
+
     /// Whether an agent's section gets the green dot: it can run, through a
     /// sign-in or a key. `false` for the other sections.
     fn signed_in(&self, s: Section) -> bool {
@@ -774,6 +821,7 @@ impl SettingsDialog {
             Section::Codex => self.codex.is_some() || self.codex_env.is_some(),
             Section::Droid => self.droid,
             Section::OpenCode => !self.opencode.is_empty(),
+            Section::Devin => self.devin || self.devin_env.is_some(),
             _ => false,
         }
     }
@@ -869,6 +917,19 @@ impl SettingsDialog {
                         cx.notify();
                     }))
                     .into_any_element(),
+                    #[cfg(target_os = "linux")]
+                    row(
+                        "Keep running in the background",
+                        "Closing the window hides it; agents, terminals and the island go on. Run arakun to bring it back, arakun quit to quit.",
+                        switch(crate::background::enabled()).into_any_element(),
+                    )
+                    .id("set-background")
+                    .cursor_pointer()
+                    .on_click(cx.listener(|_, _, _, cx| {
+                        cx.emit(SettingsEvent::Background(!crate::background::enabled()));
+                        cx.notify();
+                    }))
+                    .into_any_element(),
                     #[cfg(feature = "coderlabs")]
                     row(
                         "Oye Arakun",
@@ -952,9 +1013,31 @@ impl SettingsDialog {
                             .on_click(cx.listener(move |this, _, _, cx| this.set_namer_choice(choice, cx))),
                     );
                 }
+                let current_days = crate::cleanup::days().unwrap_or(0);
+                let mut days = ui::segmented();
+                for (i, d) in crate::cleanup::CHOICES.into_iter().enumerate() {
+                    days = days.child(
+                        ui::segment(
+                            ("set-env-cleanup", i),
+                            None,
+                            crate::cleanup::label(d),
+                            d == current_days,
+                        )
+                        .on_click(cx.listener(move |_, _, _, cx| {
+                            crate::cleanup::set_days(d);
+                            cx.notify();
+                        })),
+                    );
+                }
+                let cleanup = stacked_row(
+                    "Remove old environments",
+                    "Removes an environment's worktree once its pull request is merged or closed and nobody opened it for this long. Environments with uncommitted files, commits that aren't in the pull request or a working agent stay. The branch is kept.",
+                    days.into_any_element(),
+                )
+                .into_any_element();
                 let settle = row(
                     "Settle threads after merge",
-                    "Once an environment's pull request is merged: its open review threads are resolved on GitHub, its notifications are marked read, and the environment's sessions stop asking for you. The GitHub tab marks read the notifications of every merged pull request.",
+                    "Once an environment's pull request is merged: its open review threads are resolved on GitHub, its notifications are marked read, and the environment's sessions stop asking for you and leave the sessions list. The GitHub tab marks read the notifications of every merged pull request.",
                     switch(crate::settle::on()).into_any_element(),
                 )
                 .id("set-settle-after-merge")
@@ -991,7 +1074,7 @@ impl SettingsDialog {
                         .into_any_element(),
                     ],
                 ),
-                    titled("After merge", vec![settle]),
+                    titled("After merge", vec![settle, cleanup]),
                 ])
             }
             Section::Privacy => {
@@ -1110,6 +1193,35 @@ impl SettingsDialog {
                         )
                         .into_any_element(),
                         no_sign_in_row(AgentKind::Codex),
+                    ],
+                )])
+            }
+            Section::Devin => {
+                let signed_in = self.devin;
+                stack(vec![titled(
+                    "Account",
+                    vec![
+                        row(
+                            self.devin_status(),
+                            if signed_in {
+                                "The same sign-in the devin CLI uses. Arakun only checks that it is there."
+                            } else if self.devin_env.is_some() {
+                                "Sessions use the API key in the environment. Sign in to use your Devin account instead."
+                            } else {
+                                "Runs devin auth login in a terminal; approve the sign-in in the browser. WINDSURF_API_KEY works too."
+                            },
+                            if signed_in {
+                                ui::button("set-devin-out", "Sign out", ButtonKind::Danger, true)
+                                    .on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::DevinSignOut)))
+                                    .into_any_element()
+                            } else {
+                                ui::button("set-devin-in", "Sign in", ButtonKind::Outline, true)
+                                    .on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::DevinSignIn)))
+                                    .into_any_element()
+                            },
+                        )
+                        .into_any_element(),
+                        no_sign_in_row(AgentKind::Devin),
                     ],
                 )])
             }

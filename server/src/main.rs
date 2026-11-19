@@ -6,6 +6,8 @@
 //!   cargo build --release --locked -p arakun-server
 //!   arakun-server help
 
+#[path = "../../src/accept.rs"]
+mod accept;
 #[allow(dead_code)]
 #[path = "../../src/account.rs"]
 mod account;
@@ -21,6 +23,8 @@ mod durable;
 mod fetch;
 #[path = "../../src/guard.rs"]
 mod guard;
+#[path = "../../src/rotate.rs"]
+mod rotate;
 #[allow(dead_code)]
 #[path = "../../src/headless/sandbox.rs"]
 mod sandbox;

@@ -192,7 +192,7 @@ pub fn installed(agent: AgentKind) -> bool {
     match agent {
         AgentKind::Claude => crate::agent::claude_cli().is_some(),
         AgentKind::Droid => crate::agent::droid_bin().is_ok(),
-        AgentKind::OpenCode | AgentKind::Codex | AgentKind::WorkersAi => false,
+        AgentKind::OpenCode | AgentKind::Codex | AgentKind::Devin | AgentKind::WorkersAi => false,
     }
 }
 
@@ -227,6 +227,14 @@ fn instruction(task: &str) -> String {
 
 /// Asks `agent` for a branch name for `task`. Blocks; run it in the background.
 pub fn suggest(agent: AgentKind, model: &str, task: &str) -> Result<String> {
+    let out = ask(agent, model, instruction(task), TIMEOUT)?;
+    parse(&out).ok_or_else(|| anyhow!("the model answered with no usable name: {}", out.trim()))
+}
+
+/// Asks `agent` one question and returns its whole answer: the CLI runs once
+/// in an empty folder, without tools, and exits. Blocks; run it in the
+/// background. Only for the [`AGENTS`].
+pub fn ask(agent: AgentKind, model: &str, input: String, timeout: Duration) -> Result<String> {
     let (program, args) = command(agent, model.trim())?;
     let mut cmd = crate::platform::command(program);
     if agent == AgentKind::Claude {
@@ -234,7 +242,7 @@ pub fn suggest(agent: AgentKind, model: &str, task: &str) -> Result<String> {
             .map_err(|e| anyhow!("could not hand Claude Code its key helper: {e}"))?;
     }
     // An empty folder: no project instructions, memory or tools to load.
-    let dir = private_dir().map_err(|e| anyhow!("could not make a folder for the namer: {e}"))?;
+    let dir = private_dir().map_err(|e| anyhow!("could not make a folder for the agent: {e}"))?;
     cmd.args(args)
         .current_dir(&dir)
         .env("PATH", crate::agent::child_path_env())
@@ -243,10 +251,9 @@ pub fn suggest(agent: AgentKind, model: &str, task: &str) -> Result<String> {
         .stderr(Stdio::piped());
     // On stdin, not in argv: other local users can read a process's arguments, and
     // Windows refuses arguments with line breaks for a `.cmd` such as npm's `claude.cmd`.
-    let out = run(cmd, instruction(task));
+    let out = run(cmd, input, timeout);
     let _ = std::fs::remove_dir_all(&dir);
-    let out = out?;
-    parse(&out).ok_or_else(|| anyhow!("the model answered with no usable name: {}", out.trim()))
+    out
 }
 
 /// A new folder only this user can open, for one naming run. A fixed name in a shared
@@ -306,7 +313,7 @@ fn args(agent: AgentKind, model: &str) -> Result<Vec<String>> {
             args.extend(model.into_iter().flatten());
             args
         }
-        AgentKind::OpenCode | AgentKind::Codex | AgentKind::WorkersAi => {
+        AgentKind::OpenCode | AgentKind::Codex | AgentKind::Devin | AgentKind::WorkersAi => {
             bail!("{} cannot name branches", agent.label())
         }
     };
@@ -314,15 +321,15 @@ fn args(agent: AgentKind, model: &str) -> Result<Vec<String>> {
 }
 
 /// Runs `cmd` with `input` on its stdin and returns its stdout; stops it, and what it
-/// started, after [`TIMEOUT`].
-fn run(mut cmd: std::process::Command, input: String) -> Result<String> {
+/// started, after `timeout`.
+fn run(mut cmd: std::process::Command, input: String, timeout: Duration) -> Result<String> {
     // The CLI reads its stdin to the end before answering; it is closed once written.
-    let output = crate::platform::output_within(&mut cmd, Some(input.as_bytes()), TIMEOUT)
+    let output = crate::platform::output_within(&mut cmd, Some(input.as_bytes()), timeout)
         .map_err(|e| {
             if e.kind() == std::io::ErrorKind::TimedOut {
-                anyhow!("the namer did not answer within {} s", TIMEOUT.as_secs())
+                anyhow!("the agent did not answer within {} s", timeout.as_secs())
             } else {
-                anyhow!("could not start the namer: {e}")
+                anyhow!("could not start the agent: {e}")
             }
         })?;
     let status = output.status;
@@ -336,7 +343,7 @@ fn run(mut cmd: std::process::Command, input: String) -> Result<String> {
             .unwrap_or("")
             .trim();
         bail!(
-            "the namer failed ({status}){}",
+            "the agent failed ({status}){}",
             if err.is_empty() {
                 String::new()
             } else {
@@ -400,7 +407,7 @@ mod tests {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         let started = std::time::Instant::now();
-        assert_eq!(run(cmd, "fix/x".into()).unwrap(), "fix/x");
+        assert_eq!(run(cmd, "fix/x".into(), TIMEOUT).unwrap(), "fix/x");
         assert!(started.elapsed() < Duration::from_secs(10));
     }
 

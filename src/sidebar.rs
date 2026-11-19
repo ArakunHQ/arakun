@@ -295,6 +295,9 @@ pub enum Piece {
         #[serde(default)]
         only_open: bool,
     },
+    /// What is live in every project: sessions that wait on the user or
+    /// failed, then those that run.
+    Active,
     Pin {
         pin: Pin,
     },
@@ -331,11 +334,24 @@ impl Piece {
         }
     }
 
+    pub fn active() -> Self {
+        Piece::Active
+    }
+
     /// One of a kind: placing it again moves it.
     pub fn unique(&self) -> bool {
         !matches!(
             self,
             Piece::Pin { .. } | Piece::Separator | Piece::Title { .. } | Piece::Spacer
+        )
+    }
+
+    /// Shapes the sidebar rather than taking you anywhere: not counted as
+    /// one of a folded segment's pieces.
+    pub fn is_decoration(&self) -> bool {
+        matches!(
+            self,
+            Piece::Separator | Piece::Title { .. } | Piece::Spacer | Piece::Mascot
         )
     }
 
@@ -352,6 +368,7 @@ impl Piece {
             Piece::Search => "Search".into(),
             Piece::View { view } => view.label().into(),
             Piece::Projects { .. } => "Projects".into(),
+            Piece::Active => "Active".into(),
             Piece::Pin { pin } => pin.title().into(),
             Piece::User => "User".into(),
             Piece::Usage => "Usage card".into(),
@@ -374,6 +391,7 @@ impl Piece {
             Piece::Search => "search01",
             Piece::View { view } => view.icon(),
             Piece::Projects { .. } => "folder01",
+            Piece::Active => "clock01",
             Piece::Pin { pin } => pin.icon(),
             Piece::User => "user",
             Piece::Usage => "dashboard-square01",
@@ -489,6 +507,10 @@ pub struct Section {
     pub collapsible: bool,
     #[serde(default)]
     pub collapsed: bool,
+    /// Folded, its title says how many pieces it holds, with a dot when one
+    /// of them wants the user.
+    #[serde(default = "yes")]
+    pub peek: bool,
     #[serde(default)]
     pub line_above: bool,
     /// Not drawn while the rail is narrowed to icons.
@@ -511,6 +533,7 @@ impl Section {
             show_title: false,
             collapsible: false,
             collapsed: false,
+            peek: true,
             line_above: false,
             hide_in_icons: false,
             row: false,
@@ -631,6 +654,7 @@ impl Preset {
             .titled()
             .with_action(TitleAction::AddProject);
         let account = |pieces| Section::new("Account", Mode::Fixed, pieces);
+        let active = || Section::new("Active", Mode::Scroll, vec![Piece::active()]);
         let mut style = Style::default();
         let sections = match self {
             Preset::Switcher => vec![
@@ -639,6 +663,7 @@ impl Preset {
                     Mode::Fixed,
                     vec![Piece::Search, Piece::view(View::Inbox)],
                 ),
+                active(),
                 Section::new(
                     "Projects",
                     Mode::Scroll,
@@ -683,6 +708,7 @@ impl Preset {
                     Mode::Fixed,
                     vec![Piece::Search, Piece::view(View::Inbox)],
                 ),
+                active(),
                 projects,
                 Section::new(
                     "Tools",
@@ -715,6 +741,7 @@ impl Preset {
                         Piece::view(View::Tasks),
                     ],
                 ),
+                active(),
                 projects,
                 Section::new(
                     "Git",
@@ -741,6 +768,7 @@ impl Preset {
                     ]),
                 )
                 .folding(false),
+                active(),
                 projects,
                 Section::new(
                     "More",
@@ -771,6 +799,7 @@ impl Preset {
                             View::Notes,
                         ]),
                     ),
+                    active(),
                     projects,
                     account(vec![Piece::Settings]),
                 ]
@@ -793,6 +822,7 @@ impl Preset {
                             .collect::<Vec<_>>(),
                     ),
                 ),
+                active(),
                 projects,
                 account(vec![Piece::Usage, Piece::Settings]),
             ],
@@ -801,6 +831,7 @@ impl Preset {
             style,
             sections,
             known: View::ALL.to_vec(),
+            offered_active: true,
         }
     }
 }
@@ -814,6 +845,10 @@ pub struct Sidebar {
     /// not in it, so the builder can mark it new instead of forcing it in.
     #[serde(default)]
     pub known: Vec<View>,
+    /// The Active list was put in once. A layout saved before it existed gets
+    /// it on load; one where the user took it out keeps it out.
+    #[serde(default)]
+    pub offered_active: bool,
 }
 
 impl Default for Sidebar {
@@ -826,15 +861,23 @@ impl Default for Sidebar {
 
 impl Sidebar {
     pub fn load() -> Self {
-        std::fs::read(file())
-            .ok()
-            .and_then(|b| Self::parse(&b))
-            .unwrap_or_default()
+        Self::load_from(&file())
+    }
+
+    fn load_from(path: &std::path::Path) -> Self {
+        crate::stored::load_with(path, |b| {
+            Self::parse(b).ok_or_else(|| "not a sidebar layout".to_string())
+        })
+        .unwrap_or_default()
     }
 
     pub fn save(&self) {
+        self.save_to(&file());
+    }
+
+    fn save_to(&self, path: &std::path::Path) {
         if let Ok(bytes) = serde_json::to_vec_pretty(self) {
-            let _ = crate::durable::write(&file(), &bytes);
+            let _ = crate::stored::write(path, &bytes);
         }
     }
 
@@ -853,6 +896,7 @@ impl Sidebar {
         }
         let mut s: Sidebar = serde_json::from_value(v).ok()?;
         s.tidy();
+        s.offer_active();
         Some(s)
     }
 
@@ -960,8 +1004,9 @@ impl Sidebar {
 
     pub fn add_section(&mut self, at: usize) -> usize {
         let n = self.sections.len() + 1;
-        let mut s = Section::new(&format!("Segment {n}"), Mode::Scroll, vec![]);
-        s.show_title = true;
+        // Born titled and foldable: a group is how a long sidebar keeps
+        // room for the projects.
+        let s = Section::new(&format!("Segment {n}"), Mode::Scroll, vec![]).folding(false);
         let at = at.min(self.sections.len());
         self.sections.insert(at, s);
         at
@@ -969,6 +1014,22 @@ impl Sidebar {
 
     pub fn remove_section(&mut self, s: usize) -> Option<Section> {
         (s < self.sections.len()).then(|| self.sections.remove(s))
+    }
+
+    /// Removes segment `s` but keeps its pieces: they join the end of the
+    /// segment above it, or the start of the one below when it is the
+    /// first. False when there is no other segment to take them.
+    pub fn ungroup_section(&mut self, s: usize) -> bool {
+        if s >= self.sections.len() || self.sections.len() < 2 {
+            return false;
+        }
+        let items = self.sections.remove(s).items;
+        if s > 0 {
+            self.sections[s - 1].items.extend(items);
+        } else {
+            self.sections[0].items.splice(0..0, items);
+        }
+        true
     }
 
     /// Puts a view the rail does not hold at the end of the segment with the
@@ -1001,6 +1062,23 @@ impl Sidebar {
     }
 
     /// One of each unique piece.
+    /// Puts the Active list in its own segment right above the projects (or
+    /// first, with no projects), once per layout.
+    fn offer_active(&mut self) {
+        if std::mem::replace(&mut self.offered_active, true) || self.has(&Piece::active()) {
+            return;
+        }
+        let at = self
+            .find(&Piece::projects())
+            .map(|(s, _)| s)
+            .unwrap_or(0)
+            .min(self.sections.len());
+        self.sections.insert(
+            at,
+            Section::new("Active", Mode::Scroll, vec![Piece::active()]),
+        );
+    }
+
     fn tidy(&mut self) {
         let mut seen: Vec<Piece> = Vec::new();
         for sec in &mut self.sections {
@@ -1051,20 +1129,28 @@ impl Extensions {
     /// shows for someone who used Arakun before, so an update hides nothing,
     /// and starts with none on a new install. The choice is saved at once.
     pub fn load(layout: &Sidebar) -> Self {
-        if let Some(saved) = std::fs::read(extensions_file())
-            .ok()
-            .and_then(|b| Self::parse(&b))
-        {
+        Self::load_from(&extensions_file(), layout, crate::state::exists())
+    }
+
+    fn load_from(path: &std::path::Path, layout: &Sidebar, used_before: bool) -> Self {
+        let saved = crate::stored::load_with(path, |b| {
+            Self::parse(b).ok_or_else(|| "not a list of extensions".to_string())
+        });
+        if let Some(saved) = saved {
             return saved;
         }
-        let first = Self::first(layout, crate::state::exists());
-        first.save();
+        let first = Self::first(layout, used_before);
+        first.save_to(path);
         first
     }
 
     pub fn save(&self) {
+        self.save_to(&extensions_file());
+    }
+
+    fn save_to(&self, path: &std::path::Path) {
         if let Ok(bytes) = serde_json::to_vec_pretty(self) {
-            let _ = crate::durable::write(&extensions_file(), &bytes);
+            let _ = crate::stored::write(path, &bytes);
         }
     }
 
@@ -1156,6 +1242,7 @@ mod tests {
                 Section::new("C", Mode::Fixed, vec![Piece::Settings]),
             ],
             known: View::ALL.to_vec(),
+            offered_active: true,
         }
     }
 
@@ -1168,7 +1255,7 @@ mod tests {
         assert_eq!(s.style, Style::default());
         assert_eq!(
             s.sections.iter().map(|x| x.row).collect::<Vec<_>>(),
-            [false, false, false, true],
+            [false, false, false, false, true],
             "the views sit in a row at the bottom"
         );
     }
@@ -1236,19 +1323,82 @@ mod tests {
     }
 
     #[test]
+    fn a_new_segment_is_titled_and_folds() {
+        let mut s = small();
+        let at = s.add_section(0);
+        let sec = &s.sections[at];
+        assert!(sec.show_title && sec.collapsible && sec.peek);
+        assert!(!sec.collapsed);
+    }
+
+    #[test]
+    fn ungrouping_keeps_the_pieces() {
+        let mut s = small();
+        assert!(s.ungroup_section(1));
+        assert_eq!(names(&s), ["A[Search,Inbox,Projects,Runs]", "C[Settings]"]);
+        // The first segment's pieces go to the start of the next one.
+        assert!(s.ungroup_section(0));
+        assert_eq!(names(&s), ["C[Search,Inbox,Projects,Runs,Settings]"]);
+        // The last segment has nowhere to put them.
+        assert!(!s.ungroup_section(0));
+        assert!(!s.ungroup_section(5));
+        assert_eq!(s.sections.len(), 1);
+    }
+
+    #[test]
+    fn a_segment_saved_before_peek_shows_what_is_inside() {
+        let json = br#"{"sections":[{"title":"Tools","collapsible":true,"collapsed":true,"items":[{"type":"settings"}]}]}"#;
+        let s = Sidebar::parse(json).unwrap();
+        let tools = s.sections.iter().find(|x| x.title == "Tools").unwrap();
+        assert!(tools.peek);
+        let json =
+            br#"{"sections":[{"title":"Tools","peek":false,"items":[{"type":"settings"}]}]}"#;
+        let s = Sidebar::parse(json).unwrap();
+        assert!(!s.sections.iter().find(|x| x.title == "Tools").unwrap().peek);
+    }
+
+    #[test]
     fn a_layout_survives_unknown_pieces_and_duplicates() {
         let json = br#"{"style":{"variant":"floating","side":"right","glow":3},"sections":[
             {"title":"A","items":[{"type":"view","view":"inbox"},{"type":"hologram"},{"type":"view","view":"teleporter"}]},
             {"title":"B","mode":"fixed","items":[{"type":"view","view":"inbox","label":"Mail"},{"type":"projects"}]}
         ],"known":["inbox","teleporter"]}"#;
         let s = Sidebar::parse(json).unwrap();
-        assert_eq!(names(&s), ["A[Inbox]", "B[Projects]"]);
+        // A layout from before the Active list gets it once, over the projects.
+        assert_eq!(names(&s), ["A[Inbox]", "Active[Active]", "B[Projects]"]);
         assert_eq!(s.style.variant, Variant::Floating);
         assert_eq!(s.style.side, Side::Right);
         assert!(s.style.badges);
         assert!(s.is_new(View::Phone));
         // One word in the file, where snake_case would split it.
         assert_eq!(serde_json::to_string(&View::GitHub).unwrap(), "\"github\"");
+    }
+
+    #[test]
+    fn the_active_list_is_offered_once() {
+        let mut s = small();
+        s.offered_active = false;
+        let s = Sidebar::parse(s.to_json().as_bytes()).unwrap();
+        assert_eq!(
+            names(&s),
+            [
+                "A[Search,Inbox]",
+                "Active[Active]",
+                "B[Projects,Runs]",
+                "C[Settings]"
+            ]
+        );
+        // Taken out, it stays out.
+        let mut s = s;
+        s.remove((1, 0));
+        let s = Sidebar::parse(s.to_json().as_bytes()).unwrap();
+        assert!(!s.has(&Piece::active()));
+        // An old file that already holds it does not get a second one.
+        let json =
+            br#"{"sections":[{"title":"A","items":[{"type":"active"},{"type":"projects"}]}]}"#;
+        let s = Sidebar::parse(json).unwrap();
+        assert_eq!(names(&s), ["A[Active,Projects]"]);
+        assert_eq!(s.get((0, 0)).unwrap().piece, Piece::Active);
     }
 
     #[test]
@@ -1350,6 +1500,7 @@ mod tests {
                 Section::new("B", Mode::Scroll, vec![Piece::projects()]),
             ],
             known: View::ALL.to_vec(),
+            offered_active: true,
         };
         assert!(bare.place(View::Notes));
         assert_eq!(names(&bare), ["A[Search]", "B[Projects,Notes]"]);
@@ -1357,6 +1508,7 @@ mod tests {
             style: Style::default(),
             sections: vec![],
             known: vec![],
+            offered_active: true,
         };
         assert!(!none.place(View::Notes));
     }
@@ -1380,5 +1532,31 @@ mod tests {
         );
         assert_eq!(sec(vec![Piece::Search]).inbox_by_search(), None);
         assert_eq!(sec(vec![inbox()]).inbox_by_search(), None);
+    }
+
+    #[test]
+    fn an_unreadable_layout_is_kept() {
+        let dir = crate::stored::tests::scratch("sidebar");
+        let path = dir.join("sidebar.json");
+        // `sections` is required.
+        let edited = r#"{"style":{}}"#;
+        std::fs::write(&path, edited).unwrap();
+        assert_eq!(Sidebar::load_from(&path), Sidebar::default());
+        small().save_to(&path);
+        assert_eq!(Sidebar::load_from(&path), small());
+        assert_eq!(crate::stored::tests::kept(&path).as_deref(), Some(edited));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn unreadable_extensions_are_kept_when_the_first_choice_is_saved() {
+        let dir = crate::stored::tests::scratch("extensions");
+        let path = dir.join("extensions.json");
+        std::fs::write(&path, "{}").unwrap();
+        let e = Extensions::load_from(&path, &Sidebar::default(), false);
+        assert!(e.on.is_empty());
+        assert_eq!(Extensions::load_from(&path, &Sidebar::default(), true), e);
+        assert_eq!(crate::stored::tests::kept(&path).as_deref(), Some("{}"));
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

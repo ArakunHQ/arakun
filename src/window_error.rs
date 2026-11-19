@@ -2,6 +2,8 @@
 //! a VM or remote desktop without a GPU, or a missing or broken Vulkan or Direct3D
 //! driver. gpui gives back a bare error (or panics, on Windows), and started from the
 //! desktop arakun then simply didn't open; this says what is wrong and what to try.
+//! On Linux the display server can be missing too (an SSH session, a headless
+//! machine): see [`check_display`].
 
 /// Whether `error` says no graphics device or driver could be used. These are gpui's
 /// own messages: wgpu's on Linux, Direct3D's on Windows.
@@ -48,14 +50,42 @@ A Mac that runs a recent macOS has Metal; in a VM, turn on its graphics accelera
 #[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
 const GPU_HELP: &str = "Arakun draws its window on the GPU, and no driver it can use was found.";
 
+/// What [`check_display`] says when no display server can be reached. gpui's X11
+/// client panics with the first one when the X server is gone.
+const DISPLAY_MARKERS: [&str; 2] = ["no display server", "failed to initialize x11 client"];
+
+fn is_display(error: &str) -> bool {
+    let error = error.to_lowercase();
+    DISPLAY_MARKERS.iter().any(|m| error.contains(m))
+}
+
+const DISPLAY_HELP: &str = "\
+Arakun shows its window on a Wayland or X11 desktop, and none could be reached.
+To fix it:
+  - Start it from your desktop session, or point it at the running one with
+    WAYLAND_DISPLAY (such as wayland-1) or DISPLAY (such as :0).
+  - Over SSH, forward X with `ssh -X`, or start it on the machine's own desktop.
+  - On a machine without a desktop, `arakun server serve` runs sessions without the
+    window, and `arakun dev` runs a test Arakun on a virtual X display (Xvfb).";
+
+/// The advice for `error`, if it is one arakun knows. An error it can't place gets
+/// none, since advice that may well be wrong would only mislead.
+fn help(error: &str) -> Option<&'static str> {
+    if is_display(error) {
+        Some(DISPLAY_HELP)
+    } else if is_gpu(error) {
+        Some(GPU_HELP)
+    } else {
+        None
+    }
+}
+
 /// The whole text for `error`, gpui's error with its causes.
 fn message(error: &str) -> String {
     let text = format!("arakun: could not open its window: {error}");
-    // An error it can't place gets no advice that may well be wrong.
-    if is_gpu(error) {
-        format!("{text}\n\n{GPU_HELP}")
-    } else {
-        text
+    match help(error) {
+        Some(help) => format!("{text}\n\n{help}"),
+        None => text,
     }
 }
 
@@ -64,10 +94,115 @@ const NOTICE_TITLE: &str = "Arakun could not open its window";
 /// The desktop notification's body. The advice comes first: a toast shows only its
 /// first lines, and the whole text is in the log or the terminal.
 fn notice(error: &str) -> String {
-    if is_gpu(error) {
-        format!("{GPU_HELP}\n\n{error}")
+    match help(error) {
+        Some(help) => format!("{help}\n\n{error}"),
+        None => error.to_string(),
+    }
+}
+
+/// Finds the display server gpui will use, the way gpui picks it, and checks it
+/// answers. Without one, gpui falls back to its headless platform, whose windows
+/// nobody sees, and arakun would run on with nothing on screen; with one that is
+/// gone, gpui panics in its X11 or Wayland setup.
+#[cfg(target_os = "linux")]
+pub fn check_display() -> Result<(), String> {
+    within(PROBE_LIMIT, probe_display)
+}
+
+/// A server that takes the connection but never answers would hold the probe forever.
+#[cfg(target_os = "linux")]
+const PROBE_LIMIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Runs `probe` on its own thread and gives up after `limit`. A probe still stuck then
+/// is left behind: arakun exits on the error right after.
+#[cfg(target_os = "linux")]
+fn within(
+    limit: std::time::Duration,
+    probe: impl FnOnce() -> Result<(), String> + Send + 'static,
+) -> Result<(), String> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || tx.send(probe()));
+    rx.recv_timeout(limit).unwrap_or_else(|_| {
+        Err(format!(
+            "no display server: it did not answer within {} seconds",
+            limit.as_secs()
+        ))
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn probe_display() -> Result<(), String> {
+    let var = |name: &str| std::env::var_os(name).filter(|v| !v.is_empty());
+    // gpui's own switch to its headless platform, for its tests.
+    if var("ZED_HEADLESS").is_some() {
+        return Ok(());
+    }
+    match display(var("WAYLAND_DISPLAY"), var("DISPLAY")) {
+        Display::Wayland(name) => {
+            // A compositor that started arakun can hand it a connected socket.
+            if var("WAYLAND_SOCKET").is_some() {
+                return Ok(());
+            }
+            let path = wayland_socket(&name, var("XDG_RUNTIME_DIR")).ok_or_else(|| {
+                format!(
+                    "no display server: WAYLAND_DISPLAY is {}, but XDG_RUNTIME_DIR, \
+                     where its socket is, is not set",
+                    name.to_string_lossy()
+                )
+            })?;
+            std::os::unix::net::UnixStream::connect(&path)
+                .map(drop)
+                .map_err(|e| {
+                    format!(
+                        "no display server: could not reach the Wayland compositor at {} \
+                         (WAYLAND_DISPLAY={}): {e}",
+                        path.display(),
+                        name.to_string_lossy()
+                    )
+                })
+        }
+        Display::X11(name) => x11rb::connect(None).map(drop).map_err(|e| {
+            format!(
+                "no display server: could not reach the X server at DISPLAY={}: {e}",
+                name.to_string_lossy()
+            )
+        }),
+        Display::None => {
+            Err("no display server found: neither WAYLAND_DISPLAY nor DISPLAY is set".into())
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Debug, PartialEq)]
+enum Display {
+    Wayland(std::ffi::OsString),
+    X11(std::ffi::OsString),
+    None,
+}
+
+/// gpui's choice (`gpui::guess_compositor`): Wayland over X11 when both are set.
+#[cfg(target_os = "linux")]
+fn display(wayland: Option<std::ffi::OsString>, x11: Option<std::ffi::OsString>) -> Display {
+    match (wayland, x11) {
+        (Some(name), _) => Display::Wayland(name),
+        (None, Some(name)) => Display::X11(name),
+        (None, None) => Display::None,
+    }
+}
+
+/// Where libwayland looks for the compositor's socket: WAYLAND_DISPLAY itself when it
+/// is a path, otherwise that name in XDG_RUNTIME_DIR.
+#[cfg(target_os = "linux")]
+fn wayland_socket(
+    name: &std::ffi::OsStr,
+    runtime_dir: Option<std::ffi::OsString>,
+) -> Option<std::path::PathBuf> {
+    let name = std::path::Path::new(name);
+    if name.is_absolute() {
+        Some(name.to_path_buf())
     } else {
-        error.to_string()
+        Some(std::path::Path::new(&runtime_dir?).join(name))
     }
 }
 
@@ -89,8 +224,9 @@ pub fn exit(error: &str) -> ! {
 }
 
 /// Runs gpui's platform setup. On Windows it panics when no Direct3D device can be
-/// made; that comes back as an error here, without the panic text and the crash report
-/// a bug would send, because it is the user's driver, not a bug in arakun. Any other
+/// made, and on Linux when the X server goes away after [`check_display`]; that comes
+/// back as an error here, without the panic text and the crash report a bug would
+/// send, because it is the user's driver or desktop, not a bug in arakun. Any other
 /// panic is left alone: the previous hook (telemetry's crash report, the default
 /// message with its location) sees it, and it goes on unwinding as before.
 pub fn catch<T>(setup: impl FnOnce() -> T) -> Result<T, String> {
@@ -115,17 +251,17 @@ pub fn catch<T>(setup: impl FnOnce() -> T) -> Result<T, String> {
     match made {
         Ok(made) => Ok(made),
         Err(payload) => match panic_text(payload.as_ref()) {
-            Some(text) if is_gpu(&text) => Err(text),
+            Some(text) if help(&text).is_some() => Err(text),
             _ => panic::resume_unwind(payload),
         },
     }
 }
 
-/// Whether `catch`'s hook keeps quiet about a panic: only a GPU error, and only on the
-/// thread that runs the setup. Another thread's panic is not caught there, so it must
-/// still be reported.
+/// Whether `catch`'s hook keeps quiet about a panic: only a GPU or display server
+/// error, and only on the thread that runs the setup. Another thread's panic is not
+/// caught there, so it must still be reported.
 fn hides(on_setup_thread: bool, text: Option<&str>) -> bool {
-    on_setup_thread && text.is_some_and(is_gpu)
+    on_setup_thread && text.is_some_and(|text| help(text).is_some())
 }
 
 /// The text a panic was raised with, if it was raised with text.
@@ -174,6 +310,60 @@ mod tests {
             format!("{GPU_HELP}\n\nNo GPU adapters found")
         );
         assert_eq!(notice("something else"), "something else");
+    }
+
+    #[test]
+    fn a_missing_display_server_gets_its_own_advice() {
+        let error = "no display server found: neither WAYLAND_DISPLAY nor DISPLAY is set";
+        assert!(message(error).ends_with(DISPLAY_HELP));
+        assert_eq!(notice(error), format!("{DISPLAY_HELP}\n\n{error}"));
+        // gpui's X11 client, when the X server goes away after the check.
+        let panic = "called `Result::unwrap()` on an `Err` value: Failed to initialize X11 \
+                     client.\n\nCaused by:\n    Connection refused";
+        assert_eq!(help(panic), Some(DISPLAY_HELP));
+        assert!(DISPLAY_HELP.contains("arakun server serve"));
+        assert!(DISPLAY_HELP.contains("arakun dev"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_display_is_picked_as_gpui_picks_it() {
+        let name = |s: &str| Some(std::ffi::OsString::from(s));
+        assert_eq!(
+            display(name("wayland-1"), name(":0")),
+            Display::Wayland("wayland-1".into())
+        );
+        assert_eq!(display(None, name(":0")), Display::X11(":0".into()));
+        assert_eq!(display(None, None), Display::None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_wayland_socket_is_found_where_libwayland_looks() {
+        use std::ffi::OsStr;
+        use std::path::PathBuf;
+        assert_eq!(
+            wayland_socket(OsStr::new("wayland-1"), Some("/run/user/1000".into())),
+            Some(PathBuf::from("/run/user/1000/wayland-1"))
+        );
+        assert_eq!(
+            wayland_socket(OsStr::new("/tmp/wl"), None),
+            Some(PathBuf::from("/tmp/wl"))
+        );
+        assert_eq!(wayland_socket(OsStr::new("wayland-1"), None), None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_display_that_never_answers_is_given_up_on() {
+        use std::time::Duration;
+        assert_eq!(within(Duration::from_secs(5), || Ok(())), Ok(()));
+        let stuck = within(Duration::from_millis(50), || {
+            std::thread::sleep(Duration::from_secs(5));
+            Ok(())
+        });
+        let error = stuck.expect_err("a stuck probe is an error");
+        assert_eq!(help(&error), Some(DISPLAY_HELP));
     }
 
     #[test]

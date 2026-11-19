@@ -3,17 +3,18 @@
 //! or still busy; everything else lives in its saved transcript.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{LazyLock, Mutex, PoisonError};
 
 use gpui::{App, AppContext as _, Context, Entity, SharedString, Window};
 
 use super::Shell;
 use crate::agent::catalog;
 use crate::agent::{
-    AgentKind, FailedAt, NativeSettings, Setting, SettingOption, Thread, ThreadEvent, ThreadStatus,
-    ThreadView, ThreadViewEvent,
+    AgentKind, FailedAt, NativeSettings, Restored, Setting, SettingOption, Thread, ThreadEvent,
+    ThreadStatus, ThreadView, ThreadViewEvent,
 };
 use crate::model::{self, LiveSession, Session, Status, Tab, TabKind};
 use crate::state;
@@ -75,6 +76,14 @@ pub fn status_of(t: &Thread) -> Status {
 /// it reads from the linked transcript.
 const HANDOFF_BUDGET: usize = 16 * 1024;
 
+/// The saved transcript at `path`, ready to show; `None` when the session has none yet.
+fn read_restored(path: &Path) -> anyhow::Result<Option<Restored>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    Thread::read_restored(path).map(Some)
+}
+
 fn new_session_id() -> SharedString {
     static COUNTER: AtomicU32 = AtomicU32::new(0);
     let millis = std::time::SystemTime::now()
@@ -82,6 +91,20 @@ fn new_session_id() -> SharedString {
         .map_or(0, |d| d.as_millis());
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
     format!("{millis:x}-{n}").into()
+}
+
+/// A first prompt waiting for the worktree it will start in.
+pub(super) struct QueuedPrompt {
+    text: String,
+    /// Where it was written: what it mentions is found there.
+    from: PathBuf,
+    agent: model::Agent,
+    draft_settings: Vec<(Setting, String)>,
+    claude_settings: Vec<(Setting, String)>,
+    opencode_settings: Vec<(Setting, String)>,
+    codex_settings: Vec<(Setting, String)>,
+    devin_settings: Vec<(Setting, String)>,
+    workers_ai_settings: Vec<(Setting, String)>,
 }
 
 pub(super) fn summary(text: &str) -> SharedString {
@@ -133,6 +156,7 @@ impl Shell {
     }
 
     /// Makes sure the sessions on screen (active tab and other pane) have their agent running.
+    /// Their transcripts are read off the main thread; the tab says "Connecting…" until then.
     pub(super) fn ensure_active_live(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.has_projects() {
             return;
@@ -149,7 +173,7 @@ impl Shell {
             })
             .collect();
         for (path, id) in &ids {
-            self.ensure_live(path, id, window, cx);
+            self.ensure_live_soon(path, id, window, cx);
         }
         // A server sends every change of one session: the one in front.
         if self.env().remote.is_some()
@@ -160,6 +184,34 @@ impl Shell {
         }
     }
 
+    /// Whether session `id` still needs its agent started here. A session another
+    /// process runs is shown from there instead.
+    fn needs_live(
+        &mut self,
+        env_path: &Path,
+        id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let remote = self.find_env(env_path).is_some_and(|e| e.remote.is_some());
+        let Some(session) = self.session_mut(env_path, id) else {
+            return false;
+        };
+        if session.live.is_some() {
+            return false;
+        }
+        if remote {
+            self.view_remote(env_path, id, window, cx);
+            return false;
+        }
+        if crate::headless::shown(id) {
+            self.view_headless(env_path, id, window, cx);
+            return false;
+        }
+        true
+    }
+
+    /// Starts session `id`'s agent now, for callers that use its thread right away.
     pub(super) fn ensure_live(
         &mut self,
         env_path: &Path,
@@ -167,33 +219,81 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let remote = self.find_env(env_path).is_some_and(|e| e.remote.is_some());
+        if !self.needs_live(env_path, id, window, cx) {
+            return;
+        }
+        let restored = read_restored(&state::transcript_path(id));
+        // A read ensure_live_soon started is stale now: it ends after this
+        // one, and installing it would put the older transcript back.
+        if self.restoring.contains(id) {
+            self.restoring_stale.insert(id.into());
+        }
+        self.go_live(env_path, id, restored, window, cx);
+    }
+
+    /// Like [`Self::ensure_live`], but the transcript is read off the main thread:
+    /// a long one takes a while to parse, and older diffs take git calls to rebuild.
+    pub(super) fn ensure_live_soon(
+        &mut self,
+        env_path: &Path,
+        id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.restoring.contains(id) || !self.needs_live(env_path, id, window, cx) {
+            return;
+        }
+        let sid = SharedString::from(id.to_string());
+        self.restoring.insert(sid.clone());
+        let (env, transcript) = (env_path.to_path_buf(), state::transcript_path(id));
+        cx.spawn_in(window, async move |this, cx| {
+            let restored = cx
+                .background_spawn(crate::guard::task(
+                    async move { read_restored(&transcript) },
+                ))
+                .await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.restoring.remove(&sid);
+                // An `ensure_live` started it meanwhile; dropping the older
+                // read also covers that live thread having retired since.
+                if this.restoring_stale.remove(&sid) {
+                    return;
+                }
+                // An `ensure_live` may have started it meanwhile, or another process taken it.
+                if this.needs_live(&env, &sid, window, cx) {
+                    this.go_live(&env, &sid, restored, window, cx);
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Shows session `id` with its saved transcript (`None`: it has none yet)
+    /// and starts its agent.
+    fn go_live(
+        &mut self,
+        env_path: &Path,
+        id: &str,
+        restored: anyhow::Result<Option<Restored>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(session) = self.session_mut(env_path, id) else {
             return;
         };
-        if session.live.is_some() {
-            return;
-        }
-        if remote {
-            return self.view_remote(env_path, id, window, cx);
-        }
-        if crate::headless::shown(id) {
-            return self.view_headless(env_path, id, window, cx);
-        }
         let (kind, meta, title) = (
             session.agent.kind(),
             session.meta.clone(),
             session.title.clone(),
         );
-        let transcript = state::transcript_path(id);
-        let thread = transcript
-            .exists()
-            .then(|| Thread::restore(&transcript, cx))
-            .and_then(|r| {
-                r.map_err(|e| eprintln!("arakun: transcript {id}: {e:#}"))
-                    .ok()
-            })
-            .unwrap_or_else(|| Thread::start(kind, env_path.to_path_buf(), meta, cx));
+        let thread = match restored {
+            Ok(Some(r)) => Thread::restored(r, cx),
+            Ok(None) => Thread::start(kind, env_path.to_path_buf(), meta, cx),
+            Err(e) => {
+                eprintln!("arakun: transcript {id}: {e:#}");
+                Thread::start(kind, env_path.to_path_buf(), meta, cx)
+            }
+        };
         // A rename made while the agent was not running reaches it now.
         if !title.is_empty() && thread.read(cx).title() != title {
             thread.update(cx, |t, cx| t.rename(&title, cx));
@@ -395,6 +495,10 @@ impl Shell {
                 {
                     s.status = status;
                     s.updated = model::unix_now();
+                    // Used again after its merge: back in the list.
+                    if status == Status::Working {
+                        s.settled = false;
+                    }
                     cx.notify();
                 }
             }
@@ -444,7 +548,7 @@ impl Shell {
                 }
                 let path = state::transcript_path(id);
                 let key = id.to_string();
-                cx.background_spawn(crate::guard::task(async move {
+                let saving = cx.background_spawn(crate::guard::task(async move {
                     if let Err(e) = write_transcript(&path, &transcript) {
                         eprintln!("arakun: could not save {}: {e}", path.display());
                     }
@@ -454,7 +558,12 @@ impl Shell {
                     {
                         eprintln!("arakun: could not remember the session: {e}");
                     }
-                }))
+                }));
+                // A memory store it could not read was set aside: say so.
+                cx.spawn(async move |this, cx| {
+                    saving.await;
+                    let _ = this.update(cx, |this, cx| this.report_unreadable(cx));
+                })
                 .detach();
                 self.save(cx);
                 self.check_after_turn(env_path, id, thread, stop_reason, window, cx);
@@ -509,11 +618,81 @@ impl Shell {
                 .detach();
             }
             report_failure(&live.thread, true, cx);
-            live.thread.update(cx, |t, _| t.shutdown());
+            // A note no prompt took yet goes back to the environment, or
+            // reopening the session would lose it.
+            let note = live.thread.update(cx, |t, _| {
+                t.shutdown();
+                t.take_notes().pop()
+            });
+            if let Some(note) = note {
+                self.rename_notes
+                    .entry(env_path.to_path_buf())
+                    .or_insert(note);
+            }
             if let Some(server) = remote {
                 self.servers_unfollow(&server, id);
             }
         }
+    }
+
+    /// A first prompt that waits for its worktree, with the agent and settings
+    /// picked where it was written.
+    pub(super) fn queue_prompt(&self, text: String) -> QueuedPrompt {
+        let env = self.env();
+        QueuedPrompt {
+            text,
+            from: env.path.clone(),
+            agent: env.agent,
+            draft_settings: env.draft_settings.clone(),
+            claude_settings: env.claude_settings.clone(),
+            // What it uses now: one it inherits could change while it waits.
+            opencode_settings: opencode_draft(env),
+            codex_settings: env.codex_settings.clone(),
+            devin_settings: env.devin_settings.clone(),
+            workers_ai_settings: env.workers_ai_settings.clone(),
+        }
+    }
+
+    /// Starts the session a queued prompt waited for, in the new worktree.
+    pub(super) fn start_queued(
+        &mut self,
+        env_path: &Path,
+        p: QueuedPrompt,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(env) = self.find_env_mut(env_path) else {
+            return;
+        };
+        env.agent = p.agent;
+        env.draft_settings = p.draft_settings;
+        env.claude_settings = p.claude_settings;
+        env.opencode_settings = p.opencode_settings;
+        env.codex_settings = p.codex_settings;
+        env.devin_settings = p.devin_settings;
+        env.workers_ai_settings = p.workers_ai_settings;
+        let text = crate::agent::attach::move_mentions(&p.text, &p.from, env_path);
+        let title = summary(&text);
+        self.start_session_in(env_path, p.agent, title, text, true, window, cx);
+    }
+
+    /// The worktree a queued prompt waited for could not be made: the text
+    /// goes back into the composer it was written in, before anything typed since.
+    pub(super) fn unqueue(&mut self, p: QueuedPrompt, cx: &mut Context<Self>) {
+        let here = self.has_projects() && self.env().path == p.from;
+        let Some(env) = self.find_env_mut(&p.from) else {
+            return;
+        };
+        let typed = env.draft.trim().to_string();
+        if typed.is_empty() {
+            env.draft.set(&p.text);
+        } else {
+            env.draft.set(format!("{}\n\n{typed}", p.text));
+        }
+        if here {
+            self.composer_changed(cx);
+        }
+        cx.notify();
     }
 
     /// Sends the composer text: to the open session, or as the first prompt of a new one.
@@ -699,6 +878,16 @@ impl Shell {
             return;
         }
 
+        // One session per worktree: a first prompt in the main checkout, or
+        // in a New session tab left where a session already is, starts its
+        // session in a worktree of its own. Not on a server, which makes the
+        // worktree without a prompt to start there: the text would be lost.
+        let env = self.env();
+        if (env.is_checkout || !env.sessions.is_empty()) && env.remote.is_none() {
+            let prompt = self.queue_prompt(text);
+            self.quick_create_env_then(self.active_project, Some(prompt), window, cx);
+            return;
+        }
         let (env_path, agent) = (self.env().path.clone(), self.env().agent);
         self.start_session_in(&env_path, agent, summary(&text), text, true, window, cx);
     }
@@ -771,7 +960,17 @@ impl Shell {
         };
         s.updated = model::unix_now();
         s.status = Status::Working;
-        thread.update(cx, |t, cx| t.send(text, cx));
+        // The status handler sees no change after this, so it can't clear it.
+        s.settled = false;
+        // This session may have started on the branch's old name, as in
+        // `send_prompt`.
+        let note = self.rename_notes.remove(env_path);
+        thread.update(cx, |t, cx| {
+            if let Some(note) = note {
+                t.add_note(note);
+            }
+            t.send(text, cx)
+        });
         self.save(cx);
         cx.notify();
         true
@@ -835,6 +1034,10 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<SharedString> {
+        // Its folder is going away this moment (`shell::cleanup`).
+        if self.being_cleaned_up(env_path) {
+            return None;
+        }
         let visible = self.has_projects() && self.env().path == env_path;
         let id = new_session_id();
         let env = self.find_env_mut(env_path)?;
@@ -885,6 +1088,7 @@ impl Shell {
             (model::Agent::Claude, Some(env)) => env.claude_settings.clone(),
             (model::Agent::OpenCode, Some(env)) => opencode_draft(env),
             (model::Agent::Codex, Some(env)) => codex_draft(env),
+            (model::Agent::Devin, Some(env)) => devin_draft(env),
             (model::Agent::WorkersAi, Some(env)) => env.workers_ai_settings.clone(),
             _ => Vec::new(),
         };
@@ -902,7 +1106,7 @@ impl Shell {
         claude_settings.sort_by_key(|(s, _)| *s != Setting::Model);
         thread.update(cx, |t, cx| {
             // Queued until the session exists, then sent with `initialize_session`
-            // (Droid) or one by one before the first prompt (Claude, OpenCode, Codex).
+            // (Droid) or one by one before the first prompt (the ACP agents).
             if let Some(settings) = &settings {
                 for s in Setting::ALL {
                     let value = settings.get(s);
@@ -976,9 +1180,7 @@ impl Shell {
                 id: old_id.to_string(),
                 agent_session,
             });
-            let linked = state::data_dir()
-                .join("linked")
-                .join(format!("{old_id}.md"));
+            let linked = state::linked_path(&old_id);
             let markdown =
                 crate::agent::notes::transcript_markdown(&old.title, from.label(), &entries);
             if let Err(e) = std::fs::create_dir_all(state::data_dir().join("linked"))
@@ -1089,7 +1291,7 @@ impl Shell {
 
     /// Loads Droid's defaults and model list off the main thread; the list is
     /// cached, so Droid is only asked when the cache is missing or old.
-    /// Claude's, OpenCode's and Codex's options are cached the same way; the agent
+    /// Claude's, OpenCode's, Codex's and Devin's options are cached the same way; the agent
     /// is only asked when none of its sessions has reported them yet.
     pub(super) fn warm_droid_catalog(&mut self, cx: &mut Context<Self>) {
         let droid = catalog::droid_native();
@@ -1106,6 +1308,9 @@ impl Shell {
                 .await;
             let _ = this.update(cx, |_, cx| cx.notify());
             cx.background_spawn(crate::guard::task(async { catalog::refresh_codex() }))
+                .await;
+            let _ = this.update(cx, |_, cx| cx.notify());
+            cx.background_spawn(crate::guard::task(async { catalog::refresh_devin() }))
                 .await;
             let _ = this.update(cx, |_, cx| cx.notify());
         })
@@ -1275,6 +1480,20 @@ impl Shell {
                 }
                 Some((current, choices))
             }
+            // Devin's mode and model; it has no reasoning levels.
+            model::Agent::Devin => {
+                let options = catalog::devin_options();
+                let draft = devin_draft(env);
+                let o = crate::agent::acp_option(&options, s)?;
+                let (mut current, choices) = crate::agent::acp_setting_options(o, s);
+                if let Some((_, v)) = draft
+                    .iter()
+                    .find(|(d, v)| *d == s && choices.iter().any(|c| c.id == *v))
+                {
+                    current = v.clone();
+                }
+                Some((current, choices))
+            }
             model::Agent::WorkersAi => {
                 let options = crate::agent::workers_ai::draft_options(&env.workers_ai_settings);
                 crate::agent::acp_option(&options, s)
@@ -1301,6 +1520,7 @@ impl Shell {
             model::Agent::Claude
             | model::Agent::OpenCode
             | model::Agent::Codex
+            | model::Agent::Devin
             | model::Agent::WorkersAi => crate::agent::acp_label(s, &current, &options),
         })
     }
@@ -1360,6 +1580,7 @@ impl Shell {
             model::Agent::Claude => &mut env.claude_settings,
             model::Agent::OpenCode => &mut env.opencode_settings,
             model::Agent::Codex => &mut env.codex_settings,
+            model::Agent::Devin => &mut env.devin_settings,
             model::Agent::WorkersAi => &mut env.workers_ai_settings,
         };
         put_in_draft(
@@ -1503,6 +1724,7 @@ impl Shell {
                     catalog::remember_opencode_pick(Vec::new());
                 }
                 model::Agent::Codex => env.codex_settings.retain(|(s, _)| !model_menu(s)),
+                model::Agent::Devin => env.devin_settings.retain(|(s, _)| !model_menu(s)),
                 model::Agent::WorkersAi => env.workers_ai_settings.retain(|(s, _)| !model_menu(s)),
             }
         }
@@ -1520,11 +1742,11 @@ impl Shell {
                         .filter(|(_, v)| !v.is_empty())
                         .collect()
                 }
-                model::Agent::Claude | model::Agent::Codex => {
-                    let options = if agent == model::Agent::Claude {
-                        catalog::claude_options()
-                    } else {
-                        catalog::codex_options()
+                model::Agent::Claude | model::Agent::Codex | model::Agent::Devin => {
+                    let options = match agent {
+                        model::Agent::Claude => catalog::claude_options(),
+                        model::Agent::Codex => catalog::codex_options(),
+                        _ => catalog::devin_options(),
                     };
                     [Setting::Model, Setting::Effort, Setting::Fast]
                         .into_iter()
@@ -1801,6 +2023,10 @@ impl Shell {
         cx: &mut Context<Self>,
     ) {
         self.open_session(id.clone(), window, cx);
+        // open_session restores off the main thread, so a closed session has
+        // no live thread yet and the request would vanish. Restore it now.
+        let path = self.env().path.clone();
+        self.ensure_live(&path, &id, window, cx);
         let env = self.env();
         let Some(thread) = env
             .session_index(&id)
@@ -1832,38 +2058,23 @@ impl Shell {
         let removed = self
             .find_env_mut(&path)
             .and_then(|env| env.session_index(id).map(|i| env.sessions.remove(i)));
-        if let Some(live) = removed.as_ref().and_then(|s| s.live.as_ref()) {
+        self.forget_sessions(removed.into_iter().collect(), cx);
+        self.save(cx);
+        cx.notify();
+    }
+
+    /// Stops sessions taken off the list and deletes what they left on disk:
+    /// their transcripts, the transcripts of the sessions they continue, and
+    /// the notes linked from either. Otherwise private chats outlive the
+    /// environment or project the user removed.
+    pub(super) fn forget_sessions(&mut self, sessions: Vec<Session>, cx: &mut Context<Self>) {
+        for live in sessions.iter().filter_map(|s| s.live.as_ref()) {
             report_failure(&live.thread, true, cx);
             live.thread.update(cx, |t, _| t.shutdown());
         }
-        let mut paths = vec![state::transcript_path(id)];
-        for earlier in removed.iter().flat_map(|s| &s.continues) {
-            paths.push(state::transcript_path(&earlier.id));
-            paths.push(
-                state::data_dir()
-                    .join("linked")
-                    .join(format!("{}.md", earlier.id)),
-            );
-        }
-        // A headless session lives in its own folder, which the app scans every
-        // second; it has to go too or the session comes back.
-        let headless = crate::headless::shown(id).then(|| id.to_string());
-        if headless.is_some() {
-            crate::headless::begin_discard(id);
-            crate::headless::set_shown(id, false);
-        }
-        cx.background_spawn(crate::guard::task(async move {
-            for path in paths {
-                let _ = std::fs::remove_file(path);
-            }
-            if let Some(id) = headless {
-                crate::headless::discard(&id);
-            }
-        }))
-        .detach();
-        forget_alerts(id);
-        self.save(cx);
-        cx.notify();
+        let own = sessions.iter().map(|s| s.id.to_string()).collect();
+        let ids = sessions.iter().flat_map(session_file_ids).collect();
+        discard_session_files(own, ids, cx);
     }
 
     /// Droid session ids arakun already lists, in any environment.
@@ -1899,6 +2110,7 @@ impl Shell {
                 AgentKind::Droid => model::Agent::Droid,
                 AgentKind::OpenCode => model::Agent::OpenCode,
                 AgentKind::Codex => model::Agent::Codex,
+                AgentKind::Devin => model::Agent::Devin,
                 AgentKind::WorkersAi => model::Agent::WorkersAi,
             };
             let mut session = Session::new(new_session_id(), d.title.clone().into(), agent);
@@ -1968,7 +2180,7 @@ impl Shell {
                 .find(|e| e.session_index(&id).is_some())
                 .map(|e| e.path.clone());
             if let Some(env_path) = env_path {
-                self.ensure_live(&env_path, &id, window, cx);
+                self.ensure_live_soon(&env_path, &id, window, cx);
             }
         }
     }
@@ -2086,19 +2298,87 @@ fn forget_alerts(id: &str) {
     }
 }
 
+/// Ids of sessions whose files were deleted. A save queued before the
+/// removal, such as the one a closing tab starts, must not write the chat
+/// back, so saves and deletions take turns under this lock.
+static REMOVED: LazyLock<Mutex<HashSet<String>>> = LazyLock::new(Mutex::default);
+
+/// The ids whose transcripts and linked notes belong to `s`: its own and those
+/// of the sessions it continues.
+pub(super) fn session_file_ids(s: &Session) -> impl Iterator<Item = String> + '_ {
+    std::iter::once(s.id.to_string()).chain(s.continues.iter().map(|e| e.id.clone()))
+}
+
+/// Deletes what removed sessions left on disk: `ids` are theirs (`own`) and
+/// those of the sessions they continue. The ones run headless are stopped too.
+pub(super) fn discard_session_files(own: Vec<String>, ids: Vec<String>, cx: &mut gpui::App) {
+    let mut headless = Vec::new();
+    for id in own {
+        forget_alerts(&id);
+        // A headless session lives in its own folder, which the app scans
+        // every second; it has to go too or the session comes back.
+        if crate::headless::shown(&id) {
+            crate::headless::begin_discard(&id);
+            crate::headless::set_shown(&id, false);
+            headless.push(id);
+        }
+    }
+    if ids.is_empty() {
+        return;
+    }
+    cx.background_spawn(crate::guard::task(async move {
+        delete_session_files(ids);
+        for id in headless {
+            crate::headless::discard(&id);
+        }
+    }))
+    .detach();
+}
+
+/// Deletes the transcripts and linked notes of `ids`, and keeps later saves
+/// from writing them back. Blocking.
+fn delete_session_files(ids: Vec<String>) {
+    let mut removed = REMOVED.lock().unwrap_or_else(PoisonError::into_inner);
+    for id in ids {
+        for path in state::session_files(&id) {
+            let _ = std::fs::remove_file(path);
+        }
+        removed.insert(id);
+    }
+}
+
 /// Written so only the owner can read it: it holds the whole chat, tool
 /// output included.
 fn write_transcript(path: &Path, t: &crate::agent::Transcript) -> std::io::Result<()> {
-    crate::durable::write_private(path, &serde_json::to_vec(t)?)
+    let bytes = serde_json::to_vec(t)?;
+    let removed = REMOVED.lock().unwrap_or_else(PoisonError::into_inner);
+    let id = path.file_stem().and_then(|s| s.to_str());
+    if id.is_some_and(|id| removed.contains(id)) {
+        return Ok(());
+    }
+    crate::durable::write_private(path, &bytes)
 }
 
 /// The Codex settings an environment's next session starts with, the model first:
 /// the reasoning levels on offer depend on it. A model Codex no longer offers is
 /// dropped, since setting it would only fail.
 pub(super) fn codex_draft(env: &model::Environment) -> Vec<(Setting, String)> {
-    let mut draft = env.codex_settings.clone();
-    let options = catalog::codex_options();
-    if let Some(o) = crate::agent::acp_option(&options, Setting::Model) {
+    offered_draft(&env.codex_settings, &catalog::codex_options())
+}
+
+/// The Devin settings an environment's next session starts with. Signed out,
+/// Devin offers no models, so a remembered one waits until it does.
+pub(super) fn devin_draft(env: &model::Environment) -> Vec<(Setting, String)> {
+    offered_draft(&env.devin_settings, &catalog::devin_options())
+}
+
+/// `picked`, the model first, without a model the agent no longer offers.
+fn offered_draft(
+    picked: &[(Setting, String)],
+    options: &[crate::agent::ConfigOption],
+) -> Vec<(Setting, String)> {
+    let mut draft = picked.to_vec();
+    if let Some(o) = crate::agent::acp_option(options, Setting::Model) {
         draft.retain(|(s, v)| *s != Setting::Model || o.options.iter().any(|c| c.id == *v));
     }
     draft.sort_by_key(|(s, _)| *s != Setting::Model);

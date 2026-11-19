@@ -35,7 +35,7 @@ Written in Rust with [GPUI](https://github.com/zed-industries/zed/tree/main/crat
 
 ## Why Arakun
 
-- **Many agents, one place.** Claude Code, Droid, OpenCode, Codex and Workers AI
+- **Many agents, one place.** Claude Code, Droid, OpenCode, Codex, Devin and Workers AI
   sessions side by side. Give each task its own git worktree so the agents don't step on each
   other.
 - **The agents can use the app.** The `arakun` command line lets an agent open pages,
@@ -62,22 +62,52 @@ skipped, and "Skip setup" leaves it at once. Adding a project ends it. Open it a
 with "Show onboarding" in the palette (`Ctrl+K`). That it was done is kept in
 `state.onboarding.json`, next to `state.json` in Arakun's data folder.
 
+If Arakun can't read one of its files there (`state.json`, `history.json`,
+`prompts.json`, the palette's to-dos, rules and pins, the sidebar layout or a memory
+store), say one written by a newer version or edited by hand, it renames it to
+`<name>.corrupt-<time>` and starts that part fresh, with a notice that says so. Nothing
+saves over the copy. To restore it, quit Arakun first (it saves on quit), keep a second
+copy of it, rename it back, and start a version that can read it.
+
 ### Workspace
 
+- **Active.** The top of the sidebar lists the sessions of every project that need
+  you (waiting for an answer, or failed), then the ones running. A click opens the
+  session in its project. It stays the same whichever project is open. The open
+  project's list below holds the rest, so nothing shows twice. Move or remove it in
+  the sidebar builder.
+- **One session, one worktree.** **New session** at the top of the sidebar's list, or
+  `Ctrl+T`, gives a session its own worktree on a random branch, and the first prompt
+  names the branch. An open worktree is used only while it has no session yet; `Alt`+click
+  on New session asks for the branch. A prompt written in the main checkout, such as on
+  a project's start screen, starts its session in a new worktree too (on a server, it
+  starts where it was written). The sidebar lists each worktree by its session's title.
+  The main checkout is listed only while it holds older sessions; open it from the
+  project's right-click menu (Open main checkout, one per machine). Before a
+  repository's first commit there is nothing to branch from, so sessions start in
+  the main checkout.
+- **Several at once.** `Ctrl`+click (`Cmd`+click on macOS) rows of the sidebar's list
+  to pick them, and `Shift`+click to pick a run of them. In the Active list, either
+  picks the session's worktree. A bar under them settles their
+  sessions, closes them (their tabs close and idle agents stop; the worktrees stay), or
+  deletes the worktrees after one question. Branches stay. The main checkout and
+  worktrees on a server are deleted one at a time. `Esc` clears the pick.
 - **Projects and worktrees.** A rail of projects, each with its environments (the main
   checkout plus git worktrees). The default sidebar shows the open project, with the
-  others in its dropdown, and its environments as a flat list: a status dot, the name,
-  and one signal (Needs you, CI failed, or the diff). Under them, **Other projects**
-  lists the environments elsewhere that run or need you, and a click goes there; the
-  dropdown says the same per project. The **+** on Environments, or
-  `Ctrl+Shift+N`, makes an environment at once on a random branch from the current
-  commit; `Alt`+click on it, or File › New Environment with Options…, asks for the
-  branch and where to start from. Every environment has its own sessions, terminals
-  and draft prompt. The window has one row of tabs for all of them: a session, file,
-  diff or browser tab belongs to its environment, and going to the tab shows that
-  environment. Going to an environment shows the tab it showed last. With tabs of
-  several environments open, each run of tabs starts with its environment's name. The
-  Workspace panel shows Sessions, an Explorer and the uncommitted
+  others in its dropdown, and its sessions as a flat list: a status dot, the title,
+  and one signal (Needs you, CI failed, or the diff). If you take the Active list
+  out, **Other projects** under them lists the environments elsewhere that run or need
+  you. The dropdown says the same per project. `Ctrl+Shift+N` always makes a new
+  worktree at once on a random branch from the current branch as it is on `origin`,
+  fetched first (or the local commit when origin has none; on a server, from that
+  server's checkout, with no fetch). File › New Environment with Options… asks for
+  the branch and where to start from, the local commit among them. Every environment
+  has its own sessions, terminals and draft prompt. The window has one row of tabs for
+  all of them: a session, file, diff or browser tab belongs to its environment, and
+  going to the tab shows that environment. Going to an environment shows the tab it
+  showed last. With tabs of several environments open, each run of tabs starts with
+  its environment's name. The Workspace panel shows Sessions, an Explorer and the
+  uncommitted
   Changes; the Branches tab draws every live branch against the default one.
 
   <img src="docs/screenshots/changes.png" alt="A file's diff in a tab, next to the Changes list with lines added and removed per file" width="760">
@@ -98,12 +128,22 @@ with "Show onboarding" in the palette (`Ctrl+K`). That it was done is kept in
 - **Settled after merge.** Once an environment's pull request is merged (Arakun asks
   `gh` every few minutes), its open review threads are resolved on GitHub, its
   notifications are marked read, and the environment's sessions from before the merge
-  stop asking for you; agents that are idle and not open in a tab stop. The GitHub tab
+  stop asking for you and leave the Sessions list (a "settled sessions" row at its end
+  shows them, a search finds them, and a new prompt brings one back); agents that are
+  idle and not open in a tab stop. The GitHub tab
   also marks read the notifications of every merged pull request it reads. Each merge is
   settled once, within a week of it; threads that fail to resolve are tried again at the
   next few checks. Settled merges are noted in `~/.local/share/arakun/settled.json`.
   On by default; turn off Settings › Branches › Settle threads after merge (saved in
   `~/.local/share/arakun/settle-after-merge`, `%LOCALAPPDATA%\arakun\` on Windows).
+- **Old environments removed.** Settings › Branches › Remove old environments (Off, 7, 14
+  or 30 days; also asked during the setup) removes an environment's worktree once its
+  pull request is merged or closed and it sat unused that long. Arakun checks every hour,
+  asking `git` and `gh`. An environment stays when it has uncommitted or untracked files,
+  a commit that isn't in the pull request, an agent working or waiting for you, an
+  automation that is on and runs in it, or is the one on screen. The branch is kept. Off by default; the first time an environment
+  would have gone, a notice suggests it once. Saved in `~/.local/share/arakun/env-cleanup`
+  (`%LOCALAPPDATA%\arakun\` on Windows).
 - **Terminals.** A dock of terminals per environment (alacritty_terminal; ConPTY on
   Windows), numbered so agents and scripts can read them with `arakun logs`.
 - **Built-in browser.** Browser tabs based on CEF (Chromium Embedded Framework), behind
@@ -124,6 +164,7 @@ with "Show onboarding" in the palette (`Ctrl+K`). That it was done is kept in
 | Droid | Factory's `droid` CLI |
 | OpenCode | The `opencode` CLI |
 | Codex | Through the ACP adapter `@agentclientprotocol/codex-acp`, which brings its own `codex` |
+| Devin | The `devin` CLI (`devin acp`) |
 | Cloudflare Workers AI | A tool loop Arakun runs itself against the Workers AI API |
 
 The Claude Code adapter runs the Claude Code binary bundled with it (the `claude` on
@@ -137,7 +178,14 @@ terminal-only. The status line and keybindings from your settings don't apply in
 
 - **Agent sessions.** Transcripts render markdown, diffs, tool calls and images;
   sessions can be resumed, and per-turn diffs show what each turn changed, including
-  changes made by shell commands.
+  changes made by shell commands (files over 1 MB are left out). Each transcript is kept
+  in `sessions/` in Arakun's data folder until you delete the session or remove its
+  environment or project, which deletes it at once. At startup, Arakun also deletes the
+  files of a session its state has not listed for a week, such as one whose worktree was
+  removed outside Arakun. It keeps the sessions it has seen in `state.json.seen`, next to
+  the state file (the `ARAKUN_STATE` file when that is set), and never deletes a file
+  whose session it hasn't seen listed. A headless session keeps its file while its folder
+  under `headless/` in Arakun's data folder is there.
 - **Project check.** A per-project command (`cargo test`, `npm test`...) runs after each
   turn that edits files; on failure the tail of the output goes back to the agent, up to
   three times in a row. Checks run one at a time across all sessions, at low priority and
@@ -166,6 +214,19 @@ terminal-only. The status line and keybindings from your settings don't apply in
 
 - **CI and checks.** GitHub Actions runs for each project, with jobs, annotations and
   the failing log, read through the `gh` CLI.
+- **Create a pull request.** The pull request chip of the Changes panel opens the
+  branch's pull request, or a dialog that creates one: the title (from the first
+  commit), the branch it merges into (the remote's default one; type another for a
+  stack), and the description GitHub's own form would start with (the repository's
+  pull request template, else the commit messages). It opens as a draft unless you turn
+  that off, pushes the branch first when it has commits GitHub doesn't, and then shows
+  the new pull request in the GitHub tab. "Open GitHub's form" opens the page in your
+  browser instead, to write the description there. "Write with AI" has Claude Code
+  write the title and the description from the branch's commits, its diff (up to 60,000
+  characters) and the template, when it is the environment's agent or the one picked for
+  naming branches. It answers once with its tools off, so it reads nothing else, and
+  nothing goes to GitHub until you create the pull request. Other agents don't write it:
+  they can read files while they answer.
 - **Queue.** The GitHub tab opens on one line that says how many things need you,
   then a quiet list grouped by where each pull request stands (Needs you, Stuck,
   pilot is on it, Waiting on CI, Waiting on others, Ready to merge), stacked pull
@@ -184,6 +245,18 @@ terminal-only. The status line and keybindings from your settings don't apply in
   or "Comment"), and says why when a comment doesn't go out. Approve, request changes
   and merge ask a second time, and an approval or a merge stops if new commits came
   after you looked.
+- **Failed checks.** When checks failed, the Checks tab says how many, and a failed
+  GitHub Actions job opens the end of its failing step's log under its row (the link at
+  the end of the row opens its page). "Re-run failed" starts the failed jobs again
+  (`gh run rerun --failed`) once their run has finished. "Fix with agent" starts a
+  session with the failed checks and the logs you opened; the agent fixes it in the
+  checkout and doesn't push.
+- **Review comments.** Under each thread on the diff, "Reply" answers it and "Resolve"
+  (or "Reopen") marks it. In the Files tab, the open threads show under their lines,
+  and a click on a line writes a comment on it. Those comments are kept as pending
+  (only until you quit) and "Submit review" posts them together as one review;
+  "Discard" drops them. After new commits, submit or discard the pending ones before
+  you comment on the new diff.
 - **Agent reviews.** An agent can review a pull request for you and leave a draft
   (`arakun github draft`) that you post, edit or discard. Posting a draft asks a second
   time, and an approval goes out only for the commit the agent read: after new commits
@@ -251,6 +324,13 @@ after a week).
   process. If it reads the cutout wrong, set
   `ARAKUN_ISLAND_EDGE` to `flat`, `notch:<width>x<height>` or
   `pill:<width>x<height>+<gap to the top>`, in points.
+- **Keep running in the background** (Linux). Off by default; turn it on in Settings ›
+  General. Closing the window then hides it instead of quitting, so agents, terminals and
+  the island go on. On Hyprland the window waits in the special workspace `arakun`, on
+  Sway in the scratchpad, and elsewhere it is minimized. Run `arakun` (or `arakun show`,
+  or open it from the app launcher) to bring it back, and `arakun quit` to quit.
+  A desktop other than Hyprland and Sway may not raise a minimized window when asked
+  (GNOME and KDE on Wayland can refuse); click Arakun in the dock or task bar then.
 - **Notification history.** Every notice Arakun shows (on the island or as a desktop
   notification) also lands in the sidebar's Inbox, under the sessions waiting on you,
   grouped by day. Click one to open what it is about. The Inbox is the button at the end
@@ -259,19 +339,39 @@ after a week).
   count as read when you close it. Arakun keeps the last 300 in
   `notices.json` next to its state. `arakun notices [--unseen]` prints them.
 - **Phone remote.** A web page served by Arakun lets a paired phone follow sessions, send
-  prompts and answer the agent. Phones reach the computer over the local network (the
-  default), over Tailscale, or through an end-to-end encrypted relay. The relay defaults
+  prompts and answer the agent. While the agent works, a prompt you send waits for the
+  turn to end; with something written, Stop becomes "Stop and send". Phones reach the
+  computer over the local network (the default), over Tailscale, or through an
+  end-to-end encrypted relay. On the local network and over Tailscale the page comes
+  from the computer itself, so it only opens while the computer is on and awake; the
+  relay works from anywhere and says when the computer is offline (the Phone tab says so and offers Use Relay). The relay defaults
   to the hosted one at `arakun.dev`; you can run your own from [`relay/`](relay)
   (a Cloudflare Worker) and point `relay_base` in `phone.json` at it.
+  The page keeps shortcuts, phrases you send often, as a row of buttons over the box.
+  One that sends right away shows while the agent waits for you; the others show while
+  you write and fill the box. `{number}` in a shortcut is a blank you type each time,
+  on the number keyboard. Hold a message you sent to keep it, or tap **+** in the row.
+  Shortcuts stay in that phone's browser.
 
 ### More tabs
 
 - **Service tabs.** A PostHog tab (personal API keys; matches projects by their `phc_`
   keys) and a Cloudflare tab (uses the `cf` CLI's sign-in).
-- **Usage.** Token use and cost from Claude Code's and Droid's own logs, and each plan's
-  limits. Arakun has no account of its own and never asks you to approve access: it
+- **Usage.** Token use and estimated API cost from Claude Code's and Droid's own logs,
+  and Devin's local SQLite session history, including sessions run outside Arakun.
+  Devin's history is read only from `$XDG_DATA_HOME/devin/cli/sessions.db` (by default
+  `~/.local/share/devin/cli/sessions.db`), or `sessions.db` in `DEVIN_SESSIONS_DIR`.
+  Repeated responses are counted once. Models without a known API price are shown
+  as unpriced, not as free. Billed ACUs and experimental file-based session history
+  are not imported yet.
+  Arakun also shows Claude Code, Droid, OpenCode and Devin plan limits. Devin's daily
+  and weekly quota (Max has only the weekly one) comes from the endpoint the devin
+  CLI's `/usage` reads. It is not a documented API, so it can stop working after a
+  Devin update; then the quota is left out. Plans billed in credits or ACUs show none.
+  Arakun has no account of its own and never asks you to approve access: it
   reads the limits with the sign-in each CLI already has (Claude Code, droid,
-  OpenCode), and Sign in runs the CLI's own login. It only reads that sign-in and
+  OpenCode, devin), and Sign in runs the CLI's own login. Devin's key goes only to
+  server.codeium.com, the server `devin auth login` signed in with. It only reads that sign-in and
   never changes it. It sends it only to that provider's own host over https, never to
   a gateway set in `ANTHROPIC_BASE_URL`. Droid can also use a Factory API key you
   connect in Arakun (kept in the system keyring) or `FACTORY_API_KEY`, which goes only
@@ -288,6 +388,12 @@ after a week).
   with none on, except what you set up in the first-run setup: GitHub once the GitHub
   CLI is signed in, and Phone if you chose to pair one. An update keeps the ones your
   sidebar already had. The choice is kept in `extensions.json` next to the state.
+- **Sidebar groups.** A segment with a title folds with a click on it, and opens
+  folded next time. Folded, it says how many pieces it holds, with a dot when one of
+  them wants you (red for a failure or something waiting), so the projects get the
+  room. Right-click a title for Ungroup, which removes the segment and keeps its
+  pieces in the one above. In the sidebar builder, a segment can be set to start
+  folded or not to say what is inside; a new one is born titled and collapsible.
 - **Automations.** Scheduled shell commands or agent prompts per project.
 
 ### Make it yours
@@ -538,7 +644,11 @@ driver and the usual desktop libraries (libxkbcommon, Wayland or X11, fontconfig
 freetype). Without a graphics driver it can use, as in a VM or remote desktop without a
 GPU, `arakun` prints `could not open its window` with what to install, and exits with
 code 1; started from a launcher, it shows the same as a desktop notification. Mesa's software Vulkan driver works without a GPU, only slower:
-`mesa-vulkan-drivers` on Debian, Ubuntu and Fedora, `vulkan-swrast` on Arch. On Ubuntu 23.10 and later, browser tabs also need the AppArmor profile in
+`mesa-vulkan-drivers` on Debian, Ubuntu and Fedora, `vulkan-swrast` on Arch. It also
+needs a Wayland or X11 desktop: with neither `WAYLAND_DISPLAY` nor `DISPLAY` set, or with
+one that does not answer (an SSH session, a machine without a desktop), it says so the
+same way and exits with code 1. There, `arakun server serve` runs sessions without the
+window. On Ubuntu 23.10 and later, browser tabs also need the AppArmor profile in
 [Browser tabs on Ubuntu](#browser-tabs-on-ubuntu).
 
 **Windows:** extract `arakun-<version>-windows-x86_64.zip` and run `arakun.exe`. Keep the
@@ -562,6 +672,10 @@ Arakun does not bundle the agents. Install the ones you want to use:
   Windows) and a Codex sign-in: `codex login` with your ChatGPT plan (Settings › Codex
   runs it for you), or `CODEX_API_KEY` or `OPENAI_API_KEY` in the environment.
   `ARAKUN_CODEX_ACP` runs another adapter command instead.
+- Devin: the [Devin CLI](https://docs.devin.ai/work-with-devin/devin-cli), signed in
+  with `devin auth login` (Settings › Devin runs it for you) or `WINDSURF_API_KEY` in
+  the environment. Arakun starts `devin acp`; `ARAKUN_DEVIN_BIN` picks another `devin`
+  and `ARAKUN_DEVIN_ACP` runs another command instead.
 - Workers AI: a Cloudflare API token with Workers AI access, either stored through
   `opencode auth login` or set as `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`.
 
@@ -569,6 +683,13 @@ The first session with Claude Code or Codex asks before it installs the adapter,
 the package, the folder and the npm command, so you can run it yourself instead. Once an
 adapter is installed, Arakun updates it to the pinned version without asking.
 `ARAKUN_CLAUDE_ACP` and `ARAKUN_CODEX_ACP` start another adapter instead.
+
+What each agent prints to stderr goes to `<agent>.log` in that `agents` folder, and
+what each turn used goes to `usage.jsonl` in Arakun's data folder (or the file
+`ARAKUN_USAGE_LOG` names). Once a log passes its limit (8 MB for an agent log, 16 MB for
+the usage log), it moves to `<agent>.old.log` or `usage.old.jsonl` (`<name>.old.<ext>`
+next to an `ARAKUN_USAGE_LOG` file) and a new one starts. Arakun keeps only that one
+older copy: each move replaces the previous one.
 
 Optional tools: `git` (Changes, worktrees, branches), `gh` (CI, GitHub tab), `bwrap`
 (headless agents), `secret-tool` from libsecret (stored logins on Linux), `tailscale`
@@ -629,12 +750,23 @@ The default `browser` feature needs CEF at build time and at run time.
   This puts the runtime in `~/.local/share/arakun/cef` (loaded on the first browser tab)
   and links the build-time SDK at `.cef-sdk`, which `.cargo/config.toml` points `CEF_PATH`
   at.
-- **Windows and macOS:** the first build downloads CEF into `.cef-sdk` by itself. It
-  also needs CMake and Ninja (on macOS, `brew install cmake ninja`); for Windows, see
-  [docs/windows.md](docs/windows.md). If that download fails with "the response body is
-  larger than request limit", the `cef` crate can no longer read the CDN's index. Fetch
-  the archive with `tools/fetch-cef.py` instead and point `CEF_PATH` at it, as the
-  release workflow does (it has the archive names and checksums).
+- **macOS:** the build also needs CMake and Ninja (`brew install cmake ninja`), and the
+  download needs Python 3.12 or newer (`brew install python`; the `python3` macOS ships
+  is too old). Run:
+
+  ```sh
+  tools/setup-dev.sh --browser
+  cargo build --release
+  ```
+
+  This downloads the CEF archive the release uses, checks its SHA-1, keeps it in
+  `~/.local/share/arakun/cef-sdk` for every checkout, and links it at `.cef-sdk`. The
+  `cef` crate's own download no longer works: the CDN's index is larger than it reads
+  ("the response body is larger than request limit").
+- **Windows:** see [docs/windows.md](docs/windows.md). If the build's own CEF download
+  fails with "the response body is larger than request limit", fetch the archive with
+  `tools/fetch-cef.py` and point `CEF_PATH` at it, as the release workflow does (it has
+  the archive names and checksums).
 
 ### Browser tabs on Ubuntu
 
@@ -718,6 +850,8 @@ arakun page screenshot            # PNG of the environment's browser tab
 arakun notify "done"              # desktop notification
 arakun notices --unseen           # notifications you haven't read yet
 arakun ls                         # projects, environments and sessions
+arakun show                       # bring the window up (running `arakun` again does too)
+arakun quit                       # quit Arakun, also when its window is hidden
 arakun palette                    # bring the window up with Ctrl+K open
 arakun mem search <words>         # search what agents remember about this project
 arakun github draft o/r#12 --verdict approve --head <sha> --body-file - --agent Claude < review.md
@@ -730,6 +864,16 @@ arakun agent run <prompt>         # start a headless agent
 arakun server serve               # run sessions on this machine without the window (arakun server help)
 arakun --version                  # print the version (needs no running Arakun)
 ```
+
+Only `arakun` alone and `arakun <dir>` start the app. A word or flag it doesn't know,
+such as a typo, prints an error and exits with code 2 (`arakun --help` lists the
+commands).
+
+`-h` or `--help` after a command prints its usage and runs nothing. A flag the command
+doesn't take prints an error and exits with code 2. Both count only before the
+payload, the prompt, message or command line a command passes on, so
+`arakun run make --help` runs `make --help`. A payload that starts with a dash needs
+`--` before it: `arakun notify -- -1 test failed`.
 
 To open the palette from any app, bind `arakun palette` to a global key in your
 desktop. On Hyprland, for example: `bind = SUPER, K, exec, arakun palette`.
@@ -769,7 +913,11 @@ The link is good for two minutes and pairs one device. There are two ways to use
   you ask. A repository's main folder is never deleted. A phone paired with this app sees and works in the
   servers' sessions too. Git, terminals and the file tree stay with this machine's folders;
   `/stage`, fork, rewind and "Continue with" are not available for a server's session
-  yet. To add a folder on a server, press the folder button on it in the Servers tab,
+  yet. In the Marketplace, "Install on" picks a paired server: Discover then lists
+  the plugins its marketplaces offer, and Install adds a plugin or MCP server for
+  Claude Code there, for every project. An MCP server that wants a sign-in is signed
+  in to on that machine (`claude mcp login <name>`), since that opens a browser.
+  To add a folder on a server, press the folder button on it in the Servers tab,
   or right-click one of its environments. Clone runs that machine's git, with its
   logins, and puts the repository in the folder that holds most of the server's
   folders. Folders right in the home folder do not count; with none elsewhere, the
@@ -803,9 +951,14 @@ arakun-server service install   # keep it running; see Keep it running
 
 `arakun-server help` lists them all.
 
-- **Agents.** Claude Code, Droid, OpenCode, Codex and Workers AI, as in the app. Sign in to
+- **Agents.** Claude Code, Droid, OpenCode, Codex, Devin and Workers AI, as in the app. Sign in to
   each one on that machine first: the server uses its logins and its permission
   settings. An agent set to allow everything there asks for nothing here either.
+  Claude Code and Codex also need their ACP adapter. The server installs a missing one
+  with npm the first time a session needs it, into `~/.local/share/arakun/agents`
+  (`%LOCALAPPDATA%\arakun\agents` on Windows), so Node must be on the server's `PATH`. The service keeps the `PATH` it was installed
+  with: if Node comes from mise or nvm, run `arakun-server service install` from a shell
+  where `node` works.
 - **How devices reach it.** `serve --reach relay` (the default) dials out to the relay,
   so it works behind a firewall, and everything between the device and the server is
   end to end encrypted; `--relay <url>` names a relay of your own. `--reach tailscale`
@@ -881,17 +1034,20 @@ On macOS, `Cmd` takes the place of `Ctrl` in the shortcuts below, except for
 forward through tabs, `Ctrl+Cmd+F` toggles full screen, and `Cmd+H`, `Cmd+M` and
 `Cmd+Q` hide, minimize and quit.
 
-- `Ctrl+T` new session, `Ctrl+J` toggle the terminal dock, `Ctrl+B` toggle the sidebar
+- `Ctrl+T` new session (in a new worktree unless the open one is a worktree without one), `Ctrl+J` toggle the terminal dock, `Ctrl+B` toggle the sidebar
+- `Ctrl+Alt+B` toggle the workspace panel, `Ctrl+Alt+S` toggle the subagents panel
 - `Ctrl+D` / `Ctrl+Shift+D` split right / down, `Ctrl+Alt+arrows` move between panes
 - `Ctrl+Tab`, `Ctrl+1...9` switch tabs, across environments; `Alt+Up` / `Alt+Down`
   switch environments
 - `Ctrl+W` close the tab, `Ctrl+Alt+T` reopen the last closed tab where it was;
   `Ctrl+Shift+PageUp` / `Ctrl+Shift+PageDown` move the tab left / right. A middle click
   closes a tab, dragging it onto another moves it there, and its right-click menu also
-  closes the other tabs of its environment or those to its right. GNOME, Ubuntu and some KDE setups
-  keep `Ctrl+Alt+T` to open their own terminal; there, use Reopen closed tab in the
-  File menu or a tab's right-click menu
-- `Ctrl+Shift+N` new environment, at once on a random branch
+  opens a new session or closes the other tabs of its environment or those to its
+  right. The tab on screen stays open when its environment has no other. GNOME, Ubuntu
+  and some KDE setups keep `Ctrl+Alt+T` to open their own terminal; there, use Reopen
+  closed tab in the File menu or a tab's right-click menu
+- `Ctrl+Shift+N` new session in a new worktree, at once on a random branch;
+  `Ctrl+Alt+N` asks for the branch and options first
 - `Ctrl+F` search the conversation
 - `Ctrl+K` (or `Ctrl+P`) the palette: sessions of every project, GitHub, runs, files and
   symbols, views, commands, settings and memory in one search. Start with `>` for
@@ -925,7 +1081,8 @@ forward through tabs, `Ctrl+Cmd+F` toggles full screen, and `Cmd+H`, `Cmd+M` and
   stops the turn. A queued message has a button to send it now too
 - In the composer's agent and model menu: `↑` / `↓` move through the right column,
   `←` / `→` move between agents (on the Reasoning row they step the level), `Enter`
-  picks and `Esc` closes. In a running session, only a model pick, a click on an
+  picks and `Esc` closes. Picking a model of the agent in use or a reasoning level
+  keeps the menu open, so you can set the reasoning next. In a running session, only a model pick, a click on an
   agent row or Continue with hands the session to another agent; reasoning and fast
   mode for another agent are kept for when you switch to it. Picking a different
   model for that agent clears the reasoning level kept for it, so pick the level

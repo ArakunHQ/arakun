@@ -47,8 +47,8 @@ always checks the signature.
   SDK: gpui compiles its HLSL shaders with it. If it is not found automatically, point
   `GPUI_FXC_PATH` at `C:\Program Files (x86)\Windows Kits\10\bin\<version>\x64\fxc.exe`.
 - **Git for Windows**: the Changes panel, worktrees and the CI graph use `git`.
-- For the agents: **Node.js** (with `npm`) for the Claude Code and Codex adapters, and Factory's
-  `droid` CLI for Droid. `gh` if you want the CI panel.
+- For the agents: **Node.js** (with `npm`) for the Claude Code and Codex adapters, Factory's
+  `droid` CLI for Droid, and the Devin CLI for Devin. `gh` if you want the CI panel.
 - For browser tabs: **CMake** and **Ninja**. They come with the *C++ CMake tools for
   Windows* component of Visual Studio Build Tools (selected by default in *Desktop
   development with C++*) and are on the `PATH` of the Developer PowerShell.
@@ -122,9 +122,12 @@ start `arakun-server serve` from Task Scheduler, with the trigger "At log on".
 | That the first-launch setup was done | `%LOCALAPPDATA%\arakun\state.onboarding.json` |
 | Agent adapters (npm) | `%LOCALAPPDATA%\arakun\agents\` |
 | Log (when started without a terminal) | `%LOCALAPPDATA%\arakun\arakun.log` |
+| Agent logs and the usage log, each with one older copy once full | `%LOCALAPPDATA%\arakun\agents\<agent>.log` and `<agent>.old.log`; `%LOCALAPPDATA%\arakun\usage.jsonl` and `usage.old.jsonl` (or the file `ARAKUN_USAGE_LOG` names and its `.old` copy) |
+| Sessions the startup clean-up has seen listed | `%LOCALAPPDATA%\arakun\state.json.seen`; with `ARAKUN_STATE` set, `<state file>.seen` next to it |
 | Branch naming agent and model (Settings › Branches) | `%LOCALAPPDATA%\arakun\branch-namer.json` |
 | Where links open (Settings › General) | `%LOCALAPPDATA%\arakun\open-links` |
 | Settle threads after merge (Settings › Branches), and the merges settled | `%LOCALAPPDATA%\arakun\settle-after-merge`; by default `%LOCALAPPDATA%\arakun\settled.json`, with `ARAKUN_STATE` set `settled.json` next to that state file |
+| Remove old environments (Settings › Branches) | `%LOCALAPPDATA%\arakun\env-cleanup` |
 | Control socket | `%LOCALAPPDATA%\arakun\control.sock` |
 | `arakun server`: its settings, sessions and socket | `%LOCALAPPDATA%\arakun\server\` |
 | Servers the app is paired with (Servers tab) | `%LOCALAPPDATA%\arakun\servers.json` |

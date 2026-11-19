@@ -59,6 +59,8 @@ pub struct RailLook {
     pub width: f32,
     /// The preset the pieces are laid out as, if they still are.
     pub preset: Option<Preset>,
+    /// Whether the pieces can be arranged: the editor needs a project.
+    pub can_arrange: bool,
 }
 
 /// The widths the Sidebar tab offers.
@@ -1063,12 +1065,17 @@ impl CustomizeView {
                     Some("dashboard-square01"),
                     "Arrange pieces",
                     ButtonKind::Outline,
-                    true,
+                    look.can_arrange,
                 )
                 .w_full()
                 .justify_center()
-                .on_click(cx.listener(|_, _, _, cx| cx.emit(CustomizeEvent::ArrangeSidebar))),
+                .when(look.can_arrange, |b| {
+                    b.on_click(cx.listener(|_, _, _, cx| cx.emit(CustomizeEvent::ArrangeSidebar)))
+                }),
             )
+            .when(!look.can_arrange, |d| {
+                d.child(hint_label("Add a project to arrange its pieces."))
+            })
             .into_any_element();
         let switches = div()
             .flex()

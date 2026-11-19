@@ -12,6 +12,7 @@ impl Shell {
             preset: crate::sidebar::Preset::ALL
                 .into_iter()
                 .find(|p| p.layout().sections == self.sidebar.sections),
+            can_arrange: self.has_projects(),
         }
     }
 

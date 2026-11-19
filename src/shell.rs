@@ -1045,6 +1045,7 @@ impl Shell {
         this.restore_phone(window, cx);
         this.restore_servers(window, cx);
         this.start_updates(window, cx);
+        this.report_unreadable(cx);
         this
     }
 
@@ -1219,6 +1220,34 @@ impl Shell {
                 let _ = this.update(cx, |this, cx| this.phone_inbox_changed(cx));
             })
             .detach();
+        }
+    }
+
+    /// Says which saved files could not be read since the last call. Without
+    /// it the user only sees their projects, prompts or memories gone.
+    fn report_unreadable(&self, cx: &mut Context<Self>) {
+        for r in crate::stored::take_reports() {
+            let name = r
+                .path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| r.path.display().to_string());
+            let title = format!("Could not read {name}");
+            let body = match &r.kept {
+                // The copy's name first: a long body is cut short on the island.
+                Some(kept) => format!(
+                    "Kept as {}, in {}. Arakun went on without it.",
+                    kept.file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default(),
+                    kept.parent().unwrap_or(std::path::Path::new("")).display()
+                ),
+                None => format!(
+                    "It could not be moved aside either, so Arakun won't save over {}.",
+                    r.path.display()
+                ),
+            };
+            self.notify(crate::island::AlertKind::Warning, &title, &body, None, cx);
         }
     }
 

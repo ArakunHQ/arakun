@@ -861,15 +861,23 @@ impl Default for Sidebar {
 
 impl Sidebar {
     pub fn load() -> Self {
-        std::fs::read(file())
-            .ok()
-            .and_then(|b| Self::parse(&b))
-            .unwrap_or_default()
+        Self::load_from(&file())
+    }
+
+    fn load_from(path: &std::path::Path) -> Self {
+        crate::stored::load_with(path, |b| {
+            Self::parse(b).ok_or_else(|| "not a sidebar layout".to_string())
+        })
+        .unwrap_or_default()
     }
 
     pub fn save(&self) {
+        self.save_to(&file());
+    }
+
+    fn save_to(&self, path: &std::path::Path) {
         if let Ok(bytes) = serde_json::to_vec_pretty(self) {
-            let _ = crate::durable::write(&file(), &bytes);
+            let _ = crate::stored::write(path, &bytes);
         }
     }
 
@@ -1121,20 +1129,28 @@ impl Extensions {
     /// shows for someone who used Arakun before, so an update hides nothing,
     /// and starts with none on a new install. The choice is saved at once.
     pub fn load(layout: &Sidebar) -> Self {
-        if let Some(saved) = std::fs::read(extensions_file())
-            .ok()
-            .and_then(|b| Self::parse(&b))
-        {
+        Self::load_from(&extensions_file(), layout, crate::state::exists())
+    }
+
+    fn load_from(path: &std::path::Path, layout: &Sidebar, used_before: bool) -> Self {
+        let saved = crate::stored::load_with(path, |b| {
+            Self::parse(b).ok_or_else(|| "not a list of extensions".to_string())
+        });
+        if let Some(saved) = saved {
             return saved;
         }
-        let first = Self::first(layout, crate::state::exists());
-        first.save();
+        let first = Self::first(layout, used_before);
+        first.save_to(path);
         first
     }
 
     pub fn save(&self) {
+        self.save_to(&extensions_file());
+    }
+
+    fn save_to(&self, path: &std::path::Path) {
         if let Ok(bytes) = serde_json::to_vec_pretty(self) {
-            let _ = crate::durable::write(&extensions_file(), &bytes);
+            let _ = crate::stored::write(path, &bytes);
         }
     }
 
@@ -1516,5 +1532,31 @@ mod tests {
         );
         assert_eq!(sec(vec![Piece::Search]).inbox_by_search(), None);
         assert_eq!(sec(vec![inbox()]).inbox_by_search(), None);
+    }
+
+    #[test]
+    fn an_unreadable_layout_is_kept() {
+        let dir = crate::stored::tests::scratch("sidebar");
+        let path = dir.join("sidebar.json");
+        // `sections` is required.
+        let edited = r#"{"style":{}}"#;
+        std::fs::write(&path, edited).unwrap();
+        assert_eq!(Sidebar::load_from(&path), Sidebar::default());
+        small().save_to(&path);
+        assert_eq!(Sidebar::load_from(&path), small());
+        assert_eq!(crate::stored::tests::kept(&path).as_deref(), Some(edited));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn unreadable_extensions_are_kept_when_the_first_choice_is_saved() {
+        let dir = crate::stored::tests::scratch("extensions");
+        let path = dir.join("extensions.json");
+        std::fs::write(&path, "{}").unwrap();
+        let e = Extensions::load_from(&path, &Sidebar::default(), false);
+        assert!(e.on.is_empty());
+        assert_eq!(Extensions::load_from(&path, &Sidebar::default(), true), e);
+        assert_eq!(crate::stored::tests::kept(&path).as_deref(), Some("{}"));
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

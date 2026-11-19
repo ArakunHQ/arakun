@@ -463,7 +463,7 @@ impl Shell {
                 }
                 let path = state::transcript_path(id);
                 let key = id.to_string();
-                cx.background_spawn(crate::guard::task(async move {
+                let saving = cx.background_spawn(crate::guard::task(async move {
                     if let Err(e) = write_transcript(&path, &transcript) {
                         eprintln!("arakun: could not save {}: {e}", path.display());
                     }
@@ -473,7 +473,12 @@ impl Shell {
                     {
                         eprintln!("arakun: could not remember the session: {e}");
                     }
-                }))
+                }));
+                // A memory store it could not read was set aside: say so.
+                cx.spawn(async move |this, cx| {
+                    saving.await;
+                    let _ = this.update(cx, |this, cx| this.report_unreadable(cx));
+                })
                 .detach();
                 self.save(cx);
                 self.check_after_turn(env_path, id, thread, stop_reason, window, cx);

@@ -62,6 +62,13 @@ skipped, and "Skip setup" leaves it at once. Adding a project ends it. Open it a
 with "Show onboarding" in the palette (`Ctrl+K`). That it was done is kept in
 `state.onboarding.json`, next to `state.json` in Arakun's data folder.
 
+If Arakun can't read one of its files there (`state.json`, `history.json`,
+`prompts.json`, the palette's to-dos, rules and pins, the sidebar layout or a memory
+store), say one written by a newer version or edited by hand, it renames it to
+`<name>.corrupt-<time>` and starts that part fresh, with a notice that says so. Nothing
+saves over the copy. To restore it, quit Arakun first (it saves on quit), keep a second
+copy of it, rename it back, and start a version that can read it.
+
 ### Workspace
 
 - **Active.** The top of the sidebar lists the sessions of every project that need

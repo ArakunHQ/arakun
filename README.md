@@ -731,6 +731,10 @@ arakun server serve               # run sessions on this machine without the win
 arakun --version                  # print the version (needs no running Arakun)
 ```
 
+Only `arakun` alone and `arakun <dir>` start the app. A word or flag it doesn't know,
+such as a typo, prints an error and exits with code 2 (`arakun --help` lists the
+commands).
+
 To open the palette from any app, bind `arakun palette` to a global key in your
 desktop. On Hyprland, for example: `bind = SUPER, K, exec, arakun palette`.
 

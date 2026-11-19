@@ -556,12 +556,14 @@ fn cli(args: Vec<String>) -> Cli {
             },
             _ => return usage("arakun add [dir]"),
         },
-        // `arakun .` like an editor; anything else (flags, unknown words) starts the app.
+        // `arakun .` like an editor.
         dir if args.len() == 1 && Path::new(dir).is_dir() => match resolve_dir(&cwd, dir) {
             Ok(dir) => request("add", vec![dir.display().to_string()]),
             Err(e) => return fail(&e),
         },
-        _ => return Cli::App,
+        dir if Path::new(dir).is_dir() => return usage("arakun <dir>"),
+        // A typo must not start a second window on the same state.
+        word => return unknown(word),
     };
     match send(&req) {
         Ok(reply) if reply.ok => {
@@ -1065,6 +1067,16 @@ fn fail(message: &str) -> Cli {
     Cli::Exit(1)
 }
 
+/// A first word that is not a command, a flag or a directory.
+fn unknown(word: &str) -> Cli {
+    if word.starts_with('-') {
+        eprintln!("arakun: unknown flag {word}; see arakun --help");
+    } else {
+        eprintln!("arakun: unknown command {word}, and no such directory; see arakun --help");
+    }
+    Cli::Exit(2)
+}
+
 /// Whether an Arakun window is running and listening for commands.
 pub fn app_running() -> bool {
     UnixStream::connect(socket_path()).is_ok()
@@ -1221,6 +1233,27 @@ mod tests {
         assert_eq!(fresh_output("ok\nCompiled\n", "ok\nCompiled\n"), "");
         // Nothing recognisable left: all of it is new.
         assert_eq!(fresh_output("gone\n", "fresh\n"), "fresh\n");
+    }
+
+    #[test]
+    fn unknown_words_and_flags_exit_without_the_app() {
+        let cli = |args: &[&str]| cli(args.iter().map(|a| a.to_string()).collect());
+        // None of these may reach the socket or start a window: they return
+        // before either.
+        for args in [
+            &["lgos"][..],
+            &["doctor"],
+            &["--verbose"],
+            &["-x"],
+            &["lgos", "src"],
+            &["--verbose", "."],
+            &["no-such-dir-here"],
+        ] {
+            assert!(matches!(cli(args), Cli::Exit(2)), "{args:?}");
+        }
+        // A directory takes nothing after it.
+        assert!(matches!(cli(&[".", "extra"]), Cli::Exit(2)));
+        assert!(matches!(cli(&[]), Cli::App));
     }
 
     #[test]

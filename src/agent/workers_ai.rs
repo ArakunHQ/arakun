@@ -3661,6 +3661,43 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Without the halt, a `write_file` queued after a stopped search still ran: the
+    /// tool loop only skips the calls after one that returns a reason to halt.
+    #[test]
+    fn a_stopped_search_halts_the_turn_and_a_failed_one_does_not() {
+        let dir = std::env::temp_dir().join(format!("arakun-wai-halt-{}", uuid_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("x.txt"), "three\n").unwrap();
+        let agent = Agent {
+            out: Arc::new(|_| {}),
+            asks: Mutex::default(),
+            next_id: AtomicU64::new(1),
+            cancel: AtomicBool::new(false),
+            busy: AtomicBool::new(false),
+            session: Mutex::default(),
+            turns: AtomicU64::new(0),
+        };
+        let session = Mutex::new(Session::new(dir.clone()));
+        let call = |args: Value| Call {
+            id: "c1".into(),
+            name: "grep".into(),
+            arguments: args.to_string(),
+        };
+        // A search that fails is the model's to deal with; the turn goes on.
+        let (text, halt) = agent.run_call(
+            "s",
+            &session,
+            &dir,
+            &call(json!({"pattern": "(", "path": "no-such-folder"})),
+        );
+        assert!(text.starts_with("Error:"), "{text}");
+        assert_eq!(halt, None);
+        agent.cancel.store(true, Ordering::SeqCst);
+        let (_, halt) = agent.run_call("s", &session, &dir, &call(json!({"pattern": "thr"})));
+        assert_eq!(halt, Some("the turn was stopped"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[cfg(unix)]
     #[test]
     fn a_saved_session_is_the_owners_alone() {

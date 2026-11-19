@@ -2610,7 +2610,19 @@ impl Shell {
 
     /// Closes a tab the user asked to close; Reopen closed tab can bring it back.
     fn close_tab(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
-        self.remove_tab(index, true, window, cx);
+        if self.can_close_tab(index) {
+            self.remove_tab(index, true, window, cx);
+        }
+    }
+
+    /// Whether the user may close the tab at `index`. Not the active tab when
+    /// the environment on screen has no other: `remove_tab` would only put a
+    /// blank New session tab in its place, which the user can open themselves.
+    fn can_close_tab(&self, index: usize) -> bool {
+        if !self.has_projects() || index >= self.strip.tabs.len() {
+            return false;
+        }
+        !self.strip.is_last_on_screen(index, &self.env().path)
     }
 
     /// Closes a tab that went away by itself (its session or diff is gone, the

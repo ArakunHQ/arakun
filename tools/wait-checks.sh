@@ -30,41 +30,64 @@ die() {
 pr=${1:-}
 command -v gh > /dev/null || die "needs the GitHub CLI (gh)"
 command -v jq > /dev/null || die "needs jq"
+# Pin the pull request now: without a number, each gh call would pick the
+# pull request of whatever branch is checked out at that moment.
+if [ -z "$pr" ]; then
+  pr=$(gh pr view --json number --jq .number) || die "no pull request for the current branch"
+fi
 
 required=$(gh api "repos/{owner}/{repo}/rules/branches/main" \
   --jq '.[] | select(.type == "required_status_checks")
         | .parameters.required_status_checks[].context') ||
   die "could not read the required checks of main"
-wanted=$(grep -vxF "$SKIP_CHECK" <<< "$required" || true)
+required=$(grep -vxF "$SKIP_CHECK" <<< "$required" || true)
+
+head_sha() {
+  gh pr view "$pr" --json headRefOid --jq .headRefOid 2> /dev/null || true
+}
 
 # macOS builds code behind cfg(target_os = "macos") and macOS-only files, and
-# a new dependency or toolchain can break only there. Only changed lines in .rs
-# files count, so docs that quote the cfg don't. A changed line inside a macOS
-# function but far from its cfg is not seen; such files are named *mac*.
-macos_reason=""
-if ! files=$(gh pr diff ${pr:+"$pr"} --name-only); then
-  macos_reason="could not list the changed files"
-elif hit=$(grep -iE 'macos|(^|/)mac(\.rs$|/)|^Cargo\.(toml|lock)$|(^|/)build\.rs$|^rust-toolchain\.toml$' <<< "$files" | head -n 1) && [ -n "$hit" ]; then
-  macos_reason="$hit changed"
-elif ! diff=$(gh pr diff ${pr:+"$pr"}); then
-  macos_reason="could not read the diff"
-elif awk '/^diff --git / { rs = ($NF ~ /\.rs$/) } rs && /^[-+]/ && !/^(\+\+\+|---) /' <<< "$diff" |
-  grep -qE 'target_os *= *"macos"|target_vendor *= *"apple"'; then
-  macos_reason="the diff changes code behind target_os = \"macos\""
-fi
-if [ -n "$macos_reason" ]; then
-  echo "Waiting for the macOS job too: $macos_reason."
-  wanted=$(printf '%s\n%s\n' "$wanted" "$MACOS_CHECK")
-else
-  echo "The diff touches no macOS code; not waiting for the macOS job."
-fi
-wanted=$(grep -v '^$' <<< "$wanted")
+# a new dependency or toolchain can break only there. Only .rs files count, so
+# docs that quote the cfg don't. Context lines count too, so a change next to
+# its cfg is seen. A change inside a macOS function but far from its cfg is
+# not; such files are named *mac*. The greps read all their input: an early
+# exit could kill the writer with SIGPIPE and, under pipefail, hide a match.
+classify() {
+  local files diff hit reason=""
+  if ! files=$(gh pr diff "$pr" --name-only); then
+    reason="could not list the changed files"
+  elif hit=$(grep -iE 'macos|(^|/)mac(\.rs$|/)|^Cargo\.(toml|lock)$|(^|/)build\.rs$|^rust-toolchain\.toml$' <<< "$files" | sed -n 1p) && [ -n "$hit" ]; then
+    reason="$hit changed"
+  elif ! diff=$(gh pr diff "$pr"); then
+    reason="could not read the diff"
+  elif awk '/^diff --git / { rs = ($NF ~ /\.rs$/); next } rs && /^[-+ ]/ && !/^(\+\+\+|---) /' <<< "$diff" |
+    grep -E 'target_os *= *"macos"|target_vendor *= *"apple"' > /dev/null; then
+    reason="the diff changes code near target_os = \"macos\""
+  fi
+  if [ -n "$reason" ]; then
+    echo "Waiting for the macOS job too: $reason."
+    wanted=$(printf '%s\n%s\n' "$required" "$MACOS_CHECK")
+  else
+    echo "The diff touches no macOS code; not waiting for the macOS job."
+    wanted=$required
+  fi
+  wanted=$(grep -v '^$' <<< "$wanted" || true)
+}
 
 deadline=$(($(date +%s) + TIMEOUT_MIN * 60))
 last=""
+classified=""
 while :; do
+  # A push during the wait can bring macOS changes, so classify each new head.
+  sha=$(head_sha)
+  if [ -z "$classified" ] || { [ -n "$sha" ] && [ "$sha" != "$classified" ]; }; then
+    [ -z "$classified" ] || echo "The pull request has a new head; checking its diff again."
+    classify
+    classified=${sha:-unknown}
+    last=""
+  fi
   # gh exits 8 while checks are pending, so read the JSON, not the exit code.
-  checks=$(gh pr checks ${pr:+"$pr"} --json name,bucket 2> /dev/null || true)
+  checks=$(gh pr checks "$pr" --json name,bucket 2> /dev/null || true)
   jq -e 'type == "array"' > /dev/null 2>&1 <<< "$checks" || checks='[]'
 
   pending=() failed=()
@@ -83,6 +106,8 @@ while :; do
     exit 1
   fi
   if [ ${#pending[@]} -eq 0 ]; then
+    # The checks may belong to a head pushed after the one classified.
+    [ "$(head_sha)" = "$classified" ] || continue
     echo "The checks this pull request needs passed."
     exit 0
   fi

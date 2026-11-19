@@ -9,6 +9,8 @@ use std::rc::Rc;
 use gpui::{Hsla, ListAlignment, ListOffset, ListState, list};
 
 use super::*;
+use serde_json::json;
+
 use crate::agent::marketplace::{self, Input, Install, PluginEntry, RegistryServer};
 
 /// Wait this long after the last keystroke before asking the registry.
@@ -61,7 +63,10 @@ pub(super) struct MarketState {
 impl ExtensionsView {
     /// Reads what it needs the first time the Marketplace shows.
     pub(super) fn open_market(&mut self, cx: &mut Context<Self>) {
+        // A server says which plugins and MCP servers it has in one answer.
+        self.ask_remote(false, cx);
         match self.market {
+            Market::Plugins if self.targets.target.is_some() => {}
             Market::Plugins if self.ms.catalog.is_none() && !self.ms.catalog_loading => {
                 self.load_catalog(cx)
             }
@@ -184,9 +189,18 @@ impl ExtensionsView {
     }
 
     fn install_plugin(&mut self, entry: &PluginEntry, cx: &mut Context<Self>) {
-        let Some(cwd) = self.cwd.clone() else { return };
         let id = entry.id.clone();
         let name = entry.name.clone();
+        if self.targets.target.is_some() {
+            let done = format!(
+                "is installed{} and on in every project there.",
+                self.on_target()
+            );
+            let msg = json!({ "type": "install_plugin", "id": id });
+            self.install_remote(name, id, msg, done, cx);
+            return;
+        }
+        let Some(cwd) = self.cwd.clone() else { return };
         self.run_op(
             name,
             "is installed and on in every project",
@@ -252,7 +266,6 @@ impl ExtensionsView {
     }
 
     fn finish_install(&mut self, cx: &mut Context<Self>) {
-        let Some(cwd) = self.cwd.clone() else { return };
         let Some(ins) = &self.ms.installing else {
             return;
         };
@@ -273,6 +286,20 @@ impl ExtensionsView {
         let login = claude_ext::login_command(&name);
         let n = name.clone();
         let sign_in = matches!(&method, Install::Remote { headers, .. } if headers.is_empty());
+        if self.targets.target.is_some() {
+            // Its sign-in opens a browser, so it is done on that machine.
+            let mut done = format!("was added{} for every project there.", self.on_target());
+            if sign_in {
+                done.push_str(&format!(" Sign in to it there: {login}"));
+            }
+            let msg = json!({
+                "type": "install_server", "name": n, "install": method, "values": values,
+            });
+            self.ms.installing = None;
+            self.install_remote(name, n, msg, done, cx);
+            return;
+        }
+        let Some(cwd) = self.cwd.clone() else { return };
         self.ms.installing = None;
         self.run_op(
             name,
@@ -304,9 +331,8 @@ impl ExtensionsView {
         };
         let mut items: Vec<Item> = match self.market {
             Market::Plugins => self
-                .ms
-                .catalog
-                .iter()
+                .plugin_catalog()
+                .into_iter()
                 .flatten()
                 .filter(|p| self.ms.everything || p.official)
                 .filter(|p| {
@@ -400,17 +426,21 @@ impl ExtensionsView {
 
     fn installed(&self, item: &Item) -> bool {
         match item {
+            // A server's list says what is installed there; Claude's files here
+            // know of an install the list was read before.
             Item::Plugin(p) => {
                 p.installed
-                    || self
-                        .claude
-                        .as_ref()
-                        .is_some_and(|x| x.plugins.iter().any(|i| i.id == p.id))
+                    || self.targets.target.is_none()
+                        && self
+                            .claude
+                            .as_ref()
+                            .is_some_and(|x| x.plugins.iter().any(|i| i.id == p.id))
             }
-            Item::Server(s) => self
-                .claude
-                .as_ref()
-                .is_some_and(|x| x.servers.iter().any(|i| i.name == s.short_name())),
+            Item::Server(s) => self.remote_has_server(&s.short_name()).unwrap_or_else(|| {
+                self.claude
+                    .as_ref()
+                    .is_some_and(|x| x.servers.iter().any(|i| i.name == s.short_name()))
+            }),
         }
     }
 
@@ -437,7 +467,7 @@ impl ExtensionsView {
     /// How many plugins or servers Discover has for `m`, as the scope shows them.
     pub(super) fn discover_count(&self, m: Market) -> Option<usize> {
         match m {
-            Market::Plugins => self.ms.catalog.as_ref().map(|c| {
+            Market::Plugins => self.plugin_catalog().map(|c| {
                 c.iter()
                     .filter(|p| self.ms.everything || p.official)
                     .count()
@@ -474,9 +504,8 @@ impl ExtensionsView {
         let heading = match self.market {
             Market::Plugins => {
                 for p in self
-                    .ms
-                    .catalog
-                    .iter()
+                    .plugin_catalog()
+                    .into_iter()
                     .flatten()
                     .filter(|p| self.ms.everything || p.official)
                 {
@@ -555,12 +584,12 @@ impl ExtensionsView {
             && self.ms.everything
             && self.ms.registry_next.is_some();
         let loading = match self.market {
-            Market::Plugins => self.ms.catalog.is_none(),
+            Market::Plugins => self.plugin_catalog().is_none(),
             Market::Registry if self.ms.everything => self.ms.registry.is_none(),
             Market::Registry => self.ms.official.is_none(),
         };
         let error = match self.market {
-            Market::Plugins => self.ms.catalog_error.clone(),
+            Market::Plugins => self.catalog_error(),
             Market::Registry => self.ms.registry_error.clone(),
         };
         let query = self.query.read(cx).text().trim().to_string();
@@ -588,9 +617,11 @@ impl ExtensionsView {
                     None => ui::loading(
                         "ext-market-loading",
                         match self.market {
-                            Market::Plugins => "Reading the plugin marketplaces…",
-                            Market::Registry if self.ms.everything => "Asking the MCP Registry…",
-                            Market::Registry => "Gathering what each company publishes…",
+                            Market::Plugins => self.catalog_wait(),
+                            Market::Registry if self.ms.everything => {
+                                "Asking the MCP Registry…".into()
+                            }
+                            Market::Registry => "Gathering what each company publishes…".into(),
                         },
                     )
                     .into_any_element(),
@@ -805,8 +836,10 @@ impl ExtensionsView {
     }
 
     /// Claude Code's MCP servers that need you, as last read.
+    /// Only while Discover is on this computer: they are this computer's.
     fn needy(&self) -> impl Iterator<Item = &Server> {
-        self.claude.iter().flat_map(|x| {
+        let here = self.targets.target.is_none();
+        self.claude.iter().filter(move |_| here).flat_map(|x| {
             x.servers.iter().filter(|s| {
                 matches!(s.health, Health::Failed(_))
                     || (s.health == Health::NeedsAuth && !s.unused_connector())
@@ -880,13 +913,14 @@ impl ExtensionsView {
     fn render_head(&self, n: usize, loading: bool, cx: &mut Context<Self>) -> Div {
         let busy = !loading
             && match self.market {
-                Market::Plugins => self.ms.catalog_loading,
+                Market::Plugins => self.catalog_loading(),
                 Market::Registry if self.ms.everything => self.ms.registry_loading,
                 Market::Registry => self.ms.official_loading,
             };
         let error = match self.market {
-            Market::Plugins => self.ms.catalog_error.clone(),
-            Market::Registry => self.ms.registry_error.clone(),
+            Market::Plugins => self.catalog_error(),
+            // The registry is read from here; installing from it needs the server.
+            Market::Registry => self.reach_error().or(self.ms.registry_error.clone()),
         };
         let title = match (self.market, &self.ms.category) {
             (_, Some(c)) if self.market == Market::Plugins => capitalize(c),
@@ -1020,7 +1054,10 @@ impl ExtensionsView {
         // A plugin goes on in every project, as the details say; a server
         // asks how in the details first.
         .when(matches!(item, Item::Plugin(_)), |b| {
-            b.tooltip(ui::tip("Install for every project"))
+            b.tooltip(ui::tip_text(match self.target_server() {
+                Some(s) => format!("Install on {}, for every project", s.name),
+                None => "Install for every project".to_string(),
+            }))
         })
         .on_click(cx.listener(move |this, _, window, cx| {
             // The card under the button opens the details; Install alone installs.
@@ -1210,9 +1247,7 @@ impl ExtensionsView {
         let key = self.ms.selected.as_ref()?;
         let item = match self.market {
             Market::Plugins => Item::Plugin(
-                self.ms
-                    .catalog
-                    .as_ref()?
+                self.plugin_catalog()?
                     .iter()
                     .find(|p| &p.id == key)?
                     .clone(),
@@ -1308,7 +1343,11 @@ impl ExtensionsView {
                         div()
                             .ty(Type::Body)
                             .text_color(theme::text_subtle())
-                            .child("Installed for your user. Turn it on or off under Plugins.")
+                            .child(match self.target_server() {
+                                Some(s) => format!("Installed on {} for its user.", s.name),
+                                None => "Installed for your user. Turn it on or off under Plugins."
+                                    .to_string(),
+                            })
                             .into_any_element()
                     } else if busy {
                         div()
@@ -1322,7 +1361,10 @@ impl ExtensionsView {
                         ui::button_with(
                             "ext-detail-install",
                             Some("download04"),
-                            "Install for every project",
+                            match self.target_server() {
+                                Some(s) => format!("Install on {}", s.name),
+                                None => "Install for every project".to_string(),
+                            },
                             ButtonKind::Primary,
                             self.op.is_none(),
                         )
@@ -1376,10 +1418,17 @@ impl ExtensionsView {
         if installed {
             return Some(
                 out.child(
-                    div()
-                        .ty(Type::Body)
-                        .text_color(theme::text_subtle())
-                        .child("Already in Claude Code under this name: see it under MCP servers."),
+                    div().ty(Type::Body).text_color(theme::text_subtle()).child(
+                        match self.target_server() {
+                            Some(s) => {
+                                format!("Claude Code on {} has a server of this name.", s.name)
+                            }
+                            None => {
+                                "Already in Claude Code under this name: see it under MCP servers."
+                                    .to_string()
+                            }
+                        },
+                    ),
                 ),
             );
         }
@@ -1403,7 +1452,9 @@ impl ExtensionsView {
         let sign_in = matches!(method, Install::Remote { headers, .. } if headers.is_empty());
         if ins.fields.is_empty() {
             out = out.child(div().ty(Type::Body).text_color(theme::text_subtle()).child(
-                if sign_in {
+                if sign_in && self.targets.target.is_some() {
+                    "Nothing to fill in: you sign in on that machine once it's added."
+                } else if sign_in {
                     "Nothing to fill in: you sign in with your account once it's added."
                 } else {
                     "Nothing to fill in."
@@ -1469,8 +1520,14 @@ impl ExtensionsView {
                             .ty(Type::Caption)
                             .text_color(theme::text_subtle())
                             .child(format!(
-                                "Added as “{}”, for every project. It runs:",
-                                s.short_name()
+                                "Added as “{}”{}, for every project. It runs{}:",
+                                s.short_name(),
+                                self.on_target(),
+                                if self.targets.target.is_some() {
+                                    " there"
+                                } else {
+                                    ""
+                                },
                             )),
                     )
                     .child(
@@ -1488,7 +1545,7 @@ impl ExtensionsView {
                 ui::button_with(
                     "ext-ri-go",
                     Some("download04"),
-                    if sign_in {
+                    if sign_in && self.targets.target.is_none() {
                         "Install and sign in"
                     } else {
                         "Install"

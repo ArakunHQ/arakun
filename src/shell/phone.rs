@@ -774,6 +774,16 @@ impl Shell {
                     }
                 }
             }
+            // What the app asks of a server, to install there. A phone has
+            // the Marketplace tab of this computer for that.
+            ClientMsg::Market
+            | ClientMsg::InstallPlugin { .. }
+            | ClientMsg::InstallServer { .. } => {
+                self.phone_send(
+                    client,
+                    wire::error("Install from the Marketplace tab of this computer."),
+                );
+            }
             ClientMsg::Ping => {}
         }
     }

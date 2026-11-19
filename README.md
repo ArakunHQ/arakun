@@ -705,7 +705,11 @@ The link is good for two minutes and pairs one device. There are two ways to use
 - **In the app.** Open the Servers tab and paste the link. The server and its sessions
   show there. A session opens as the app draws its own, live; you can start one in any
   folder the server offers, send follow-ups, stop a turn and answer what the agent
-  asks. The app keeps what pairing gave it in `servers.json` next to its state, which
+  asks. In the Marketplace, "Install on" picks a paired server: Discover then lists
+  the plugins its marketplaces offer, and Install adds a plugin or MCP server for
+  Claude Code there, for every project. An MCP server that wants a sign-in is signed
+  in to on that machine (`claude mcp login <name>`), since that opens a browser.
+  The app keeps what pairing gave it in `servers.json` next to its state, which
   only your user can read. "Forget" on a server removes it there and has the server
   forget the app. A server that cannot be reached at that moment keeps the app in its
   list: remove it there with `arakun-server unpair <device>`.

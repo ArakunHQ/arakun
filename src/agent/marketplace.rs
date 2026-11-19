@@ -786,9 +786,61 @@ fn run(bin: &Path, cwd: &Path, args: &[&str], timeout: Duration) -> Result<Strin
     super::claude_ext::run_cli(bin, cwd, args, timeout)
 }
 
+// ---------------------------------------------------------------------------
+// On a server: the app asks for the marketplace there and installs from it
+// (`ClientMsg::Market`, `InstallPlugin` and `InstallServer`). Everything is
+// for the server's user, so it runs in that user's home.
+
+/// Blocking: the `market` message a server answers with. It holds the plugins
+/// its marketplaces offer, each saying whether it is installed, and the names
+/// of the MCP servers Claude has there. When the list cannot be read, it holds
+/// the last one read and says why.
+pub fn report() -> Value {
+    let home = launch::home();
+    let (plugins, error) = match plugins(&home) {
+        Ok(list) => (list, None),
+        Err(e) => (cached_plugins().unwrap_or_default(), Some(format!("{e:#}"))),
+    };
+    let servers: Vec<String> = super::claude_ext::load_quick(&home)
+        .servers
+        .into_iter()
+        .map(|s| s.name)
+        .collect();
+    json!({ "type": "market", "plugins": plugins, "servers": servers, "error": error })
+}
+
+/// Blocking: installs a plugin on this machine, and says how it went (`market_done`).
+pub fn serve_plugin(id: &str) -> Value {
+    done(id, install_plugin(&launch::home(), id))
+}
+
+/// Blocking: adds an MCP server on this machine, and says how it went (`market_done`).
+pub fn serve_server(name: &str, install: &Install, values: &HashMap<String, String>) -> Value {
+    let result = install_server(&launch::home(), name, install, values).map(|_| ());
+    done(name, result)
+}
+
+fn done(name: &str, result: Result<()>) -> Value {
+    json!({
+        "type": "market_done",
+        "name": name,
+        "error": result.err().map(|e| format!("{e:#}")),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_server_says_how_an_install_went() {
+        let ok = done("a@b", Ok(()));
+        assert_eq!(ok["type"], "market_done");
+        assert_eq!(ok["name"], "a@b");
+        assert!(ok["error"].is_null());
+        let failed = done("a@b", Err(anyhow!("no such plugin")));
+        assert_eq!(failed["error"], "no such plugin");
+    }
 
     fn sample() -> Value {
         json!({"servers": [

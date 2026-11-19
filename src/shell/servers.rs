@@ -20,6 +20,7 @@ use super::Shell;
 use crate::agent::{
     AgentKind, Entry, SessionMeta, Thread, ThreadStatus, ThreadView, Transcript, Usage,
 };
+use crate::extensions_view::ServerTarget;
 use crate::model::{Status, TabKind, unix_now};
 use crate::servers::client::{Client, Event, Events, Status as LinkStatus};
 use crate::servers::{self, Saved};
@@ -260,7 +261,7 @@ impl Shell {
         cx.notify();
     }
 
-    fn servers_connect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn servers_connect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.servers.is_some() {
             return;
         }
@@ -300,6 +301,9 @@ impl Shell {
     }
 
     pub(super) fn sync_servers_view(&mut self, cx: &mut Context<Self>) {
+        let targets = self.server_targets();
+        self.extensions_view
+            .update(cx, |v, cx| v.set_servers(targets, cx));
         let Some(link) = &self.servers else {
             return;
         };
@@ -342,6 +346,38 @@ impl Shell {
             error: link.error.clone(),
         };
         self.servers_view.update(cx, |v, cx| v.set_state(state, cx));
+    }
+
+    /// The paired servers, for the Marketplace to install on. Before the
+    /// first connection they are read from the file, and not connected.
+    pub(super) fn server_targets(&self) -> Vec<ServerTarget> {
+        let target = |s: &Saved, reach: Reach| ServerTarget {
+            id: s.id.clone(),
+            name: if s.name.is_empty() {
+                s.origin.clone()
+            } else {
+                s.name.clone()
+            },
+            reach,
+        };
+        match &self.servers {
+            Some(link) => link
+                .saved
+                .iter()
+                .filter_map(|s| Some(target(s, link.conns.get(&s.id)?.reach.clone())))
+                .collect(),
+            None => servers::load()
+                .iter()
+                .map(|s| target(s, Reach::Connecting))
+                .collect(),
+        }
+    }
+
+    /// A message from the Marketplace to one server.
+    pub(super) fn servers_send(&self, id: &str, msg: &Value) {
+        if let Some(conn) = self.servers.as_ref().and_then(|l| l.conns.get(id)) {
+            conn.client.send(msg);
+        }
     }
 
     /// A message to the server showing the open session, about that session.
@@ -624,6 +660,21 @@ impl Shell {
                 }
             }
             Event::Message(msg) => {
+                let kind = msg["type"].as_str().unwrap_or("");
+                if matches!(kind, "market" | "market_done") {
+                    self.extensions_view
+                        .update(cx, |v, cx| v.server_said(id, &msg, cx));
+                    return;
+                }
+                if kind == "error" {
+                    let message = text(&msg, "message");
+                    let taken = self
+                        .extensions_view
+                        .update(cx, |v, cx| v.server_error(id, &message, cx));
+                    if taken {
+                        return;
+                    }
+                }
                 if msg["type"] == "started" {
                     let session = text(&msg, "id");
                     self.servers_show(id, &session, window, cx);

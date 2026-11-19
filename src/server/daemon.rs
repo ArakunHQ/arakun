@@ -25,7 +25,7 @@ use crate::account::Account;
 use crate::agent::log::render_log;
 use crate::agent::{
     self, AgentKind, Entry, Setting, SettingOption, Thread, ThreadEvent, ThreadStatus, Transcript,
-    catalog, workers_ai,
+    catalog, marketplace, workers_ai,
 };
 use crate::model::{Status, unix_now};
 use crate::phone::relay::{self, RelayClient};
@@ -1577,6 +1577,23 @@ impl Daemon {
                 let usage = self.usage(cx);
                 self.transport.send(client, usage);
             }
+            ClientMsg::Market => {
+                self.answer_off_thread(client, marketplace::report, cx);
+            }
+            ClientMsg::InstallPlugin { id } => {
+                self.answer_off_thread(client, move || marketplace::serve_plugin(&id), cx);
+            }
+            ClientMsg::InstallServer {
+                name,
+                install,
+                values,
+            } => {
+                self.answer_off_thread(
+                    client,
+                    move || marketplace::serve_server(&name, &install, &values),
+                    cx,
+                );
+            }
             ClientMsg::Visible { visible } => {
                 if visible {
                     self.hidden.remove(&client);
@@ -1586,6 +1603,25 @@ impl Daemon {
             }
             ClientMsg::Ping => {}
         }
+    }
+
+    /// Runs `job` off the main thread (it waits on `claude`) and sends what it
+    /// gives to `client`, in `part`s when it is too big for one frame.
+    fn answer_off_thread(
+        &self,
+        client: ClientId,
+        job: impl FnOnce() -> serde_json::Value + Send + 'static,
+        cx: &mut Context<Self>,
+    ) {
+        cx.spawn(async move |this, cx| {
+            let reply = cx.background_executor().spawn(async move { job() }).await;
+            let _ = this.update(cx, |this, _| {
+                for frame in wire::parts(reply.to_string()) {
+                    this.transport.send(client, frame);
+                }
+            });
+        })
+        .detach();
     }
 
     /// Sends `text` to the session `id` as its next prompt.

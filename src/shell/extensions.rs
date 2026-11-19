@@ -1,5 +1,6 @@
 //! The Marketplace tab: opening it on the visible environment and what its
-//! buttons do in the window (terminals, files beside the chat).
+//! buttons do in the window (terminals, files beside the chat). Installing on
+//! a paired server goes through that server's connection (`shell::servers`).
 
 use gpui::{Context, Window};
 
@@ -20,7 +21,9 @@ impl Shell {
         });
         self.note_active_tab(cx);
         let dir = self.env().path.clone();
+        let targets = self.server_targets();
         self.extensions_view.update(cx, |v, cx| {
+            v.set_servers(targets, cx);
             v.set_dir(dir, cx);
             v.refresh_if_stale(cx);
             v.focus(window, cx);
@@ -45,6 +48,18 @@ impl Shell {
             cx.notify();
             return;
         }
+        match ev {
+            ExtensionsEvent::ConnectServers => {
+                self.servers_connect(window, cx);
+                self.sync_servers_view(cx);
+                return;
+            }
+            ExtensionsEvent::Server(id, msg) => {
+                self.servers_send(id, msg);
+                return;
+            }
+            _ => {}
+        }
         if !self.has_projects() {
             return;
         }
@@ -54,7 +69,9 @@ impl Shell {
                 self.run_in_terminal(&env_path, command, true, window, cx);
             }
             ExtensionsEvent::Open(path) => self.open_file_beside(&env_path, path, None, window, cx),
-            ExtensionsEvent::Toggled(..) => {}
+            ExtensionsEvent::Toggled(..)
+            | ExtensionsEvent::ConnectServers
+            | ExtensionsEvent::Server(..) => {}
         }
     }
 }

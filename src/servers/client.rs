@@ -21,7 +21,7 @@ use tungstenite::{Message, WebSocket, stream::MaybeTlsStream};
 use super::{Invite, Saved, Way, socket_origin};
 use crate::phone::e2e::{Handshake, Session};
 use crate::phone::identity::is_label;
-use crate::phone::relay::{CONTROL, DATA, HELLO};
+use crate::phone::relay::{CONTROL, DATA, HELLO, Joiner};
 use crate::phone::wire;
 
 /// The first wait after a drop; each failure doubles it up to `RETRY_MAX`.
@@ -440,6 +440,8 @@ impl Link {
         let mut session: Option<Session> = None;
         // The server knows who this is: messages may go.
         let mut ready = false;
+        // A message too big for one relay frame comes as `{part}` pieces.
+        let mut pieces = Joiner::default();
         loop {
             // As in `talk_direct`: a stop is acted on after the queue is read.
             let stopping = self.stop.load(Ordering::Relaxed);
@@ -491,7 +493,11 @@ impl Link {
                         HELLO => {
                             let Some(hs) = handshake.take() else { continue };
                             match hs.finish(payload, label, channel) {
-                                Ok(agreed) => session = Some(agreed),
+                                Ok(agreed) => {
+                                    session = Some(agreed);
+                                    // Pieces from before belong to no message now.
+                                    pieces = Joiner::default();
+                                }
                                 // Whoever answered does not hold the key the address names.
                                 Err(e) => {
                                     return Ended::Refused(format!(
@@ -529,6 +535,12 @@ impl Link {
                                         "A message from the server did not open.".into(),
                                     );
                                 }
+                            };
+                            let msg = match pieces.take(msg) {
+                                Ok(Some(msg)) => msg,
+                                // More pieces of it are on their way.
+                                Ok(None) => continue,
+                                Err(why) => return Ended::Retry(why.into()),
                             };
                             if let Some(p) = msg.get("paired") {
                                 let text = |key: &str| p[key].as_str().unwrap_or("").to_string();
@@ -1397,6 +1409,21 @@ mod tests {
         // Sealed both ways from here.
         seal(&mut ws, &mut session, json!({ "type": "inbox" }));
         assert!(matches!(next(&mut rx), Event::Message(m) if m["type"] == "inbox"));
+
+        // A message too big for one relay frame comes in pieces, as the
+        // server's relay client sends it, and reaches the shell joined.
+        let text = "é".repeat(300 * 1024);
+        let big = json!({ "type": "entries", "text": text }).to_string();
+        let sent = crate::phone::relay::parts(&big, 160 * 1024);
+        assert!(sent.len() > 1);
+        for piece in sent {
+            seal(&mut ws, &mut session, serde_json::from_str(&piece).unwrap());
+        }
+        assert!(
+            matches!(next(&mut rx), Event::Message(m) if m["type"] == "entries" && m["text"] == text)
+        );
+        seal(&mut ws, &mut session, json!({ "type": "usage" }));
+        assert!(matches!(next(&mut rx), Event::Message(m) if m["type"] == "usage"));
         client.send(&json!({ "type": "cancel", "session": "s1" }));
         assert_eq!(
             sealed(&mut ws, &mut session),

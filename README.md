@@ -1117,6 +1117,9 @@ forward through tabs, `Ctrl+Cmd+F` toggles full screen, and `Cmd+H`, `Cmd+M` and
 - `Ctrl+Shift+N` new session in a new worktree, at once on a random branch;
   `Ctrl+Alt+N` asks for the branch and options first
 - `Ctrl+F` search the session
+- `Tab` / `Shift+Tab` move between buttons, switches and menu rows, and `Enter` or
+  `Space` presses the one with the ring. Terminals, web pages, fields and the composer
+  keep `Tab` for themselves
 - `Ctrl+K` (or `Ctrl+P`) the palette: sessions of every project, GitHub, runs, files and
   symbols, views, commands, settings and memory in one search. Start with `>` for
   commands, `/` for files, `:` for settings, `@` for people or `#` for pull requests.

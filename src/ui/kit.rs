@@ -303,6 +303,7 @@ pub fn chip(
         .border_1()
         .ty(Type::Label)
         .cursor_pointer()
+        .map(crate::ui::focusable)
         .when(on, |d| {
             d.bg(theme::fill_selected())
                 .border_color(theme::border_strong())
@@ -430,6 +431,7 @@ pub fn toggle_group<T: Copy + PartialEq + 'static>(
             .rounded(crate::ui::rad(RADIUS_SM))
             .ty(Type::Overline)
             .cursor_pointer()
+            .map(crate::ui::focusable)
             .when(on, |d| {
                 d.bg(theme::fill_selected()).text_color(theme::text())
             })
@@ -475,6 +477,7 @@ pub fn choice_row(id: impl Into<ElementId>, selected: bool) -> gpui::Stateful<gp
         .ty(Type::Body)
         .text_color(theme::text())
         .cursor_pointer()
+        .map(crate::ui::focusable)
         .hover(|d| d.bg(theme::fill_hover()))
         .when(selected, |d| d.bg(theme::fill_selected()))
         .child(radio(selected))
@@ -498,6 +501,7 @@ pub fn submenu_row(
         .ty(Type::Body)
         .text_color(theme::text())
         .cursor_pointer()
+        .map(crate::ui::focusable)
         .when(open, |d| d.bg(theme::fill_hover()))
         .hover(|d| d.bg(theme::fill_hover()))
         .child(div().flex_1().child(name.to_string()))
@@ -526,6 +530,7 @@ pub fn switch_row(id: impl Into<ElementId>, name: &str, on: bool) -> gpui::State
         .ty(Type::Body)
         .text_color(theme::text())
         .cursor_pointer()
+        .map(crate::ui::focusable)
         .hover(|d| d.bg(theme::fill_hover()))
         .child(div().flex_1().child(name.to_string()))
         .child(switch(on))
@@ -956,6 +961,7 @@ pub fn outline_tab(
         .border_1()
         .ty(Type::Label)
         .cursor_pointer()
+        .map(crate::ui::focusable)
         .when(on, |d| {
             d.bg(theme::fill_selected())
                 .border_color(theme::border_strong())

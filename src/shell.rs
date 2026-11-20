@@ -3536,6 +3536,67 @@ impl Shell {
                 .into_any_element(),
         }
     }
+
+    /// Tab and Shift+Tab move between controls. This listens last, so a view
+    /// that uses Tab itself (a field completing, the new-session dialog)
+    /// already took it. Terminals, pages and the composer type it instead:
+    /// not all of them stop the key, so they are left out by name.
+    fn tab_key(&mut self, ev: &gpui::KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let k = &ev.keystroke;
+        let m = k.modifiers;
+        if k.key != "tab" || m.control || m.alt || m.platform || m.function {
+            return;
+        }
+        if self.composer_focus.is_focused(window) || types_tab(&window.context_stack()) {
+            return;
+        }
+        let step = |window: &mut Window, cx: &mut Context<Self>| {
+            if m.shift {
+                window.focus_prev(cx);
+            } else {
+                window.focus_next(cx);
+            }
+        };
+        step(window, cx);
+        // gpui's tab order spans the window, so an open dialog would let Tab
+        // reach the controls behind it. Step on to the next stop inside one;
+        // back at the first stop means no dialog is open.
+        let first = window.focused(cx);
+        for _ in 0..MAX_TAB_STOPS {
+            if in_modal(&window.context_stack()) {
+                break;
+            }
+            step(window, cx);
+            let now = window.focused(cx);
+            if now.is_none() || now == first {
+                break;
+            }
+        }
+        if !in_modal(&window.context_stack())
+            && let Some(first) = first
+        {
+            window.focus(&first, cx);
+        }
+        cx.stop_propagation();
+    }
+}
+
+/// How many tab stops Tab passes at most looking for one inside a dialog.
+const MAX_TAB_STOPS: usize = 1024;
+
+/// Whether focus is inside a dialog (`ui::modal_panel`).
+fn in_modal(contexts: &[gpui::KeyContext]) -> bool {
+    contexts.iter().any(|c| c.contains(ui::MODAL_CONTEXT))
+}
+
+/// Whether focus is in something that types a Tab or moves with it: a
+/// terminal, a web page or the palette.
+fn types_tab(contexts: &[gpui::KeyContext]) -> bool {
+    contexts.iter().any(|c| {
+        ["Terminal", "Browser", "Palette"]
+            .iter()
+            .any(|name| c.contains(name))
+    })
 }
 
 impl Render for Shell {
@@ -3868,6 +3929,7 @@ impl Render for Shell {
                 }),
             )
             .map(|d| self.pane_handlers(d, cx))
+            .on_key_down(cx.listener(Self::tab_key))
             .capture_key_down(|ev: &gpui::KeyDownEvent, window, cx| {
                 if ev.keystroke.key == "escape" && crate::agent::markdown::close_preview(window) {
                     cx.stop_propagation();
@@ -4464,5 +4526,17 @@ mod tests {
         // The open project stays open at its new index.
         assert_eq!(active, 1);
         assert_eq!(projects[active].path, other);
+    }
+
+    #[test]
+    fn tab_stays_in_what_types_it() {
+        let ctx = |s: &str| gpui::KeyContext::parse(s).unwrap();
+        assert!(!types_tab(&[ctx("Shell")]));
+        assert!(!types_tab(&[ctx("Shell"), ctx("ThreadView")]));
+        assert!(types_tab(&[ctx("Shell"), ctx("Terminal")]));
+        assert!(types_tab(&[ctx("Shell"), ctx("Browser")]));
+        assert!(types_tab(&[ctx("Shell"), ctx("Palette"), ctx("TextInput")]));
+        assert!(in_modal(&[ctx("Shell"), ctx(ui::MODAL_CONTEXT)]));
+        assert!(!in_modal(&[ctx("Shell"), ctx("ThreadView")]));
     }
 }

@@ -274,15 +274,25 @@ pub fn remember_claude_options(raw: &Value) {
 /// A session's values are its own; a new one starts on the defaults: the
 /// `default` choice where there is one, fast mode off, and the permission mode
 /// from `~/.claude/settings.json`.
-fn claude_defaults(mut options: Vec<ConfigOption>) -> Vec<ConfigOption> {
+fn claude_defaults(options: Vec<ConfigOption>) -> Vec<ConfigOption> {
     let mode = std::fs::read(home().join(".claude/settings.json"))
         .ok()
         .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
         .and_then(|v| v["permissions"]["defaultMode"].as_str().map(str::to_string));
+    defaults_with_mode(options, mode.as_deref())
+}
+
+/// [`claude_defaults`] with the configured `defaultMode`. Without one the
+/// adapter starts in `auto` when it offers it, so the New session tab must
+/// not show Manual for a session that will run in Auto.
+fn defaults_with_mode(mut options: Vec<ConfigOption>, mode: Option<&str>) -> Vec<ConfigOption> {
     for o in &mut options {
         let has = |id: &str| o.options.iter().any(|c| c.id == id);
-        let pick = if o.category.as_deref() == Some("mode") && mode.as_deref().is_some_and(has) {
-            mode.clone()
+        let is_mode = o.category.as_deref() == Some("mode");
+        let pick = if is_mode && let Some(m) = mode.filter(|m| has(m)) {
+            Some(m.to_string())
+        } else if is_mode && mode.is_none() && has("auto") {
+            Some("auto".to_string())
         } else if has("default") {
             Some("default".to_string())
         } else if has("off") {
@@ -864,6 +874,31 @@ fn read_session(path: &Path) -> Option<AgentSession> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn claude_mode_defaults_as_the_adapter_does() {
+        let modes = |ids: &[&str]| {
+            parse_config(&json!([{
+                "id": "mode", "category": "mode", "currentValue": "plan",
+                "options": ids.iter().map(|i| json!({"value": i, "name": i})).collect::<Vec<_>>(),
+            }]))
+        };
+        let all = ["default", "acceptEdits", "plan", "auto"];
+        let current = |o: Vec<ConfigOption>| o[0].current.clone();
+        assert_eq!(current(defaults_with_mode(modes(&all), None)), "auto");
+        assert_eq!(
+            current(defaults_with_mode(modes(&all[..3]), None)),
+            "default"
+        );
+        assert_eq!(
+            current(defaults_with_mode(modes(&all), Some("acceptEdits"))),
+            "acceptEdits"
+        );
+        assert_eq!(
+            current(defaults_with_mode(modes(&all[..3]), Some("auto"))),
+            "default"
+        );
+    }
 
     #[test]
     fn claude_project_dir_matches_the_sdk() {

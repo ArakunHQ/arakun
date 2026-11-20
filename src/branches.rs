@@ -449,22 +449,21 @@ fn prs(dir: &Path) -> Result<Vec<(String, Pr)>, String> {
     let out = crate::platform::output_within(&mut cmd, None, crate::platform::GIT_REMOTE).map_err(
         |e| {
             if e.kind() == std::io::ErrorKind::NotFound {
-                "GitHub CLI (gh) isn't installed".to_string()
+                crate::github::NO_GH.to_string()
             } else {
                 e.to_string()
             }
         },
     )?;
     if !out.status.success() {
-        let err = git::strip_ansi(&String::from_utf8_lossy(&out.stderr));
-        let err = err.trim();
+        let err = crate::github::gh_error(&out.stderr, out.status);
         return Err(
             if err.contains("no git remotes") || err.contains("none of the git remotes") {
                 NO_REMOTE.into()
-            } else if err.is_empty() {
-                "gh failed".into()
+            } else if err.to_lowercase().contains("gh auth login") {
+                crate::github::SIGNED_OUT.into()
             } else {
-                err.lines().next().unwrap_or(err).to_string()
+                err.lines().next().unwrap_or(&err).to_string()
             },
         );
     }

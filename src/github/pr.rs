@@ -1172,7 +1172,7 @@ fn gh_run_within(cmd: &Cmd, timeout: std::time::Duration) -> Result<Vec<u8>, Pro
     let out = crate::headless::sandbox::run_with_timeout(gh, input, timeout)
         .map_err(|e| Problem::Other(format!("could not run gh: {e}")))?;
     if !out.status.success() {
-        return Err(super::problem(&String::from_utf8_lossy(&out.stderr)));
+        return Err(super::problem(&out.stderr, out.status));
     }
     Ok(out.stdout)
 }
@@ -2615,7 +2615,7 @@ fn gh_run(cmd: &Cmd) -> Result<Vec<u8>, Problem> {
         },
     )?;
     if !out.status.success() {
-        return Err(super::problem(&String::from_utf8_lossy(&out.stderr)));
+        return Err(super::problem(&out.stderr, out.status));
     }
     Ok(out.stdout)
 }

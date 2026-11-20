@@ -483,10 +483,26 @@ impl From<crate::guard::Panicked> for Problem {
 impl Problem {
     pub fn text(&self) -> String {
         match self {
-            Problem::NoGh => "GitHub CLI (gh) is not installed".into(),
-            Problem::SignedOut => "Sign in to GitHub: run `gh auth login` in a terminal.".into(),
+            Problem::NoGh => NO_GH.into(),
+            Problem::SignedOut => SIGNED_OUT.into(),
             Problem::Other(e) => e.clone(),
         }
+    }
+}
+
+/// What every view that reads through `gh` says when it is missing or signed
+/// out, so the fix reads the same wherever it shows.
+pub const NO_GH: &str = "The GitHub CLI (gh) is not installed. Install it from https://cli.github.com, then run `gh auth login` in a terminal.";
+pub const SIGNED_OUT: &str =
+    "Not signed in to GitHub. Run `gh auth login` in a terminal, then refresh.";
+
+/// What `gh` wrote on a failed call. When it wrote nothing, how it exited:
+/// a bare "gh failed" leaves nothing to go on.
+pub fn gh_error(stderr: &[u8], status: impl std::fmt::Display) -> String {
+    let err = git::strip_ansi(&String::from_utf8_lossy(stderr));
+    match err.trim() {
+        "" => format!("gh failed without saying why ({status})"),
+        err => err.to_string(),
     }
 }
 
@@ -500,15 +516,12 @@ fn polls(opened: bool, problem: Option<&Problem>) -> bool {
 }
 
 /// What `gh` wrote on a failed call, as a problem.
-fn problem(stderr: &str) -> Problem {
-    let err = git::strip_ansi(stderr);
-    let err = err.trim();
+fn problem(stderr: &[u8], status: impl std::fmt::Display) -> Problem {
+    let err = gh_error(stderr, status);
     if err.to_lowercase().contains("gh auth login") {
         Problem::SignedOut
-    } else if err.is_empty() {
-        Problem::Other("gh failed".into())
     } else {
-        Problem::Other(err.to_string())
+        Problem::Other(err)
     }
 }
 
@@ -564,7 +577,7 @@ fn gh_out_within(args: &[&str], timeout: Duration) -> Result<Vec<u8>, Problem> {
             _ => Problem::Other(format!("could not run gh: {e}")),
         })?;
     if !out.status.success() {
-        return Err(problem(&String::from_utf8_lossy(&out.stderr)));
+        return Err(problem(&out.stderr, out.status));
     }
     Ok(out.stdout)
 }
@@ -2318,6 +2331,7 @@ mod tests {
 
     #[test]
     fn gh_failures_say_what_to_do() {
+        let problem = |stderr: &str| problem(stderr.as_bytes(), "exit status: 1");
         assert_eq!(
             problem("To get started with GitHub CLI, please run:  gh auth login\n"),
             Problem::SignedOut
@@ -2330,11 +2344,14 @@ mod tests {
             problem("\u{1b}[31mgh: Not Found (HTTP 404)\u{1b}[0m\n"),
             Problem::Other("gh: Not Found (HTTP 404)".into())
         );
-        assert_eq!(problem("  "), Problem::Other("gh failed".into()));
         assert_eq!(
-            Problem::SignedOut.text(),
-            "Sign in to GitHub: run `gh auth login` in a terminal."
+            problem("  "),
+            Problem::Other("gh failed without saying why (exit status: 1)".into())
         );
+        for text in [Problem::NoGh.text(), Problem::SignedOut.text()] {
+            assert!(text.contains("`gh auth login`"), "{text}");
+        }
+        assert!(NO_GH.contains(crate::onboarding::GH_URL));
     }
 
     #[test]

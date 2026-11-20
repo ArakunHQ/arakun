@@ -169,12 +169,9 @@ pub fn find_agents() -> Vec<AgentRow> {
 pub fn install_link(agent: Agent) -> (&'static str, &'static str) {
     match agent {
         Agent::Claude | Agent::Codex => ("Needs Node.js for npm", "https://nodejs.org"),
-        Agent::OpenCode => ("Get OpenCode", "https://opencode.ai"),
-        Agent::Droid => ("Get Droid", "https://factory.ai"),
-        Agent::Devin => (
-            "Get the Devin CLI",
-            "https://docs.devin.ai/work-with-devin/devin-cli",
-        ),
+        Agent::OpenCode => ("Get OpenCode", AgentKind::OpenCode.install_url()),
+        Agent::Droid => ("Get Droid", AgentKind::Droid.install_url()),
+        Agent::Devin => ("Get the Devin CLI", AgentKind::Devin.install_url()),
         Agent::WorkersAi => ("", ""),
     }
 }

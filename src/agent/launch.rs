@@ -346,7 +346,10 @@ pub fn droid_native() -> bool {
 pub fn droid_bin() -> Result<PathBuf> {
     let name = std::env::var("ARAKUN_DROID_BIN").unwrap_or_else(|_| "droid".into());
     which(&name).ok_or_else(|| {
-        anyhow!("`{name}` was not found on PATH or in ~/.local/bin. Install Factory's CLI first.")
+        anyhow!(
+            "`{name}` was not found on PATH or in ~/.local/bin. Install Factory's Droid CLI first ({}).",
+            AgentKind::Droid.install_url()
+        )
     })
 }
 
@@ -461,7 +464,10 @@ pub fn opencode_go_login_command() -> Option<Vec<String>> {
 pub fn opencode_bin() -> Result<PathBuf> {
     let name = std::env::var("ARAKUN_OPENCODE_BIN").unwrap_or_else(|_| "opencode".into());
     which(&name).ok_or_else(|| {
-        anyhow!("`{name}` was not found on PATH or in ~/.local/bin. Install OpenCode first (https://opencode.ai).")
+        anyhow!(
+            "`{name}` was not found on PATH or in ~/.local/bin. Install OpenCode first ({}).",
+            AgentKind::OpenCode.install_url()
+        )
     })
 }
 
@@ -471,7 +477,8 @@ pub fn devin_bin() -> Result<PathBuf> {
     let name = std::env::var("ARAKUN_DEVIN_BIN").unwrap_or_else(|_| "devin".into());
     which(&name).ok_or_else(|| {
         anyhow!(
-            "`{name}` was not found on PATH or in ~/.local/bin. Install the Devin CLI first (https://docs.devin.ai/work-with-devin/devin-cli)."
+            "`{name}` was not found on PATH or in ~/.local/bin. Install the Devin CLI first ({}).",
+            AgentKind::Devin.install_url()
         )
     })
 }
@@ -962,7 +969,7 @@ fn install_claude_adapter() -> Result<()> {
         return Ok(());
     }
     let npm = which("npm").ok_or_else(|| {
-        anyhow!("npm was not found; it is needed once to install {CLAUDE_ACP_PACKAGE}. Install nodejs and npm, or set ARAKUN_CLAUDE_ACP.")
+        anyhow!("npm was not found; it is needed once to install {CLAUDE_ACP_PACKAGE}. Install Node.js, which brings npm (https://nodejs.org), or set ARAKUN_CLAUDE_ACP.")
     })?;
     let dir = agents_dir();
     std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
@@ -989,10 +996,15 @@ fn install_claude_adapter() -> Result<()> {
     Ok(())
 }
 
-/// Installs the Codex adapter, and with it the `codex` CLI, when it is missing
-/// or old, so a first sign-in works before any session ran. Blocking.
-pub fn install_codex() -> Result<()> {
-    install_codex_adapter()
+/// Installs `kind`'s adapter, and with it the agent's own CLI, when it is
+/// missing or old, so a first sign-in works before any session ran. Only
+/// Claude Code and Codex have one. Blocking.
+pub fn install_adapter(kind: AgentKind) -> Result<()> {
+    match kind {
+        AgentKind::Claude => install_claude_adapter(),
+        AgentKind::Codex => install_codex_adapter(),
+        other => bail!("Arakun does not install {}", other.label()),
+    }
 }
 
 /// The Codex adapter goes in a folder of its own, so starting the Claude adapter
@@ -1004,7 +1016,7 @@ fn install_codex_adapter() -> Result<()> {
         return Ok(());
     }
     let npm = which("npm").ok_or_else(|| {
-        anyhow!("npm was not found; it is needed once to install {CODEX_ACP_PACKAGE}. Install nodejs and npm, or set ARAKUN_CODEX_ACP.")
+        anyhow!("npm was not found; it is needed once to install {CODEX_ACP_PACKAGE}. Install Node.js, which brings npm (https://nodejs.org), or set ARAKUN_CODEX_ACP.")
     })?;
     std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
     npm_install(&npm, &dir, CODEX_ACP_PACKAGE, AgentKind::Codex)?;

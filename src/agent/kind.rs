@@ -64,6 +64,30 @@ impl AgentKind {
         }
     }
 
+    /// Where to get the agent's CLI. Workers AI runs through OpenCode's sign-in.
+    pub fn install_url(self) -> &'static str {
+        match self {
+            AgentKind::Claude => "https://code.claude.com/docs/en/setup",
+            AgentKind::Droid => "https://docs.factory.com/cli/getting-started/quickstart",
+            AgentKind::OpenCode | AgentKind::WorkersAi => "https://opencode.ai",
+            AgentKind::Codex => "https://github.com/openai/codex",
+            AgentKind::Devin => "https://docs.devin.ai/work-with-devin/devin-cli",
+        }
+    }
+
+    /// What to say when the agent's CLI is not on this computer: what is
+    /// missing and where to get it, the same wherever it is noticed.
+    pub fn missing(self) -> String {
+        let cli = match self {
+            AgentKind::WorkersAi => "OpenCode",
+            other => other.label(),
+        };
+        format!(
+            "{cli} was not found. Install it from {}, then try again.",
+            AgentKind::install_url(self)
+        )
+    }
+
     /// What the user should do when the agent says it is not authenticated.
     pub fn login_hint(self) -> &'static str {
         match self {

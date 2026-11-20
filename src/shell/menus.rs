@@ -126,7 +126,7 @@ impl Shell {
                         .text_color(theme::text_subtle())
                         .hover(|s| s.bg(theme::selection_hover()).text_color(theme::content()))
                         .child(icon("add01", 14.).text_color(theme::text_subtle()))
-                        .child("New environment (worktree)…")
+                        .child("New environment…")
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.open_create_env(pi, window, cx)
                         })),

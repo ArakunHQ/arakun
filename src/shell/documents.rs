@@ -390,7 +390,7 @@ impl Shell {
         }
         let rows = Rc::new(ex.rows());
         if rows.is_empty() {
-            return panel_empty("This worktree is empty.").into_any_element();
+            return panel_empty("This environment is empty.").into_any_element();
         }
         let selected = ex.selected.clone();
         let changed: Rc<std::collections::HashSet<std::path::PathBuf>> =

@@ -548,7 +548,7 @@ impl Render for GalleryView {
             .child(
                 div()
                     .text_color(theme::text_faint())
-                    .child("Search conversations…"),
+                    .child("Search sessions…"),
             );
 
         // ---- menus ----------------------------------------------------------------------------

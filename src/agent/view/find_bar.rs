@@ -12,7 +12,7 @@ impl ThreadView {
         let input = match &self.search {
             Some(s) => s.input.clone(),
             None => {
-                let input = cx.new(|cx| TextInput::new("Find in chat", cx));
+                let input = cx.new(|cx| TextInput::new("Find in session", cx));
                 let sub = cx.subscribe_in(
                     &input,
                     window,

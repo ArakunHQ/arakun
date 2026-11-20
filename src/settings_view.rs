@@ -222,7 +222,7 @@ impl Section {
                 "raccoon mascot animation motion new session dynamic island notch top bar agents alerts background close hide tray sidebar usage card plans browser web page drive click type scripts"
             }
             Section::Appearance => {
-                "theme palette color colors accent tint corners radius rounded round sharp spacing gap padding compact roomy density window custom share night graphite midnight forest rose diff colors colorblind high contrast glass blur transparent translucent grays gray text size font scale design system mode dark light zoom bigger smaller"
+                "theme palette color scheme colors accent tint corners radius rounded round sharp spacing gap padding compact roomy density window custom share night graphite midnight forest rose diff colors colorblind high contrast glass blur transparent translucent grays gray text size font scale design system mode dark light zoom bigger smaller"
             }
             Section::Project => {
                 "setup script install new environment worktree check command test lint build verify"
@@ -1019,7 +1019,7 @@ impl SettingsDialog {
                             row(
                                 "Open links in Arakun",
                                 if crate::browser::ENABLED {
-                                    "Links from chats, the GitHub view and pins open in a browser tab. Off, they open in your own browser."
+                                    "Links from sessions, the GitHub view and pins open in a browser tab. Off, they open in your own browser."
                                 } else {
                                     "This build has no browser tabs, so leave it off: links then open in your own browser."
                                 },
@@ -1077,13 +1077,13 @@ impl SettingsDialog {
                 }
                 let cleanup = stacked_row(
                     "Remove old environments",
-                    "Removes an environment's worktree once its pull request is merged or closed and nobody opened it for this long. Environments with uncommitted files, commits that aren't in the pull request or a working agent stay. The branch is kept.",
+                    "Removes an environment's folder once its pull request is merged or closed and nobody opened it for this long. Environments with uncommitted files, commits that aren't in the pull request or a working agent stay. The branch is kept.",
                     days.into_any_element(),
                 )
                 .into_any_element();
                 let settle = row(
                     "Archive after merge",
-                    "Once an environment's pull request is merged: its open review threads are resolved on GitHub, its notifications are marked read, and the environment's sessions stop asking for you and are archived. The GitHub tab marks read the notifications of every merged pull request.",
+                    "Once an environment's pull request is merged: its open review threads are resolved on GitHub, its GitHub notifications are marked read, and the environment's sessions stop asking for you and are archived. The GitHub tab marks read the GitHub notifications of every merged pull request.",
                     switch(crate::settle::on()).into_any_element(),
                 )
                 .id("set-settle-after-merge")
@@ -1748,7 +1748,7 @@ impl SettingsDialog {
             vec![
                 stacked_row(
                     "Setup script",
-                    "Runs in a terminal of every new environment of this project on this computer, right after its worktree is created. Not on servers. Empty turns it off.",
+                    "Runs in a terminal of every new environment of this project on this computer, right after it is created. Not on servers. Empty turns it off.",
                     field(self.setup_input.clone(), 420.).into_any_element(),
                 )
                 .into_any_element(),

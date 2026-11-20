@@ -1234,7 +1234,7 @@ impl Thread {
             _ => json!({}),
         };
         self.set_status(ThreadStatus::Working, cx);
-        self.status_detail = Some("Compacting the conversation…".into());
+        self.status_detail = Some("Compacting the session…".into());
         self.native.compacting = true;
         let before = self.usage.context_percent();
         let request = conn.request("droid.compact_session", params);
@@ -1599,7 +1599,7 @@ impl Thread {
                         super::log_note(&format!("droid.load_session failed: {e}"));
                         let _ = this.update(cx, |t, cx| {
                             t.notice(
-                                "Droid could not reopen this session, so it starts fresh with no memory of the conversation above.",
+                                "Droid could not reopen this session, so it starts fresh with no memory of the messages above.",
                                 false,
                                 cx,
                             )

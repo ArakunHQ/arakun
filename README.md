@@ -163,7 +163,7 @@ copy of it, rename it back, and start a version that can read it.
   the optional `browser` cargo feature. Agents can drive pages on localhost through
   `arakun page` (screenshot, console, click, type, eval). Links you click open in a
   browser tab; turn off Settings › General › Open links in Arakun to open them in your
-  own browser instead. That covers links from chats, the GitHub view and pins; a link
+  own browser instead. That covers links from sessions, the GitHub view and pins; a link
   clicked inside a browser tab always stays in Arakun. Builds without the browser open
   links in your own browser from the start. The choice is
   saved in `~/.local/share/arakun/open-links` (`%LOCALAPPDATA%\arakun\open-links` on
@@ -352,7 +352,7 @@ after a week).
   or open it from the app launcher) to bring it back, and `arakun quit` to quit.
   A desktop other than Hyprland and Sway may not raise a minimized window when asked
   (GNOME and KDE on Wayland can refuse); click Arakun in the dock or task bar then.
-- **Notification history.** Every notice Arakun shows (on the island or as a desktop
+- **Notice history.** Every notice Arakun shows (on the island or as a desktop
   notification) also lands in the sidebar's Inbox, under the sessions waiting on you,
   grouped by day. Click one to open what it is about. The Inbox is the button at the end
   of the search box when it sits next to Search in the sidebar (as in every preset), and
@@ -424,17 +424,17 @@ the workspace panel is, so the work stays in view while you change it. Open it f
 palette (`Customize`), View › Customize… or Settings › Appearance › Open Customize, which
 only sums up what is chosen. It opens without a project too.
 
-- **Colors.** Mode draws the palette on black or on a white background with dark text.
-  There are built-in palettes (Arakun Black, the default, then Calma, Arakun Night,
+- **Colors.** Mode draws the color scheme on black or on a white background with dark text.
+  There are built-in color schemes (Arakun Black, the default, then Calma, Arakun Night,
   Graphite, Midnight, Forest, Rosé). Only the center of the window is a sheet; the
   sidebar, the workspace panel and the status line sit on the window itself, and the
   accent is kept for what needs you. Duplicate one to change its tint, background and
   accent; Arakun warns when text or the accent gets hard to read. Grays sets how bright
   secondary text and borders are, and Diff colors how added and removed lines look.
-  Reset colors goes back to Arakun Black, dark, and keeps your palettes. The mode,
-  the choice and your palettes are kept in `palettes.json` next to the state.
+  Reset colors goes back to Arakun Black, dark, and keeps your color schemes. The mode,
+  the choice and your color schemes are kept in `palettes.json` next to the state.
 
-  <img src="docs/screenshots/palettes.png" alt="The built-in palettes" width="520">
+  <img src="docs/screenshots/palettes.png" alt="The built-in color schemes" width="520">
 - **Shape.** Corners makes cards, buttons and fields sharper or rounder (0 to 200%;
   presets Sharp, Default, Round). Spacing makes the room inside and between things
   tighter or roomier (60 to 160%; Compact, Default, Roomy). Window gap is the space
@@ -461,7 +461,7 @@ only sums up what is chosen. It opens without a project too.
   Import reads a look line and asks again which parts to use; the sidebar is off until
   ticked, since it replaces the whole layout. A sidebar layout comes without its
   commands, which run on a click: add those with Command…, where their text can be
-  read. Import also takes a palette line (`arakun:palette/v1:…`) or a sidebar layout
+  read. Import also takes a color scheme line (`arakun:palette/v1:…`) or a sidebar layout
   copied before looks existed.
 - **Design system.** The card at the foot of the panel opens the Design system tab:
   every color, type style and component, live, so a change can be judged on all of
@@ -904,7 +904,7 @@ arakun check                      # run the project check here
 arakun rename fix/tab-name         # rename this environment's branch (before it is pushed)
 arakun page screenshot            # PNG of the environment's browser tab
 arakun notify "done"              # desktop notification
-arakun notices --unseen           # notifications you haven't read yet
+arakun notices --unseen           # notices you haven't read yet
 arakun ls                         # projects, environments and sessions
 arakun show                       # bring the window up (running `arakun` again does too)
 arakun quit                       # quit Arakun, also when its window is hidden
@@ -1111,7 +1111,7 @@ forward through tabs, `Ctrl+Cmd+F` toggles full screen, and `Cmd+H`, `Cmd+M` and
   closed tab in the File menu or a tab's right-click menu
 - `Ctrl+Shift+N` new session in a new worktree, at once on a random branch;
   `Ctrl+Alt+N` asks for the branch and options first
-- `Ctrl+F` search the conversation
+- `Ctrl+F` search the session
 - `Ctrl+K` (or `Ctrl+P`) the palette: sessions of every project, GitHub, runs, files and
   symbols, views, commands, settings and memory in one search. Start with `>` for
   commands, `/` for files, `:` for settings, `@` for people or `#` for pull requests.

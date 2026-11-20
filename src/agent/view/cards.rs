@@ -27,7 +27,7 @@ impl ThreadView {
         let summary = if plan.loading {
             "Checking which files changed since…".to_string()
         } else if plan.restore.is_empty() && plan.delete.is_empty() {
-            "No files changed since; only the conversation goes back.".to_string()
+            "No files changed since; only the messages go back.".to_string()
         } else {
             "Files the agent changed since go back to how they were:".to_string()
         };

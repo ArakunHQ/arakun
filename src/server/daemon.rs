@@ -2623,7 +2623,7 @@ impl Daemon {
             self.offer_place(&p, agent).map_err(|e| {
                 if made {
                     format!(
-                        "{e}. The worktree is at {0}: once the server can save again, `arakun-server add {0}` lists it.",
+                        "{e}. The environment is at {0}: once the server can save again, `arakun-server add {0}` lists it.",
                         p.display()
                     )
                 } else {
@@ -3440,7 +3440,7 @@ fn place_failed(message: &str) -> String {
 fn no_commits() -> String {
     json!({
         "type": "place_failed",
-        "message": "That repository has no commits yet, so no worktree can be made of it.",
+        "message": "That repository has no commits yet, so no environment can be made of it.",
         "no_commits": true,
     })
     .to_string()
@@ -3819,7 +3819,7 @@ fn worktree_within(
         // A hook that failed after the checkout: the worktree is there, and
         // asking again would only say so.
         Err(e) if dest.exists() => Err(format!(
-            "{e}. The worktree is at {} anyway: `arakun-server add` it, or remove it.",
+            "{e}. The environment is at {} anyway: `arakun-server add` it, or remove it.",
             dest.display()
         )),
         Err(e) => Err(e),
@@ -4485,7 +4485,7 @@ mod tests {
         let err = worktree_in(&base, &app, "hooked").unwrap_err();
         let made = base.join("app/hooked");
         assert!(
-            err.contains(&format!("The worktree is at {} anyway", made.display())),
+            err.contains(&format!("The environment is at {} anyway", made.display())),
             "{err}"
         );
         assert_eq!(store::branch(&made).as_deref(), Some("hooked"), "it stays");

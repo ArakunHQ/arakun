@@ -464,7 +464,7 @@ impl Shell {
                                     "drop-context",
                                     "attachment01",
                                     "Add to context",
-                                    "Its recent conversation goes along with your next message.",
+                                    "Its recent turns go along with your next message.",
                                 )
                                 .on_click(cx.listener(
                                     |this, _, window, cx| {

@@ -7,8 +7,9 @@ use crate::servers_view::Reach;
 const ENV_ROW_H: f32 = 28.;
 const ENV_GAP: f32 = 2.;
 
-const NEW_SESSION_TIP: &str = "A session in its own worktree. Alt+click to pick the branch";
-const NEW_ENV_TIP: &str = "New session in its own worktree (Ctrl+Shift+N). Alt+click for options";
+const NEW_SESSION_TIP: &str = "A session in its own environment. Alt+click to pick the branch";
+const NEW_ENV_TIP: &str =
+    "New session in its own environment (Ctrl+Shift+N). Alt+click for options";
 
 /// The one thing an environment row says at its end, the most urgent first.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -165,7 +166,7 @@ fn pending_env_row(id: usize, name: String) -> gpui::Stateful<gpui::Div> {
                 .flex_none()
                 .text_size(px(ui::TEXT_XS))
                 .text_color(theme::text_faint())
-                .child("Making worktree"),
+                .child("Making environment"),
         )
 }
 

@@ -104,9 +104,11 @@ impl ThreadView {
                                     cx.notify();
                                 },
                             )))
-                            .child(button("sel-note", "comment-add01", "Add to chat").on_click(
-                                cx.listener(|this, _, window, cx| this.start_note(window, cx)),
-                            )),
+                            .child(
+                                button("sel-note", "comment-add01", "Add to message").on_click(
+                                    cx.listener(|this, _, window, cx| this.start_note(window, cx)),
+                                ),
+                            ),
                     ),
             )
             .with_priority(1)

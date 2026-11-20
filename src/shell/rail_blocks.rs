@@ -738,7 +738,7 @@ impl Shell {
                     row(shortcut(&item.piece))
                         .bg(theme::fill_hover())
                         .my(px(2.))
-                        .tooltip(ui::tip("Search everywhere (Ctrl+K)"))
+                        .tooltip(ui::tip("Search in the palette (Ctrl+K)"))
                         .on_click(cx.listener(|this, _, window, cx| this.open_switcher(window, cx)))
                         .into_any_element()
                 }

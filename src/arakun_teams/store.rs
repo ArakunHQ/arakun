@@ -732,10 +732,7 @@ pub struct Sealer {
     path: PathBuf,
 }
 
-pub(super) async fn after_save<T>(
-    pending: Option<impl Future<Output = ()>>,
-    next: impl FnOnce() -> T,
-) -> T {
+pub(super) async fn after_save<T>(pending: Option<impl Future>, next: impl FnOnce() -> T) -> T {
     if let Some(task) = pending {
         task.await;
     }
@@ -743,22 +740,23 @@ pub(super) async fn after_save<T>(
 }
 
 impl Sealer {
-    pub fn write(&self, kept: &Kept) {
+    /// Writes the whole cache, so a later write also retries a failed one.
+    pub fn write(&self, kept: &Kept) -> Result<(), String> {
         if kept.device != self.device {
-            eprintln!("arakun: refusing to save a Teams cache belonging to a different device");
-            return;
+            return Err("it belongs to another device".into());
         }
-        let saved = serde_json::to_vec(kept)
+        serde_json::to_vec(kept)
             .map_err(std::io::Error::other)
             .and_then(|plain| {
                 crate::durable::write_private(
                     &self.path,
                     &crypto::seal_local(&self.file_key, &plain),
                 )
-            });
-        if let Err(e) = saved {
-            eprintln!("arakun: could not save {}: {e}", self.path.display());
-        }
+            })
+            .map_err(|e| {
+                eprintln!("arakun: could not save {}: {e}", self.path.display());
+                e.to_string()
+            })
     }
 }
 
@@ -826,7 +824,7 @@ mod tests {
             let mut kept = local.read().unwrap();
             kept.put_key("shared", 3, &[42; 32]);
             kept.ask("private", "unannounced team");
-            local.sealer().write(&kept);
+            local.sealer().write(&kept).unwrap();
             local
         }
     }
@@ -864,7 +862,7 @@ mod tests {
         let (release, gate) = futures::channel::oneshot::channel::<()>();
         let saving = async {
             gate.await.unwrap();
-            local.sealer().write(&accepted);
+            local.sealer().write(&accepted).unwrap();
         }
         .shared();
         let reload = || {
@@ -880,6 +878,20 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_save_is_returned_not_only_logged() {
+        let f = Fixture::new();
+        let local = f.load(&f.scope(7), no_lookup).unwrap();
+        let blocked = f.dir.join("not-a-folder");
+        std::fs::write(&blocked, b"").unwrap();
+        let sealer = Sealer {
+            path: blocked.join("teams.keys"),
+            ..local.sealer()
+        };
+        assert!(sealer.write(&local.read().unwrap()).is_err());
+        assert!(local.sealer().write(&local.read().unwrap()).is_ok());
+    }
+
+    #[test]
     fn device_and_encrypted_cache_survive_a_round_trip_between_accounts() {
         let f = Fixture::new();
         let (alice, bob) = (f.scope(7), f.scope(8));
@@ -892,10 +904,10 @@ mod tests {
         ak.put_key("shared", 1, &[1; 32]);
         bk.put_key("shared", 1, &[2; 32]);
         ak.ask("alone", "private team");
-        b.sealer().write(&bk);
+        b.sealer().write(&bk).unwrap();
         // A delayed save captured before the switch cannot target Bob's cache.
-        a.sealer().write(&ak);
-        b.sealer().write(&ak);
+        a.sealer().write(&ak).unwrap();
+        assert!(b.sealer().write(&ak).is_err());
         let back = f.load(&alice, no_lookup).unwrap();
         assert_eq!(back.device.id(), a.device.id());
         assert_eq!(back.read().unwrap(), ak);
@@ -917,7 +929,7 @@ mod tests {
         let b = f.load(&bob, || Ok(vec![])).unwrap();
         assert_ne!(b.device.id(), old.device.id());
         assert!(b.read().unwrap().asked().is_empty());
-        b.sealer().write(&b.read().unwrap());
+        b.sealer().write(&b.read().unwrap()).unwrap();
         let a = f.load(&alice, || Ok(vec![row(&old.device)])).unwrap();
         assert_eq!(a.device.id(), old.device.id());
         assert_eq!(a.file_key, old.file_key);
@@ -1091,7 +1103,7 @@ mod tests {
         assert!(!k.needs_delivery("T", 7, 10, "a", 2));
         assert!(k.needs_delivery("T", 7, 10, "a", 3));
         k.delivered("T", 7, 10, "a", 3);
-        local.sealer().write(&k);
+        local.sealer().write(&k).unwrap();
         k = local.read().unwrap();
         assert!(!k.needs_delivery("T", 7, 10, "a", 3));
         assert!(k.needs_delivery("T", 7, 10, "b", 3));

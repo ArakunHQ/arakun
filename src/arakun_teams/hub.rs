@@ -252,7 +252,7 @@ pub struct Hub {
     setup: HashMap<String, String>,
     next_link: u64,
     _events: Task<()>,
-    save_task: Option<Shared<Task<()>>>,
+    save_task: Option<Shared<Task<Result<(), String>>>>,
     _poll: Option<Task<()>>,
     _tick: Option<Task<()>>,
 }
@@ -445,14 +445,31 @@ impl Hub {
     }
 
     fn save(&mut self, cx: &mut Context<Self>) {
-        if let Some(sealer) = self.sealer.clone() {
-            let kept = self.kept.clone();
-            let prior = self.save_task.take();
-            self.save_task = Some(
-                cx.background_spawn(store::after_save(prior, move || sealer.write(&kept)))
-                    .shared(),
-            );
-        }
+        let Some(sealer) = self.sealer.clone() else {
+            return;
+        };
+        let kept = self.kept.clone();
+        let prior = self.save_task.take();
+        let task = cx
+            .background_spawn(store::after_save(prior, move || sealer.write(&kept)))
+            .shared();
+        self.save_task = Some(task.clone());
+        // What only this device knows, such as a request to join, would be
+        // gone after a restart: say so rather than only log it.
+        let generation = self.generation;
+        cx.spawn(async move |this, cx| {
+            if let Err(e) = task.await {
+                let _ = this.update(cx, |hub, cx| {
+                    if hub.generation == generation {
+                        hub.error = Some(format!(
+                            "Could not save this device's Teams records: {e}. The next change tries again."
+                        ));
+                        cx.notify();
+                    }
+                });
+            }
+        })
+        .detach();
     }
 
     fn github_id(&self) -> u64 {

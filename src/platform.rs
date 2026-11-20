@@ -1163,6 +1163,22 @@ pub fn output_within(
     input: Option<&[u8]>,
     limit: std::time::Duration,
 ) -> std::io::Result<std::process::Output> {
+    output_until(
+        cmd,
+        input,
+        limit,
+        &std::sync::atomic::AtomicBool::new(false),
+    )
+}
+
+/// [`output_within`] that also stops the command once `stop` is set, with an
+/// `Interrupted` error: for a run whose answer nobody waits for any more.
+pub fn output_until(
+    cmd: &mut Command,
+    input: Option<&[u8]>,
+    limit: std::time::Duration,
+    stop: &std::sync::atomic::AtomicBool,
+) -> std::io::Result<std::process::Output> {
     use std::io::{Read as _, Write as _};
     use std::time::{Duration, Instant};
     cmd.stdin(if input.is_some() {
@@ -1202,11 +1218,18 @@ pub fn output_within(
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
+            Ok(None) if stop.load(std::sync::atomic::Ordering::Relaxed) => {
+                self::stop(&tree, &mut child);
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Interrupted,
+                    format!("{} was stopped", command_name(cmd)),
+                ));
+            }
             Ok(None) if started.elapsed() < limit => {
                 std::thread::sleep(Duration::from_millis(20));
             }
             Ok(None) => {
-                stop(&tree, &mut child);
+                self::stop(&tree, &mut child);
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::TimedOut,
                     format!(

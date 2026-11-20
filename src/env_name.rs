@@ -6,6 +6,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use anyhow::{Result, anyhow, bail};
@@ -236,6 +237,18 @@ pub fn suggest(agent: AgentKind, model: &str, task: &str) -> Result<String> {
 /// Workers AI is asked by Arakun itself, with no tools in the request. Blocks; run
 /// it in the background.
 pub fn ask(agent: AgentKind, model: &str, input: String, timeout: Duration) -> Result<String> {
+    ask_until(agent, model, input, timeout, &AtomicBool::new(false))
+}
+
+/// [`ask`] that stops the agent once `stop` is set: its answer is no longer
+/// wanted, and a CLI left running would spend tokens for nothing.
+pub fn ask_until(
+    agent: AgentKind,
+    model: &str,
+    input: String,
+    timeout: Duration,
+    stop: &AtomicBool,
+) -> Result<String> {
     let model = model.trim();
     if agent == AgentKind::WorkersAi {
         return crate::agent::workers_ai::ask(model, &input, timeout).map_err(|e| anyhow!(e));
@@ -244,7 +257,7 @@ pub fn ask(agent: AgentKind, model: &str, input: String, timeout: Duration) -> R
     let program = program(agent)?;
     // An empty folder: no project instructions, memory or files to load.
     let dir = private_dir().map_err(|e| anyhow!("could not make a folder for the agent: {e}"))?;
-    let out = ask_in(agent, program, model, input, timeout, &dir);
+    let out = ask_in(agent, program, model, input, timeout, &dir, stop);
     let _ = std::fs::remove_dir_all(&dir);
     out
 }
@@ -256,6 +269,7 @@ fn ask_in(
     input: String,
     timeout: Duration,
     dir: &Path,
+    stop: &AtomicBool,
 ) -> Result<String> {
     let plan = plan(agent, model, dir)?;
     let mut cmd = crate::platform::command(program);
@@ -283,7 +297,7 @@ fn ask_in(
         }
         None => input,
     };
-    let out = run(cmd, stdin, timeout)?;
+    let out = run(cmd, stdin, timeout, stop)?;
     // A reply file holds the answer alone; stdout may carry more around it.
     Ok(plan
         .reply_file
@@ -448,12 +462,19 @@ fn plan(agent: AgentKind, model: &str, dir: &Path) -> Result<Plan> {
 
 /// Runs `cmd` with `input` on its stdin and returns its stdout; stops it, and what it
 /// started, after `timeout`.
-fn run(mut cmd: std::process::Command, input: String, timeout: Duration) -> Result<String> {
+fn run(
+    mut cmd: std::process::Command,
+    input: String,
+    timeout: Duration,
+    stop: &AtomicBool,
+) -> Result<String> {
     // The CLI reads its stdin to the end before answering; it is closed once written.
-    let output = crate::platform::output_within(&mut cmd, Some(input.as_bytes()), timeout)
+    let output = crate::platform::output_until(&mut cmd, Some(input.as_bytes()), timeout, stop)
         .map_err(|e| {
             if e.kind() == std::io::ErrorKind::TimedOut {
                 anyhow!("the agent did not answer within {} s", timeout.as_secs())
+            } else if e.kind() == std::io::ErrorKind::Interrupted {
+                anyhow!("the agent was stopped")
             } else {
                 anyhow!("could not start the agent: {e}")
             }
@@ -533,7 +554,26 @@ mod tests {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         let started = std::time::Instant::now();
-        assert_eq!(run(cmd, "fix/x".into(), TIMEOUT).unwrap(), "fix/x");
+        let go = AtomicBool::new(false);
+        assert_eq!(run(cmd, "fix/x".into(), TIMEOUT, &go).unwrap(), "fix/x");
+        assert!(started.elapsed() < Duration::from_secs(10));
+    }
+
+    /// A dialog closed while its agent writes stops the agent, not after the timeout.
+    #[cfg(unix)]
+    #[test]
+    fn an_agent_whose_answer_nobody_wants_is_stopped() {
+        let mut cmd = crate::platform::command("sh");
+        cmd.args(["-c", "sleep 30"]);
+        let stop = std::sync::Arc::new(AtomicBool::new(false));
+        let later = stop.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(200));
+            later.store(true, std::sync::atomic::Ordering::Relaxed);
+        });
+        let started = std::time::Instant::now();
+        let err = run(cmd, String::new(), TIMEOUT, &stop).unwrap_err();
+        assert_eq!(err.to_string(), "the agent was stopped");
         assert!(started.elapsed() < Duration::from_secs(10));
     }
 

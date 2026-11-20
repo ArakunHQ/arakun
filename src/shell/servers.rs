@@ -2624,6 +2624,10 @@ impl Shell {
                     link.git_asks.older(id);
                     return;
                 }
+                // Knows `git`, but not this request: only that one fails.
+                if kind == "error" && link.git_asks.refused(id, &text(&msg, "message")) {
+                    return;
+                }
                 if self.server_term_message(id, &msg, cx) || self.server_files_message(id, &msg, cx)
                 {
                     return;

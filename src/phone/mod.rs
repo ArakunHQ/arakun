@@ -1266,7 +1266,18 @@ fn talk(
     stop: &AtomicBool,
 ) {
     let _ = stream.set_read_timeout(Some(Duration::from_millis(20)));
-    let mut ws: WebSocket<TcpStream> = match tungstenite::accept(stream) {
+    // The client learns here that what it numbers is acknowledged. The
+    // callback's error type is tungstenite's to choose.
+    #[allow(clippy::result_large_err)]
+    let announce = |_: &tungstenite::handshake::server::Request,
+                    mut res: tungstenite::handshake::server::Response| {
+        res.headers_mut().insert(
+            wire::ACKS_HEADER,
+            tungstenite::http::HeaderValue::from_static("1"),
+        );
+        Ok(res)
+    };
+    let mut ws: WebSocket<TcpStream> = match tungstenite::accept_hdr(stream, announce) {
         Ok(ws) => ws,
         Err(e) => {
             eprintln!("arakun: phone handshake: {e}");
@@ -1283,17 +1294,27 @@ fn talk(
             return;
         }
         match ws.read() {
-            Ok(Message::Text(text)) => match serde_json::from_str::<ClientMsg>(text.as_str()) {
-                Ok(ClientMsg::Ping) => {}
-                Ok(msg) => {
-                    if tx.unbounded_send(Incoming::Message(id, msg)).is_err() {
-                        return;
+            Ok(Message::Text(text)) => {
+                let msg = serde_json::from_str::<serde_json::Value>(text.as_str());
+                let seq = msg.as_ref().ok().and_then(wire::seq);
+                match msg.and_then(serde_json::from_value::<ClientMsg>) {
+                    Ok(ClientMsg::Ping) => {}
+                    Ok(msg) => {
+                        if tx.unbounded_send(Incoming::Message(id, msg)).is_err() {
+                            return;
+                        }
+                    }
+                    Err(e) => {
+                        let _ = ws.send(Message::text(wire::error(&format!("bad message: {e}"))));
                     }
                 }
-                Err(e) => {
-                    let _ = ws.send(Message::text(wire::error(&format!("bad message: {e}"))));
+                // A bad message was read all the same: sending it again would not help.
+                if let Some(seq) = seq
+                    && ws.send(Message::text(wire::ack(seq))).is_err()
+                {
+                    return;
                 }
-            },
+            }
             Ok(Message::Close(_)) => {
                 // tungstenite queued the answering close frame.
                 let _ = ws.flush();

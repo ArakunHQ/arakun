@@ -82,13 +82,13 @@ impl Shell {
                             )
                             .text_color(theme::text_subtle()),
                         )
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .truncate()
-                                .child(env.branch.clone()),
-                        )
+                        .child(div().flex_1().min_w_0().truncate().child(
+                            if env.branch.is_empty() {
+                                env.name.clone()
+                            } else {
+                                env.branch.clone()
+                            },
+                        ))
                         .child(
                             div()
                                 .text_size(px(ui::TEXT_XS))

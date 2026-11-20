@@ -5,6 +5,7 @@ use std::sync::OnceLock;
 
 use gpui::Point;
 
+use super::sidebar_builder::BuilderSel;
 use super::*;
 use crate::sidebar::{BadgeMode, Collapse, Item, Mode, Piece, Pin, Section, TitleAction, View};
 
@@ -422,6 +423,7 @@ impl Shell {
 
     fn render_section(&self, si: usize, section: &Section, cx: &mut Context<Self>) -> AnyElement {
         let narrow = self.rail_narrow();
+        let arranging = self.arranging(cx);
         let folded = section.collapsible && section.collapsed && !narrow;
         // Narrowed, the rail is a column of icons already.
         let in_row = section.row && !narrow;
@@ -454,14 +456,19 @@ impl Shell {
                     _ => self.render_item((si, ii), item, in_row, cx),
                 };
                 if let Some(el) = el {
-                    body = body.child(el);
+                    body = body.child(if arranging {
+                        self.arrange_target(BuilderSel::Item((si, ii)), el, cx)
+                    } else {
+                        el
+                    });
                 }
             }
         }
         // Folded, the segment still says what it holds and whether something
         // inside wants the user.
         let peek = folded.then(|| self.folded_peek(section, cx)).flatten();
-        let title = (section.show_title && !narrow).then(|| {
+        // Arranging, every segment shows its title so it can be selected.
+        let title = ((section.show_title || arranging) && !narrow).then(|| {
             let collapsible = section.collapsible;
             div()
                 .id(("rail-section", si))
@@ -554,12 +561,33 @@ impl Shell {
                     }),
                 )
         });
+        let title = title.map(|t| {
+            if arranging {
+                self.arrange_target(BuilderSel::Section(si), t.into_any_element(), cx)
+            } else {
+                t.into_any_element()
+            }
+        });
+        let selected = arranging && self.builder.sel == Some(BuilderSel::Section(si));
         div()
             .flex()
             .flex_col()
             .py(crate::ui::sp(4.))
             // Space, not a line, between sections.
             .when(section.line_above, |d| d.mt(crate::ui::sp(10.)))
+            // Arranging, each segment shows where it starts and ends.
+            .when(arranging, |d| {
+                d.mx(crate::ui::sp(4.))
+                    .my(crate::ui::sp(2.))
+                    .rounded(crate::ui::rad(10.))
+                    .border_1()
+                    .border_dashed()
+                    .border_color(if selected {
+                        theme::active()
+                    } else {
+                        theme::border()
+                    })
+            })
             .children(title)
             .child(body)
             .into_any_element()

@@ -22,7 +22,7 @@ pub(super) enum BuilderSel {
 
 /// The text fields of the right column, made for the current selection.
 pub(super) struct BuilderInputs {
-    sel: BuilderSel,
+    pub(super) sel: BuilderSel,
     name: Entity<TextInput>,
     emoji: Entity<TextInput>,
     /// A pin's URL, command or path.
@@ -40,7 +40,7 @@ pub(super) enum PinAsk {
 
 pub(super) struct BuilderPrompt {
     ask: PinAsk,
-    input: Entity<TextInput>,
+    pub(super) input: Entity<TextInput>,
     _sub: Subscription,
 }
 
@@ -188,7 +188,12 @@ impl Shell {
         }
     }
 
-    fn select_builder(&mut self, sel: BuilderSel, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn select_builder(
+        &mut self,
+        sel: BuilderSel,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.builder.sel = Some(sel);
         self.builder.prompt = None;
         let (name, emoji, target) = match sel {
@@ -316,7 +321,7 @@ impl Shell {
         cx.notify();
     }
 
-    fn ask_pin(&mut self, ask: PinAsk, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn ask_pin(&mut self, ask: PinAsk, window: &mut Window, cx: &mut Context<Self>) {
         let placeholder = match ask {
             PinAsk::Url => "https://… then Enter",
             PinAsk::Command => "npm run dev… then Enter",
@@ -371,7 +376,7 @@ impl Shell {
 
     /// A click on a palette piece: at the end of the selected segment, else
     /// of the first scrolling one.
-    fn add_piece(&mut self, piece: Piece, cx: &mut Context<Self>) {
+    pub(super) fn add_piece(&mut self, piece: Piece, cx: &mut Context<Self>) {
         let target = match self.builder.sel {
             Some(BuilderSel::Section(s)) => Some(s),
             Some(BuilderSel::Item((s, _))) => Some(s),
@@ -396,7 +401,7 @@ impl Shell {
     }
 
     /// The tab on screen as a pin, when it is a page or a file.
-    fn tab_pin(&self) -> Option<Pin> {
+    pub(super) fn tab_pin(&self) -> Option<Pin> {
         let env = self.env();
         // The builder itself is on screen; the tab before it is the one meant.
         let tab = self.strip.tabs.iter().rev().find(|t| {
@@ -1406,7 +1411,7 @@ impl Shell {
         col.child(self.render_style_options(cx))
     }
 
-    fn render_item_options(
+    pub(super) fn render_item_options(
         &self,
         p: ItemPath,
         inputs: &BuilderInputs,
@@ -1548,7 +1553,7 @@ impl Shell {
         )
     }
 
-    fn render_section_options(
+    pub(super) fn render_section_options(
         &self,
         si: usize,
         inputs: &BuilderInputs,

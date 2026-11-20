@@ -1,6 +1,6 @@
 //! Headless ACP check: runs one prompt against an agent and prints the event stream.
 //!
-//!   cargo run --release --example acp_probe -- <claude|droid|opencode|codex|devin> <cwd> <prompt> [options]
+//!   cargo run --release --example acp_probe -- <claude|droid|opencode|codex|devin|cursor> <cwd> <prompt> [options]
 //!
 //! Options:
 //!   --allow | --deny        answer permission requests (default: allow)
@@ -45,6 +45,18 @@ mod headless {
 mod memory {
     pub fn prompt_for(_: &std::path::Path) -> String {
         String::new()
+    }
+    pub fn root() -> std::path::PathBuf {
+        crate::platform::app_dir().join("memory")
+    }
+}
+// Examples run no control socket; a sandboxed session there gets no `arakun`.
+mod control {
+    pub fn sandbox_socket_path() -> std::path::PathBuf {
+        crate::platform::app_dir().join("sandbox/control.sock")
+    }
+    pub fn shim_dir() -> Option<std::path::PathBuf> {
+        None
     }
 }
 #[path = "../src/assets.rs"]
@@ -108,7 +120,7 @@ fn parse_args() -> Args {
     let mut it = std::env::args().skip(1);
     let usage = || -> ! {
         eprintln!(
-            "usage: acp_probe <claude|droid|opencode|codex|devin> <cwd> <prompt> [--allow|--deny] [--mode m] [--model m] [--cancel-after s] [--resume id] [--save p] [--restore p] [--list]"
+            "usage: acp_probe <claude|droid|opencode|codex|devin|cursor> <cwd> <prompt> [--allow|--deny] [--mode m] [--model m] [--cancel-after s] [--resume id] [--save p] [--restore p] [--list]"
         );
         std::process::exit(2)
     };
@@ -325,6 +337,7 @@ fn main() {
                     created: 0,
                     updated: 0,
                     pr: None,
+                    seat: None,
                 });
                 Thread::start(args.kind, args.cwd.clone(), resume, cx)
             }
@@ -521,6 +534,7 @@ fn main() {
                         }
                     }
                     ThreadEvent::Changed
+                    | ThreadEvent::CommandsChanged
                     | ThreadEvent::Forked(_)
                     | ThreadEvent::Rewound { .. }
                     | ThreadEvent::RewindChanged { .. }

@@ -112,6 +112,15 @@ pub fn devin_logo(size: f32) -> Svg {
         .text_color(theme::content())
 }
 
+/// Cursor's mark (the cube, from Simple Icons), tinted like the text around it.
+pub fn cursor_logo(size: f32) -> Svg {
+    svg()
+        .path("providers/cursor.svg")
+        .size(px(size))
+        .flex_none()
+        .text_color(theme::content())
+}
+
 /// What a hovered icon-only button shows: one line in a small dark card.
 struct Tip(SharedString);
 

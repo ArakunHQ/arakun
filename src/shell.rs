@@ -67,6 +67,8 @@ mod sidebar_builder;
 #[cfg(feature = "coderlabs")]
 mod site;
 mod subagents;
+mod subnav;
+mod switching;
 #[cfg(feature = "coderlabs")]
 mod tasks;
 #[cfg(feature = "team")]
@@ -82,6 +84,7 @@ use titlebar::*;
 
 use crate::account::Account;
 use crate::account_view::{self, AccountDialog, AccountDialogEvent};
+use crate::agent::AgentKind;
 use crate::attach_picker::{AttachEvent, AttachPicker};
 use crate::branches_view::BranchesView;
 use crate::ci::{self, Ci};
@@ -100,7 +103,7 @@ use crate::highlight;
 use crate::input::{InputEvent, TextInput};
 use crate::memory_view::{MemoryEvent, MemoryView};
 use crate::model::{
-    self, Agent, Document, Environment, Project, Status, Tab, TabKind, TermTab, pretty_path,
+    self, Document, Environment, Project, Status, Tab, TabKind, TermTab, pretty_path,
 };
 use crate::picker::{FolderPicker, PickerEvent};
 use crate::posthog_view::PostHogView;
@@ -246,17 +249,17 @@ enum MenuKey {
     /// A setting's choice for an agent: (agent, setting, choice id, can be
     /// picked). Another agent's model switches to it; its other settings are
     /// only remembered while a session runs, and switch on the New session tab.
-    Choice(Agent, crate::agent::Setting, String, bool),
+    Choice(AgentKind, crate::agent::Setting, String, bool),
     /// The reasoning row of the model menu; ← and → step through its levels.
-    Effort(Agent),
+    Effort(AgentKind),
     /// Fast mode, with whether it is on now.
-    Fast(Agent, bool),
+    Fast(AgentKind, bool),
     /// Back to the agent's default model, reasoning and fast mode.
-    Reset(Agent),
+    Reset(AgentKind),
     /// Switches the composer to the agent, with the settings it remembers.
-    Agent(Agent),
+    Agent(AgentKind),
     /// Shows or hides a provider in the rail's usage card.
-    Rail(crate::agent::AgentKind),
+    Rail(AgentKind),
     OpenUsage,
 }
 
@@ -284,6 +287,10 @@ pub struct Shell {
     /// Reads in `restoring` an `ensure_live` beat: when one ends, its older
     /// transcript is dropped instead of put back over the newer session.
     restoring_stale: std::collections::HashSet<SharedString>,
+    /// Transcripts read while the pointer rests on their row (`switching`).
+    ahead: std::collections::HashMap<SharedString, switching::Ahead>,
+    /// The thread the pane drew last, to fade in the next (`switching`).
+    shown: RefCell<switching::Shown>,
     active_project: usize,
     panel_tab: PanelTab,
     dock_open: bool,
@@ -350,7 +357,11 @@ pub struct Shell {
     completion: Option<Completion>,
     /// `git ls-files` of an environment, cached briefly for `@` completion.
     file_index: Option<(std::path::PathBuf, Instant, Arc<Vec<String>>)>,
-    file_index_loading: bool,
+    /// The environment whose file index is being read, if any.
+    file_index_loading: Option<std::path::PathBuf>,
+    /// The skills an environment's agents read, cached briefly for `/` completion.
+    skill_index: Option<(std::path::PathBuf, Instant, Arc<Vec<crate::agent::Choice>>)>,
+    skill_index_loading: bool,
     /// The ASCII face over the start and welcome screens (redraws the shell
     /// while its intro fades the screen in) and the small raccoon atop the
     /// rail, which steps aside while a raccoon shows in the main view.
@@ -367,6 +378,9 @@ pub struct Shell {
     _quit: [Subscription; 2],
     /// `arakun restart` asked to quit: save for the next arakun and launch it.
     restarting: bool,
+    /// The `update-policy` feature flag's dialog (`shell::updates`), over
+    /// everything else, dialogs included.
+    update_dialog: Option<(Entity<crate::update_dialog::UpdateDialog>, Subscription)>,
     /// The pages last marked visible, so tab switches can tell when to update CEF.
     shown_browsers: Vec<gpui::EntityId>,
     /// Answers `arakun <command>` from the control socket.
@@ -417,7 +431,7 @@ pub struct Shell {
     /// Automations made from a sentence in the palette (`rules.json`).
     rules: crate::palette::rules::Rules,
     session_query: Entity<TextInput>,
-    session_filter: Option<Agent>,
+    session_filter: Option<AgentKind>,
     /// The sessions list shows the ones settled after a merge too.
     show_settled: bool,
     _session_query: Subscription,
@@ -430,7 +444,7 @@ pub struct Shell {
     tasks_view: Entity<TasksView>,
     /// A task waiting for its project to be picked, and the agent to work on it.
     #[cfg(feature = "coderlabs")]
-    task_start: Option<(String, Agent)>,
+    task_start: Option<(String, AgentKind)>,
     #[cfg(feature = "coderlabs")]
     _tasks: [Subscription; 3],
     ci: Entity<Ci>,
@@ -438,7 +452,7 @@ pub struct Shell {
     memory_view: Entity<MemoryView>,
     _memory_view: Subscription,
     cloudflare_view: Entity<CloudflareView>,
-    _cloudflare_view: Subscription,
+    _cloudflare_view: [Subscription; 2],
     #[cfg(feature = "coderlabs")]
     site_view: Entity<SiteView>,
     #[cfg(feature = "coderlabs")]
@@ -455,7 +469,7 @@ pub struct Shell {
     pilot: Entity<crate::github::pilot::Pilot>,
     _github: [Subscription; 5],
     extensions_view: Entity<ExtensionsView>,
-    _extensions_view: Subscription,
+    _extensions_view: [Subscription; 2],
     _branches_view: Subscription,
     /// The phone's server and what each phone watches, while the phone is on.
     phone: Option<phone::PhoneLink>,
@@ -467,6 +481,8 @@ pub struct Shell {
     servers_view: Entity<crate::servers_view::ServersView>,
     _servers_view: Subscription,
     usage_view: Entity<UsageView>,
+    /// Set while a frame is built when it shows the Usage view.
+    usage_shown: std::cell::Cell<bool>,
     gallery_view: Entity<GalleryView>,
     iso_view: Entity<crate::iso_view::IsoView>,
     #[cfg(feature = "coderlabs")]
@@ -497,7 +513,7 @@ pub struct Shell {
     /// A one-line note under the composer (a prompt was saved, ...), until the next key.
     composer_flash: Option<SharedString>,
     /// The agent whose models the model menu shows; `None` is the composer's.
-    menu_agent: Option<Agent>,
+    menu_agent: Option<AgentKind>,
     /// The row the arrow keys are on, in `menu_keys` order.
     menu_cursor: Option<usize>,
     /// The model list's scroll, kept on the row the keys are on.
@@ -687,14 +703,19 @@ impl Shell {
             this.spy_from_composer(window, cx)
         });
         let (projects, active_project, layout, strip) = state::restore(state::load());
+        crate::agent::sandbox::set_projects(projects.iter().flat_map(|p| {
+            std::iter::once(&p.path)
+                .chain(p.environments.iter().map(|e| &e.path))
+                .map(|path| (path.clone(), p.sandbox))
+        }));
         theme::set_diff_palette(layout.diff_palette);
         theme::set_glass(layout.glass);
         theme::set_grays(layout.grays);
         crate::palettes::apply_saved();
-        account_view::set_rail_shows(crate::agent::AgentKind::Claude, layout.rail_usage[0]);
-        account_view::set_rail_shows(crate::agent::AgentKind::Droid, layout.rail_usage[1]);
-        account_view::set_rail_shows(crate::agent::AgentKind::OpenCode, layout.rail_usage[2]);
-        account_view::set_rail_shows(crate::agent::AgentKind::Devin, layout.rail_usage[3]);
+        account_view::set_rail_shows(AgentKind::Claude, layout.rail_usage[0]);
+        account_view::set_rail_shows(AgentKind::Droid, layout.rail_usage[1]);
+        account_view::set_rail_shows(AgentKind::OpenCode, layout.rail_usage[2]);
+        account_view::set_rail_shows(AgentKind::Devin, layout.rail_usage[3]);
         crate::ui::set_type_scale(layout.type_scale);
         if layout.ui_zoom != crate::ui_zoom::pct() {
             crate::ui_zoom::set_pct(layout.ui_zoom);
@@ -772,8 +793,7 @@ impl Shell {
             |this, _, ev: &crate::usage_view::UsageEvent, window, cx| match ev {
                 crate::usage_view::UsageEvent::OpenAccount => this.open_account(window, cx),
                 crate::usage_view::UsageEvent::ClaudeSignIn => {
-                    if let Some(cmd) = crate::agent::login_command(crate::agent::AgentKind::Claude)
-                    {
+                    if let Some(cmd) = crate::agent::login_command(AgentKind::Claude) {
                         this.spawn_terminal_command(Some(cmd), true, window, cx);
                     }
                 }
@@ -784,10 +804,17 @@ impl Shell {
             },
         );
         let cloudflare_view = cx.new(CloudflareView::new);
-        let cloudflare_sub =
+        let cloudflare_sub = [
             cx.subscribe_in(&cloudflare_view, window, |this, _, ev, window, cx| {
                 this.on_cloudflare_event(ev, window, cx)
-            });
+            }),
+            // Open, its pages are in the rail: their counts follow the view.
+            cx.observe(&cloudflare_view, |this, _, cx| {
+                if this.subnav_view() == Some(crate::sidebar::View::Cloudflare) {
+                    cx.notify();
+                }
+            }),
+        ];
         #[cfg(feature = "coderlabs")]
         let site_view = cx.new(SiteView::new);
         #[cfg(feature = "coderlabs")]
@@ -813,10 +840,16 @@ impl Shell {
         let sidebar = crate::sidebar::Sidebar::load();
         let views = crate::sidebar::Extensions::load(&sidebar);
         let extensions_view = cx.new(|cx| ExtensionsView::new(views, cx));
-        let extensions_sub =
+        let extensions_sub = [
             cx.subscribe_in(&extensions_view, window, |this, _, ev, window, cx| {
                 this.on_extensions_event(ev, window, cx)
-            });
+            }),
+            cx.observe(&extensions_view, |this, _, cx| {
+                if this.subnav_view() == Some(crate::sidebar::View::Extensions) {
+                    cx.notify();
+                }
+            }),
+        ];
         let branches_sub = cx.subscribe_in(&branches_view, window, |this, _, ev, window, cx| {
             this.on_branches_event(ev, window, cx)
         });
@@ -868,6 +901,8 @@ impl Shell {
             mention_sources: Default::default(),
             restoring: Default::default(),
             restoring_stale: Default::default(),
+            ahead: Default::default(),
+            shown: Default::default(),
             active_project,
             panel_tab: PanelTab::Sessions,
             dock_open: layout.dock_open,
@@ -905,7 +940,9 @@ impl Shell {
             stale_diffs: Vec::new(),
             completion: None,
             file_index: None,
-            file_index_loading: false,
+            file_index_loading: None,
+            skill_index: None,
+            skill_index_loading: false,
             home_face,
             _home_face: home_face_sub,
             rail_mascot: cx.new(|cx| crate::mascot::Mascot::new(24., cx)),
@@ -991,6 +1028,7 @@ impl Shell {
             _servers_view: servers_sub,
             _usage_view: usage_sub,
             usage_view,
+            usage_shown: std::cell::Cell::new(false),
             gallery_view,
             customize: None,
             customize_tab: CustomizeTab::Colors,
@@ -1025,6 +1063,7 @@ impl Shell {
             inbox_shown: Cell::new(0),
             clear_armed: false,
             restarting: false,
+            update_dialog: None,
             _runs: runs_subs,
             _quit: [
                 cx.on_app_quit(|this, cx| {
@@ -1263,6 +1302,13 @@ impl Shell {
     // Persistence and git refresh
 
     fn save(&self, cx: &mut Context<Self>) {
+        // Its environments too: an environment elsewhere stays the project's
+        // even if its Git metadata says otherwise.
+        crate::agent::sandbox::set_projects(self.projects.iter().flat_map(|p| {
+            std::iter::once(&p.path)
+                .chain(p.environments.iter().map(|e| &e.path))
+                .map(|path| (path.clone(), p.sandbox))
+        }));
         state::queue(self.state_bytes());
         cx.background_spawn(crate::guard::task(async move {
             if let Err(e) = state::write_queued() {
@@ -1338,10 +1384,10 @@ impl Shell {
             grays: theme::grays(),
             type_scale: crate::ui::type_scale(),
             rail_usage: [
-                account_view::rail_shows(crate::agent::AgentKind::Claude),
-                account_view::rail_shows(crate::agent::AgentKind::Droid),
-                account_view::rail_shows(crate::agent::AgentKind::OpenCode),
-                account_view::rail_shows(crate::agent::AgentKind::Devin),
+                account_view::rail_shows(AgentKind::Claude),
+                account_view::rail_shows(AgentKind::Droid),
+                account_view::rail_shows(AgentKind::OpenCode),
+                account_view::rail_shows(AgentKind::Devin),
             ],
             ui_zoom: crate::ui_zoom::pct(),
             window: self.window_state.clone(),
@@ -1397,26 +1443,30 @@ impl Shell {
     }
 
     fn refresh_status(&mut self, env_path: &std::path::Path, cx: &mut Context<Self>) {
-        // A server's folder: its changes are on that machine.
-        if crate::model::Remote::is_path(env_path) {
-            return;
-        }
         if !self.git_reads.start(env_path, git_actions::GitRead::Status) {
             return;
         }
         let path = env_path.to_path_buf();
+        // A server's folder: the server reads its changes there.
+        let at = self.git_at(env_path);
         cx.spawn(async move |this, cx| {
-            let p = path.clone();
             let (changes, sync) = cx
-                .background_spawn(crate::guard::task(async move {
-                    (git::status(&p), git::sync(&p))
-                }))
+                .background_spawn(crate::guard::task(async move { at.status() }))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 let timed_out = changes.as_ref().err().or(sync.as_ref().err());
                 let timed_out = timed_out.filter(|e| git::timed_out(e));
                 let recovered = this.git_reads.status_ended(&path, timed_out.is_some());
                 if let Some(env) = this.find_env_mut(&path) {
+                    // A server that could not be asked says so in the panel,
+                    // which would otherwise show no changes, or old ones.
+                    if env.remote.is_some() {
+                        let error = changes.as_ref().err().map(|e| e.to_string().into());
+                        if env.status_error != error {
+                            env.status_error = error;
+                            cx.notify();
+                        }
+                    }
                     if let Some(e) = timed_out {
                         env.git_error = Some(
                             format!(
@@ -1552,10 +1602,10 @@ impl Shell {
         }
         self.fetching = true;
         let path = self.env().path.clone();
+        let at = self.git_at(&path);
         cx.spawn(async move |this, cx| {
-            let p = path.clone();
             let fetched = cx
-                .background_spawn(crate::guard::task(async move { git::fetch(&p) }))
+                .background_spawn(crate::guard::task(async move { at.fetch() }))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.fetching = false;
@@ -1751,10 +1801,23 @@ impl Shell {
             .get(project.active_env)
             .and_then(|e| e.remote.as_ref())
             .map(|r| r.server.clone());
-        let pick = machines
+        let open_pick = machines
             .iter()
             .position(|m| m.server.as_ref().map(|(s, _)| s) == open.as_ref())
             .unwrap_or(0);
+        // Spread: the machine it would go to without asking, the open one
+        // first on a tie.
+        // The others keep their order, as in `spread_target`.
+        let mut order: Vec<usize> = (0..machines.len()).collect();
+        order.remove(open_pick);
+        order.insert(0, open_pick);
+        let ids: Vec<Option<&str>> = order
+            .iter()
+            .map(|&i| machines[i].server.as_ref().map(|(s, _)| s.as_str()))
+            .collect();
+        let pick = self
+            .servers_spread_pick(&ids)
+            .map_or(open_pick, |i| order[i]);
         let (repo, name) = (project.path.clone(), project.name.clone());
         let (setup, start) = (project.setup.clone(), project.base.clone());
         let dialog = cx.new(|cx| {
@@ -1792,6 +1855,47 @@ impl Shell {
         cx.notify();
     }
 
+    /// The machine a new environment of project `pi` goes to while they are
+    /// spread: `Some(None)` for this computer, `Some(Some(env))` for the
+    /// server of that environment. `None` when they are not spread or no
+    /// machine can take it.
+    fn spread_target(&self, pi: usize) -> Option<Option<usize>> {
+        let project = self.projects.get(pi)?;
+        let open = project
+            .environments
+            .get(project.active_env)
+            .and_then(|e| e.remote.as_ref())
+            .map(|r| r.server.as_str());
+        let mut machines: Vec<(Option<&str>, Option<usize>)> = Vec::new();
+        if !project.is_remote() {
+            machines.push((None, None));
+        }
+        // The open environment first, so its server makes the new one from it.
+        let envs = std::iter::once(project.active_env).chain(0..project.environments.len());
+        for i in envs {
+            let Some(e) = project.environments.get(i) else {
+                continue;
+            };
+            let Some(r) = &e.remote else { continue };
+            let known = machines.iter().any(|(s, _)| *s == Some(r.server.as_str()));
+            if known
+                || self.server_env_retired(&e.path)
+                || self.server_reach(&r.server) != Some(crate::servers_view::Reach::Connected)
+            {
+                continue;
+            }
+            machines.push((Some(r.server.as_str()), Some(i)));
+        }
+        // The open environment's machine wins a tie.
+        if let Some(at) = machines.iter().position(|(s, _)| *s == open) {
+            let first = machines.remove(at);
+            machines.insert(0, first);
+        }
+        let ids: Vec<Option<&str>> = machines.iter().map(|(s, _)| *s).collect();
+        let i = self.servers_spread_pick(&ids)?;
+        Some(machines[i].1)
+    }
+
     /// A new environment without asking: a random branch from the current
     /// commit, as the dialog would fill in. Its row shows at once and the
     /// worktree follows; the agent names the branch after the first prompt.
@@ -1813,13 +1917,24 @@ impl Shell {
         let Some(project) = self.projects.get(pi) else {
             return;
         };
+        // Spread across machines, one made without a prompt goes where
+        // `spread_target` says. A prompt stays on the machine it was written
+        // on: what it mentions and the settings picked with it are there.
+        let spread = prompt
+            .as_ref()
+            .map_or_else(|| self.spread_target(pi), |_| None);
+        if let Some(Some(from)) = spread {
+            self.servers_new_env(pi, from, None, cx);
+            return;
+        }
         // In a server's environment, or a project only servers have: the
         // new one is made on that server.
-        let on_server = project
-            .environments
-            .get(project.active_env)
-            .is_some_and(|e| e.remote.is_some())
-            || project.is_remote();
+        let on_server = spread.is_none()
+            && (project
+                .environments
+                .get(project.active_env)
+                .is_some_and(|e| e.remote.is_some())
+                || project.is_remote());
         if on_server {
             // A queued prompt goes only to the server it was written on,
             // never to another that has this project too.
@@ -2460,6 +2575,7 @@ impl Shell {
                 setup: p.setup.clone(),
                 check: p.check.clone(),
                 base: p.base.clone(),
+                sandbox: p.sandbox,
                 remote: p.is_remote(),
             }
         });
@@ -2531,6 +2647,12 @@ impl Shell {
                         this.save(cx);
                     }
                 }
+                SettingsEvent::ProjectSandbox { project, on } => {
+                    if let Some(p) = this.projects.iter_mut().find(|p| p.path == *project) {
+                        p.sandbox = *on;
+                        this.save(cx);
+                    }
+                }
                 SettingsEvent::ProjectBase { project, base } => {
                     if let Some(p) = this.projects.iter_mut().find(|p| p.path == *project) {
                         p.base = base.clone();
@@ -2564,41 +2686,49 @@ impl Shell {
                 }
                 SettingsEvent::ClaudeSignIn => {
                     this.close_modal(window, cx);
-                    this.sign_in(crate::agent::AgentKind::Claude, window, cx);
+                    this.sign_in(AgentKind::Claude, window, cx);
                 }
                 SettingsEvent::ClaudeSignOut => {
                     this.close_modal(window, cx);
-                    this.sign_out(crate::agent::AgentKind::Claude, window, cx);
+                    this.sign_out(AgentKind::Claude, window, cx);
                 }
                 SettingsEvent::CodexSignIn => {
                     this.close_modal(window, cx);
-                    this.sign_in(crate::agent::AgentKind::Codex, window, cx);
+                    this.sign_in(AgentKind::Codex, window, cx);
                 }
                 SettingsEvent::CodexSignOut => {
                     this.close_modal(window, cx);
-                    this.sign_out(crate::agent::AgentKind::Codex, window, cx);
+                    this.sign_out(AgentKind::Codex, window, cx);
                 }
                 SettingsEvent::DevinSignIn => {
                     this.close_modal(window, cx);
-                    this.sign_in(crate::agent::AgentKind::Devin, window, cx);
+                    this.sign_in(AgentKind::Devin, window, cx);
                 }
                 SettingsEvent::DevinSignOut => {
                     this.close_modal(window, cx);
-                    this.sign_out(crate::agent::AgentKind::Devin, window, cx);
+                    this.sign_out(AgentKind::Devin, window, cx);
+                }
+                SettingsEvent::CursorSignIn => {
+                    this.close_modal(window, cx);
+                    this.sign_in(AgentKind::Cursor, window, cx);
+                }
+                SettingsEvent::CursorSignOut => {
+                    this.close_modal(window, cx);
+                    this.sign_out(AgentKind::Cursor, window, cx);
                 }
                 SettingsEvent::OpenCodeSignIn => {
                     this.close_modal(window, cx);
-                    this.sign_in(crate::agent::AgentKind::OpenCode, window, cx);
+                    this.sign_in(AgentKind::OpenCode, window, cx);
                 }
                 SettingsEvent::OpenCodeGoSignIn => {
                     this.close_modal(window, cx);
                     let cmd = crate::agent::opencode_go_login_command();
-                    let kind = crate::agent::AgentKind::OpenCode;
+                    let kind = AgentKind::OpenCode;
                     this.run_account_command("Sign in to OpenCode Go", kind, cmd, window, cx);
                 }
                 SettingsEvent::OpenCodeSignOut => {
                     this.close_modal(window, cx);
-                    this.sign_out(crate::agent::AgentKind::OpenCode, window, cx);
+                    this.sign_out(AgentKind::OpenCode, window, cx);
                 }
                 #[cfg(feature = "coderlabs")]
                 SettingsEvent::DisconnectCoderSpace => {
@@ -3269,7 +3399,8 @@ impl Shell {
     /// A new session in project `pi`: the New session tab of its main
     /// checkout, ready to type in at once. The first prompt sent there makes
     /// the worktree, so nobody waits on git before writing. On a server the
-    /// worktree is made first, as a prompt queued for it would be lost.
+    /// worktree is made first, as a prompt queued for it would be lost, and
+    /// so when environments are spread and a server's turn is next.
     pub(super) fn draft_new_session(
         &mut self,
         pi: usize,
@@ -3286,9 +3417,20 @@ impl Shell {
             .get(project.active_env)
             .is_some_and(|e| e.remote.is_some())
             || project.is_remote();
-        let checkout = project.environments.iter().position(|e| e.is_checkout);
+        let checkout = project
+            .environments
+            .iter()
+            .position(|e| e.is_checkout && e.remote.is_none());
+        // Spread across machines, the balancer says where it goes, not the
+        // open environment: a prompt written in the draft would stay on this
+        // computer, so a server's pick is made at once there.
+        let here = match self.spread_target(pi) {
+            Some(Some(_)) => false,
+            Some(None) => true,
+            None => !on_server,
+        };
         match checkout {
-            Some(ei) if !on_server => {
+            Some(ei) if here => {
                 self.select_env(pi, ei, window, cx);
                 self.show_new_session_tab(window, cx);
             }
@@ -3424,13 +3566,26 @@ impl Shell {
                     Some(live) => gpui::AnyView::from(live.view.clone())
                         .cached(gpui::StyleRefinement::default().size_full())
                         .into_any_element(),
-                    None => panel_empty("Connecting…").into_any_element(),
+                    None => switching::render_waiting(&id),
                 };
+                // One pane only: in a split, moving the focus between the
+                // two must not fade either.
+                let alone = self.split_other().is_none();
+                if alone {
+                    self.note_shown(&id, live.is_some());
+                }
                 div()
                     .flex()
                     .flex_col()
                     .size_full()
-                    .child(div().flex_1().min_h_0().child(transcript))
+                    .child(
+                        div()
+                            .relative()
+                            .flex_1()
+                            .min_h_0()
+                            .child(transcript)
+                            .when(alone, |d| d.children(self.render_fade())),
+                    )
                     .when(index == self.composer_tab(), |d| {
                         d.child(
                             div()
@@ -3477,7 +3632,9 @@ impl Shell {
                 self.memory_view.update(cx, |v, cx| v.set_dir(&dir, cx));
                 self.memory_view.clone().into_any_element()
             }
-            Some(TabKind::Cloudflare) => self.cloudflare_view.clone().into_any_element(),
+            Some(TabKind::Cloudflare) => {
+                self.with_subnav(index, self.cloudflare_view.clone().into_any_element(), cx)
+            }
             #[cfg(feature = "coderlabs")]
             Some(TabKind::Site) => self.site_view.clone().into_any_element(),
             #[cfg(feature = "team")]
@@ -3502,7 +3659,7 @@ impl Shell {
                     v.set_dir(dir, cx);
                     v.refresh_if_stale(cx);
                 });
-                self.extensions_view.clone().into_any_element()
+                self.with_subnav(index, self.extensions_view.clone().into_any_element(), cx)
             }
             Some(TabKind::Phone) => self.phone_view.clone().into_any_element(),
             Some(TabKind::Servers) => self.servers_view.clone().into_any_element(),
@@ -3517,6 +3674,7 @@ impl Shell {
             #[cfg(feature = "coderlabs")]
             Some(TabKind::Canvas) => self.canvas_view.clone().into_any_element(),
             Some(TabKind::Usage) => {
+                self.usage_shown.set(true);
                 self.sync_usage_view(cx);
                 self.usage_view.clone().into_any_element()
             }
@@ -3565,10 +3723,16 @@ impl Shell {
         step(window, cx);
         // gpui's tab order spans the window, so an open dialog would let Tab
         // reach the controls behind it. Step on to the next stop inside one;
-        // back at the first stop means no dialog is open.
+        // back at the first stop means no dialog is open. The update dialog
+        // covers any other dialog, so while it is open only its stops count.
+        let update = self.update_dialog.as_ref().map(|(d, _)| d.focus_handle(cx));
+        let inside = |window: &Window, cx: &App| match &update {
+            Some(update) => update.contains_focused(window, cx),
+            None => in_modal(&window.context_stack()),
+        };
         let first = window.focused(cx);
         for _ in 0..MAX_TAB_STOPS {
-            if in_modal(&window.context_stack()) {
+            if inside(window, cx) {
                 break;
             }
             step(window, cx);
@@ -3577,7 +3741,7 @@ impl Shell {
                 break;
             }
         }
-        if !in_modal(&window.context_stack())
+        if !inside(window, cx)
             && let Some(first) = first
         {
             window.focus(&first, cx);
@@ -3705,7 +3869,11 @@ impl Render for Shell {
         } else {
             self.render_welcome(window, cx).into_any_element()
         };
+        self.usage_view
+            .read(cx)
+            .set_on_screen(self.usage_shown.take());
 
+        let update_dialog = self.update_dialog.as_ref().map(|(d, _)| d.clone());
         let palette_open = matches!(self.modal, Some((Modal::Palette(_), _)));
         // Dialogs sit in the middle, like the system's own. Lists that filter
         // as you type stay near the top, so they don't jump as their height changes.
@@ -3951,7 +4119,9 @@ impl Render for Shell {
             })
             .capture_key_down(cx.listener(|this, ev: &gpui::KeyDownEvent, window, cx| {
                 let k = &ev.keystroke;
+                // The update dialog's Enter and Space press its own buttons.
                 if this.menu.is_some()
+                    && this.update_dialog.is_none()
                     && !k.modifiers.control
                     && !k.modifiers.alt
                     && !k.modifiers.platform
@@ -4112,6 +4282,24 @@ impl Render for Shell {
                         ),
                 )
             })
+            .when_some(update_dialog, |d, dialog| {
+                d.child(
+                    div()
+                        .id("update-backdrop")
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .size_full()
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .pt(relative(0.10))
+                        .px(crate::ui::sp(12.))
+                        .occlude()
+                        .bg(gpui::black().opacity(0.4))
+                        .child(dialog),
+                )
+            })
             .when(self.env_menu_open, |d| {
                 d.child(
                     div()
@@ -4145,15 +4333,17 @@ fn plural(n: usize, word: &str) -> String {
     }
 }
 
-pub(crate) fn agent_icon(agent: Agent, size: f32) -> AnyElement {
+pub(crate) fn agent_icon(agent: AgentKind, size: f32) -> AnyElement {
     match agent {
-        Agent::Claude => img("providers/claude.svg")
+        AgentKind::Claude => img("providers/claude.svg")
             .size(px(size))
             .flex_none()
             .into_any_element(),
-        Agent::Droid => ui::factory_logo(size).into_any_element(),
-        Agent::OpenCode => ui::opencode_logo(size).into_any_element(),
-        Agent::Codex | Agent::Devin | Agent::WorkersAi => agent.kind().icon(size),
+        AgentKind::Droid => ui::factory_logo(size).into_any_element(),
+        AgentKind::OpenCode => ui::opencode_logo(size).into_any_element(),
+        AgentKind::Codex | AgentKind::Devin | AgentKind::Cursor | AgentKind::WorkersAi => {
+            agent.icon(size)
+        }
     }
 }
 

@@ -73,7 +73,7 @@ Nobody is available to answer questions: when a real decision is open, pick the 
 10. Close with evidence: the verified outcome, every failing or pending check, what remains. Leave the changes in the working tree.";
 
 /// The prompt rules a sweep can switch on, by name.
-pub const RULES: [(&str, &str); 6] = [
+pub const RULES: [(&str, &str); 7] = [
     (
         "small_task",
         "- If the task is understood after at most 3 reads (~10k tokens), fix it inline: read only what you change and its helpers, \
@@ -95,6 +95,11 @@ pub const RULES: [(&str, &str); 6] = [
         "checklist",
         "- At the start, list each requirement, example and constraint in the request as a short checklist in your notes.\n\
          - Before finishing, verify each item against your diff and tests, and fix the ones that are missing.",
+    ),
+    (
+        "terse",
+        "- Reply terse: answer first, one idea per sentence, no filler or recap. Keep not, never, only and numbers. \
+         Quote code and paths exactly. Use full sentences for warnings and irreversible actions.",
     ),
     ("argon", ARGON),
 ];
@@ -807,6 +812,9 @@ mod tests {
         assert!(w.iter().any(|x| x.contains("colour")) && w.iter().any(|x| x.contains("nope")));
         let text = k.rules_text();
         assert!(text.contains("at most 3 reads") && text.contains("Work method"));
+        let (k, w) = parse(r#"{"rules": ["terse"]}"#);
+        assert!(w.is_empty(), "{w:?}");
+        assert!(k.rules_text().starts_with("- Reply terse"));
     }
 
     #[test]

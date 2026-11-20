@@ -225,6 +225,7 @@ impl Thread {
                         created: now,
                         updated: now,
                         pr: None,
+                        seat: None,
                     }));
                 }
                 Err(e) => t.notice(format!("Forking failed: {e}"), true, cx),
@@ -372,6 +373,7 @@ impl Thread {
                         created: now,
                         updated: now,
                         pr: None,
+                        seat: None,
                     },
                     prompt: plan.map(|p| p.text).unwrap_or_default(),
                 });

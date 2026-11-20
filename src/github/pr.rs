@@ -13,7 +13,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::{Notification, Problem};
-use crate::git;
 
 // ---------------------------------------------------------------------------
 // References
@@ -641,7 +640,7 @@ fn open_thread_ids(answer: &Value) -> (Vec<String>, Option<String>) {
 /// can't hold up the next check.
 pub fn resolve_open_threads(host: &str, item: &ItemRef) -> Result<usize, Problem> {
     resolve_open_threads_with(host, item, super::read_only(), |args| {
-        super::gh_out_within(args, GH_TIMEOUT)
+        super::gh_run(&std::env::temp_dir(), args, None, GH_TIMEOUT)
     })
 }
 
@@ -1176,17 +1175,10 @@ pub fn rerunnable(sum: &ChecksSummary, repo: &str, host: &str) -> Vec<u64> {
 /// that hangs would keep the log on "Loading", or every other write waiting.
 const CHECK_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
 
-/// [`gh_run`], killing `gh` after `timeout`.
-fn gh_run_within(cmd: &Cmd, timeout: std::time::Duration) -> Result<Vec<u8>, Problem> {
-    let mut gh = git::gh(&std::env::temp_dir());
-    gh.args(&cmd.args);
-    let input = cmd.stdin.as_ref().map(|t| t.as_bytes());
-    let out = crate::headless::sandbox::run_with_timeout(gh, input, timeout)
-        .map_err(|e| Problem::Other(format!("could not run gh: {e}")))?;
-    if !out.status.success() {
-        return Err(super::problem(&out.stderr, out.status));
-    }
-    Ok(out.stdout)
+/// Runs `cmd` away from any checkout, killing `gh` after `timeout`.
+fn gh_run(cmd: &Cmd, timeout: std::time::Duration) -> Result<Vec<u8>, Problem> {
+    let stdin = cmd.stdin.as_deref().map(str::as_bytes);
+    super::gh_run(&std::env::temp_dir(), &cmd.args, stdin, timeout)
 }
 
 /// Log lines kept of a failing job: the end is where it failed.
@@ -1198,7 +1190,12 @@ pub fn check_log(item: &ItemRef, job: u64) -> Result<Vec<crate::ci::LogLine>, Pr
         return Err(invalid("Not a repository name."));
     }
     let path = format!("repos/{}/actions/jobs/{job}/logs", item.repo);
-    let out = super::gh_out_within(&["api", "--allow-escape-sequences", &path], CHECK_WAIT)?;
+    let out = super::gh_run(
+        &std::env::temp_dir(),
+        &["api", "--allow-escape-sequences", &path],
+        None,
+        CHECK_WAIT,
+    )?;
     let lines = crate::ci::parse_log(&String::from_utf8_lossy(&out));
     let mut end = crate::ci::failure_excerpt(&lines);
     if end.len() > CHECK_LOG_LINES {
@@ -1232,7 +1229,7 @@ pub fn rerun_failed(item: &ItemRef, runs: &[u64]) -> Result<(), Problem> {
     }
     rerun_each(runs, |run| {
         act_with(super::read_only(), rerun_cmd(item, run), |cmd| {
-            gh_run_within(cmd, CHECK_WAIT)
+            gh_run(cmd, CHECK_WAIT)
         })
         .map(|_| ())
     })
@@ -2649,24 +2646,6 @@ fn state_cmd(item: &ItemRef, verb: &str) -> Cmd {
     }
 }
 
-fn gh_run(cmd: &Cmd) -> Result<Vec<u8>, Problem> {
-    let mut gh = git::gh(&std::env::temp_dir());
-    gh.args(&cmd.args);
-    // gh may give up before it reads all of stdin; what it wrote says why.
-    let input = cmd.stdin.as_deref().map(str::as_bytes);
-    let out = crate::platform::output_within(&mut gh, input, crate::platform::GIT_REMOTE).map_err(
-        |e| match e.kind() {
-            std::io::ErrorKind::NotFound => Problem::NoGh,
-            std::io::ErrorKind::TimedOut => Problem::Other(e.to_string()),
-            _ => Problem::Other(format!("could not run gh: {e}")),
-        },
-    )?;
-    if !out.status.success() {
-        return Err(super::problem(&out.stderr, out.status));
-    }
-    Ok(out.stdout)
-}
-
 /// Runs an action unless this Arakun is read-only, and returns what gh printed.
 /// The refusal comes before anything else, so a read-only Arakun never starts gh.
 fn act_with(
@@ -2681,7 +2660,9 @@ fn act_with(
 }
 
 fn act(cmd: Result<Cmd, Problem>) -> Result<String, Problem> {
-    act_with(super::read_only(), cmd, gh_run)
+    act_with(super::read_only(), cmd, |cmd| {
+        gh_run(cmd, crate::platform::GIT_REMOTE)
+    })
 }
 
 /// Comments on the conversation; returns the comment's address.

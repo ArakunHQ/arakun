@@ -8,7 +8,8 @@ use crate::ui::Typography as _;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::time::{Duration, SystemTime};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant, SystemTime};
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
@@ -21,7 +22,8 @@ use crate::account::{Account, UsageMode};
 use crate::account_view;
 use crate::agent::claude_auth;
 use crate::agent::cliproxy;
-use crate::agent::plan::{self, PlanUsage};
+use crate::agent::plan::{self, PlanUsage, Seats};
+use crate::agent::seats;
 use crate::agent::{AgentKind, fmt_cost};
 use crate::agent::{devin_plan, opencode_plan};
 use crate::input::{InputEvent, TextInput};
@@ -258,6 +260,8 @@ pub struct UsageView {
     /// machine has one; shown beside the sign-in's.
     #[cfg(feature = "coderlabs")]
     borrowed: Option<PlanUsage>,
+    /// Every Claude seat sessions can run on; shown once a named seat is saved.
+    seats: SeatsInfo,
     /// The OpenCode Go plan's windows, when a Go key is connected.
     go: Option<PlanUsage>,
     /// The Devin plan's quota windows, on a plan that has a quota.
@@ -288,33 +292,88 @@ pub struct UsageView {
     projects: Vec<(PathBuf, String)>,
     focus: FocusHandle,
     scroll: ScrollHandle,
+    /// Whether the view is on screen, for the poll's background task.
+    shown: std::sync::Arc<Shown>,
     _poll: [Task<()>; 3],
 }
 
 impl EventEmitter<UsageEvent> for UsageView {}
 
+/// Whether the Usage view is on screen, readable off the UI thread.
+#[derive(Default)]
+struct Shown {
+    /// Whether the shell's last frame showed the view. A window that is not
+    /// drawn keeps the last value, so `drawn` counts too.
+    on_screen: AtomicBool,
+    /// When the view was last drawn. Its own poll redraws it every [`POLL`]
+    /// while it is on screen, so an older time means it is not.
+    drawn: std::sync::Mutex<Option<Instant>>,
+}
+
+impl Shown {
+    fn now(&self) -> bool {
+        self.on_screen.load(Ordering::Relaxed)
+            && self
+                .drawn
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .is_some_and(|at| at.elapsed() < 2 * POLL)
+    }
+}
+
+/// What the seats block shows (see `agent::seats`).
+#[derive(Clone, Default, PartialEq)]
+struct SeatsInfo {
+    seats: Seats,
+    /// Claude Code has a claude.ai sign-in: the "own" seat.
+    own: bool,
+    /// A borrowed token is set.
+    borrowed: bool,
+    /// Live sessions on each seat.
+    live: HashMap<String, usize>,
+    /// Why sessions can't get a seat each, if they can't.
+    blocked: Option<seats::Blocked>,
+}
+
+impl SeatsInfo {
+    /// Reads files and maybe the network; keep it off the UI thread.
+    fn read(all: Seats) -> Self {
+        SeatsInfo {
+            seats: all,
+            own: plan::own_sign_in(),
+            borrowed: plan::borrowed_seat_token().is_some(),
+            live: seats::live(),
+            blocked: seats::blocked(),
+        }
+    }
+}
+
 impl UsageView {
     pub fn new(cx: &mut Context<Self>) -> Self {
-        let poll = cx.spawn(async move |this, cx| {
-            loop {
-                if this.update(cx, |v, cx| v.rescan(cx)).is_err() {
-                    break;
-                }
-                cx.background_executor().timer(POLL).await;
-            }
-        });
+        let shown = std::sync::Arc::new(Shown::default());
+        let probe_ok = shown.clone();
+        let poll = crate::poll::poll_every(cx, Duration::ZERO, POLL, Self::rescan);
         let plan_poll = cx.spawn(async move |this, cx| {
             loop {
-                let (seats, go, devin, access) = cx
+                // Reading a named seat sends it a message, which can start its
+                // 5-hour window: only while someone looks at them.
+                let probe_ok = probe_ok.clone();
+                let (info, go, devin, access) = cx
                     .background_spawn(crate::guard::task_or_default(async move {
+                        // Asked once the refresh has its turn: the tab may
+                        // have closed while another refresh ran.
+                        let all = plan::seats_probing_if(&seats::Store::open().names(), || {
+                            probe_ok.now()
+                        });
                         (
-                            plan::seats(),
+                            SeatsInfo::read(all),
                             opencode_plan::refresh(),
                             devin_plan::refresh(),
                             claude_auth::access(),
                         )
                     }))
                     .await;
+                let seats = &info.seats;
                 let plan = seats.active().cloned();
                 #[cfg(feature = "coderlabs")]
                 let borrowed = seats.borrowed.clone();
@@ -326,6 +385,10 @@ impl UsageView {
                         let changed = false;
                         // The phone's Claude card names the key or endpoint too.
                         let changed = changed || v.access != access;
+                        if v.seats != info {
+                            v.seats = info;
+                            cx.notify();
+                        }
                         if changed || v.plan != plan || v.go != go || v.devin != devin {
                             v.access = access;
                             v.plan = plan;
@@ -382,6 +445,7 @@ impl UsageView {
             access: None,
             #[cfg(feature = "coderlabs")]
             borrowed: None,
+            seats: SeatsInfo::default(),
             go: None,
             devin: None,
             proxy: None,
@@ -401,6 +465,7 @@ impl UsageView {
             titles: HashMap::new(),
             projects: Vec::new(),
             focus: cx.focus_handle(),
+            shown,
             scroll: ScrollHandle::new(),
             _poll: [poll, plan_poll, proxy_poll],
         }
@@ -440,6 +505,12 @@ impl UsageView {
             self.projects = projects;
             cx.notify();
         }
+    }
+
+    /// Tells the view whether the shell's frame shows it. Named seats are
+    /// read only while it does: a read sends the seat a message.
+    pub fn set_on_screen(&self, shown: bool) {
+        self.shown.on_screen.store(shown, Ordering::Relaxed);
     }
 
     pub fn focus(&self, window: &mut Window, cx: &mut Context<Self>) {
@@ -700,6 +771,116 @@ impl UsageView {
             "Borrowed seat"
         };
         Some(limits_block(AgentKind::Claude, name, None, rows))
+    }
+
+    /// Every Claude seat with its 5-hour and weekly windows and the live
+    /// sessions on it, once a named seat is saved (`arakun seat add`). Says so
+    /// when sessions can't get a seat each.
+    fn seat_limits(&self) -> Option<AnyElement> {
+        let info = &self.seats;
+        if info.seats.named.is_empty() {
+            return None;
+        }
+        let at = now();
+        let mut rows = div().flex().flex_col().gap(crate::ui::sp(14.));
+        if let Some(blocked) = &info.blocked {
+            rows = rows.child(
+                div()
+                    .text_size(px(ui::TEXT_SM))
+                    .line_height(px(17.))
+                    .text_color(theme::warn())
+                    .child(blocked.notice()),
+            );
+        }
+        let mut list: Vec<(&str, Option<&PlanUsage>, Option<&str>)> = Vec::new();
+        if info.own {
+            list.push((seats::OWN, info.seats.own.as_ref(), None));
+        }
+        if info.borrowed {
+            list.push((seats::BORROWED, info.seats.borrowed.as_ref(), None));
+        }
+        for s in &info.seats.named {
+            list.push((&s.name, s.usage.as_ref(), s.error.as_deref()));
+        }
+        for (id, usage, error) in list {
+            let live = info.live.get(id).copied().unwrap_or(0);
+            let name = match id {
+                seats::OWN | seats::BORROWED => seats::label(id),
+                name => crate::redact::value(name),
+            };
+            let mut seat = div().flex().flex_col().gap(crate::ui::sp(8.)).child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(crate::ui::sp(8.))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(px(ui::TEXT_SM))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(theme::text_muted())
+                            .child(name),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .text_size(px(ui::TEXT_XS))
+                            .text_color(if live > 0 {
+                                theme::text_muted()
+                            } else {
+                                theme::text_faint()
+                            })
+                            .child(match live {
+                                0 => "No live sessions".to_string(),
+                                1 => "1 live session".to_string(),
+                                n => format!("{n} live sessions"),
+                            }),
+                    ),
+            );
+            let windows: Vec<_> = usage
+                .map(|u| {
+                    [u.five_hour_window(), u.weekly()]
+                        .into_iter()
+                        .flatten()
+                        .collect()
+                })
+                .unwrap_or_default();
+            for w in &windows {
+                seat = seat.child(ui::limit_line(&w.label, w.percent as f32, w.reset_text(at)));
+            }
+            let quiet = match (windows.is_empty(), error) {
+                (true, Some(e)) => Some((
+                    format!("Couldn't read it: {}", crate::redact::text(e)),
+                    theme::error(),
+                )),
+                (true, None) => Some(("Not read yet.".to_string(), theme::text_subtle().into())),
+                // The windows above are the last good read; say why this one
+                // failed, or a refused seat would look like any other.
+                (false, Some(e)) => Some((
+                    format!("Couldn't refresh it: {}", crate::redact::text(e)),
+                    theme::error(),
+                )),
+                (false, None) => None,
+            };
+            if let Some((text, color)) = quiet {
+                seat = seat.child(
+                    div()
+                        .text_size(px(ui::TEXT_SM))
+                        .text_color(color)
+                        .child(text),
+                );
+            }
+            rows = rows.child(seat);
+        }
+        let total: usize = info.live.values().sum();
+        Some(limits_block(
+            AgentKind::Claude,
+            "Claude seats",
+            (total > 0).then(|| format!("{total} live").into_any_element()),
+            rows,
+        ))
     }
 
     /// OpenCode Go's limits: its three windows, each with the endpoint's
@@ -1125,7 +1306,7 @@ fn model_name(id: &str) -> String {
 }
 
 /// Which hue each agent's series and share bar wear: Anthropic's clay for
-/// Claude Code, a quiet light gray for Droid. Darker grays keep Devin,
+/// Claude Code, a quiet light gray for Droid. Darker grays keep Cursor, Devin,
 /// OpenCode and Codex apart.
 fn agent_color(agent: AgentKind) -> Hsla {
     match agent {
@@ -1134,6 +1315,7 @@ fn agent_color(agent: AgentKind) -> Hsla {
         AgentKind::OpenCode => theme::mix(0.45),
         AgentKind::Codex => theme::mix(0.3),
         AgentKind::Devin => theme::mix(0.2),
+        AgentKind::Cursor => theme::mix(0.58),
         AgentKind::WorkersAi => gpui::rgb(0xf38020).into(),
     }
 }
@@ -1385,6 +1567,7 @@ impl gpui::Focusable for UsageView {
 
 impl Render for UsageView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        *self.shown.drawn.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
         let all: &[Record] = self.records.as_deref().unwrap_or_default();
         let filtered: Vec<Record>;
         let records = match self.agent_filter {
@@ -1789,6 +1972,9 @@ impl UsageView {
                     })
                     .when_some(self.borrowed_limits(), |d, b| {
                         d.child(div().h(px(1.)).bg(theme::fill_hover())).child(b)
+                    })
+                    .when_some(self.seat_limits(), |d, s| {
+                        d.child(div().h(px(1.)).bg(theme::fill_hover())).child(s)
                     })
                     .child(div().h(px(1.)).bg(theme::fill_hover()))
                     .child(self.droid_limits(cx))

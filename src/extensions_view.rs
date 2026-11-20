@@ -26,6 +26,7 @@ use crate::agent::plugins::{self, Plugins, Runtime};
 use crate::input::{InputEvent, TextInput};
 use crate::logos;
 use crate::sidebar::{self, View};
+use crate::subnav::{Entry, Lead, Line};
 use crate::theme;
 use crate::ui::Typography as _;
 use crate::ui::{self, ButtonKind, Tone, Type, icon};
@@ -246,7 +247,7 @@ impl EventEmitter<ExtensionsEvent> for ExtensionsView {}
 
 impl ExtensionsView {
     pub fn new(views: sidebar::Extensions, cx: &mut Context<Self>) -> Self {
-        let query = cx.new(|cx| TextInput::new("Search plugins and MCP servers…", cx));
+        let query = cx.new(|cx| TextInput::new("Search plugins, MCP servers and skills…", cx));
         let sub = cx.subscribe(&query, |this, input, ev: &InputEvent, cx| match ev {
             InputEvent::Changed => {
                 this.query_changed(cx);
@@ -264,18 +265,10 @@ impl ExtensionsView {
             }
             _ => {}
         });
-        let poll = cx.spawn(async move |this, cx| {
-            loop {
-                cx.background_executor().timer(WATCH_EVERY).await;
-                let alive = this.update(cx, |this, cx| {
-                    let watching = this.watch_until.is_some_and(|t| Instant::now() < t);
-                    if watching && !this.claude_loading && this.op.is_none() {
-                        this.load_claude(cx);
-                    }
-                });
-                if alive.is_err() {
-                    break;
-                }
+        let poll = crate::poll::poll_every(cx, WATCH_EVERY, WATCH_EVERY, |this, cx| {
+            let watching = this.watch_until.is_some_and(|t| Instant::now() < t);
+            if watching && !this.claude_loading && this.op.is_none() {
+                this.load_claude(cx);
             }
         });
         Self {
@@ -379,6 +372,11 @@ impl ExtensionsView {
     fn refresh(&mut self, cx: &mut Context<Self>) {
         if self.which == Which::Claude && self.kind == Kind::Marketplace {
             self.ask_remote(true, cx);
+            // Asked for, a failed load is tried again at once.
+            self.ms.failed_at = None;
+            // A failed skills.sh search too, for the same words.
+            self.ms.skills_error = None;
+            self.open_market(cx);
         }
         match self.which {
             Which::Claude => self.load_claude(cx),
@@ -2563,7 +2561,7 @@ impl ExtensionsView {
         self.kind = kind;
         self.open = None;
         let hint = match kind {
-            Kind::Marketplace => "Search plugins and MCP servers…",
+            Kind::Marketplace => "Search plugins, MCP servers and skills…",
             Kind::Servers => "Filter MCP servers…",
             Kind::Plugins => "Filter plugins…",
             Kind::Skills => "Filter skills…",
@@ -2574,73 +2572,47 @@ impl ExtensionsView {
         cx.notify();
     }
 
-    /// The column at the left: Arakun's own extensions, then whose things,
-    /// what there is to add, what is installed, and in Discover its categories.
-    fn render_nav(&self, cx: &mut Context<Self>) -> Stateful<Div> {
+    /// The pages, for the sidebar (`crate::subnav`): Arakun's own extensions,
+    /// then whose things, where to install, what there is to add, what is
+    /// installed, and in Discover its categories.
+    pub fn nav(&self) -> Vec<Line> {
         let which = self.which;
-        let mut agents = ui::segmented().w_full();
-        for (i, (value, label)) in [(Which::Claude, "Claude Code"), (Which::Droid, "Droid")]
-            .into_iter()
-            .enumerate()
-        {
-            agents = agents.child(
-                ui::segment(("ext-which", i), None, label, which == value)
-                    .flex_1()
-                    .justify_center()
-                    .on_click(cx.listener(move |this, _, _, cx| this.set_which(value, cx))),
-            );
-        }
-        let mut nav = div()
-            .id("ext-nav")
-            .flex()
-            .flex_col()
-            .flex_none()
-            .w(px(NAV_W))
-            .h_full()
-            .overflow_y_scroll()
-            .gap(crate::ui::sp(2.))
-            .px(crate::ui::sp(12.))
-            .py(crate::ui::sp(16.))
-            .border_r_1()
-            .border_color(theme::border_subtle())
-            .child(nav_heading("Arakun", false))
-            .child(
-                market::nav_row(
-                    "ext-arakun",
-                    "dashboard-square01",
-                    "Extensions",
-                    Some(self.views.on.len()),
-                    self.kind == Kind::Arakun,
-                )
-                .on_click(cx.listener(|this, _, _, cx| this.set_kind(Kind::Arakun, cx))),
-            )
-            .child(
-                div()
-                    .flex_none()
-                    .pt(crate::ui::sp(16.))
-                    .pb(crate::ui::sp(12.))
-                    .child(agents),
-            );
+        let mut out = vec![
+            Line::Heading("Arakun".into()),
+            Line::Entry(
+                Entry::new("arakun", Lead::Icon("dashboard-square01"), "Extensions")
+                    .count(Some(self.views.on.len()))
+                    .on(self.kind == Kind::Arakun),
+            ),
+            Line::Gap,
+            Line::Choice(vec![
+                (
+                    "which:claude".into(),
+                    "Claude Code".into(),
+                    which == Which::Claude,
+                ),
+                ("which:droid".into(), "Droid".into(), which == Which::Droid),
+            ]),
+        ];
 
         if which == Which::Claude {
-            nav = nav.children(self.render_targets(cx));
-            nav = nav.child(nav_heading("Discover", false));
-            for (i, (m, label, icon_name)) in [
-                (Market::Plugins, "Plugins", "cube"),
-                (Market::Registry, "MCP servers", "link01"),
-            ]
-            .into_iter()
-            .enumerate()
-            {
+            out.extend(self.target_lines());
+            out.push(Line::Heading("Discover".into()));
+            for (m, key, label, icon_name) in [
+                (Market::Plugins, "market:plugins", "Plugins", "cube"),
+                (Market::Registry, "market:registry", "MCP servers", "link01"),
+                (Market::Skills, "market:skills", "Skills", "sparkles"),
+            ] {
                 let on = self.kind == Kind::Marketplace && self.market == m;
-                nav = nav.child(
-                    market::nav_row(("ext-src", i), icon_name, label, self.discover_count(m), on)
-                        .on_click(cx.listener(move |this, _, _, cx| this.show_market(m, cx))),
-                );
+                out.push(Line::Entry(
+                    Entry::new(key, Lead::Icon(icon_name), label)
+                        .count(self.discover_count(m))
+                        .on(on),
+                ));
             }
         }
 
-        nav = nav.child(nav_heading("Installed", which == Which::Claude));
+        out.push(Line::Heading("Installed".into()));
         let problems = match which {
             Which::Claude => self.problems(),
             Which::Droid => 0,
@@ -2694,20 +2666,52 @@ impl ExtensionsView {
                 ]
             }
         };
-        for (i, (k, label, icon_name, n)) in rows.into_iter().enumerate() {
-            let on = self.kind == k;
-            let row = if k == Kind::Servers && problems > 0 {
-                market::nav_alert_row(("ext-kind", i), icon_name, label, problems, on)
+        for (k, label, icon_name, n) in rows {
+            let entry = Entry::new(kind_key(k), Lead::Icon(icon_name), label).on(self.kind == k);
+            // Servers that need you say how many, not how many there are.
+            let entry = if k == Kind::Servers && problems > 0 {
+                entry.count(Some(problems)).tone(Some(Tone::Warning))
             } else {
-                market::nav_row(("ext-kind", i), icon_name, label, n, on)
+                entry.count(n)
             };
-            nav = nav.child(row.on_click(cx.listener(move |this, _, _, cx| this.set_kind(k, cx))));
+            out.push(Line::Entry(entry));
         }
 
         if which == Which::Claude && self.kind == Kind::Marketplace {
-            nav = nav.children(self.render_market_filters(cx));
+            out.extend(self.category_lines());
         }
-        nav
+        out
+    }
+
+    /// Opens the page `key` of `nav` names.
+    pub fn pick_nav(&mut self, key: &str, cx: &mut Context<Self>) {
+        match key {
+            "arakun" => self.set_kind(Kind::Arakun, cx),
+            "which:claude" => self.set_which(Which::Claude, cx),
+            "which:droid" => self.set_which(Which::Droid, cx),
+            "market:plugins" => self.show_market(Market::Plugins, cx),
+            "market:registry" => self.show_market(Market::Registry, cx),
+            "market:skills" => self.show_market(Market::Skills, cx),
+            "target:" => self.pick_target(None, cx),
+            "cat:" => self.pick_category(None, cx),
+            _ => {
+                if let Some(id) = key.strip_prefix("target:") {
+                    self.pick_target(Some(id.to_string()), cx);
+                } else if let Some(g) = key.strip_prefix("cat:") {
+                    self.pick_category(Some(g.to_string()), cx);
+                } else if let Some(k) = [
+                    Kind::Servers,
+                    Kind::Plugins,
+                    Kind::Skills,
+                    Kind::Permissions,
+                ]
+                .into_iter()
+                .find(|k| kind_key(*k) == key)
+                {
+                    self.set_kind(k, cx);
+                }
+            }
+        }
     }
 
     /// Arakun's extensions, each with a switch. On, it shows in the sidebar.
@@ -2814,17 +2818,17 @@ impl ExtensionsView {
     }
 }
 
-/// The small capitals over a group of the left column.
-fn nav_heading(label: &str, gap_above: bool) -> Div {
-    ui::overline(label)
-        .flex_none()
-        .px(crate::ui::sp(8.))
-        .pb(crate::ui::sp(4.))
-        .when(gap_above, |d| d.mt(crate::ui::sp(16.)))
+/// The key of an Installed page in `nav`.
+fn kind_key(k: Kind) -> &'static str {
+    match k {
+        Kind::Servers => "kind:servers",
+        Kind::Plugins => "kind:plugins",
+        Kind::Skills => "kind:skills",
+        Kind::Permissions => "kind:permissions",
+        Kind::Arakun => "arakun",
+        Kind::Marketplace => "market",
+    }
 }
-
-/// The left column's width.
-const NAV_W: f32 = 212.;
 
 impl Render for ExtensionsView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -2904,7 +2908,9 @@ impl Render for ExtensionsView {
                             .child(if self.kind == Kind::Arakun {
                                 "Tabs for the sidebar, on every project".to_string()
                             } else {
-                                format!("Plugins and MCP servers for your agents in {place}")
+                                format!(
+                                    "Plugins, MCP servers and skills for your agents in {place}"
+                                )
                             }),
                     ),
             )
@@ -2965,14 +2971,7 @@ impl Render for ExtensionsView {
             .font_family(theme::FONT_SANS)
             .text_color(theme::content())
             .child(header)
-            .child(
-                div()
-                    .flex()
-                    .flex_1()
-                    .min_h_0()
-                    .child(self.render_nav(cx))
-                    .child(content),
-            )
+            .child(div().flex().flex_1().min_h_0().child(content))
     }
 }
 

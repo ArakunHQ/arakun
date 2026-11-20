@@ -24,6 +24,8 @@
 // Named by path: `arakun-server` includes this file from its own package.
 #[path = "server/daemon.rs"]
 pub mod daemon;
+#[path = "server/files.rs"]
+mod files;
 #[path = "server/local.rs"]
 mod local;
 #[path = "server/pty.rs"]

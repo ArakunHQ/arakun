@@ -95,7 +95,7 @@ impl Shell {
         cx.notify();
     }
 
-    fn onboarding_pick_agent(&mut self, agent: crate::model::Agent, cx: &mut Context<Self>) {
+    fn onboarding_pick_agent(&mut self, agent: AgentKind, cx: &mut Context<Self>) {
         if crate::model::default_agent() != agent {
             crate::model::set_default_agent(agent);
             self.save(cx);
@@ -576,7 +576,7 @@ impl Shell {
             };
             let line = pick_row(
                 ("onboarding-agent", i),
-                agent.kind().icon(16.),
+                agent.icon(16.),
                 agent.label(),
                 says,
                 on,

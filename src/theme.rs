@@ -432,11 +432,12 @@ impl Palette {
 
 /// The contrast every palette keeps against its background: text, the
 /// gray text roles at their faintest ramp, and the accent and warnings
-/// (WCAG AAA for body text is 7).
+/// (WCAG AAA for body text is 7). Faint holds WCAG's 3:1 for icons and
+/// other marks; text that must be read takes subtle or stronger.
 const MIN_TEXT: f32 = 12.;
 const MIN_MUTED: f32 = 7.;
 const MIN_SUBTLE: f32 = 4.5;
-const MIN_FAINT: f32 = 2.5;
+const MIN_FAINT: f32 = 3.;
 const MIN_ACCENT: f32 = 7.;
 const MIN_WARN: f32 = 7.;
 /// Headroom over the minimums for a single color, so rounding to 8-bit
@@ -643,7 +644,7 @@ impl Grays {
             Grays::Balanced => Ramp {
                 text_muted: 0.72,
                 text_subtle: 0.52,
-                text_faint: 0.36,
+                text_faint: 0.39,
                 border_subtle: 0.06,
                 border: 0.10,
                 border_strong: 0.16,
@@ -665,7 +666,7 @@ impl Grays {
             Grays::Soft => Ramp {
                 text_muted: 0.68,
                 text_subtle: 0.50,
-                text_faint: 0.34,
+                text_faint: 0.38,
                 border_subtle: 0.05,
                 border: 0.08,
                 border_strong: 0.13,
@@ -715,11 +716,13 @@ pub fn text() -> Hsla {
 pub fn text_muted() -> Hsla {
     mix(text_alpha(ramp().text_muted))
 }
-/// Labels, units, hints, column headers.
+/// Labels, units, hints, column headers, placeholders, axis ticks.
 pub fn text_subtle() -> Hsla {
     mix(text_alpha(ramp().text_subtle))
 }
-/// Placeholders, disabled text, axis ticks.
+/// Disabled text, and marks that only need to be seen: icons, separators.
+/// At 3:1 it is too faint for text someone has to read, so placeholders and
+/// axis ticks take [`text_subtle`] (4.5:1).
 pub fn text_faint() -> Hsla {
     mix(text_alpha(ramp().text_faint))
 }
@@ -1079,7 +1082,7 @@ mod tests {
                 };
                 assert!(on(r.text_muted) >= 7., "{} {g:?} muted", p.name);
                 assert!(on(r.text_subtle) >= 4.5, "{} {g:?} subtle", p.name);
-                assert!(on(r.text_faint) >= 2.5, "{} {g:?} faint", p.name);
+                assert!(on(r.text_faint) >= MIN_FAINT, "{} {g:?} faint", p.name);
             }
             let accent = rgb(p.readable_light_accent());
             assert!(
@@ -1153,7 +1156,7 @@ mod tests {
                 };
                 assert!(on(r.text_muted) >= 7., "{} {g:?} muted", p.name);
                 assert!(on(r.text_subtle) >= 4.5, "{} {g:?} subtle", p.name);
-                assert!(on(r.text_faint) >= 2.5, "{} {g:?} faint", p.name);
+                assert!(on(r.text_faint) >= MIN_FAINT, "{} {g:?} faint", p.name);
             }
         }
     }
@@ -1171,7 +1174,7 @@ mod tests {
                 let r = g.ramp();
                 let on = |alpha: f32| contrast(over(text.opacity(alpha), back), back);
                 assert!(on(r.text_subtle) >= 4.5, "{g:?} subtle at {lift}");
-                assert!(on(r.text_faint) >= 2.5, "{g:?} faint at {lift}");
+                assert!(on(r.text_faint) >= MIN_FAINT, "{g:?} faint at {lift}");
             }
         }
     }
@@ -1187,8 +1190,8 @@ mod tests {
 
     /// The contrast the single night palette was held to before palettes
     /// could change: text 12, accent and warnings 7, and for every gray
-    /// ramp muted 7, subtle 4.5 and faint 2.5 (WCAG AA is 4.5 for body
-    /// text, 3 for large text and hints).
+    /// ramp muted 7, subtle 4.5 and faint 3 (WCAG AA is 4.5 for body
+    /// text, 3 for large text and for icons).
     fn assert_readable(p: &Palette) {
         let (bg, text) = (p.background(), p.content());
         let what = format!(
@@ -1203,7 +1206,7 @@ mod tests {
             let on = |alpha: f32| contrast(over(text.opacity(alpha), bg), bg);
             assert!(on(r.text_muted) >= 7., "{what} {g:?} muted");
             assert!(on(r.text_subtle) >= 4.5, "{what} {g:?} subtle");
-            assert!(on(r.text_faint) >= 2.5, "{what} {g:?} faint");
+            assert!(on(r.text_faint) >= MIN_FAINT, "{what} {g:?} faint");
         }
     }
 

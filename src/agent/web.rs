@@ -9,6 +9,12 @@
 //! that a few string searches read. When it answers with its bot check, the
 //! same page is asked of Browser Run's real browser instead.
 //!
+//! `web_fetch` takes an optional `query`. With it, the page is cut down to
+//! its title, its headings and the paragraphs, list items and table rows that
+//! contain the query's words, so a fact in a long page costs a few hundred
+//! tokens instead of the whole page. It stays optional: on a small page the
+//! outline can weigh more than the page.
+//!
 //! Lab mode: with `ARAKUN_WEB_URL` set (like `http://lab.internal/web`), both
 //! tools ask the lab's Worker instead, with GETs that answer JSON:
 //!
@@ -217,46 +223,48 @@ pub fn fetch(args: &Value) -> Result<String, String> {
         "text" => false,
         other => return Err(format!("format is markdown or text, not {other}")),
     };
+    let query = args["query"]
+        .as_str()
+        .map(str::trim)
+        .filter(|q| !q.is_empty());
     let list = blocklist();
     check(&url, &list)?;
-    let (last, content, note) = if let Some(base) = lab() {
+    let (last, page, note) = if let Some(base) = lab() {
         let v = lab_get(&lab_fetch_url(&base, &url))?;
         let last = v["url"].as_str().unwrap_or(&url).to_string();
         let content = v["content"]
             .as_str()
             .ok_or("the lab's web service answered no content")?
             .to_string();
-        (
-            last,
-            if markdown {
-                content
-            } else {
-                markdown_to_text(&content)
-            },
-            None,
-        )
+        (last, Page::Markdown(content), None)
     } else if crate::fetch::available() {
-        let page = if markdown {
-            crate::fetch::page("markdown", &url)
+        // A query reads the HTML: it has the document title, and tables keep
+        // their header when this file turns them into Markdown.
+        let page = if markdown && query.is_none() {
+            crate::fetch::page("markdown", &url).map(Page::Markdown)
         } else {
-            crate::fetch::page("content", &url).map(|h| html_to_text(&h, false))
+            crate::fetch::page("content", &url).map(Page::Html)
         };
         match page {
-            Ok(content) => (url.clone(), content, None),
+            Ok(page) => (url.clone(), page, None),
             Err(e) => {
-                let (last, content) = direct(&url, markdown)?;
+                let (last, page) = direct(&url)?;
                 (
                     last,
-                    content,
+                    page,
                     Some(format!("(Browser Run failed: {e}; fetched directly)")),
                 )
             }
         }
     } else {
-        let (last, content) = direct(&url, markdown)?;
-        (last, content, None)
+        let (last, page) = direct(&url)?;
+        (last, page, None)
     };
     check(&last, &list)?;
+    let content = match query {
+        Some(q) => page.focus(q, markdown),
+        None => page.whole(markdown),
+    };
     let content = content.trim();
     let mut out = format!("URL: {last}\n");
     if let Some(n) = note {
@@ -272,8 +280,438 @@ pub fn fetch(args: &Value) -> Result<String, String> {
     Ok(out)
 }
 
-/// A page with a plain GET: the final URL and its text.
-fn direct(url: &str, markdown: bool) -> Result<(String, String), String> {
+/// A page as it came in, before it is turned into what the model reads.
+enum Page {
+    /// From the lab's service or Browser Run.
+    Markdown(String),
+    Html(String),
+    /// Text that is not a web page: a log, JSON, a source file.
+    Plain(String),
+    /// A Markdown file served as `text/markdown`: whole, it stays as it
+    /// came; with a query, it is matched as Markdown.
+    MarkdownFile(String),
+}
+
+impl Page {
+    /// The whole page, as `web_fetch` without a query has always returned it.
+    fn whole(self, markdown: bool) -> String {
+        match self {
+            Page::Markdown(md) if markdown => md,
+            Page::Markdown(md) => markdown_to_text(&md),
+            Page::Html(html) => html_to_text(&html, markdown),
+            Page::Plain(text) | Page::MarkdownFile(text) => text,
+        }
+    }
+
+    /// The parts that match `query`. Matching needs the headings and table
+    /// rows, so HTML becomes Markdown first. For `format: text` it gets no
+    /// links, and only the marks this file added come off again: a `**` or a
+    /// `[a](b)` in the page's own words stays.
+    fn focus(self, query: &str, markdown: bool) -> String {
+        match self {
+            Page::Markdown(md) | Page::MarkdownFile(md) => {
+                let out = focus(&md, query, None, false);
+                if markdown {
+                    out
+                } else {
+                    markdown_to_text(&out)
+                }
+            }
+            Page::Html(html) => {
+                let title = html_title(&html);
+                let out = focus(
+                    &html_convert(&html, true, markdown, true),
+                    query,
+                    title.as_deref(),
+                    false,
+                );
+                if markdown { out } else { unmark(&out) }
+            }
+            Page::Plain(text) => focus(&text, query, None, true),
+        }
+    }
+}
+
+/// Headings the outline lists at most.
+const OUTLINE_MAX: usize = 60;
+/// Matching paragraphs, items or rows shown at most.
+const PARTS_MAX: usize = 40;
+/// Query words matched at most; each one is a bit in a mask.
+const TERMS_MAX: usize = 64;
+
+const STOPWORDS: &[&str] = &[
+    "a", "an", "and", "are", "as", "at", "be", "by", "can", "do", "does", "for", "from", "how",
+    "i", "in", "is", "it", "of", "on", "or", "the", "this", "to", "was", "what", "when", "where",
+    "which", "who", "why", "with",
+];
+
+/// The words of a query that are worth matching, lower case. Sentence
+/// punctuation goes; the marks that make a name (`C#`, `C++`) stay.
+fn terms(query: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for w in query.split(|c: char| !(c.is_alphanumeric() || "._-/+#".contains(c))) {
+        let w = w
+            .trim_start_matches(|c: char| !c.is_alphanumeric())
+            .trim_end_matches(['.', '-', '/', '_'])
+            .to_lowercase();
+        if !w.is_empty() && !STOPWORDS.contains(&w.as_str()) && !out.contains(&w) {
+            out.push(w);
+        }
+    }
+    if out.is_empty() {
+        // A query of only small words still means something.
+        for w in query.split_whitespace().map(str::to_lowercase) {
+            if !out.contains(&w) {
+                out.push(w);
+            }
+        }
+    }
+    out.truncate(TERMS_MAX);
+    out
+}
+
+/// Whether lower-case `text` holds `term` as a word or the start of one:
+/// "version" finds "versions", but "1.14" does not find "1.142", "11.14"
+/// or "2.1.14", and "install" does not find "reinstall".
+fn has(text: &str, term: &str) -> bool {
+    let (Some(first), Some(last)) = (term.chars().next(), term.chars().next_back()) else {
+        return false;
+    };
+    let same = |a: char, b: char| {
+        (a.is_ascii_digit() && b.is_ascii_digit()) || (a.is_alphabetic() && b.is_alphabetic())
+    };
+    text.match_indices(term).any(|(i, _)| {
+        let mut back = text[..i].chars().rev();
+        let before = back.next();
+        let mut after = text[i + term.len()..].chars();
+        let next = after.next();
+        before.is_none_or(|b| !same(b, first))
+            && !(first.is_ascii_digit()
+                && before == Some('.')
+                && back.next().is_some_and(|c| c.is_ascii_digit()))
+            && (!last.is_ascii_digit()
+                || match next {
+                    None => true,
+                    Some(c) if c.is_ascii_digit() => false,
+                    Some('.') => !after.next().is_some_and(|c| c.is_ascii_digit()),
+                    Some(_) => true,
+                })
+    })
+}
+
+/// The bits of the terms that `text` holds.
+fn mask(text: &str, terms: &[String]) -> u64 {
+    let text = text.to_lowercase();
+    terms
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| has(&text, t))
+        .fold(0, |m, (i, _)| m | 1 << i)
+}
+
+fn heading(line: &str) -> Option<(usize, &str)> {
+    let level = line.bytes().take_while(|b| *b == b'#').count();
+    let rest = &line[level..];
+    ((1..=6).contains(&level) && rest.starts_with(' ')).then(|| (level, rest.trim()))
+}
+
+fn list_item(line: &str) -> bool {
+    let l = line.trim_start();
+    l.starts_with("- ")
+        || l.starts_with("* ")
+        || l.starts_with("+ ")
+        || l.split_once(". ")
+            .is_some_and(|(n, _)| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// A code fence's mark and length: ``` or ~~~, three or more. Four spaces
+/// or a tab in front make it indented code instead.
+fn fence(line: &str) -> Option<(char, usize)> {
+    let l = line.trim_start();
+    let indent = &line[..line.len() - l.len()];
+    if indent.contains('\t') || indent.len() >= 4 {
+        return None;
+    }
+    let mark = l.chars().next().filter(|c| *c == '`' || *c == '~')?;
+    let n = l.chars().take_while(|c| *c == mark).count();
+    (n >= 3).then_some((mark, n))
+}
+
+/// Whether `line` closes a fence opened with `n` of `mark`: the same mark,
+/// at least as long, and nothing after.
+fn closes(line: &str, mark: char, n: usize) -> bool {
+    fence(line).is_some_and(|(m, k)| m == mark && k >= n && line.trim().chars().all(|c| c == mark))
+}
+
+/// A table's delimiter row, with or without the outer pipes: `|---|:--:|`
+/// or `--- | ---`.
+fn delimiter(line: &str) -> bool {
+    let l = line.trim();
+    l.contains('|') && l.contains('-') && l.chars().all(|c| "|-: ".contains(c))
+}
+
+/// A heading, stored once: the parts under it point here, and a path is
+/// only put together for the ones shown.
+struct Section<'a> {
+    level: usize,
+    label: &'a str,
+    parent: Option<usize>,
+    /// The terms in this heading or the ones above it.
+    mask: u64,
+}
+
+/// One piece of a block that can match alone: a paragraph, a list item or a
+/// table row, with its table's header when it has one.
+struct Part {
+    section: usize,
+    header: Option<usize>,
+    text: String,
+}
+
+/// A block of lines (between blank lines) cut into the parts that can match
+/// alone: a code block or a paragraph whole, a list item by item, a table
+/// row by row with its header stored once.
+fn split(
+    lines: &[&str],
+    section: usize,
+    terms: &[String],
+    headers: &mut Vec<(String, u64)>,
+    parts: &mut Vec<Part>,
+) {
+    let Some(first) = lines.first() else { return };
+    let one = |text: String| Part {
+        section,
+        header: None,
+        text,
+    };
+    let piped = lines.iter().all(|l| l.trim_start().starts_with('|'));
+    let delimited = lines.len() > 1 && delimiter(lines[1]);
+    if fence(first).is_some() {
+        parts.push(one(lines.join("\n")));
+    } else if delimited || (piped && lines.len() > 1) {
+        let head = if delimited { 2 } else { 1 };
+        // A quote or a list right under the table ends it.
+        let end = lines[head..]
+            .iter()
+            .position(|l| {
+                let t = l.trim_start();
+                t.starts_with('>') || (list_item(t) && !t.contains('|'))
+            })
+            .map_or(lines.len(), |i| head + i);
+        let header = lines[..head].join("\n");
+        let m = mask(&header, terms);
+        headers.push((header, m));
+        for l in &lines[head..end] {
+            parts.push(Part {
+                section,
+                header: Some(headers.len() - 1),
+                text: (*l).to_string(),
+            });
+        }
+        split(&lines[end..], section, terms, headers, parts);
+    } else if lines.iter().any(|l| list_item(l)) {
+        // Items, each with the lines under it; text before the first item
+        // stands alone.
+        let mut item: Vec<&str> = Vec::new();
+        for l in lines {
+            if list_item(l) && !item.is_empty() {
+                parts.push(one(std::mem::take(&mut item).join("\n")));
+            }
+            item.push(l);
+        }
+        parts.push(one(item.join("\n")));
+    } else {
+        // A paragraph stays whole however it is wrapped, so a match keeps
+        // the words around it.
+        parts.push(one(lines.join("\n")));
+    }
+}
+
+/// The page cut down to what matches `query`: its title, its headings, and
+/// the paragraphs, list items and table rows that hold the most of the
+/// query's words, in page order under their headings. `title` is the
+/// document's own, when the page had one; else the first heading is used.
+/// A `plain` page is not Markdown, so each line stands alone.
+fn focus(page: &str, query: &str, title: Option<&str>, plain: bool) -> String {
+    let terms = terms(query);
+    // Section 0 is the text before the first heading.
+    let mut sections = vec![Section {
+        level: 0,
+        label: "",
+        parent: None,
+        mask: 0,
+    }];
+    // The open headings, deepest last.
+    let mut path: Vec<usize> = Vec::new();
+    // Table headers with their masks, each stored once for all its rows.
+    let mut headers: Vec<(String, u64)> = Vec::new();
+    let mut parts: Vec<Part> = Vec::new();
+    let mut block: Vec<&str> = Vec::new();
+    let mut open: Option<(char, usize)> = None;
+    let mut flush = |block: &mut Vec<&str>, parts: &mut Vec<Part>, section: usize| {
+        split(&std::mem::take(block), section, &terms, &mut headers, parts);
+    };
+    for line in page.lines() {
+        if plain {
+            // Not Markdown: each line stands alone.
+            if !line.trim().is_empty() {
+                flush(&mut vec![line], &mut parts, 0);
+            }
+            continue;
+        }
+        if let Some((mark, n)) = open {
+            block.push(line);
+            if closes(line, mark, n) {
+                open = None;
+                flush(&mut block, &mut parts, sections.len() - 1);
+            }
+            continue;
+        }
+        if let Some(f) = fence(line) {
+            flush(&mut block, &mut parts, sections.len() - 1);
+            open = Some(f);
+            block.push(line);
+            continue;
+        }
+        if let Some((level, label)) = heading(line) {
+            flush(&mut block, &mut parts, sections.len() - 1);
+            path.retain(|&i| sections[i].level < level);
+            let parent = path.last().copied();
+            let above = parent.map_or(0, |i| sections[i].mask);
+            sections.push(Section {
+                level,
+                label,
+                parent,
+                mask: above | mask(label, &terms),
+            });
+            path.push(sections.len() - 1);
+            continue;
+        }
+        if line.trim().is_empty() {
+            flush(&mut block, &mut parts, sections.len() - 1);
+        } else {
+            block.push(line);
+        }
+    }
+    flush(&mut block, &mut parts, sections.len() - 1);
+
+    let mut out = String::new();
+    if let Some(title) = title.or(sections.get(1).map(|s| s.label)) {
+        out.push_str(&format!("Title: {title}\n"));
+    }
+    if sections.len() > 1 {
+        out.push_str("\nOutline:\n");
+        for s in sections.iter().skip(1).take(OUTLINE_MAX) {
+            out.push_str(&format!("{}- {}\n", "  ".repeat(s.level - 1), s.label));
+        }
+        if sections.len() - 1 > OUTLINE_MAX {
+            out.push_str(&format!(
+                "- ({} more headings)\n",
+                sections.len() - 1 - OUTLINE_MAX
+            ));
+        }
+    }
+
+    // A part matches with its headings and its table header, so a section
+    // or a column named for the query counts. A word found in few parts
+    // weighs more than one found everywhere: in a table of versions, "1.142"
+    // picks the row and "version" barely counts.
+    let masks: Vec<u64> = parts
+        .iter()
+        .map(|p| {
+            mask(&p.text, &terms) | sections[p.section].mask | p.header.map_or(0, |h| headers[h].1)
+        })
+        .collect();
+    let weights: Vec<f64> = (0..terms.len())
+        .map(|i| {
+            let df = masks.iter().filter(|m| *m & 1 << i != 0).count();
+            if df == 0 { 0.0 } else { 1.0 / df as f64 }
+        })
+        .collect();
+    let scores: Vec<f64> = masks
+        .iter()
+        .map(|m| {
+            (0..terms.len())
+                .filter(|i| m & 1 << i != 0)
+                .map(|i| weights[i])
+                .sum()
+        })
+        .collect();
+    let best = scores.iter().copied().fold(0.0, f64::max);
+    if best == 0.0 {
+        out.push_str(&format!(
+            "\nNothing on the page matches \"{query}\". Fetch it without a query to read it all.\n"
+        ));
+        return out;
+    }
+    // Parts close to the best one; the rest only share its common words.
+    let mut keep: Vec<usize> = (0..parts.len())
+        .filter(|&i| scores[i] >= best / 2.0)
+        .collect();
+    let found = keep.len();
+    if found > PARTS_MAX {
+        let mut ranked = keep.clone();
+        ranked.sort_by(|&a, &b| scores[b].total_cmp(&scores[a]));
+        ranked.truncate(PARTS_MAX);
+        ranked.sort_unstable();
+        keep = ranked;
+    }
+    out.push_str(&format!(
+        "\nParts that match \"{query}\" ({found} of {}). Fetch without a query for the whole page.\n",
+        parts.len()
+    ));
+    let mut shown_section = usize::MAX;
+    let mut shown_header = None;
+    let mut prev: Option<usize> = None;
+    for &i in &keep {
+        let p = &parts[i];
+        // Items next to each other on the page stay a list.
+        let item =
+            prev.is_some_and(|j| j + 1 == i && list_item(&parts[j].text)) && list_item(&p.text);
+        prev = Some(i);
+        // Right under a heading, the part needs no blank line of its own.
+        let mut fresh = false;
+        if p.section != shown_section {
+            shown_section = p.section;
+            shown_header = None;
+            out.push('\n');
+            let level = sections[p.section].level;
+            if level > 0 {
+                let mut labels = Vec::new();
+                let mut at = Some(p.section);
+                while let Some(s) = at {
+                    labels.push(sections[s].label);
+                    at = sections[s].parent;
+                }
+                labels.reverse();
+                out.push_str(&format!("{} {}\n", "#".repeat(level), labels.join(" > ")));
+                fresh = true;
+            }
+        }
+        if p.header.is_none() || p.header != shown_header {
+            if !fresh && !item && !out.ends_with("\n\n") {
+                out.push('\n');
+            }
+            if let Some(h) = p.header {
+                out.push_str(&headers[h].0);
+                out.push('\n');
+            }
+            shown_header = p.header;
+        }
+        out.push_str(&p.text);
+        out.push('\n');
+    }
+    if found > keep.len() {
+        out.push_str(&format!(
+            "\n({} more matching parts not shown; use more specific words.)\n",
+            found - keep.len()
+        ));
+    }
+    out
+}
+
+/// A page with a plain GET: the final URL and its body.
+fn direct(url: &str) -> Result<(String, Page), String> {
     let (last, status, ty, body) = get(
         url,
         "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.5",
@@ -282,14 +720,17 @@ fn direct(url: &str, markdown: bool) -> Result<(String, String), String> {
         return Err(format!("{last} answered {status}"));
     }
     let html = ty.contains("html") || (ty.is_empty() && body.trim_start().starts_with('<'));
+    let markdown = ty.starts_with("text/markdown") || ty.starts_with("text/x-markdown");
     let text = ty.starts_with("text/")
         || ["json", "xml", "javascript", "yaml", "toml"]
             .iter()
             .any(|t| ty.contains(t));
     if html {
-        Ok((last, html_to_text(&body, markdown)))
+        Ok((last, Page::Html(body)))
+    } else if markdown {
+        Ok((last, Page::MarkdownFile(body)))
     } else if text || ty.is_empty() {
-        Ok((last, body))
+        Ok((last, Page::Plain(body)))
     } else {
         Err(format!("{last} is {ty}, not a page to read"))
     }
@@ -528,6 +969,29 @@ fn strip_tags(html: &str) -> String {
 /// A page's readable text; with `markdown`, headings, list items and links
 /// keep their Markdown form.
 fn html_to_text(html: &str, markdown: bool) -> String {
+    html_convert(html, markdown, markdown, false)
+}
+
+/// The document's `<title>`, from the head.
+fn html_title(html: &str) -> Option<String> {
+    let lower = html.to_ascii_lowercase();
+    let head = &lower[..lower.find("</head").unwrap_or(lower.len())];
+    let start = head.find("<title")?;
+    let open = start + head[start..].find('>')? + 1;
+    let end = open + head[open..].find("</title")?;
+    let title = decode_entities(&html[open..end])
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    (!title.is_empty()).then_some(title)
+}
+
+/// `html_to_text`; `links` writes links as `[text](href)`. With `focused`
+/// (for a query), tables come out as Markdown tables (the first row as the
+/// header, the caption on its own) so a row found by a query keeps its
+/// column names, and `<pre>` as a code block so its lines stay as they are.
+/// Plain fetches keep the old output.
+fn html_convert(html: &str, markdown: bool, links: bool, focused: bool) -> String {
     const SKIP: &[&str] = &[
         "script", "style", "noscript", "svg", "head", "template", "iframe",
     ];
@@ -559,7 +1023,34 @@ fn html_to_text(html: &str, markdown: bool) -> String {
         "body",
     ];
     let mut out = String::new();
-    let mut links: Vec<Option<(usize, String)>> = Vec::new();
+    let mut open_links: Vec<Option<(usize, String)>> = Vec::new();
+    // Markdown tables: how deep in tables, and the open row's cell count
+    // (`None` when no row is open) and how many rows came before it.
+    let mut depth = 0usize;
+    let mut cells: Option<usize> = None;
+    let mut rows = 0usize;
+    let end_row = |out: &mut String, cells: &mut Option<usize>, rows: &mut usize| {
+        if let Some(n) = cells.take().filter(|n| *n > 0) {
+            out.truncate(out.trim_end_matches(' ').len());
+            out.push_str(" |\n");
+            if *rows == 0 {
+                out.push('|');
+                out.push_str(&" --- |".repeat(n));
+                out.push('\n');
+            }
+            *rows += 1;
+        }
+    };
+    // Text in a cell: a `|` would start a new column.
+    let text = |out: &mut String, raw: &str, in_cell: bool| {
+        let start = out.len();
+        push_text(out, raw);
+        if in_cell && out[start..].contains('|') {
+            let escaped = out[start..].replace('|', "\\|");
+            out.truncate(start);
+            out.push_str(&escaped);
+        }
+    };
     let mut rest = html;
     let space = |out: &mut String| {
         if !out.ends_with([' ', '\n']) && !out.is_empty() {
@@ -567,11 +1058,12 @@ fn html_to_text(html: &str, markdown: bool) -> String {
         }
     };
     while !rest.is_empty() {
+        let in_cell = cells.is_some();
         let Some(lt) = rest.find('<') else {
-            push_text(&mut out, rest);
+            text(&mut out, rest, in_cell);
             break;
         };
-        push_text(&mut out, &rest[..lt]);
+        text(&mut out, &rest[..lt], in_cell);
         rest = &rest[lt..];
         if rest.starts_with("<!--") {
             rest = rest.find("-->").map_or("", |e| &rest[e + 3..]);
@@ -589,14 +1081,76 @@ fn html_to_text(html: &str, markdown: bool) -> String {
             .to_ascii_lowercase();
         if !closing && SKIP.contains(&name.as_str()) {
             let close = format!("</{name}");
-            rest = rest
-                .to_ascii_lowercase()
-                .find(&close)
-                .map_or("", |e| &rest[e..]);
+            rest = find_ignore_case(rest, &close).map_or("", |e| &rest[e..]);
             continue;
         }
+        let heading =
+            name.len() == 2 && name.starts_with('h') && name.as_bytes()[1].is_ascii_digit();
+        if focused {
+            match name.as_str() {
+                "pre" if !closing && !in_cell => {
+                    let (inner, after) = match find_ignore_case(rest, "</pre") {
+                        Some(e) => (
+                            &rest[..e],
+                            rest[e..].find('>').map_or("", |g| &rest[e + g + 1..]),
+                        ),
+                        None => (rest, ""),
+                    };
+                    rest = after;
+                    push_code(&mut out, inner);
+                    continue;
+                }
+                "caption" if depth == 1 => {
+                    // On its own, so the table starts at its header.
+                    out.push_str("\n\n");
+                    continue;
+                }
+                "table" if !closing => {
+                    depth += 1;
+                    if depth == 1 {
+                        rows = 0;
+                        out.push_str("\n\n");
+                    }
+                    continue;
+                }
+                "table" => {
+                    if depth == 1 {
+                        end_row(&mut out, &mut cells, &mut rows);
+                        out.push_str("\n\n");
+                    }
+                    depth = depth.saturating_sub(1);
+                    continue;
+                }
+                "tr" if depth == 1 => {
+                    // `</tr>` may be left out; the next row ends the open one.
+                    end_row(&mut out, &mut cells, &mut rows);
+                    if !closing {
+                        if !out.ends_with('\n') {
+                            out.push('\n');
+                        }
+                        cells = Some(0);
+                    }
+                    continue;
+                }
+                "td" | "th" if depth == 1 => {
+                    if !closing {
+                        out.truncate(out.trim_end_matches(' ').len());
+                        let n = cells.get_or_insert(0);
+                        out.push_str(if *n == 0 { "| " } else { " | " });
+                        *n += 1;
+                    }
+                    continue;
+                }
+                b if in_cell && (heading || b == "li" || BLOCK.contains(&b)) => {
+                    // A row stays on one line.
+                    space(&mut out);
+                    continue;
+                }
+                _ => {}
+            }
+        }
         match name.as_str() {
-            h if h.len() == 2 && h.starts_with('h') && h.as_bytes()[1].is_ascii_digit() => {
+            h if heading => {
                 out.push_str("\n\n");
                 if markdown && !closing {
                     out.push_str(&"#".repeat((h.as_bytes()[1] - b'0') as usize));
@@ -604,19 +1158,19 @@ fn html_to_text(html: &str, markdown: bool) -> String {
                 }
             }
             "li" if !closing => out.push_str(if markdown { "\n- " } else { "\n" }),
-            "a" if markdown && !closing => {
+            "a" if links && !closing => {
                 let href = attr(tag, "href")
                     .map(|h| decode_entities(&h))
                     .filter(|h| h.starts_with("http"));
                 if let Some(h) = &href {
-                    links.push(Some((out.len(), h.clone())));
+                    open_links.push(Some((out.len(), h.clone())));
                     out.push('[');
                 } else {
-                    links.push(None);
+                    open_links.push(None);
                 }
             }
-            "a" if markdown => {
-                if let Some(Some((start, href))) = links.pop() {
+            "a" if links => {
+                if let Some(Some((start, href))) = open_links.pop() {
                     let text = out[start + 1..].trim().to_string();
                     out.truncate(start);
                     if !text.is_empty() {
@@ -631,7 +1185,18 @@ fn html_to_text(html: &str, markdown: bool) -> String {
     }
     let mut text = String::new();
     let mut blank = 0;
-    for line in out.lines().map(str::trim) {
+    // A code block's lines stay as they are, blank ones too.
+    let mut code: Option<(char, usize)> = None;
+    for raw in out.lines() {
+        if let Some((mark, n)) = code {
+            text.push('\n');
+            text.push_str(raw.trim_end());
+            if closes(raw, mark, n) {
+                code = None;
+            }
+            continue;
+        }
+        let line = raw.trim();
         if line.is_empty() || line == "-" {
             blank += 1;
             continue;
@@ -641,8 +1206,54 @@ fn html_to_text(html: &str, markdown: bool) -> String {
         }
         blank = 0;
         text.push_str(line);
+        if focused {
+            code = fence(line);
+        }
     }
     text
+}
+
+/// Where ASCII `needle` first starts in `hay`, in any case. It stops at the
+/// match, so a page is not copied or lowercased again for every tag.
+fn find_ignore_case(hay: &str, needle: &str) -> Option<usize> {
+    let n = needle.as_bytes();
+    hay.as_bytes()
+        .windows(n.len())
+        .position(|w| w.eq_ignore_ascii_case(n))
+}
+
+/// A `<pre>` block's text as a fenced code block, its line breaks and
+/// indentation kept. The fence is longer than any backtick run inside.
+fn push_code(out: &mut String, inner: &str) {
+    let mut raw = String::new();
+    let mut tag = false;
+    for c in inner.chars() {
+        match c {
+            '<' => tag = true,
+            '>' if tag => tag = false,
+            c if !tag => raw.push(c),
+            _ => {}
+        }
+    }
+    let code = decode_entities(&raw);
+    // A newline right after `<pre>` is not part of the text.
+    let code = code
+        .strip_prefix("\r\n")
+        .or_else(|| code.strip_prefix('\n'))
+        .unwrap_or(&code)
+        .trim_end();
+    if code.trim().is_empty() {
+        out.push('\n');
+        return;
+    }
+    let mut run = 0;
+    let mut longest = 0;
+    for c in code.chars() {
+        run = if c == '`' { run + 1 } else { 0 };
+        longest = longest.max(run);
+    }
+    let fence = "`".repeat((longest + 1).max(3));
+    out.push_str(&format!("\n\n{fence}\n{code}\n{fence}\n\n"));
 }
 
 fn push_text(out: &mut String, raw: &str) {
@@ -663,40 +1274,77 @@ fn push_text(out: &mut String, raw: &str) {
     }
 }
 
-/// Markdown from the lab's service, for `format: text`: links and emphasis
-/// marks gone, the words kept.
+/// Markdown from the lab's service, for `format: text`: links, heading
+/// marks and `**` gone, the words kept.
 fn markdown_to_text(md: &str) -> String {
     let mut out = String::with_capacity(md.len());
-    let mut rest = md;
-    while let Some(open) = rest.find('[') {
-        let after = &rest[open + 1..];
-        match after.find("](").and_then(|mid| {
-            after[mid + 2..]
-                .find(')')
-                .map(|close| (mid, mid + 2 + close))
-        }) {
-            Some((mid, close)) if !after[..mid].contains('\n') => {
-                out.push_str(rest[..open].trim_end_matches('!'));
-                out.push_str(&after[..mid]);
-                rest = &after[close + 1..];
-            }
-            _ => {
-                out.push_str(&rest[..=open]);
-                rest = after;
-            }
+    // Each search runs once and is reused while it lies ahead of the next
+    // `[`, so a page full of brackets costs linear time.
+    let mut pos = 0;
+    let mut mid: Option<usize> = None;
+    let mut newline: Option<usize> = None;
+    let mut close: Option<usize> = None;
+    while let Some(open) = md[pos..].find('[').map(|o| pos + o) {
+        if mid.is_none_or(|m| m <= open) {
+            mid = md[open + 1..].find("](").map(|m| open + 1 + m);
+            // Only the label can hold it: looking further back would rescan
+            // the line for every link on it.
+            newline = mid.and_then(|m| md[open + 1..m].rfind('\n').map(|n| open + 1 + n));
         }
+        // With no `](` or no `)` after it, no link follows.
+        let Some(m) = mid else { break };
+        if close.is_none_or(|c| c < m + 2) {
+            close = md[m + 2..].find(')').map(|c| m + 2 + c);
+        }
+        let Some(c) = close else { break };
+        if newline.is_some_and(|n| n > open) {
+            // A label does not span lines.
+            out.push_str(&md[pos..=open]);
+            pos = open + 1;
+            continue;
+        }
+        out.push_str(md[pos..open].trim_end_matches('!'));
+        out.push_str(&md[open + 1..m]);
+        pos = c + 1;
     }
-    out.push_str(rest);
+    out.push_str(&md[pos..]);
     out.lines()
         .map(|l| l.trim_start_matches('#').trim_start().replace("**", ""))
         .collect::<Vec<_>>()
         .join("\n")
 }
 
+/// Markdown this file made from HTML without links, for `format: text`:
+/// only the heading marks and code fences it added come off. The page's own
+/// `**` and brackets stay, and code keeps its lines.
+fn unmark(md: &str) -> String {
+    let mut out = Vec::new();
+    let mut code: Option<(char, usize)> = None;
+    for line in md.lines() {
+        if let Some((mark, n)) = code {
+            if closes(line, mark, n) {
+                code = None;
+            } else {
+                out.push(line);
+            }
+        } else if let Some(f) = fence(line) {
+            code = Some(f);
+        } else {
+            out.push(heading(line).map_or(line, |(_, t)| t));
+        }
+    }
+    out.join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// `focus` on Markdown with no document title.
+    fn md(page: &str, query: &str) -> String {
+        focus(page, query, None, false)
+    }
 
     /// Trimmed from a real answer for "bun latest version", with an ad put back in.
     const DDG_PAGE: &str = r#"<div class="serp__results"><div id="links" class="results">
@@ -816,6 +1464,197 @@ mod tests {
         assert_eq!(
             markdown_to_text("# Hi\nSee [the **docs**](https://x.y/z) and ![img](a.png)."),
             "Hi\nSee the docs and img."
+        );
+        // A label does not span lines; brackets with no link stay.
+        assert_eq!(markdown_to_text("a [b\nc](d) [f](g)"), "a [b\nc](d) f");
+        assert_eq!(markdown_to_text("[[[x"), "[[[x");
+        assert_eq!(
+            markdown_to_text("x\n[a](1) [b](2) [c\nd](3)"),
+            "x\na b [c\nd](3)"
+        );
+    }
+
+    #[test]
+    fn a_query_keeps_only_the_matching_rows_under_their_header() {
+        let mut page = String::from(
+            "# Releases\n\nAll versions of the tool.\n\n## Table\n\n| Version | Date |\n|---|---|\n",
+        );
+        for n in 0..200 {
+            page.push_str(&format!("| 1.{n} | 2026-01-{:02} |\n", n % 28 + 1));
+        }
+        page.push_str("\n## License\n\nMIT.\n");
+        let out = md(&page, "when was version 1.142 released?");
+        assert_eq!(
+            out,
+            "Title: Releases\n\nOutline:\n- Releases\n  - Table\n  - License\n\n\
+             Parts that match \"when was version 1.142 released?\" (1 of 202). \
+             Fetch without a query for the whole page.\n\n\
+             ## Releases > Table\n| Version | Date |\n|---|---|\n| 1.142 | 2026-01-03 |\n"
+        );
+        assert!(out.len() * 10 < page.len());
+    }
+
+    #[test]
+    fn a_matching_heading_brings_its_text_and_misses_say_so() {
+        let page = "# Bun docs\n\nIntro text.\n\n## Install\n\nRun the script:\n\n```sh\n# not a heading\ncurl -fsSL https://bun.sh/install | bash\n```\n\n- macOS\n- Linux\n\n## Test runner\n\nbun test runs tests.\n";
+        let out = md(page, "install");
+        assert!(out.contains("## Bun docs > Install\nRun the script:\n\n```sh\n# not a heading"));
+        assert!(out.contains("bash\n```\n\n- macOS\n- Linux\n"), "{out}");
+        let linux = md(page, "linux");
+        assert!(
+            linux.contains("## Bun docs > Install\n- Linux\n"),
+            "{linux}"
+        );
+        assert!(!linux.contains("macOS\n"));
+        assert!(!out.contains("bun test runs"));
+        assert!(!out.contains("Intro text"));
+        assert!(!out.contains("  - not a heading"));
+        let miss = md(page, "windows");
+        assert!(miss.contains("Nothing on the page matches \"windows\""));
+        assert!(miss.contains("  - Test runner"));
+        assert_eq!(
+            terms("What is the Bun 1.4 release date?"),
+            ["bun", "1.4", "release", "date"]
+        );
+        assert_eq!(terms("the"), ["the"]);
+        assert_eq!(terms("C# vs C++, in .NET."), ["c#", "vs", "c++", "net"]);
+    }
+
+    #[test]
+    fn words_match_whole_versions_and_word_starts() {
+        assert!(has("1.14 is out", "1.14"));
+        assert!(has("see v1.14.", "1.14"));
+        assert!(!has("1.142 is out", "1.14"));
+        assert!(!has("11.14", "1.14"));
+        assert!(!has("1.14.2", "1.14"));
+        assert!(!has("2.1.14", "1.14"));
+        assert!(has("all versions", "version"));
+        assert!(!has("reinstall", "install"));
+        assert!(has("use c# here", "c#"));
+        assert!(!has("use c here", "c#"));
+    }
+
+    #[test]
+    fn fences_tables_and_headings_parse_as_markdown_means() {
+        // A four-backtick block holds a three-backtick one and a `#` line.
+        let page = "# Doc\n\n````md\n```\n# inside\n```\n````\n\n## Retry when load > 80%\n\nPlan | Price\n--- | ---\nFree | 0\nPro | 20\n\nThis paragraph wraps\nover four lines and\nends with the part\nthat says pro matters.\n";
+        let out = md(page, "pro");
+        assert!(!out.contains("- inside"), "{out}");
+        assert!(out.contains("  - Retry when load > 80%\n"), "{out}");
+        assert!(
+            out.contains("## Doc > Retry when load > 80%\nPlan | Price\n--- | ---\nPro | 20\n\nThis paragraph wraps\nover four lines and\nends with the part\nthat says pro matters.\n"),
+            "{out}"
+        );
+        assert!(!out.contains("Free"));
+    }
+
+    #[test]
+    fn an_html_page_keeps_its_title_its_table_header_and_its_own_marks() {
+        let html = "<html><head><title>Acme &amp; Co</title></head><body><h1>Prices</h1>\
+            <table><tr><th>Plan</th><th>Price</th></tr><tr><td>Free</td><td>0</td>\
+            <tr><td>Pro <b>plan</b></td><td><p>20</p></td></tr><tr><td>Team</td><td>50</td></tr></table>\
+            <p>Use ** for powers in pro mode.</p></body></html>";
+        let out = Page::Html(html.into()).focus("pro", true);
+        assert!(out.starts_with("Title: Acme & Co\n"), "{out}");
+        assert!(
+            out.ends_with("# Prices\n| Plan | Price |\n| --- | --- |\n| Pro plan | 20 |\n\nUse ** for powers in pro mode.\n"),
+            "{out}"
+        );
+        assert!(!out.contains("Free"));
+        let text = Page::Html(html.into()).focus("pro", false);
+        assert!(text.contains("\nPrices\n| Plan | Price |"), "{text}");
+        assert!(text.contains("Use ** for powers"), "{text}");
+        // Without a query the plain converter's output is unchanged.
+        assert_eq!(
+            Page::Html(html.into()).whole(true),
+            "# Prices\n\nPlan Price\n\nFree 0\nPro plan\n20\n\nTeam 50\n\nUse ** for powers in pro mode."
+        );
+    }
+
+    #[test]
+    fn edge_cases_from_review_hold() {
+        // The first part on the page is the match.
+        assert!(md("- Linux\n- macOS\n", "linux").ends_with("\n- Linux\n"));
+        // Indented backticks are code, not a fence that eats the page.
+        let indented = md("# A\n\n    ```\n\n## Install\n\nRun it.\n", "install");
+        assert!(indented.contains("  - Install\n"), "{indented}");
+        assert!(indented.contains("Run it."));
+        // A quote under a table ends the table and matches whole.
+        let quoted = md(
+            "| Plan | Price |\n|---|---|\n| Pro | 20 |\n> Warranty terms\n> Applies only to annual plans.\n",
+            "warranty",
+        );
+        assert!(
+            quoted.ends_with("\n> Warranty terms\n> Applies only to annual plans.\n"),
+            "{quoted}"
+        );
+        assert!(!quoted.contains("| Plan"));
+        // A long wrapped paragraph stays whole.
+        let long: String = (0..25).map(|i| format!("line {i} of the note\n")).collect();
+        let whole = md(&format!("{long}\nOther.\n"), "line 3");
+        assert!(whole.contains("line 0 of the note") && whole.contains("line 24 of"));
+        assert!(!whole.contains("Other."));
+        // Plain text: each line alone, no headings.
+        assert_eq!(
+            focus(
+                "# not a heading\nok\nan error here\nok\n",
+                "error",
+                None,
+                true
+            ),
+            "\nParts that match \"error\" (1 of 4). Fetch without a query for the whole page.\n\nan error here\n"
+        );
+    }
+
+    #[test]
+    fn focused_html_keeps_brackets_code_and_captions() {
+        // Text output: the page's own brackets stay, real links give their words.
+        let html =
+            "<p>Call items[index](value). See <a href=\"https://x.y\">the items docs</a>.</p>";
+        let text = Page::Html(html.into()).focus("items", false);
+        assert!(
+            text.contains("Call items[index](value). See the items docs."),
+            "{text}"
+        );
+        // A `<pre>` keeps its lines; a `#` comment in it is not a heading.
+        let html = "<h1>Guide</h1><pre><code># Example\nfn  start() {\n    run();\n}</code></pre><p>Other.</p>";
+        let md = Page::Html(html.into()).focus("start", true);
+        assert!(
+            md.ends_with("# Guide\n```\n# Example\nfn  start() {\n    run();\n}\n```\n"),
+            "{md}"
+        );
+        let text = Page::Html(html.into()).focus("start", false);
+        assert!(
+            text.ends_with("Guide\n# Example\nfn  start() {\n    run();\n}"),
+            "{text}"
+        );
+        // Closing tags match in any case.
+        let upper = Page::Html("<PRE>a  b</PRE><SCRIPT>x</SCRIPT><p>c</p>".into()).focus("b", true);
+        assert!(upper.ends_with("```\na  b\n```\n"), "{upper}");
+        // A caption stands apart, so the table starts at its header.
+        let html = "<table><caption>Plans</caption><tr><th>Plan</th><th>Price</th></tr>\
+            <tr><td>Free</td><td>0</td></tr><tr><td>Pro</td><td>20</td></tr></table>";
+        let out = Page::Html(html.into()).focus("pro", true);
+        assert!(
+            out.ends_with("| Plan | Price |\n| --- | --- |\n| Pro | 20 |\n"),
+            "{out}"
+        );
+        assert!(!out.contains("Free"), "{out}");
+        // Without a query the plain converter's output is unchanged.
+        assert_eq!(
+            Page::Html(html.into()).whole(true),
+            "Plans\nPlan Price\n\nFree 0\n\nPro 20"
+        );
+    }
+
+    #[test]
+    fn a_markdown_file_stays_whole_and_matches_as_markdown() {
+        let page = "# Prices\n\n| Plan | Price |\n|---|---|\n| Free | 0 |\n| Pro | 20 |\n";
+        assert_eq!(Page::MarkdownFile(page.into()).whole(false), page);
+        let out = Page::MarkdownFile(page.into()).focus("pro", true);
+        assert!(
+            out.ends_with("# Prices\n| Plan | Price |\n|---|---|\n| Pro | 20 |\n"),
+            "{out}"
         );
     }
 }

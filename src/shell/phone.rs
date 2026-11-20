@@ -14,6 +14,7 @@ use serde_json::json;
 
 use super::Shell;
 use super::sessions::{Notice, summary};
+use crate::agent::AgentKind;
 use crate::agent::{Setting, Thread, ThreadEvent};
 use crate::model::TabKind;
 use crate::phone::relay::{self, RelayClient};
@@ -74,13 +75,13 @@ const PHONE_SETTINGS: [Setting; 2] = [Setting::Model, Setting::Effort];
 impl Shell {
     /// The `options` answer for a phone: what a new `agent` session in the
     /// environment at `env_path` starts on, and its choices.
-    pub(super) fn phone_options(&self, env_path: &Path, agent: crate::model::Agent) -> String {
+    pub(super) fn phone_options(&self, env_path: &Path, agent: AgentKind) -> String {
         let list = PHONE_SETTINGS
             .into_iter()
             .filter_map(|s| Some((s, self.draft_choices(env_path, agent, s)?)))
             .collect();
         json!({
-            "type": "options", "env": env_path.to_string_lossy(), "agent": agent.key(),
+            "type": "options", "env": env_path.to_string_lossy(), "agent": agent.id(),
             "settings": wire::settings(list),
         })
         .to_string()
@@ -347,21 +348,11 @@ impl Shell {
                 }
             }
         });
-        let tick = cx.spawn(async move |this, cx| {
-            loop {
-                cx.background_executor().timer(INBOX_EVERY).await;
-                if this
-                    .update(cx, |this, cx| {
-                        if let Some(link) = &this.phone {
-                            link.last_read.trim();
-                        }
-                        this.phone_sync_inbox(cx)
-                    })
-                    .is_err()
-                {
-                    break;
-                }
+        let tick = crate::poll::poll_every(cx, INBOX_EVERY, INBOX_EVERY, |this, cx| {
+            if let Some(link) = &this.phone {
+                link.last_read.trim();
             }
+            this.phone_sync_inbox(cx)
         });
         let remote = match &server {
             Transport::Relay(client) => relay_address(relay::Status::Connecting, client.page_url()),
@@ -660,7 +651,7 @@ impl Shell {
                 };
                 let agent = agent
                     .as_deref()
-                    .map(crate::model::Agent::from_key)
+                    .map(AgentKind::from_id)
                     .unwrap_or(found.agent);
                 let text = text.trim().to_string();
                 if text.is_empty() {
@@ -682,7 +673,7 @@ impl Shell {
                     let first = super::servers::FirstPrompt {
                         env: path,
                         text,
-                        agent: agent.kind(),
+                        agent,
                         note: None,
                         mentions_from: None,
                         desktop: false,
@@ -707,7 +698,7 @@ impl Shell {
             }
             ClientMsg::Options { env, agent } => {
                 let path = PathBuf::from(&env);
-                let agent = crate::model::Agent::from_key(&agent);
+                let agent = AgentKind::from_id(&agent);
                 // A server's folder: what that server offers, as last said,
                 // and again once it answers.
                 self.servers_ask_options_for(client, &path, agent);
@@ -839,7 +830,7 @@ impl Shell {
                 let agent = self
                     .find_env(&env_path)
                     .and_then(|e| e.sessions.iter().find(|s| *s.id == *sid))
-                    .map_or("", |s| s.agent.key());
+                    .map_or("", |s| s.agent.id());
                 let frames = self.with_session_entries(&env_path, &sid, cx, |all, cwd| {
                     wire::transcript_message(&session, agent, cwd, all, from)
                 });
@@ -903,10 +894,20 @@ impl Shell {
             | ClientMsg::TermClose { .. } => {
                 self.phone_send(client, wire::error("terminals open on servers only"));
             }
+            // What the app asks of a server for the files of its environments.
+            ClientMsg::ListDir { .. } | ClientMsg::ReadFile { .. } | ClientMsg::ListFiles { .. } => {
+                self.phone_send(client, wire::error("files are browsed on servers only"));
+            }
             ClientMsg::SettleEnv { .. } | ClientMsg::DeleteEnv { .. } => self.phone_send(
                 client,
                 wire::error("settle or delete this computer's environments in Arakun itself"),
             ),
+            // Answered with its `ref`, so whoever waits on it stops waiting.
+            ClientMsg::Git { reference, .. } => {
+                let why = anyhow::anyhow!("commit this computer's changes in Arakun itself");
+                let reply = crate::git_call::reply(reference, Err(why));
+                self.phone_send(client, reply.to_string());
+            }
             ClientMsg::Ping => {}
         }
     }
@@ -997,7 +998,7 @@ impl Shell {
                     project: &p.name,
                     env: &e.name,
                     branch: Some(e.branch.as_ref()).filter(|b| !b.is_empty()),
-                    agent: e.agent.key(),
+                    agent: e.agent.id(),
                     repo: Some(&p.path),
                     // The page a phone opens has no use for it.
                     origin: None,

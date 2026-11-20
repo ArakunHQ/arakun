@@ -244,8 +244,7 @@ impl Shell {
         if !self.has_projects() {
             return;
         }
-        let (path, agent) = (self.env().path.clone(), self.env().agent);
-        self.start_session_in(&path, agent, title.into(), prompt, true, window, cx);
+        self.ask_agent(title.into(), prompt, window, cx);
     }
 
     /// A session on a pull request, in the environment on its branch: the one

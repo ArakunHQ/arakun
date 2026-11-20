@@ -35,6 +35,7 @@ use tungstenite::{Message, WebSocket, stream::MaybeTlsStream};
 
 use super::e2e::{Handshake, PhoneHello, Session};
 use super::identity::Identity;
+use super::quiet::Quiet;
 use super::{ClientId, ClientMsg, Effect, Head, Incoming, Shared, wire};
 
 pub const HELLO: u8 = 0x01;
@@ -659,13 +660,19 @@ impl Link {
 
     fn talk_on(&mut self, ws: &mut Socket, stream: &TcpStream) -> Ended {
         let mut events = Events::new();
-        let mut last_heard = Instant::now();
-        let mut last_ping = Instant::now();
+        // Counts sleep: a laptop that wakes gives up on the old socket at once.
+        let mut last_heard = Quiet::now();
+        let mut last_ping = Quiet::now();
         // The claim may have left frames read but not taken: look first.
         let mut readable = true;
         loop {
             if self.stop.load(Ordering::Relaxed) {
                 return Ended::Stopped;
+            }
+            // Judged before reading: a pong buffered before the computer
+            // slept would otherwise pass for a relay that is still there.
+            if last_heard.elapsed() > SILENCE_MAX {
+                return Ended::Retry("The relay went quiet".into());
             }
             // After a frame, more may sit in the TLS and WebSocket buffers
             // where the poller cannot see them, so read until nothing is left.
@@ -673,25 +680,22 @@ impl Link {
             if readable {
                 match read_now(ws, stream) {
                     Ok(Read::Frame(kind, channel, payload)) => {
-                        last_heard = Instant::now();
+                        last_heard = Quiet::now();
                         more = true;
                         if let Err(ended) = self.heard(ws, kind, channel, payload) {
                             return ended;
                         }
                     }
                     Ok(Read::Alive) => {
-                        last_heard = Instant::now();
+                        last_heard = Quiet::now();
                         more = true;
                     }
                     Ok(Read::Nothing) => {}
                     Err(ended) => return ended,
                 }
             }
-            if last_heard.elapsed() > SILENCE_MAX {
-                return Ended::Retry("The relay went quiet".into());
-            }
             if last_ping.elapsed() > PING_EVERY {
-                last_ping = Instant::now();
+                last_ping = Quiet::now();
                 if ws.send(Message::Ping(Vec::new().into())).is_err() {
                     return Ended::Retry("Could not write to the relay".into());
                 }

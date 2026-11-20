@@ -18,6 +18,10 @@ mod agent;
 mod broker;
 #[path = "../../src/durable.rs"]
 mod durable;
+// The files of its folders, for a paired app's Explorer (`server/files.rs`).
+#[allow(dead_code)]
+#[path = "../../src/explorer.rs"]
+mod explorer;
 #[allow(dead_code)]
 #[path = "../../src/fetch.rs"]
 mod fetch;
@@ -25,8 +29,14 @@ mod fetch;
 #[allow(dead_code)]
 #[path = "../../src/git.rs"]
 mod git;
+// The app asks for a folder's changes, commits and pull requests (`ClientMsg::Git`).
+#[allow(dead_code)]
+#[path = "../../src/git_call.rs"]
+mod git_call;
 #[path = "../../src/guard.rs"]
 mod guard;
+#[path = "../../src/poll.rs"]
+mod poll;
 #[path = "../../src/rotate.rs"]
 mod rotate;
 #[allow(dead_code)]
@@ -41,18 +51,32 @@ mod headless {
     }
 }
 mod github {
-    // The server opens no pull requests: `git.rs`'s `pr_create` is the app's.
+    // The app pushes and opens pull requests through the server
+    // (`git_call`), as read-only as the app's own: `src/github/mod.rs`.
     pub fn read_only() -> bool {
-        true
+        std::env::var("ARAKUN_GITHUB").is_ok_and(|v| v == "readonly")
     }
     pub mod pr {
-        pub const READ_ONLY: &str = "The server opens no pull requests.";
+        pub const READ_ONLY: &str =
+            "GitHub is read-only on this server (ARAKUN_GITHUB=readonly): nothing was sent.";
     }
 }
 mod memory {
     // `arakun mem` is the app's.
     pub fn prompt_for(_: &std::path::Path) -> String {
         String::new()
+    }
+    pub fn root() -> std::path::PathBuf {
+        crate::platform::app_dir().join("memory")
+    }
+}
+/// The server answers no `arakun` commands; a sandboxed session here reaches none.
+mod control {
+    pub fn sandbox_socket_path() -> std::path::PathBuf {
+        crate::platform::app_dir().join("sandbox/control.sock")
+    }
+    pub fn shim_dir() -> Option<std::path::PathBuf> {
+        None
     }
 }
 /// What the phone's messages and the server use of the app's model.

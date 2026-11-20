@@ -470,7 +470,7 @@ fn trim(list: &mut Vec<String>) {
 }
 
 fn load_book() -> Option<Book> {
-    serde_json::from_slice(&std::fs::read(book_file()).ok()?).ok()
+    crate::durable::load_json(book_file())
 }
 
 fn store_book(book: &Book) {
@@ -731,14 +731,7 @@ impl EventEmitter<PilotEvent> for Pilot {}
 
 impl Pilot {
     pub fn new(cx: &mut Context<Self>) -> Self {
-        let poll = cx.spawn(async move |this, cx| {
-            loop {
-                if this.update(cx, |this, cx| this.refresh(cx)).is_err() {
-                    break;
-                }
-                cx.background_executor().timer(POLL).await;
-            }
-        });
+        let poll = crate::poll::poll_every(cx, Duration::ZERO, POLL, Self::refresh);
         let book = load_book();
         Self {
             config: None,

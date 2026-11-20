@@ -410,8 +410,18 @@ impl Shell {
         {
             return Some(files.clone());
         }
-        if !self.file_index_loading {
-            self.file_index_loading = true;
+        // A server's environment: its files are listed over there, and
+        // the answer fills the index (`server_files_message`).
+        if crate::model::Remote::is_path(&env_path) {
+            if self.file_index_loading.as_ref() != Some(&env_path)
+                && self.server_list_files(&env_path)
+            {
+                self.file_index_loading = Some(env_path);
+            }
+            return None;
+        }
+        if self.file_index_loading.as_ref() != Some(&env_path) {
+            self.file_index_loading = Some(env_path.clone());
             cx.spawn(async move |this, cx| {
                 let p = env_path.clone();
                 let files = cx
@@ -420,7 +430,9 @@ impl Shell {
                     }))
                     .await;
                 let _ = this.update(cx, |this, cx| {
-                    this.file_index_loading = false;
+                    if this.file_index_loading.as_ref() == Some(&env_path) {
+                        this.file_index_loading = None;
+                    }
                     this.file_index = Some((env_path.clone(), Instant::now(), Arc::new(files)));
                     // The popup may have been waiting for the index.
                     this.update_completion(cx);
@@ -429,6 +441,49 @@ impl Shell {
             .detach();
         }
         None
+    }
+
+    /// The skills of the visible environment for `/` completion, read in the
+    /// background on the first ask (or once stale). Claude Code and Workers AI
+    /// read them, so they show before a session has said what it offers.
+    fn skill_index(&mut self, cx: &mut Context<Self>) -> Option<Arc<Vec<crate::agent::Choice>>> {
+        let env_path = self.env().path.clone();
+        if let Some((path, at, skills)) = &self.skill_index
+            && *path == env_path
+            && at.elapsed() < FILE_INDEX_TTL
+        {
+            return Some(skills.clone());
+        }
+        if !self.skill_index_loading {
+            self.skill_index_loading = true;
+            let for_path = env_path.clone();
+            cx.spawn(async move |this, cx| {
+                let p = for_path.clone();
+                let skills = cx
+                    .background_spawn(crate::guard::task(async move {
+                        crate::agent::claude_ext::agent_skills(&p, true)
+                            .into_iter()
+                            .map(|s| crate::agent::Choice {
+                                id: s.name.clone(),
+                                name: s.name,
+                                description: (!s.description.is_empty()).then_some(s.description),
+                            })
+                            .collect::<Vec<_>>()
+                    }))
+                    .await;
+                let _ = this.update(cx, |this, cx| {
+                    this.skill_index_loading = false;
+                    this.skill_index = Some((for_path, Instant::now(), Arc::new(skills)));
+                    this.update_completion(cx);
+                });
+            })
+            .detach();
+        }
+        // While they are read again, the last ones read for this environment.
+        self.skill_index
+            .as_ref()
+            .filter(|(p, ..)| *p == env_path)
+            .map(|(_, _, s)| s.clone())
     }
 
     pub(super) fn update_completion(&mut self, cx: &mut Context<Self>) {
@@ -505,18 +560,36 @@ impl Shell {
             if name.contains(char::is_whitespace) {
                 return None;
             }
-            let thread = self.active_thread(cx)?;
-            let thread = thread.read(cx);
+            // This computer's skills; a server's session says what it has there.
+            let skills = (self.env().remote.is_none()
+                && matches!(
+                    self.composer_agent(),
+                    AgentKind::Claude | AgentKind::WorkersAi
+                ))
+            .then(|| self.skill_index(cx))
+            .flatten();
+            let thread = self.active_thread(cx);
+            let reported: &[crate::agent::Choice] = match &thread {
+                Some(t) => t.read(cx).commands(),
+                None => &[],
+            };
             let name = name.to_lowercase();
-            let own = [crate::agent::Choice {
-                id: "stage".into(),
-                name: "stage".into(),
-                description: Some("Stage only the files this session changed".into()),
-            }];
-            let items: Vec<CompletionItem> = own
+            // `/stage` needs a session to know its files; an agent's own `stage` wins.
+            let stage =
+                (thread.is_some() && !reported.iter().any(|c| c.name == "stage")).then(|| {
+                    crate::agent::Choice {
+                        id: "stage".into(),
+                        name: "stage".into(),
+                        description: Some("Stage only the files this session changed".into()),
+                    }
+                });
+            // A skill the session reported already shows once.
+            let mut seen = std::collections::HashSet::new();
+            let items: Vec<CompletionItem> = stage
                 .iter()
-                .filter(|o| !thread.commands().iter().any(|c| c.name == o.name))
-                .chain(thread.commands())
+                .chain(reported)
+                .chain(skills.iter().flat_map(|s| s.iter()))
+                .filter(|c| seen.insert(c.name.to_lowercase()))
                 .filter(|c| name.is_empty() || c.name.to_lowercase().starts_with(&name))
                 .take(COMPLETION_ROWS)
                 .map(|c| CompletionItem {
@@ -871,6 +944,11 @@ impl Shell {
             .is_some_and(|(current, _)| current == "on");
         let permissions = self.permissions_label(cx);
         let usage_line = thread.as_ref().and_then(|t| t.read(cx).usage().summary());
+        // The Claude seat the session runs on, while it runs (`agent::seats`).
+        let seat = thread
+            .as_ref()
+            .and_then(|t| t.read(cx).seat().map(crate::agent::seats::label))
+            .map(|s| crate::redact::value(&s));
         let focused = self.composer_focus.is_focused(window);
         let entity = cx.entity();
         let focus = self.composer_focus.clone();
@@ -1131,10 +1209,10 @@ impl Shell {
             .when_some(note_row, |d, p| d.child(p))
             .when_some(context_row, |d, p| d.child(p))
             .when_some(self.agent_out_of_limits(agent, cx), |d, why| {
-                let other = if agent == Agent::Droid {
-                    Agent::Claude
+                let other = if agent == AgentKind::Droid {
+                    AgentKind::Claude
                 } else {
-                    Agent::Droid
+                    AgentKind::Droid
                 };
                 let other_ok = self.agent_out_of_limits(other, cx).is_none();
                 d.child(
@@ -1385,6 +1463,24 @@ impl Shell {
                                     },
                                 )),
                             )
+                            .when_some(seat, |d, seat| {
+                                d.child(
+                                    div()
+                                        .id("composer-seat")
+                                        .flex_none()
+                                        .flex()
+                                        .items_center()
+                                        .gap(crate::ui::sp(4.))
+                                        .px(crate::ui::sp(6.))
+                                        .text_size(px(ui::TEXT_XS))
+                                        .text_color(theme::text_subtle())
+                                        .child(icon("user", 11.).text_color(theme::text_faint()))
+                                        .child(seat)
+                                        .tooltip(ui::tip(
+                                            "The Claude seat this session runs on, for its whole life",
+                                        )),
+                                )
+                            })
                             .when_some(permissions, |d, (label, risky)| {
                                 d.child(
                                     chip(

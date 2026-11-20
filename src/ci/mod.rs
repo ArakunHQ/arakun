@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context as _, Result, anyhow, bail};
+use anyhow::{Result, anyhow};
 use gpui::{AppContext as _, Context, EventEmitter, SharedString, Task};
 use serde::Deserialize;
 
@@ -633,22 +633,12 @@ pub fn snippet(source: &str, line: u32, end_line: u32) -> Vec<(u32, String)> {
 
 /// Runs `gh` with `args` in `dir`, stopped after [`GIT_REMOTE`]: a refresh holds the
 /// project's `busy` flag until it ends.
-fn gh_out(dir: &Path, args: &[&str]) -> Result<std::process::Output> {
-    crate::platform::output_within(git::gh(dir).args(args), None, GIT_REMOTE).map_err(|e| {
-        match e.kind() {
-            std::io::ErrorKind::NotFound => anyhow!(crate::github::NO_GH),
-            std::io::ErrorKind::TimedOut => anyhow!("{e}"),
-            _ => anyhow!("could not run gh: {e}"),
-        }
-    })
+fn gh_out(dir: &Path, args: &[&str]) -> Result<Vec<u8>> {
+    crate::github::gh_run(dir, args, None, GIT_REMOTE).map_err(|p| anyhow!(p.text()))
 }
 
 fn gh_json<T: serde::de::DeserializeOwned>(dir: &Path, args: &[&str]) -> Result<T> {
-    let out = gh_out(dir, args)?;
-    if !out.status.success() {
-        bail!("{}", crate::github::gh_error(&out.stderr, out.status));
-    }
-    serde_json::from_slice(&out.stdout).context("unexpected answer from gh")
+    crate::github::gh_json(dir, args, GIT_REMOTE).map_err(|p| anyhow!(p.text()))
 }
 
 /// What a failed list read means for the project.
@@ -743,18 +733,7 @@ pub fn job_log(dir: &Path, job: u64) -> Result<Vec<LogLine>> {
             &format!("repos/{{owner}}/{{repo}}/actions/jobs/{job}/logs"),
         ],
     )?;
-    if !out.status.success() {
-        let err = git::strip_ansi(&String::from_utf8_lossy(&out.stderr));
-        bail!(
-            "{}",
-            if err.trim().is_empty() {
-                "The log isn't available."
-            } else {
-                err.trim()
-            }
-        );
-    }
-    let mut lines = parse_log(&String::from_utf8_lossy(&out.stdout));
+    let mut lines = parse_log(&String::from_utf8_lossy(&out));
     if lines.len() > LOG_LINES {
         lines.drain(..lines.len() - LOG_LINES);
     }
@@ -840,11 +819,7 @@ pub fn run_detail(
 }
 
 fn gh_action(dir: &Path, args: &[&str]) -> Result<()> {
-    let out = gh_out(dir, args)?;
-    if !out.status.success() {
-        bail!("{}", crate::github::gh_error(&out.stderr, out.status));
-    }
-    Ok(())
+    gh_out(dir, args).map(|_| ())
 }
 
 /// The prompt that hands a failed run to an agent.

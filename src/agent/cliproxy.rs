@@ -75,7 +75,7 @@ struct SavedKey {
 }
 
 fn saved_key() -> Option<SavedKey> {
-    serde_json::from_slice(&std::fs::read(key_path()).ok()?).ok()
+    crate::durable::load_json(key_path())
 }
 
 /// The saved key, only when it was typed for `base`.
@@ -146,7 +146,7 @@ fn fingerprint(key: &str) -> u64 {
 }
 
 fn cached() -> Option<Proxy> {
-    serde_json::from_str(&std::fs::read_to_string(cache_path()).ok()?).ok()
+    crate::durable::load_json(cache_path())
 }
 
 fn store(p: &Proxy) {

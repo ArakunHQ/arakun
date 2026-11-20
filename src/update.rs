@@ -285,10 +285,7 @@ fn saved_path() -> PathBuf {
 }
 
 fn load() -> Saved {
-    std::fs::read(saved_path())
-        .ok()
-        .and_then(|b| serde_json::from_slice(&b).ok())
-        .unwrap_or_default()
+    crate::durable::load_json(saved_path()).unwrap_or_default()
 }
 
 fn save(s: &Saved) -> std::io::Result<()> {
@@ -557,6 +554,53 @@ fn listed(sums: &str, file: &str) -> Option<String> {
     })
 }
 
+/// The feature flag (`flags`) that tells a version to update: a multivariate
+/// flag whose variant is `request` (ask the user to restart into the new
+/// release) or `force` (no way on until they do). Its release conditions pick
+/// the versions, such as `$app_version` below 0.9.0 (semver). The payload may
+/// carry `{"message": "…"}`, said in the dialog.
+pub const POLICY_FLAG: &str = "update-policy";
+
+/// How hard to push for the newest release.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Push {
+    Request,
+    Force,
+}
+
+/// What the policy flag says to this build.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Policy {
+    pub push: Push,
+    pub message: Option<String>,
+}
+
+/// The policy for this build, `None` when it may stay as it is.
+/// Blocking: call it off the UI thread.
+pub fn policy() -> Result<Option<Policy>, String> {
+    if !release_build() {
+        return Ok(None);
+    }
+    Ok(policy_from(crate::flags::fetch()?.get(POLICY_FLAG)))
+}
+
+fn policy_from(flag: Option<&crate::flags::Flag>) -> Option<Policy> {
+    let flag = flag.filter(|f| f.enabled)?;
+    let push = match flag.variant.as_deref()? {
+        "request" => Push::Request,
+        "force" => Push::Force,
+        _ => return None,
+    };
+    // A bare string works too, and anything past a short paragraph is cut.
+    let message = flag
+        .payload
+        .as_ref()
+        .and_then(|p| p.get("message").unwrap_or(p).as_str())
+        .map(|m| m.trim().chars().take(400).collect::<String>())
+        .filter(|m| !m.is_empty());
+    Some(Policy { push, message })
+}
+
 /// What a check ended in.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Outcome {
@@ -646,12 +690,14 @@ fn stage(tag: &str, version: Version, install: &Install) -> Result<(), String> {
         }
         remove_any(&install.incoming)
             .map_err(|e| format!("{}: {e}", install.incoming.display()))?;
+        let _ = remove_any(&pdb_beside(&install.incoming));
         unpack(&archive, &work, &name, &install.incoming)?;
         verify(&install.binary_in(&install.incoming), tag)
     })();
     let _ = std::fs::remove_dir_all(&work);
     if result.is_err() {
         let _ = remove_any(&install.incoming);
+        let _ = remove_any(&pdb_beside(&install.incoming));
     }
     result
 }
@@ -659,7 +705,31 @@ fn stage(tag: &str, version: Version, install: &Install) -> Result<(), String> {
 /// Moves a complete, checked `incoming` to `staged`.
 fn promote(install: &Install) -> std::io::Result<()> {
     remove_any(&install.staged)?;
-    std::fs::rename(&install.incoming, &install.staged)
+    std::fs::rename(&install.incoming, &install.staged)?;
+    // Only crash reports need it: a .pdb that won't move doesn't stop the
+    // update, and a stale one beside `staged` doesn't match the new binary.
+    let staged_pdb = pdb_beside(&install.staged);
+    let _ = remove_any(&staged_pdb);
+    let _ = move_pdb(&pdb_beside(&install.incoming), &staged_pdb);
+    Ok(())
+}
+
+/// Where a staged or incoming Windows binary's .pdb waits: its name plus
+/// ".pdb". Crash reports read the function names of arakun.exe from the
+/// arakun.pdb beside it, and it must match the binary, so it moves with it.
+fn pdb_beside(binary: &Path) -> PathBuf {
+    let mut name = binary.as_os_str().to_owned();
+    name.push(".pdb");
+    PathBuf::from(name)
+}
+
+/// Moves a .pdb if there is one: earlier releases shipped none.
+fn move_pdb(from: &Path, to: &Path) -> std::io::Result<()> {
+    if !from.is_file() {
+        return Ok(());
+    }
+    remove_any(to)?;
+    std::fs::rename(from, to)
 }
 
 /// Saves `url` to `to` and returns its SHA-256 in hex.
@@ -739,6 +809,14 @@ fn unpack(archive: &Path, work: &Path, name: &str, to: &Path) -> Result<(), Stri
     let exe_dir = to.parent().ok_or("the binary has no folder")?;
     update_runtime(&x.join(name), exe_dir, &crate::platform::app_dir())?;
     std::fs::copy(&from, to).map_err(|e| format!("{}: {e}", to.display()))?;
+    let pdb = x.join(name).join("arakun.pdb");
+    if cfg!(windows) && pdb.is_file() {
+        // Only crash reports need it: without it the binary still stages.
+        let at = pdb_beside(to);
+        if std::fs::copy(&pdb, &at).is_err() {
+            let _ = remove_any(&at);
+        }
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
@@ -847,8 +925,16 @@ fn install_runtime(from: &Path, to: &Path) -> std::io::Result<()> {
         }
         return std::fs::rename(from, to).or_else(|_| copy_tree(from, to));
     }
-    // The binary is swapped at quit, and the papers are not the runtime's.
-    let skip = ["arakun.exe", "LICENSE", "NOTICE", "README.md", LIBCEF];
+    // The binary and its .pdb are swapped at quit, and the papers are not the
+    // runtime's.
+    let skip = [
+        "arakun.exe",
+        "arakun.pdb",
+        "LICENSE",
+        "NOTICE",
+        "README.md",
+        LIBCEF,
+    ];
     for entry in std::fs::read_dir(from)? {
         let entry = entry?;
         let name = entry.file_name();
@@ -975,6 +1061,7 @@ fn apply_locked() -> Result<Option<String>, String> {
         swap(&install).map_err(|e| format!("could not install Arakun {tag}: {e}"))?;
     } else {
         let _ = remove_any(&install.staged);
+        let _ = remove_any(&pdb_beside(&install.staged));
     }
     saved.staged = None;
     saved.staged_sha256 = None;
@@ -1001,6 +1088,11 @@ fn swap(install: &Install) -> std::io::Result<()> {
     }
     // On Windows the old .exe is still running; the next start removes it.
     let _ = remove_any(&install.old);
+    // Only crash reports need it: a .pdb that won't move doesn't stop the update.
+    let _ = move_pdb(
+        &pdb_beside(&install.staged),
+        &install.target.with_extension("pdb"),
+    );
     Ok(())
 }
 
@@ -1044,6 +1136,7 @@ pub fn clean_up() {
     if let (Ok(Some(_lock)), Ok(install)) = (lock(), Install::here()) {
         remove_old(&install);
         let _ = remove_any(&install.incoming);
+        let _ = remove_any(&pdb_beside(&install.incoming));
     }
 }
 
@@ -1431,6 +1524,39 @@ E/PXP6NV7MfZ8NxQICz/mogdfOuIowQ5VLFE/4IC5gtsY2py3mp1d7ahKcI0zkxlgjsjCCpqCaO/ndQ+
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    // Linux swaps with one rename and has no .pdb to carry.
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn the_pdb_follows_the_binary_into_place() {
+        let dir = std::env::temp_dir().join(format!("arakun-update-pdb-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let install = Install {
+            target: dir.join("arakun.exe"),
+            staged: dir.join(".arakun.exe.update"),
+            incoming: dir.join(".arakun.exe.incoming"),
+            old: dir.join(".arakun.exe.old"),
+        };
+        std::fs::write(&install.target, "old").unwrap();
+        std::fs::write(dir.join("arakun.pdb"), "old symbols").unwrap();
+        std::fs::write(&install.incoming, "new").unwrap();
+        std::fs::write(pdb_beside(&install.incoming), "new symbols").unwrap();
+        promote(&install).unwrap();
+        // Staged, the running binary keeps its own .pdb.
+        assert_eq!(
+            std::fs::read_to_string(dir.join("arakun.pdb")).unwrap(),
+            "old symbols"
+        );
+        swap(&install).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.join("arakun.pdb")).unwrap(),
+            "new symbols"
+        );
+        assert!(!pdb_beside(&install.staged).exists());
+        assert!(!pdb_beside(&install.incoming).exists());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     /// The island host keeps running the old .exe after an update, so the next
     /// update finds `.arakun.exe.old` still in use: Windows lets a running .exe
     /// be renamed but not deleted.
@@ -1590,5 +1716,43 @@ E/PXP6NV7MfZ8NxQICz/mogdfOuIowQ5VLFE/4IC5gtsY2py3mp1d7ahKcI0zkxlgjsjCCpqCaO/ndQ+
             let t = s.text();
             assert!(t.ends_with('.') || t.ends_with('…'), "{t}");
         }
+    }
+
+    #[test]
+    fn the_policy_flag_says_how_hard_to_push() {
+        use crate::flags::Flag;
+        let flag =
+            |enabled: bool, variant: Option<&str>, payload: Option<serde_json::Value>| Flag {
+                enabled,
+                variant: variant.map(str::to_string),
+                payload,
+            };
+        assert_eq!(policy_from(None), None);
+        assert_eq!(policy_from(Some(&flag(false, Some("force"), None))), None);
+        assert_eq!(policy_from(Some(&flag(true, None, None))), None);
+        assert_eq!(policy_from(Some(&flag(true, Some("other"), None))), None);
+        assert_eq!(
+            policy_from(Some(&flag(true, Some("request"), None))),
+            Some(Policy {
+                push: Push::Request,
+                message: None
+            })
+        );
+        assert_eq!(
+            policy_from(Some(&flag(
+                true,
+                Some("force"),
+                Some(serde_json::json!({"message": " Fixes data loss. "}))
+            ))),
+            Some(Policy {
+                push: Push::Force,
+                message: Some("Fixes data loss.".into())
+            })
+        );
+        assert_eq!(
+            policy_from(Some(&flag(true, Some("force"), Some("Plain words".into()))))
+                .and_then(|p| p.message),
+            Some("Plain words".into())
+        );
     }
 }

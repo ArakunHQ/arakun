@@ -6,6 +6,11 @@
 /relay/.wrangler
 /relay/.dev.vars
 /relay/.peers-key.json
+/teams/node_modules
+/teams/bun.lock
+/teams/.wrangler
+/teams/.dev.vars*
+/teams/.env*
 __pycache__/
 /shots
 /.cef-sdk

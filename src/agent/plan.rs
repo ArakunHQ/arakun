@@ -4,9 +4,10 @@
 //! window when it gets near (`agent::thread::PlanLimit`); this shows the whole
 //! picture any time.
 //!
-//! Two seats can be on screen at once: the machine's own claude.ai sign-in and
-//! a long-lived token (`claude setup-token`) Claude Code runs on, whose windows
-//! only the rate-limit headers of a one-token call report.
+//! Several seats can be on screen at once: the machine's own claude.ai sign-in,
+//! a long-lived token (`claude setup-token`) Claude Code runs on, and the named
+//! seats saved with `arakun seat add` (`seats`). A token's windows only the
+//! rate-limit headers of a one-token call report.
 
 use std::io::Write as _;
 use std::path::PathBuf;
@@ -91,6 +92,38 @@ pub struct Seats {
     /// The borrowed seat's windows; `None` when there is no token or it failed.
     #[serde(default)]
     pub borrowed: Option<PlanUsage>,
+    /// The seats saved with `arakun seat add`, by name. Never their tokens.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub named: Vec<NamedSeat>,
+}
+
+/// A seat saved with `arakun seat add`: its windows as last read.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct NamedSeat {
+    pub name: String,
+    /// Unix seconds of the last read, whether it worked or not, so a dead
+    /// token is not asked again on every refresh.
+    #[serde(default)]
+    pub at: u64,
+    /// The windows; the last good ones when a later read failed.
+    #[serde(default)]
+    pub usage: Option<PlanUsage>,
+    /// Why the last read failed, if it did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+impl NamedSeat {
+    /// The last read was turned away (401 or 403): the token was revoked or
+    /// has expired, and no session can run on it until it is added again.
+    pub fn refused(&self) -> bool {
+        self.error.as_deref().is_some_and(is_refusal)
+    }
+}
+
+/// Whether a read's error says the token was turned away.
+fn is_refusal(error: &str) -> bool {
+    error.starts_with("HTTP 401") || error.starts_with("HTTP 403")
 }
 
 impl Seats {
@@ -110,6 +143,13 @@ impl Seats {
     }
 }
 
+/// The windows a seat's room is judged by: the 5-hour one and the weekly one
+/// for every model. A model's own weekly window says nothing about the others.
+const FIVE_HOUR: &str = "5-hour limit";
+/// A token's headers and the older fields say "Weekly limit"; the endpoint's
+/// `limits[]` list calls the same window `weekly_all`.
+const WEEKLY: [&str; 2] = ["Weekly limit", "Weekly all"];
+
 impl Window {
     /// "5h", "Fable", "Week": the window's name where rows are narrow.
     pub fn short_label(&self) -> String {
@@ -127,6 +167,11 @@ impl Window {
                 .unwrap_or(&self.label)
                 .to_string()
         }
+    }
+
+    /// The window has started over by `now`, so what it said is past.
+    pub fn reset_by(&self, now: u64) -> bool {
+        self.resets_at.is_some_and(|at| at <= now)
     }
 
     /// Near or over the limit: worth drawing in red.
@@ -175,6 +220,41 @@ const MONTH: [&str; 12] = [
 ];
 
 impl PlanUsage {
+    /// How full the 5-hour window is, 0-100, when it is reported.
+    pub fn five_hour(&self) -> Option<u64> {
+        self.five_hour_window().map(|w| w.percent)
+    }
+
+    /// The weekly window for every model, when it is reported.
+    pub fn weekly(&self) -> Option<&Window> {
+        self.windows
+            .iter()
+            .find(|w| WEEKLY.contains(&w.label.as_str()))
+    }
+
+    /// The 5-hour window, when it is reported.
+    pub fn five_hour_window(&self) -> Option<&Window> {
+        self.windows.iter().find(|w| w.label == FIVE_HOUR)
+    }
+
+    /// How full the 5-hour window is at `now`: none once it has started over
+    /// since it was read.
+    pub fn five_hour_at(&self, now: u64) -> Option<u64> {
+        self.five_hour_window()
+            .filter(|w| !w.reset_by(now))
+            .map(|w| w.percent)
+    }
+
+    /// Near or over its 5-hour or weekly limit at `now`: a new session should
+    /// go elsewhere if it can. A window that has started over since it was
+    /// read is empty, whatever it said then.
+    pub fn near_limit(&self, now: u64) -> bool {
+        [self.five_hour_window(), self.weekly()]
+            .into_iter()
+            .flatten()
+            .any(|w| w.active && w.hot() && !w.reset_by(now))
+    }
+
     /// "Team · Max 5x" for the settings list; empty when nothing is known.
     pub fn plan_label(&self) -> String {
         if self.borrowed {
@@ -244,13 +324,11 @@ fn seats_path() -> PathBuf {
 
 /// The last fetch of both seats, however old.
 fn cached_seats() -> Option<Seats> {
-    serde_json::from_str(&std::fs::read_to_string(seats_path()).ok()?).ok()
+    crate::durable::load_json(seats_path())
 }
 
 fn store_seats(seats: &Seats) {
-    if let Ok(json) = serde_json::to_vec_pretty(seats) {
-        let _ = crate::durable::write(&seats_path(), &json);
-    }
+    crate::durable::cache_json(&seats_path(), seats);
 }
 
 /// The last usage any view fetched, for surfaces that only render (the rail).
@@ -282,18 +360,54 @@ pub fn refresh() -> Option<PlanUsage> {
 /// Both seats, the sign-in at most every [`STALE`] seconds and the borrowed
 /// one every [`BORROWED_STALE`] (reading it costs a few tokens of that seat).
 /// A seat that fails to answer keeps the cache's windows, so one dead token
-/// never blanks the other.
+/// never blanks the other. Named seats keep their last windows: reading one
+/// sends it a message, which can start its 5-hour window, so only
+/// [`seats_probing`] does.
 pub fn seats() -> Seats {
+    seats_probing(&[])
+}
+
+/// [`seats`], and the named seats in `probe` whose windows are older than
+/// [`BORROWED_STALE`]: for the Usage tab while it is on screen, and for a
+/// session about to pick a seat.
+pub fn seats_probing(probe: &[String]) -> Seats {
+    seats_probing_if(probe, || true)
+}
+
+/// [`seats_probing`] while `still()` holds, asked once this call has its
+/// turn: waiting for another refresh can take long enough that the reason
+/// to read the named seats (the Usage tab on screen) is gone.
+pub fn seats_probing_if(probe: &[String], still: impl FnOnce() -> bool) -> Seats {
+    // One refresh at a time: two sessions starting together would otherwise
+    // both find a seat due and both send it a message. The second one waits,
+    // then finds the first one's read in the cache.
+    static ONE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _one = ONE.lock().unwrap_or_else(|e| e.into_inner());
+    let probe = if still() { probe } else { &[] };
     let at = now();
     let mut out = cached_seats().unwrap_or_default();
     let token = borrowed_token();
+    let store = super::seats::Store::open();
+    let names = store.names();
+    let probe: Vec<String> = probe
+        .iter()
+        .filter(|n| names.contains(n))
+        .cloned()
+        .collect();
     let own_due = out.own.is_none() || at.saturating_sub(out.at) >= STALE;
     let borrowed_due = token.is_some()
         && (out.borrowed.is_none() || at.saturating_sub(out.borrowed_at) >= BORROWED_STALE);
-    if !own_due && !borrowed_due && (token.is_some() || out.borrowed.is_none()) {
+    let named_due = !named_due(&out.named, &probe, at).is_empty()
+        || out.named.iter().any(|s| !names.contains(&s.name));
+    if !own_due && !borrowed_due && !named_due && (token.is_some() || out.borrowed.is_none()) {
         return remember_seats(out);
     }
-    let mut changed = false;
+    let mut changed = refresh_named(&mut out.named, &names, &probe, at, |name| {
+        let token = store
+            .token(name)
+            .ok_or_else(|| anyhow!("the seat's token file is gone"))?;
+        fetch_borrowed(&token).map_err(|e| anyhow!(hide_token(&format!("{e:#}"), &token)))
+    });
     if own_due && let Ok(own) = fetch_own() {
         out.own = own;
         out.at = at;
@@ -316,6 +430,106 @@ pub fn seats() -> Seats {
         store_seats(&out);
     }
     remember_seats(out)
+}
+
+/// The named seats whose windows are older than [`BORROWED_STALE`], or were
+/// never read.
+fn named_due(named: &[NamedSeat], names: &[String], at: u64) -> Vec<String> {
+    names
+        .iter()
+        .filter(|n| {
+            named
+                .iter()
+                .find(|s| s.name == **n)
+                .is_none_or(|s| at.saturating_sub(s.at) >= BORROWED_STALE)
+        })
+        .cloned()
+        .collect()
+}
+
+/// Brings `named` in line with the seats saved now (`names`): drops the gone
+/// ones and reads the due ones among `probe`, all at once, each with `fetch`.
+/// A read that fails keeps the seat's last windows. Whether anything changed.
+fn refresh_named(
+    named: &mut Vec<NamedSeat>,
+    names: &[String],
+    probe: &[String],
+    at: u64,
+    fetch: impl Fn(&str) -> Result<PlanUsage> + Sync,
+) -> bool {
+    let before = named.len();
+    named.retain(|s| names.contains(&s.name));
+    let mut changed = named.len() != before;
+    let due = named_due(named, probe, at);
+    let fetch = &fetch;
+    let read: Vec<(String, Result<PlanUsage>)> = std::thread::scope(|scope| {
+        let jobs: Vec<_> = due
+            .into_iter()
+            .map(|name| scope.spawn(move || (name.clone(), fetch(&name))))
+            .collect();
+        jobs.into_iter().filter_map(|j| j.join().ok()).collect()
+    });
+    for (name, got) in read {
+        changed = true;
+        let ix = match named.iter().position(|s| s.name == name) {
+            Some(ix) => ix,
+            None => {
+                named.push(NamedSeat {
+                    name,
+                    ..NamedSeat::default()
+                });
+                named.len() - 1
+            }
+        };
+        let seat = &mut named[ix];
+        seat.at = at;
+        match got {
+            Ok(usage) => {
+                seat.usage = Some(usage);
+                seat.error = None;
+            }
+            Err(e) => {
+                let e = format!("{e:#}");
+                // A timeout does not say a refused token works again; only
+                // a good read clears the refusal.
+                if !seat.refused() || is_refusal(&e) {
+                    seat.error = Some(e);
+                }
+            }
+        }
+    }
+    named.sort_by(|a, b| a.name.cmp(&b.name));
+    changed
+}
+
+/// `text` with `token` cut out, should an error ever quote it.
+pub(crate) fn hide_token(text: &str, token: &str) -> String {
+    if token.is_empty() {
+        return text.to_string();
+    }
+    text.replace(token, "[token]")
+}
+
+/// Puts a named seat's windows, read just now, into the cache, so the seat
+/// is not read again at once (`arakun seat add` reads it to check the token).
+pub fn remember_named(name: &str, usage: PlanUsage) {
+    let mut seats = cached_seats().unwrap_or_default();
+    seats.named.retain(|s| s.name != name);
+    seats.named.push(NamedSeat {
+        name: name.to_string(),
+        at: usage.at,
+        usage: Some(usage),
+        error: None,
+    });
+    seats.named.sort_by(|a, b| a.name.cmp(&b.name));
+    store_seats(&seats);
+    remember_seats(seats);
+}
+
+/// What is known of every seat without reading the network: the last
+/// refresh in this process, else the cache file.
+pub fn known_seats() -> Seats {
+    latest_seats().or_else(cached_seats).unwrap_or_default()
 }
 
 fn remember_seats(s: Seats) -> Seats {
@@ -371,8 +585,7 @@ struct Oauth {
 /// Claude Code's sign-in, shared with every tool that reads ~/.claude. Read
 /// only: see `cli_login`.
 fn credentials() -> Option<Oauth> {
-    let json: Value =
-        serde_json::from_str(&std::fs::read_to_string(credentials_path()).ok()?).ok()?;
+    let json: Value = crate::durable::load_json(credentials_path())?;
     let o = json.get("claudeAiOauth")?;
     Some(Oauth {
         access_token: o["accessToken"].as_str()?.to_string(),
@@ -388,8 +601,12 @@ fn credentials() -> Option<Oauth> {
 /// Whether Claude Code has a claude.ai sign-in or a long-lived token. On macOS
 /// the sign-in sits in the keychain, so the account in ~/.claude.json counts too.
 pub fn has_sign_in() -> bool {
+    own_sign_in() || oauth_token().is_some()
+}
+
+/// Whether Claude Code has a claude.ai sign-in of its own (not a token).
+pub(crate) fn own_sign_in() -> bool {
     credentials().is_some()
-        || oauth_token().is_some()
         || std::fs::read_to_string(crate::platform::home().join(".claude.json"))
             .ok()
             .and_then(|s| serde_json::from_str::<Value>(&s).ok())
@@ -400,20 +617,41 @@ pub fn has_sign_in() -> bool {
 /// claude.ai sign-in: from `env` in ~/.claude/settings.json (it wins, Claude
 /// Code applies it over its own environment) or from ours.
 fn oauth_token() -> Option<String> {
+    settings_oauth_token()
+        .or_else(|| std::env::var("CLAUDE_CODE_OAUTH_TOKEN").ok())
+        .filter(|t| !t.trim().is_empty())
+}
+
+/// `CLAUDE_CODE_OAUTH_TOKEN` in the `env` block of ~/.claude/settings.json.
+/// Claude Code assigns that block over its own environment, so while it is
+/// there every session runs on it, whatever token a session is started with.
+fn settings_oauth_token() -> Option<String> {
     let settings = crate::platform::home()
         .join(".claude")
         .join("settings.json");
-    let from_settings = std::fs::read_to_string(settings)
+    std::fs::read_to_string(settings)
         .ok()
         .and_then(|s| serde_json::from_str::<Value>(&s).ok())
-        .and_then(|j| {
-            j["env"]["CLAUDE_CODE_OAUTH_TOKEN"]
-                .as_str()
-                .map(str::to_string)
-        });
-    from_settings
-        .or_else(|| std::env::var("CLAUDE_CODE_OAUTH_TOKEN").ok())
-        .filter(|t| !t.trim().is_empty())
+        .and_then(|j| settings_token_of(&j))
+}
+
+fn settings_token_of(settings: &Value) -> Option<String> {
+    settings["env"]["CLAUDE_CODE_OAUTH_TOKEN"]
+        .as_str()
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(str::to_string)
+}
+
+/// Whether ~/.claude/settings.json pins every session to one token (see
+/// [`settings_oauth_token`]).
+pub(crate) fn settings_pin_a_token() -> bool {
+    settings_oauth_token().is_some()
+}
+
+/// The borrowed seat's token, whichever way this build finds it.
+pub(crate) fn borrowed_seat_token() -> Option<String> {
+    borrowed_token()
 }
 
 /// Another seat's long-lived token (`claude setup-token`), one line in a file
@@ -457,7 +695,7 @@ fn borrowed_token() -> Option<String> {
 
 /// The token's 5-hour and weekly windows, from the headers of a one-token
 /// Haiku message (about 35 tokens of the seat per fetch).
-fn fetch_borrowed(token: &str) -> Result<PlanUsage> {
+pub(crate) fn fetch_borrowed(token: &str) -> Result<PlanUsage> {
     cli_login::check(AgentKind::Claude, MESSAGES)?;
     let body = serde_json::json!({
         "model": PROBE_MODEL,
@@ -885,6 +1123,7 @@ mod tests {
             own: Some(own.clone()),
             borrowed_at: 1,
             borrowed: Some(borrowed.clone()),
+            named: Vec::new(),
         };
         // Signed in on the machine's own account, that seat is in use; with a
         // borrowed token, the borrowed one.
@@ -895,6 +1134,162 @@ mod tests {
         let back: Seats = serde_json::from_str(&json).unwrap();
         assert_eq!(back, seats);
         assert_eq!(back.borrowed.as_ref().unwrap().windows[0].percent, 100);
+    }
+
+    #[test]
+    fn named_seats_refresh_when_stale_and_keep_windows_on_failure() {
+        let good = parse_headers(&serde_json::json!({
+            "anthropic-ratelimit-unified-5h-utilization": ["0.25"],
+            "anthropic-ratelimit-unified-7d-utilization": ["0.5"]
+        }));
+        let mut named = vec![
+            NamedSeat {
+                name: "fresh".into(),
+                at: 1_000,
+                usage: Some(good.clone()),
+                error: None,
+            },
+            NamedSeat {
+                name: "removed".into(),
+                at: 1_000,
+                usage: Some(good.clone()),
+                error: None,
+            },
+        ];
+        let names: Vec<String> = vec!["fresh".into(), "new".into()];
+        let asked = std::sync::Mutex::new(Vec::new());
+        // Not asked to probe, nothing is read; the removed one is dropped.
+        let mut quiet = named.clone();
+        assert!(refresh_named(&mut quiet, &names, &[], 1_000, |_| {
+            panic!("probed unasked")
+        }));
+        assert_eq!(quiet.len(), 1);
+        let changed = refresh_named(&mut named, &names, &names, 1_000 + 60, |name| {
+            asked.lock().unwrap().push(name.to_string());
+            Ok(good.clone())
+        });
+        // Only the seat never read is asked; the removed one is dropped.
+        assert!(changed);
+        assert_eq!(*asked.lock().unwrap(), ["new"]);
+        assert_eq!(
+            named.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
+            ["fresh", "new"]
+        );
+        // Past the staleness both are asked again; a failure keeps the windows.
+        let later = 1_000 + 60 + BORROWED_STALE;
+        assert!(refresh_named(&mut named, &names, &names, later, |name| {
+            if name == "fresh" {
+                Err(anyhow!("HTTP 429"))
+            } else {
+                Ok(good.clone())
+            }
+        }));
+        assert_eq!(named[0].usage.as_ref().unwrap().five_hour(), Some(25));
+        assert_eq!(named[0].error.as_deref(), Some("HTTP 429"));
+        // Busy is not refused; only a 401 or 403 says the token is dead.
+        assert!(!named[0].refused());
+        let mut dead = named[0].clone();
+        dead.error = Some("HTTP 401: the token's answer carried no rate-limit headers".into());
+        assert!(dead.refused());
+        assert_eq!(named[0].at, later);
+        // Nothing due, nothing asked, nothing changed.
+        assert!(!refresh_named(
+            &mut named,
+            &names,
+            &names,
+            later + 1,
+            |_| { panic!("asked too soon") }
+        ));
+        // They survive the cache's JSON, with no token in it.
+        let seats = Seats {
+            named: named.clone(),
+            ..Seats::default()
+        };
+        let back: Seats = serde_json::from_str(&serde_json::to_string(&seats).unwrap()).unwrap();
+        assert_eq!(back.named, named);
+    }
+
+    #[test]
+    fn a_refusal_stays_until_a_good_read() {
+        let good = parse_headers(&serde_json::json!({
+            "anthropic-ratelimit-unified-5h-utilization": ["0.05"]
+        }));
+        let names: Vec<String> = vec!["a".into()];
+        let mut named = vec![NamedSeat {
+            name: "a".into(),
+            at: 1_000,
+            usage: Some(good.clone()),
+            error: Some("HTTP 401: refused".into()),
+        }];
+        let mut at = 1_000;
+        let mut read = |named: &mut Vec<NamedSeat>, got: Result<PlanUsage>| {
+            at += BORROWED_STALE;
+            let got = std::sync::Mutex::new(Some(got));
+            refresh_named(named, &names, &names, at, |_| {
+                got.lock().unwrap().take().unwrap()
+            });
+        };
+        // A timeout says nothing about the token: it stays refused.
+        read(&mut named, Err(anyhow!("timed out")));
+        assert!(named[0].refused());
+        // Another refusal replaces it.
+        read(&mut named, Err(anyhow!("HTTP 403: forbidden")));
+        assert_eq!(named[0].error.as_deref(), Some("HTTP 403: forbidden"));
+        // A good read clears it.
+        read(&mut named, Ok(good));
+        assert!(!named[0].refused());
+        // On a seat that was not refused, a timeout is kept as is.
+        read(&mut named, Err(anyhow!("timed out")));
+        assert_eq!(named[0].error.as_deref(), Some("timed out"));
+    }
+
+    #[test]
+    fn near_limit_reads_the_five_hour_and_weekly_windows() {
+        let p = parse_headers(&serde_json::json!({
+            "anthropic-ratelimit-unified-5h-utilization": ["0.3"],
+            "anthropic-ratelimit-unified-7d-utilization": ["0.85"]
+        }));
+        assert_eq!(p.five_hour(), Some(30));
+        assert!(p.near_limit(0));
+        let p = parse_headers(&serde_json::json!({
+            "anthropic-ratelimit-unified-5h-utilization": ["0.3"],
+            "anthropic-ratelimit-unified-7d-utilization": ["0.1"]
+        }));
+        assert!(!p.near_limit(0));
+        // The sign-in's endpoint names the weekly window differently.
+        let own = parse_usage(
+            &serde_json::json!({"limits": [
+                {"kind": "session", "percent": 10, "severity": "normal"},
+                {"kind": "weekly_all", "percent": 90, "severity": "normal"}
+            ]}),
+            "max",
+            "",
+        );
+        assert_eq!(own.weekly().map(|w| w.percent), Some(90));
+        assert!(own.near_limit(0));
+        // A model's own weekly window says nothing about the others.
+        let mut p = p;
+        p.windows.push(Window {
+            label: "Weekly · Opus".into(),
+            percent: 100,
+            severity: "critical".into(),
+            resets_at: None,
+            active: true,
+        });
+        assert!(!p.near_limit(0));
+    }
+
+    #[test]
+    fn a_token_in_claude_settings_is_found_and_never_quoted() {
+        let settings = serde_json::json!({"env": {"CLAUDE_CODE_OAUTH_TOKEN": " sk-x "}});
+        assert_eq!(settings_token_of(&settings).as_deref(), Some("sk-x"));
+        assert_eq!(
+            settings_token_of(&serde_json::json!({"env": {"CLAUDE_CODE_OAUTH_TOKEN": ""}})),
+            None
+        );
+        assert_eq!(settings_token_of(&serde_json::json!({"env": {}})), None);
+        assert_eq!(hide_token("401 for sk-x", "sk-x"), "401 for [token]");
+        assert_eq!(hide_token("401", ""), "401");
     }
 
     #[test]

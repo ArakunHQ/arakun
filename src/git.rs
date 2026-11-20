@@ -1154,6 +1154,10 @@ pub fn remote_for(dir: &Path, slug: &str) -> Option<String> {
     text.lines().find_map(|line| {
         let mut cols = line.split_whitespace();
         let (name, url) = (cols.next()?, cols.next()?);
+        // A push address can name another repository than the one fetched.
+        if cols.next() != Some("(fetch)") {
+            return None;
+        }
         remote_slug(url)
             .filter(|s| s.eq_ignore_ascii_case(slug))
             .map(|_| name.to_string())
@@ -1188,20 +1192,19 @@ pub fn add_pull_worktree(
         )?;
         return Ok(());
     }
+    // Straight into the branch, not through FETCH_HEAD: another fetch in this
+    // repository could replace that before the worktree is made.
     run_loud(
         git(repo).args([
             "fetch",
             "--quiet",
             remote,
-            &format!("refs/pull/{number}/head"),
+            &format!("refs/pull/{number}/head:{local}"),
         ]),
         GIT_REMOTE,
     )?;
     run_loud(
-        git(repo)
-            .args(["worktree", "add", "--no-track", "-b", branch])
-            .arg(path)
-            .arg("FETCH_HEAD"),
+        git(repo).args(["worktree", "add"]).arg(path).arg(branch),
         GIT_LONG,
     )?;
     if track {
@@ -2068,6 +2071,31 @@ test: cover the resize\u{1f}\u{1e}\n";
             );
         }
         assert_eq!(super::remote_slug("/tmp/repo"), None);
+    }
+
+    #[test]
+    fn a_remote_is_found_by_where_it_fetches() {
+        let dir = repo();
+        let git = |args: &[&str]| {
+            assert!(
+                super::git(&dir).args(args).status().unwrap().success(),
+                "{args:?}"
+            )
+        };
+        git(&["remote", "add", "origin", "git@github.com:up/r.git"]);
+        git(&[
+            "remote",
+            "set-url",
+            "--push",
+            "origin",
+            "git@github.com:me/r.git",
+        ]);
+        git(&["remote", "add", "mine", "https://github.com/me/r"]);
+        assert_eq!(super::remote_for(&dir, "UP/r").as_deref(), Some("origin"));
+        // origin pushes to me/r but fetches up/r: its pull requests aren't there.
+        assert_eq!(super::remote_for(&dir, "me/r").as_deref(), Some("mine"));
+        assert_eq!(super::remote_for(&dir, "other/r"), None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

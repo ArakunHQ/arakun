@@ -988,13 +988,24 @@ impl GitHubView {
             return;
         };
         let title = self.title(cx);
-        let on = self.target(&item, cx);
-        self.ask(
-            format!("Review: {title}"),
-            pr::review_prompt(&item, &title),
-            on,
-            cx,
-        );
+        let prompt = pr::review_prompt(&item, &title);
+        let title = format!("Review: {title}");
+        if let Some(on) = self.target(&item, cx) {
+            self.ask(title, prompt, Some(on), cx);
+            return;
+        }
+        // Not read yet: without its branch the session would start in the
+        // environment in front, and reading it later wouldn't move it.
+        cx.spawn(async move |this, cx| {
+            let it = item.clone();
+            let read = cx
+                .background_spawn(crate::guard::task(async move { pr::fetch_pull(&it) }))
+                .await;
+            // Unreadable: the environment in front, whose agent then says so.
+            let on = read.ok().map(|p| pr::PullTarget::of(&item, &p));
+            let _ = this.update(cx, |this, cx| this.ask(title, prompt, on, cx));
+        })
+        .detach();
     }
 
     /// "Work on it": an agent does what the issue asks, in the project open.

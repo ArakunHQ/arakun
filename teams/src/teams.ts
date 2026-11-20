@@ -633,11 +633,14 @@ async function reject(c: Ctx, teamId: string, id: string): Promise<Response> {
     return error(400, 'expected {"request_id"} as GET .../pending lists it');
   }
   const db = c.env.DB;
-  const [result, still] = await db.batch([
-    db.prepare("DELETE FROM pending WHERE team_id = ? AND github_id = ? AND request_id = ?").bind(teamId, Number(id), requestId),
+  const [result, allowed, still] = await db.batch([
+    db.prepare(`DELETE FROM pending WHERE team_id = ?1 AND github_id = ?2 AND request_id = ?3 AND ${stillAdmin("?1", "?4", "unixepoch()")}`)
+      .bind(teamId, Number(id), requestId, c.me.hash),
+    db.prepare(`SELECT 1 WHERE ${stillAdmin("?1", "?2", "unixepoch()")}`).bind(teamId, c.me.hash),
     db.prepare("SELECT 1 FROM pending WHERE team_id = ? AND github_id = ?").bind(teamId, Number(id)),
   ]);
   if (result!.meta.changes) return new Response(null, { status: 204 });
+  if (allowed!.results.length === 0) return notAdmin();
   if (still!.results.length > 0) return error(409, "the request changed: fetch the pending list again");
   return error(404, "no such request");
 }

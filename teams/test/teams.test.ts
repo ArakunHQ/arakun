@@ -325,6 +325,22 @@ describe("teams", () => {
     await expectJson(api(t.owner.user, "POST", `/teams/${t.teamId}/pending/2001/approve`, { device: t.owner.device, body: { envelopes: [] } }), 404);
   });
 
+  it("keeps the pending request when the admin's flag ends before rejection commits", async () => {
+    const t = await team();
+    const u = await user(2001, "asker");
+    const d = await makeDevice();
+    await expectJson(register(u, d), 201);
+    const { invite_id } = await expectJson(api(t.owner.user, "POST", `/teams/${t.teamId}/invites`, { body: { github_login: "asker" } }), 201);
+    await expectJson(api(u, "POST", `/invites/${invite_id}/accept`, { device: d }), 200);
+    const batch = env.DB.batch.bind(env.DB);
+    vi.spyOn(env.DB, "batch").mockImplementationOnce(async (statements) => {
+      await env.DB.prepare("DELETE FROM user_flags WHERE github_id = ? AND flag = 'teams'").bind(t.owner.user.id).run();
+      return batch(statements);
+    });
+    await expectJson(api(t.owner.user, "POST", `/teams/${t.teamId}/pending/${u.id}/reject`, { body: { request_id: invite_id } }), 403);
+    expect(await env.DB.prepare("SELECT request_id FROM pending WHERE team_id = ? AND github_id = ?").bind(t.teamId, u.id).first("request_id")).toBe(invite_id);
+  });
+
   it("lets an approval that lost to another one write no envelope", async () => {
     const t = await team();
     const u = await user(2002, "twice");

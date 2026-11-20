@@ -989,7 +989,13 @@ The link is good for two minutes and pairs one device. There are two ways to use
   same tabs, with the same composer, as sessions here: send, stop, approve and answer
   go to the server. "New environment" makes a worktree on a server too: Alt+click the
   + and pick the machine, or right-click a server's environment. A plain + makes it on
-  the open environment's machine. It goes in
+  the open environment's machine. To spread them instead, turn on **Spread across
+  machines** in the Servers tab: a new environment then goes to a connected machine
+  that has the project, This computer included, picking the least busy one (the fewest
+  sessions at work). Set each machine to Prefer, Normal or Avoid there: a preferred
+  machine takes new environments before the others, and an avoided one only when no other
+  can. The New environment dialog starts on that machine too, and a first prompt stays
+  on the machine it was written on. This is kept in `servers-balance.json`. A new environment on a server goes in
   `~/arakun-workspaces/<project>/<branch>` there. Unless naming is off in Settings ›
   Branches, Arakun names its branch after the first prompt, as here. Right-click a
   server's environment to archive it there (the sessions that ask for attention

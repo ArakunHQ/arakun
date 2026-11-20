@@ -10,6 +10,7 @@
 //! What each server last listed is kept in `servers-inbox.json`, so its
 //! environments are back at start before the server answers, or when it can't.
 
+pub mod balance;
 pub mod client;
 
 use std::collections::HashMap;

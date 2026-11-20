@@ -31,6 +31,7 @@ use crate::dialogs::{DeleteEnvDialog, DialogEvent};
 use crate::extensions_view::ServerTarget;
 use crate::model::{self, Environment, Project, Remote, Session, Status, TabKind, unix_now};
 use crate::phone::{ClientId, wire};
+use crate::servers::balance::{self, Balance, Candidate};
 use crate::servers::client::{Client, Event, Events, Status as LinkStatus};
 use crate::servers::{self, Saved};
 use crate::servers_view::{PlaceRow, Reach, ServerRow, ServersEvent, ServersState, SessionRow};
@@ -166,6 +167,8 @@ pub(super) struct ServersLink {
     error: Option<String>,
     /// The terminals open in servers' environments.
     terms: terms::Terms,
+    /// Whether new environments are spread across machines, and each one's preference.
+    balance: Balance,
     _listen: Task<()>,
 }
 
@@ -846,6 +849,7 @@ impl Shell {
             pairing_timeout: None,
             error: None,
             terms: terms::Terms::new(window, cx),
+            balance: balance::load(),
             _listen: listen,
         });
         for (id, inbox) in &seeded {
@@ -894,6 +898,7 @@ impl Shell {
             pairing: link.pairing.is_some(),
             adding: link.adding.clone(),
             error: link.error.clone(),
+            balance: link.balance.clone(),
         };
         self.servers_view.update(cx, |v, cx| v.set_state(state, cx));
         cx.notify();
@@ -991,6 +996,10 @@ impl Shell {
                 }
                 link.saved.retain(|s| s.id != *id);
                 servers::save(&link.saved);
+                if link.balance.servers.contains_key(id) {
+                    link.balance.forget(id);
+                    balance::save(&link.balance);
+                }
                 if link.inboxes.remove(id).is_some() || link.inboxes_unsaved {
                     link.inboxes_unsaved = !servers::save_inboxes(&link.inboxes);
                 }
@@ -1030,6 +1039,14 @@ impl Shell {
             ServersEvent::Open { server, session } => {
                 let (server, session) = (server.clone(), session.clone());
                 self.servers_open_session(&server, &session, window, cx);
+            }
+            ServersEvent::Spread(on) => {
+                link.balance.spread = *on;
+                balance::save(&link.balance);
+            }
+            ServersEvent::Prefer { server, preference } => {
+                link.balance.set(server.as_deref(), *preference);
+                balance::save(&link.balance);
             }
         }
         self.sync_servers_view(cx);
@@ -2012,6 +2029,34 @@ impl Shell {
             prompt,
             cx,
         );
+    }
+
+    /// Where a new environment goes while they are spread: one of `machines`, each a server's id or `None` for this computer,
+    /// listed with the open environment's machine first. `None` when they
+    /// are not spread.
+    pub(super) fn servers_spread_pick(&self, machines: &[Option<&str>]) -> Option<usize> {
+        let link = self.servers.as_ref().filter(|l| l.balance.spread)?;
+        let working = |status: Status| status == Status::Working;
+        let candidates: Vec<Candidate> = machines
+            .iter()
+            .map(|m| Candidate {
+                preference: link.balance.of(*m),
+                busy: match m {
+                    None => self
+                        .projects
+                        .iter()
+                        .flat_map(|p| &p.environments)
+                        .filter(|e| e.remote.is_none())
+                        .flat_map(|e| &e.sessions)
+                        .filter(|s| working(s.status))
+                        .count(),
+                    Some(id) => link.conns.get(*id).map_or(0, |c| {
+                        c.sessions.iter().filter(|s| working(s.status)).count()
+                    }),
+                },
+            })
+            .collect();
+        balance::pick(&candidates)
     }
 
     /// Whether a first prompt in the server environment at `env_path` starts

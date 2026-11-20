@@ -303,6 +303,8 @@ pub struct TeamDetail {
     pub team_id: String,
     pub name: String,
     pub epoch: u64,
+    #[serde(default)]
+    pub keyed_epoch: Option<u64>,
     pub rotation_pending: bool,
     pub members: Vec<MemberRow>,
     pub channels: Vec<ChannelRow>,
@@ -320,6 +322,7 @@ pub struct InviteRow {
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 pub struct PendingRow {
+    pub request_id: String,
     pub github_id: u64,
     pub login: String,
     pub requested_at: u64,
@@ -455,10 +458,11 @@ impl Call<'_> {
         &self,
         team_id: &str,
         github_id: u64,
+        request_id: &str,
         envelopes: &[Envelope],
     ) -> Result<(), ApiError> {
         let path = format!("/teams/{team_id}/pending/{github_id}/approve");
-        let body = serde_json::json!({ "envelopes": envelopes });
+        let body = serde_json::json!({ "request_id": request_id, "envelopes": envelopes });
         self.post::<serde_json::Value>("POST", &path, body)
             .map(|_| ())
     }
@@ -470,13 +474,18 @@ impl Call<'_> {
     }
 
     /// `PUT /teams/<id>/envelopes`: whether a rotation is still pending after.
-    pub fn put_envelopes(&self, team_id: &str, envelopes: &[Envelope]) -> Result<bool, ApiError> {
+    pub fn put_envelopes(
+        &self,
+        team_id: &str,
+        keyed_epoch: u64,
+        envelopes: &[Envelope],
+    ) -> Result<bool, ApiError> {
         #[derive(Deserialize)]
         struct Put {
             rotation_pending: bool,
         }
         let path = format!("/teams/{team_id}/envelopes");
-        let body = serde_json::json!({ "envelopes": envelopes });
+        let body = serde_json::json!({ "keyed_epoch": keyed_epoch, "envelopes": envelopes });
         self.post::<Put>("PUT", &path, body)
             .map(|p| p.rotation_pending)
     }

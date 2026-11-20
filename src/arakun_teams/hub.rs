@@ -770,7 +770,7 @@ impl Hub {
                 let mine = trusted_devices(&call.devices(me)?);
                 let key = crypto::new_team_key();
                 let envelopes = seal_all(net, &team_id, &[(1, key)], &mine)?;
-                call.put_envelopes(&team_id, &envelopes)?;
+                call.put_envelopes(&team_id, 0, &envelopes)?;
                 let channel_id = crypto::ulid();
                 let name_ct = crypto::seal_channel_name(&team_id, &channel_id, 1, &key, "general");
                 call.create_channel(&team_id, &channel_id, &name_ct)?;
@@ -812,6 +812,7 @@ impl Hub {
             return;
         }
         let epoch = t.detail.epoch;
+        let keyed_epoch = t.detail.keyed_epoch.unwrap_or(epoch.saturating_sub(1));
         let devices: Vec<DeviceRow> = t.devices.values().flatten().cloned().collect();
         let team_id = team_id.to_string();
         let key = crypto::new_team_key();
@@ -821,7 +822,8 @@ impl Hub {
                 let team_id = team_id.clone();
                 move |net| {
                     let envelopes = seal_all(net, &team_id, &[(epoch, key)], &devices)?;
-                    net.call().put_envelopes(&team_id, &envelopes)?;
+                    net.call()
+                        .put_envelopes(&team_id, keyed_epoch, &envelopes)?;
                     Ok(devices.into_iter().map(|d| d.device_id).collect::<Vec<_>>())
                 }
             },
@@ -851,6 +853,7 @@ impl Hub {
             return;
         };
         let keys = self.kept.keys(team_id);
+        let keyed_epoch = t.detail.keyed_epoch.unwrap_or(t.detail.epoch);
         let mine = self.device_id().unwrap_or_default();
         if keys.is_empty() {
             return;
@@ -888,7 +891,7 @@ impl Hub {
                 move |net| {
                     let envelopes = seal_all(net, &team_id, &keys, &fresh)?;
                     for chunk in envelopes.chunks(500) {
-                        net.call().put_envelopes(&team_id, chunk)?;
+                        net.call().put_envelopes(&team_id, keyed_epoch, chunk)?;
                     }
                     Ok(fresh.into_iter().map(|d| d.device_id).collect::<Vec<_>>())
                 }
@@ -977,11 +980,22 @@ impl Hub {
 
     /// Lets a pending member in: their devices must all check out, and get
     /// every key this device holds from the oldest it can give without a gap.
-    pub fn approve(&mut self, team_id: &str, github_id: u64, cx: &mut Context<Self>) {
+    pub fn approve(
+        &mut self,
+        team_id: &str,
+        github_id: u64,
+        request_id: &str,
+        cx: &mut Context<Self>,
+    ) {
         let Some(t) = self.team.get(team_id) else {
             return;
         };
-        let Some(p) = t.pending.iter().find(|p| p.github_id == github_id).cloned() else {
+        let Some(p) = t
+            .pending
+            .iter()
+            .find(|p| p.github_id == github_id && p.request_id == request_id)
+            .cloned()
+        else {
             return;
         };
         let trusted = trusted_devices(&p.devices);
@@ -1012,7 +1026,8 @@ impl Hub {
                 let team_id = team_id.clone();
                 move |net| {
                     let envelopes = seal_all(net, &team_id, &keys, &trusted)?;
-                    net.call().approve(&team_id, github_id, &envelopes)?;
+                    net.call()
+                        .approve(&team_id, github_id, &p.request_id, &envelopes)?;
                     Ok(trusted.into_iter().map(|d| d.device_id).collect::<Vec<_>>())
                 }
             },
@@ -1708,7 +1723,7 @@ mod tests {
         let mine = trusted_devices(&a.call().devices(ma.github_id).unwrap());
         let key = crypto::new_team_key();
         let envelopes = seal_all(&a, &team, &[(1, key)], &mine).unwrap();
-        assert!(!a.call().put_envelopes(&team, &envelopes).unwrap());
+        assert!(!a.call().put_envelopes(&team, 0, &envelopes).unwrap());
         let channel = crypto::ulid();
         let sealed = crypto::seal_channel_name(&team, &channel, 1, &key, "general");
         a.call().create_channel(&team, &channel, &sealed).unwrap();
@@ -1735,7 +1750,9 @@ mod tests {
         let theirs = trusted_devices(&p.devices);
         assert_eq!(theirs.len(), 1);
         let envelopes = seal_all(&a, &team, &contiguous_tail(&[(1, key)]), &theirs).unwrap();
-        a.call().approve(&team, mb.github_id, &envelopes).unwrap();
+        a.call()
+            .approve(&team, mb.github_id, &p.request_id, &envelopes)
+            .unwrap();
 
         // B reads the team as load_team does: the key, checked, and the channel.
         let read = read_team(&b, &team, false, &HashSet::new()).unwrap();
@@ -1786,6 +1803,9 @@ mod tests {
             loop {
                 if let (who, socket::Event::Frame(v)) = next() {
                     assert_ne!(v["type"], "error", "{v}");
+                    if v["type"] != "message" {
+                        continue;
+                    }
                     let s: Stored = serde_json::from_value(v).unwrap();
                     if s.message.id == want {
                         return (who, s);
@@ -1859,7 +1879,7 @@ mod tests {
             .filter(|d| d.device_id == d2.id())
             .collect();
         a.call()
-            .put_envelopes(&team, &seal_all(&a, &team, &[(1, key)], &fresh).unwrap())
+            .put_envelopes(&team, 1, &seal_all(&a, &team, &[(1, key)], &fresh).unwrap())
             .unwrap();
         let read2 = read_team(&second, &team, true, &HashSet::new()).unwrap();
         assert_eq!(read2.keys, vec![(1, key)]);
@@ -1871,7 +1891,7 @@ mod tests {
         assert_eq!(read.detail.epoch, 2);
         let devices: Vec<DeviceRow> = read.devices.values().flatten().cloned().collect();
         let envelopes = seal_all(&a, &team, &[(2, crypto::new_team_key())], &devices).unwrap();
-        assert!(!a.call().put_envelopes(&team, &envelopes).unwrap());
+        assert!(!a.call().put_envelopes(&team, 1, &envelopes).unwrap());
         assert!(matches!(
             b.call().team(&team),
             Err(ApiError::Status(404, _))

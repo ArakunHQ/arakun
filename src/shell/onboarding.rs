@@ -84,6 +84,8 @@ impl Shell {
         self.menu = None;
         self.env_menu_open = false;
         self.setup_tips = false;
+        // This setup asks about the phone again; an earlier answer is replaced.
+        self.phone_after_project = false;
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
         let fresh = !self.has_projects();
@@ -220,7 +222,8 @@ impl Shell {
         let Some(o) = self.onboarding.as_ref() else {
             return;
         };
-        if o.at > 0 {
+        // The welcome is not a step to go back to, as Back doesn't offer it.
+        if o.at > 0 && o.steps[o.at - 1] != Step::Welcome {
             self.onboarding_move(-1, window, cx);
         } else if !o.fresh {
             self.finish_onboarding(window, cx);
@@ -269,22 +272,6 @@ impl Shell {
         cx.notify();
     }
 
-    /// A sidebar layout; the sidebar's look (card, side) stays as it was.
-    fn onboarding_set_preset(&mut self, preset: Preset, cx: &mut Context<Self>) {
-        self.change_sidebar(cx, |s| {
-            let style = s.style;
-            *s = preset.layout();
-            s.style = style;
-        });
-        self.clear_builder_selection();
-    }
-
-    fn onboarding_preset(&self) -> Option<Preset> {
-        Preset::ALL
-            .into_iter()
-            .find(|p| p.layout().sections == self.sidebar.sections)
-    }
-
     /// The crash reports switch, answered as the dialog answers it: followed
     /// for this run either way; unsaved, the question comes back next launch.
     fn onboarding_toggle_reports(&mut self, cx: &mut Context<Self>) {
@@ -308,10 +295,11 @@ impl Shell {
         let Some(o) = self.onboarding.as_ref() else {
             return;
         };
-        if o.at + 1 == o.steps.len() {
-            self.finish_onboarding(window, cx);
-        } else {
-            self.onboarding_move(1, window, cx);
+        match o.step() {
+            // As in the picker's field: Enter adds what it has highlighted.
+            Step::Project => self.onboarding_add(window, cx),
+            _ if o.at + 1 == o.steps.len() => self.finish_onboarding(window, cx),
+            _ => self.onboarding_move(1, window, cx),
         }
     }
 
@@ -347,6 +335,7 @@ impl Shell {
         if self.has_projects() {
             // Someone new lands on the start screen with a few keys to know.
             self.setup_tips = o.fresh;
+            self.phone_after_project = false;
             window.focus(&self.composer_focus, cx);
             if o.pair_phone {
                 self.open_phone_tab(window, cx);
@@ -568,7 +557,7 @@ impl Shell {
             Step::Look => {
                 let palette = o.look.active().name;
                 let palette = palette.trim_start_matches("Arakun ").to_string();
-                Some(match self.onboarding_preset() {
+                Some(match self.sidebar_preset() {
                     Some(p) => format!("{palette}, {}", p.label()).into(),
                     None => palette.into(),
                 })
@@ -761,7 +750,7 @@ impl Shell {
             .child(ui::text(
                 ui::Type::Body,
                 theme::text_faint(),
-                "Ask, build, / for commands, @ for references…",
+                super::composer::PLACEHOLDER,
             ))
             .child(
                 div()
@@ -939,10 +928,10 @@ impl Shell {
                 .gap(ui::sp(12.))
                 .child(keys_hint(
                     &["Enter"],
-                    if o.at + 1 == o.steps.len() {
-                        "open"
-                    } else {
-                        "next"
+                    match (o.at + 1 == o.steps.len(), o.fresh && self.has_projects()) {
+                        (true, true) => "open",
+                        (true, false) => "done",
+                        (false, _) => "next",
                     },
                 ))
                 .child(keys_hint(&["Esc"], "back")),
@@ -1074,7 +1063,7 @@ impl Shell {
             .enumerate()
             .map(|(i, p)| palette_tile(i, &p, p.id == active, cx))
             .collect();
-        let current = self.onboarding_preset();
+        let current = self.sidebar_preset();
         let presets: Vec<AnyElement> = Preset::ALL
             .into_iter()
             .enumerate()
@@ -1117,7 +1106,7 @@ impl Shell {
                         theme::text_subtle(),
                         preset_blurb(p),
                     ))
-                    .on_click(cx.listener(move |this, _, _, cx| this.onboarding_set_preset(p, cx)))
+                    .on_click(cx.listener(move |this, _, _, cx| this.apply_sidebar_preset(p, cx)))
                     .into_any_element()
             })
             .collect();
@@ -1244,22 +1233,41 @@ impl Shell {
             }))
             .into_any_element()
         };
-        // An environment variable decides for the user: say so, and leave the
-        // switch where it is.
+        // An environment variable decides for the user: show what it decided,
+        // which can be on as well as off, and leave the switch where it is.
         let forced = crate::telemetry::env_override();
+        let forced_on = crate::telemetry::effective() != crate::telemetry::Consent::NONE;
+        // Crashes without usage counts, or the other way round, was chosen in
+        // Settings: one switch can't say that, and a click would overwrite it.
+        let split = crate::telemetry::consent().is_some_and(|c| {
+            c != crate::telemetry::Consent::ALL && c != crate::telemetry::Consent::NONE
+        });
         let reports_says: SharedString = match (forced, o.reports) {
-            (Some(var), _) => format!("Off while {var} is set.").into(),
+            (None, _) if split => "Partly on, as chosen in Settings › Privacy.".into(),
+            (Some(var), _) => format!(
+                "{} while {var} is set.",
+                if forced_on { "On" } else { "Off" }
+            )
+            .into(),
             (None, true) => "On. They tell us what breaks and what gets used.".into(),
             (None, false) => {
                 "Off until you turn them on. They tell us what breaks and what gets used.".into()
             }
         };
+        let fixed = forced.is_some() || split;
+        let shown_on = if split {
+            true
+        } else if forced.is_some() {
+            forced_on
+        } else {
+            o.reports
+        };
         let reports = div()
             .id("onboarding-reports")
             .flex()
-            .child(ui::switch(o.reports && forced.is_none()))
-            .when(forced.is_some(), |d| d.opacity(0.5))
-            .when(forced.is_none(), |d| {
+            .child(ui::switch(shown_on))
+            .when(fixed, |d| d.opacity(0.5))
+            .when(!fixed, |d| {
                 d.cursor_pointer()
                     .on_click(cx.listener(|this, _, _, cx| this.onboarding_toggle_reports(cx)))
             })

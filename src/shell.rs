@@ -2833,14 +2833,7 @@ impl Shell {
                             this.change_sidebar(cx, |s| s.style = style);
                         }
                         CustomizeEvent::SidebarPreset(p) => {
-                            // A preset lays out the pieces; the look stays as chosen.
-                            let p = *p;
-                            this.change_sidebar(cx, |s| {
-                                let style = s.style;
-                                *s = p.layout();
-                                s.style = style;
-                            });
-                            this.clear_builder_selection();
+                            this.apply_sidebar_preset(*p, cx);
                         }
                         CustomizeEvent::RailWidth(w) => {
                             this.rail_w = *w;

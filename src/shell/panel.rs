@@ -9,9 +9,7 @@ impl Shell {
         crate::customize_view::RailLook {
             style: self.sidebar.style,
             width: self.rail_w,
-            preset: crate::sidebar::Preset::ALL
-                .into_iter()
-                .find(|p| p.layout().sections == self.sidebar.sections),
+            preset: self.sidebar_preset(),
             can_undo: !self.builder.undo.is_empty(),
             can_redo: !self.builder.redo.is_empty(),
             note: self.builder.flash.clone(),

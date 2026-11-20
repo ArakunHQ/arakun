@@ -419,7 +419,7 @@ impl FolderPicker {
         let added = self.existing.contains(&row.path);
         let leading: gpui::AnyElement = match &row.kind {
             RowKind::Repo { .. } => {
-                let (color, art) = logo_for(&row.path);
+                let (color, icon) = logo_for(&row.path);
                 let color: Hsla = gpui::rgb(color).into();
                 div()
                     .flex()
@@ -429,7 +429,7 @@ impl FolderPicker {
                     .size(px(28.))
                     .rounded(crate::ui::rad(ui::RADIUS))
                     .bg(color.opacity(0.12))
-                    .child(ui::pixel_art(ui::project_art(art), 2., color))
+                    .child(ui::project_icon(icon, 2., color))
                     .into_any_element()
             }
             RowKind::Folder | RowKind::Clone(_) => {

@@ -54,6 +54,7 @@ mod panes;
 mod paste;
 mod phone;
 mod posthog;
+mod project_icon;
 mod rail;
 mod rail_blocks;
 mod rail_pick;
@@ -1642,7 +1643,11 @@ impl Shell {
         let index = match self.projects.iter().position(|p| p.path == path) {
             Some(i) => i,
             None => {
-                self.projects.push(state::new_project(&path));
+                let mut project = state::new_project(&path);
+                project.icon = model::unique_icon(project.icon, |icon| {
+                    self.projects.iter().any(|p| p.icon == icon)
+                });
+                self.projects.push(project);
                 crate::telemetry::capture(crate::telemetry::events::PROJECT_ADDED, &[]);
                 self.projects.len() - 1
             }

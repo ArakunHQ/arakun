@@ -906,6 +906,12 @@ impl Shell {
                         ),
                     )
                     .child(
+                        ui::menu_item("cm-icon", "paint-board", "Edit icon…", false, true)
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.open_icon_editor(pi, window, cx)
+                            })),
+                    )
+                    .child(
                         ui::menu_item(
                             "cm-setup",
                             "computer-terminal01",

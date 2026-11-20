@@ -284,55 +284,6 @@ pub fn hover_icon(name: &str, size: f32, color: Hsla, hover: Hsla, group: &'stat
         .group_hover(group, move |s| s.text_color(hover))
 }
 
-/// Pixel art from `#`/`.` rows, one `unit` square per `#`.
-pub fn pixel_art(rows: &'static [&'static str], unit: f32, color: Hsla) -> impl IntoElement {
-    let w = rows.first().map_or(0, |r| r.len()) as f32 * unit;
-    let h = rows.len() as f32 * unit;
-    canvas(
-        |_, _, _| {},
-        move |bounds: Bounds<Pixels>, _, window: &mut Window, _: &mut App| {
-            paint_pixels(rows, bounds.origin, unit, color, window);
-        },
-    )
-    .w(px(w))
-    .h(px(h))
-    .flex_none()
-}
-
-pub fn paint_pixels(
-    rows: &[&str],
-    origin: gpui::Point<Pixels>,
-    unit: f32,
-    color: Hsla,
-    window: &mut Window,
-) {
-    for (y, row) in rows.iter().enumerate() {
-        let bytes = row.as_bytes();
-        let mut x = 0;
-        while x < bytes.len() {
-            if bytes[x] != b'#' {
-                x += 1;
-                continue;
-            }
-            let mut run = 1;
-            while x + run < bytes.len() && bytes[x + run] == b'#' {
-                run += 1;
-            }
-            window.paint_quad(fill(
-                Bounds::new(
-                    point(
-                        origin.x + px(x as f32 * unit),
-                        origin.y + px(y as f32 * unit),
-                    ),
-                    size(px(run as f32 * unit), px(unit)),
-                ),
-                color,
-            ));
-            x += run;
-        }
-    }
-}
-
 pub const MOON: &[&str] = &[
     "..####..", ".###....", "###.....", "###.....", "###.....", "###.....", ".###....", "..####..",
 ];
@@ -349,11 +300,68 @@ pub const CONSTELLATION: &[&str] = &[
     "........", "##.....#", "##....#.", "..#..#..", "...##...", "...##...", "........", "........",
 ];
 
-/// Logos a project can get; `Project::art` indexes this.
+/// Drawings a project icon can start from in the icon editor.
 pub const PROJECT_ART: [&[&str]; 5] = [MOON, PLANET, COMET, STAR, CONSTELLATION];
 
-pub fn project_art(art: u8) -> &'static [&'static str] {
-    PROJECT_ART[art as usize % PROJECT_ART.len()]
+/// An 8×8 drawing as a bitmap: bit `y * 8 + x` is the pixel at column `x`,
+/// row `y`. Project icons are stored this way.
+pub fn rows_to_bits(rows: &[&str]) -> u64 {
+    let mut bits = 0;
+    for (y, row) in rows.iter().take(8).enumerate() {
+        for (x, b) in row.bytes().take(8).enumerate() {
+            if b == b'#' {
+                bits |= 1 << (y * 8 + x);
+            }
+        }
+    }
+    bits
+}
+
+/// A project's icon, one `unit` square per lit pixel of its 8×8 bitmap.
+pub fn project_icon(bits: u64, unit: f32, color: Hsla) -> impl IntoElement {
+    canvas(
+        |_, _, _| {},
+        move |bounds: Bounds<Pixels>, _, window: &mut Window, _: &mut App| {
+            paint_bits(bits, bounds.origin, unit, color, window);
+        },
+    )
+    .w(px(8. * unit))
+    .h(px(8. * unit))
+    .flex_none()
+}
+
+pub fn paint_bits(
+    bits: u64,
+    origin: gpui::Point<Pixels>,
+    unit: f32,
+    color: Hsla,
+    window: &mut Window,
+) {
+    for y in 0..8 {
+        let row = (bits >> (y * 8)) & 0xff;
+        let mut x = 0;
+        while x < 8 {
+            if row & (1 << x) == 0 {
+                x += 1;
+                continue;
+            }
+            let mut run = 1;
+            while x + run < 8 && row & (1 << (x + run)) != 0 {
+                run += 1;
+            }
+            window.paint_quad(fill(
+                Bounds::new(
+                    point(
+                        origin.x + px(x as f32 * unit),
+                        origin.y + px(y as f32 * unit),
+                    ),
+                    size(px(run as f32 * unit), px(unit)),
+                ),
+                color,
+            ));
+            x += run;
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

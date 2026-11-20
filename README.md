@@ -327,8 +327,11 @@ sees the project's skills.
   repository line above the verdict to show only some organizations or repositories; the rest
   doesn't show, count or alert. "Mark all read" marks only what that choice shows.
 - **Pull request agent.** With a pull request agent on a server of your own
-  (arakun-pilot), `arakun github pilot connect <url> --token -` (the token on stdin)
-  checks the Worker and saves its settings; `arakun github pilot status` says whether
+  (arakun-pilot), Ctrl+K "Connect arakun-pilot…" (also in the GitHub tab's `…` menu,
+  and under an empty queue) asks for the Worker's address, its token and, to send it
+  tasks, its admin token; it checks them against the Worker before it saves them, and
+  later "arakun-pilot settings…" changes them or disconnects. From a terminal,
+  `arakun github pilot connect <url> --token -` (the token on stdin) does the same; `arakun github pilot status` says whether
   they still work and `arakun github pilot disconnect` removes them. They go in
   `~/.config/arakun-pilot/client.json` (`$XDG_CONFIG_HOME` when set to an absolute path;
   `{"url": "…", "token": "…"}`, readable only by you), and Arakun reads `GET <url>/board` and
@@ -343,7 +346,7 @@ sees the project's skills.
   the island opens that sheet over whatever window is in front (Esc gives it back).
   Without a board, the notice opens the pull request's sheet, which doesn't show the
   question: answer it on pilot's card in the queue. On your own pull requests, "Ask pilot" in the sheet sends what you
-  typed as a task (`POST <url>/tasks`, which needs `"admin_token"` in `client.json`).
+  typed as a task (`POST <url>/tasks`, which needs the admin token).
   While the Worker has no board, its cards show at the top of the queue under "Your
   agent". With a board, a card about a pull request the board follows shows under
   "From pilot" in that pull request's sheet, and the rest in a "From pilot" group at the
@@ -352,7 +355,7 @@ sees the project's skills.
   kept in `~/.local/share/arakun/pilot.json` (`%LOCALAPPDATA%\arakun\pilot.json` on
   Windows; next to the state file when `ARAKUN_STATE` is set). Ctrl+K "Send to the cloud agent…" (or type
   `cloud: <task>`) hands it new work, on the open pull request of yours picked in the tab
-  or on a new branch (`POST <url>/tasks`); that needs `"admin_token"` in `client.json`
+  or on a new branch (`POST <url>/tasks`); that needs the admin token
   too. On that card `Tab` switches between your pull request and a new branch (see
   [Keyboard shortcuts](#keyboard-shortcuts)).
 

@@ -313,6 +313,7 @@ fn main() {
         })
         .detach();
         ui::motion::follow_system(cx);
+        ui::contrast::follow_system(cx);
         cx.on_window_closed(|cx, _| {
             if cx.windows().is_empty() {
                 // Now: the shell saves as it is released, which can come before

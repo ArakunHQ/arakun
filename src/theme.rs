@@ -121,8 +121,14 @@ pub fn set_diff_palette(p: DiffPalette) {
     DIFF_PALETTE.store(ix as u8, Ordering::Relaxed);
 }
 
-/// Translucent window surfaces over the compositor's blur.
+/// Translucent window surfaces over the compositor's blur, as drawn: never
+/// with high contrast on, since text over a blurred desktop loses contrast.
 pub fn glass() -> bool {
+    glass_chosen() && !high_contrast()
+}
+
+/// Glass as the user set it, for the setting's switch and the saved state.
+pub fn glass_chosen() -> bool {
     GLASS.load(Ordering::Relaxed)
 }
 
@@ -136,6 +142,79 @@ pub fn window_background() -> gpui::WindowBackgroundAppearance {
     } else {
         gpui::WindowBackgroundAppearance::Opaque
     }
+}
+
+/// Whether the grays are drawn for high contrast: follow the system's
+/// setting, or always or never.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Contrast {
+    System,
+    Standard,
+    High,
+}
+
+impl Contrast {
+    pub const ALL: [Contrast; 3] = [Contrast::System, Contrast::Standard, Contrast::High];
+
+    pub fn id(self) -> &'static str {
+        match self {
+            Contrast::System => "system",
+            Contrast::Standard => "standard",
+            Contrast::High => "high",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Contrast::System => "System",
+            Contrast::Standard => "Standard",
+            Contrast::High => "High",
+        }
+    }
+
+    pub fn from_id(id: &str) -> Self {
+        Self::ALL
+            .into_iter()
+            .find(|c| c.id() == id)
+            .unwrap_or(Contrast::System)
+    }
+
+    /// Whether this choice means high contrast, given what the system says.
+    pub fn is_high(self, system: bool) -> bool {
+        match self {
+            Contrast::System => system,
+            Contrast::Standard => false,
+            Contrast::High => true,
+        }
+    }
+}
+
+/// The index of the chosen `Contrast` in `Contrast::ALL`.
+static CONTRAST: AtomicU8 = AtomicU8::new(0);
+/// What the system last said: macOS's Increase contrast, Windows high
+/// contrast or GNOME's high contrast theme.
+static SYSTEM_HIGH_CONTRAST: AtomicBool = AtomicBool::new(false);
+
+pub fn contrast_setting() -> Contrast {
+    Contrast::ALL[CONTRAST.load(Ordering::Relaxed) as usize % Contrast::ALL.len()]
+}
+
+pub fn set_contrast(c: Contrast) {
+    let ix = Contrast::ALL.iter().position(|x| *x == c).unwrap_or(0);
+    CONTRAST.store(ix as u8, Ordering::Relaxed);
+}
+
+pub fn system_high_contrast() -> bool {
+    SYSTEM_HIGH_CONTRAST.load(Ordering::Relaxed)
+}
+
+pub fn set_system_high_contrast(on: bool) {
+    SYSTEM_HIGH_CONTRAST.store(on, Ordering::Relaxed);
+}
+
+/// Whether the high contrast grays are in use now.
+pub fn high_contrast() -> bool {
+    contrast_setting().is_high(system_high_contrast())
 }
 
 /// The background lightness the surface offsets were tuned on: callers of
@@ -704,8 +783,28 @@ pub fn set_grays(g: Grays) {
     GRAYS.store(ix as u8, Ordering::Relaxed);
 }
 
+/// The grays with high contrast on, whatever the Grays choice: muted and
+/// subtle text at 7:1 (WCAG AAA), faint at 4.5:1, and borders at the 3:1
+/// that control outlines need. Rules between rows stay lighter so a list
+/// doesn't turn into a grid.
+pub const HIGH_CONTRAST_RAMP: Ramp = Ramp {
+    text_muted: 0.9,
+    text_subtle: 0.8,
+    text_faint: 0.62,
+    border_subtle: 0.24,
+    border: 0.5,
+    border_strong: 0.66,
+    fill_raised: 0.06,
+    fill_hover: 0.12,
+    fill_selected: 0.2,
+};
+
 fn ramp() -> Ramp {
-    grays().ramp()
+    if high_contrast() {
+        HIGH_CONTRAST_RAMP
+    } else {
+        grays().ramp()
+    }
 }
 
 /// Primary text: titles, values, what is selected.
@@ -1207,6 +1306,61 @@ mod tests {
             assert!(on(r.text_muted) >= 7., "{what} {g:?} muted");
             assert!(on(r.text_subtle) >= 4.5, "{what} {g:?} subtle");
             assert!(on(r.text_faint) >= MIN_FAINT, "{what} {g:?} faint");
+        }
+    }
+
+    /// High contrast's grays on `back`, with `text` as the content color
+    /// and `lift` as the text roles' light mode boost.
+    fn assert_high_contrast(what: &str, text: Hsla, back: Hsla, lift: f32) {
+        let r = HIGH_CONTRAST_RAMP;
+        let on = |alpha: f32| contrast(over(text.opacity(alpha), back), back);
+        let text_on = |alpha: f32| on((alpha * lift).min(1.));
+        assert!(text_on(r.text_muted) >= 7., "{what} muted");
+        assert!(text_on(r.text_subtle) >= 7., "{what} subtle");
+        assert!(text_on(r.text_faint) >= 4.5, "{what} faint");
+        assert!(on(r.border) >= 3., "{what} border");
+        assert!(on(r.border_strong) > on(r.border), "{what} strong border");
+    }
+
+    #[test]
+    fn high_contrast_holds_on_every_palette_in_both_modes() {
+        let mut palettes = Palette::built_in();
+        for hue in (0..360).step_by(30) {
+            for tint in [0., 0.3, 0.6] {
+                for bg in [0.03, 0.085, 0.16] {
+                    palettes.push(Palette::new("", "", hue as f32, tint, bg, AMBER));
+                }
+            }
+        }
+        for p in &palettes {
+            let what = format!("{} ({}, {}, {})", p.name, p.hue, p.tint, p.bg);
+            let (bg, text) = (p.readable_bg(), p.content());
+            for lift in [0., SHEET_LIFT, RAISED_LIFT] {
+                let back = tinted(p.hue, p.tint, bg, BASE_L + lift);
+                assert_high_contrast(&format!("{what} dark +{lift}"), text, back, 1.);
+            }
+            let text = p.content_at(LIGHT_CONTENT_L);
+            for drop in [0., LIGHT_GROUND_DROP, LIGHT_SUNK_DROP] {
+                let back = light_tinted(p.hue, p.tint, BASE_L - drop);
+                assert_high_contrast(
+                    &format!("{what} light -{drop}"),
+                    text,
+                    back,
+                    LIGHT_TEXT_LIFT,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn high_contrast_follows_the_system_unless_set() {
+        assert!(Contrast::System.is_high(true));
+        assert!(!Contrast::System.is_high(false));
+        assert!(!Contrast::Standard.is_high(true));
+        assert!(Contrast::High.is_high(false));
+        assert_eq!(Contrast::from_id("nonsense"), Contrast::System);
+        for c in Contrast::ALL {
+            assert_eq!(Contrast::from_id(c.id()), c);
         }
     }
 

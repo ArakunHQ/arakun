@@ -504,7 +504,10 @@ only sums up what is chosen. It opens without a project too.
   accent is kept for what needs you. Duplicate one to change its tint, background and
   accent; Arakun warns when text or the accent gets hard to read. Grays sets how bright
   secondary text and borders are, and Diff colors how added and removed lines look, with a
-  few lines of a diff under it to see the choice.
+  few lines of a diff under it to see the choice. Contrast follows the system's high
+  contrast setting (macOS Increase contrast, Windows high contrast, GNOME's high contrast
+  theme), or is set to Standard or High: High raises secondary text to 7:1 and borders
+  to 3:1, whatever Grays says, and turns Glass off.
   Reset colors goes back to Arakun Black, dark, and keeps your color schemes. The mode,
   the choice and your color schemes are kept in `palettes.json` next to the state.
 

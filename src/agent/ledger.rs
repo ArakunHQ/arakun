@@ -1,7 +1,12 @@
 //! The usage log: one line per settled turn in `<app dir>/usage.jsonl`, with
 //! what the turn used (tokens, cost, credits). It outlives the sessions, so
 //! totals by day, project and model can be worked out later.
+//!
+//! Turns of arakun's own Workers AI loop also say how much each tool's
+//! results put in the context (`tools`), which `arakun usage tools` adds up:
+//! where to aim output shrinking, and which commands are the noisy ones.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use anyhow::Result;
@@ -37,6 +42,78 @@ pub struct Turn {
     pub credits: u64,
     #[serde(default)]
     pub ms: u64,
+    /// What each tool's results added to the context, by [`tool_key`].
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub tools: BTreeMap<String, ToolUse>,
+}
+
+/// The results of one tool (or one command) in a turn.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ToolUse {
+    #[serde(default)]
+    pub calls: u64,
+    /// Bytes of results the model was sent.
+    #[serde(default)]
+    pub bytes: u64,
+}
+
+impl ToolUse {
+    pub fn add(&mut self, other: ToolUse) {
+        self.calls += other.calls;
+        self.bytes += other.bytes;
+    }
+
+    /// About four bytes a token, near enough to rank the tools.
+    pub fn tokens(&self) -> u64 {
+        self.bytes.div_ceil(4)
+    }
+}
+
+/// The name a tool call is counted under: the tool's, and for `bash` the
+/// program the command runs too (`bash cargo`), so noisy commands stand out.
+pub fn tool_key(name: &str, command: Option<&str>) -> String {
+    match command.and_then(program) {
+        Some(p) if name == "bash" => format!("bash {p}"),
+        _ => name.to_string(),
+    }
+}
+
+/// The program a shell line runs: its first word past `VAR=value`
+/// assignments, `cd <dir> &&`, `env`, `sudo`, `time` and `exec`, without its
+/// directory. `cd ~/x && cargo test` runs cargo, not cd.
+fn program(command: &str) -> Option<String> {
+    let mut rest = command.trim();
+    // The last `cd … &&` (or `;`) prefix: what runs is after it.
+    while let Some(after) = rest
+        .strip_prefix("cd ")
+        .or_else(|| rest.strip_prefix("pushd "))
+    {
+        let cut = ["&&", ";"]
+            .iter()
+            .filter_map(|sep| after.find(sep).map(|i| i + sep.len()))
+            .min()?;
+        rest = after[cut..].trim_start();
+    }
+    let word = rest.split_whitespace().find(|w| {
+        !(w.contains('=') && !w.starts_with('='))
+            && !matches!(*w, "env" | "sudo" | "time" | "exec" | "command")
+    })?;
+    let word = word.trim_start_matches(['(', '{']);
+    let word = word.rsplit('/').next().unwrap_or(word);
+    (!word.is_empty()).then(|| word.to_string())
+}
+
+/// What each tool's results used over `turns`, largest first.
+pub fn by_tool<'a>(turns: impl IntoIterator<Item = &'a Turn>) -> Vec<(String, ToolUse)> {
+    let mut all: BTreeMap<String, ToolUse> = BTreeMap::new();
+    for t in turns {
+        for (k, u) in &t.tools {
+            all.entry(k.clone()).or_default().add(*u);
+        }
+    }
+    let mut v: Vec<_> = all.into_iter().collect();
+    v.sort_by(|a, b| b.1.bytes.cmp(&a.1.bytes).then(a.0.cmp(&b.0)));
+    v
 }
 
 impl Turn {
@@ -81,6 +158,86 @@ fn parse(bytes: &[u8]) -> Vec<Turn> {
         .collect()
 }
 
+pub const USAGE: &str = "arakun usage tools [--days N] [--json]";
+
+/// `arakun usage …`: reads the log, so it needs no running Arakun.
+pub fn cli(args: &[String]) -> i32 {
+    let mut days: Option<u64> = None;
+    let mut json = false;
+    let mut it = args.iter();
+    match it.next().map(String::as_str) {
+        Some("tools") => {}
+        Some("-h" | "--help" | "help") => {
+            println!("usage: {USAGE}\n\n{HELP}");
+            return 0;
+        }
+        _ => {
+            eprintln!("usage: {USAGE}");
+            return 2;
+        }
+    }
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--json" => json = true,
+            "--days" => match it.next().and_then(|n| n.parse().ok()) {
+                Some(n) => days = Some(n),
+                None => {
+                    eprintln!("usage: {USAGE}");
+                    return 2;
+                }
+            },
+            "-h" | "--help" => {
+                println!("usage: {USAGE}\n\n{HELP}");
+                return 0;
+            }
+            _ => {
+                eprintln!("usage: {USAGE}");
+                return 2;
+            }
+        }
+    }
+    let since = days.map_or(0, |d| super::rpc::unix_now().saturating_sub(d * 24 * 3600));
+    let turns: Vec<Turn> = read().into_iter().filter(|t| t.at >= since).collect();
+    let rows = by_tool(&turns);
+    if json {
+        let rows: Vec<_> = rows
+            .iter()
+            .map(|(k, u)| serde_json::json!({"tool": k, "calls": u.calls, "bytes": u.bytes, "tokens": u.tokens()}))
+            .collect();
+        println!("{}", serde_json::Value::Array(rows));
+    } else {
+        print!("{}", table(&rows));
+    }
+    0
+}
+
+const HELP: &str = "\
+Where the tokens of tool results go: what each tool's results added to the
+context of Workers AI sessions, from the usage log. bash is split by the
+program the command runs. Tokens are bytes / 4. --days N counts the last N
+days only; --json prints the rows as JSON.";
+
+fn table(rows: &[(String, ToolUse)]) -> String {
+    if rows.is_empty() {
+        return "No tool results logged yet. Workers AI sessions log them as they run.\n".into();
+    }
+    let total: u64 = rows.iter().map(|r| r.1.bytes).sum::<u64>().max(1);
+    let width = rows.iter().map(|r| r.0.len()).max().unwrap_or(0).max(4);
+    let mut out = format!(
+        "{:<width$}  {:>7}  {:>10}  {:>5}\n",
+        "tool", "calls", "tokens", "share"
+    );
+    for (k, u) in rows {
+        out.push_str(&format!(
+            "{k:<width$}  {:>7}  {:>10}  {:>4}%\n",
+            u.calls,
+            u.tokens(),
+            u.bytes * 100 / total
+        ));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -101,6 +258,13 @@ mod tests {
             cost_estimate: true,
             credits: 0,
             ms: 900,
+            tools: BTreeMap::from([(
+                "bash cargo".to_string(),
+                ToolUse {
+                    calls: 2,
+                    bytes: 4000,
+                },
+            )]),
         };
         let line = serde_json::to_string(&t).unwrap();
         assert_eq!(serde_json::from_str::<Turn>(&line).unwrap(), t);
@@ -113,6 +277,76 @@ mod tests {
             (7, 0., None)
         );
         assert!(!bare.is_empty());
+        assert!(bare.tools.is_empty());
+        assert!(!serde_json::to_string(&bare).unwrap().contains("tools"));
+    }
+
+    #[test]
+    fn bash_is_counted_by_the_program_it_runs() {
+        let k = |c: &str| tool_key("bash", Some(c));
+        assert_eq!(k("cargo test --locked"), "bash cargo");
+        assert_eq!(k("cd /x/y && npm ci"), "bash npm");
+        assert_eq!(k("cd a; cd b && git status"), "bash git");
+        assert_eq!(k("RUST_LOG=1 FOO=a=b /usr/bin/git log"), "bash git");
+        assert_eq!(k("sudo env X=1 make"), "bash make");
+        assert_eq!(k("(grep -rn x src)"), "bash grep");
+        assert_eq!(k("   "), "bash");
+        assert_eq!(k("cd /x"), "bash");
+        assert_eq!(tool_key("read_file", None), "read_file");
+        assert_eq!(tool_key("grep", Some("cargo")), "grep");
+    }
+
+    #[test]
+    fn tools_add_up_over_turns_largest_first() {
+        let turn = |tools: &[(&str, u64, u64)]| Turn {
+            at: 1,
+            agent: AgentKind::WorkersAi,
+            session: "s".into(),
+            cwd: "/p".into(),
+            model: None,
+            input: 1,
+            output: 0,
+            cache_read: 0,
+            cache_write: 0,
+            cost: 0.,
+            cost_estimate: false,
+            credits: 0,
+            ms: 0,
+            tools: tools
+                .iter()
+                .map(|&(k, calls, bytes)| (k.to_string(), ToolUse { calls, bytes }))
+                .collect(),
+        };
+        let turns = [
+            turn(&[("read_file", 1, 100), ("bash cargo", 1, 50)]),
+            turn(&[("bash cargo", 2, 400)]),
+        ];
+        let rows = by_tool(&turns);
+        assert_eq!(
+            rows[0],
+            (
+                "bash cargo".into(),
+                ToolUse {
+                    calls: 3,
+                    bytes: 450
+                }
+            )
+        );
+        assert_eq!(
+            rows[1],
+            (
+                "read_file".into(),
+                ToolUse {
+                    calls: 1,
+                    bytes: 100
+                }
+            )
+        );
+        let shown = table(&rows);
+        assert!(
+            shown.contains("bash cargo") && shown.contains("81%"),
+            "{shown}"
+        );
     }
 
     #[test]

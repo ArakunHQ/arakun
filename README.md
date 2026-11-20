@@ -847,6 +847,11 @@ the usage log), it moves to `<agent>.old.log` or `usage.old.jsonl` (`<name>.old.
 next to an `ARAKUN_USAGE_LOG` file) and a new one starts. Arakun keeps only that one
 older copy: each move replaces the previous one.
 
+Turns of Workers AI sessions also log what each tool's results added to the context.
+`arakun usage tools [--days N] [--json]` adds them up, largest first, with bash split by
+the program the command runs (`bash cargo`, `bash git`), so you can see which tools and
+commands cost the tokens.
+
 Optional tools: `git` (Changes, worktrees, branches), `gh` (CI, GitHub tab), `bwrap`
 (headless agents on Linux), `secret-tool` from libsecret (stored logins on Linux), `tailscale`
 (phone over Tailscale), `cf` (Cloudflare tab).
@@ -1013,6 +1018,7 @@ arakun notify "done"              # desktop notification
 arakun shrink -- cargo test       # run it and print a summary: failures, collapsed logs,
                                   # JSON outline; the whole output goes to a file it names
 arakun notices --unseen           # notices you haven't read yet
+arakun usage tools --days 7       # which tools' results used the tokens of Workers AI turns
 arakun seat add work < token.txt  # save a Claude seat (a `claude setup-token` token)
 arakun seat ls                    # the seats and their 5-hour and weekly usage
 arakun seat rm work               # forget a seat

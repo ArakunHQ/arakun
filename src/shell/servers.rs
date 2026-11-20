@@ -1719,12 +1719,7 @@ impl Shell {
         let remote = env.remote.as_ref()?;
         let key = (remote.server.clone(), remote.place.clone(), agent);
         let offered = self.servers.as_ref()?.options.get(&key)?;
-        draft_on_server(
-            offered,
-            agent.kind(),
-            super::sessions::agent_draft(env, agent),
-            s,
-        )
+        draft_on_server(offered, agent, super::sessions::agent_draft(env, agent), s)
     }
 
     /// Where git runs for the environment at `env_path`: in its folder here,

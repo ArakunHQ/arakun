@@ -294,10 +294,8 @@ impl Shell {
                     }
                     // A new worktree gets the project's setup, as one made from
                     // the sidebar does; one already there has had it.
-                    if created {
-                        if let Some(script) = this.projects[pi].setup.clone() {
-                            this.run_in_terminal(&path, &script, true, window, cx);
-                        }
+                    if created && let Some(script) = this.projects[pi].setup.clone() {
+                        this.run_in_terminal(&path, &script, true, window, cx);
                     }
                     let agent = this.env().agent;
                     this.start_session_in(&path, agent, title.into(), prompt, true, window, cx);

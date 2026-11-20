@@ -410,8 +410,18 @@ impl Shell {
         {
             return Some(files.clone());
         }
-        if !self.file_index_loading {
-            self.file_index_loading = true;
+        // A server's environment: its files are listed over there, and
+        // the answer fills the index (`server_files_message`).
+        if crate::model::Remote::is_path(&env_path) {
+            if self.file_index_loading.as_ref() != Some(&env_path)
+                && self.server_list_files(&env_path)
+            {
+                self.file_index_loading = Some(env_path);
+            }
+            return None;
+        }
+        if self.file_index_loading.as_ref() != Some(&env_path) {
+            self.file_index_loading = Some(env_path.clone());
             cx.spawn(async move |this, cx| {
                 let p = env_path.clone();
                 let files = cx
@@ -420,7 +430,9 @@ impl Shell {
                     }))
                     .await;
                 let _ = this.update(cx, |this, cx| {
-                    this.file_index_loading = false;
+                    if this.file_index_loading.as_ref() == Some(&env_path) {
+                        this.file_index_loading = None;
+                    }
                     this.file_index = Some((env_path.clone(), Instant::now(), Arc::new(files)));
                     // The popup may have been waiting for the index.
                     this.update_completion(cx);

@@ -903,6 +903,10 @@ impl Shell {
             | ClientMsg::TermClose { .. } => {
                 self.phone_send(client, wire::error("terminals open on servers only"));
             }
+            // What the app asks of a server for the files of its environments.
+            ClientMsg::ListDir { .. } | ClientMsg::ReadFile { .. } | ClientMsg::ListFiles { .. } => {
+                self.phone_send(client, wire::error("files are browsed on servers only"));
+            }
             ClientMsg::SettleEnv { .. } | ClientMsg::DeleteEnv { .. } => self.phone_send(
                 client,
                 wire::error("settle or delete this computer's environments in Arakun itself"),

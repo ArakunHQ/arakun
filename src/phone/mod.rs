@@ -346,6 +346,24 @@ pub enum ClientMsg {
         place: String,
         call: crate::git_call::Call,
     },
+    /// The folder `dir` of place `place` (relative, `""` for the place
+    /// itself), for the app's Explorer. Answered with `dir`.
+    ListDir {
+        place: String,
+        #[serde(default)]
+        dir: String,
+    },
+    /// The text of file `path` of place `place` (relative), for a file tab.
+    /// Answered with `file`.
+    ReadFile {
+        place: String,
+        path: String,
+    },
+    /// The files of place `place` that `@` mentions complete. Answered with
+    /// `files`.
+    ListFiles {
+        place: String,
+    },
     Ping,
 }
 

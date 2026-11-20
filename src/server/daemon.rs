@@ -20,6 +20,7 @@ use futures::channel::mpsc;
 use gpui::{App, AppContext as _, Context, Entity, Global, Subscription, Task};
 use serde_json::json;
 
+use super::files;
 use super::local::{self, Reply, Request};
 use super::pty::{self, Pty};
 use super::store::{self, Place, Record, Store};
@@ -1001,6 +1002,16 @@ impl Daemon {
     /// sends a turn asks, the device's and the local commands' alike.
     fn admit(&self, place: &Path) -> Result<(), String> {
         admission(place, &self.deleting)
+    }
+
+    /// Whether a device may read the files of `place`: one of this server's
+    /// folders, not being deleted.
+    fn place_to_read(&self, place: &Path) -> Result<(), String> {
+        self.admit(place)?;
+        match self.store.place(place) {
+            Some(_) => Ok(()),
+            None => Err("that folder is not one of this server's".into()),
+        }
     }
 
     fn thread_event(
@@ -2377,6 +2388,41 @@ impl Daemon {
             }
             ClientMsg::TermClose { term } => {
                 self.terms.remove(&term);
+            }
+            ClientMsg::ListDir { place, dir } => {
+                let place = PathBuf::from(place);
+                match self.place_to_read(&place) {
+                    Ok(()) => {
+                        self.answer_off_thread(client, move || files::list_dir(&place, &dir), cx)
+                    }
+                    Err(e) => {
+                        let msg = json!({ "type": "dir", "place": place, "dir": dir, "error": e });
+                        self.transport.send(client, msg.to_string());
+                    }
+                }
+            }
+            ClientMsg::ReadFile { place, path } => {
+                let place = PathBuf::from(place);
+                match self.place_to_read(&place) {
+                    Ok(()) => {
+                        self.answer_off_thread(client, move || files::read_file(&place, &path), cx)
+                    }
+                    Err(e) => {
+                        let msg =
+                            json!({ "type": "file", "place": place, "path": path, "error": e });
+                        self.transport.send(client, msg.to_string());
+                    }
+                }
+            }
+            ClientMsg::ListFiles { place } => {
+                let place = PathBuf::from(place);
+                match self.place_to_read(&place) {
+                    Ok(()) => self.answer_off_thread(client, move || files::list_files(&place), cx),
+                    Err(_) => {
+                        let msg = json!({ "type": "files", "place": place, "files": [] });
+                        self.transport.send(client, msg.to_string());
+                    }
+                }
             }
             ClientMsg::Usage => {
                 // Fresh numbers follow through `usage_changed` once the reads land.

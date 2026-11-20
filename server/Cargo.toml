@@ -31,6 +31,7 @@ rust-embed = "8"
 anyhow = "1"
 imagesize = "0.15"
 ureq = "3"
+ignore = "0.4"
 unicode-segmentation = "1"
 pulldown-cmark = { version = "0.13", default-features = false }
 aes-gcm = "0.11"

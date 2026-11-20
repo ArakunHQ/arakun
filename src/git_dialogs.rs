@@ -52,6 +52,11 @@ pub struct CommitDialog {
     writer: Option<AgentKind>,
     /// While the agent writes.
     writing: bool,
+    /// Stops the agent when the dialog closes before it answers.
+    stop: crate::pr_writer::StopOnDrop,
+    /// What the agent wrote when the user had typed a message meanwhile:
+    /// theirs stays in the box.
+    kept: Option<SharedString>,
     error: Option<SharedString>,
     _sub: Subscription,
 }
@@ -108,6 +113,8 @@ impl CommitDialog {
             busy: None,
             writer: None,
             writing: false,
+            stop: Default::default(),
+            kept: None,
             error: None,
             _sub: sub,
         }
@@ -128,21 +135,27 @@ impl CommitDialog {
         }
         self.writing = true;
         self.error = None;
+        self.kept = None;
         cx.notify();
-        let (at, all) = (self.at.clone(), self.takes_all());
+        let (at, all, stop) = (self.at.clone(), self.takes_all(), self.stop.flag());
         let typed = self.input.read(cx).text().to_string();
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_spawn(crate::guard::task(async move {
                     let source = crate::pr_writer::commit::read(&at, all)?;
-                    crate::pr_writer::commit::write(agent, &source)
+                    crate::pr_writer::commit::write(agent, &source, &stop)
                 }))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.writing = false;
                 match result {
-                    // A message typed meanwhile is the user's.
-                    Ok(_) if this.input.read(cx).text() != typed => {}
+                    // A message typed meanwhile is the user's; what the agent
+                    // wrote shows under it, to copy from.
+                    Ok(message) if this.input.read(cx).text() != typed => {
+                        this.kept = Some(
+                            format!("Kept your message. {} wrote: {message}", agent.label()).into(),
+                        )
+                    }
                     Ok(message) => this.input.update(cx, |i, cx| i.set_text(message, cx)),
                     Err(e) => {
                         this.error =
@@ -318,6 +331,9 @@ impl Render for CommitDialog {
                                     .child(self.input.clone()),
                             ),
                     )
+                    .when_some(self.kept.clone(), |d, kept| {
+                        d.child(ui::text(ui::Type::Caption, theme::text_muted(), kept))
+                    })
                     .when_some(self.error.clone(), |d, e| d.child(error_box(e)))
                     .child(
                         div()
@@ -389,6 +405,8 @@ pub struct PullRequestDialog {
     writer: Option<AgentKind>,
     /// The agent is writing.
     writing: bool,
+    /// Stops the agent when the dialog closes before it answers.
+    stop: crate::pr_writer::StopOnDrop,
     title: Entity<TextInput>,
     base: Entity<TextInput>,
     draft: bool,
@@ -472,6 +490,7 @@ impl PullRequestDialog {
             plan,
             writer,
             writing: false,
+            stop: Default::default(),
             title,
             base,
             draft: true,
@@ -697,6 +716,7 @@ impl PullRequestDialog {
         self.error = None;
         cx.notify();
         let (at, remote, branch) = (self.at.clone(), self.remote.clone(), self.branch.clone());
+        let stop = self.stop.flag();
         // Both fields stay editable while it writes.
         let (for_base, old_title) = (base.clone(), self.title.read(cx).text().to_string());
         cx.spawn(async move |this, cx| {
@@ -708,7 +728,7 @@ impl PullRequestDialog {
                             "Nothing to write from: git found no commits on {branch} that {remote}/{base} doesn't have."
                         );
                     }
-                    crate::pr_writer::write(agent, &input)
+                    crate::pr_writer::write(agent, &input, &stop)
                 }))
                 .await;
             let _ = this.update(cx, |this, cx| {

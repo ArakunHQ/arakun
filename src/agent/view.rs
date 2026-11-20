@@ -84,6 +84,49 @@ fn fmt_elapsed(ms: u64) -> String {
     }
 }
 
+/// What a working turn waits on while its calls run: the subagents it
+/// started, or the command it ran. None while it writes or thinks.
+fn waiting_on(content: &[Entry], cwd: &Path) -> Option<(String, Option<String>)> {
+    let running: Vec<&ToolCall> = content
+        .iter()
+        .filter_map(|e| match e {
+            Entry::Tool(t)
+                if t.parent.is_none()
+                    && matches!(t.status, ToolStatus::Pending | ToolStatus::InProgress) =>
+            {
+                Some(t)
+            }
+            _ => None,
+        })
+        .collect();
+    let agents = running.iter().filter(|t| t.is_subagent()).count();
+    if agents > 0 {
+        return Some((
+            match agents {
+                1 => "waiting on an agent".to_string(),
+                n => format!("waiting on {n} agents"),
+            },
+            None,
+        ));
+    }
+    let cmds: Vec<&&ToolCall> = running.iter().filter(|t| t.kind == "execute").collect();
+    match cmds.as_slice() {
+        [] => None,
+        [t] => Some(match tool_rows::wait_limit(t) {
+            Some(tool_rows::Wait::Sleep(_)) => ("waiting on a timer".to_string(), None),
+            _ => {
+                let label = tool_rows::tool_label(t, cwd, true, false);
+                let cmd = label.target.lines().next().unwrap_or("").trim();
+                (
+                    "waiting on".to_string(),
+                    Some(crate::redact::text(cmd).into_owned()),
+                )
+            }
+        }),
+        many => Some((format!("waiting on {} commands", many.len()), None)),
+    }
+}
+
 fn fmt_clock(unix: u64) -> String {
     match crate::schedule::local(unix) {
         Some(tm) => format!("{:02}:{:02}", tm.hour, tm.minute),
@@ -433,6 +476,8 @@ impl ThreadView {
                 self.sync_ask(window, cx)
             }
             ThreadEvent::RewindChanged { entry } => self.remeasure_entry(*entry),
+            // A background subagent keeps the timers ticking after the turn.
+            ThreadEvent::SubagentsChanged { .. } => self.sync_tick(window, cx),
             _ => {}
         }
         self.sync_mascot(cx);
@@ -486,10 +531,12 @@ impl ThreadView {
     }
 
     fn sync_tick(&mut self, window: &Window, cx: &mut Context<Self>) {
+        let t = self.thread.read(cx);
+        // A background subagent's timer runs on after the turn ends.
         let busy = matches!(
-            self.thread.read(cx).status(),
+            t.status(),
             ThreadStatus::Working | ThreadStatus::NeedsInput | ThreadStatus::Connecting
-        );
+        ) || t.running_subagents() > 0;
         if !(busy && window.is_window_active()) {
             self.tick = None;
             return;
@@ -1082,12 +1129,14 @@ impl ThreadView {
         let base = range.start + body_start;
 
         if live {
+            let waiting_on = waiting_on(content, &cwd);
             col = col.child(self.live_header(
                 kind,
                 &status,
                 cancelling,
                 question.is_some(),
                 elapsed_live,
+                waiting_on,
                 window,
             ));
         }
@@ -1599,6 +1648,7 @@ impl ThreadView {
         cancelling: bool,
         question: bool,
         elapsed: Option<Duration>,
+        waiting_on: Option<(String, Option<String>)>,
         window: &Window,
     ) -> AnyElement {
         let label = if cancelling {
@@ -1644,11 +1694,33 @@ impl ThreadView {
             .child(div().text_color(theme::text_faint()).child("·"))
             .child(
                 div()
-                    .flex_1()
-                    .min_w_0()
-                    .truncate()
+                    .flex_none()
                     .when(waiting, |d| d.text_color(amber()))
                     .child(label),
+            )
+            .when_some(
+                waiting_on.filter(|_| *status == ThreadStatus::Working && !cancelling),
+                |d, (what, cmd)| {
+                    d.child(div().flex_none().text_color(theme::text_faint()).child("·"))
+                        .child(
+                            div()
+                                .flex_none()
+                                .text_color(theme::text_faint())
+                                .child(what),
+                        )
+                        .when_some(cmd, |d, cmd| {
+                            d.child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .font_family(theme::FONT_MONO)
+                                    .text_size(px(crate::ui::TEXT_MD))
+                                    .text_color(theme::text_subtle())
+                                    .child(cmd),
+                            )
+                        })
+                },
             )
             .into_any_element()
     }

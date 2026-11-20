@@ -126,6 +126,22 @@ impl Shell {
             .into_any_element()
     }
 
+    /// A row for a piece that draws nothing right now (an empty list, a
+    /// card with nothing to say), so it can be reached while arranging.
+    pub(super) fn arrange_placeholder(&self, item: &Item) -> AnyElement {
+        div()
+            .flex()
+            .items_center()
+            .gap(crate::ui::sp(8.))
+            .h(px(self.sidebar.style.density.row_h()))
+            .px(crate::ui::sp(8.))
+            .text_size(px(ui::TEXT_SM))
+            .text_color(theme::text_faint())
+            .child(icon(item.piece.icon(), 14.).text_color(theme::text_faint()))
+            .child(div().min_w_0().truncate().child(item.name()))
+            .into_any_element()
+    }
+
     /// The end of a segment while arranging: a piece dropped here lands
     /// last in it, and a segment dropped here goes after it.
     pub(super) fn arrange_end(&self, si: usize, len: usize, cx: &mut Context<Self>) -> AnyElement {

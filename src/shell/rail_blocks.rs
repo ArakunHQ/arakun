@@ -360,7 +360,10 @@ impl Shell {
             );
         };
         for (si, section) in self.sidebar.sections.iter().enumerate() {
-            if (narrow && section.hide_in_icons) || self.rail_section_hidden(section, cx) {
+            // Arranging, no segment hides: its title is how it is reached.
+            if (narrow && section.hide_in_icons)
+                || (!self.arranging() && self.rail_section_hidden(section, cx))
+            {
                 continue;
             }
             let el = self.render_section(si, section, cx);
@@ -455,6 +458,12 @@ impl Shell {
                     }
                     _ => self.render_item((si, ii), item, in_row, cx),
                 };
+                // Arranging, a piece that draws nothing now (empty, quiet)
+                // still gets a row, so it can be selected and moved.
+                let el = el.or_else(|| {
+                    (arranging && self.rail_shows(&item.piece, cx))
+                        .then(|| self.arrange_placeholder(item))
+                });
                 if let Some(el) = el {
                     body = body.child(if arranging {
                         self.arrange_target(BuilderSel::Item((si, ii)), el, cx)
@@ -832,22 +841,7 @@ impl Shell {
                 if narrow {
                     return None;
                 }
-                match self.render_active_block(cx) {
-                    Some(block) => block,
-                    // Empty, it hides; arranging, it keeps a row to select and move.
-                    None if self.arranging() => div()
-                        .flex()
-                        .items_center()
-                        .gap(crate::ui::sp(8.))
-                        .h(px(style.density.row_h()))
-                        .px(crate::ui::sp(8.))
-                        .text_size(px(ui::TEXT_SM))
-                        .text_color(theme::text_faint())
-                        .child(icon(item.piece.icon(), 14.).text_color(theme::text_faint()))
-                        .child("Active sessions show here")
-                        .into_any_element(),
-                    None => return None,
-                }
+                self.render_active_block(cx)?
             }
             Piece::Mascot => div()
                 .flex()

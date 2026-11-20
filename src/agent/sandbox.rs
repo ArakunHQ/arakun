@@ -90,7 +90,7 @@ fn git_common_dir(ws: &Path) -> Result<Option<PathBuf>, String> {
         {
             Ok(Some(common))
         }
-        _ => bad("its repository does not list it as a worktree (git worktree repair fixes that)"),
+        _ => bad("its repository does not list this folder (git worktree repair fixes that)"),
     }
 }
 
@@ -179,6 +179,27 @@ fn materialize(p: &Path) -> std::io::Result<()> {
         Some("json") => std::fs::write(p, "{}\n"),
         Some(_) => std::fs::write(p, ""),
         None => std::fs::create_dir_all(p),
+    }
+}
+
+/// Copies `from` to `to` only if nothing is at `to`, not even a dangling link:
+/// the agent may have left one there to make arakun write somewhere else. The
+/// copy is the user's alone (0600), as Claude Code keeps it.
+fn seed(from: &Path, to: &Path) -> std::io::Result<()> {
+    use std::io::Write as _;
+    let bytes = match std::fs::read(from) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e),
+    };
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut opts, 0o600);
+    match opts.open(to) {
+        Ok(mut f) => f.write_all(&bytes),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+        Err(e) => Err(e),
     }
 }
 
@@ -412,12 +433,8 @@ impl Session {
             && claude.is_dir()
         {
             let inside = claude.join(".claude.json");
-            if !inside.exists()
-                && let Err(e) = std::fs::copy(home.join(".claude.json"), &inside)
-                && e.kind() != std::io::ErrorKind::NotFound
-            {
-                return Err(anyhow!("{}: {e}", inside.display()));
-            }
+            seed(&home.join(".claude.json"), &inside)
+                .map_err(|e| anyhow!("{}: {e}", inside.display()))?;
             env.push(("CLAUDE_CONFIG_DIR".into(), claude.into_os_string()));
         }
         Ok(Session {
@@ -850,10 +867,17 @@ mod tests {
         let ws = d.join("ws");
         std::fs::create_dir_all(&ws).unwrap();
         std::fs::write(ws.join(".env"), "KEY=1").unwrap();
-        // In $HOME, which the sandbox reads but doesn't write (temp folders it does).
-        let outside =
-            crate::platform::home().join(format!(".arakun-sbx-out-{}", std::process::id()));
-        std::fs::write(&outside, "host").unwrap();
+        // A Git hook stays read-only inside, so it stands for a file outside
+        // without touching $HOME.
+        let git = std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&ws)
+            .status()
+            .is_ok_and(|s| s.success());
+        let outside = ws.join(".git/hooks/pre-commit");
+        if git {
+            std::fs::write(&outside, "host").unwrap();
+        }
         let Ok(s) = Session::new(AgentKind::Codex, &ws) else {
             // A bubblewrap that can't start here (no user namespaces in CI).
             return;
@@ -867,14 +891,42 @@ mod tests {
             std::os::unix::fs::symlink(ws.join(".env"), ws.join("l")).unwrap();
             // Refused (Seatbelt) or empty (bubblewrap binds an empty file over it).
             assert!(s.read(&ws.join("l"), 100).map_or(true, |b| b.is_empty()));
-            std::os::unix::fs::symlink(&outside, ws.join("out")).unwrap();
-            assert!(s.write(&ws.join("out"), b"agent").is_err());
-            assert_eq!(std::fs::read_to_string(&outside).unwrap(), "host");
+            if git {
+                std::os::unix::fs::symlink(&outside, ws.join("out")).unwrap();
+                assert!(s.write(&ws.join("out"), b"agent").is_err());
+                assert_eq!(std::fs::read_to_string(&outside).unwrap(), "host");
+            }
         }
         assert!(s.read(&ws, 100).is_err());
         drop(s);
         assert!(!dir.exists());
-        std::fs::remove_file(&outside).unwrap();
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_settings_copy_never_follows_a_link() {
+        let d = std::env::temp_dir().join(format!("arakun-sbx-seed-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let from = d.join("claude.json");
+        std::fs::write(&from, "{}").unwrap();
+        // A link the agent left, dangling, toward a file of the user's.
+        let victim = d.join("victim");
+        std::os::unix::fs::symlink(&victim, d.join("inside.json")).unwrap();
+        seed(&from, &d.join("inside.json")).unwrap();
+        assert!(!victim.exists());
+        // Nothing there: a copy, the user's alone.
+        seed(&from, &d.join("fresh.json")).unwrap();
+        assert_eq!(std::fs::read_to_string(d.join("fresh.json")).unwrap(), "{}");
+        use std::os::unix::fs::PermissionsExt as _;
+        let mode = std::fs::metadata(d.join("fresh.json"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
+        // No source: nothing to copy.
+        seed(&d.join("none"), &d.join("x.json")).unwrap();
+        assert!(!d.join("x.json").exists());
         std::fs::remove_dir_all(&d).unwrap();
     }
 

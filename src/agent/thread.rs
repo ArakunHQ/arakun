@@ -3370,10 +3370,33 @@ impl Thread {
                 })
                 .detach();
             }
-            "fs/write_text_file" => match self.write_file(&params) {
-                Ok(()) => conn.respond(id, json!({})),
-                Err(e) => conn.respond_error(id, -32002, &format!("{e:#}")),
-            },
+            // Checked here, written off the main thread: a sandboxed write starts a
+            // process, and a big file on a slow disk would freeze the window too.
+            "fs/write_text_file" => {
+                let checked = self.writable_path(&params);
+                let sandbox = self.sandbox.clone();
+                let content = params["content"].as_str().unwrap_or("").to_string();
+                let conn = Rc::downgrade(&conn);
+                cx.spawn(async move |_, cx| {
+                    let written = match checked {
+                        Ok(path) => {
+                            cx.background_spawn(crate::guard::task(async move {
+                                write_text(&path, sandbox.as_deref(), &content)
+                            }))
+                            .await
+                        }
+                        Err(e) => Err(e),
+                    };
+                    let Some(conn) = conn.upgrade() else {
+                        return;
+                    };
+                    match written {
+                        Ok(()) => conn.respond(id, json!({})),
+                        Err(e) => conn.respond_error(id, -32002, &format!("{e:#}")),
+                    }
+                })
+                .detach();
+            }
             _ => conn.respond_error(id, -32601, &format!("method not found: {method}")),
         }
     }
@@ -3387,7 +3410,8 @@ impl Thread {
             .map(|c| (c.id.clone(), c.thread.clone()))
     }
 
-    fn write_file(&self, params: &Value) -> Result<()> {
+    /// Where the agent's `fs/write_text_file` goes, if it may write there.
+    fn writable_path(&self, params: &Value) -> Result<PathBuf> {
         let path = confine(&self.cwd, params["path"].as_str().unwrap_or(""))?;
         if self.sandbox.as_ref().is_some_and(|s| !s.may_write(&path)) {
             return Err(anyhow!(
@@ -3395,15 +3419,7 @@ impl Thread {
                 path.display()
             ));
         }
-        let content = params["content"].as_str().unwrap_or("");
-        // Written from inside: checked paths can still be swapped for links.
-        if let Some(s) = &self.sandbox {
-            return s.write(&path, content.as_bytes());
-        }
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
-        }
-        std::fs::write(&path, content).with_context(|| format!("writing {}", path.display()))
+        Ok(path)
     }
 
     // ---- session/update --------------------------------------------------
@@ -3825,6 +3841,18 @@ fn confine(cwd: &Path, raw: &str) -> Result<PathBuf> {
         ));
     }
     Ok(real)
+}
+
+/// Writes the agent's `fs/write_text_file`. Runs off the main thread.
+fn write_text(path: &Path, sandbox: Option<&super::sandbox::Session>, content: &str) -> Result<()> {
+    // Written from inside: checked paths can still be swapped for links.
+    if let Some(s) = sandbox {
+        return s.write(path, content.as_bytes());
+    }
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(path, content).with_context(|| format!("writing {}", path.display()))
 }
 
 /// Most of a file the agent gets in one answer. A bigger file would freeze the

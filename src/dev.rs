@@ -990,7 +990,13 @@ pub fn play(steps: Vec<Synth>, window: &mut gpui::Window, cx: &mut gpui::App) {
             }
             Synth::Key(k) => {
                 if let Ok(k) = Keystroke::parse(&k) {
-                    window.dispatch_keystroke(k, cx);
+                    window.dispatch_keystroke(k.clone(), cx);
+                    // Release it too: a focused control runs its click on
+                    // the release of Enter or Space.
+                    window.dispatch_event(
+                        PlatformInput::KeyUp(gpui::KeyUpEvent { keystroke: k }),
+                        cx,
+                    );
                 }
             }
             Synth::Text(text) => {

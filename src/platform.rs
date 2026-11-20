@@ -1521,7 +1521,7 @@ pub mod keyring {
     /// A secret stored by another app, e.g. droid's "Factory CLI" keyring entries.
     pub fn lookup_in(service: &str, account: &str) -> Option<String> {
         #[cfg(windows)]
-        let secret = win::read(&format!("{service}/{account}"));
+        let secret = win::read(&target_name(service, account));
         #[cfg(not(windows))]
         let secret = {
             let out = Command::new("secret-tool")
@@ -1539,9 +1539,22 @@ pub mod keyring {
             .filter(|s| !s.is_empty())
     }
 
+    /// The name a secret is filed under in the Windows Credential Manager, as it lists
+    /// it. Arakun's own are `arakun:<account>`; another app's are `<service>/<account>`,
+    /// the form Node's keytar uses (droid's "Factory CLI/auth-encryption-key").
+    /// Storing and looking up both go through here, so they can't drift apart.
+    #[cfg(any(windows, test))]
+    pub(super) fn target_name(service: &str, account: &str) -> String {
+        if service == "arakun" {
+            format!("arakun:{account}")
+        } else {
+            format!("{service}/{account}")
+        }
+    }
+
     pub fn store(account: &str, label: &str, secret: &str) -> Result<(), String> {
         #[cfg(windows)]
-        return win::write(account, label, secret);
+        return win::write(&target_name("arakun", account), label, secret);
         #[cfg(not(windows))]
         {
             let mut child = Command::new("secret-tool")
@@ -1575,7 +1588,7 @@ pub mod keyring {
 
     pub fn clear(account: &str) {
         #[cfg(windows)]
-        win::delete(account);
+        win::delete(&target_name("arakun", account));
         #[cfg(not(windows))]
         let _ = Command::new("secret-tool")
             .args(["clear", "service", "arakun", "account", account])
@@ -1595,13 +1608,9 @@ pub mod keyring {
             s.encode_utf16().chain(std::iter::once(0)).collect()
         }
 
-        /// The name the secret is filed under, as Credential Manager lists it.
-        fn target(account: &str) -> Vec<u16> {
-            wide(&format!("arakun:{account}"))
-        }
-
-        pub fn read(account: &str) -> Option<String> {
-            let target = target(account);
+        /// `target` is the full name, from [`super::target_name`].
+        pub fn read(target: &str) -> Option<String> {
+            let target = wide(target);
             let mut cred: *mut CREDENTIALW = std::ptr::null_mut();
             // SAFETY: `target` is NUL-terminated; on success `cred` points at a block the
             // system allocated, read here and released with CredFree.
@@ -1619,11 +1628,11 @@ pub mod keyring {
             }
         }
 
-        pub fn write(account: &str, label: &str, secret: &str) -> Result<(), String> {
+        pub fn write(target: &str, label: &str, secret: &str) -> Result<(), String> {
             if secret.len() > CRED_MAX_CREDENTIAL_BLOB_SIZE as usize {
                 return Err("too long for the Windows Credential Manager".into());
             }
-            let mut target = target(account);
+            let mut target = wide(target);
             let mut comment = wide(label);
             let mut user = wide("arakun");
             let mut blob = secret.as_bytes().to_vec();
@@ -1647,8 +1656,8 @@ pub mod keyring {
             Ok(())
         }
 
-        pub fn delete(account: &str) {
-            let target = target(account);
+        pub fn delete(target: &str) {
+            let target = wide(target);
             // SAFETY: `target` is NUL-terminated.
             unsafe {
                 CredDeleteW(target.as_ptr(), CRED_TYPE_GENERIC, 0);
@@ -1934,5 +1943,31 @@ mod tests {
         assert_eq!(found, Some(file));
         assert_eq!(find_in([dir.clone()], "missing"), None);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn keyring_names_match_what_credential_manager_lists() {
+        assert_eq!(
+            keyring::target_name("arakun", "teams-session"),
+            "arakun:teams-session"
+        );
+        assert_eq!(
+            keyring::target_name("Factory CLI", "auth-encryption-key"),
+            "Factory CLI/auth-encryption-key"
+        );
+    }
+
+    /// What arakun stores it must find again, and forget on clear. Only Windows: the
+    /// Secret Service needs a desktop session that CI and headless Linux lack.
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "writes to this machine's Credential Manager"]
+    fn a_stored_secret_is_found_again_and_cleared() {
+        let account = format!("test-roundtrip-{}", std::process::id());
+        keyring::store(&account, "arakun: test", "s3cret").unwrap();
+        let found = keyring::lookup(&account);
+        keyring::clear(&account);
+        assert_eq!(found.as_deref(), Some("s3cret"));
+        assert_eq!(keyring::lookup(&account), None);
     }
 }

@@ -848,18 +848,23 @@ pub fn stage(dir: &Path, path: &str) -> Result<()> {
 }
 
 /// Stages the changes git sees to `files` (relative to `dir`), and only those;
-/// returns the ones it staged.
+/// returns the ones it staged, relative to the repository's top.
 pub fn stage_only(dir: &Path, files: &[String]) -> Result<Vec<String>> {
+    // Status names files from the repository's top, and `dir` may be a folder
+    // inside it: both sides, and `git add`, use the top.
+    let prefix = stdout(git(dir).args(["rev-parse", "--show-prefix"]))?;
+    let prefix = prefix.trim_end_matches(['\r', '\n']);
+    let top = top_level(dir)?;
     let changed: std::collections::HashSet<String> =
         status(dir)?.into_iter().map(|c| c.path).collect();
     let picked: Vec<String> = files
         .iter()
-        .filter(|f| changed.contains(*f))
-        .cloned()
+        .map(|f| format!("{prefix}{f}"))
+        .filter(|f| changed.contains(f))
         .collect();
     if !picked.is_empty() {
         run_loud(
-            git_paths(dir).args(["add", "-A", "--"]).args(&picked),
+            git_paths(&top).args(["add", "-A", "--"]).args(&picked),
             GIT_LOCAL,
         )?;
     }
@@ -1637,6 +1642,21 @@ test: cover the resize\u{1f}\u{1e}\n";
             assert!(ok.success());
         }
         dir
+    }
+
+    #[test]
+    fn stage_only_works_from_a_folder_inside_the_repository() {
+        let dir = repo();
+        let sub = dir.join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(sub.join("a.txt"), "a").unwrap();
+        std::fs::write(sub.join("b.txt"), "b").unwrap();
+        let staged = super::stage_only(&sub, &["a.txt".into(), "gone.txt".into()]).unwrap();
+        assert_eq!(staged, ["sub/a.txt"]);
+        let index =
+            super::stdout(super::git(&dir).args(["diff", "--cached", "--name-only"])).unwrap();
+        assert_eq!(index.trim(), "sub/a.txt");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

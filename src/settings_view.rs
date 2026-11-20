@@ -48,6 +48,11 @@ pub enum SettingsEvent {
         check: bool,
         command: Option<String>,
     },
+    /// The branch a project's new environments start from; `None` for origin's default.
+    ProjectBase {
+        project: std::path::PathBuf,
+        base: Option<String>,
+    },
     /// Only Linux has the switch.
     #[cfg(target_os = "linux")]
     Background(bool),
@@ -67,8 +72,17 @@ pub struct ProjectSettings {
     pub name: SharedString,
     pub setup: Option<String>,
     pub check: Option<String>,
+    pub base: Option<String>,
     /// The project lives on a server: its commands are not saved here.
     pub remote: bool,
+}
+
+/// A text field of the Project section.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ProjectField {
+    Setup,
+    Check,
+    Base,
 }
 
 /// Where a section sits in the list: Arakun's own settings, then the agents'.
@@ -191,7 +205,7 @@ impl Section {
             Section::Appearance => {
                 "Zoom here. Colors, shape and the sidebar are edited beside the app, not in this dialog."
             }
-            Section::Project => "The open project's commands, on this computer.",
+            Section::Project => "The open project's commands and base branch, on this computer.",
             Section::Branches => {
                 "A new environment starts on a random branch name; an agent can rename it after the task. A merged pull request is archived."
             }
@@ -225,7 +239,8 @@ impl Section {
                 "theme palette color scheme colors accent tint corners radius rounded round sharp spacing gap padding compact roomy density window custom share night graphite midnight forest rose diff colors colorblind high contrast glass blur transparent translucent grays gray text size font scale design system mode dark light zoom bigger smaller"
             }
             Section::Project => {
-                "setup script install new environment worktree check command test lint build verify"
+                "setup script install new environment worktree check command test lint build verify \
+                 base branch start from origin main default"
             }
             Section::Branches => {
                 "branch name naming environment worktree rename model haiku agent merge merged \
@@ -428,7 +443,8 @@ pub struct SettingsDialog {
     project: Option<ProjectSettings>,
     setup_input: Entity<TextInput>,
     check_input: Entity<TextInput>,
-    _subs: [Subscription; 6],
+    base_input: Entity<TextInput>,
+    _subs: [Subscription; 7],
 }
 
 impl EventEmitter<SettingsEvent> for SettingsDialog {}
@@ -516,11 +532,21 @@ impl SettingsDialog {
             }
             i
         });
+        let base_input = cx.new(|cx| {
+            let mut i = TextInput::new("origin's default branch", cx).mono();
+            if let Some(b) = project.as_ref().and_then(|p| p.base.as_ref()) {
+                i.set_text(b.clone(), cx);
+            }
+            i
+        });
         let setup_sub = cx.subscribe_in(&setup_input, window, |this: &mut Self, _, ev, _, cx| {
-            this.on_command_input(false, ev, cx)
+            this.on_project_input(ProjectField::Setup, ev, cx)
         });
         let check_sub = cx.subscribe_in(&check_input, window, |this: &mut Self, _, ev, _, cx| {
-            this.on_command_input(true, ev, cx)
+            this.on_project_input(ProjectField::Check, ev, cx)
+        });
+        let base_sub = cx.subscribe_in(&base_input, window, |this: &mut Self, _, ev, _, cx| {
+            this.on_project_input(ProjectField::Base, ev, cx)
         });
         cx.spawn(async move |this, cx| {
             let (plan, access) = cx
@@ -575,16 +601,19 @@ impl SettingsDialog {
             project,
             setup_input,
             check_input,
+            base_input,
             look,
             confirm_nightly: false,
             pane_scroll: gpui::ScrollHandle::new(),
-            _subs: [sub, key_sub, voice_sub, namer_sub, setup_sub, check_sub],
+            _subs: [
+                sub, key_sub, voice_sub, namer_sub, setup_sub, check_sub, base_sub,
+            ],
         }
     }
 
-    /// Saves the project's setup script or check as it is typed, like the
-    /// naming model, so closing the dialog keeps what the field shows.
-    fn on_command_input(&mut self, check: bool, ev: &InputEvent, cx: &mut Context<Self>) {
+    /// Saves the project's setup script, check or base branch as it is typed, like
+    /// the naming model, so closing the dialog keeps what the field shows.
+    fn on_project_input(&mut self, field: ProjectField, ev: &InputEvent, cx: &mut Context<Self>) {
         match ev {
             InputEvent::Changed => {}
             InputEvent::Cancel => return cx.emit(SettingsEvent::Dismissed),
@@ -593,26 +622,28 @@ impl SettingsDialog {
         let Some(project) = self.project.as_mut().filter(|p| !p.remote) else {
             return;
         };
-        let input = if check {
-            &self.check_input
-        } else {
-            &self.setup_input
+        let (input, saved) = match field {
+            ProjectField::Setup => (&self.setup_input, &mut project.setup),
+            ProjectField::Check => (&self.check_input, &mut project.check),
+            ProjectField::Base => (&self.base_input, &mut project.base),
         };
         let text = input.read(cx).text().trim().to_string();
-        let command = (!text.is_empty()).then_some(text);
-        let saved = if check {
-            &mut project.check
-        } else {
-            &mut project.setup
-        };
-        if *saved == command {
+        let value = (!text.is_empty()).then_some(text);
+        if *saved == value {
             return;
         }
-        *saved = command.clone();
-        cx.emit(SettingsEvent::ProjectCommand {
-            project: project.path.clone(),
-            check,
-            command,
+        *saved = value.clone();
+        let project = project.path.clone();
+        cx.emit(match field {
+            ProjectField::Base => SettingsEvent::ProjectBase {
+                project,
+                base: value,
+            },
+            _ => SettingsEvent::ProjectCommand {
+                project,
+                check: field == ProjectField::Check,
+                command: value,
+            },
         });
     }
 
@@ -1718,13 +1749,13 @@ impl SettingsDialog {
         ])
     }
 
-    /// The open project's setup script and check, saved as they are typed.
+    /// The open project's setup script, check and base branch, saved as they are typed.
     fn render_project(&self) -> AnyElement {
         let Some(project) = &self.project else {
             return group(vec![
                 row(
                     "No project open",
-                    "Add or open a project, then come back to set its setup script and check command.",
+                    "Add or open a project, then come back to set its setup script, check command and base branch.",
                     div().into_any_element(),
                 )
                 .into_any_element(),
@@ -1736,7 +1767,7 @@ impl SettingsDialog {
                 vec![
                     row(
                         "On a server",
-                        "This project comes from a server, which keeps its own settings. A setup script and a check command are set on a project on this computer.",
+                        "This project comes from a server, which keeps its own settings. A setup script, a check command and a base branch are set on a project on this computer.",
                         div().into_any_element(),
                     )
                     .into_any_element(),
@@ -1756,6 +1787,12 @@ impl SettingsDialog {
                     "Check command",
                     "Runs in the environment after every agent turn that edits files. When it fails, Arakun sends the output back to the agent, up to 3 times in a row. Agents can run it themselves with arakun check. Empty turns it off.",
                     field(self.check_input.clone(), 420.).into_any_element(),
+                )
+                .into_any_element(),
+                stacked_row(
+                    "Base branch",
+                    "New environments of this project on this computer start from this branch as it is on origin, fetched first, or from the local branch when origin has none. Empty uses origin's default branch, usually main.",
+                    field(self.base_input.clone(), 420.).into_any_element(),
                 )
                 .into_any_element(),
             ],

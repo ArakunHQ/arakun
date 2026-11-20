@@ -104,10 +104,11 @@ copy of it, rename it back, and start a version that can read it.
   elsewhere that run or need you. The dropdown says the same per project. The **+** on
   the Projects heading opens **New**: a session in the open project or another one, or
   a project to add (`Ctrl+T` and `Ctrl+O` pick them). `Ctrl+Shift+N` always makes a new
-  worktree at once on a random branch from the current branch as it is on `origin`,
-  fetched first (or the local commit when origin has none; on a server, from that
-  server's checkout, with no fetch). File › New Environment with Options… asks for
-  the branch and where to start from, the local commit among them. Every environment
+  worktree at once on a random branch from origin's default branch (usually `main`),
+  fetched first, or from the project's **Base branch** set in Settings › Project. When
+  origin has no such branch it starts from the local one, else the local commit; on a
+  server, from that server's checkout, with no fetch. File › New Environment with
+  Options… asks for the branch and where to start from, the local commit among them. Every environment
   has its own sessions, terminals and draft prompt. The window has one row of tabs for
   all of them: a session, file, diff or browser tab belongs to its environment, and
   going to the tab shows that environment. Going to an environment shows the tab it

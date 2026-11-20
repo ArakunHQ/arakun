@@ -218,6 +218,8 @@ pub struct Branches {
     pub current: Option<String>,
     pub local: Vec<String>,
     pub remote: Vec<String>,
+    /// The branch origin calls its default (`origin/HEAD`), when the clone knows it.
+    pub origin_head: Option<String>,
 }
 
 pub fn branches(repo: &Path) -> Result<Branches> {
@@ -244,6 +246,13 @@ pub fn branches(repo: &Path) -> Result<Branches> {
             b.remote.push(remote.to_string());
         }
     }
+    b.origin_head = read(
+        repo,
+        &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+    )
+    .ok()
+    .and_then(|h| Some(h.trim().strip_prefix("origin/")?.to_string()))
+    .filter(|h| !h.is_empty());
     Ok(b)
 }
 
@@ -297,12 +306,69 @@ pub fn remove_clean_worktree(repo: &Path, path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Where a new environment starts by default: the checked-out branch as it is on
-/// origin, fetched first, so it begins from what was pushed and merged rather than a
-/// local branch that may be behind. None when there is no such remote branch; the
-/// caller then starts from the current commit.
-pub fn origin_base(repo: &Path) -> Option<String> {
-    let branch = current_branch(repo)?;
+/// Where a new environment starts by default: `branch` (the project's base branch),
+/// else origin's default branch, as it is on origin and fetched first, so it begins
+/// from what was pushed and merged rather than a local branch that may be behind.
+/// When origin has no such branch, the local branch of that name; None when there is
+/// neither, and the caller then starts from the current commit.
+pub fn new_env_base(repo: &Path, branch: Option<&str>) -> Option<String> {
+    let branch = match branch.map(base_branch_name).filter(|b| !b.is_empty()) {
+        Some(b) => b.to_string(),
+        None => origin_default_branch(repo),
+    };
+    origin_base(repo, &branch).or_else(|| {
+        let local = format!("refs/heads/{branch}");
+        succeeds(
+            git(repo).args(["show-ref", "--verify", "--quiet", &local]),
+            GIT_LOCAL,
+        )
+        .then_some(local)
+    })
+}
+
+/// A base branch as typed: `origin/main` names the same branch as `main`.
+pub fn base_branch_name(typed: &str) -> &str {
+    let typed = typed.trim();
+    typed.strip_prefix("origin/").unwrap_or(typed)
+}
+
+/// The branch origin calls its default. A clone knows it as `origin/HEAD`; a
+/// repository that added origin later asks origin, and `main` when that fails too.
+fn origin_default_branch(repo: &Path) -> String {
+    if let Ok(head) = read(
+        repo,
+        &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+    ) && let Some(b) = head.trim().strip_prefix("origin/")
+        && !b.is_empty()
+    {
+        return b.to_string();
+    }
+    output(
+        git(repo).args(["ls-remote", "--symref", "origin", "HEAD"]),
+        ORIGIN_TIMEOUT,
+    )
+    .ok()
+    .filter(|o| o.status.success())
+    .and_then(|o| symref_head(&String::from_utf8_lossy(&o.stdout)))
+    .unwrap_or_else(|| "main".into())
+}
+
+/// The branch in `git ls-remote --symref origin HEAD`'s answer
+/// (`ref: refs/heads/main\tHEAD`).
+fn symref_head(listed: &str) -> Option<String> {
+    listed.lines().find_map(|l| {
+        let (target, name) = l.strip_prefix("ref: ")?.split_once('\t')?;
+        (name == "HEAD")
+            .then(|| target.strip_prefix("refs/heads/"))
+            .flatten()
+            .filter(|b| !b.is_empty())
+            .map(str::to_string)
+    })
+}
+
+/// `branch` as it is on origin, fetched first. None when origin has no such
+/// branch, or it can't be reached and was never fetched.
+fn origin_base(repo: &Path, branch: &str) -> Option<String> {
     let remote = format!("refs/remotes/origin/{branch}");
     // Exit code 2: origin answered and has no such branch. A copy fetched before it
     // was deleted must not be used then.
@@ -1905,7 +1971,8 @@ test: cover the resize\u{1f}\u{1e}\n";
     #[test]
     fn new_environments_start_from_origin() {
         let dir = repo();
-        assert_eq!(super::origin_base(&dir), None);
+        // No origin and no local main: the current commit.
+        assert_eq!(super::new_env_base(&dir, None), None);
         let remote = dir.with_extension("remote");
         let tree = dir.with_extension("tree");
         let git = |args: &[&str]| {
@@ -1916,16 +1983,25 @@ test: cover the resize\u{1f}\u{1e}\n";
                 .success()
         };
         let d = dir.to_str().unwrap();
-        assert!(git(&["init", "-q", "--bare", remote.to_str().unwrap()]));
+        let r = remote.to_str().unwrap();
+        assert!(git(&["init", "-q", "--bare", "-b", "main", r]));
+        assert!(git(&["-C", d, "remote", "add", "origin", r]));
         assert!(git(&[
             "-C",
             d,
-            "remote",
-            "add",
+            "push",
+            "-q",
             "origin",
-            remote.to_str().unwrap()
+            "env/brave-otter:main"
         ]));
-        assert!(git(&["-C", d, "push", "-q", "origin", "env/brave-otter"]));
+        assert!(git(&[
+            "-C",
+            d,
+            "push",
+            "-q",
+            "origin",
+            "env/brave-otter:develop"
+        ]));
         // A local commit that is not on origin must not be in the new environment.
         assert!(git(&[
             "-C",
@@ -1943,7 +2019,7 @@ test: cover the resize\u{1f}\u{1e}\n";
             "local",
         ]));
         // A local branch with the remote branch's short name must not confuse it.
-        assert!(git(&["-C", d, "branch", "origin/env/brave-otter"]));
+        assert!(git(&["-C", d, "branch", "origin/main"]));
         // Origin's fetch refspec leaves the branch out: it is fetched all the same.
         assert!(git(&[
             "-C",
@@ -1952,43 +2028,52 @@ test: cover the resize\u{1f}\u{1e}\n";
             "remote.origin.fetch",
             "+refs/heads/other:refs/remotes/origin/other"
         ]));
-        assert!(git(&[
-            "-C",
-            d,
-            "update-ref",
-            "-d",
-            "refs/remotes/origin/env/brave-otter"
-        ]));
-        let base = super::origin_base(&dir);
-        assert_eq!(base.as_deref(), Some("refs/remotes/origin/env/brave-otter"));
+        // No origin/HEAD here: origin says its default is main, not the current branch.
+        let base = super::new_env_base(&dir, None);
+        assert_eq!(base.as_deref(), Some("refs/remotes/origin/main"));
         super::add_worktree(&dir, &tree, "fresh", base.as_deref(), true).unwrap();
         let rev = |dir: &std::path::Path, r: &str| {
             super::stdout(super::git(dir).args(["rev-parse", r])).unwrap()
         };
-        assert_eq!(
-            rev(&tree, "HEAD"),
-            rev(&dir, "refs/remotes/origin/env/brave-otter")
-        );
+        assert_eq!(rev(&tree, "HEAD"), rev(&dir, "refs/remotes/origin/main"));
         assert_ne!(rev(&tree, "HEAD"), rev(&dir, "HEAD"));
-        // Not tracking origin/env/brave-otter: a push must not go there.
+        // Not tracking origin/main: a push must not go there.
         assert!(
             super::git(&tree)
                 .args(["rev-parse", "@{u}"])
                 .output()
                 .is_ok_and(|o| !o.status.success())
         );
-        // Deleted on origin: the copy fetched earlier is stale, so start locally.
-        assert!(git(&[
-            "--git-dir",
-            remote.to_str().unwrap(),
-            "branch",
-            "-D",
-            "env/brave-otter"
-        ]));
-        assert_eq!(super::origin_base(&dir), None);
+        // A base branch set by the user, typed either way.
+        for typed in ["develop", "origin/develop", " develop "] {
+            assert_eq!(
+                super::new_env_base(&dir, Some(typed)).as_deref(),
+                Some("refs/remotes/origin/develop")
+            );
+        }
+        // Only local: the local branch.
+        assert_eq!(
+            super::new_env_base(&dir, Some("taken")).as_deref(),
+            Some("refs/heads/taken")
+        );
+        // Deleted on origin: the copy fetched earlier is stale, and there is no
+        // local one, so start from the current commit.
+        assert!(git(&["--git-dir", r, "branch", "-D", "develop"]));
+        assert_eq!(super::new_env_base(&dir, Some("develop")), None);
         let _ = std::fs::remove_dir_all(&tree);
         let _ = std::fs::remove_dir_all(dir);
         let _ = std::fs::remove_dir_all(remote);
+    }
+
+    #[test]
+    fn reads_origins_default_branch() {
+        assert_eq!(
+            super::symref_head("ref: refs/heads/trunk\tHEAD\nabc123\tHEAD\n").as_deref(),
+            Some("trunk")
+        );
+        assert_eq!(super::symref_head("abc123\tHEAD\n"), None);
+        assert_eq!(super::base_branch_name(" origin/main "), "main");
+        assert_eq!(super::base_branch_name("release/1.0"), "release/1.0");
     }
 
     #[test]

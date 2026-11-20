@@ -707,6 +707,9 @@ pub fn state_message(id: &str, t: &Thread, status: Status) -> String {
         "elapsed_ms": t.turn_elapsed().map(|d| d.as_millis() as u64),
         "title": t.title(),
         "changes": change_totals(t.entries()),
+        "queue": t.queued(),
+        "queue_paused": t.queue_paused(),
+        "sending_now": t.sending_now(),
     })
     .to_string()
 }
@@ -775,15 +778,24 @@ pub fn session_live(head: &SessionHead, t: &Thread, status: Status, scope: &Scop
     msg["usage"] = usage(t.usage());
     msg["elapsed_ms"] = json!(t.turn_elapsed().map(|d| d.as_millis() as u64));
     msg["status"] = json!(self::status(status));
+    msg["queue"] = json!(t.queued());
+    msg["queue_paused"] = json!(t.queue_paused());
+    msg["sending_now"] = json!(t.sending_now());
     if !t.title().is_empty() {
         msg["title"] = json!(t.title());
     }
     msg.to_string()
 }
 
-/// `session`: one that is not running, from its transcript's entries.
-pub fn session_saved(head: &SessionHead, all: &[Entry], scope: &Scope) -> String {
-    session_head(head, all, scope).to_string()
+/// `session`: one that is not running, from its transcript's entries and
+/// the follow-ups that waited in it. Its thread holds those paused once it
+/// is back, so they show paused.
+pub fn session_saved(head: &SessionHead, all: &[Entry], queue: &[String], scope: &Scope) -> String {
+    let mut msg = session_head(head, all, scope);
+    msg["queue"] = json!(queue);
+    msg["queue_paused"] = json!(!queue.is_empty());
+    msg["sending_now"] = json!(0);
+    msg.to_string()
 }
 
 /// What a waiting session asks, for its line in the inbox.

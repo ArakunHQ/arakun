@@ -803,7 +803,9 @@ impl Shell {
                     let thread = self.active_thread(cx);
                     if let Some(thread) = &thread {
                         thread.update(cx, |t, cx| {
-                            if reachable {
+                            if reachable && now {
+                                t.interrupt_with(prompt, cx);
+                            } else if reachable {
                                 t.send(prompt, cx);
                             } else {
                                 t.post_notice(

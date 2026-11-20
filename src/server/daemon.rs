@@ -2034,7 +2034,9 @@ impl Daemon {
                         wire::session_live(&head, t, status_of(t), &self.scope(t.cwd()))
                     }
                     None => self.with_entries(&session, cx, |all, cwd| {
-                        wire::session_saved(&head, all, &self.scope(cwd))
+                        // The read just made, kept: not read again.
+                        let queue = self.last_read.queue(&self.store.transcript_path(&session));
+                        wire::session_saved(&head, all, &queue, &self.scope(cwd))
                     }),
                 };
                 let watched = self.watching.entry(client).or_default();
@@ -2231,11 +2233,31 @@ impl Daemon {
                     json!({ "type": "settings", "id": session, "settings": wire::settings(list) });
                 self.transport.send(client, reply.to_string());
             }
-            ClientMsg::Cancel { session } => {
+            ClientMsg::Cancel {
+                session,
+                keep_queue,
+            } => {
                 if let Some(thread) = self.thread(&session) {
-                    stop_turn(&thread, cx);
+                    if keep_queue {
+                        thread.update(cx, |t, cx| t.cancel(cx));
+                    } else {
+                        stop_turn(&thread, cx);
+                    }
                 }
             }
+            ClientMsg::Unqueue {
+                session,
+                index,
+                text,
+                now,
+            } => match self.queue_thread(&session, now, cx) {
+                Ok(thread) => thread.update(cx, |t, cx| t.unqueue(index, &text, now, cx)),
+                Err(e) => self.transport.send(client, session_error(&session, &e)),
+            },
+            ClientMsg::ResumeQueue { session } => match self.queue_thread(&session, true, cx) {
+                Ok(thread) => thread.update(cx, |t, cx| t.resume_queue(cx)),
+                Err(e) => self.transport.send(client, session_error(&session, &e)),
+            },
             ClientMsg::Permission { session, option } => {
                 if let Some(thread) = self.thread(&session) {
                     thread.update(cx, |t, cx| t.respond_permission(&option, cx));
@@ -2991,6 +3013,28 @@ impl Daemon {
             return Err(format!("{} is being deleted.", path.display()));
         }
         offer(&mut self.store, path, agent)
+    }
+
+    /// The thread whose queue a device acts on. A session let go while its
+    /// queue waited is brought back: its transcript kept the queue. Work
+    /// that would start a turn is held to what a prompt sent is held to.
+    fn queue_thread(
+        &mut self,
+        id: &str,
+        starts_turn: bool,
+        cx: &mut Context<Self>,
+    ) -> Result<Entity<Thread>, String> {
+        if !starts_turn && let Some(thread) = self.thread(id) {
+            return Ok(thread);
+        }
+        // Bringing the agent back starts it in that folder, so it is asked too.
+        if let Some(s) = self.store.session(id) {
+            self.admit(&s.place)?;
+        }
+        if starts_turn && self.handing_over.contains(id) {
+            return Err("it is being handed to another agent".into());
+        }
+        self.ensure_live(id, cx)
     }
 
     /// Sends `text` to the session `id` as its next prompt.

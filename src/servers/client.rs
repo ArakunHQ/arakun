@@ -133,6 +133,7 @@ impl Client {
             status: None,
             parts: wire::Parts::default(),
             timing,
+            page: crate::servers::new_id(),
             torn: false,
             acks: false,
             seq: 0,
@@ -239,6 +240,11 @@ struct Link {
     status: Option<Status>,
     parts: wire::Parts,
     timing: Timing,
+    /// This client's name to the relay, as `phone/relay.js` has one per page.
+    /// It stays the same across reconnects, so the relay replaces the socket
+    /// a sleep or a network switch left behind instead of counting it as one
+    /// more phone until it is full.
+    page: String,
     /// A write failed and the socket may still hold that frame: it is
     /// dropped without a close or a flush, so what was told back as
     /// undelivered does not go out after all.
@@ -496,7 +502,12 @@ impl Link {
                 (
                     saved.origin.clone(),
                     label.clone(),
-                    format!("d={}&t={}", percent(&saved.device), percent(ticket)),
+                    format!(
+                        "d={}&t={}&s={}",
+                        percent(&saved.device),
+                        percent(ticket),
+                        percent(&self.page)
+                    ),
                 )
             }
         };
@@ -518,7 +529,10 @@ impl Link {
         label: &str,
         wait: &mut Duration,
     ) -> Ended {
-        let mut pulse = Pulse::new(self.timing);
+        // The relay reaps a phone that stops pinging, but it counts only its
+        // own text ping; a protocol ping would leave a dead socket holding a
+        // place for good.
+        let mut pulse = Pulse::relay(self.timing);
         let mut channel = 0u32;
         // A hello sent and not yet answered; then the keys it agreed on.
         let mut handshake: Option<Handshake> = None;
@@ -570,9 +584,7 @@ impl Link {
                                     return hung_up(msg["reason"].as_str().unwrap_or(""), None);
                                 }
                                 "limit" => {
-                                    return Ended::Retry(
-                                        "The relay is holding this connection back for now.".into(),
-                                    );
+                                    return held_back(msg["which"].as_str().unwrap_or(""));
                                 }
                                 _ => {}
                             }
@@ -714,6 +726,8 @@ impl Link {
 /// Pings in the silences, and notices when nothing comes back.
 struct Pulse {
     timing: Timing,
+    /// Pings as the text `ping`, which the relay answers `pong` itself.
+    text: bool,
     last_heard: Instant,
     last_ping: Instant,
 }
@@ -722,8 +736,16 @@ impl Pulse {
     fn new(timing: Timing) -> Pulse {
         Pulse {
             timing,
+            text: false,
             last_heard: Instant::now(),
             last_ping: Instant::now(),
+        }
+    }
+
+    fn relay(timing: Timing) -> Pulse {
+        Pulse {
+            text: true,
+            ..Pulse::new(timing)
         }
     }
 
@@ -737,7 +759,12 @@ impl Pulse {
         }
         if self.last_ping.elapsed() >= self.timing.ping {
             self.last_ping = Instant::now();
-            ws.send(Message::Ping(Vec::new().into()))
+            let ping = if self.text {
+                Message::text("ping")
+            } else {
+                Message::Ping(Vec::new().into())
+            };
+            ws.send(ping)
                 .map_err(|e| Ended::Retry(format!("Could not write to the server: {e}")))?;
         }
         Ok(())
@@ -789,11 +816,25 @@ fn hung_up(reason: &str, code: Option<u16>) -> Ended {
             Ended::Refused("This app is no longer paired with the server.".into())
         }
         _ if code == Some(4429) || reason.starts_with("limit:") => {
-            Ended::Retry("The relay is holding this connection back for now.".into())
+            held_back(reason.strip_prefix("limit:").unwrap_or(""))
         }
         "" => Ended::Retry("The relay closed the connection.".into()),
         other => Ended::Retry(format!("The relay hung up: {other}")),
     }
+}
+
+/// The relay closed the connection at one of its limits, named by `which`.
+fn held_back(which: &str) -> Ended {
+    Ended::Retry(
+        match which {
+            "phones" => "The relay has as many devices connected to this server as it allows.",
+            "burst" => "The relay slowed this connection down: too many messages at once.",
+            "daily" => "The relay has passed this server's messages for today.",
+            "frame" => "The relay turned down a message that was too big.",
+            _ => "The relay is holding this connection back for now.",
+        }
+        .into(),
+    )
 }
 
 /// `value` as it goes in a query: what is not plainly safe is escaped.
@@ -1522,6 +1563,7 @@ mod tests {
             match ws.read().unwrap() {
                 Message::Binary(b) => return (b[0], b[1..].to_vec()),
                 Message::Ping(_) | Message::Pong(_) => continue,
+                Message::Text(t) if t.as_str() == "ping" => continue,
                 other => panic!("unexpected {other:?}"),
             }
         }
@@ -1711,7 +1753,8 @@ mod tests {
         let _client = Client::start("srv".into(), Who::Saved(saved), String::new(), tx, QUICK);
         assert_eq!(status(&mut rx), Status::Connecting);
         let (mut ws, mut session, query) = accept_through_relay(&listener, &identity, 9);
-        assert_eq!(query, "d=dev1&t=tick%20et");
+        let page = query.strip_prefix("d=dev1&t=tick%20et&s=").unwrap();
+        assert!(page.len() >= 8 && page.bytes().all(|b| b.is_ascii_hexdigit()));
         assert_eq!(
             sealed(&mut ws, &mut session),
             json!({ "auth": { "token": "tok" } })
@@ -1750,10 +1793,55 @@ mod tests {
     }
 
     #[test]
+    fn it_comes_back_to_the_relay_as_the_same_page_and_pings_in_text() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let origin = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let identity = Identity::generate();
+        let saved = Saved {
+            id: "srv".into(),
+            name: "build-box".into(),
+            origin,
+            way: Way::Relay {
+                label: identity.label(),
+                ticket: "t".into(),
+            },
+            device: "dev1".into(),
+            token: "tok".into(),
+        };
+        let (tx, mut rx) = mpsc::unbounded();
+        let _client = Client::start("srv".into(), Who::Saved(saved), String::new(), tx, QUICK);
+        let (mut ws, mut session, first) = accept_through_relay(&listener, &identity, 3);
+        assert_eq!(
+            sealed(&mut ws, &mut session),
+            json!({ "auth": { "token": "tok" } })
+        );
+        seal(&mut ws, &mut session, json!({ "ok": { "id": "dev1" } }));
+        // The relay reaps a phone by its text ping only.
+        let ping = loop {
+            match ws.read().unwrap() {
+                Message::Text(t) => break t,
+                Message::Pong(_) => continue,
+                other => panic!("unexpected {other:?}"),
+            }
+        };
+        assert_eq!(ping.as_str(), "ping");
+        // The connection drops without a word: the next one is the same page,
+        // so the relay can let it take the old one's place.
+        drop(ws);
+        let (_ws, _session, again) = accept_through_relay(&listener, &identity, 4);
+        assert_eq!(again, first);
+        assert!(first.contains("&s="));
+        let _ = status(&mut rx);
+    }
+
+    #[test]
     fn what_ends_a_connection_decides_whether_another_follows() {
         assert!(matches!(hung_up("revoked", None), Ended::Refused(_)));
         assert!(matches!(hung_up("bad_code", None), Ended::Refused(_)));
         assert!(matches!(hung_up("", Some(4401)), Ended::Refused(_)));
+        assert!(
+            matches!(hung_up("limit:phones", Some(4429)), Ended::Retry(why) if why.contains("devices"))
+        );
         assert!(matches!(hung_up("limit:daily", None), Ended::Retry(_)));
         assert!(matches!(hung_up("", Some(4429)), Ended::Retry(_)));
         assert!(matches!(hung_up("", None), Ended::Retry(_)));

@@ -20,6 +20,8 @@ struct Kept {
     stamp: (SystemTime, u64),
     entries: Vec<Entry>,
     cwd: PathBuf,
+    /// The follow-ups that waited when it was saved.
+    queue: Vec<String>,
     used: Cell<Instant>,
 }
 
@@ -41,6 +43,19 @@ impl LastRead {
     /// that is missing or cannot be read has no entries, and is read again
     /// the next time: only a read that worked is kept.
     pub fn with<R>(&self, path: &Path, f: impl FnOnce(&[Entry], &Path) -> R) -> R {
+        match self.kept(path) {
+            Some(kept) => f(&kept.entries, &kept.cwd),
+            None => f(&[], Path::new("")),
+        }
+    }
+
+    /// The follow-ups that waited in the transcript saved at `path`: a
+    /// restored thread holds them, paused, until someone lets them go.
+    pub fn queue(&self, path: &Path) -> Vec<String> {
+        self.kept(path).map(|k| k.queue.clone()).unwrap_or_default()
+    }
+
+    fn kept(&self, path: &Path) -> Option<Rc<Kept>> {
         // Taken before the read: a save that lands in between leaves an old
         // stamp on new entries, and the next call reads again.
         let stamp = stamp(path);
@@ -59,14 +74,15 @@ impl LastRead {
                 // moment, not), and the empty answer would stay for good.
                 let (Ok(read), Some(stamp)) = (Thread::read_transcript(path), stamp) else {
                     *self.kept.borrow_mut() = None;
-                    return f(&[], Path::new(""));
+                    return None;
                 };
-                let (entries, cwd) = (read.entries, read.meta.cwd);
+                let (entries, cwd, queue) = (read.entries, read.meta.cwd, read.queue);
                 let kept = Rc::new(Kept {
                     path: path.to_path_buf(),
                     stamp,
                     entries,
                     cwd,
+                    queue,
                     used: Cell::new(Instant::now()),
                 });
                 *self.kept.borrow_mut() = Some(kept.clone());
@@ -74,7 +90,7 @@ impl LastRead {
             }
         };
         kept.used.set(Instant::now());
-        f(&kept.entries, &kept.cwd)
+        Some(kept)
     }
 
     /// Lets go of a read nobody asked for in a while. Call it now and then.
@@ -139,5 +155,28 @@ mod tests {
         assert_eq!(count(&a), (0, PathBuf::new()));
         assert_eq!(last.reads.get(), before + 2);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_queue_saved_comes_with_the_read() {
+        let dir = std::env::temp_dir().join(format!("arakun-last-queue-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("q.json");
+        save(&path, &["one"]);
+        let last = LastRead::default();
+        // None saved: none to show.
+        assert!(last.queue(&path).is_empty());
+        let mut t: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        t["queue"] = serde_json::json!(["next", "after"]);
+        std::fs::write(&path, t.to_string()).unwrap();
+        assert_eq!(last.queue(&path), ["next", "after"]);
+        // The entries come from the same read.
+        let before = last.reads.get();
+        assert_eq!(last.with(&path, |all, _| all.len()), 1);
+        assert_eq!(last.reads.get(), before);
+        // A file gone has none.
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(last.queue(&path).is_empty());
     }
 }

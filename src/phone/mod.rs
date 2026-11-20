@@ -166,6 +166,25 @@ pub enum ClientMsg {
     },
     Cancel {
         session: String,
+        /// Pauses the queued follow-ups instead of dropping them, as Esc does
+        /// in the app. A server without it drops them, as before.
+        #[serde(default)]
+        keep_queue: bool,
+    },
+    /// Takes one queued follow-up out of the queue: `now` sends it as soon as
+    /// the running turn stopped (which it stops), otherwise it is dropped.
+    /// `text` is the follow-up's own, so one that moved in the queue since is
+    /// still found, and one that went already is left alone.
+    Unqueue {
+        session: String,
+        index: usize,
+        text: String,
+        #[serde(default)]
+        now: bool,
+    },
+    /// Lets the queue go again after an interrupt paused it.
+    ResumeQueue {
+        session: String,
     },
     Permission {
         session: String,
@@ -2468,5 +2487,39 @@ mod tests {
             }
         }
         assert!(heard);
+    }
+
+    #[test]
+    fn queue_messages_parse_and_a_plain_cancel_drops_the_queue() {
+        let parse = |s: &str| serde_json::from_str::<ClientMsg>(s).unwrap();
+        assert_eq!(
+            parse(r#"{"type":"cancel","session":"s1"}"#),
+            ClientMsg::Cancel {
+                session: "s1".into(),
+                keep_queue: false,
+            }
+        );
+        assert_eq!(
+            parse(r#"{"type":"cancel","session":"s1","keep_queue":true}"#),
+            ClientMsg::Cancel {
+                session: "s1".into(),
+                keep_queue: true,
+            }
+        );
+        assert_eq!(
+            parse(r#"{"type":"unqueue","session":"s1","index":2,"text":"go","now":true}"#),
+            ClientMsg::Unqueue {
+                session: "s1".into(),
+                index: 2,
+                text: "go".into(),
+                now: true,
+            }
+        );
+        assert_eq!(
+            parse(r#"{"type":"resume_queue","session":"s1"}"#),
+            ClientMsg::ResumeQueue {
+                session: "s1".into()
+            }
+        );
     }
 }

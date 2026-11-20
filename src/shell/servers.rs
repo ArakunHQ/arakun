@@ -93,6 +93,36 @@ struct Following {
     /// Who looks at it: the session in front here, phones through this app.
     /// It is followed while anyone does.
     by: Vec<Watcher>,
+    /// The prompts waiting there for the running turn, as its last `state`
+    /// said: the server keeps the queue.
+    queue: RemoteQueue,
+}
+
+/// A server session's queue, as its `state` says it. An older server says
+/// none: it is shown empty.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct RemoteQueue {
+    prompts: Vec<String>,
+    paused: bool,
+    sending_now: usize,
+}
+
+impl RemoteQueue {
+    fn of(msg: &Value) -> Self {
+        let prompts = msg["queue"]
+            .as_array()
+            .map(|q| {
+                q.iter()
+                    .filter_map(|p| p.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        Self {
+            prompts,
+            paused: msg["queue_paused"] == true,
+            sending_now: msg["sending_now"].as_u64().unwrap_or(0) as usize,
+        }
+    }
 }
 
 impl Following {
@@ -655,7 +685,7 @@ fn transcript_of(f: &Following) -> Transcript {
         fork_point: None,
         interrupted: false,
         resume: false,
-        queue: Vec::new(),
+        queue: f.queue.prompts.clone(),
         handoff: None,
         subagents: Vec::new(),
     }
@@ -1351,6 +1381,7 @@ impl Shell {
             refill: Some(Vec::new()),
             broken: None,
             by: Vec::new(),
+            queue: RemoteQueue::default(),
         };
         let followed = follow_in(&mut link.following, who, fresh, conn.watches_several);
         close_follows(link, followed.close);
@@ -1408,7 +1439,12 @@ impl Shell {
             RemoteAction::Send { text, now } => {
                 json!({ "type": "send", "text": text, "uploads": [], "now": now })
             }
-            RemoteAction::Cancel => json!({ "type": "cancel" }),
+            // Paused, not dropped: the queue stays on show, to resume or empty.
+            RemoteAction::Cancel => json!({ "type": "cancel", "keep_queue": true }),
+            RemoteAction::Unqueue { index, text, now } => {
+                json!({ "type": "unqueue", "index": index, "text": text, "now": now })
+            }
+            RemoteAction::ResumeQueue => json!({ "type": "resume_queue" }),
             RemoteAction::Permission(option) => json!({ "type": "permission", "option": option }),
             RemoteAction::Answer(answers) => json!({ "type": "answer", "answers": answers }),
             RemoteAction::SkipQuestion => json!({ "type": "skip_question" }),
@@ -2989,14 +3025,17 @@ impl Shell {
                 if let Some(title) = msg["title"].as_str().filter(|t| !t.is_empty()) {
                     f.title = title.to_string();
                 }
+                f.queue = RemoteQueue::of(msg);
                 let Some(thread) = thread_of(&self.projects, &f.env_path, &f.session) else {
                     return;
                 };
                 let (status, transcript) = (thread_status(f.status), transcript_of(f));
                 let (permission, question) = (msg["permission"].clone(), msg["question"].clone());
+                let queue = f.queue.clone();
                 thread.update(cx, |t, cx| {
                     t.show_transcript(transcript, status, cx);
                     t.set_remote_asks(&permission, &question, cx);
+                    t.set_remote_queue(queue.prompts, queue.paused, queue.sending_now, cx);
                 });
             }
             // Entries changed, cut down for a phone: the whole ones are asked for.
@@ -3605,6 +3644,7 @@ mod tests {
             refill: None,
             broken: None,
             by,
+            queue: RemoteQueue::default(),
         }
     }
 
@@ -3895,5 +3935,24 @@ mod tests {
         // One that stays idle is not marked again once read.
         env.sessions.iter_mut().for_each(|s| s.unread = false);
         assert!(!sync_sessions(&strip, &[], &mut env, done()));
+    }
+
+    #[test]
+    fn a_session_state_carries_the_queue_there() {
+        let msg = json!({
+            "type": "state", "id": "s1", "status": "working",
+            "queue": ["now", "later"], "queue_paused": true, "sending_now": 1,
+        });
+        assert_eq!(
+            RemoteQueue::of(&msg),
+            RemoteQueue {
+                prompts: vec!["now".into(), "later".into()],
+                paused: true,
+                sending_now: 1,
+            }
+        );
+        // An older server says nothing of it.
+        let old = json!({ "type": "state", "id": "s1", "status": "working" });
+        assert_eq!(RemoteQueue::of(&old), RemoteQueue::default());
     }
 }

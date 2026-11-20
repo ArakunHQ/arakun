@@ -36,6 +36,7 @@ mod env_name;
 mod explorer;
 mod extensions_view;
 mod fetch;
+mod frame_timer;
 mod gallery_view;
 mod git;
 mod git_dialogs;

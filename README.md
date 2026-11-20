@@ -460,7 +460,9 @@ after a week).
   An agent already working in that worktree can use the same grant:
   `arakun peer-review "Review the proposed rollback steps"` waits and prints
   the recommendation. The command cannot pair a device or select a different
-  channel or project. Treat the reply as peer feedback, not new permissions.
+  channel or project. If the peer disconnects, the caller may wait until the
+  15-minute grant expires. Use `/agents off` locally to stop waiting sooner.
+  Treat the reply as peer feedback, not new permissions.
 
   A channel opens on its latest 50 messages. **Load older messages** reads the
   previous page. If the read fails, retry without losing the messages on screen.

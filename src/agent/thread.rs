@@ -1854,14 +1854,19 @@ impl Thread {
                 if fresh && t.kind == AgentKind::OpenCode {
                     super::catalog::remember_opencode_options(&v["configOptions"]);
                 }
-                if fresh && matches!(t.kind, AgentKind::Codex | AgentKind::Devin) {
+                if fresh
+                    && matches!(
+                        t.kind,
+                        AgentKind::Codex | AgentKind::Devin | AgentKind::Cursor
+                    )
+                {
                     let raw = v["configOptions"].clone();
                     let kind = t.kind;
                     cx.background_spawn(crate::guard::task(async move {
-                        if kind == AgentKind::Codex {
-                            super::catalog::remember_codex_options(&raw)
-                        } else {
-                            super::catalog::remember_devin_options(&raw)
+                        match kind {
+                            AgentKind::Codex => super::catalog::remember_codex_options(&raw),
+                            AgentKind::Devin => super::catalog::remember_devin_options(&raw),
+                            _ => super::catalog::remember_cursor_options(&raw),
                         }
                     }))
                     .detach();

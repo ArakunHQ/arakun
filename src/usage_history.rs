@@ -335,6 +335,7 @@ pub fn scan() -> Vec<Record> {
             | AgentKind::OpenCode
             | AgentKind::Codex
             | AgentKind::Devin
+            | AgentKind::Cursor
             | AgentKind::WorkersAi => modified,
         };
         let wal = (*agent == AgentKind::Devin)
@@ -358,8 +359,8 @@ pub fn scan() -> Vec<Record> {
                 }
             },
             // OpenCode keeps its history in a database arakun does not read, and
-            // Codex's rollouts are not read yet.
-            AgentKind::OpenCode | AgentKind::Codex | AgentKind::WorkersAi => {
+            // Codex's rollouts and Cursor's chats are not read yet.
+            AgentKind::OpenCode | AgentKind::Codex | AgentKind::Cursor | AgentKind::WorkersAi => {
                 (Vec::new(), Vec::new())
             }
         };

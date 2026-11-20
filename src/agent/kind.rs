@@ -14,14 +14,16 @@ pub enum AgentKind {
     Codex,
     /// Cognition's Devin CLI, which speaks ACP itself (`devin acp`).
     Devin,
+    /// The Cursor CLI (`cursor-agent`), which speaks ACP itself (`cursor-agent acp`).
+    Cursor,
     /// Cloudflare Workers AI, run by arakun itself (`workers_ai.rs`).
     #[serde(rename = "workers-ai")]
     WorkersAi,
 }
 
 impl AgentKind {
-    /// The agent CLIs whose plans the sidebar's usage card can show. Codex is
-    /// left out until its ChatGPT limits are read.
+    /// The agent CLIs whose plans the sidebar's usage card can show. Codex and
+    /// Cursor are left out until their plans' limits are read.
     pub const ALL: [AgentKind; 4] = [
         AgentKind::Claude,
         AgentKind::Droid,
@@ -36,6 +38,7 @@ impl AgentKind {
             AgentKind::OpenCode => "OpenCode",
             AgentKind::Codex => "Codex",
             AgentKind::Devin => "Devin",
+            AgentKind::Cursor => "Cursor",
             AgentKind::WorkersAi => "Workers AI",
         }
     }
@@ -48,6 +51,7 @@ impl AgentKind {
             AgentKind::OpenCode => "opencode",
             AgentKind::Codex => "codex",
             AgentKind::Devin => "devin",
+            AgentKind::Cursor => "cursor",
             AgentKind::WorkersAi => "workers-ai",
         }
     }
@@ -59,6 +63,7 @@ impl AgentKind {
             "opencode" | "open-code" => Some(AgentKind::OpenCode),
             "codex" | "chatgpt" | "openai" => Some(AgentKind::Codex),
             "devin" | "cognition" => Some(AgentKind::Devin),
+            "cursor" | "cursor-agent" | "cursor agent" => Some(AgentKind::Cursor),
             "workers-ai" | "workersai" | "workers ai" => Some(AgentKind::WorkersAi),
             _ => None,
         }
@@ -72,6 +77,7 @@ impl AgentKind {
             AgentKind::OpenCode | AgentKind::WorkersAi => "https://opencode.ai",
             AgentKind::Codex => "https://github.com/openai/codex",
             AgentKind::Devin => "https://docs.devin.ai/work-with-devin/devin-cli",
+            AgentKind::Cursor => "https://cursor.com/docs/cli/installation",
         }
     }
 
@@ -104,6 +110,10 @@ impl AgentKind {
                 "Run `devin auth login` in a terminal and sign in in the browser \
                  (or set WINDSURF_API_KEY), then retry."
             }
+            AgentKind::Cursor => {
+                "Run `cursor-agent login` in a terminal and sign in in the browser \
+                 (or set CURSOR_API_KEY), then retry."
+            }
             AgentKind::WorkersAi => {
                 "Run `opencode auth login`, pick Cloudflare Workers AI and paste an API token with Workers AI access \
                  (or set CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID), then retry."
@@ -112,7 +122,7 @@ impl AgentKind {
     }
 
     /// The same logos the shell draws: Claude's starburst, Factory's mark for Droid,
-    /// OpenCode's, Codex's and Devin's own; Workers AI gets the Cloudflare tab's globe.
+    /// OpenCode's, Codex's, Devin's and Cursor's own; Workers AI gets the Cloudflare tab's globe.
     pub fn icon(self, size: f32) -> AnyElement {
         match self {
             AgentKind::Claude => img("providers/claude.svg")
@@ -123,6 +133,7 @@ impl AgentKind {
             AgentKind::OpenCode => ui::opencode_logo(size).into_any_element(),
             AgentKind::Codex => ui::codex_logo(size).into_any_element(),
             AgentKind::Devin => ui::devin_logo(size).into_any_element(),
+            AgentKind::Cursor => ui::cursor_logo(size).into_any_element(),
             AgentKind::WorkersAi => ui::icon("internet", size)
                 .text_color(crate::theme::content())
                 .into_any_element(),
@@ -142,6 +153,7 @@ mod tests {
             AgentKind::OpenCode,
             AgentKind::Codex,
             AgentKind::Devin,
+            AgentKind::Cursor,
             AgentKind::WorkersAi,
         ] {
             assert_eq!(AgentKind::parse(kind.id()), Some(kind));
@@ -153,5 +165,6 @@ mod tests {
             );
         }
         assert_eq!(AgentKind::parse("Devin"), Some(AgentKind::Devin));
+        assert_eq!(AgentKind::parse("cursor-agent"), Some(AgentKind::Cursor));
     }
 }

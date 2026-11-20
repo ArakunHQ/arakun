@@ -768,6 +768,7 @@ impl Daemon {
             }
             catalog::refresh_codex();
             catalog::refresh_devin();
+            catalog::refresh_cursor();
         })));
         let account = cx.new(Account::new);
         let account_events = cx.observe(&account, |this, _, cx| this.usage_changed(cx));
@@ -3557,7 +3558,7 @@ fn staged_message(session: &str, staged: Result<Vec<String>, String>) -> String 
 }
 
 fn unknown_agent(agent: &str) -> String {
-    format!("unknown agent {agent}: claude, droid, opencode, codex, devin or workers-ai")
+    format!("unknown agent {agent}: claude, droid, opencode, codex, devin, cursor or workers-ai")
 }
 
 /// What a session waits on the user for, with the command that answers it.
@@ -3654,11 +3655,16 @@ fn draft_choices(
             }
             Some(agent::setting_options(&settings, &catalog.models, s))
         }
-        AgentKind::Claude | AgentKind::OpenCode | AgentKind::Codex | AgentKind::Devin => {
+        AgentKind::Claude
+        | AgentKind::OpenCode
+        | AgentKind::Codex
+        | AgentKind::Devin
+        | AgentKind::Cursor => {
             let options = match agent {
                 AgentKind::Claude => catalog::claude_options(),
                 AgentKind::Codex => catalog::codex_options(),
                 AgentKind::Devin => catalog::devin_options(),
+                AgentKind::Cursor => catalog::cursor_options(),
                 _ => catalog::opencode_options(),
             };
             // OpenCode's and Codex's reasoning levels are per model: the cached

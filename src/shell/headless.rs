@@ -37,6 +37,7 @@ fn app_agent(kind: AgentKind) -> model::Agent {
         AgentKind::OpenCode => model::Agent::OpenCode,
         AgentKind::Codex => model::Agent::Codex,
         AgentKind::Devin => model::Agent::Devin,
+        AgentKind::Cursor => model::Agent::Cursor,
         AgentKind::WorkersAi => model::Agent::WorkersAi,
     }
 }

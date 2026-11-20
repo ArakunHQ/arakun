@@ -1,7 +1,7 @@
 //! Finding (and, for Claude and Codex, installing) the entry point of each agent:
 //! ACP adapters for Claude and Codex, Factory's native `stream-jsonrpc` for Droid
-//! unless `ARAKUN_DROID_ACP=1`, and the ACP servers OpenCode and Devin have
-//! themselves (`opencode acp`, `devin acp`).
+//! unless `ARAKUN_DROID_ACP=1`, and the ACP servers OpenCode, Devin and Cursor
+//! have themselves (`opencode acp`, `devin acp`, `cursor-agent acp`).
 
 use std::ffi::OsString;
 use std::io::Write as _;
@@ -103,8 +103,9 @@ fn is_executable(path: &Path) -> bool {
 /// `/login` (the user's `claude`, else the binary bundled with the adapter's
 /// SDK; both share `~/.claude`), plain `droid`, which asks to sign in,
 /// `opencode auth login`, which asks for a provider and its key,
-/// `codex login`, which signs in with ChatGPT in the browser, or
-/// `devin auth login`, which signs in to Devin in the browser.
+/// `codex login`, which signs in with ChatGPT in the browser,
+/// `devin auth login`, which signs in to Devin in the browser, or
+/// `cursor-agent login`, which signs in to Cursor in the browser.
 pub fn login_command(kind: AgentKind) -> Option<Vec<String>> {
     match kind {
         AgentKind::Claude => {
@@ -128,13 +129,17 @@ pub fn login_command(kind: AgentKind) -> Option<Vec<String>> {
             Some(vec![bin.display().to_string(), "login".into()])
         }
         AgentKind::Devin => Some(devin_auth_command(&devin_bin().ok()?, "login")),
+        AgentKind::Cursor => Some(vec![
+            cursor_bin().ok()?.display().to_string(),
+            "login".into(),
+        ]),
     }
 }
 
 /// The interactive sign-out for `kind`, to run in a terminal: Claude's `/logout`,
-/// `opencode auth logout`, which asks which provider, `codex logout` or
-/// `devin auth logout`. Droid's
-/// CLI is signed out from Factory's side.
+/// `opencode auth logout`, which asks which provider, `codex logout`,
+/// `devin auth logout` or `cursor-agent logout`. Droid's CLI is signed out
+/// from Factory's side.
 pub fn logout_command(kind: AgentKind) -> Option<Vec<String>> {
     match kind {
         AgentKind::Claude => {
@@ -155,6 +160,10 @@ pub fn logout_command(kind: AgentKind) -> Option<Vec<String>> {
             Some(vec![bin.display().to_string(), "logout".into()])
         }
         AgentKind::Devin => Some(devin_auth_command(&devin_bin().ok()?, "logout")),
+        AgentKind::Cursor => Some(vec![
+            cursor_bin().ok()?.display().to_string(),
+            "logout".into(),
+        ]),
     }
 }
 
@@ -514,6 +523,74 @@ pub fn devin_env_key() -> Option<&'static str> {
         .then_some(VAR)
 }
 
+/// The user's `cursor-agent`. Arakun does not install it: Cursor's installer
+/// also keeps it up to date. The installer links the same binary as `agent`
+/// too, but that name is too common to trust. `ARAKUN_CURSOR_BIN` picks
+/// another binary.
+pub fn cursor_bin() -> Result<PathBuf> {
+    let name = std::env::var("ARAKUN_CURSOR_BIN").unwrap_or_else(|_| "cursor-agent".into());
+    which(&name).ok_or_else(|| {
+        anyhow!(
+            "`{name}` was not found on PATH or in ~/.local/bin. Install the Cursor CLI first ({}).",
+            AgentKind::Cursor.install_url()
+        )
+    })
+}
+
+/// Whether `cursor-agent login` has signed in: its `auth.json` exists and
+/// does not say it was signed out. `cursor-agent logout` keeps the file and
+/// marks it, and on macOS the tokens may sit in the keychain with only the
+/// mark in the file. Only that mark is kept from the file; the tokens are
+/// never looked at.
+pub fn cursor_signed_in() -> bool {
+    let path = cursor_auth_file(
+        std::env::consts::OS,
+        std::env::var_os("XDG_CONFIG_HOME"),
+        std::env::var_os("APPDATA"),
+        &home(),
+    );
+    std::fs::read(path).is_ok_and(|b| cursor_auth_signed_in(&b))
+}
+
+fn cursor_auth_signed_in(bytes: &[u8]) -> bool {
+    #[derive(serde::Deserialize)]
+    struct Mark {
+        #[serde(default, rename = "signedOut")]
+        signed_out: bool,
+    }
+    serde_json::from_slice::<Mark>(bytes).is_ok_and(|m| !m.signed_out)
+}
+
+/// Where the Cursor CLI keeps its sign-in, the way it finds the file itself:
+/// `%APPDATA%\Cursor` on Windows, `~/.cursor` on macOS, and
+/// `$XDG_CONFIG_HOME/cursor` (else `~/.config/cursor`) elsewhere.
+fn cursor_auth_file(
+    os: &str,
+    xdg_config: Option<OsString>,
+    appdata: Option<OsString>,
+    home: &Path,
+) -> PathBuf {
+    let set = |v: Option<OsString>| v.filter(|v| !v.is_empty()).map(PathBuf::from);
+    let dir = match os {
+        "windows" => set(appdata)
+            .unwrap_or_else(|| home.join("AppData").join("Roaming"))
+            .join("Cursor"),
+        "macos" => home.join(".cursor"),
+        _ => set(xdg_config)
+            .unwrap_or_else(|| home.join(".config"))
+            .join("cursor"),
+    };
+    dir.join("auth.json")
+}
+
+/// The variable with Cursor's API key when the environment has one. Names it,
+/// never reads the key out.
+pub fn cursor_env_key() -> Option<&'static str> {
+    ["CURSOR_API_KEY", "CURSOR_AUTH_TOKEN"]
+        .into_iter()
+        .find(|var| std::env::var_os(var).is_some_and(|v| !v.is_empty()))
+}
+
 /// The providers OpenCode keeps credentials for (`opencode auth login`), by
 /// name only: the keys of its `auth.json`, never the secrets.
 pub fn opencode_providers() -> Vec<String> {
@@ -751,7 +828,11 @@ pub fn adapter_install(kind: AgentKind) -> Option<AdapterInstall> {
             CODEX_ACP_PACKAGE,
             codex_dir(),
         ),
-        AgentKind::Droid | AgentKind::OpenCode | AgentKind::Devin | AgentKind::WorkersAi => {
+        AgentKind::Droid
+        | AgentKind::OpenCode
+        | AgentKind::Devin
+        | AgentKind::Cursor
+        | AgentKind::WorkersAi => {
             return None;
         }
     };
@@ -765,7 +846,8 @@ pub fn adapter_install(kind: AgentKind) -> Option<AdapterInstall> {
 /// Claude or Codex adapter is installed with npm into [`agents_dir`]; without it,
 /// the error is an [`AdapterInstall`] that says what would be. `progress` gets a
 /// short status line. `ARAKUN_DROID`, `ARAKUN_CLAUDE_ACP`, `ARAKUN_OPENCODE_ACP`,
-/// `ARAKUN_CODEX_ACP` and `ARAKUN_DEVIN_ACP` replace the command.
+/// `ARAKUN_CODEX_ACP`, `ARAKUN_DEVIN_ACP` and `ARAKUN_CURSOR_ACP` replace the
+/// command.
 pub fn resolve(
     kind: AgentKind,
     cwd: Option<&Path>,
@@ -895,6 +977,17 @@ pub fn resolve(
             Some(spec) => spec?,
             None => LaunchSpec {
                 program: devin_bin()?,
+                args: vec!["acp".into()],
+                env: Vec::new(),
+            },
+        },
+        // Cursor takes no system prompt over ACP either; it reads AGENTS.md
+        // itself. Arakun never calls `authenticate`: signed in, Cursor takes
+        // `session/new` without it, and signed out it would open a browser.
+        AgentKind::Cursor => match from_override("ARAKUN_CURSOR_ACP") {
+            Some(spec) => spec?,
+            None => LaunchSpec {
+                program: cursor_bin()?,
                 args: vec!["acp".into()],
                 env: Vec::new(),
             },
@@ -1121,6 +1214,7 @@ mod tests {
             AgentKind::Droid,
             AgentKind::OpenCode,
             AgentKind::Devin,
+            AgentKind::Cursor,
             AgentKind::WorkersAi,
         ] {
             assert_eq!(adapter_install(kind), None);
@@ -1242,5 +1336,40 @@ mod tests {
             devin_auth_command(bin, "logout"),
             ["/home/u/.local/bin/devin", "auth", "logout"]
         );
+    }
+
+    #[test]
+    fn cursor_auth_file_is_where_the_cli_looks() {
+        let home = Path::new("/home/u");
+        assert_eq!(
+            cursor_auth_file("linux", None, None, home),
+            Path::new("/home/u/.config/cursor/auth.json")
+        );
+        assert_eq!(
+            cursor_auth_file("linux", Some("/cfg".into()), None, home),
+            Path::new("/cfg/cursor/auth.json")
+        );
+        assert_eq!(
+            cursor_auth_file("linux", Some("".into()), None, home),
+            Path::new("/home/u/.config/cursor/auth.json")
+        );
+        assert_eq!(
+            cursor_auth_file("macos", Some("/cfg".into()), None, home),
+            Path::new("/home/u/.cursor/auth.json")
+        );
+        assert_eq!(
+            cursor_auth_file("windows", None, Some("/appdata".into()), home),
+            Path::new("/appdata/Cursor/auth.json")
+        );
+    }
+
+    #[test]
+    fn cursor_is_signed_out_when_its_auth_file_says_so() {
+        assert!(cursor_auth_signed_in(
+            br#"{"accessToken":"x","refreshToken":"y"}"#
+        ));
+        assert!(cursor_auth_signed_in(br#"{"storedIn":"os-secret-store"}"#));
+        assert!(!cursor_auth_signed_in(br#"{"signedOut":true}"#));
+        assert!(!cursor_auth_signed_in(b"not json"));
     }
 }

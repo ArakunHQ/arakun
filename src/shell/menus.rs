@@ -205,6 +205,11 @@ impl Shell {
                 let label = self.setting_value_label(Setting::Mode, cx)?;
                 Some((label, current(Setting::Mode).as_deref() == Some("bypass")))
             }
+            // Cursor's mode: Agent, Plan or Ask. None of them skips asking.
+            model::Agent::Cursor => {
+                let label = self.setting_value_label(Setting::Mode, cx)?;
+                Some((label, false))
+            }
             // It asks before commands and edits; `arakun agent new` sessions don't.
             model::Agent::WorkersAi => None,
             model::Agent::Droid => {
@@ -472,7 +477,8 @@ impl Shell {
             model::Agent::Claude
             | model::Agent::OpenCode
             | model::Agent::Codex
-            | model::Agent::Devin => vec![Setting::Mode],
+            | model::Agent::Devin
+            | model::Agent::Cursor => vec![Setting::Mode],
             model::Agent::WorkersAi => Vec::new(),
             model::Agent::Droid => [Setting::Mode, Setting::Autonomy]
                 .into_iter()

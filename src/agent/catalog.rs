@@ -504,7 +504,7 @@ pub fn refresh_opencode() {
     }
 }
 
-// ---- Codex's and Devin's options -------------------------------------------
+// ---- Codex's, Devin's and Cursor's options --------------------------------
 
 /// An agent's config options as a fresh session starts with them, kept as raw
 /// JSON and parsed, and on disk in `file` next to Droid's cache.
@@ -633,6 +633,35 @@ fn devin_stale(options: &[ConfigOption], signed_in: bool) -> bool {
             && options
                 .iter()
                 .any(|o| o.category.as_deref() == Some("model") && o.options.is_empty())
+}
+
+/// Cursor's config options (mode and model) as a fresh session starts with
+/// them. Signed out, Cursor starts no session, so nothing is read then.
+static CURSOR: RawOptions = RawOptions::new("cursor-options.json");
+
+/// The options a fresh Cursor session starts with; empty until one has run.
+pub fn cursor_options() -> Arc<Vec<ConfigOption>> {
+    CURSOR.options()
+}
+
+/// Keeps what a fresh Cursor session reported, when it changed. Blocking; run
+/// it off the main thread.
+pub fn remember_cursor_options(raw: &Value) {
+    CURSOR.remember(raw)
+}
+
+/// Asks Cursor for its options when none are cached and it is signed in. A
+/// session that never gets a prompt, so it costs no tokens. Blocking; run it
+/// off the main thread.
+pub fn refresh_cursor() {
+    let signed_in = launch::cursor_signed_in() || launch::cursor_env_key().is_some();
+    if !cursor_options().is_empty() || !signed_in || launch::cursor_bin().is_err() {
+        return;
+    }
+    match fetch_options(AgentKind::Cursor) {
+        Ok((_, raw)) => remember_cursor_options(&raw),
+        Err(e) => eprintln!("arakun: cursor options: {e:#}"),
+    }
 }
 
 // ---- The agents' own sessions ---------------------------------------------

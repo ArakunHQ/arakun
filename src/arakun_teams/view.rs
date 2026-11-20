@@ -926,6 +926,7 @@ impl TeamsView {
             page = page.child(Self::section("Waiting for approval"));
             for (i, p) in pending.iter().enumerate() {
                 let (t1, t2, gid) = (tid.clone(), tid.clone(), p.github_id);
+                let request = p.request_id.clone();
                 let busy = approving[i];
                 page = page.child(
                     div()
@@ -979,7 +980,8 @@ impl TeamsView {
                             )
                             .on_click(cx.listener(
                                 move |this, _, _, cx| {
-                                    this.hub.update(cx, |h, cx| h.approve(&t2, gid, cx))
+                                    this.hub
+                                        .update(cx, |h, cx| h.approve(&t2, gid, &request, cx))
                                 },
                             )),
                         ),

@@ -68,6 +68,10 @@ const PHONE_SILENCE_MAX: Duration = if cfg!(test) {
 /// How long one write to a phone may block. A page that stopped reading (a
 /// frozen tab) would hold its connection's thread forever.
 const PHONE_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long one pass may spend sending queued messages before it reads again.
+/// A long queue of slow writes would otherwise leave the phone's pongs unread
+/// until it looked silent.
+const PHONE_SEND_PASS: Duration = Duration::from_millis(100);
 /// Messages waiting for one phone. A phone that lets this many pile up is not
 /// reading, and is dropped rather than kept in memory.
 const PHONE_QUEUE: usize = 1024;
@@ -1411,8 +1415,9 @@ fn talk(
                 return;
             }
         }
+        let pass_ends = Instant::now() + PHONE_SEND_PASS;
         loop {
-            if ended() {
+            if ended() || Instant::now() > pass_ends {
                 break;
             }
             match out.try_recv() {

@@ -75,14 +75,14 @@ impl Shell {
     /// and `gh` is there to read it. A link someone typed on another host
     /// stays a web page.
     pub(super) fn github_item(&self, url: &str, cx: &App) -> Option<github::pr::ItemRef> {
+        let item = github::pr::ItemRef::from_url_on(url, &github::pr::gh_host())?;
+        // The inbox's problem is only known once the tab has polled; before
+        // that, `gh_ready` looks for `gh` and a sign-in itself.
         let cant_read = matches!(
             self.github.read(cx).problem(),
             Some(github::Problem::NoGh | github::Problem::SignedOut)
         );
-        if cant_read {
-            return None;
-        }
-        github::pr::ItemRef::from_url_on(url, &github::pr::gh_host())
+        (!cant_read && github::pr::gh_ready()).then_some(item)
     }
 
     /// Whether the window shows the GitHub tab, looked at or not.
@@ -312,7 +312,8 @@ impl Shell {
 /// to the shell, which shows it in the GitHub tab. The rest is left to the
 /// terminal, which opens it in the desktop browser as before.
 pub fn open_terminal_link(url: &str, window: &mut Window, cx: &mut App) -> bool {
-    let item = github::pr::ItemRef::from_url_on(url, &github::pr::gh_host());
+    let item = github::pr::ItemRef::from_url_on(url, &github::pr::gh_host())
+        .filter(|_| github::pr::gh_ready());
     if item.is_some() {
         window.dispatch_action(
             Box::new(crate::agent::markdown::OpenLink {

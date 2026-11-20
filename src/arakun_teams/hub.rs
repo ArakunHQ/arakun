@@ -336,9 +336,11 @@ impl Hub {
         self.net.as_ref().map(|n| n.local.device.id())
     }
 
-    /// This device's public signing key, for comparing devices.
-    pub fn sig_pub(&self) -> Option<&str> {
-        self.net.as_ref().map(|n| n.local.device.sig_pub())
+    /// This device's public keys, `(sig_pub, enc_pub)`, for comparing devices.
+    pub fn public_keys(&self) -> Option<(&str, &str)> {
+        self.net
+            .as_ref()
+            .map(|n| (n.local.device.sig_pub(), n.local.device.enc_pub()))
     }
 
     /// The user checked this device's compare numbers with its owner.
@@ -356,7 +358,9 @@ impl Hub {
         if !yes {
             self.doubts.fetch_add(1, Ordering::SeqCst);
         }
-        if self.kept.set_verified(device_id, yes) {
+        // "They don't" saves even when nothing changed, so pressing it again
+        // retries a save that failed.
+        if self.kept.set_verified(device_id, yes) || !yes {
             self.save(cx);
         }
         cx.notify();
@@ -1081,11 +1085,26 @@ impl Hub {
         let busy = format!("rotate:{team_id}:{version}");
         let doubted = doubted(&self.kept, t);
         if !doubted.is_empty() {
-            let who = doubted.join(", @");
+            // A failed comparison is the user's call to undo; a chain that
+            // doesn't check out is not.
+            let compared: Vec<&str> = doubted
+                .iter()
+                .filter(|l| !t.untrusted.contains(l))
+                .map(String::as_str)
+                .collect();
+            let problem = if compared.is_empty() {
+                format!(
+                    "The team needs a new key, but a device of @{} does not check out, so none was made.",
+                    doubted.join(", @")
+                )
+            } else {
+                format!(
+                    "The team needs a new key, but a device of @{} did not match when you compared it, so none was made. Compare it again, or remove them.",
+                    compared.join(", @")
+                )
+            };
             if let Some(t) = self.team.get_mut(team_id) {
-                t.problem = Some(format!(
-                    "The team needs a new key, but a device of @{who} does not check out, so none was made."
-                ));
+                t.problem = Some(problem);
             }
             return;
         }

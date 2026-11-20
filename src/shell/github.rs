@@ -1,7 +1,7 @@
 //! The GitHub tab (the notifications inbox): opening it, its rail badge, what
 //! its rows do, and the notices for new notifications that deserve one.
 
-use gpui::{App, Context, SharedString, Window};
+use gpui::{App, Context, Window};
 
 use super::island::Open;
 use super::*;
@@ -217,16 +217,7 @@ impl Shell {
                     self.open_picker(window, cx);
                     return;
                 }
-                let (path, agent) = (self.env().path.clone(), self.env().agent);
-                self.start_session_in(
-                    &path,
-                    agent,
-                    SharedString::from(title.clone()),
-                    prompt.clone(),
-                    true,
-                    window,
-                    cx,
-                );
+                self.ask_agent(title.clone().into(), prompt.clone(), window, cx);
             }
         }
     }

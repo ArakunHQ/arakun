@@ -229,20 +229,11 @@ impl Shell {
                             })
                             .collect();
                         if self.has_projects() {
-                            let (path, agent) = (self.env().path.clone(), self.env().agent);
                             let prompt = format!(
                                 "Summarize what these Arakun sessions did and what is left, one short paragraph each. Read them with `arakun sessions show <id>`.\n{}",
                                 titles.join("\n")
                             );
-                            self.start_session_in(
-                                &path,
-                                agent,
-                                "Summary of sessions".into(),
-                                prompt,
-                                true,
-                                window,
-                                cx,
-                            );
+                            self.ask_agent("Summary of sessions".into(), prompt, window, cx);
                         }
                     }
                     _ => {
@@ -256,20 +247,11 @@ impl Shell {
                 self.close_modal(window, cx);
                 self.modal = None;
                 if self.has_projects() {
-                    let (path, agent) = (self.env().path.clone(), self.env().agent);
                     let prompt = format!(
                         "{question}\n\nA quick answer said:\n> {}\n\nGo deeper: check it against the code and the logs.",
                         answer.replace('\n', "\n> ")
                     );
-                    self.start_session_in(
-                        &path,
-                        agent,
-                        head(question, 60).into(),
-                        prompt,
-                        true,
-                        window,
-                        cx,
-                    );
+                    self.ask_agent(head(question, 60).into(), prompt, window, cx);
                 }
             }
             PaletteEvent::AddRule(draft) => {

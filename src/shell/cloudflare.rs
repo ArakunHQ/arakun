@@ -174,6 +174,10 @@ impl Shell {
             self.select_env(pi, ei, window, cx);
         }
         let title: SharedString = ask.title.clone().into();
+        if self.env().path == env_path {
+            self.ask_agent(title, ask.prompt.clone(), window, cx);
+            return;
+        }
         let agent = self.env().agent;
         self.start_session_in(
             &env_path,

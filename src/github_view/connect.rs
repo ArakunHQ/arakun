@@ -157,6 +157,10 @@ impl PilotDialog {
     }
 
     fn disconnect(&mut self, cx: &mut Context<Self>) {
+        // A save still running would write the file back after removing it.
+        if self.busy {
+            return;
+        }
         if !self.confirm_remove {
             self.confirm_remove = true;
             cx.notify();

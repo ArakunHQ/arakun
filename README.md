@@ -329,7 +329,8 @@ sees the project's skills.
 - **Pull request agent.** With a pull request agent on a server of your own
   (arakun-pilot), Ctrl+K "Connect arakun-pilot…" (also in the GitHub tab's `…` menu,
   and under an empty queue) asks for the Worker's address, its token and, to send it
-  tasks, its admin token; it checks them against the Worker before it saves them, and
+  tasks, its admin token; it checks the token against the Worker before it saves them
+  (the admin token is saved unchecked, since only sending a task tries it), and
   later "arakun-pilot settings…" changes them or disconnects. From a terminal,
   `arakun github pilot connect <url> --token -` (the token on stdin) does the same; `arakun github pilot status` says whether
   they still work and `arakun github pilot disconnect` removes them. They go in

@@ -1204,8 +1204,8 @@ impl ThreadView {
                         ("thinking", ix),
                         self.active,
                         "Thinking…",
-                        0.35,
-                        0.8,
+                        theme::text_faint(),
+                        theme::text_muted(),
                     )),
             );
         }

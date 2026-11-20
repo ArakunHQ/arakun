@@ -223,8 +223,9 @@ Manager (Windows Credentials, Generic Credentials).
   it restarts the Dynamic Island with the new version. A later start deletes the old
   file once nothing runs it; an old file still in use is moved aside, with a number
   after its name, and deleted the same way. The release's `arakun.pdb` waits as
-  `.arakun.exe.update.pdb` and replaces `arakun.pdb` at the same time; a release
-  without one updates the same way. Settings has no **Restart now** button on
+  `.arakun.exe.update.pdb` and replaces `arakun.pdb` right after the new `.exe` is in
+  place. If that move fails, the update still goes through, and crash reports lack
+  function names until the next one. A release without a `.pdb` updates the same way. Settings has no **Restart now** button on
   Windows: quit Arakun and open it again. Not tested on real Windows yet.
 - **Dynamic Island:** an always-on-top window at the top center of the main display's
   work area, where Linux uses a layer-shell surface. Clicks around its shape reach the

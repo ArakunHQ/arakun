@@ -16,7 +16,7 @@ impl Shell {
     pub(super) fn open_cloudflare_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.menu = None;
         if !self.has_projects() {
-            self.open_picker(window, cx);
+            self.pick_project_for("The Cloudflare tab", Self::open_cloudflare_tab, window, cx);
             return;
         }
         self.show_view_tab("Cloudflare", TabKind::Cloudflare, |k| {

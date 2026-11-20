@@ -123,47 +123,33 @@ impl Shell {
             )
     }
 
-    /// The GitHub tab with no project added, in the welcome's place: the
-    /// window's bar with a way back, over the queue.
-    pub(super) fn render_github_alone(
-        &self,
-        window: &Window,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let back = icon_button("github-alone-back", "arrow-left01", 14.)
-            .tooltip(ui::tip("Back to the welcome screen"))
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.github_alone = false;
-                cx.notify();
-            }));
-        self.render_alone(
-            "github-alone",
-            back,
-            self.github_view.clone().into_any_element(),
-            window,
-        )
+    /// What shows in the welcome's place. Leaving the Servers tab tells the
+    /// servers nobody is looking, as when its tab closes.
+    pub(super) fn show_alone(&mut self, alone: Option<Alone>, cx: &mut Context<Self>) {
+        let left = std::mem::replace(&mut self.alone, alone);
+        if left == Some(Alone::Servers) && alone != left {
+            self.servers_tab_closed(cx);
+        }
+        cx.notify();
     }
 
-    /// The Servers tab with no project added: following servers needs none.
-    pub(super) fn render_servers_alone(
+    /// A view that needs no project, with none added: the window's bar with
+    /// a way back to the welcome, over the view.
+    pub(super) fn render_view_alone(
         &self,
+        alone: Alone,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let back = icon_button("servers-alone-back", "arrow-left01", 14.)
+        let back = icon_button("alone-back", "arrow-left01", 14.)
             .tooltip(ui::tip("Back to the welcome screen"))
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.servers_alone = false;
-                // Nobody is looking any more, as when its tab closes.
-                this.servers_tab_closed(cx);
-                cx.notify();
-            }));
-        self.render_alone(
-            "servers-alone",
-            back,
-            self.servers_view.clone().into_any_element(),
-            window,
-        )
+            .on_click(cx.listener(|this, _, _, cx| this.show_alone(None, cx)));
+        let view = match alone {
+            Alone::GitHub => self.github_view.clone().into_any_element(),
+            Alone::Servers => self.servers_view.clone().into_any_element(),
+            Alone::Usage => self.usage_view.clone().into_any_element(),
+        };
+        self.render_alone("view-alone", back, view, window)
     }
 
     /// A sign-in's terminal with no project added. Going back closes it,
@@ -212,6 +198,15 @@ impl Shell {
             ))
             .child(div().flex().flex_1().min_h_0().child(view))
     }
+}
+
+/// A view that needs no project, shown in the welcome's place before any
+/// project was added. One at a time: the way back leads to the welcome.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Alone {
+    GitHub,
+    Servers,
+    Usage,
 }
 
 /// The welcome screen's top: room to drag the window, its buttons, and

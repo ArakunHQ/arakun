@@ -749,10 +749,8 @@ impl Shell {
             self.note_active_tab(cx);
         } else {
             // Following servers needs no project here: the tab shows in the
-            // welcome's place, as the GitHub tab does. One of the two at a
-            // time: the way back from here leads to the welcome, not the queue.
-            self.servers_alone = true;
-            self.github_alone = false;
+            // welcome's place, as the GitHub tab does.
+            self.show_alone(Some(super::home::Alone::Servers), cx);
         }
         self.servers_connect(window, cx);
         self.sync_servers_view(cx);

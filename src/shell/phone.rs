@@ -160,7 +160,7 @@ impl Shell {
     pub(super) fn open_phone_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.menu = None;
         if !self.has_projects() {
-            self.open_picker(window, cx);
+            self.pick_project_for("The Phone tab", Self::open_phone_tab, window, cx);
             return;
         }
         let strip = &mut self.strip;

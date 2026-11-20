@@ -23,11 +23,7 @@ impl Shell {
             self.note_active_tab(cx);
         } else {
             // The queue doesn't need a project: it shows in the welcome's place.
-            self.github_alone = true;
-            // The Servers tab was in that place: nobody is looking at it now.
-            if std::mem::take(&mut self.servers_alone) {
-                self.servers_tab_closed(cx);
-            }
+            self.show_alone(Some(super::home::Alone::GitHub), cx);
         }
         self.github.update(cx, |g, cx| g.opened(cx));
         self.github_view.update(cx, |v, cx| {
@@ -76,7 +72,7 @@ impl Shell {
         if self.has_projects() {
             matches!(self.strip.active().map(|t| &t.kind), Some(TabKind::GitHub))
         } else {
-            self.github_alone
+            self.alone == Some(super::home::Alone::GitHub)
         }
     }
 

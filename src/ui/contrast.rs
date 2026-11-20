@@ -4,19 +4,26 @@
 //! usually changed in another app. What it does to the colors is
 //! `theme::high_contrast`'s.
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use gpui::App;
 
 use crate::theme;
 
+/// Counts the reads started, so a slow one that ends after a newer one
+/// can't put back what the system said before.
+static READS: AtomicU64 = AtomicU64::new(0);
+
 /// Reads the system's setting off the main thread, and redraws every window
 /// if it changed.
 pub fn follow_system(cx: &mut App) {
+    let read = READS.fetch_add(1, Ordering::Relaxed) + 1;
     cx.spawn(async move |cx| {
         let on = cx
             .background_executor()
             .spawn(async { system_high_contrast() })
             .await;
-        if on == theme::system_high_contrast() {
+        if read != READS.load(Ordering::Relaxed) || on == theme::system_high_contrast() {
             return;
         }
         cx.update(|cx| {
@@ -28,7 +35,8 @@ pub fn follow_system(cx: &mut App) {
 }
 
 /// Redraws every window in the contrast now in force: glass goes off and on
-/// with it, and the window background has to follow.
+/// with it, and the window background has to follow. A window whose update
+/// is running (the caller's own) is skipped; set its background there.
 pub fn apply(cx: &mut App) {
     for handle in cx.windows() {
         let _ = handle.update(cx, |_, window, _| {

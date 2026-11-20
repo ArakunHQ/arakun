@@ -2824,6 +2824,9 @@ impl Shell {
                         }
                         CustomizeEvent::Contrast(c) => {
                             theme::set_contrast(*c);
+                            // `apply` can't update this window while the
+                            // callback holds it, so set it here.
+                            window.set_background_appearance(theme::window_background());
                             this.save(cx);
                             crate::ui::contrast::apply(cx);
                         }

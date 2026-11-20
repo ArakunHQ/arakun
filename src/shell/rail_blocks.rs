@@ -1010,8 +1010,9 @@ impl Shell {
                         1.5,
                         gpui::rgb(project.logo).into(),
                     ))
-                    // Another project's work shows here, as the rail has no rows.
-                    .when(!selected, |d| {
+                    // Every project's work shows here, the open one's too, as
+                    // the narrowed rail has no rows.
+                    .map(|d| {
                         let status = self.project_activity(pi, cx).status();
                         d.when(status != Status::Idle, |d| {
                             d.child(

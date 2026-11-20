@@ -67,7 +67,8 @@ pub(super) fn env_status(sessions: Status, github: &GitHubState) -> Status {
     } else if sessions == Status::Working || github.ci_running {
         Status::Working
     } else {
-        Status::Idle
+        // Keeps a session's error.
+        sessions
     }
 }
 
@@ -1405,6 +1406,10 @@ mod tests {
         assert_eq!(
             env_status(Status::Idle, &GitHubState::default()),
             Status::Idle
+        );
+        assert_eq!(
+            env_status(Status::Error, &GitHubState::default()),
+            Status::Error
         );
     }
 

@@ -1244,22 +1244,23 @@ impl Shell {
             c != crate::telemetry::Consent::ALL && c != crate::telemetry::Consent::NONE
         });
         let reports_says: SharedString = match (forced, o.reports) {
-            (None, _) if split => "Partly on, as chosen in Settings › Privacy.".into(),
+            // The variable wins over the saved answer, split or not.
             (Some(var), _) => format!(
                 "{} while {var} is set.",
                 if forced_on { "On" } else { "Off" }
             )
             .into(),
+            (None, _) if split => "Partly on, as chosen in Settings › Privacy.".into(),
             (None, true) => "On. They tell us what breaks and what gets used.".into(),
             (None, false) => {
                 "Off until you turn them on. They tell us what breaks and what gets used.".into()
             }
         };
         let fixed = forced.is_some() || split;
-        let shown_on = if split {
-            true
-        } else if forced.is_some() {
+        let shown_on = if forced.is_some() {
             forced_on
+        } else if split {
+            true
         } else {
             o.reports
         };

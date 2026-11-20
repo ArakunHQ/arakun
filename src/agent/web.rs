@@ -287,6 +287,9 @@ enum Page {
     Html(String),
     /// Text that is not a web page: a log, JSON, a source file.
     Plain(String),
+    /// A Markdown file served as `text/markdown`: whole, it stays as it
+    /// came; with a query, it is matched as Markdown.
+    MarkdownFile(String),
 }
 
 impl Page {
@@ -294,39 +297,35 @@ impl Page {
     fn whole(self, markdown: bool) -> String {
         match self {
             Page::Markdown(md) if markdown => md,
-            Page::Markdown(md) => markdown_to_text(&md, true),
+            Page::Markdown(md) => markdown_to_text(&md),
             Page::Html(html) => html_to_text(&html, markdown),
-            Page::Plain(text) => text,
+            Page::Plain(text) | Page::MarkdownFile(text) => text,
         }
     }
 
     /// The parts that match `query`. Matching needs the headings and table
-    /// rows, so HTML becomes Markdown first, and for `format: text` only the
-    /// marks this file added come off again: a `**` in the page's own words
-    /// stays.
+    /// rows, so HTML becomes Markdown first. For `format: text` it gets no
+    /// links, and only the marks this file added come off again: a `**` or a
+    /// `[a](b)` in the page's own words stays.
     fn focus(self, query: &str, markdown: bool) -> String {
         match self {
-            Page::Markdown(md) => {
+            Page::Markdown(md) | Page::MarkdownFile(md) => {
                 let out = focus(&md, query, None, false);
                 if markdown {
                     out
                 } else {
-                    markdown_to_text(&out, true)
+                    markdown_to_text(&out)
                 }
             }
             Page::Html(html) => {
                 let title = html_title(&html);
                 let out = focus(
-                    &html_convert(&html, true, true),
+                    &html_convert(&html, true, markdown, true),
                     query,
                     title.as_deref(),
                     false,
                 );
-                if markdown {
-                    out
-                } else {
-                    markdown_to_text(&out, false)
-                }
+                if markdown { out } else { unmark(&out) }
             }
             Page::Plain(text) => focus(&text, query, None, true),
         }
@@ -436,6 +435,12 @@ fn fence(line: &str) -> Option<(char, usize)> {
     let mark = l.chars().next().filter(|c| *c == '`' || *c == '~')?;
     let n = l.chars().take_while(|c| *c == mark).count();
     (n >= 3).then_some((mark, n))
+}
+
+/// Whether `line` closes a fence opened with `n` of `mark`: the same mark,
+/// at least as long, and nothing after.
+fn closes(line: &str, mark: char, n: usize) -> bool {
+    fence(line).is_some_and(|(m, k)| m == mark && k >= n && line.trim().chars().all(|c| c == mark))
 }
 
 /// A table's delimiter row, with or without the outer pipes: `|---|:--:|`
@@ -556,10 +561,7 @@ fn focus(page: &str, query: &str, title: Option<&str>, plain: bool) -> String {
         }
         if let Some((mark, n)) = open {
             block.push(line);
-            // Closed only by the same mark, at least as long, and nothing after.
-            if fence(line)
-                .is_some_and(|(m, k)| m == mark && k >= n && line.trim().chars().all(|c| c == mark))
-            {
+            if closes(line, mark, n) {
                 open = None;
                 flush(&mut block, &mut parts, sections.len() - 1);
             }
@@ -718,12 +720,15 @@ fn direct(url: &str) -> Result<(String, Page), String> {
         return Err(format!("{last} answered {status}"));
     }
     let html = ty.contains("html") || (ty.is_empty() && body.trim_start().starts_with('<'));
+    let markdown = ty.starts_with("text/markdown") || ty.starts_with("text/x-markdown");
     let text = ty.starts_with("text/")
         || ["json", "xml", "javascript", "yaml", "toml"]
             .iter()
             .any(|t| ty.contains(t));
     if html {
         Ok((last, Page::Html(body)))
+    } else if markdown {
+        Ok((last, Page::MarkdownFile(body)))
     } else if text || ty.is_empty() {
         Ok((last, Page::Plain(body)))
     } else {
@@ -964,7 +969,7 @@ fn strip_tags(html: &str) -> String {
 /// A page's readable text; with `markdown`, headings, list items and links
 /// keep their Markdown form.
 fn html_to_text(html: &str, markdown: bool) -> String {
-    html_convert(html, markdown, false)
+    html_convert(html, markdown, markdown, false)
 }
 
 /// The document's `<title>`, from the head.
@@ -981,10 +986,12 @@ fn html_title(html: &str) -> Option<String> {
     (!title.is_empty()).then_some(title)
 }
 
-/// `html_to_text`, and with `tables`, tables come out as Markdown tables
-/// (the first row as the header), so a row found by a query keeps its
-/// column names. Plain fetches keep the old output.
-fn html_convert(html: &str, markdown: bool, tables: bool) -> String {
+/// `html_to_text`; `links` writes links as `[text](href)`. With `focused`
+/// (for a query), tables come out as Markdown tables (the first row as the
+/// header, the caption on its own) so a row found by a query keeps its
+/// column names, and `<pre>` as a code block so its lines stay as they are.
+/// Plain fetches keep the old output.
+fn html_convert(html: &str, markdown: bool, links: bool, focused: bool) -> String {
     const SKIP: &[&str] = &[
         "script", "style", "noscript", "svg", "head", "template", "iframe",
     ];
@@ -1016,7 +1023,7 @@ fn html_convert(html: &str, markdown: bool, tables: bool) -> String {
         "body",
     ];
     let mut out = String::new();
-    let mut links: Vec<Option<(usize, String)>> = Vec::new();
+    let mut open_links: Vec<Option<(usize, String)>> = Vec::new();
     // Markdown tables: how deep in tables, and the open row's cell count
     // (`None` when no row is open) and how many rows came before it.
     let mut depth = 0usize;
@@ -1082,8 +1089,26 @@ fn html_convert(html: &str, markdown: bool, tables: bool) -> String {
         }
         let heading =
             name.len() == 2 && name.starts_with('h') && name.as_bytes()[1].is_ascii_digit();
-        if tables {
+        if focused {
             match name.as_str() {
+                "pre" if !closing && !in_cell => {
+                    let lower = rest.to_ascii_lowercase();
+                    let (inner, after) = match lower.find("</pre") {
+                        Some(e) => (
+                            &rest[..e],
+                            rest[e..].find('>').map_or("", |g| &rest[e + g + 1..]),
+                        ),
+                        None => (rest, ""),
+                    };
+                    rest = after;
+                    push_code(&mut out, inner);
+                    continue;
+                }
+                "caption" if depth == 1 => {
+                    // On its own, so the table starts at its header.
+                    out.push_str("\n\n");
+                    continue;
+                }
                 "table" if !closing => {
                     depth += 1;
                     if depth == 1 {
@@ -1137,19 +1162,19 @@ fn html_convert(html: &str, markdown: bool, tables: bool) -> String {
                 }
             }
             "li" if !closing => out.push_str(if markdown { "\n- " } else { "\n" }),
-            "a" if markdown && !closing => {
+            "a" if links && !closing => {
                 let href = attr(tag, "href")
                     .map(|h| decode_entities(&h))
                     .filter(|h| h.starts_with("http"));
                 if let Some(h) = &href {
-                    links.push(Some((out.len(), h.clone())));
+                    open_links.push(Some((out.len(), h.clone())));
                     out.push('[');
                 } else {
-                    links.push(None);
+                    open_links.push(None);
                 }
             }
-            "a" if markdown => {
-                if let Some(Some((start, href))) = links.pop() {
+            "a" if links => {
+                if let Some(Some((start, href))) = open_links.pop() {
                     let text = out[start + 1..].trim().to_string();
                     out.truncate(start);
                     if !text.is_empty() {
@@ -1164,7 +1189,18 @@ fn html_convert(html: &str, markdown: bool, tables: bool) -> String {
     }
     let mut text = String::new();
     let mut blank = 0;
-    for line in out.lines().map(str::trim) {
+    // A code block's lines stay as they are, blank ones too.
+    let mut code: Option<(char, usize)> = None;
+    for raw in out.lines() {
+        if let Some((mark, n)) = code {
+            text.push('\n');
+            text.push_str(raw.trim_end());
+            if closes(raw, mark, n) {
+                code = None;
+            }
+            continue;
+        }
+        let line = raw.trim();
         if line.is_empty() || line == "-" {
             blank += 1;
             continue;
@@ -1174,8 +1210,45 @@ fn html_convert(html: &str, markdown: bool, tables: bool) -> String {
         }
         blank = 0;
         text.push_str(line);
+        if focused {
+            code = fence(line);
+        }
     }
     text
+}
+
+/// A `<pre>` block's text as a fenced code block, its line breaks and
+/// indentation kept. The fence is longer than any backtick run inside.
+fn push_code(out: &mut String, inner: &str) {
+    let mut raw = String::new();
+    let mut tag = false;
+    for c in inner.chars() {
+        match c {
+            '<' => tag = true,
+            '>' if tag => tag = false,
+            c if !tag => raw.push(c),
+            _ => {}
+        }
+    }
+    let code = decode_entities(&raw);
+    // A newline right after `<pre>` is not part of the text.
+    let code = code
+        .strip_prefix("\r\n")
+        .or_else(|| code.strip_prefix('\n'))
+        .unwrap_or(&code)
+        .trim_end();
+    if code.trim().is_empty() {
+        out.push('\n');
+        return;
+    }
+    let mut run = 0;
+    let mut longest = 0;
+    for c in code.chars() {
+        run = if c == '`' { run + 1 } else { 0 };
+        longest = longest.max(run);
+    }
+    let fence = "`".repeat((longest + 1).max(3));
+    out.push_str(&format!("\n\n{fence}\n{code}\n{fence}\n\n"));
 }
 
 fn push_text(out: &mut String, raw: &str) {
@@ -1196,42 +1269,64 @@ fn push_text(out: &mut String, raw: &str) {
     }
 }
 
-/// Markdown from the lab's service, for `format: text`: links and heading
-/// marks gone, the words kept. With `emphasis`, `**` goes too; without it
-/// (Markdown this file made from HTML, where a `**` is the page's own),
-/// only a `#` that starts a heading goes.
-fn markdown_to_text(md: &str, emphasis: bool) -> String {
+/// Markdown from the lab's service, for `format: text`: links, heading
+/// marks and `**` gone, the words kept.
+fn markdown_to_text(md: &str) -> String {
     let mut out = String::with_capacity(md.len());
-    let mut rest = md;
-    while let Some(open) = rest.find('[') {
-        let after = &rest[open + 1..];
-        match after.find("](").and_then(|mid| {
-            after[mid + 2..]
-                .find(')')
-                .map(|close| (mid, mid + 2 + close))
-        }) {
-            Some((mid, close)) if !after[..mid].contains('\n') => {
-                out.push_str(rest[..open].trim_end_matches('!'));
-                out.push_str(&after[..mid]);
-                rest = &after[close + 1..];
-            }
-            _ => {
-                out.push_str(&rest[..=open]);
-                rest = after;
-            }
+    // Each search runs once and is reused while it lies ahead of the next
+    // `[`, so a page full of brackets costs linear time.
+    let mut pos = 0;
+    let mut mid: Option<usize> = None;
+    let mut newline: Option<usize> = None;
+    let mut close: Option<usize> = None;
+    while let Some(open) = md[pos..].find('[').map(|o| pos + o) {
+        if mid.is_none_or(|m| m <= open) {
+            mid = md[open + 1..].find("](").map(|m| open + 1 + m);
+            newline = mid.and_then(|m| md[..m].rfind('\n'));
         }
+        // With no `](` or no `)` after it, no link follows.
+        let Some(m) = mid else { break };
+        if close.is_none_or(|c| c < m + 2) {
+            close = md[m + 2..].find(')').map(|c| m + 2 + c);
+        }
+        let Some(c) = close else { break };
+        if newline.is_some_and(|n| n > open) {
+            // A label does not span lines.
+            out.push_str(&md[pos..=open]);
+            pos = open + 1;
+            continue;
+        }
+        out.push_str(md[pos..open].trim_end_matches('!'));
+        out.push_str(&md[open + 1..m]);
+        pos = c + 1;
     }
-    out.push_str(rest);
+    out.push_str(&md[pos..]);
     out.lines()
-        .map(|l| {
-            if emphasis {
-                l.trim_start_matches('#').trim_start().replace("**", "")
-            } else {
-                heading(l).map_or(l, |(_, t)| t).to_string()
-            }
-        })
+        .map(|l| l.trim_start_matches('#').trim_start().replace("**", ""))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// Markdown this file made from HTML without links, for `format: text`:
+/// only the heading marks and code fences it added come off. The page's own
+/// `**` and brackets stay, and code keeps its lines.
+fn unmark(md: &str) -> String {
+    let mut out = Vec::new();
+    let mut code: Option<(char, usize)> = None;
+    for line in md.lines() {
+        if let Some((mark, n)) = code {
+            if closes(line, mark, n) {
+                code = None;
+            } else {
+                out.push(line);
+            }
+        } else if let Some(f) = fence(line) {
+            code = Some(f);
+        } else {
+            out.push(heading(line).map_or(line, |(_, t)| t));
+        }
+    }
+    out.join("\n")
 }
 
 #[cfg(test)]
@@ -1360,12 +1455,12 @@ mod tests {
             "Bun 1.4\n\nRead the release notes, or these.\n\nfast\nsmall & sharp"
         );
         assert_eq!(
-            markdown_to_text(
-                "# Hi\nSee [the **docs**](https://x.y/z) and ![img](a.png).",
-                true
-            ),
+            markdown_to_text("# Hi\nSee [the **docs**](https://x.y/z) and ![img](a.png)."),
             "Hi\nSee the docs and img."
         );
+        // A label does not span lines; brackets with no link stay.
+        assert_eq!(markdown_to_text("a [b\nc](d) [f](g)"), "a [b\nc](d) f");
+        assert_eq!(markdown_to_text("[[[x"), "[[[x");
     }
 
     #[test]
@@ -1497,6 +1592,55 @@ mod tests {
                 true
             ),
             "\nParts that match \"error\" (1 of 4). Fetch without a query for the whole page.\n\nan error here\n"
+        );
+    }
+
+    #[test]
+    fn focused_html_keeps_brackets_code_and_captions() {
+        // Text output: the page's own brackets stay, real links give their words.
+        let html =
+            "<p>Call items[index](value). See <a href=\"https://x.y\">the items docs</a>.</p>";
+        let text = Page::Html(html.into()).focus("items", false);
+        assert!(
+            text.contains("Call items[index](value). See the items docs."),
+            "{text}"
+        );
+        // A `<pre>` keeps its lines; a `#` comment in it is not a heading.
+        let html = "<h1>Guide</h1><pre><code># Example\nfn  start() {\n    run();\n}</code></pre><p>Other.</p>";
+        let md = Page::Html(html.into()).focus("start", true);
+        assert!(
+            md.ends_with("# Guide\n```\n# Example\nfn  start() {\n    run();\n}\n```\n"),
+            "{md}"
+        );
+        let text = Page::Html(html.into()).focus("start", false);
+        assert!(
+            text.ends_with("Guide\n# Example\nfn  start() {\n    run();\n}"),
+            "{text}"
+        );
+        // A caption stands apart, so the table starts at its header.
+        let html = "<table><caption>Plans</caption><tr><th>Plan</th><th>Price</th></tr>\
+            <tr><td>Free</td><td>0</td></tr><tr><td>Pro</td><td>20</td></tr></table>";
+        let out = Page::Html(html.into()).focus("pro", true);
+        assert!(
+            out.ends_with("| Plan | Price |\n| --- | --- |\n| Pro | 20 |\n"),
+            "{out}"
+        );
+        assert!(!out.contains("Free"), "{out}");
+        // Without a query the plain converter's output is unchanged.
+        assert_eq!(
+            Page::Html(html.into()).whole(true),
+            "Plans\nPlan Price\n\nFree 0\n\nPro 20"
+        );
+    }
+
+    #[test]
+    fn a_markdown_file_stays_whole_and_matches_as_markdown() {
+        let page = "# Prices\n\n| Plan | Price |\n|---|---|\n| Free | 0 |\n| Pro | 20 |\n";
+        assert_eq!(Page::MarkdownFile(page.into()).whole(false), page);
+        let out = Page::MarkdownFile(page.into()).focus("pro", true);
+        assert!(
+            out.ends_with("# Prices\n| Plan | Price |\n|---|---|\n| Pro | 20 |\n"),
+            "{out}"
         );
     }
 }

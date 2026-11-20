@@ -331,7 +331,10 @@ sees the project's skills.
   and under an empty queue) asks for the Worker's address, its token and, to send it
   tasks, its admin token; it checks the token against the Worker before it saves them
   (the admin token is saved unchecked, since only sending a task tries it), and
-  later "arakun-pilot settings…" changes them or disconnects. From a terminal,
+  later "arakun-pilot settings…" changes them or disconnects. Under that row the
+  `…` menu says how pilot is doing ("Connected to … · read 2 min ago", or what is
+  wrong), and when pilot can't be read, or its settings file can't be used, the
+  queue says why with a "Settings…" link to the form. From a terminal,
   `arakun github pilot connect <url> --token -` (the token on stdin) does the same; `arakun github pilot status` says whether
   they still work and `arakun github pilot disconnect` removes them. They go in
   `~/.config/arakun-pilot/client.json` (`$XDG_CONFIG_HOME` when set to an absolute path;

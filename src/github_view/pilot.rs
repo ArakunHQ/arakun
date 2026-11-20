@@ -117,6 +117,22 @@ fn quote(color: Hsla, text: impl Into<gpui::SharedString>, strong: bool) -> gpui
         .child(text.into())
 }
 
+/// "Settings…" after a pilot problem: the form that fixes it.
+pub(super) fn settings_link(
+    id: &'static str,
+    cx: &mut Context<GitHubView>,
+) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .flex_none()
+        .ty(Type::Caption)
+        .text_color(theme::link())
+        .cursor_pointer()
+        .hover(|s| s.underline())
+        .child("Settings…")
+        .on_click(cx.listener(|_, _, _, cx| cx.emit(super::GitHubViewEvent::ConnectPilot)))
+}
+
 impl GitHubView {
     /// The section's heading and its cards; nothing when no card waits.
     /// With a board, only the cards no sheet shows: "From pilot".
@@ -130,7 +146,14 @@ impl GitHubView {
             .filter(|c| board.is_none_or(|b| board::card_place(b, c) == CardPlace::Loose))
             .cloned()
             .collect();
-        let problem = p.problem().map(str::to_string);
+        // Broken settings show here too: pilot would just look off.
+        let problem = p
+            .config_problem()
+            .map(|e| format!("pilot is off: {e}"))
+            .or_else(|| {
+                p.problem()
+                    .map(|e| format!("Couldn't reach your agent: {e}"))
+            });
         let sent = self.pilot_sent.as_ref().map(|(t, _)| t.clone());
         if items.is_empty() && problem.is_none() && sent.is_none() {
             return Vec::new();
@@ -178,8 +201,9 @@ impl GitHubView {
                             .truncate()
                             .ty(Type::Caption)
                             .text_color(theme::error())
-                            .child(format!("Couldn't reach your agent: {e}")),
+                            .child(e),
                     )
+                    .child(settings_link("gh-pilot-fix", cx))
                     .into_any_element(),
             );
         }
@@ -749,7 +773,7 @@ impl GitHubView {
         let Some(cfg) = self.pilot.read(cx).config().cloned() else {
             self.pilot_notes.insert(
                 id.to_string(),
-                "Not sent: arakun-pilot's client.json is missing.".into(),
+                "Not sent: arakun-pilot isn't connected (\u{201c}Connect arakun-pilot\u{2026}\u{201d} in the GitHub tab's menu).".into(),
             );
             cx.notify();
             return false;

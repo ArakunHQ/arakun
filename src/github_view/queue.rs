@@ -69,7 +69,8 @@ impl GitHubView {
                 }),
             )
             .child({
-                let label = if self.pilot.read(cx).config().is_some() {
+                let p = self.pilot.read(cx);
+                let label = if p.config().is_some() || p.config_problem().is_some() {
                     "arakun-pilot settings…"
                 } else {
                     "Connect arakun-pilot…"
@@ -79,6 +80,20 @@ impl GitHubView {
                     cx.emit(super::GitHubViewEvent::ConnectPilot);
                     cx.notify();
                 }))
+            })
+            // How pilot is doing, under its row: a quiet empty board and a
+            // Worker that refuses the token look the same otherwise.
+            .when_some(self.pilot.read(cx).status(), |d, (text, bad)| {
+                d.child(
+                    div()
+                        .px(crate::ui::sp(8.))
+                        .pl(crate::ui::sp(34.))
+                        .pb(crate::ui::sp(4.))
+                        .line_clamp(2)
+                        .ty(Type::Caption)
+                        .text_color(if bad { theme::error().into() } else { theme::text_subtle() })
+                        .child(text),
+                )
             })
             .child(ui::menu_divider())
             .child(ui::menu_heading("Notices"))

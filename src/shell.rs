@@ -3564,10 +3564,16 @@ impl Shell {
         step(window, cx);
         // gpui's tab order spans the window, so an open dialog would let Tab
         // reach the controls behind it. Step on to the next stop inside one;
-        // back at the first stop means no dialog is open.
+        // back at the first stop means no dialog is open. The update dialog
+        // covers any other dialog, so while it is open only its stops count.
+        let update = self.update_dialog.as_ref().map(|(d, _)| d.focus_handle(cx));
+        let inside = |window: &Window, cx: &App| match &update {
+            Some(update) => update.contains_focused(window, cx),
+            None => in_modal(&window.context_stack()),
+        };
         let first = window.focused(cx);
         for _ in 0..MAX_TAB_STOPS {
-            if in_modal(&window.context_stack()) {
+            if inside(window, cx) {
                 break;
             }
             step(window, cx);
@@ -3576,7 +3582,7 @@ impl Shell {
                 break;
             }
         }
-        if !in_modal(&window.context_stack())
+        if !inside(window, cx)
             && let Some(first) = first
         {
             window.focus(&first, cx);

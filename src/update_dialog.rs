@@ -27,6 +27,8 @@ pub enum UpdateEvent {
 pub struct UpdateDialog {
     focus: FocusHandle,
     pub policy: Policy,
+    /// Holds back the window's shortcuts while the dialog is open (see `new`).
+    _keys: gpui::Subscription,
 }
 
 impl EventEmitter<UpdateEvent> for UpdateDialog {}
@@ -35,7 +37,21 @@ impl UpdateDialog {
     pub fn new(policy: Policy, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
-        Self { focus, policy }
+        // The dialog covers the window, but a shortcut would still reach the
+        // Shell's actions behind it (a new environment, the palette). Stopped
+        // here, no binding runs; key listeners still do, so Tab, Escape and
+        // the buttons' Enter and Space keep working.
+        let ours = window.window_handle();
+        let _keys = cx.intercept_keystrokes(move |_, window, cx| {
+            if window.window_handle() == ours {
+                cx.stop_propagation();
+            }
+        });
+        Self {
+            focus,
+            policy,
+            _keys,
+        }
     }
 
     pub fn forced(&self) -> bool {
@@ -67,6 +83,11 @@ impl Render for UpdateDialog {
             "We ask everyone on this version to update."
         };
         let (label, enabled, event) = match &status {
+            // Downloaded for the nightly channel the user has left since: it
+            // would not be installed at quit (`update::will_install`).
+            Status::Ready(tag) if !update::will_install(tag) => {
+                ("Try again", true, UpdateEvent::Retry)
+            }
             Status::Ready(_) if CAN_RESTART => ("Restart now", true, UpdateEvent::Restart),
             Status::Ready(_) => ("Quit and update", true, UpdateEvent::Restart),
             Status::Failed(_) => ("Try again", true, UpdateEvent::Retry),

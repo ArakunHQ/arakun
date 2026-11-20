@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use super::anthropic;
+use super::claude_ext;
 use super::knobs;
 use super::launch;
 use super::rpc::{RpcError, unix_now, uuid_v4};
@@ -747,6 +748,7 @@ fn system_prompt(cwd: &Path) -> String {
     if let Some((name, text)) = project_instructions(cwd) {
         s.push_str(&format!("\n\n# Project instructions ({name})\n\n{text}"));
     }
+    s.push_str(&skills_prompt(&skills(cwd)));
     let rules = knobs::get().rules_text();
     if !rules.is_empty() {
         s.push_str("\n\n");
@@ -783,6 +785,89 @@ fn project_instructions(cwd: &Path) -> Option<(&'static str, String)> {
         };
         Some((name, format!("{}{more}", &text[..cut])))
     })
+}
+
+// ---- skills --------------------------------------------------------------------
+
+/// What one skill's description takes in the system prompt at most.
+const SKILL_DESCRIPTION_BYTES: usize = 300;
+/// What the list of skills takes in the system prompt at most.
+const SKILLS_BYTES: usize = 10_000;
+
+/// The skills this session can load. A sandboxed one's home is empty, so it gets
+/// only the project's.
+fn skills(cwd: &Path) -> Vec<claude_ext::Skill> {
+    claude_ext::agent_skills(cwd, jail().is_none())
+}
+
+/// The system prompt's list of skills, empty when there are none.
+fn skills_prompt(skills: &[claude_ext::Skill]) -> String {
+    if skills.is_empty() {
+        return String::new();
+    }
+    let mut s = String::from(
+        "\n\n# Skills\n\nSkills are instructions for particular kinds of task. When the task matches a \
+         skill's description, or the user types /<name> of one, call the skill tool with its name before \
+         you start, then follow what it returns.\n",
+    );
+    let start = s.len();
+    for (i, skill) in skills.iter().enumerate() {
+        let d = skill.description.trim();
+        let cut = floor_boundary(d, SKILL_DESCRIPTION_BYTES);
+        let more = if cut < d.len() { "…" } else { "" };
+        let line = if d.is_empty() {
+            format!("\n- {}", skill.name)
+        } else {
+            format!("\n- {}: {}{more}", skill.name, &d[..cut])
+        };
+        if s.len() - start + line.len() > SKILLS_BYTES {
+            s.push_str(&format!(
+                "\n- [arakun: {} more skills are left out here]",
+                skills.len() - i
+            ));
+            break;
+        }
+        s.push_str(&line);
+    }
+    s
+}
+
+/// The `skill` tool: the named skill's SKILL.md without its front matter, and the
+/// folder its relative paths start from.
+fn load_skill(cwd: &Path, args: &Value) -> Result<String, String> {
+    let name = args["name"].as_str().ok_or("name is missing")?;
+    let name = name.trim().trim_start_matches('/');
+    let all = skills(cwd);
+    let Some(skill) = all.iter().find(|s| s.name == name) else {
+        let names: Vec<&str> = all.iter().map(|s| s.name.as_str()).collect();
+        return Err(if names.is_empty() {
+            "there are no skills".into()
+        } else {
+            format!(
+                "there is no skill {name}; the skills are {}",
+                names.join(", ")
+            )
+        });
+    };
+    let path = skill.path.join("SKILL.md");
+    let text = std::fs::read_to_string(&path)
+        .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    let body = claude_ext::skill_body(&text);
+    let max = tool_chars();
+    let cut = floor_boundary(body, max);
+    let more = if cut < body.len() {
+        format!(
+            "\n[arakun: the rest of the skill is cut off here; read_file {} for it]",
+            path.display()
+        )
+    } else {
+        String::new()
+    };
+    Ok(format!(
+        "Skill {name}, from {}. Paths in it are relative to that folder.\n\n{}{more}",
+        skill.path.display(),
+        &body[..cut]
+    ))
 }
 
 /// The PATH arakun's children get, for the sandbox.
@@ -879,6 +964,12 @@ fn tool_specs() -> Value {
             "Search the web; returns results with title, URL and snippet. Read the ones that matter with web_fetch.",
             json!({"query": s("What to search for."), "max_results": n("How many results: default 8, at most 20.")}),
             &["query"],
+        ),
+        f(
+            "skill",
+            "Load a skill from the system prompt's list: its instructions for a kind of task. Follow them.",
+            json!({"name": s("The skill's name, as listed.")}),
+            &["name"],
         ),
     ])
 }
@@ -1396,7 +1487,7 @@ fn run_streaming(
 fn read_only(name: &str) -> bool {
     matches!(
         name,
-        "read_file" | "grep" | "list" | "web_fetch" | "web_search"
+        "read_file" | "grep" | "list" | "web_fetch" | "web_search" | "skill"
     )
 }
 
@@ -1412,7 +1503,7 @@ fn permission_group(name: &str) -> Option<&'static str> {
 fn tool_kind(name: &str) -> &'static str {
     match name {
         "bash" => "execute",
-        "read_file" | "list" | "read_email" => "read",
+        "read_file" | "list" | "read_email" | "skill" => "read",
         "write_file" | "edit_file" => "edit",
         "grep" => "search",
         "web_fetch" | "web_search" => "fetch",
@@ -1433,6 +1524,7 @@ fn describe(name: &str, args: &Value, cwd: &Path) -> Value {
         "list" => format!("List {}", if path.is_empty() { "." } else { &path }),
         "web_fetch" => format!("Fetch {}", s("url")),
         "web_search" => format!("Search the web: {}", s("query")),
+        "skill" => format!("Skill {}", s("name")),
         "request_action" => format!("{} {}", broker::ACTION_TITLE, s("action")),
         "read_email" => format!(
             "Read email {}",
@@ -1720,6 +1812,22 @@ impl Agent {
         self.send(json!({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": sid, "update": update}}));
     }
 
+    /// The skills as slash commands, so the composer offers them after a `/`.
+    fn offer_skills(&self, sid: &str, cwd: &Path) {
+        let skills = skills(cwd);
+        if skills.is_empty() {
+            return;
+        }
+        let commands: Vec<Value> = skills
+            .iter()
+            .map(|s| json!({"name": s.name, "description": s.description}))
+            .collect();
+        self.update(
+            sid,
+            json!({"sessionUpdate": "available_commands_update", "availableCommands": commands}),
+        );
+    }
+
     fn notice(&self, sid: &str, text: &str, error: bool) {
         self.send(json!({"jsonrpc": "2.0", "method": "_arakun/notice", "params": {"sessionId": sid, "text": text, "error": error}}));
     }
@@ -1775,18 +1883,22 @@ impl Agent {
                     .unwrap_or_else(launch::home);
                 let s = Session::new(cwd);
                 s.save();
+                let (sid, cwd) = (s.id.clone(), s.cwd.clone());
                 let result = json!({"sessionId": s.id, "configOptions": s.config()});
                 *lock(&self.session) = Some(Arc::new(Mutex::new(s)));
-                reply(Ok(result))
+                reply(Ok(result));
+                self.offer_skills(&sid, &cwd);
             }
             // The transcript already shows the history, so loading replays nothing.
             "session/resume" | "session/load" => {
                 match params["sessionId"].as_str().and_then(Session::load) {
                     Some(s) => {
                         knobs::log_once();
+                        let (sid, cwd) = (s.id.clone(), s.cwd.clone());
                         let result = json!({"configOptions": s.config()});
                         *lock(&self.session) = Some(Arc::new(Mutex::new(s)));
-                        reply(Ok(result))
+                        reply(Ok(result));
+                        self.offer_skills(&sid, &cwd);
                     }
                     None => reply(Err((
                         -32002,
@@ -2423,6 +2535,7 @@ impl Agent {
             "edit_file" => edit_file(cwd, &args),
             "grep" => grep(cwd, &args, &self.cancel),
             "list" => list(cwd, &args),
+            "skill" => load_skill(cwd, &args),
             "web_fetch" => super::web::fetch(&args).map(|t| clip_middle(&t, tool_chars())),
             "web_search" => super::web::search(&args).map(|t| clip_middle(&t, tool_chars())),
             "read_email"
@@ -2442,6 +2555,8 @@ impl Agent {
                 "{} lines",
                 text.lines().filter(|l| l.contains('\t')).count()
             )
+        } else if call.name == "skill" && status == "completed" {
+            text.lines().next().unwrap_or_default().to_string()
         } else {
             clip_middle(&text, tool_chars())
         };
@@ -3120,7 +3235,8 @@ mod tests {
                 "grep",
                 "list",
                 "web_fetch",
-                "web_search"
+                "web_search",
+                "skill"
             ]
         );
         assert!((ds.cost(1_000_000, 0, 0, 1_000_000) - 1.5).abs() < 1e-9);
@@ -3429,6 +3545,52 @@ mod tests {
         assert!(text.len() < INSTRUCTIONS_BYTES + 100 && text.ends_with("cut off here]"));
         assert!(system_prompt(&dir).contains("# Project instructions (AGENTS.md)"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn skills_are_listed_in_the_prompt_and_load_without_front_matter() {
+        assert_eq!(skills_prompt(&[]), "");
+        let dir = std::env::temp_dir().join(format!("arakun-wai-{}", uuid_v4()));
+        let name = format!("t-{}", uuid_v4());
+        let folder = dir.join(".claude/skills").join(&name);
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(
+            folder.join("SKILL.md"),
+            format!(
+                "---\nname: {name}\ndescription: {}\n---\n\nRun ./go.sh\n",
+                "d".repeat(400)
+            ),
+        )
+        .unwrap();
+        let listed = skills_prompt(&claude_ext::agent_skills(&dir, false));
+        assert!(listed.contains("# Skills"));
+        assert!(listed.contains(&format!(
+            "\n- {name}: {}…",
+            "d".repeat(SKILL_DESCRIPTION_BYTES)
+        )));
+        assert!(system_prompt(&dir).contains(&format!("- {name}: ")));
+
+        let loaded = load_skill(&dir, &json!({"name": format!("/{name}")})).unwrap();
+        assert!(loaded.starts_with(&format!("Skill {name}, from {}.", folder.display())));
+        assert!(loaded.ends_with("\n\nRun ./go.sh"));
+        let missing = load_skill(&dir, &json!({"name": "nope"})).unwrap_err();
+        assert!(missing.contains(&name));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn many_skills_stay_within_their_share_of_the_prompt() {
+        let skills: Vec<_> = (0..200)
+            .map(|i| claude_ext::Skill {
+                name: format!("skill-{i}"),
+                description: "x".repeat(SKILL_DESCRIPTION_BYTES),
+                source: "project".into(),
+                path: PathBuf::new(),
+            })
+            .collect();
+        let s = skills_prompt(&skills);
+        assert!(s.len() < SKILLS_BYTES + 1000);
+        assert!(s.ends_with("more skills are left out here]"));
     }
 
     #[test]

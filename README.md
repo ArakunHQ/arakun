@@ -197,6 +197,14 @@ sense in the terminal app: `/clear`, `/cost`, `/keybindings-help`, `/login`, `/l
 `/output-style:new`, `/release-notes`, `/todos` and others Claude Code marks as
 terminal-only. The status line and keybindings from your settings don't apply in Arakun.
 
+Workers AI reads the project's `AGENTS.md` (or `CLAUDE.md`) and can use skills: a
+folder with a `SKILL.md` in `~/.claude/skills`, `~/.agents/skills`, the project's
+`.claude/skills` or `.agents/skills`, or a Claude Code plugin you turned on. Its system
+prompt lists each skill's name and description, and the agent loads a skill's
+instructions when a task matches it or when you type `/<name>`. A skill in your home
+folder wins over a project skill with the same name. A headless session's sandbox only
+sees the project's skills.
+
 - **Agent sessions.** Transcripts render markdown, diffs, tool calls and images;
   sessions can be resumed, and per-turn diffs show what each turn changed, including
   changes made by shell commands (files over 1 MB are left out). Each transcript is kept
@@ -443,8 +451,12 @@ after a week).
   while `~/.claude/settings.json` sets `CLAUDE_CODE_OAUTH_TOKEN` in its `env` block,
   because Claude Code applies that over each session's environment; the Usage tab says
   so, and sessions start as before. Without a saved seat nothing changes.
-- **Marketplace.** Plugins and MCP servers to add, and the MCP servers, plugins, skills
-  and permission rules the agents load now. Under Arakun › Extensions (or Settings ›
+- **Marketplace.** Plugins, MCP servers and skills to add, and the MCP servers, plugins,
+  skills and permission rules the agents load now. Discover › Skills searches
+  [skills.sh](https://skills.sh); Install copies the skill's folder from its GitHub
+  repository into `~/.claude/skills`, where Claude Code and Workers AI find it. It uses
+  your `gh` sign-in (or `GH_TOKEN`) when there is one, since GitHub answers few
+  requests without one. Skills install on this computer only, not on a paired server. Under Arakun › Extensions (or Settings ›
   General › Sidebar) you turn on the tabs the sidebar shows besides Inbox, Runs, Branches and Marketplace: GitHub, Notes,
   Memory, Usage, Cloudflare, PostHog, Isometric, Phone, Servers and Automations. The
   palette and Customize › Sidebar list only the tabs that are on. A new install starts

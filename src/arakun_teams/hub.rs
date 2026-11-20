@@ -241,6 +241,10 @@ pub struct Hub {
     roster_version: u64,
     applied_roster: u64,
     membership: HashMap<String, u64>,
+    /// Teams this device created whose `#general` is not made yet, with the
+    /// channel ID to make it with. A retry reuses the ID, so a create that
+    /// went through but lost its answer is not made twice.
+    setup: HashMap<String, String>,
     next_link: u64,
     _events: Task<()>,
     save_task: Option<Shared<Task<()>>>,
@@ -288,6 +292,7 @@ impl Hub {
             roster_version: 0,
             applied_roster: 0,
             membership: HashMap::new(),
+            setup: HashMap::new(),
             next_link: 0,
             _events: events,
             save_task: None,
@@ -328,6 +333,7 @@ impl Hub {
         self.kept = Kept::default();
         self.teams.clear();
         self.membership.clear();
+        self.setup.clear();
         self.invites.clear();
         self.team.clear();
         self.channels.clear();
@@ -637,6 +643,7 @@ impl Hub {
                             hub.info = Some(format!("You're no longer in {}.", was.detail.name));
                         }
                         hub.team.remove(&t);
+                        hub.setup.remove(&t);
                         hub.notices.retain(|n| n.team_id != t);
                         hub.channels.retain(|_, c| c.team_id != t);
                         hub.kept.forget_team(&t);
@@ -811,6 +818,17 @@ impl Hub {
                 self.ingest(&key, waiting, true, cx);
             }
         }
+        if self.setup.contains_key(team_id) {
+            let has_channels = self
+                .team
+                .get(team_id)
+                .is_some_and(|t| !t.detail.channels.is_empty());
+            if has_channels {
+                self.setup.remove(team_id);
+            } else if let Some((epoch, key)) = self.sending_key(team_id) {
+                self.finish_setup(team_id, epoch, key, cx);
+            }
+        }
         if role.is_admin() {
             if rotation {
                 self.rotate(team_id, cx);
@@ -851,7 +869,10 @@ impl Hub {
                 Ok((call.create_team(&name)?, mine))
             },
             move |hub, result, cx| match result {
-                Ok((team_id, mine)) => hub.first_key(team_id, me, mine, cx),
+                Ok((team_id, mine)) => {
+                    hub.setup.insert(team_id.clone(), crypto::ulid());
+                    hub.first_key(team_id, me, mine, cx)
+                }
                 Err(e) => {
                     hub.busy.remove("create-team");
                     hub.error = Some(format!("Could not create the team: {e}"));
@@ -880,9 +901,20 @@ impl Hub {
             move |hub, result, cx| {
                 let batch = match result {
                     Ok(batch) => batch,
+                    // Another upload made the key first, such as this device's
+                    // rotation from a refresh that saw the new team. The
+                    // refresh reads that key, and `team_read` finishes setup.
+                    Err(ApiError::Status(409, _)) => {
+                        hub.busy.remove("create-team");
+                        hub.refresh(cx);
+                        return;
+                    }
+                    // The team exists without a key. The next refresh rotates
+                    // it, then `team_read` finishes setup.
                     Err(e) => {
                         hub.busy.remove("create-team");
                         hub.error = Some(format!("Could not make the team's first key: {e}"));
+                        hub.refresh(cx);
                         return;
                     }
                 };
@@ -899,22 +931,47 @@ impl Hub {
                 hub.kept.admitted(&team, me, 1, &batch);
                 hub.save(cx);
                 // The first key is already live even if channel creation fails.
-                hub.run(
-                    cx,
-                    move |net| {
-                        let channel = crypto::ulid();
-                        let name = crypto::seal_channel_name(&team, &channel, 1, &key, "general");
-                        net.call().create_channel(&team, &channel, &name)
-                    },
-                    |hub, result, cx| {
-                        hub.busy.remove("create-team");
-                        if let Err(e) = result {
-                            hub.error =
-                                Some(format!("Could not create the team's first channel: {e}"));
-                        }
+                hub.finish_setup(&team, 1, key, cx);
+            },
+        );
+    }
+
+    /// Makes `#general` for a team this device created, with the channel ID
+    /// kept for it. A failure is tried again when the team is read next.
+    fn finish_setup(&mut self, team_id: &str, epoch: u64, key: TeamKey, cx: &mut Context<Self>) {
+        let Some(channel) = self.setup.get(team_id).cloned() else {
+            self.busy.remove("create-team");
+            return;
+        };
+        let busy = format!("general:{team_id}");
+        if !self.busy.insert(busy.clone()) {
+            return;
+        }
+        let team = team_id.to_string();
+        self.run(
+            cx,
+            {
+                let team = team.clone();
+                move |net| {
+                    let name = crypto::seal_channel_name(&team, &channel, epoch, &key, "general");
+                    net.call().create_channel(&team, &channel, &name)
+                }
+            },
+            move |hub, result, cx| {
+                hub.busy.remove(&busy);
+                hub.busy.remove("create-team");
+                match result {
+                    Ok(()) => {
+                        hub.setup.remove(&team);
                         hub.refresh(cx);
-                    },
-                );
+                    }
+                    // The ID is taken by an earlier try whose answer was
+                    // lost, or the key changed. Reading the team tells which.
+                    Err(ApiError::Status(409, _)) => hub.refresh(cx),
+                    Err(e) => {
+                        hub.error = Some(format!("Could not create the team's first channel: {e}"));
+                    }
+                }
             },
         );
     }

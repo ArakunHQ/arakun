@@ -1769,10 +1769,23 @@ impl Shell {
             .get(project.active_env)
             .and_then(|e| e.remote.as_ref())
             .map(|r| r.server.clone());
-        let pick = machines
+        let open_pick = machines
             .iter()
             .position(|m| m.server.as_ref().map(|(s, _)| s) == open.as_ref())
             .unwrap_or(0);
+        // Spread: the machine it would go to without asking, the open one
+        // first on a tie.
+        // The others keep their order, as in `spread_target`.
+        let mut order: Vec<usize> = (0..machines.len()).collect();
+        order.remove(open_pick);
+        order.insert(0, open_pick);
+        let ids: Vec<Option<&str>> = order
+            .iter()
+            .map(|&i| machines[i].server.as_ref().map(|(s, _)| s.as_str()))
+            .collect();
+        let pick = self
+            .servers_spread_pick(&ids)
+            .map_or(open_pick, |i| order[i]);
         let (repo, name) = (project.path.clone(), project.name.clone());
         let (setup, start) = (project.setup.clone(), project.base.clone());
         let dialog = cx.new(|cx| {
@@ -1810,6 +1823,47 @@ impl Shell {
         cx.notify();
     }
 
+    /// The machine a new environment of project `pi` goes to while they are
+    /// spread: `Some(None)` for this computer, `Some(Some(env))` for the
+    /// server of that environment. `None` when they are not spread or no
+    /// machine can take it.
+    fn spread_target(&self, pi: usize) -> Option<Option<usize>> {
+        let project = self.projects.get(pi)?;
+        let open = project
+            .environments
+            .get(project.active_env)
+            .and_then(|e| e.remote.as_ref())
+            .map(|r| r.server.as_str());
+        let mut machines: Vec<(Option<&str>, Option<usize>)> = Vec::new();
+        if !project.is_remote() {
+            machines.push((None, None));
+        }
+        // The open environment first, so its server makes the new one from it.
+        let envs = std::iter::once(project.active_env).chain(0..project.environments.len());
+        for i in envs {
+            let Some(e) = project.environments.get(i) else {
+                continue;
+            };
+            let Some(r) = &e.remote else { continue };
+            let known = machines.iter().any(|(s, _)| *s == Some(r.server.as_str()));
+            if known
+                || self.server_env_retired(&e.path)
+                || self.server_reach(&r.server) != Some(crate::servers_view::Reach::Connected)
+            {
+                continue;
+            }
+            machines.push((Some(r.server.as_str()), Some(i)));
+        }
+        // The open environment's machine wins a tie.
+        if let Some(at) = machines.iter().position(|(s, _)| *s == open) {
+            let first = machines.remove(at);
+            machines.insert(0, first);
+        }
+        let ids: Vec<Option<&str>> = machines.iter().map(|(s, _)| *s).collect();
+        let i = self.servers_spread_pick(&ids)?;
+        Some(machines[i].1)
+    }
+
     /// A new environment without asking: a random branch from the current
     /// commit, as the dialog would fill in. Its row shows at once and the
     /// worktree follows; the agent names the branch after the first prompt.
@@ -1831,13 +1885,24 @@ impl Shell {
         let Some(project) = self.projects.get(pi) else {
             return;
         };
+        // Spread across machines, one made without a prompt goes where
+        // `spread_target` says. A prompt stays on the machine it was written
+        // on: what it mentions and the settings picked with it are there.
+        let spread = prompt
+            .as_ref()
+            .map_or_else(|| self.spread_target(pi), |_| None);
+        if let Some(Some(from)) = spread {
+            self.servers_new_env(pi, from, None, cx);
+            return;
+        }
         // In a server's environment, or a project only servers have: the
         // new one is made on that server.
-        let on_server = project
-            .environments
-            .get(project.active_env)
-            .is_some_and(|e| e.remote.is_some())
-            || project.is_remote();
+        let on_server = spread.is_none()
+            && (project
+                .environments
+                .get(project.active_env)
+                .is_some_and(|e| e.remote.is_some())
+                || project.is_remote());
         if on_server {
             // A queued prompt goes only to the server it was written on,
             // never to another that has this project too.

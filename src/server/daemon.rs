@@ -2125,20 +2125,35 @@ impl Daemon {
                 }
                 // Until it is gone, or stays: no session starts there meanwhile.
                 self.deleting.insert(path.clone());
-                // A shell there would hold the folder open.
-                self.hang_up_terms_in(&path);
                 cx.spawn(async move |this, cx| {
                     let p = path.clone();
                     // Git's files are read to the side, as every place's are.
-                    let done = cx
+                    let checked = cx
                         .background_executor()
                         .spawn(async move {
                             removable(&p)?;
                             let branch = delete_branch.then(|| store::branch(&p)).flatten();
                             branch_agreed(branch.as_deref(), confirmed.as_deref())?;
-                            remove_worktree(&p, branch.as_deref())
+                            Ok::<_, String>(branch)
                         })
                         .await;
+                    let done = match checked {
+                        Ok(branch) => {
+                            // A shell there would hold the folder open. Only
+                            // now: a refused deletion keeps its terminals.
+                            let hung_up = this.update(cx, |this, _| {
+                                this.hang_up_terms_in(&path);
+                            });
+                            if hung_up.is_err() {
+                                return;
+                            }
+                            let p = path.clone();
+                            cx.background_executor()
+                                .spawn(async move { remove_worktree(&p, branch.as_deref()) })
+                                .await
+                        }
+                        Err(e) => Err(e),
+                    };
                     let _ = this.update(cx, |this, cx| {
                         this.deleting.remove(&path);
                         // The folder is gone even when its branch stayed.

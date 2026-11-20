@@ -33,6 +33,11 @@ const CHILD_EVENT: usize = tty::PTY_CHILD_EVENT_TOKEN;
 /// The output kept for devices that fall behind or come back.
 pub const KEPT: usize = 256 * 1024;
 
+/// The most one read takes before the thread looks at hang-ups and typing
+/// again. A terminal that prints without pause would hold it otherwise. The
+/// poller is level-triggered, so what is left wakes it straight away.
+const READ_BATCH: usize = 64 * 1024;
+
 /// What a terminal printed, as far back as [`KEPT`] goes, and how it ended.
 #[derive(Default)]
 pub struct Output {
@@ -95,9 +100,21 @@ impl Pty {
         (cols, rows): (u16, u16),
         wake: mpsc::UnboundedSender<String>,
     ) -> std::io::Result<Pty> {
+        // The common case gets a plain error; `in_dir` covers a folder that
+        // goes between this look and the child's start.
+        if !cwd.is_dir() {
+            return Err(std::io::Error::new(
+                ErrorKind::NotFound,
+                format!("{} is not a folder", cwd.display()),
+            ));
+        }
         let mut argv = command
             .filter(|c| !c.is_empty())
             .unwrap_or_else(crate::platform::default_shell);
+        #[cfg(unix)]
+        {
+            argv = in_dir(&cwd, argv)?;
+        }
         let program = argv.remove(0);
         let env = [
             ("TERM", "xterm-256color"),
@@ -177,6 +194,28 @@ impl Drop for Pty {
     }
 }
 
+/// `argv`, run by a `sh` that enters `cwd` first and stops when it cannot.
+/// Alacritty ignores a failed `chdir` on Unix, which would run the command
+/// in the server's own folder.
+#[cfg(unix)]
+fn in_dir(cwd: &std::path::Path, argv: Vec<String>) -> std::io::Result<Vec<String>> {
+    let dir = cwd.to_str().ok_or_else(|| {
+        std::io::Error::new(
+            ErrorKind::InvalidInput,
+            format!("{} is not a UTF-8 path", cwd.display()),
+        )
+    })?;
+    let mut wrapped = vec![
+        "/bin/sh".into(),
+        "-c".into(),
+        r#"cd -- "$1" || exit 126; shift; exec "$@""#.into(),
+        "sh".into(),
+        dir.into(),
+    ];
+    wrapped.extend(argv);
+    Ok(wrapped)
+}
+
 fn window_size(cols: u16, rows: u16) -> WindowSize {
     WindowSize {
         num_cols: cols.max(2),
@@ -233,7 +272,7 @@ impl Run {
                 match event.key {
                     CHILD_EVENT => {
                         if let Some(ChildEvent::Exited(status)) = self.pty.next_child_event() {
-                            let _ = self.read(&mut buf);
+                            self.drain(&mut buf);
                             break 'run status.map(exit_code);
                         }
                     }
@@ -277,26 +316,36 @@ impl Run {
         self.ended(code);
     }
 
-    /// Reads all there is now.
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<()> {
-        let mut got = false;
+    /// Reads what there is now, up to [`READ_BATCH`] bytes. True when it
+    /// stopped at that limit and more may be waiting.
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<bool> {
+        let mut got = 0;
         let result = loop {
+            if got >= READ_BATCH {
+                break Ok(true);
+            }
             match self.pty.reader().read(buf) {
-                Ok(0) => break Ok(()),
+                Ok(0) => break Ok(false),
                 Ok(n) => {
                     self.output.lock().unwrap().push(&buf[..n]);
-                    got = true;
+                    got += n;
                 }
                 Err(e) if matches!(e.kind(), ErrorKind::Interrupted | ErrorKind::WouldBlock) => {
-                    break Ok(());
+                    break Ok(false);
                 }
                 Err(e) => break Err(e),
             }
         };
-        if got {
+        if got > 0 {
             self.wake();
         }
         result
+    }
+
+    /// Reads what the shell left behind once it ended, a batch at a time so
+    /// a hang-up still stops it.
+    fn drain(&mut self, buf: &mut [u8]) {
+        while !self.stop.load(Ordering::Acquire) && matches!(self.read(buf), Ok(true)) {}
     }
 
     fn write(&mut self) -> std::io::Result<()> {
@@ -385,5 +434,37 @@ mod tests {
                 break;
             }
         }
+    }
+
+    #[test]
+    fn a_missing_folder_is_not_started_in() {
+        let (wake, _woken) = mpsc::unbounded();
+        let gone = std::env::temp_dir().join("arakun-pty-no-such-folder");
+        let cmd = vec!["/bin/sh".into(), "-c".into(), "true".into()];
+        assert!(Pty::spawn("t2".into(), gone, Some(cmd), (80, 24), wake).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_command_runs_in_its_folder_or_not_at_all() {
+        let run = |dir: &std::path::Path| {
+            let argv = in_dir(dir, vec!["/bin/pwd".into(), "-P".into()]).unwrap();
+            std::process::Command::new(&argv[0])
+                .args(&argv[1..])
+                .current_dir("/")
+                .output()
+                .unwrap()
+        };
+        let here = std::env::temp_dir().canonicalize().unwrap();
+        let out = run(&here);
+        assert!(out.status.success());
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout).trim(),
+            here.to_str().unwrap()
+        );
+
+        let out = run(&here.join("arakun-pty-no-such-folder"));
+        assert_eq!(out.status.code(), Some(126));
+        assert!(out.stdout.is_empty());
     }
 }

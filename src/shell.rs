@@ -3536,6 +3536,37 @@ impl Shell {
                 .into_any_element(),
         }
     }
+
+    /// Tab and Shift+Tab move between controls. This listens last, so a view
+    /// that uses Tab itself (a field completing, the new-session dialog)
+    /// already took it. Terminals, pages and the composer type it instead:
+    /// not all of them stop the key, so they are left out by name.
+    fn tab_key(&mut self, ev: &gpui::KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let k = &ev.keystroke;
+        let m = k.modifiers;
+        if k.key != "tab" || m.control || m.alt || m.platform || m.function {
+            return;
+        }
+        if self.composer_focus.is_focused(window) || types_tab(&window.context_stack()) {
+            return;
+        }
+        if m.shift {
+            window.focus_prev(cx);
+        } else {
+            window.focus_next(cx);
+        }
+        cx.stop_propagation();
+    }
+}
+
+/// Whether focus is in something that types a Tab or moves with it: a
+/// terminal, a web page or the palette.
+fn types_tab(contexts: &[gpui::KeyContext]) -> bool {
+    contexts.iter().any(|c| {
+        ["Terminal", "Browser", "Palette"]
+            .iter()
+            .any(|name| c.contains(name))
+    })
 }
 
 impl Render for Shell {
@@ -3868,6 +3899,7 @@ impl Render for Shell {
                 }),
             )
             .map(|d| self.pane_handlers(d, cx))
+            .on_key_down(cx.listener(Self::tab_key))
             .capture_key_down(|ev: &gpui::KeyDownEvent, window, cx| {
                 if ev.keystroke.key == "escape" && crate::agent::markdown::close_preview(window) {
                     cx.stop_propagation();
@@ -4464,5 +4496,15 @@ mod tests {
         // The open project stays open at its new index.
         assert_eq!(active, 1);
         assert_eq!(projects[active].path, other);
+    }
+
+    #[test]
+    fn tab_stays_in_what_types_it() {
+        let ctx = |s: &str| gpui::KeyContext::parse(s).unwrap();
+        assert!(!types_tab(&[ctx("Shell")]));
+        assert!(!types_tab(&[ctx("Shell"), ctx("ThreadView")]));
+        assert!(types_tab(&[ctx("Shell"), ctx("Terminal")]));
+        assert!(types_tab(&[ctx("Shell"), ctx("Browser")]));
+        assert!(types_tab(&[ctx("Shell"), ctx("Palette"), ctx("TextInput")]));
     }
 }

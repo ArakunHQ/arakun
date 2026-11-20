@@ -213,6 +213,34 @@ pub fn tip_text(label: impl Into<SharedString>) -> impl Fn(&mut Window, &mut App
     }
 }
 
+/// How wide the focus ring is around a control reached with Tab.
+pub const FOCUS_RING_W: f32 = 2.;
+
+/// Makes a control a tab stop. Reached with Tab, it shows the focus ring,
+/// and Enter or Space run its `on_click` (gpui sends those as a click). The
+/// ring is an inset shadow: it takes no room, so nothing moves when it shows,
+/// and gpui would paint an outer one under a see-through control.
+///
+/// A mouse press leaves focus where it was: clicking a button in a toolbar
+/// must not take the keyboard from the terminal or the composer.
+pub fn focusable(d: gpui::Stateful<gpui::Div>) -> gpui::Stateful<gpui::Div> {
+    d.tab_index(0)
+        .focus_visible(|s| s.shadow(focus_ring()))
+        .on_mouse_down(gpui::MouseButton::Left, |_, window, _| {
+            window.prevent_default()
+        })
+}
+
+fn focus_ring() -> Vec<gpui::BoxShadow> {
+    vec![gpui::BoxShadow {
+        color: theme::focus_ring(),
+        offset: point(px(0.), px(0.)),
+        blur_radius: px(0.),
+        spread_radius: px(FOCUS_RING_W),
+        inset: true,
+    }]
+}
+
 /// Icon button: 24×24, rounded-md, content/50 → hover content on content/10.
 pub fn icon_button(
     id: impl Into<ElementId>,
@@ -228,6 +256,7 @@ pub fn icon_button(
         .size(px(ICON_BUTTON))
         .rounded(rad(RADIUS))
         .cursor_pointer()
+        .map(focusable)
         .group("icon-button")
         .hover(|s| s.bg(theme::fill_selected()))
         .child(hover_icon(
@@ -548,6 +577,7 @@ pub fn segment(
         .text_size(px(TEXT_SM))
         .font_weight(gpui::FontWeight::MEDIUM)
         .cursor_pointer()
+        .map(focusable)
         .when(on, |d| {
             d.bg(theme::fill_selected()).text_color(theme::content())
         })
@@ -654,6 +684,7 @@ pub fn close_button(id: impl Into<ElementId>) -> gpui::Stateful<gpui::Div> {
         .size(px(28.))
         .rounded(rad(8.))
         .cursor_pointer()
+        .map(focusable)
         .hover(|s| s.bg(theme::fill_hover()))
         .child(hover_icon(
             "cancel01",
@@ -722,7 +753,7 @@ pub fn button_lead(
         .rounded(rad(RADIUS))
         .text_size(px(TEXT_SM))
         .font_weight(gpui::FontWeight::MEDIUM)
-        .when(enabled, |d| d.cursor_pointer())
+        .when(enabled, |d| d.cursor_pointer().map(focusable))
         .when(!enabled, |d| d.opacity(0.4))
         .when_some(leading, |d, lead| d.child(lead))
         .child(div().min_w_0().truncate().child(label.into()));
@@ -800,7 +831,9 @@ pub fn menu_item(
         .text_size(px(TEXT_MD))
         .text_color(color)
         .when(enabled, |d| {
-            d.cursor_pointer().hover(|s| s.bg(theme::selection_hover()))
+            d.cursor_pointer()
+                .map(focusable)
+                .hover(|s| s.bg(theme::selection_hover()))
         })
         .when(!enabled, |d| d.opacity(0.4))
         .child(icon(icon_name, 14.).text_color(color))

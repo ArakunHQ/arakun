@@ -863,6 +863,13 @@ pub fn active() -> Hsla {
     content()
 }
 
+/// The ring around a control reached with Tab. The accent reads at 7:1 on
+/// the background, past the 3:1 a focus ring needs (WCAG 2.4.11), and it
+/// stays apart from a primary button, which is filled with `content`.
+pub fn focus_ring() -> Hsla {
+    accent()
+}
+
 /// Selected text: a light night blue, so amber stays for the accent,
 /// search hits and notes.
 pub fn text_selection() -> Hsla {

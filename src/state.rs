@@ -275,7 +275,14 @@ pub struct Layout {
 pub struct ProjectState {
     pub path: PathBuf,
     pub logo: u32,
+    /// The drawing older versions picked by number. Still written, as 0, so
+    /// they can read this file; `icon` replaced it.
+    #[serde(default)]
     pub art: u8,
+    /// The 8×8 icon; missing in files from before it, which get one drawn
+    /// from the path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<u64>,
     /// Shell command run in a terminal when a new environment is created.
     #[serde(default)]
     pub setup: Option<String>,
@@ -745,7 +752,8 @@ pub fn snapshot_with(
             .map(|p| ProjectState {
                 path: p.path.clone(),
                 logo: p.logo,
-                art: p.art,
+                art: 0,
+                icon: Some(p.icon),
                 setup: p.setup.clone(),
                 check: p.check.clone(),
                 check_declined: p.check_declined,
@@ -1034,9 +1042,9 @@ pub fn restore(state: State) -> (Vec<Project>, usize, Layout, TabStrip) {
                 .unwrap_or(0);
             Project {
                 name: crate::model::dir_name(&p.path).into(),
+                icon: p.icon.unwrap_or_else(|| crate::model::logo_for(&p.path).1),
                 path: p.path,
                 logo: crate::model::current_logo(p.logo),
-                art: p.art,
                 environments,
                 active_env,
                 setup: p.setup,
@@ -1110,12 +1118,12 @@ pub fn restore(state: State) -> (Vec<Project>, usize, Layout, TabStrip) {
 }
 
 pub fn new_project(path: &Path) -> Project {
-    let (logo, art) = crate::model::logo_for(path);
+    let (logo, icon) = crate::model::logo_for(path);
     Project {
         name: crate::model::dir_name(path).into(),
         path: path.to_path_buf(),
         logo,
-        art,
+        icon,
         environments: vec![Environment::new(path.to_path_buf(), None, true)],
         active_env: 0,
         setup: None,

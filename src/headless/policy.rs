@@ -1660,7 +1660,7 @@ fn simple(
             Some("mem")
                 if matches!(
                     args.get(1).copied(),
-                    Some("search" | "get" | "list" | "context")
+                    Some("search" | "get" | "list" | "context" | "scripts")
                 ) => {}
             Some("github") if args.get(1) == Some(&"draft") => {
                 github_draft(&args, &cmd.reads, cwd.as_deref(), cx, out, &line)

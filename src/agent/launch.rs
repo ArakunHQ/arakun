@@ -427,6 +427,11 @@ const HINT: &str = "You are running inside arakun, a desktop app where the user 
          loaded in a real browser on Cloudflare (Browser Run), so sites that block curl still answer; \
          `arakun crawl [--limit N] [--depth N] <url>` reads a whole site the same way. Prefer them to curl \
          for reading the web; at most one fetch every 10 s.\n\
+         - `arakun shrink -- <command>` runs a command and prints a summary of its output: the \
+         failures and result line of a test run, a log's repeated lines collapsed, JSON's outline, \
+         a table's header and a few rows. It saves the whole output to a file and prints its path, \
+         so read that when you need more. Use it for test runs, builds and logs that print a lot, \
+         rather than cutting them with `| tail`.\n\
          - `arakun rename <branch>` renames this environment's branch, before it is pushed, when the \
          work turns out to be something its name doesn't say.\n\
          - `arakun notify <message>` sends the user a desktop notification.\n\

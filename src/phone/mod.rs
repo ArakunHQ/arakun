@@ -16,6 +16,7 @@
 pub mod e2e;
 pub mod identity;
 pub mod push;
+mod quiet;
 pub mod relay;
 pub mod tailscale;
 mod transport;
@@ -34,6 +35,7 @@ use std::sync::{Arc, Mutex, mpsc as std_mpsc};
 use std::time::{Duration, Instant};
 
 use futures::channel::mpsc;
+use quiet::Quiet;
 use serde::{Deserialize, Serialize};
 use sha2::Digest as _;
 use tungstenite::{Message, WebSocket};
@@ -49,6 +51,30 @@ const PAIR_TRIES: u8 = 5;
 const MAX_BODY: usize = 4096;
 /// How long a request body may take to arrive, all of it.
 const BODY_DEADLINE: Duration = Duration::from_secs(5);
+/// A phone is pinged this often, and dropped after this long without a word:
+/// two missed pings. One that left the network without closing would pass for
+/// someone watching until TCP gave up, minutes later.
+/// Short in tests, which wait for a phone to be dropped.
+const PHONE_PING_EVERY: Duration = if cfg!(test) {
+    Duration::from_millis(300)
+} else {
+    Duration::from_secs(15)
+};
+const PHONE_SILENCE_MAX: Duration = if cfg!(test) {
+    Duration::from_secs(1)
+} else {
+    Duration::from_secs(40)
+};
+/// How long one write to a phone may block. A page that stopped reading (a
+/// frozen tab) would hold its connection's thread forever.
+const PHONE_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long one pass may spend sending queued messages before it reads again.
+/// A long queue of slow writes would otherwise leave the phone's pongs unread
+/// until it looked silent.
+const PHONE_SEND_PASS: Duration = Duration::from_millis(100);
+/// Messages waiting for one phone. A phone that lets this many pile up is not
+/// reading, and is dropped rather than kept in memory.
+const PHONE_QUEUE: usize = 1024;
 /// A few phones each load the page and keep a socket; anyone on the network
 /// can open connections, so one address must not take every place.
 const CONNECTIONS: crate::accept::Limits = crate::accept::Limits {
@@ -158,6 +184,17 @@ pub enum ClientMsg {
     /// one is in the inbox.
     Fork {
         session: String,
+    },
+    /// Hands the session to another agent there: a session of `agent` takes
+    /// its place, shown the conversation so far and told about it with the
+    /// next prompt, and the old one is gone. `settings` are the model and the
+    /// reasoning picked for `agent`, as with `start`. Answered with
+    /// `continued` once the new one is in the inbox.
+    ContinueWith {
+        session: String,
+        agent: String,
+        #[serde(default)]
+        settings: Vec<(String, String)>,
     },
     /// Summarizes the session's conversation so far, to free context. What it
     /// did shows in the session.
@@ -848,12 +885,22 @@ fn new_code() -> String {
     format!("{:06}", u32::from_le_bytes(bytes) % 1_000_000)
 }
 
-type Outgoing = std_mpsc::Sender<String>;
+type Outgoing = std_mpsc::SyncSender<String>;
 
 /// A connected phone: the device it is, and the way to write to it.
 struct Client {
     device: String,
     out: Outgoing,
+    /// Set when the client is dropped from the map. Its loop would otherwise
+    /// write out every message still queued before it noticed, which for a
+    /// phone dropped for a full queue can take as long as it is slow.
+    gone: Arc<AtomicBool>,
+}
+
+impl Drop for Client {
+    fn drop(&mut self) {
+        self.gone.store(true, Ordering::Relaxed);
+    }
 }
 
 type Clients = Arc<Mutex<HashMap<ClientId, Client>>>;
@@ -919,15 +966,17 @@ impl Server {
     }
 
     pub fn send(&self, id: ClientId, text: String) {
-        if let Some(c) = self.clients.lock().unwrap().get(&id) {
-            let _ = c.out.send(text);
+        let mut clients = self.clients.lock().unwrap();
+        if clients.get(&id).is_some_and(|c| !queue(&c.out, text)) {
+            clients.remove(&id);
         }
     }
 
     pub fn broadcast(&self, text: &str) {
-        for c in self.clients.lock().unwrap().values() {
-            let _ = c.out.send(text.to_string());
-        }
+        self.clients
+            .lock()
+            .unwrap()
+            .retain(|_, c| queue(&c.out, text.to_string()));
     }
 
     pub fn client_count(&self) -> usize {
@@ -950,7 +999,7 @@ impl Server {
 
     /// Closes every socket of a device, as unpairing it must.
     pub fn disconnect_device(&self, device: &str) {
-        // Dropping a client's sender ends its loop, which closes the socket.
+        // Dropping a client ends its loop, which closes the socket.
         self.clients
             .lock()
             .unwrap()
@@ -958,10 +1007,16 @@ impl Server {
     }
 }
 
+/// Queues a message for a phone; false when its queue is full. Dropping its
+/// client then ends its loop and closes the socket, and the shell hears it left.
+fn queue(out: &Outgoing, text: String) -> bool {
+    !matches!(out.try_send(text), Err(std_mpsc::TrySendError::Full(_)))
+}
+
 impl Drop for Server {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
-        // Dropping the senders ends every client loop; a connection wakes the acceptor.
+        // Dropping the clients ends every client loop; a connection wakes the acceptor.
         self.clients.lock().unwrap().clear();
         let _ = TcpStream::connect_timeout(
             &SocketAddr::from((Ipv4Addr::LOCALHOST, self.port)),
@@ -1005,15 +1060,18 @@ fn answer(
             let _ = respond(&mut stream, 403, "text/plain", b"forbidden");
             return;
         };
-        let (out_tx, out_rx) = std_mpsc::channel();
+        let (out_tx, out_rx) = std_mpsc::sync_channel(PHONE_QUEUE);
+        let gone = Arc::new(AtomicBool::new(false));
         clients.lock().unwrap().insert(
             id,
             Client {
                 device: device.id.clone(),
                 out: out_tx,
+                gone: gone.clone(),
             },
         );
-        talk(stream, id, device.id, out_rx, &tx, &stop);
+        let ended = || stop.load(Ordering::Relaxed) || gone.load(Ordering::Relaxed);
+        talk(stream, id, device.id, out_rx, &tx, ended);
         clients.lock().unwrap().remove(&id);
         let _ = tx.unbounded_send(Incoming::Disconnected(id));
         return;
@@ -1263,9 +1321,10 @@ fn talk(
     device: String,
     out: std_mpsc::Receiver<String>,
     tx: &mpsc::UnboundedSender<Incoming>,
-    stop: &AtomicBool,
+    ended: impl Fn() -> bool,
 ) {
     let _ = stream.set_read_timeout(Some(Duration::from_millis(20)));
+    let _ = stream.set_write_timeout(Some(PHONE_WRITE_TIMEOUT));
     // The client learns here that what it numbers is acknowledged. The
     // callback's error type is tungstenite's to choose.
     #[allow(clippy::result_large_err)]
@@ -1287,18 +1346,40 @@ fn talk(
     if tx.unbounded_send(Incoming::Connected(id, device)).is_err() {
         return;
     }
+    let mut last_heard = Quiet::now();
+    let mut last_ping = Quiet::now();
     loop {
-        if stop.load(Ordering::Relaxed) {
+        if ended() {
             let _ = ws.close(None);
             let _ = ws.flush();
             return;
         }
-        match ws.read() {
+        // Judged before reading: input buffered while the computer slept
+        // would otherwise pass for a phone that is still there.
+        // Browsers answer pings themselves, even for a page in the background.
+        if last_heard.elapsed() > PHONE_SILENCE_MAX {
+            return;
+        }
+        let read = ws.read();
+        if read.is_ok() {
+            // Judged again: the computer can sleep while `read` waits, and
+            // what it returns on waking may have sat in a buffer all along.
+            if last_heard.elapsed() > PHONE_SILENCE_MAX {
+                return;
+            }
+            last_heard = Quiet::now();
+        }
+        match read {
             Ok(Message::Text(text)) => {
                 let msg = serde_json::from_str::<serde_json::Value>(text.as_str());
                 let seq = msg.as_ref().ok().and_then(wire::seq);
                 match msg.and_then(serde_json::from_value::<ClientMsg>) {
-                    Ok(ClientMsg::Ping) => {}
+                    // The page's own ping: it cannot see ours, so it hears it is still here.
+                    Ok(ClientMsg::Ping) => {
+                        if ws.send(Message::text(wire::pong())).is_err() {
+                            return;
+                        }
+                    }
                     Ok(msg) => {
                         if tx.unbounded_send(Incoming::Message(id, msg)).is_err() {
                             return;
@@ -1328,7 +1409,17 @@ fn talk(
                 ) => {}
             Err(_) => return,
         }
+        if last_ping.elapsed() > PHONE_PING_EVERY {
+            last_ping = Quiet::now();
+            if ws.send(Message::Ping(Vec::new().into())).is_err() {
+                return;
+            }
+        }
+        let pass_ends = Instant::now() + PHONE_SEND_PASS;
         loop {
+            if ended() || Instant::now() > pass_ends {
+                break;
+            }
             match out.try_recv() {
                 Ok(text) => {
                     if ws.send(Message::text(text)).is_err() {
@@ -1640,6 +1731,14 @@ mod tests {
             read(r#"{"type":"stage","session":"s1"}"#),
             ClientMsg::Stage {
                 session: "s1".into()
+            }
+        );
+        assert_eq!(
+            read(r#"{"type":"continue_with","session":"s1","agent":"codex"}"#),
+            ClientMsg::ContinueWith {
+                session: "s1".into(),
+                agent: "codex".into(),
+                settings: Vec::new(),
             }
         );
     }
@@ -2114,6 +2213,138 @@ mod tests {
             .starts_with("HTTP/1.1 403")
         );
         assert_eq!(access.lock().unwrap().devices.len(), 1);
+    }
+
+    /// A connected phone's socket and its id on the server.
+    fn connect_phone(
+        server: &Server,
+        access: &Shared,
+        rx: &mut mpsc::UnboundedReceiver<Incoming>,
+    ) -> (
+        WebSocket<tungstenite::stream::MaybeTlsStream<TcpStream>>,
+        ClientId,
+    ) {
+        let token = pair(server, access, "p");
+        let url = format!("ws://127.0.0.1:{}/ws?t={token}", server.port());
+        let (ws, _) = tungstenite::connect(url).unwrap();
+        loop {
+            match futures::executor::block_on(futures::StreamExt::next(rx)) {
+                Some(Incoming::Connected(id, _)) => return (ws, id),
+                Some(_) => {}
+                None => panic!("the server stopped"),
+            }
+        }
+    }
+
+    /// Waits for the server to say the phone left.
+    fn disconnected(rx: &mut mpsc::UnboundedReceiver<Incoming>, id: ClientId, within: Duration) {
+        let deadline = Instant::now() + within;
+        while Instant::now() < deadline {
+            match rx.try_recv() {
+                Ok(Incoming::Disconnected(gone)) if gone == id => return,
+                Ok(_) => {}
+                Err(_) => std::thread::sleep(Duration::from_millis(10)),
+            }
+        }
+        panic!("the phone was not dropped in time");
+    }
+
+    #[test]
+    fn a_page_that_pings_hears_a_pong() {
+        let access = Access::new(Vec::new(), "pk".into());
+        let (server, mut rx) = Server::start(Ipv4Addr::LOCALHOST, 0, access.clone()).unwrap();
+        let (mut ws, _) = connect_phone(&server, &access, &mut rx);
+        ws.send(Message::text(r#"{"type":"ping"}"#)).unwrap();
+        loop {
+            match ws.read().unwrap() {
+                Message::Text(t) => {
+                    assert_eq!(t.as_str(), wire::pong());
+                    break;
+                }
+                Message::Ping(_) | Message::Pong(_) => {}
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_phone_that_answers_pings_stays() {
+        let access = Access::new(Vec::new(), "pk".into());
+        let (server, mut rx) = Server::start(Ipv4Addr::LOCALHOST, 0, access.clone()).unwrap();
+        let (mut ws, id) = connect_phone(&server, &access, &mut rx);
+        // Reading answers the server's pings; nothing else is said.
+        let tungstenite::stream::MaybeTlsStream::Plain(tcp) = ws.get_ref() else {
+            unreachable!("a plain socket");
+        };
+        tcp.set_read_timeout(Some(Duration::from_millis(50)))
+            .unwrap();
+        let until = Instant::now() + PHONE_SILENCE_MAX * 2;
+        let mut pinged = false;
+        while Instant::now() < until {
+            match ws.read() {
+                Ok(Message::Ping(_)) => pinged = true,
+                Ok(_) => {}
+                Err(tungstenite::Error::Io(e))
+                    if matches!(
+                        e.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    ) => {}
+                Err(e) => panic!("dropped: {e}"),
+            }
+        }
+        assert!(pinged, "the server pinged");
+        assert!(server.device_of(id).is_some(), "still connected");
+    }
+
+    #[test]
+    fn a_phone_that_stops_answering_is_dropped() {
+        let access = Access::new(Vec::new(), "pk".into());
+        let (server, mut rx) = Server::start(Ipv4Addr::LOCALHOST, 0, access.clone()).unwrap();
+        // Never read again, so the server's pings go unanswered.
+        let (_ws, id) = connect_phone(&server, &access, &mut rx);
+        disconnected(&mut rx, id, PHONE_SILENCE_MAX * 5);
+        assert_eq!(server.device_of(id), None);
+    }
+
+    #[test]
+    fn a_phone_whose_queue_fills_is_dropped() {
+        let (tx, _rx) = std_mpsc::sync_channel(1);
+        let server = Server {
+            port: 0,
+            clients: Arc::default(),
+            stop: Arc::default(),
+        };
+        let gone = Arc::new(AtomicBool::new(false));
+        server.clients.lock().unwrap().insert(
+            1,
+            Client {
+                device: "d".into(),
+                out: tx,
+                gone: gone.clone(),
+            },
+        );
+        server.send(1, "first".into());
+        assert_eq!(server.client_count(), 1, "room for one");
+        assert!(!gone.load(Ordering::Relaxed));
+        server.send(1, "second".into());
+        assert_eq!(server.client_count(), 0, "a full queue drops it");
+        // Its loop stops now, without writing out what is still queued.
+        assert!(gone.load(Ordering::Relaxed), "its loop is told");
+
+        let (tx, _rx) = std_mpsc::sync_channel(1);
+        let gone = Arc::new(AtomicBool::new(false));
+        server.clients.lock().unwrap().insert(
+            2,
+            Client {
+                device: "d".into(),
+                out: tx,
+                gone: gone.clone(),
+            },
+        );
+        server.broadcast("one");
+        server.broadcast("two");
+        assert_eq!(server.client_count(), 0, "and so does a broadcast");
+        assert!(gone.load(Ordering::Relaxed), "its loop is told");
     }
 
     #[test]

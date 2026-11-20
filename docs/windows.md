@@ -225,8 +225,12 @@ Manager (Windows Credentials, Generic Credentials).
   after its name, and deleted the same way. The release's `arakun.pdb` waits as
   `.arakun.exe.update.pdb` and replaces `arakun.pdb` right after the new `.exe` is in
   place. If that move fails, the update still goes through, and crash reports lack
-  function names until the next one. A release without a `.pdb` updates the same way. Settings has no **Restart now** button on
-  Windows: quit Arakun and open it again. Not tested on real Windows yet.
+  function names until the next one. A release without a `.pdb` updates the same way.
+  Settings has no **Restart now** button on Windows: quit Arakun and open it again. The
+  dialog the `update-policy` feature flag opens (see "Updates" in the README) says
+  **Quit and update** instead of **Restart now**: it quits Arakun, which installs the
+  release, and you open it again. A forced one can't be closed: it offers that, **Quit
+  Arakun**, and **Try again** after a failed download. Not tested on real Windows yet.
 - **Dynamic Island:** an always-on-top window at the top center of the main display's
   work area, where Linux uses a layer-shell surface. Clicks around its shape reach the
   windows below, and clicking it never takes the focus from the window you type in.
@@ -262,8 +266,8 @@ Manager (Windows Credentials, Generic Credentials).
 
 ## Not available on Windows
 
-- **Headless agents (`arakun agent run`):** their sandbox is bubblewrap, which is
-  Linux-only.
+- **Headless agents (`arakun agent run`):** their sandbox is bubblewrap on Linux
+  and Seatbelt on macOS; Windows has neither.
 - **`arakun dev`** (the test instance in Xvfb) and the **Claude SEO** installer in the
   Marketplace tab are Linux-only; on Windows they print a notice instead of running.
 

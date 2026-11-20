@@ -32,6 +32,29 @@ pub(super) struct GitHubState {
     pub ci_running: bool,
     /// The pull request needs changes: what it says, and its address.
     pub review: Option<(&'static str, String)>,
+    /// The branch's open pull request.
+    pub pr: Option<PrLink>,
+}
+
+/// An open pull request as a row links to it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct PrLink {
+    pub number: u64,
+    pub title: String,
+    pub url: String,
+    pub draft: bool,
+}
+
+impl PrLink {
+    /// The chip's tooltip: what the pull request is, and that a click opens it.
+    fn tip(&self) -> String {
+        let draft = if self.draft {
+            "Draft pull request"
+        } else {
+            "Pull request"
+        };
+        format!("{draft} #{}: {}", self.number, self.title)
+    }
 }
 
 impl GitHubState {
@@ -55,6 +78,12 @@ impl GitHubState {
             failed_run: failed_run.filter(|_| ci == Some(ci::State::Failed)),
             ci_running: ci.is_some_and(|s| !s.done()),
             review,
+            pr: pr.map(|pr| PrLink {
+                number: pr.number,
+                title: pr.title.clone(),
+                url: pr.url.clone(),
+                draft: pr.is_draft,
+            }),
         }
     }
 }
@@ -362,10 +391,7 @@ impl Shell {
             return GitHubState::default();
         };
         let ci = repo.branch_state(&env.branch);
-        let pr = repo
-            .prs
-            .iter()
-            .find(|pr| pr.head_ref_name == env.branch.as_ref());
+        let pr = repo.pr_of(&env.branch);
         GitHubState::of(ci.map(|(s, _)| s), ci.map(|(_, r)| r.id), pr)
     }
 
@@ -653,7 +679,6 @@ impl Shell {
                 .iter()
                 .flat_map(|e| e.changes.iter())
                 .fold((0, 0), |(a, r), c| (a + c.added, r + c.removed));
-            let art = ui::project_art(project.art);
             let logo: Hsla = gpui::rgb(project.logo).into();
             projects = projects.child(
                 div()
@@ -680,7 +705,7 @@ impl Shell {
                             .items_center()
                             .justify_center()
                             .size(px(16.))
-                            .child(ui::pixel_art(art, 1.5, logo)),
+                            .child(ui::project_icon(project.icon, 1.5, logo)),
                     )
                     .child(
                         div()
@@ -897,7 +922,7 @@ impl Shell {
                             .items_center()
                             .justify_center()
                             .size(px(16.))
-                            .child(ui::pixel_art(ui::project_art(project.art), 1.5, logo)),
+                            .child(ui::project_icon(project.icon, 1.5, logo)),
                     )
                     .child(
                         div()
@@ -1041,7 +1066,7 @@ impl Shell {
                             .items_center()
                             .justify_center()
                             .size(px(14.))
-                            .child(ui::pixel_art(ui::project_art(project.art), 1., logo)),
+                            .child(ui::project_icon(project.icon, 1., logo)),
                     )
                     .child(
                         div()
@@ -1295,6 +1320,25 @@ impl Shell {
             ),
             EnvSignal::Nothing => None,
         };
+        // The branch's pull request by number, so a row says which one it is.
+        let pr = github.pr.clone().map(|pr| {
+            let url = pr.url.clone();
+            div()
+                .id(("env-pr", pi * 1000 + ei))
+                .flex_none()
+                .px(crate::ui::sp(4.))
+                .rounded(crate::ui::rad(4.))
+                .text_size(px(ui::TEXT_XS))
+                .text_color(theme::text_faint())
+                .hover(|s| s.bg(theme::fill_selected()).text_color(theme::content()))
+                .tooltip(ui::tip_text(pr.tip()))
+                .child(format!("#{}", pr.number))
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    cx.stop_propagation();
+                    this.select_env(pi, ei, window, cx);
+                    this.open_url(url.clone(), window, cx);
+                }))
+        });
         div()
             .id(("env", pi * 1000 + ei))
             .on_mouse_down(
@@ -1360,6 +1404,7 @@ impl Shell {
                     d.child(div().flex_1().min_w_0().truncate().child(env.name.clone()))
                 })
             })
+            .children(pr)
             .children(self.render_machine(env, pi * 1000 + ei))
             .children(end.map(|e| div().flex_none().child(e)))
             .on_click(cx.listener(move |this, ev: &gpui::ClickEvent, window, cx| {
@@ -1518,6 +1563,28 @@ mod tests {
         assert_eq!(passed.failed_run, None);
         assert!(!passed.ci_running);
         assert!(GitHubState::of(Some(ci::State::Running), Some(3), None).ci_running);
+    }
+
+    #[test]
+    fn a_row_knows_its_pull_request() {
+        let pr: crate::ci::Pr = serde_json::from_value(serde_json::json!({
+            "number": 513,
+            "title": "Reach buttons with Tab",
+            "headRefName": "pr/focus",
+            "url": "https://github.com/o/r/pull/513",
+            "isDraft": true,
+        }))
+        .unwrap();
+        let link = GitHubState::of(None, None, Some(&pr)).pr.unwrap();
+        assert_eq!(link.number, 513);
+        assert_eq!(link.url, "https://github.com/o/r/pull/513");
+        assert_eq!(
+            link.tip(),
+            "Draft pull request #513: Reach buttons with Tab"
+        );
+        // A pull request alone needs nothing from the user.
+        assert!(!GitHubState::of(None, None, Some(&pr)).needs_you());
+        assert_eq!(GitHubState::of(None, None, None).pr, None);
     }
 
     #[test]

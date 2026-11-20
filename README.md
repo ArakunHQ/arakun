@@ -124,6 +124,9 @@ copy of it, rename it back, and start a version that can read it.
   line) or type a GitHub `o/r` to clone it and add it in one step. GitHub repositories
   are cloned with `gh` when it is installed, so private ones use its sign-in. The clone
   goes in the folder that already holds most of your repositories, or `~/code`.
+  Each project gets its own 8×8 pixel-art icon, drawn from its path. "Edit icon…" in
+  the project's menu lets you draw it pixel by pixel (mirrored or not), shuffle a new
+  one, start from a classic drawing, or change its color.
 - **Branch names from the task.** A new environment starts on a random branch name
   (`env/brave-otter`); after the first prompt, a small model names it after the task
   (`fix/terminal-tab-name`) and Arakun renames the branch. The folder keeps its name. By
@@ -154,6 +157,7 @@ copy of it, rename it back, and start a version that can read it.
   or 30 days; also asked during the setup) removes an environment's worktree once its
   pull request is merged or closed and it sat unused that long. Arakun checks every hour,
   asking `git` and `gh`. An environment stays when it has uncommitted or untracked files,
+  git-ignored files other than build output (`target/`, `node_modules/` and the like),
   a commit that isn't in the pull request, an agent working or waiting for you, an
   automation that is on and runs in it, or is the one on screen. The branch is kept. Off by default; the first time an environment
   would have gone, a notice suggests it once. Saved in `~/.local/share/arakun/env-cleanup`
@@ -212,13 +216,14 @@ terminal-only. The status line and keybindings from your settings don't apply in
   failing command or the same edit over and over) and offers to stop and rethink.
 - **Memory.** Agents save what they learn (`arakun mem`), and every new session starts
   with an index of it in the system prompt. Plain JSON files, one per repository plus a
-  global one.
+  global one. `arakun mem scripts` lists the scripts agents wrote again and again in a
+  project's sessions, worth keeping as a script of the project.
 - **Headless agents.** `arakun agent run` starts an agent in its own process that keeps
-  going with the app closed. Its tools run inside a bubblewrap sandbox (workspace
-  writable, the rest read-only, no credentials, no network unless `--allow net`), and a
-  policy (`--policy readonly|workspace|full`) decides which tool calls need your approval
-  (`arakun agent approve|deny`). Linux only (needs `bwrap`); headless runs use Workers AI
-  models for now.
+  going with the app closed. Its tools run inside a sandbox (workspace writable, the
+  rest read-only, no credentials, no network unless `--allow net`), and a policy
+  (`--policy readonly|workspace|full`) decides which tool calls need your approval
+  (`arakun agent approve|deny`). The sandbox is bubblewrap on Linux (needs `bwrap`) and
+  Seatbelt (`sandbox-exec`) on macOS; headless runs use Workers AI models for now.
 - **Server.** `arakun server serve` is Arakun without a window, for a machine nobody
   sits at: a build box, the workstation at the office, a VPS. It runs sessions of any
   agent signed in on that machine and keeps them going while nothing is connected.
@@ -377,11 +382,24 @@ after a week).
   you write and fill the box. `{number}` in a shortcut is a blank you type each time,
   on the number keyboard. Hold a message you sent to keep it, or tap **+** in the row.
   Shortcuts stay in that phone's browser.
+  Charts and diagrams in a reply (` ```chart ` and ` ```mermaid ` blocks) are drawn
+  on the phone as they are in the app. **Code** shows the block's text, and **Open**
+  shows the drawing full screen.
 
 ### More tabs
 
 - **Service tabs.** A PostHog tab (personal API keys; matches projects by their `phc_`
-  keys) and a Cloudflare tab (uses the `cf` CLI's sign-in).
+  keys) and a Cloudflare tab (uses the `cf` CLI's sign-in). The PostHog tab has
+  Overview, Events (filter by event, `key = value` properties, a person and a range;
+  a row opens its properties, its person and its replay), People (search by email or
+  distinct_id; a profile with properties, cohorts, flags, sessions and a timeline),
+  Flags and Errors. Experiments and Ask come next. The key needs `user:read`,
+  `organization:read`, `project:read`, `query:read`, `feature_flag:read` and
+  `error_tracking:read`; People also needs `person:read`, and the event picker
+  `event_definition:read` and `property_definition:read`. A tab whose scope is
+  missing says which one and the others keep working. PostHog counts queries per
+  hour: the tab shows how many are left, keeps answers on disk and reads again only
+  when they are 15 minutes old or you refresh.
 - **Usage.** Token use and estimated API cost from Claude Code's and Droid's own logs,
   and Devin's local SQLite session history, including sessions run outside Arakun.
   Devin's history is read only from `$XDG_DATA_HOME/devin/cli/sessions.db` (by default
@@ -573,7 +591,9 @@ To install a given version, run `curl -fsSL https://arakun.dev/install | sh -s -
 or set `ARAKUN_VERSION=v0.2.1` (on Windows, `$env:ARAKUN_VERSION = "v0.2.1"`). There is
 no build for Intel Macs yet; build from source there. `v0.1.0` has no macOS build; on
 macOS, install a later version. Linux on arm64 has release builds from the release after
-v0.4.1.
+v0.4.1. `--nightly` (`ARAKUN_VERSION=nightly`, on Windows `$env:ARAKUN_VERSION = "nightly"`)
+installs the newest [nightly build](#nightly-builds) instead, and `--version` takes a
+nightly's tag, such as `0.5.1-nightly.202611180300`.
 
 **The server alone (Linux x86_64 and arm64):** for a machine with no display, such as a VPS, install
 only [`arakun-server`](#the-server-alone-no-display):
@@ -584,8 +604,12 @@ curl -fsSL https://arakun.dev/install | sh -s -- --server    # the same
 ```
 
 It is the install script with `--server`: it checks the release the same way and installs
-`~/.local/bin/arakun-server` (uninstall: `rm ~/.local/bin/arakun-server`). It takes
-`--version` too. Releases after v0.4.0 carry it. It does not update itself: run the line
+`~/.local/bin/arakun-server` (uninstall: `rm ~/.local/bin/arakun-server`). It also
+installs what the server runs agents with, if it is missing: git and gh with the system's
+package manager (as root, or with `sudo` that needs no password; otherwise it prints the
+command to run), and Node.js 22 from nodejs.org in `~/.local/share/arakun/node`, linked
+as `node`, `npm` and `npx` in `~/.local/bin`. Without Node, a new session fails as it
+starts. `--no-tools` leaves all three to you. It takes `--version` too. Releases after v0.4.0 carry it. It does not update itself: run the line
 again for a new release, then restart the service if it runs as one:
 `systemctl --user restart arakun-server`. A server in another folder
 (`ARAKUN_SERVER_DIR`) is the unit `arakun-server-<folder>`, and a service installed as
@@ -599,6 +623,20 @@ signed `SHA256SUMS`, and puts it next to the installed app. The update is instal
 you quit Arakun, so the next start runs it. Settings › General › Updates shows the version, has **Check now**,
 and on Linux and macOS **Restart now**. Turn **Update automatically** off there to stop
 the checks; `ARAKUN_UPDATES=0` turns them off for one run.
+
+When a version has a serious problem, Arakun can ask you to update, or require it. Once
+an hour, and a few seconds after it starts, a release build reads the `update-policy`
+feature flag from Arakun's PostHog project. The request carries only the version, the
+update channel, the operating system and the processor type; the id it sends is your
+install's random id only if you agreed to usage counts, and a new one each start
+otherwise. If the flag says *request*, Arakun downloads the latest release and asks you
+to restart into it; **Later** or Escape puts it off until the next start. If it says
+*force*, a dialog stays over the window, and Escape and shortcuts do nothing, until you
+restart into the new version (on Windows: quit and open Arakun again) or quit. After a
+failed download, both offer **Try again**.
+Neither happens when no newer release exists. Maintainers set this per version in
+PostHog: one condition set per version range on `$app_version`, with a semver operator,
+and the variant to use.
 
 From a terminal, `arakun update` downloads the latest release and installs it. If Arakun
 is running, it is installed when Arakun quits: on Linux and macOS `arakun restart` does
@@ -620,6 +658,13 @@ whichever is newest of the nightlies and the releases, so a release that comes o
 reaches you. `arakun update --channel stable` (or turning the switch off) goes back to
 releases: the nightly stays until a release newer than it comes out, or install the latest
 release again to go back now. `arakun update --channel` says which channel you follow.
+
+To install a nightly from scratch, pass `--nightly` to the install script:
+`curl -fsSL https://arakun.dev/install | sh -s -- --nightly`, or on Windows
+`$env:ARAKUN_VERSION = "nightly"` before `irm https://arakun.dev/install.ps1 | iex`. A
+nightly installed this way follows nightlies. For a server alone,
+`curl -fsSL https://arakun.dev/install-server | sh -s -- --nightly` installs the newest
+nightly `arakun-server`. It does not update itself, so run the line again for a newer one.
 
 Nightly `SHA256SUMS` are signed with their own key,
 [assets/nightly-key.pub](assets/nightly-key.pub), which the updater accepts for nightly
@@ -748,7 +793,7 @@ next to an `ARAKUN_USAGE_LOG` file) and a new one starts. Arakun keeps only that
 older copy: each move replaces the previous one.
 
 Optional tools: `git` (Changes, worktrees, branches), `gh` (CI, GitHub tab), `bwrap`
-(headless agents), `secret-tool` from libsecret (stored logins on Linux), `tailscale`
+(headless agents on Linux), `secret-tool` from libsecret (stored logins on Linux), `tailscale`
 (phone over Tailscale), `cf` (Cloudflare tab).
 
 ## Build from source
@@ -910,12 +955,15 @@ arakun check                      # run the project check here
 arakun rename fix/tab-name         # rename this environment's branch (before it is pushed)
 arakun page screenshot            # PNG of the environment's browser tab
 arakun notify "done"              # desktop notification
+arakun shrink -- cargo test       # run it and print a summary: failures, collapsed logs,
+                                  # JSON outline; the whole output goes to a file it names
 arakun notices --unseen           # notices you haven't read yet
 arakun ls                         # projects, environments and sessions
 arakun show                       # bring the window up (running `arakun` again does too)
 arakun quit                       # quit Arakun, also when its window is hidden
 arakun palette                    # bring the window up with Ctrl+K open
 arakun mem search <words>         # search what agents remember about this project
+arakun mem scripts                # scripts agents keep writing here, worth keeping
 arakun github draft o/r#12 --verdict approve --head <sha> --body-file - --agent Claude < review.md
                                   # save a review draft for the GitHub tab; sends nothing.
                                   # --body-file takes a file or - (stdin); an agent's file
@@ -979,10 +1027,11 @@ The link is good for two minutes and pairs one device. There are two ways to use
   follows for an hour is hung up. Git and the file tree stay with this machine's folders.
   Fork, compact, rewind and `/stage` in a server's session run on the server, with its
   agent and its git: a fork or a rewind opens as a new session there. "Continue with"
-  is not available for a server's session yet. In a server's environment, the model
-  menu lists the models and reasoning levels that server offers. A new session starts
-  with what you pick there, and picking in a running session changes it on the server.
-  The permission mode and fast mode are the server's own. In the Marketplace, "Install on" picks a paired server: Discover then lists
+  hands a server's session to another of the agents on that server, in the same tab.
+  In a server's environment, the model menu lists the models and reasoning levels that
+  server offers. A new session starts with what you pick there, and picking in a running
+  session changes it on the server. The permission mode and fast mode are the server's
+  own. In the Marketplace, "Install on" picks a paired server: Discover then lists
   the plugins its marketplaces offer, and Install adds a plugin or MCP server for
   Claude Code there, for every project. An MCP server that wants a sign-in is signed
   in to on that machine (`claude mcp login <name>`), since that opens a browser.
@@ -1025,7 +1074,8 @@ arakun-server service install   # keep it running; see Keep it running
   settings. An agent set to allow everything there asks for nothing here either.
   Claude Code and Codex also need their ACP adapter. The server installs a missing one
   with npm the first time a session needs it, into `~/.local/share/arakun/agents`
-  (`%LOCALAPPDATA%\arakun\agents` on Windows), so Node must be on the server's `PATH`. The service keeps the `PATH` it was installed
+  (`%LOCALAPPDATA%\arakun\agents` on Windows), so Node 22 or newer must be on the
+  server's `PATH`; the server install script puts one there. The service keeps the `PATH` it was installed
   with: if Node comes from mise or nvm, run `arakun-server service install` from a shell
   where `node` works.
 - **How devices reach it.** `serve --reach relay` (the default) dials out to the relay,
@@ -1041,7 +1091,8 @@ arakun-server service install   # keep it running; see Keep it running
 - **What it keeps.** `~/.local/share/arakun/server/`, which only your user can read:
   `phone.json` (how it is reached, its relay identity, the paired devices),
   `state.json` (folders and sessions), `sessions/` (transcripts, saved as the agents
-  work) and `uploads/` (photos sent with prompts). `ARAKUN_SERVER_DIR` names another
+  work), `linked/` (the conversation of a session handed to another agent, as
+  markdown that the new agent reads) and `uploads/` (photos sent with prompts). `ARAKUN_SERVER_DIR` names another
   folder, for a second server on the machine. The app's own files are not touched: the
   app and a server can run side by side.
 - **The local socket.** The commands above reach the server over `server.sock` in

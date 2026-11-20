@@ -501,6 +501,58 @@ button.prow:active { background: var(--fill-hover); }
 #tableview .tvbody { flex: 1; overflow: auto; padding: 0 var(--gr) 0 var(--gl); }
 #tableview table { background: var(--card); border-radius: var(--r-lg); box-shadow: 0 0 0 1px var(--border); overflow: hidden; }
 #tableview td:first-child { background: var(--card); }
+/* Charts and flowcharts drawn from ```chart and ```mermaid (diagrams.js). The
+   SVG takes its colors from these classes so both themes apply; only series
+   colors are fixed, the desktop's category palette. The drawing scales down to
+   the column through its viewBox, never above its own size. */
+.md .diagram { margin: 10px 0; background: var(--group); border: 1px solid var(--border); border-radius: var(--r-lg); overflow: hidden; }
+.dgview { min-width: 0; }
+.dghead { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 12px 14px 0; }
+.dgtitle { font-size: 13px; font-weight: 500; color: var(--text); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dgunit { font-family: var(--mono); font-size: 11.5px; color: var(--faint); flex: none; }
+.dglegend { display: flex; flex-wrap: wrap; gap: 4px 14px; padding: 8px 14px 0; font-size: 12px; color: var(--subtle); }
+.dglegend span, .dgrow { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.dglegend i, .dgrow i { width: 8px; height: 8px; border-radius: 4px; flex: none; }
+.dgbody { padding: 14px; }
+.dgsvg { display: block; width: 100%; height: auto; max-width: 100%; margin: 0 auto; overflow: visible; }
+.dgflow { max-width: var(--dgw); }
+.dgsvg text { font-family: var(--sans); font-size: 11px; fill: var(--subtle); }
+.dgsvg .dglabel { font-size: 12.5px; fill: var(--muted); }
+.dgsvg .dgtotal { font-size: 16px; font-weight: 600; fill: var(--text); }
+.dgsvg .dgnl { font-size: 13px; fill: var(--text); }
+.dgsvg .dgel { font-family: var(--mono); font-size: 10px; fill: var(--subtle); }
+.dgaxis { stroke: var(--border-strong); stroke-width: 1; }
+.dggrid { stroke: var(--border); stroke-width: 1; }
+.dgtrack { fill: var(--fill-hover); }
+.dgdot { fill: var(--group); }
+.dgnode { fill: var(--raised); stroke: var(--border-strong); stroke-width: 1; }
+.dgedge { fill: none; stroke: var(--faint); stroke-width: 1.25; }
+.dgedge.thick { stroke-width: 2.5; }
+.dgedge.dotted { stroke-dasharray: 4 4; }
+.dgarrow { fill: var(--subtle); }
+.dgpill { fill: var(--group); }
+.dgpiewrap { display: flex; align-items: center; gap: 18px; }
+.dgpie { width: 132px; flex: none; margin: 0; }
+.dglist { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
+.dgname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+.dgval { color: var(--subtle); flex: none; }
+.dgpct { width: 36px; text-align: right; color: var(--faint); flex: none; }
+/* "Code" shows the block's source where the drawing was. */
+.md .diagram .dgsrc { display: none; margin: 0; border: 0; border-radius: 0; background: none; padding: 14px; }
+.diagram.showcode .dgsrc { display: block; }
+.diagram.showcode .dgview { display: none; }
+.dgfoot { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 8px 6px 14px; border-top: 1px solid var(--border); }
+.dgcap { font-family: var(--mono); font-size: 11.5px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dgacts { display: flex; gap: 6px; flex: none; }
+.dgbtn { height: 30px; padding: 0 12px; border-radius: 999px; border: 1px solid var(--border-strong); display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 500; color: var(--muted); }
+.dgbtn:active, .dgbtn[aria-pressed="true"] { background: var(--fill-hover); }
+.dgbtn svg { width: 13px; height: 13px; }
+/* Opened full screen, a flowchart fills the width, up to a little over its own
+   size, and never shrinks below it: a tall one scrolls down, a wide one sideways. */
+#tableview .dgview { background: var(--group); border: 1px solid var(--border); border-radius: var(--r-lg); }
+#tableview .dgdiagram { min-width: max-content; }
+#tableview .dgflow { max-width: none; width: min(max(100%, var(--dgw)), calc(var(--dgw) * 1.6)); }
+#tableview .dgbars, #tableview .dghbars, #tableview .dglines { max-width: 640px; }
 /* The entry around a tool call shares its class; only the card draws a frame. */
 .entry.tool { background: none; border: 0; border-radius: 0; overflow: visible; box-shadow: none; max-width: none; }
 /* What the agent does: each step a quiet line on an elbow off one shared rail,

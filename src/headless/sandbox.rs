@@ -1,6 +1,12 @@
-//! Where a headless agent's tools run: inside bubblewrap, with the workspace
-//! writable, the rest of the machine read-only, credentials and the host's
-//! sockets out of sight, and no network unless a `--allow` grants it.
+//! Where a headless agent's tools run: inside bubblewrap on Linux and Seatbelt
+//! (`sandbox-exec`) on macOS, with the workspace writable, the rest of the machine
+//! read-only, credentials and the host's sockets out of sight, and no network
+//! unless a `--allow` grants it.
+//!
+//! Seatbelt cannot mount over a path, so where bubblewrap shows an empty `$HOME`
+//! and its own `/tmp`, the Seatbelt profile refuses to read what is in them. It
+//! starts from "allow" and denies what matters (files, sockets, the keychain,
+//! launching apps); bubblewrap's namespaces cut more by default.
 //!
 //! The model's API calls and the [`broker`](super::broker)'s actions run in the
 //! host process, outside; nothing inside can send, push or pay on its own.
@@ -162,6 +168,26 @@ pub const HIDE: &[&str] = &[
     ".pulse-cookie",
 ];
 
+/// macOS places under `$HOME` the sandbox never sees: browsers, mail and messages.
+pub const MAC_HIDE: &[&str] = &[
+    "Library/Application Support/Google/Chrome",
+    "Library/Application Support/BraveSoftware",
+    "Library/Application Support/Firefox",
+    "Library/Application Support/Arc",
+    "Library/Application Support/Microsoft Edge",
+    "Library/Application Support/Chromium",
+    "Library/Application Support/Claude",
+    "Library/Application Support/Code",
+    "Library/Application Support/Cursor",
+    "Library/Application Support/discord",
+    "Library/Application Support/1Password",
+    "Library/Cookies",
+    "Library/Mail",
+    "Library/Messages",
+    "Library/Safari",
+    "Library/Group Containers/group.com.apple.notes",
+];
+
 /// What a sandbox sees of `$HOME`, read-only: toolchains and their caches.
 /// The rest of `$HOME` is an empty tmpfs.
 pub const TOOLCHAINS: &[&str] = &[
@@ -186,7 +212,7 @@ pub const TOOLCHAINS: &[&str] = &[
 ];
 
 /// A file that looks like it holds a secret, wherever it is.
-fn secret_file(name: &str) -> bool {
+pub fn secret_file(name: &str) -> bool {
     let n = name.to_lowercase();
     let (stem, ext) = n
         .rsplit_once('.')
@@ -429,10 +455,34 @@ pub enum Bound {
     Link(PathBuf, PathBuf),
 }
 
-/// One session's sandbox, as `bwrap` arguments.
+/// The program that confines a command.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Runner {
+    /// Linux: `bwrap`, with namespaces and bind mounts.
+    Bwrap(PathBuf),
+    /// macOS: `sandbox-exec` with a Seatbelt profile.
+    Seatbelt(PathBuf),
+}
+
+impl Runner {
+    pub fn program(&self) -> &Path {
+        match self {
+            Runner::Bwrap(p) | Runner::Seatbelt(p) => p,
+        }
+    }
+
+    fn name(&self) -> &'static str {
+        match self {
+            Runner::Bwrap(_) => "bubblewrap",
+            Runner::Seatbelt(_) => "sandbox-exec",
+        }
+    }
+}
+
+/// One session's sandbox, as `bwrap` arguments or a Seatbelt profile.
 #[derive(Clone, Debug)]
 pub struct Sandbox {
-    pub bwrap: PathBuf,
+    pub runner: Runner,
     pub home: PathBuf,
     /// Bound back read-only over the empty `$HOME`: [`TOOLCHAINS`] that exist.
     pub toolchains: Vec<Bound>,
@@ -460,8 +510,37 @@ impl Sandbox {
         self.caps.iter().any(|c| matches!(c, Cap::Net | Cap::Modal))
     }
 
-    /// `bwrap …` around `inner`, run in `cwd` (the workspace when outside it).
+    /// Where the sandbox's own temporary folder is, seen from inside.
+    pub fn shown_tmp(&self) -> PathBuf {
+        match self.runner {
+            Runner::Bwrap(_) => PathBuf::from("/tmp"),
+            Runner::Seatbelt(_) => self.tmp.clone(),
+        }
+    }
+
+    /// `cwd` when it is inside the workspace or the sandbox's `/tmp`, else the workspace.
+    fn inner_cwd<'a>(&'a self, cwd: &'a Path) -> &'a Path {
+        if cwd.starts_with(&self.workspace) || cwd.starts_with(self.shown_tmp()) {
+            cwd
+        } else {
+            &self.workspace
+        }
+    }
+
+    /// The runner's arguments around `inner`, run in `cwd` (the workspace when
+    /// outside it). Seatbelt cannot change folder; [`Self::command`] does.
     pub fn argv(&self, cwd: &Path, inner: &[String]) -> Vec<String> {
+        match self.runner {
+            Runner::Bwrap(_) => self.bwrap_argv(cwd, inner),
+            Runner::Seatbelt(_) => {
+                let mut a = vec!["-p".to_string(), self.seatbelt_profile()];
+                a.extend(inner.iter().cloned());
+                a
+            }
+        }
+    }
+
+    fn bwrap_argv(&self, cwd: &Path, inner: &[String]) -> Vec<String> {
         let mut a: Vec<String> = [
             "--die-with-parent",
             "--new-session",
@@ -554,25 +633,118 @@ impl Sandbox {
         for f in &self.extra_ro {
             a.extend(["--ro-bind".to_string(), s(f), s(f)]);
         }
-        let cwd = if cwd.starts_with(&self.workspace) || cwd.starts_with("/tmp") {
-            cwd
-        } else {
-            &self.workspace
-        };
-        a.extend(["--chdir".to_string(), s(cwd), "--".to_string()]);
+        a.extend([
+            "--chdir".to_string(),
+            s(self.inner_cwd(cwd)),
+            "--".to_string(),
+        ]);
         a.extend(inner.iter().cloned());
         a
     }
 
+    /// The Seatbelt profile: the same rules as [`Self::bwrap_argv`], as far as
+    /// Seatbelt can say them. A later rule wins over an earlier one only when both
+    /// name the same operations, so each allow repeats its deny's.
+    pub fn seatbelt_profile(&self) -> String {
+        let q = sbpl_subpath;
+        let list = |ps: &[&Path]| sbpl_list(ps);
+        let mut out = String::from("(version 1)\n(allow default)\n");
+        // Nothing launched outside the sandbox: no apps, no Apple events, no keychain
+        // or clipboard.
+        out.push_str("(deny appleevent-send)\n");
+        out.push_str("(deny mach-lookup");
+        for name in SEATBELT_SERVICES {
+            out.push_str(&format!(" (global-name \"{name}\")"));
+        }
+        out.push_str(")\n");
+        let tmp = q(&self.tmp);
+        let ws = q(&self.workspace);
+        out.push_str("(deny file-write*)\n");
+        out.push_str(&format!(
+            "(allow file-write* {ws} {tmp} (literal \"/dev/null\") (literal \"/dev/zero\") \
+             (literal \"/dev/dtracehelper\") (literal \"/dev/tty\") (regex #\"^/dev/fd/\"))\n"
+        ));
+        let frozen: Vec<&Path> = self.frozen.iter().map(PathBuf::as_path).collect();
+        if !frozen.is_empty() {
+            out.push_str(&format!("(deny file-write* {})\n", list(&frozen)));
+        }
+        // $HOME and the shared temporary folders read as empty, but for what is
+        // shown again; names and sizes stay visible, as Seatbelt has no tmpfs.
+        let mut dark = vec![self.home.as_path()];
+        if Path::new("/root").is_dir() && self.home != Path::new("/root") {
+            dark.push(Path::new("/root"));
+        }
+        dark.extend([
+            Path::new("/private/tmp"),
+            Path::new("/private/var/tmp"),
+            Path::new("/private/var/folders"),
+        ]);
+        out.push_str(&format!("(deny {READ} {})\n", list(&dark)));
+        let mut shown: Vec<PathBuf> = Vec::new();
+        for b in &self.toolchains {
+            match b {
+                Bound::Path(p) => shown.push(p.clone()),
+                // A link is read where it leads.
+                Bound::Link(p, _) => shown.extend(crate::platform::canonicalize(p).ok()),
+            }
+        }
+        shown.extend(self.reads.iter().cloned());
+        shown.push(self.workspace.clone());
+        let shown: Vec<&Path> = shown.iter().map(PathBuf::as_path).collect();
+        out.push_str(&format!("(allow {READ} {})\n", list(&shown)));
+        let hidden: Vec<&Path> = self.hidden.iter().map(|h| h.path.as_path()).collect();
+        if !hidden.is_empty() {
+            out.push_str(&format!("(deny {READ} {})\n", list(&hidden)));
+            out.push_str(&format!("(deny file-write* {})\n", list(&hidden)));
+        }
+        let pinned: Vec<&Path> = frozen.iter().chain(&hidden).copied().collect();
+        out.push_str(&sbpl_pin(&[self.workspace.as_path()], &pinned));
+        // The sandbox's own /tmp, last: it may sit under a hidden folder.
+        out.push_str(&format!("(allow {READ} {tmp})\n"));
+        out.push_str(&format!("(allow file-write* {tmp})\n"));
+        // The host's sockets (ssh-agent, Docker, arakun's own) are out of reach;
+        // the sandbox's own are not.
+        let uq = |p: &Path| format!("(remote unix-socket {})", q(p));
+        out.push_str("(deny network-outbound (remote unix-socket))\n");
+        out.push_str(&format!(
+            "(allow network-outbound {} {})\n",
+            uq(&self.workspace),
+            uq(&self.tmp)
+        ));
+        out.push_str("(deny network-bind (local unix-socket))\n");
+        out.push_str(&format!(
+            "(allow network-bind (local unix-socket {ws}) (local unix-socket {tmp}))\n"
+        ));
+        if self.net() {
+            // Name lookups go through mDNSResponder's socket.
+            out.push_str(
+                "(allow network-outbound (remote unix-socket (path-literal \"/private/var/run/mDNSResponder\")))\n",
+            );
+        } else {
+            out.push_str("(deny network-outbound (remote ip))\n");
+            out.push_str("(deny network-bind (local ip))\n");
+        }
+        out
+    }
+
     /// The command that runs `inner` inside, with a scrubbed environment.
     pub fn command(&self, cwd: &Path, inner: &[String]) -> Command {
-        let mut cmd = crate::platform::command(&self.bwrap);
+        let mut cmd = crate::platform::command(self.runner.program());
         cmd.args(self.argv(cwd, inner));
         let path = crate::agent::workers_ai::child_path()
             .to_string_lossy()
             .into_owned();
-        cmd.env_clear()
-            .envs(scrub_env(std::env::vars(), &self.caps, &path));
+        let mut env = scrub_env(std::env::vars(), &self.caps, &path);
+        if let Runner::Seatbelt(_) = self.runner {
+            // Seatbelt cannot put the sandbox's folder at /tmp; TMPDIR says where it is.
+            for (k, v) in &mut env {
+                if k == "TMPDIR" {
+                    *v = s(&self.tmp);
+                }
+            }
+            cmd.current_dir(self.inner_cwd(cwd));
+        }
+        cmd.env_clear().envs(env);
         cmd
     }
 
@@ -655,6 +827,9 @@ fn mail_secrets(home: &Path, config: &Path) -> Vec<PathBuf> {
 /// Everything to hide for a session in `workspace`, as it is on disk now.
 pub fn hidden(home: &Path, caps: &[Cap]) -> Vec<Hidden> {
     let mut paths: Vec<PathBuf> = HIDE.iter().map(|r| home.join(r)).collect();
+    if cfg!(target_os = "macos") {
+        paths.extend(MAC_HIDE.iter().map(|r| home.join(r)));
+    }
     let config = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
@@ -737,6 +912,70 @@ pub fn toolchains(home: &Path, hidden: &[Hidden]) -> Vec<Bound> {
     out
 }
 
+/// What a Seatbelt rule that hides a file names; an allow must name the same.
+pub const READ: &str = "file-read-data file-read-xattr";
+
+/// `p` as a Seatbelt string, quotes and backslashes escaped.
+pub fn sbpl_str(p: &Path) -> String {
+    format!("\"{}\"", s(p).replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+/// `(subpath "p")`: `p` and everything under it.
+pub fn sbpl_subpath(p: &Path) -> String {
+    format!("(subpath {})", sbpl_str(p))
+}
+
+/// Seatbelt judges a path when it is used, so renaming a folder above a hidden or
+/// read-only path moves it out from under its rule (`mv sub x && cat x/.env`).
+/// This denies renaming or removing each folder from a writable `root` down to a
+/// `pinned` path; what is inside those folders stays writable.
+pub fn sbpl_pin(roots: &[&Path], pinned: &[&Path]) -> String {
+    let mut dirs: Vec<&Path> = pinned
+        .iter()
+        .flat_map(|p| p.ancestors().skip(1))
+        // The root too: moving the whole workspace into its /tmp would do the same.
+        .filter(|a| roots.iter().any(|r| a.starts_with(r)))
+        .collect();
+    dirs.sort();
+    dirs.dedup();
+    if dirs.is_empty() {
+        return String::new();
+    }
+    let lits: Vec<String> = dirs
+        .iter()
+        .map(|d| format!("(literal {})", sbpl_str(d)))
+        .collect();
+    format!("(deny file-write-unlink {})\n", lits.join(" "))
+}
+
+pub fn sbpl_list(ps: &[&Path]) -> String {
+    ps.iter()
+        .map(|p| sbpl_subpath(p))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Mach services a Seatbelt sandbox may not reach: the keychain, the clipboard
+/// and LaunchServices (`open`, which would start a program outside).
+pub const SEATBELT_SERVICES: &[&str] = &[
+    "com.apple.SecurityServer",
+    "com.apple.securityd.xpc",
+    "com.apple.security.agent",
+    "com.apple.secd",
+    "com.apple.pasteboard.1",
+    "com.apple.coreservices.launchservicesd",
+];
+
+/// The runner this platform has: Seatbelt on macOS, bubblewrap elsewhere.
+pub fn find_runner() -> Option<Runner> {
+    if cfg!(target_os = "macos") {
+        return Some(PathBuf::from("/usr/bin/sandbox-exec"))
+            .filter(|p| p.exists())
+            .map(Runner::Seatbelt);
+    }
+    find_bwrap().map(Runner::Bwrap)
+}
+
 pub fn find_bwrap() -> Option<PathBuf> {
     std::env::var_os("ARAKUN_BWRAP")
         .map(PathBuf::from)
@@ -746,28 +985,34 @@ pub fn find_bwrap() -> Option<PathBuf> {
 
 impl Sandbox {
     /// The sandbox of the session whose data is in `session_dir`; it checks
-    /// that bwrap starts, so a broken one is an error now, not a silent bypass.
+    /// that the runner starts, so a broken one is an error now, not a silent bypass.
     pub fn new(
         workspace: &Path,
         session_dir: &Path,
         caps: &[Cap],
         reads: &[PathBuf],
     ) -> Result<Self, String> {
-        Self::with(find_bwrap(), workspace, session_dir, caps, reads)
+        Self::with(find_runner(), workspace, session_dir, caps, reads)
     }
 
     fn with(
-        bwrap: Option<PathBuf>,
+        runner: Option<Runner>,
         workspace: &Path,
         session_dir: &Path,
         caps: &[Cap],
         reads: &[PathBuf],
     ) -> Result<Self, String> {
-        let bwrap = bwrap.ok_or("bubblewrap (bwrap) is not installed; headless agents run inside it. Install it (pacman -S bubblewrap / apt install bubblewrap), or pass --no-sandbox, which you must then confirm.")?;
+        let runner = runner.ok_or(if cfg!(target_os = "macos") {
+            "sandbox-exec is not at /usr/bin/sandbox-exec; headless agents run inside it. Pass --no-sandbox, which you must then confirm."
+        } else {
+            "bubblewrap (bwrap) is not installed; headless agents run inside it. Install it (pacman -S bubblewrap / apt install bubblewrap), or pass --no-sandbox, which you must then confirm."
+        })?;
         let workspace = crate::platform::canonicalize(workspace)
             .map_err(|e| format!("{}: {e}", workspace.display()))?;
         let tmp = session_dir.join("tmp");
         std::fs::create_dir_all(&tmp).map_err(|e| format!("{}: {e}", tmp.display()))?;
+        // Seatbelt matches real paths (/private/var, not /var).
+        let tmp = crate::platform::canonicalize(&tmp).unwrap_or(tmp);
         let empty = session_dir.join("empty");
         std::fs::write(&empty, b"").map_err(|e| format!("{}: {e}", empty.display()))?;
         let home = crate::platform::home();
@@ -799,7 +1044,7 @@ impl Sandbox {
             toolchains.push(Bound::Path(home.join(".modal.toml")));
         }
         let sb = Sandbox {
-            bwrap,
+            runner,
             home,
             toolchains,
             reads,
@@ -823,13 +1068,20 @@ impl Sandbox {
                 None,
                 Duration::from_secs(20),
             )
-            .map_err(|e| format!("bubblewrap ({}) would not start: {e}", self.bwrap.display()))?;
+            .map_err(|e| {
+                format!(
+                    "{} ({}) would not start: {e}",
+                    self.runner.name(),
+                    self.runner.program().display()
+                )
+            })?;
         if out.status.success() {
             Ok(())
         } else {
             Err(format!(
-                "bubblewrap ({}) would not start a sandbox: {}",
-                self.bwrap.display(),
+                "{} ({}) would not start a sandbox: {}",
+                self.runner.name(),
+                self.runner.program().display(),
                 String::from_utf8_lossy(&out.stderr).trim()
             ))
         }
@@ -888,12 +1140,7 @@ impl Sandbox {
 
     /// A folder's entries, folders ending in `/`.
     pub fn list(&self, cwd: &Path, dir: &Path) -> Result<Vec<String>, String> {
-        let out = self.sh(
-            cwd,
-            "LC_ALL=C exec ls -1Ap --color=never -- \"$1\"",
-            &[&s(dir)],
-            None,
-        )?;
+        let out = self.sh(cwd, "LC_ALL=C exec ls -1Ap -- \"$1\"", &[&s(dir)], None)?;
         if !out.status.success() {
             return Err(Self::failed(&out, &format!("list {}", dir.display())));
         }
@@ -952,7 +1199,7 @@ mod tests {
 
     fn sb(caps: &[Cap]) -> Sandbox {
         Sandbox {
-            bwrap: "/usr/bin/bwrap".into(),
+            runner: Runner::Bwrap("/usr/bin/bwrap".into()),
             home: "/home/u".into(),
             toolchains: vec![
                 Bound::Path("/home/u/.cargo/bin".into()),
@@ -1062,6 +1309,44 @@ mod tests {
         assert_eq!(
             after(&sb(&[]).argv(Path::new("/etc"), &[]), "--chdir"),
             vec!["/home/u/proj"]
+        );
+    }
+
+    #[test]
+    fn the_seatbelt_profile_says_the_same() {
+        let mut b = sb(&[]);
+        b.runner = Runner::Seatbelt("/usr/bin/sandbox-exec".into());
+        let p = b.seatbelt_profile();
+        let at = |needle: &str| p.find(needle).unwrap_or_else(|| panic!("{needle} in\n{p}"));
+        // $HOME goes dark, its toolchains come back, its secrets go again, then /tmp.
+        let dark = at("(deny file-read-data file-read-xattr (subpath \"/home/u\")");
+        let shown = at("(allow file-read-data file-read-xattr (subpath \"/home/u/.cargo/bin\")");
+        let hidden = at("(deny file-read-data file-read-xattr (subpath \"/home/u/.ssh\")");
+        let tmp = at("(allow file-read-data file-read-xattr (subpath \"/d/h1/tmp\"))");
+        assert!(dark < shown && shown < hidden && hidden < tmp);
+        assert!(p.contains("(subpath \"/home/u/proj/.env\")"));
+        assert!(p.contains("(deny file-write* (subpath \"/home/u/proj/.git/hooks\"))"));
+        assert!(p.contains("(global-name \"com.apple.SecurityServer\")"));
+        assert!(p.contains("(deny network-outbound (remote ip))"));
+        // Their folders can't be renamed away from the rules, nor ttys written.
+        assert!(p.contains(
+            "(deny file-write-unlink (literal \"/home/u/proj\") (literal \"/home/u/proj/.git\"))"
+        ));
+        assert!(!p.contains("^/dev/tty"));
+        let net = Sandbox {
+            caps: vec![Cap::Net],
+            ..b.clone()
+        };
+        assert!(!net.seatbelt_profile().contains("(remote ip)"));
+        // Seatbelt runs the command itself; the profile comes first.
+        let a = b.argv(Path::new("/elsewhere"), &["true".into()]);
+        assert_eq!((a[0].as_str(), a[2].as_str()), ("-p", "true"));
+        assert_eq!(b.shown_tmp(), Path::new("/d/h1/tmp"));
+        // A quote in a path can't end the string early.
+        b.workspace = "/home/u/a\"b".into();
+        assert!(
+            b.seatbelt_profile()
+                .contains("(subpath \"/home/u/a\\\"b\")")
         );
     }
 
@@ -1223,13 +1508,107 @@ mod tests {
         assert!(
             Sandbox::with(None, &d, &d, &[], &[])
                 .unwrap_err()
-                .contains("not installed")
+                .contains("--no-sandbox")
         );
         assert!(
-            Sandbox::with(Some(d.join("no-bwrap")), &d, &d, &[], &[])
+            Sandbox::with(Some(Runner::Bwrap(d.join("no-bwrap"))), &d, &d, &[], &[])
                 .unwrap_err()
                 .contains("would not start")
         );
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// The real thing on macOS, where sandbox-exec always is.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn inside_seatbelt() {
+        let Some(runner) = find_runner() else { return };
+        let d = crate::platform::canonicalize(std::env::temp_dir())
+            .unwrap()
+            .join(format!("arakun-sbx-sb-{}", std::process::id()));
+        let ws = d.join("ws");
+        std::fs::create_dir_all(&ws).unwrap();
+        let sb = Sandbox::with(Some(runner), &ws, &d.join("session"), &[], &[]).unwrap();
+        // Beside the workspace, in the host's temporary folder.
+        let secret = d.join("secret");
+        std::fs::create_dir_all(&secret).unwrap();
+        std::fs::write(secret.join("token"), "s3cr3t").unwrap();
+        let run = |c: &str| {
+            let o = sb
+                .output(
+                    &ws,
+                    &["sh".into(), "-c".into(), c.into()],
+                    None,
+                    Duration::from_secs(20),
+                )
+                .unwrap();
+            (
+                o.status.success(),
+                String::from_utf8_lossy(&o.stdout).trim().to_string(),
+            )
+        };
+        assert_eq!(run("echo hi > f && cat f"), (true, "hi".into()));
+        assert_eq!(run("pwd"), (true, ws.display().to_string()));
+        assert_eq!(std::fs::read_to_string(ws.join("f")).unwrap(), "hi\n");
+        let home = crate::platform::home();
+        let probe = home.join(format!(".arakun-sbx-probe-{}", std::process::id()));
+        assert!(!run(&format!("touch {}", probe.display())).0);
+        assert!(!probe.exists());
+        // $HOME reads as empty, its toolchains aside.
+        assert!(!run(&format!("ls {} > /dev/null", home.display())).0);
+        if home.join(".zshrc").is_file() {
+            assert!(!run(&format!("cat {}/.zshrc > /dev/null", home.display())).0);
+        }
+        if home.join(".cargo/bin").is_dir() {
+            assert!(run(&format!("ls {}/.cargo/bin > /dev/null", home.display())).0);
+            assert!(!run(&format!("touch {}/.cargo/bin/x", home.display())).0);
+        }
+        assert!(!run("touch /etc/x").0);
+        assert!(!run(&format!("cat {}/token", secret.display())).0);
+        assert!(!run("touch /private/tmp/arakun-sbx-x").0);
+        // A rename can't move a secret out from under its rule.
+        std::fs::create_dir_all(ws.join("sub")).unwrap();
+        std::fs::write(ws.join("sub/.env"), "KEY=1").unwrap();
+        let sb = Sandbox::with(find_runner(), &ws, &d.join("session"), &[], &[]).unwrap();
+        let run = |c: &str| {
+            let o = sb
+                .output(
+                    &ws,
+                    &["sh".into(), "-c".into(), c.into()],
+                    None,
+                    Duration::from_secs(20),
+                )
+                .unwrap();
+            (
+                o.status.success(),
+                String::from_utf8_lossy(&o.stdout).trim().to_string(),
+            )
+        };
+        assert!(!run("cat sub/.env").0);
+        assert!(!run("mv sub sub2").0);
+        assert!(!run(&format!("mv {} \"$TMPDIR/ws\"", ws.display())).0);
+        assert!(run("touch sub/a && rm sub/a").0);
+        // Tools still work: git (through xcrun) and a C compiler.
+        if Path::new("/Library/Developer/CommandLineTools").is_dir() {
+            assert!(run("git init -q . && git status --short > /dev/null").0);
+            assert!(run("printf 'int main(void){return 0;}' > m.c && cc m.c -o m && ./m").0);
+        }
+        if home.join(".cargo/bin/cargo").exists() {
+            assert!(run(&format!("{}/.cargo/bin/cargo --version", home.display())).0);
+        }
+        // No network, and no keychain.
+        assert!(!run("curl -sS -m 5 -o /dev/null https://example.com").0);
+        assert!(!run("security list-keychains").0);
+        if let Some((k, _)) = std::env::vars().find(|(k, _)| secret_var(k, &[])) {
+            assert_eq!(run(&format!("printenv {k} || echo gone")).1, "gone");
+        }
+        // Its own temporary folder, kept between calls.
+        assert_eq!(
+            run("echo t > \"$TMPDIR/t\" && cat \"$TMPDIR/t\""),
+            (true, "t".into())
+        );
+        assert_eq!(std::fs::read_to_string(sb.tmp.join("t")).unwrap(), "t\n");
+        assert!(sb.list(&ws, &ws).unwrap().contains(&"f".to_string()));
         std::fs::remove_dir_all(&d).unwrap();
     }
 
@@ -1243,7 +1622,13 @@ mod tests {
         let d = std::env::temp_dir().join(format!("arakun-sbx-real-{}", std::process::id()));
         let ws = d.join("ws");
         std::fs::create_dir_all(&ws).unwrap();
-        let Ok(sb) = Sandbox::with(Some(bwrap), &ws, &d.join("session"), &[], &[]) else {
+        let Ok(sb) = Sandbox::with(
+            Some(Runner::Bwrap(bwrap)),
+            &ws,
+            &d.join("session"),
+            &[],
+            &[],
+        ) else {
             return;
         };
         // Beside the workspace, under the host's /tmp, which the sandbox doesn't see.

@@ -210,8 +210,8 @@ which git ignores. Turn the hooks off with `lefthook uninstall`.
   token and component live.
 - **See your change.** `arakun dev start` runs a second, fresh Arakun from your build,
   with data of its own. On Linux it runs on a virtual display (it needs `Xvfb`). On
-  macOS it opens a window that never takes the focus, and `dev shot` captures that
-  window alone; the app you run it from needs Screen Recording permission. Both need
+  macOS it opens a window that never takes the focus, and `dev shot` has it render
+  that window itself, so it needs no Screen Recording permission. Both need
   `tesseract` for `dev text` and clicking by text. Input goes into the test Arakun
   directly, so it never touches your pointer, your keyboard or your own Arakun:
 

@@ -709,6 +709,10 @@ impl PlatformWindow for ZoomWindow {
     fn play_system_bell(&self) {
         self.inner.play_system_bell()
     }
+    #[cfg(target_os = "macos")]
+    fn render_to_image(&self, scene: &gpui::Scene) -> Result<image::RgbaImage> {
+        self.inner.render_to_image(scene)
+    }
     fn a11y_init(&self, callbacks: A11yCallbacks) {
         self.inner.a11y_init(callbacks)
     }

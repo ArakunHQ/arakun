@@ -1119,6 +1119,19 @@ jobs:
             dist/SHA256SUMS
             dist/SHA256SUMS.minisig
 
+  # The hosted relay ships with the release: once the release is out, deploy
+  # the relay and phone page from its tag. A relay hotfix without a new
+  # version, and its rules, are in relay-deploy.yml. It skips pre-releases.
+  relay:
+    name: Relay
+    needs: release
+    uses: $/.github/workflows/relay-deploy.yml
+    # It lives in the `production` environment, which the called job uses.
+    secrets:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+    permissions:
+      contents: read
+
   # A nightly build of main, published as a pre-release with no approval. A
   # job of its own, like the release job: it runs no code from the
   # repository, and only it can read the nightly key. That key lives in the

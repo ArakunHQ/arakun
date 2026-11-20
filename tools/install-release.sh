@@ -4,6 +4,7 @@
 #   curl -fsSL https://arakun.dev/install | sh
 #   curl -fsSL https://arakun.dev/install | sh -s -- --version v0.1.0
 #   curl -fsSL https://arakun.dev/install-server | sh
+#   curl -fsSL https://arakun.dev/install-server | sh -s -- --nightly
 #
 # macOS (Apple silicon): ~/Applications/Arakun.app, and ~/.local/bin/arakun linking into it.
 # Linux (x86_64, arm64): ~/.local/bin/arakun, and the browser's CEF runtime in
@@ -12,7 +13,13 @@
 #                        the window. arakun.dev/install-server serves this script
 #                        with `main "$@"` at the end changed to `main --server "$@"`,
 #                        so keep that line as it is.
-# ARAKUN_VERSION pins a release, like --version. Windows: tools/install-release.ps1.
+#                        It also installs what the server runs agents with, unless
+#                        --no-tools: git and gh with the package manager (as root or
+#                        with sudo that needs no password), and Node.js from nodejs.org
+#                        in ${XDG_DATA_HOME:-~/.local/share}/arakun/node.
+# --nightly:             the newest nightly build of main instead of the latest release.
+# ARAKUN_VERSION pins a release, like --version (`nightly` is --nightly).
+# Windows: tools/install-release.ps1.
 #
 # Everything runs from main at the end, so a download cut short runs nothing.
 set -eu
@@ -21,6 +28,9 @@ repo=arakunhq/arakun
 # The minisign keys SHA256SUMS may be signed with: the one release.yml uses
 # (assets/release-key.pub), and an offline backup (assets/release-key-backup.pub).
 release_keys="RWRHh4aSkL+9oL41eNxaL791lQYzu/un+QvVqfckIj7839aB8lQBoxyn RWSxlRjKJX7FQmC0+on+hpDPmZ/ShKCW4KzyJhbnm0bAc6JGTI7KV+xg"
+# The key of the nightly builds (assets/nightly-key.pub). Accepted for a nightly
+# version only, as the updater does, so it can never sign a release.
+nightly_key="RWTZ1q5XZwa1CsB/oR68Esdai4A24ex+Ez5D/iWLMVCVJGTduA5jPa+y"
 
 say() { printf 'arakun: %s\n' "$*"; }
 die() {
@@ -39,6 +49,22 @@ latest_tag() {
   printf '%s\n' "$tag"
 }
 
+# The tag of the newest nightly build, such as 0.9.1-nightly.202611201136. The
+# nightlies are pre-releases, which /releases/latest skips, so this asks the
+# API (60 calls an hour from one address). The number after `nightly.` is the
+# time it was built.
+latest_nightly() {
+  json=$(curl -fsSL -H 'Accept: application/vnd.github+json' \
+    "https://api.github.com/repos/$repo/releases?per_page=30") ||
+    die "could not list the releases on GitHub"
+  # One field per line, whether or not the JSON is pretty-printed.
+  tag=$(printf '%s\n' "$json" | tr ',' '\n' |
+    sed -n 's/^ *"tag_name": *"\([0-9]*\.[0-9]*\.[0-9]*-nightly\.[0-9]*\)" *$/\1/p' |
+    sort -t. -k4,4n | tail -n 1)
+  [ -n "$tag" ] || die "no nightly build found at https://github.com/$repo/releases"
+  printf '%s\n' "$tag"
+}
+
 # The checksum SHA256SUMS ($2) lists for the file $1, or nothing.
 listed() {
   awk -v f="$1" '$2 == f || $2 == "*" f { print $1 }' "$2"
@@ -52,8 +78,7 @@ signed_release() {
   }'
 }
 
-# Checks SHA256SUMS ($1) against its signature ($2) by one of the release
-# keys, with minisign, or with OpenSSL 3 where minisign is missing, using the
+# Checks SHA256SUMS ($1) against its signature ($2) by one of $keys, with minisign, or with OpenSSL 3 where minisign is missing, using the
 # directory $3 for its files. Returns 2 when there is neither, and 1 for any
 # other failure. Never pass a tool's own status through: minisign exits 2 on an
 # empty or broken signature, which would read as "no verifier" and install.
@@ -66,7 +91,7 @@ verify_sums() {
       *) return 2 ;;
     esac
   fi
-  for key in $release_keys; do
+  for key in $keys; do
     "verify_with_$tool" "$key" "$@" && return 0
   done
   return 1
@@ -114,9 +139,148 @@ check_glibc() {
   fi
 }
 
+# The Node.js major the Claude Code adapter needs at least (the "engines" of
+# @agentclientprotocol/claude-agent-acp, CLAUDE_ACP_PACKAGE in src/agent/launch.rs).
+node_major=22
+
+# The major version of the node on PATH, or nothing.
+node_version() {
+  v=$(node --version 2>/dev/null) || return 0
+  v=${v#v}
+  printf '%s\n' "${v%%.*}"
+}
+
+# Runs a command as root: directly when this is root, else with sudo when it
+# needs no password. Returns 1 without running it otherwise.
+as_root() {
+  if [ "$(id -u)" = 0 ]; then
+    "$@"
+  elif command -v sudo >/dev/null && sudo -n true 2>/dev/null; then
+    sudo "$@"
+  else
+    return 1
+  fi
+}
+
+# The command that installs the system packages $@, or nothing on a system
+# this script does not know.
+pkg_install_cmd() {
+  if command -v apt-get >/dev/null; then
+    echo "apt-get install -y $*"
+  elif command -v dnf >/dev/null; then
+    echo "dnf install -y $*"
+  elif command -v zypper >/dev/null; then
+    echo "zypper --non-interactive install $*"
+  elif command -v pacman >/dev/null; then
+    echo "pacman -S --noconfirm --needed $*"
+  elif command -v apk >/dev/null; then
+    echo "apk add $*"
+  fi
+}
+
+# Installs the system packages $@. Says what to run instead when it cannot.
+pkg_install() {
+  cmd=$(pkg_install_cmd "$@")
+  if [ -z "$cmd" ]; then
+    say "warning: install $* with your package manager; arakun-server needs it"
+    return 0
+  fi
+  say "installing $*"
+  if command -v apt-get >/dev/null; then
+    # A fresh VPS often has no package lists yet.
+    as_root apt-get update -qq >/dev/null 2>&1 || true
+  fi
+  # shellcheck disable=SC2086 # $cmd is a command line on purpose
+  if ! as_root env DEBIAN_FRONTEND=noninteractive $cmd >/dev/null 2>&1; then
+    say "warning: could not install $*; run this as root, then start the server:"
+    printf '\n  %s\n\n' "$cmd"
+  fi
+}
+
+# Installs Node.js $node_major from nodejs.org into the data folder and links
+# node, npm and npx into $bindir. For the user only, so it needs no root, and
+# distributions often ship an older Node than the adapter needs.
+install_node() {
+  case $platform in
+    linux-x86_64) node_arch=linux-x64 ;;
+    linux-arm64) node_arch=linux-arm64 ;;
+  esac
+  dist=https://nodejs.org/dist/latest-v$node_major.x
+  curl -fsSL -o "$tmp/node-sums" "$dist/SHASUMS256.txt" ||
+    die "could not download $dist/SHASUMS256.txt (use --no-tools to skip Node.js)"
+  node_file=$(awk -v a="$node_arch" '$2 ~ "^node-v[0-9.]+-" a "\\.tar\\.gz$" { print $2; exit }' "$tmp/node-sums")
+  [ -n "$node_file" ] || die "nodejs.org lists no Node.js $node_major for $node_arch"
+  say "downloading ${node_file%.tar.gz}"
+  curl -fSL --progress-bar -o "$tmp/$node_file" "$dist/$node_file" ||
+    die "could not download $dist/$node_file"
+  want=$(listed "$node_file" "$tmp/node-sums")
+  have=$(sha256 "$tmp/$node_file")
+  [ "$have" = "$want" ] || die "checksum mismatch for $node_file (expected $want, got $have)"
+
+  mkdir -p "${node_dir%/*}" "$tmp/node"
+  tar -C "$tmp/node" -xzf "$tmp/$node_file"
+  rm -rf "$node_dir.new" "$node_dir.old"
+  mv "$tmp/node/${node_file%.tar.gz}" "$node_dir.new"
+  if [ -e "$node_dir" ]; then mv "$node_dir" "$node_dir.old"; fi
+  mv "$node_dir.new" "$node_dir"
+  rm -rf "$node_dir.old"
+  for b in node npm npx; do
+    # A node of the user's own there stays; it would come first on PATH.
+    if [ -e "$bindir/$b" ] && [ ! -L "$bindir/$b" ]; then
+      say "warning: $bindir/$b is not Arakun's; left as it is"
+      continue
+    fi
+    ln -sfn "$node_dir/bin/$b" "$bindir/$b"
+  done
+  say "installed Node.js $(PATH="$bindir:$PATH" node_version) in $node_dir, linked in $bindir"
+}
+
+# What the server runs agents with: git for their worktrees, Node.js and npm
+# to install the Claude Code and Codex adapters, and gh for pull requests.
+# Without Node, a new session fails as it starts.
+server_tools() {
+  node_dir=${XDG_DATA_HOME:-$HOME/.local/share}/arakun/node
+  command -v git >/dev/null || pkg_install git
+  if ! command -v gh >/dev/null; then
+    # Not every distribution packages gh; the server works without it.
+    if [ -n "$(pkg_install_cmd gh)" ] && as_root true 2>/dev/null; then
+      pkg_install gh
+    else
+      say "gh is not installed; the server shows no pull requests without it (https://cli.github.com)"
+    fi
+  fi
+  # The one $bindir gives, else the one PATH gives: a new one goes in $bindir.
+  have_node=$(PATH="$bindir:$PATH" node_version)
+  if [ -z "$have_node" ] || [ "$have_node" -lt "$node_major" ] ||
+    ! PATH="$bindir:$PATH" command -v npm >/dev/null; then
+    if [ -n "$have_node" ]; then
+      say "Node.js $have_node is too old; the Claude Code adapter needs $node_major or newer"
+    fi
+    install_node
+  fi
+  # The service keeps the PATH it is installed with, and the server looks in
+  # $bindir only after it: an older node ahead of $bindir is the one it runs.
+  path_node=$(node_version)
+  if [ -n "$path_node" ] && [ "$path_node" -lt "$node_major" ]; then
+    say "warning: 'node' on your PATH is $(command -v node), Node.js $path_node; the server needs $node_major or newer."
+    say "put $bindir first on your PATH, then run 'arakun-server service install' again if it runs as a service:"
+    # shellcheck disable=SC2016 # printed for the user to paste, not expanded here
+    printf '\n  export PATH="$HOME/.local/bin:$PATH"\n\n'
+  fi
+  # Only the links that are Arakun's, from this run or an earlier one: a
+  # node of the user's own was left in place and must stay.
+  for b in node npm npx; do
+    if [ -L "$bindir/$b" ] && [ "$(readlink "$bindir/$b")" = "$node_dir/bin/$b" ]; then
+      uninstall="$uninstall ~/.local/bin/$b"
+    fi
+  done
+  if [ -d "$node_dir" ]; then uninstall="$uninstall \"$node_dir\""; fi
+}
+
 main() {
   version=${ARAKUN_VERSION:-}
   server=
+  tools=1
   while [ $# -gt 0 ]; do
     case $1 in
       --version)
@@ -126,10 +290,15 @@ main() {
         ;;
       --version=*) version=${1#--version=} ;;
       --server) server=1 ;;
+      --nightly) version=nightly ;;
+      --no-tools) tools= ;;
       -h | --help)
         # Not read from $0: under `curl | sh` there is no file.
-        echo "usage: install-release.sh [--server] [--version vX.Y.Z]   (or ARAKUN_VERSION=vX.Y.Z)"
-        echo "  --server  install arakun-server (Linux), the server without the window"
+        echo "usage: install-release.sh [--server [--no-tools]] [--nightly | --version vX.Y.Z]   (or ARAKUN_VERSION=vX.Y.Z)"
+        echo "  --server    install arakun-server (Linux), the server without the window,"
+        echo "              and what it runs agents with: git, gh and Node.js $node_major"
+        echo "  --no-tools  with --server: leave git, gh and Node.js to you"
+        echo "  --nightly   install the newest nightly build of main (it can break)"
         return 0
         ;;
       *) die "unknown option $1" ;;
@@ -173,11 +342,21 @@ main() {
   # must be signed, or whoever can edit releases could mark an unsigned one
   # as latest.
   pinned=$version
-  if [ -z "$version" ]; then
-    version=$(latest_tag)
-  else
-    case $version in v*) ;; *) version=v$version ;; esac
-  fi
+  case $version in
+    "") version=$(latest_tag) ;;
+    nightly) version=$(latest_nightly) ;;
+    # Nightly tags have no v: 0.9.1-nightly.202611201136.
+    *-nightly.*) version=${version#v} ;;
+    v*) ;;
+    *) version=v$version ;;
+  esac
+  keys=$release_keys key_name="release key"
+  case $version in
+    *-nightly.*)
+      keys="$keys $nightly_key" key_name="release or nightly key"
+      say "$version is a nightly build: it can break, crash or lose a session; see https://github.com/$repo#nightly-builds"
+      ;;
+  esac
 
   name=arakun-$version-$platform
   if [ -n "$server" ]; then name=arakun-server-$version-$platform; fi
@@ -201,9 +380,9 @@ main() {
     mkdir "$tmp/sig"
     verify_sums "$tmp/SHA256SUMS" "$tmp/SHA256SUMS.minisig" "$tmp/sig" && signature=0 || signature=$?
     case $signature in
-      0) say "SHA256SUMS is signed with Arakun's release key" ;;
+      0) say "SHA256SUMS is signed with Arakun's $key_name" ;;
       2) say "warning: the signature of SHA256SUMS was not checked; install minisign or OpenSSL 3 to check it" ;;
-      *) die "SHA256SUMS is not signed with Arakun's release key; nothing was installed" ;;
+      *) die "SHA256SUMS is not signed with Arakun's $key_name; nothing was installed" ;;
     esac
   else
     say "$version is from before releases were signed; only its checksums are checked"
@@ -241,7 +420,8 @@ main() {
     chmod 755 "$bindir/.arakun-server.new"
     mv -f "$bindir/.arakun-server.new" "$bindir/arakun-server"
     say "installed arakun-server in $bindir"
-    uninstall="rm ~/.local/bin/arakun-server"
+    uninstall="rm -rf ~/.local/bin/arakun-server"
+    if [ -n "$tools" ]; then server_tools; fi
   elif [ "$platform" = macos-arm64 ]; then
     apps=$HOME/Applications
     app=$apps/Arakun.app

@@ -1369,6 +1369,86 @@ impl Shell {
         self.servers_send(&remote.server, id, json!({ "type": "stage" }), cx);
     }
 
+    /// "Continue with" `agent` in a server's session: the server hands it
+    /// over, and answers with `continued`.
+    pub(super) fn servers_continue_with(
+        &mut self,
+        env_path: &Path,
+        id: &str,
+        agent: model::Agent,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(env) = self.find_env(env_path) else {
+            return;
+        };
+        let Some(remote) = env.remote.clone() else {
+            return;
+        };
+        let settings = super::sessions::server_picks(env, agent);
+        // As in `servers_start`: the new session must not start in a folder
+        // the server no longer offers. The old session stays as it is.
+        if self.server_env_retired(env_path) {
+            if let Some(thread) = thread_of(&self.projects, env_path, id) {
+                let notice = format!(
+                    "{} no longer offers this folder, so no new session starts in it.",
+                    remote.machine
+                );
+                thread.update(cx, |t, cx| t.post_notice(notice, true, cx));
+            }
+            return;
+        }
+        // A pick the server does not offer would only fail the new session
+        // there, after the old one is gone.
+        let offered = self.servers.as_ref().and_then(|link| {
+            link.options
+                .get(&(remote.server.clone(), remote.place.clone(), agent.kind()))
+        });
+        let settings = offered_picks(&settings, offered);
+        let msg = json!({ "type": "continue_with", "agent": agent.key(), "settings": settings });
+        self.servers_send(&remote.server, id, msg, cx);
+    }
+
+    /// `server` handed its session `old` to another agent as session `new`:
+    /// the tab showing `old` shows `new`, and `old` is gone.
+    fn servers_continued(
+        &mut self,
+        server: &str,
+        old: &str,
+        new: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // The server sends its inbox before this: the new session is here.
+        let Some(env_path) = self.server_session_env(server, new) else {
+            return;
+        };
+        let Some(env) = self.find_env_mut(&env_path) else {
+            return;
+        };
+        let Some(agent) = env.session_index(new).map(|i| env.sessions[i].agent) else {
+            return;
+        };
+        if let Some(i) = env.session_index(old) {
+            let gone = env.sessions.remove(i);
+            if let Some(live) = gone.live {
+                live.thread.update(cx, |t, _| t.shutdown());
+                self.servers_unfollow(server, old);
+            }
+        }
+        for tab in &mut self.strip.tabs {
+            if tab.is_in(&env_path)
+                && matches!(&tab.kind, TabKind::Session { id, .. } if id.as_ref() == old)
+            {
+                tab.kind = TabKind::Session {
+                    agent,
+                    id: new.to_string().into(),
+                };
+            }
+        }
+        self.servers_open_session(server, new, window, cx);
+        self.save(cx);
+    }
+
     /// The rewinds shown in `server`'s sessions end: what the server says of
     /// them is not coming. One under way may still have run there; its new
     /// session then shows up with the inbox.
@@ -1751,7 +1831,8 @@ impl Shell {
             }
             // An answer that did not go can be given again, and the rest asked again.
             Some(
-                "answer" | "skip_question" | "fork" | "compact" | "rewind" | "stage" | "setting",
+                "answer" | "skip_question" | "fork" | "compact" | "rewind" | "stage" | "setting"
+                | "continue_with",
             ) => {
                 let session = text(msg, "session");
                 if let Some(env) = self.server_session_env(server, &session)
@@ -2497,6 +2578,9 @@ impl Shell {
                     }
                     // The server sends its inbox before this: the session is here.
                     self.servers_open_started(window, cx);
+                } else if msg["type"] == "continued" {
+                    let (old, new) = (text(&msg, "id"), text(&msg, "session"));
+                    self.servers_continued(id, &old, &new, window, cx);
                 } else if msg["type"] == "forked" || msg["type"] == "rewound" {
                     // The server sends its inbox before this: the session is here.
                     let session = text(&msg, "session");
@@ -2614,12 +2698,16 @@ impl Shell {
                 );
                 true
             }
-            _ if older_server_refused(&message, &["fork", "compact", "rewind", "stage"]) => {
+            _ if older_server_refused(
+                &message,
+                &["fork", "compact", "rewind", "stage", "continue_with"],
+            ) =>
+            {
                 self.servers_drop_rewinds(id, cx);
                 self.notify(
                     crate::island::AlertKind::Warning,
                     "The server cannot do that yet",
-                    "This server runs an older Arakun. Update it to fork, compact, rewind or stage its sessions from here.",
+                    "This server runs an older Arakun. Update it to fork, compact, rewind, stage or hand over its sessions from here.",
                     None,
                     cx,
                 );

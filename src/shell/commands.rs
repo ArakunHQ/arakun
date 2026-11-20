@@ -25,8 +25,10 @@ impl Shell {
                     let reply = match crate::dev::handle(&req) {
                         Ok(steps) => cx
                             .update(|window, cx| crate::dev::play(steps, window, cx))
-                            .map(|_| Reply::ok(""))
-                            .unwrap_or_else(|_| Reply::err("the window is gone")),
+                            .map_or_else(
+                                |_| Reply::err("the window is gone"),
+                                |r| r.map_or_else(Reply::err, |()| Reply::ok("")),
+                            ),
                         Err(reply) => reply,
                     };
                     let _ = done.send(reply);

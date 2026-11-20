@@ -435,10 +435,16 @@ fn shot(file: Option<PathBuf>) -> Result<String, String> {
     let inst = running().ok_or("no test arakun is running; start one with `arakun dev start`")?;
     #[cfg(target_os = "macos")]
     let img = {
+        let _ = inst;
         // A covered window draws nothing on its own: input since the last frame
         // would not show.
         input(&["draw".to_string()])?;
-        mac::shot(inst.arakun, &root().join("raw-shot.png"))?
+        // The app renders its last frame itself: screencapture would need
+        // Screen Recording permission for whatever runs this command.
+        let raw = root().join("raw-shot.png");
+        let _ = std::fs::remove_file(&raw);
+        input(&["capture".to_string(), raw.display().to_string()])?;
+        image::open(&raw).map_err(|e| e.to_string())?.to_rgb8()
     };
     #[cfg(not(target_os = "macos"))]
     let img = x_shot(&inst)?;
@@ -795,6 +801,9 @@ pub enum Synth {
     },
     Key(String),
     Text(String),
+    /// Write the window's last frame to this PNG, rendered by the app itself.
+    #[cfg(target_os = "macos")]
+    Capture(PathBuf),
 }
 
 pub fn parse_input(args: &[String]) -> Result<Vec<Synth>, String> {
@@ -865,6 +874,8 @@ pub fn parse_input(args: &[String]) -> Result<Vec<Synth>, String> {
         Some("type") if !rest.is_empty() => Ok(vec![Synth::Text(rest.join(" "))]),
         // No input, only a fresh frame: `shot` asks for one first on macOS.
         Some("draw") if rest.is_empty() => Ok(Vec::new()),
+        #[cfg(target_os = "macos")]
+        Some("capture") if rest.len() == 1 => Ok(vec![Synth::Capture(PathBuf::from(&rest[0]))]),
         Some(cmd) => Err(format!("usage: see `arakun dev help` ({cmd})")),
         None => Err("no input".into()),
     }
@@ -876,7 +887,11 @@ thread_local! {
 }
 
 /// Plays `steps` in the window, as if the user did them.
-pub fn play(steps: Vec<Synth>, window: &mut gpui::Window, cx: &mut gpui::App) {
+pub fn play(
+    steps: Vec<Synth>,
+    window: &mut gpui::Window,
+    cx: &mut gpui::App,
+) -> Result<(), String> {
     // Steps come in screenshot pixels; the window works in points.
     let scale = window.scale_factor();
     let at = |x: f32, y: f32| point(px(x / scale), px(y / scale));
@@ -999,6 +1014,16 @@ pub fn play(steps: Vec<Synth>, window: &mut gpui::Window, cx: &mut gpui::App) {
                     );
                 }
             }
+            #[cfg(target_os = "macos")]
+            Synth::Capture(file) => {
+                let img = window
+                    .render_to_image()
+                    .map_err(|e| format!("could not render the window: {e}"))?;
+                img.save(&file)
+                    .map_err(|e| format!("{}: {e}", file.display()))?;
+                // Rendering a frame is all this step does.
+                return Ok(());
+            }
             Synth::Text(text) => {
                 for ch in text.chars() {
                     let key = match ch {
@@ -1023,6 +1048,7 @@ pub fn play(steps: Vec<Synth>, window: &mut gpui::Window, cx: &mut gpui::App) {
     window.refresh();
     #[cfg(target_os = "macos")]
     mac::redraw(window);
+    Ok(())
 }
 
 /// Answers a `dev` request: only a test arakun takes synthetic input.
@@ -1035,116 +1061,10 @@ pub fn handle(req: &Request) -> Result<Vec<Synth>, Reply> {
     parse_input(&req.args).map_err(Reply::err)
 }
 
-/// The test arakun's window on macOS, found by its process in the window
-/// server's list and captured alone with `screencapture`, even when another
-/// window covers it.
+/// Keeps the test arakun's covered window drawing on macOS.
 #[cfg(target_os = "macos")]
 mod mac {
     use std::ffi::c_void;
-    use std::path::Path;
-    use std::process::{Command, Stdio};
-
-    type CfRef = *const c_void;
-
-    #[repr(C)]
-    #[derive(Default)]
-    struct Rect {
-        x: f64,
-        y: f64,
-        w: f64,
-        h: f64,
-    }
-
-    #[link(name = "CoreFoundation", kind = "framework")]
-    unsafe extern "C" {
-        fn CFArrayGetCount(array: CfRef) -> isize;
-        fn CFArrayGetValueAtIndex(array: CfRef, index: isize) -> CfRef;
-        fn CFDictionaryGetValue(dict: CfRef, key: CfRef) -> CfRef;
-        fn CFNumberGetValue(number: CfRef, kind: isize, out: *mut c_void) -> bool;
-        fn CFRelease(value: CfRef);
-    }
-
-    #[link(name = "CoreGraphics", kind = "framework")]
-    unsafe extern "C" {
-        fn CGWindowListCopyWindowInfo(option: u32, relative_to: u32) -> CfRef;
-        fn CGRectMakeWithDictionaryRepresentation(dict: CfRef, rect: *mut Rect) -> bool;
-        static kCGWindowOwnerPID: CfRef;
-        static kCGWindowNumber: CfRef;
-        static kCGWindowLayer: CfRef;
-        static kCGWindowBounds: CfRef;
-    }
-
-    const ALL_WINDOWS: u32 = 0;
-    const SINT64: isize = 4;
-
-    /// # Safety
-    /// `dict` is a live CFDictionary.
-    unsafe fn number(dict: CfRef, key: CfRef) -> Option<i64> {
-        let mut n = 0i64;
-        // SAFETY: CFDictionaryGetValue returns a borrowed value or null, and
-        // CFNumberGetValue writes one i64 into `n`.
-        unsafe {
-            let v = CFDictionaryGetValue(dict, key);
-            (!v.is_null() && CFNumberGetValue(v, SINT64, (&raw mut n).cast())).then_some(n)
-        }
-    }
-
-    /// The number of the largest normal window (layer 0) of `pid`.
-    fn window(pid: u32) -> Option<u32> {
-        let mut best: Option<(u32, f64)> = None;
-        // SAFETY: the list is ours (Copy) and released below; its entries and their
-        // values are borrowed from it while it lives.
-        unsafe {
-            let list = CGWindowListCopyWindowInfo(ALL_WINDOWS, 0);
-            if list.is_null() {
-                return None;
-            }
-            for i in 0..CFArrayGetCount(list) {
-                let w = CFArrayGetValueAtIndex(list, i);
-                if number(w, kCGWindowOwnerPID) != Some(pid as i64)
-                    || number(w, kCGWindowLayer) != Some(0)
-                {
-                    continue;
-                }
-                let mut rect = Rect::default();
-                let bounds = CFDictionaryGetValue(w, kCGWindowBounds);
-                let Some(id) = number(w, kCGWindowNumber) else {
-                    continue;
-                };
-                if bounds.is_null() || !CGRectMakeWithDictionaryRepresentation(bounds, &mut rect) {
-                    continue;
-                }
-                if best.is_none_or(|(_, area)| rect.w * rect.h > area) {
-                    best = Some((id as u32, rect.w * rect.h));
-                }
-            }
-            CFRelease(list);
-        }
-        best.map(|(id, _)| id)
-    }
-
-    /// The window of `pid` at its full resolution (twice its size in points on
-    /// a Retina screen), which is what `arakun dev click` takes.
-    pub(super) fn shot(pid: u32, raw: &Path) -> Result<image::RgbImage, String> {
-        let id = window(pid).ok_or("the test arakun has no window on screen yet")?;
-        let _ = std::fs::remove_file(raw);
-        // -o leaves out the shadow, -x the sound.
-        let out = Command::new("screencapture")
-            .args(["-o", "-x", "-t", "png", &format!("-l{id}")])
-            .arg(raw)
-            .stdin(Stdio::null())
-            .output()
-            .map_err(|e| format!("screencapture: {e}"))?;
-        if !out.status.success() || !raw.exists() {
-            return Err(format!(
-                "screencapture could not capture the test arakun's window ({}); give the app \
-                 you run this from Screen Recording permission (System Settings > Privacy & \
-                 Security > Screen & System Audio Recording)",
-                String::from_utf8_lossy(&out.stderr).trim()
-            ));
-        }
-        Ok(image::open(raw).map_err(|e| e.to_string())?.to_rgb8())
-    }
 
     #[link(name = "objc")]
     unsafe extern "C" {

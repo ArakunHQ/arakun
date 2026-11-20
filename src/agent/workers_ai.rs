@@ -1181,7 +1181,13 @@ impl Spool {
         let (host, shown) = match sandbox() {
             Some(j) => (
                 j.sandbox.as_ref().unwrap().tmp.join(&name),
-                format!("/tmp/{name}"),
+                j.sandbox
+                    .as_ref()
+                    .unwrap()
+                    .shown_tmp()
+                    .join(&name)
+                    .display()
+                    .to_string(),
             ),
             None => {
                 let p = std::env::temp_dir().join(&name);

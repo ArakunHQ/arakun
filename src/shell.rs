@@ -54,6 +54,7 @@ mod panes;
 mod paste;
 mod phone;
 mod posthog;
+mod project_icon;
 mod rail;
 mod rail_blocks;
 mod rail_pick;
@@ -66,6 +67,7 @@ mod sidebar_builder;
 #[cfg(feature = "coderlabs")]
 mod site;
 mod subagents;
+mod subnav;
 #[cfg(feature = "coderlabs")]
 mod tasks;
 #[cfg(feature = "team")]
@@ -366,6 +368,9 @@ pub struct Shell {
     _quit: [Subscription; 2],
     /// `arakun restart` asked to quit: save for the next arakun and launch it.
     restarting: bool,
+    /// The `update-policy` feature flag's dialog (`shell::updates`), over
+    /// everything else, dialogs included.
+    update_dialog: Option<(Entity<crate::update_dialog::UpdateDialog>, Subscription)>,
     /// The pages last marked visible, so tab switches can tell when to update CEF.
     shown_browsers: Vec<gpui::EntityId>,
     /// Answers `arakun <command>` from the control socket.
@@ -437,7 +442,7 @@ pub struct Shell {
     memory_view: Entity<MemoryView>,
     _memory_view: Subscription,
     cloudflare_view: Entity<CloudflareView>,
-    _cloudflare_view: Subscription,
+    _cloudflare_view: [Subscription; 2],
     #[cfg(feature = "coderlabs")]
     site_view: Entity<SiteView>,
     #[cfg(feature = "coderlabs")]
@@ -454,7 +459,7 @@ pub struct Shell {
     pilot: Entity<crate::github::pilot::Pilot>,
     _github: [Subscription; 5],
     extensions_view: Entity<ExtensionsView>,
-    _extensions_view: Subscription,
+    _extensions_view: [Subscription; 2],
     _branches_view: Subscription,
     /// The phone's server and what each phone watches, while the phone is on.
     phone: Option<phone::PhoneLink>,
@@ -783,10 +788,17 @@ impl Shell {
             },
         );
         let cloudflare_view = cx.new(CloudflareView::new);
-        let cloudflare_sub =
+        let cloudflare_sub = [
             cx.subscribe_in(&cloudflare_view, window, |this, _, ev, window, cx| {
                 this.on_cloudflare_event(ev, window, cx)
-            });
+            }),
+            // Open, its pages are in the rail: their counts follow the view.
+            cx.observe(&cloudflare_view, |this, _, cx| {
+                if this.subnav_view() == Some(crate::sidebar::View::Cloudflare) {
+                    cx.notify();
+                }
+            }),
+        ];
         #[cfg(feature = "coderlabs")]
         let site_view = cx.new(SiteView::new);
         #[cfg(feature = "coderlabs")]
@@ -812,10 +824,16 @@ impl Shell {
         let sidebar = crate::sidebar::Sidebar::load();
         let views = crate::sidebar::Extensions::load(&sidebar);
         let extensions_view = cx.new(|cx| ExtensionsView::new(views, cx));
-        let extensions_sub =
+        let extensions_sub = [
             cx.subscribe_in(&extensions_view, window, |this, _, ev, window, cx| {
                 this.on_extensions_event(ev, window, cx)
-            });
+            }),
+            cx.observe(&extensions_view, |this, _, cx| {
+                if this.subnav_view() == Some(crate::sidebar::View::Extensions) {
+                    cx.notify();
+                }
+            }),
+        ];
         let branches_sub = cx.subscribe_in(&branches_view, window, |this, _, ev, window, cx| {
             this.on_branches_event(ev, window, cx)
         });
@@ -1024,6 +1042,7 @@ impl Shell {
             inbox_shown: Cell::new(0),
             clear_armed: false,
             restarting: false,
+            update_dialog: None,
             _runs: runs_subs,
             _quit: [
                 cx.on_app_quit(|this, cx| {
@@ -1642,7 +1661,11 @@ impl Shell {
         let index = match self.projects.iter().position(|p| p.path == path) {
             Some(i) => i,
             None => {
-                self.projects.push(state::new_project(&path));
+                let mut project = state::new_project(&path);
+                project.icon = model::unique_icon(project.icon, |icon| {
+                    self.projects.iter().any(|p| p.icon == icon)
+                });
+                self.projects.push(project);
                 crate::telemetry::capture(crate::telemetry::events::PROJECT_ADDED, &[]);
                 self.projects.len() - 1
             }
@@ -3472,7 +3495,9 @@ impl Shell {
                 self.memory_view.update(cx, |v, cx| v.set_dir(&dir, cx));
                 self.memory_view.clone().into_any_element()
             }
-            Some(TabKind::Cloudflare) => self.cloudflare_view.clone().into_any_element(),
+            Some(TabKind::Cloudflare) => {
+                self.with_subnav(index, self.cloudflare_view.clone().into_any_element(), cx)
+            }
             #[cfg(feature = "coderlabs")]
             Some(TabKind::Site) => self.site_view.clone().into_any_element(),
             #[cfg(feature = "team")]
@@ -3497,7 +3522,7 @@ impl Shell {
                     v.set_dir(dir, cx);
                     v.refresh_if_stale(cx);
                 });
-                self.extensions_view.clone().into_any_element()
+                self.with_subnav(index, self.extensions_view.clone().into_any_element(), cx)
             }
             Some(TabKind::Phone) => self.phone_view.clone().into_any_element(),
             Some(TabKind::Servers) => self.servers_view.clone().into_any_element(),
@@ -3560,10 +3585,16 @@ impl Shell {
         step(window, cx);
         // gpui's tab order spans the window, so an open dialog would let Tab
         // reach the controls behind it. Step on to the next stop inside one;
-        // back at the first stop means no dialog is open.
+        // back at the first stop means no dialog is open. The update dialog
+        // covers any other dialog, so while it is open only its stops count.
+        let update = self.update_dialog.as_ref().map(|(d, _)| d.focus_handle(cx));
+        let inside = |window: &Window, cx: &App| match &update {
+            Some(update) => update.contains_focused(window, cx),
+            None => in_modal(&window.context_stack()),
+        };
         let first = window.focused(cx);
         for _ in 0..MAX_TAB_STOPS {
-            if in_modal(&window.context_stack()) {
+            if inside(window, cx) {
                 break;
             }
             step(window, cx);
@@ -3572,7 +3603,7 @@ impl Shell {
                 break;
             }
         }
-        if !in_modal(&window.context_stack())
+        if !inside(window, cx)
             && let Some(first) = first
         {
             window.focus(&first, cx);
@@ -3701,7 +3732,17 @@ impl Render for Shell {
             self.render_welcome(window, cx).into_any_element()
         };
 
+        let update_dialog = self.update_dialog.as_ref().map(|(d, _)| d.clone());
         let palette_open = matches!(self.modal, Some((Modal::Palette(_), _)));
+        // Dialogs sit in the middle, like the system's own. Lists that filter
+        // as you type stay near the top, so they don't jump as their height changes.
+        let center_modal = !matches!(
+            self.modal,
+            Some((
+                Modal::Palette(_) | Modal::Picker(_) | Modal::Attach(_) | Modal::New(_),
+                _
+            ))
+        );
         let modal: Option<(AnyElement, u64)> = self.modal.as_ref().map(|(m, _)| match m {
             Modal::Picker(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),
             Modal::Attach(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),
@@ -3937,7 +3978,9 @@ impl Render for Shell {
             })
             .capture_key_down(cx.listener(|this, ev: &gpui::KeyDownEvent, window, cx| {
                 let k = &ev.keystroke;
+                // The update dialog's Enter and Space press its own buttons.
                 if this.menu.is_some()
+                    && this.update_dialog.is_none()
                     && !k.modifiers.control
                     && !k.modifiers.alt
                     && !k.modifiers.platform
@@ -4043,7 +4086,13 @@ impl Render for Shell {
                         .flex()
                         .flex_col()
                         .items_center()
-                        .pt(relative(0.10))
+                        .map(|d| {
+                            if center_modal {
+                                d.pt(crate::ui::sp(12.))
+                            } else {
+                                d.pt(relative(0.10))
+                            }
+                        })
                         .pb(crate::ui::sp(12.))
                         .px(crate::ui::sp(12.))
                         .occlude()
@@ -4065,6 +4114,7 @@ impl Render for Shell {
                                 .flex()
                                 .flex_col()
                                 .items_center()
+                                .when(center_modal, |d| d.justify_center())
                                 .flex_1()
                                 .min_h_0()
                                 .w_full()
@@ -4089,6 +4139,24 @@ impl Render for Shell {
                                 d.bg(gpui::black().opacity(dim * ui::motion::ease_out(t)))
                             },
                         ),
+                )
+            })
+            .when_some(update_dialog, |d, dialog| {
+                d.child(
+                    div()
+                        .id("update-backdrop")
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .size_full()
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .pt(relative(0.10))
+                        .px(crate::ui::sp(12.))
+                        .occlude()
+                        .bg(gpui::black().opacity(0.4))
+                        .child(dialog),
                 )
             })
             .when(self.env_menu_open, |d| {

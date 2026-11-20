@@ -336,6 +336,11 @@ impl Hub {
         self.kept.verified(device_id)
     }
 
+    /// The user found this device's compare numbers different.
+    pub fn mismatched(&self, device_id: &str) -> bool {
+        self.kept.mismatched(device_id)
+    }
+
     /// Marks a device checked ("They match"), or not ("They don't").
     pub fn set_verified(&mut self, device_id: &str, yes: bool, cx: &mut Context<Self>) {
         if self.kept.set_verified(device_id, yes) {
@@ -1026,8 +1031,9 @@ impl Hub {
             return;
         };
         let busy = format!("rotate:{team_id}:{version}");
-        if !t.untrusted.is_empty() {
-            let who = t.untrusted.join(", @");
+        let doubted = doubted(&self.kept, t);
+        if !doubted.is_empty() {
+            let who = doubted.join(", @");
             if let Some(t) = self.team.get_mut(team_id) {
                 t.problem = Some(format!(
                     "The team needs a new key, but a device of @{who} does not check out, so none was made."
@@ -1231,7 +1237,10 @@ impl Hub {
             return;
         };
         let trusted = trusted_devices(github_id, &p.devices);
-        if trusted.len() != p.devices.len() || !pin_directory(&mut self.kept, github_id, &trusted) {
+        if trusted.len() != p.devices.len()
+            || trusted.iter().any(|d| self.kept.mismatched(&d.device_id))
+            || !pin_directory(&mut self.kept, github_id, &trusted)
+        {
             self.error = Some(format!(
                 "A device of @{} does not check out, so they can't be approved from here.",
                 p.login
@@ -1982,12 +1991,26 @@ impl KeyDelivery {
     }
 }
 
+/// Members no team key may go to: a device of theirs doesn't check out, or
+/// the user compared numbers with them and found them different.
+fn doubted(kept: &Kept, t: &TeamState) -> Vec<String> {
+    let mut who = t.untrusted.clone();
+    for m in &t.detail.members {
+        let devices = t.devices.get(&m.github_id).into_iter().flatten();
+        if !who.contains(&m.login) && devices.into_iter().any(|d| kept.mismatched(&d.device_id)) {
+            who.push(m.login.clone());
+        }
+    }
+    who
+}
+
 fn next_backfill(kept: &Kept, t: &TeamState, mine: &str) -> Vec<KeyDelivery> {
     let team = &t.detail.team_id;
     let keys = kept.keys(team);
+    let doubted = doubted(kept, t);
     let mut batch = Vec::new();
     for (m, d) in recipients(t) {
-        if d.device_id == mine || d.created_at < m.joined_at {
+        if d.device_id == mine || d.created_at < m.joined_at || doubted.contains(&m.login) {
             continue;
         }
         for &(epoch, key) in &keys {
@@ -2394,6 +2417,12 @@ mod tests {
         );
         assert!(missing.iter().all(|s| s.device.device_id == new.device_id));
         assert!(next_backfill(&kept, &t, &new.device_id).is_empty());
+        // "They don't" on the Compare panel stops every key to that person.
+        kept.set_verified(&new.device_id, false);
+        assert!(next_backfill(&kept, &t, "").is_empty());
+        assert_eq!(doubted(&kept, &t), vec![t.detail.members[0].login.clone()]);
+        kept.set_verified(&new.device_id, true);
+        assert!(doubted(&kept, &t).is_empty());
         record_batch(&mut kept, "T", &missing);
         assert!(next_backfill(&kept, &t, "").is_empty());
 

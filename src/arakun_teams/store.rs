@@ -424,6 +424,10 @@ pub struct Kept {
     /// new key is a new, unchecked device.
     #[serde(default)]
     verified: BTreeSet<String>,
+    /// Devices whose compare numbers the user found different. Kept so that,
+    /// as PROTOCOL.md asks, no team key goes to their owner after a restart.
+    #[serde(default)]
+    mismatched: BTreeSet<String>,
 }
 
 impl Kept {
@@ -597,13 +601,21 @@ impl Kept {
         self.verified.contains(device_id)
     }
 
-    /// Marks a device checked, or not; whether that changed anything.
+    /// The user found this device's compare numbers different.
+    pub fn mismatched(&self, device_id: &str) -> bool {
+        self.mismatched.contains(device_id)
+    }
+
+    /// Marks a device as matching ("They match") or not ("They don't");
+    /// whether that changed anything.
     pub fn set_verified(&mut self, device_id: &str, yes: bool) -> bool {
-        if yes {
-            self.verified.insert(device_id.to_string())
+        let (add, drop) = if yes {
+            (&mut self.verified, &mut self.mismatched)
         } else {
-            self.verified.remove(device_id)
-        }
+            (&mut self.mismatched, &mut self.verified)
+        };
+        let dropped = drop.remove(device_id);
+        add.insert(device_id.to_string()) || dropped
     }
 
     /// Forgets a team this user is no longer in.
@@ -1041,6 +1053,11 @@ mod tests {
         assert!(k.verified("a"));
         assert!(k.set_verified("a", false));
         assert!(!k.verified("a"));
+        assert!(k.mismatched("a"));
+        assert!(!k.set_verified("a", false));
+        assert!(k.set_verified("a", true));
+        assert!(!k.mismatched("a"));
+        assert!(k.set_verified("a", false));
         assert!(k.grants.is_empty());
         assert!(!k.needs_delivery("T", 7, 10, "a", 1));
         let mut team = TeamDetail {

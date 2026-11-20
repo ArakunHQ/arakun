@@ -2879,7 +2879,7 @@ impl TeamsView {
             .sig_pub()
             .and_then(|mine| super::crypto::compare_numbers(mine, &device.sig_pub));
         let verified = hub.verified(device_id);
-        let mismatch = self.mismatch.as_deref() == Some(device_id);
+        let mismatch = self.mismatch.as_deref() == Some(device_id) || hub.mismatched(device_id);
         let title = format!("Compare {name}");
         let Some(numbers) = numbers else {
             return (

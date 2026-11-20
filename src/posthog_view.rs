@@ -1,8 +1,12 @@
 //! The PostHog tab: the PostHog project of the open Arakun project, read
 //! with whichever saved sign-in sees it (`posthog`). Every account stays
 //! signed in at once; the header names the account, organization and project
-//! and switches between them. The overview is 24 hours of events and
-//! visitors, the week's error tracking issues and the feature flags.
+//! and switches between them.
+//!
+//! A strip of tabs under the header, each in its own module: Overview (24
+//! hours of events and visitors, flags, errors), Events and People (their
+//! own views, reading pages through `posthog::query`), Flags and Errors
+//! (read-only lists), and Experiments and Ask, which come next.
 //!
 //! PostHog's hourly query budget: an answer is kept on disk and shown at
 //! once, read again only when the tab opens and it is older than `STALE`
@@ -10,6 +14,15 @@
 //! waits out the Retry-After with a calm note instead of retrying.
 
 mod accounts;
+mod ask;
+mod bars;
+mod errors;
+mod events;
+mod experiments;
+mod flags;
+mod overview;
+mod people;
+mod scope;
 
 use std::path::{Path, PathBuf};
 
@@ -25,6 +38,8 @@ use crate::input::{InputEvent, TextInput};
 use crate::posthog::{self, ApiError, Directory, Overview, Project, Region, Resolved, Session};
 use crate::theme;
 use crate::ui::{self, AreaChart, ButtonKind, Format, Series, Tone, Type, Typography as _, icon};
+use events::{EventsEvent, EventsTab};
+use people::{PeopleEvent, PeopleTab};
 
 /// An answer older than this is read again when the tab opens.
 const STALE: u64 = 15 * 60;
@@ -42,6 +57,49 @@ pub enum PostHogEvent {
 enum Page {
     Main,
     Accounts,
+}
+
+/// The tabs under the header, in their order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tab {
+    Overview,
+    Events,
+    People,
+    Flags,
+    Experiments,
+    Errors,
+    Ask,
+}
+
+impl Tab {
+    const ALL: [Tab; 7] = [
+        Tab::Overview,
+        Tab::Events,
+        Tab::People,
+        Tab::Flags,
+        Tab::Experiments,
+        Tab::Errors,
+        Tab::Ask,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            Tab::Overview => "Overview",
+            Tab::Events => "Events",
+            Tab::People => "People",
+            Tab::Flags => "Flags",
+            Tab::Experiments => "Experiments",
+            Tab::Errors => "Errors",
+            Tab::Ask => "Ask",
+        }
+    }
+}
+
+/// The account and project a tab reads.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Target {
+    pub session: Session,
+    pub project: Project,
 }
 
 pub struct PostHogView {
@@ -64,6 +122,9 @@ pub struct PostHogView {
     /// Unix seconds of the last read asked for.
     asked_at: u64,
     page: Page,
+    tab: Tab,
+    events: Entity<EventsTab>,
+    people: Entity<PeopleTab>,
     menu: Option<Point<Pixels>>,
     key_input: Entity<TextInput>,
     /// None tries both regions.
@@ -78,6 +139,7 @@ pub struct PostHogView {
     _scan: Option<Task<()>>,
     _connect: Option<Task<()>>,
     _input: Subscription,
+    _tabs: [Subscription; 2],
 }
 
 impl EventEmitter<PostHogEvent> for PostHogView {}
@@ -96,6 +158,25 @@ impl PostHogView {
                 _ => {}
             },
         );
+        let events = cx.new(EventsTab::new);
+        let people = cx.new(PeopleTab::new);
+        let tabs = [
+            cx.subscribe(&events, |this: &mut Self, _, e: &EventsEvent, cx| match e {
+                EventsEvent::Open(url) => cx.emit(PostHogEvent::Open(url.clone())),
+                EventsEvent::Person {
+                    person_id,
+                    distinct_id,
+                } => {
+                    this.tab = Tab::People;
+                    let (p, d) = (person_id.clone(), distinct_id.clone());
+                    this.people.update(cx, |t, cx| t.open_person(p, d, cx));
+                    cx.notify();
+                }
+            }),
+            cx.subscribe(&people, |_, _, e: &PeopleEvent, cx| match e {
+                PeopleEvent::Open(url) => cx.emit(PostHogEvent::Open(url.clone())),
+            }),
+        ];
         Self {
             root: None,
             sessions: posthog::sessions(),
@@ -110,6 +191,9 @@ impl PostHogView {
             error: None,
             asked_at: 0,
             page: Page::Main,
+            tab: Tab::Overview,
+            events,
+            people,
             menu: None,
             key_input,
             region: None,
@@ -123,6 +207,7 @@ impl PostHogView {
             _scan: None,
             _connect: None,
             _input: sub,
+            _tabs: tabs,
         }
     }
 
@@ -230,6 +315,37 @@ impl PostHogView {
                 self.current = None;
             }
         }
+        self.sync_tabs(cx);
+        cx.notify();
+    }
+
+    /// Hands the current account and project to the tabs that read on their own.
+    fn sync_tabs(&mut self, cx: &mut Context<Self>) {
+        let target = self.current.clone().and_then(|p| {
+            Some(Target {
+                session: self.session_of(&p)?,
+                project: p,
+            })
+        });
+        let t = target.clone();
+        self.events.update(cx, |e, cx| e.set_target(t, cx));
+        self.people.update(cx, |e, cx| e.set_target(target, cx));
+        self.show_current(cx);
+    }
+
+    /// The visible tab reads what it doesn't have yet.
+    fn show_current(&mut self, cx: &mut Context<Self>) {
+        match self.tab {
+            Tab::Events => self.events.update(cx, |t, cx| t.show(cx)),
+            Tab::People => self.people.update(cx, |t, cx| t.show(cx)),
+            _ => {}
+        }
+    }
+
+    pub(super) fn show_tab(&mut self, tab: Tab, _: &mut Window, cx: &mut Context<Self>) {
+        self.tab = tab;
+        self.menu = None;
+        self.show_current(cx);
         cx.notify();
     }
 
@@ -240,6 +356,7 @@ impl PostHogView {
         self.overview = posthog::cached(&p);
         self.error = None;
         self.current = Some(p);
+        self.sync_tabs(cx);
         self.update_chart(cx);
         self.refresh_if_stale(cx);
         cx.notify();
@@ -407,22 +524,76 @@ fn notice(icon_name: &str, tone: Tone, text: String) -> AnyElement {
         .into_any_element()
 }
 
-/// A titled block of the overview.
-fn section(title: &str, meta: Option<String>) -> gpui::Div {
-    div().flex().flex_col().gap(crate::ui::sp(8.)).child(
-        div()
-            .flex()
-            .items_baseline()
-            .gap(crate::ui::sp(8.))
-            .child(ui::heading(title.to_string()))
-            .when_some(meta, |d, m| {
-                d.child(ui::text(Type::Caption, theme::text_faint(), m))
-            }),
-    )
-}
-
 fn quiet(text: impl Into<SharedString>) -> gpui::Div {
     ui::text(Type::Body, theme::text_subtle(), text).py(crate::ui::sp(8.))
+}
+
+/// A tab that a later version fills.
+fn coming_next(title: &str, what: &str) -> AnyElement {
+    div()
+        .flex()
+        .justify_center()
+        .pt(crate::ui::sp(48.))
+        .child(ui::empty_state(
+            "clock01",
+            &format!("{title} · coming next"),
+            what,
+            None,
+        ))
+        .into_any_element()
+}
+
+const MONTHS: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
+/// "Nov 18" in local time.
+fn day(t: u64) -> String {
+    match crate::platform::local_time(t) {
+        Some(l) => format!("{} {}", MONTHS[l.month.clamp(0, 11) as usize], l.day),
+        None => {
+            let days = (t / 86_400) as i64;
+            // Civil from days (Hinnant), for the UTC fallback.
+            let z = days + 719_468;
+            let era = z.div_euclid(146_097);
+            let doe = z - era * 146_097;
+            let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+            let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+            let mp = (5 * doy + 2) / 153;
+            let d = doy - (153 * mp + 2) / 5 + 1;
+            let m = if mp < 10 { mp + 3 } else { mp - 9 };
+            format!("{} {d}", MONTHS[(m - 1) as usize])
+        }
+    }
+}
+
+/// "Today" or "Nov 18".
+fn day_or_today(t: u64, now: u64) -> String {
+    if day(t) == day(now) {
+        "Today".into()
+    } else {
+        day(t)
+    }
+}
+
+/// "14:02:31" today, "Nov 17 14:02" before.
+fn time_of_day(t: u64, now: u64) -> String {
+    match crate::platform::local_time(t) {
+        Some(l) if day(t) == day(now) => format!("{:02}:{:02}:{:02}", l.hour, l.minute, t % 60),
+        Some(l) => format!("{} {:02}:{:02}", day(t), l.hour, l.minute),
+        None => posthog::clock(t),
+    }
+}
+
+/// "now", "4 min ago", "3 h ago", "2 d ago".
+fn short_ago(t: u64, now: u64) -> String {
+    match now.saturating_sub(t) {
+        0..60 => "now".into(),
+        s @ 60..3600 => format!("{} min ago", s / 60),
+        s @ 3600..86_400 => format!("{} h ago", s / 3600),
+        86_400..172_800 => "yesterday".into(),
+        s => format!("{} d ago", s / 86_400),
+    }
 }
 
 impl PostHogView {
@@ -483,6 +654,11 @@ impl PostHogView {
             cx.listener(move |this, _, _, cx| {
                 if can_refresh {
                     this.refresh(true, cx);
+                    match this.tab {
+                        Tab::Events => this.events.update(cx, |t, cx| t.refresh(cx)),
+                        Tab::People => this.people.update(cx, |t, cx| t.refresh(cx)),
+                        _ => {}
+                    }
                 } else if this.current.is_none() {
                     this.refresh_directory(cx);
                 }
@@ -518,25 +694,77 @@ impl PostHogView {
             )
             .on_click(cx.listener(|this, _, _, cx| this.open("", cx)))
         });
+        let tabs =
+            (self.current.is_some() && self.page == Page::Main).then(|| self.render_tabs(cx));
         div()
             .flex()
             .flex_none()
-            .items_end()
-            .justify_between()
+            .flex_col()
             .gap(crate::ui::sp(16.))
             .px(crate::ui::sp(ui::PAGE_PAD))
             .pt(crate::ui::sp(ui::PAGE_PAD))
             .pb(crate::ui::sp(18.))
-            .child(ui::page_title("PostHog", Some(subtitle)))
             .child(
                 div()
                     .flex()
-                    .items_center()
-                    .gap(crate::ui::sp(8.))
-                    .children(open)
-                    .when(!self.sessions.is_empty(), |d| d.child(accounts))
-                    .child(refresh),
+                    .items_end()
+                    .justify_between()
+                    .gap(crate::ui::sp(16.))
+                    .child(ui::page_title("PostHog", Some(subtitle)))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(crate::ui::sp(8.))
+                            .children(open)
+                            .when(!self.sessions.is_empty(), |d| d.child(accounts))
+                            .child(refresh),
+                    ),
             )
+            .children(tabs)
+            .into_any_element()
+    }
+
+    /// Overview · Events · People · Flags 14 · Experiments · Errors 9 · Ask,
+    /// and the project's host at the right.
+    fn render_tabs(&self, cx: &mut Context<Self>) -> AnyElement {
+        let o = self.overview.as_ref();
+        let mut strip = ui::segmented();
+        for (i, tab) in Tab::ALL.into_iter().enumerate() {
+            let n = match tab {
+                Tab::Flags => o.map(|o| o.flags.len()),
+                Tab::Errors => o.map(|o| o.issues.len()),
+                _ => None,
+            };
+            let on = self.tab == tab;
+            strip = strip.child(
+                ui::segment(("ph-tab", i), None, tab.label(), on)
+                    .when_some(n.filter(|n| *n > 0), |d, n| {
+                        d.child(
+                            div()
+                                .ty(Type::Caption)
+                                .font_family(theme::FONT_MONO)
+                                .text_color(theme::text_faint())
+                                .child(n.to_string()),
+                        )
+                    })
+                    .on_click(
+                        cx.listener(move |this, _, window, cx| this.show_tab(tab, window, cx)),
+                    ),
+            );
+        }
+        let host = self
+            .current
+            .as_ref()
+            .map(|p| format!("{} · {}", p.name, p.host.trim_start_matches("https://")))
+            .unwrap_or_default();
+        div()
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap(crate::ui::sp(16.))
+            .child(strip)
+            .child(ui::text(Type::Caption, theme::text_faint(), host).truncate())
             .into_any_element()
     }
 
@@ -694,6 +922,27 @@ impl PostHogView {
                         .into_any_element(),
                 ),
             ),
+            Some(ApiError::MissingScope(scope)) => {
+                let (email, host) = self
+                    .current
+                    .as_ref()
+                    .map(|p| (p.email.clone(), p.host.clone()))
+                    .unwrap_or_default();
+                let url = posthog::scope::keys_url(&host);
+                return scope::missing_scope(
+                    "Overview",
+                    scope,
+                    &email,
+                    &host,
+                    &[],
+                    "Events and People",
+                    cx.listener(move |_, _, _, cx| cx.emit(PostHogEvent::Open(url.clone()))),
+                    cx.listener(|this, _, _, cx| {
+                        this.asked_at = 0;
+                        this.refresh(true, cx);
+                    }),
+                );
+            }
             Some(ApiError::RateLimited(until)) => ui::empty_state(
                 "clock01",
                 "Waiting on PostHog's query budget",
@@ -720,265 +969,6 @@ impl PostHogView {
         state.into_any_element()
     }
 
-    fn render_stats(&self, o: &Overview) -> AnyElement {
-        let cell = |body: gpui::Div, last: bool| {
-            div()
-                .flex_1()
-                .min_w(px(170.))
-                .px(crate::ui::sp(16.))
-                .py(crate::ui::sp(14.))
-                .when(!last, |d| {
-                    d.border_r_1().border_color(theme::border_subtle())
-                })
-                .child(body)
-        };
-        let live_flags = o.flags.iter().filter(|f| f.active).count();
-        div()
-            .flex()
-            .flex_wrap()
-            .border_t_1()
-            .border_b_1()
-            .border_color(theme::border_subtle())
-            .child(cell(
-                ui::stat(
-                    "Events · 24 h",
-                    count(o.events),
-                    format!("{} pageviews", count(o.pageviews)),
-                ),
-                false,
-            ))
-            .child(cell(
-                ui::stat(
-                    "Unique visitors · 24 h",
-                    count(o.visitors),
-                    "persons with an event",
-                ),
-                false,
-            ))
-            .child(cell(
-                ui::stat(
-                    "Error issues · 7 days",
-                    o.issues.len().to_string(),
-                    format!(
-                        "{} exceptions",
-                        count(o.issues.iter().map(|i| i.count).sum())
-                    ),
-                ),
-                false,
-            ))
-            .child(cell(
-                ui::stat(
-                    "Feature flags",
-                    o.flags.len().to_string(),
-                    format!("{live_flags} on"),
-                ),
-                true,
-            ))
-            .into_any_element()
-    }
-
-    fn render_issues(&self, o: &Overview, cx: &mut Context<Self>) -> AnyElement {
-        let now = crate::model::unix_now();
-        let mut list = section("Error tracking", Some("last 7 days · newest first".into()));
-        if o.issues.is_empty() {
-            list = list.child(quiet("No exceptions this week."));
-        }
-        for (i, issue) in o.issues.iter().enumerate() {
-            let path = format!("/error_tracking/{}", issue.id);
-            let title = if issue.kind.is_empty() {
-                "Exception".to_string()
-            } else {
-                issue.kind.clone()
-            };
-            list = list.child(
-                div()
-                    .id(("ph-issue", i))
-                    .flex()
-                    .items_center()
-                    .gap(crate::ui::sp(12.))
-                    .px(crate::ui::sp(8.))
-                    .py(crate::ui::sp(8.))
-                    .rounded(crate::ui::rad(ui::RADIUS))
-                    .cursor_pointer()
-                    .hover(|d| d.bg(theme::fill_hover()))
-                    .child(icon("alert-circle", 14.).text_color(theme::error()))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .gap(crate::ui::sp(2.))
-                            .child(
-                                div()
-                                    .truncate()
-                                    .ty(Type::Body)
-                                    .text_color(theme::text())
-                                    .child(title),
-                            )
-                            .child(
-                                div()
-                                    .truncate()
-                                    .ty(Type::Mono)
-                                    .text_color(theme::text_subtle())
-                                    .child(issue.message.clone()),
-                            ),
-                    )
-                    .child(ui::text(Type::Label, theme::text(), count(issue.count)))
-                    .child(
-                        ui::text(
-                            Type::Caption,
-                            theme::text_faint(),
-                            format!("{} users", count(issue.users)),
-                        )
-                        .w(px(70.)),
-                    )
-                    .child(
-                        ui::text(
-                            Type::Caption,
-                            theme::text_subtle(),
-                            if issue.last_seen > 0 {
-                                crate::memory::ago(issue.last_seen, now)
-                            } else {
-                                String::new()
-                            },
-                        )
-                        .w(px(80.)),
-                    )
-                    .on_click(cx.listener(move |this, _, _, cx| this.open(&path, cx))),
-            );
-        }
-        list.flex_1().min_w(px(360.)).into_any_element()
-    }
-
-    fn render_flags(&self, o: &Overview, cx: &mut Context<Self>) -> AnyElement {
-        let mut list = section(
-            "Feature flags",
-            Some(format!("{} · live first", o.flags.len())),
-        );
-        if o.flags.is_empty() {
-            list = list.child(quiet("No feature flags in this project."));
-        }
-        for (i, f) in o.flags.iter().take(30).enumerate() {
-            let path = format!("/feature_flags/{}", f.id);
-            list = list.child(
-                div()
-                    .id(("ph-flag", i))
-                    .flex()
-                    .items_center()
-                    .gap(crate::ui::sp(10.))
-                    .px(crate::ui::sp(8.))
-                    .py(crate::ui::sp(6.))
-                    .rounded(crate::ui::rad(ui::RADIUS))
-                    .cursor_pointer()
-                    .hover(|d| d.bg(theme::fill_hover()))
-                    .when(!f.active, |d| d.opacity(0.6))
-                    .child(
-                        ui::status_dot(
-                            if f.active { "On" } else { "Off" },
-                            if f.active {
-                                Tone::Success
-                            } else {
-                                Tone::Neutral
-                            },
-                        )
-                        .w(px(44.)),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .child(
-                                div()
-                                    .truncate()
-                                    .ty(Type::Mono)
-                                    .text_color(theme::text())
-                                    .child(f.key.clone()),
-                            )
-                            .when(!f.name.is_empty() && f.name != f.key, |d| {
-                                d.child(
-                                    div()
-                                        .truncate()
-                                        .ty(Type::Caption)
-                                        .text_color(theme::text_faint())
-                                        .child(f.name.clone()),
-                                )
-                            }),
-                    )
-                    .child(ui::text(
-                        Type::Caption,
-                        theme::text_subtle(),
-                        f.rollout.clone(),
-                    ))
-                    .on_click(cx.listener(move |this, _, _, cx| this.open(&path, cx))),
-            );
-        }
-        if o.flags.len() > 30 {
-            list = list.child(quiet(format!("{} more in PostHog.", o.flags.len() - 30)));
-        }
-        list.w(px(380.)).flex_none().into_any_element()
-    }
-
-    fn render_overview(&self, o: &Overview, cx: &mut Context<Self>) -> AnyElement {
-        let now = crate::model::unix_now();
-        let mut notes: Vec<AnyElement> = Vec::new();
-        if let Some(until) = o.limited_until.filter(|t| *t > now) {
-            notes.push(notice(
-                "clock01",
-                Tone::Info,
-                format!(
-                    "PostHog's hourly query budget for this account is spent. These are the numbers from {}; the tab reads again after {}.",
-                    posthog::clock(o.fetched_at),
-                    posthog::clock(until)
-                ),
-            ));
-        }
-        match &self.error {
-            Some(ApiError::RateLimited(until)) if *until > now => notes.push(notice(
-                "clock01",
-                Tone::Info,
-                format!("PostHog asked to wait for its query budget. Showing the saved numbers; the tab reads again after {}.", posthog::clock(*until)),
-            )),
-            Some(ApiError::RateLimited(_)) | None => {}
-            Some(e) => notes.push(notice("alert-circle", Tone::Warning, format!("Showing the last answer. {}", e.message()))),
-        }
-        for p in &o.problems {
-            notes.push(notice("alert-circle", Tone::Warning, p.clone()));
-        }
-        let traffic = section("Traffic", Some("last 24 hours, per hour".into()))
-            .child(
-                div()
-                    .flex()
-                    .gap(crate::ui::sp(16.))
-                    .child(ui::legend("Events", Tone::Info.color()))
-                    .child(ui::legend("Visitors", Tone::Accent.color())),
-            )
-            .child(if o.hourly.len() == posthog::HOURS {
-                self.chart.clone().into_any_element()
-            } else {
-                quiet("No hourly numbers yet.").into_any_element()
-            });
-        div()
-            .flex()
-            .flex_col()
-            .gap(crate::ui::sp(28.))
-            .children(notes)
-            .child(self.render_stats(o))
-            .child(traffic)
-            .child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .items_start()
-                    .gap(crate::ui::sp(40.))
-                    .child(self.render_issues(o, cx))
-                    .child(self.render_flags(o, cx)),
-            )
-            .into_any_element()
-    }
-
     fn render_body(&self, cx: &mut Context<Self>) -> AnyElement {
         if self.sessions.is_empty() {
             return div()
@@ -991,10 +981,16 @@ impl PostHogView {
         if self.page == Page::Accounts {
             return self.render_accounts(cx);
         }
-        match (&self.current, &self.overview) {
-            (None, _) => self.render_picker(cx),
-            (Some(_), Some(o)) => self.render_overview(o, cx),
-            (Some(_), None) => div()
+        match (&self.current, &self.overview, self.tab) {
+            (None, _, _) => self.render_picker(cx),
+            (Some(_), _, Tab::Events) => self.events.clone().into_any_element(),
+            (Some(_), _, Tab::People) => self.people.clone().into_any_element(),
+            (Some(_), _, Tab::Experiments) => experiments::render(),
+            (Some(_), _, Tab::Ask) => ask::render(),
+            (Some(_), Some(o), Tab::Overview) => self.render_overview(o, cx),
+            (Some(_), Some(o), Tab::Flags) => self.render_flags(o, None, cx),
+            (Some(_), Some(o), Tab::Errors) => self.render_issues(o, None, cx),
+            (Some(_), None, _) => div()
                 .flex()
                 .justify_center()
                 .pt(crate::ui::sp(48.))
@@ -1014,6 +1010,11 @@ impl Render for PostHogView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let header = self.render_header(cx);
         let body = self.render_body(cx);
+        // Events and People scroll on their own, so their drawers stay put.
+        let own_scroll = !self.sessions.is_empty()
+            && self.page == Page::Main
+            && self.current.is_some()
+            && matches!(self.tab, Tab::Events | Tab::People);
         let menu = self.menu.filter(|_| self.current.is_some());
         div()
             .track_focus(&self.focus)
@@ -1025,7 +1026,9 @@ impl Render for PostHogView {
             .font_family(theme::FONT_SANS)
             .text_color(theme::text())
             .child(header)
-            .child(
+            .child(if own_scroll {
+                div().flex_1().min_h_0().child(body).into_any_element()
+            } else {
                 div()
                     .id("ph-body")
                     .track_scroll(&self.scroll)
@@ -1034,8 +1037,9 @@ impl Render for PostHogView {
                     .overflow_y_scroll()
                     .px(crate::ui::sp(ui::PAGE_PAD))
                     .pb(crate::ui::sp(32.))
-                    .child(div().w_full().max_w(px(1320.)).mx_auto().child(body)),
-            )
+                    .child(div().w_full().max_w(px(1320.)).child(body))
+                    .into_any_element()
+            })
             .when_some(menu, |d, at| {
                 d.child(
                     div()
@@ -1066,6 +1070,17 @@ impl Render for PostHogView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn times_read_short() {
+        let now = 1_800_000_000;
+        assert_eq!(short_ago(now - 10, now), "now");
+        assert_eq!(short_ago(now - 4 * 60, now), "4 min ago");
+        assert_eq!(short_ago(now - 3 * 3600, now), "3 h ago");
+        assert_eq!(short_ago(now - 30 * 3600, now), "yesterday");
+        assert_eq!(short_ago(now - 5 * 86_400, now), "5 d ago");
+        assert_eq!(day_or_today(now, now), "Today");
+    }
 
     #[test]
     fn counts_read_short() {

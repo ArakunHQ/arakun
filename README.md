@@ -381,7 +381,17 @@ after a week).
 ### More tabs
 
 - **Service tabs.** A PostHog tab (personal API keys; matches projects by their `phc_`
-  keys) and a Cloudflare tab (uses the `cf` CLI's sign-in).
+  keys) and a Cloudflare tab (uses the `cf` CLI's sign-in). The PostHog tab has
+  Overview, Events (filter by event, `key = value` properties, a person and a range;
+  a row opens its properties, its person and its replay), People (search by email or
+  distinct_id; a profile with properties, cohorts, flags, sessions and a timeline),
+  Flags and Errors. Experiments and Ask come next. The key needs `user:read`,
+  `organization:read`, `project:read`, `query:read`, `feature_flag:read` and
+  `error_tracking:read`; People also needs `person:read`, and the event picker
+  `event_definition:read` and `property_definition:read`. A tab whose scope is
+  missing says which one and the others keep working. PostHog counts queries per
+  hour: the tab shows how many are left, keeps answers on disk and reads again only
+  when they are 15 minutes old or you refresh.
 - **Usage.** Token use and estimated API cost from Claude Code's and Droid's own logs,
   and Devin's local SQLite session history, including sessions run outside Arakun.
   Devin's history is read only from `$XDG_DATA_HOME/devin/cli/sessions.db` (by default

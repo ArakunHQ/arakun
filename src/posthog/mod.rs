@@ -12,8 +12,18 @@
 //! reads three small HogQL queries with time ranges, keeps the answer on disk
 //! (`cached`), and after a 429 sends no query to that account until its
 //! Retry-After has passed (`blocked_until`).
+//!
+//! The Events and People tabs read through `query`: paged HogQL with bound
+//! values, one hourly budget per account, and answers cached on disk. A 403
+//! names the missing scope (`scope`) so only the tab that needs it stops.
 
+pub mod defs;
+pub mod events;
+mod fixture;
+pub mod people;
+pub mod query;
 pub mod scan;
+pub mod scope;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -134,7 +144,7 @@ fn dir() -> PathBuf {
     crate::platform::app_dir().join("posthog")
 }
 
-fn cache_dir() -> PathBuf {
+pub(crate) fn cache_dir() -> PathBuf {
     crate::platform::app_dir().join("cache")
 }
 
@@ -149,6 +159,9 @@ fn store_lock() -> std::sync::MutexGuard<'static, ()> {
 }
 
 pub fn sessions() -> Vec<Session> {
+    if let Some(s) = fixture::sessions() {
+        return s;
+    }
     Store::read_from(&store_file()).sessions
 }
 
@@ -193,7 +206,7 @@ fn write_private(file: &Path, bytes: &[u8]) -> std::io::Result<()> {
     std::fs::rename(&tmp, file)
 }
 
-fn write_json(file: &Path, v: &impl Serialize) {
+pub(crate) fn write_json(file: &Path, v: &impl Serialize) {
     if let Ok(json) = serde_json::to_vec(v) {
         let _ = crate::durable::write(file, &json);
     }
@@ -208,6 +221,8 @@ pub enum ApiError {
     SignedOut(String),
     /// 429: nothing more until this unix second.
     RateLimited(u64),
+    /// 403 on one endpoint: the key lacks this scope (`person:read`).
+    MissingScope(String),
     Failed(String),
 }
 
@@ -224,6 +239,7 @@ impl ApiError {
             ApiError::RateLimited(until) => {
                 format!("PostHog asked to wait until {}.", clock(*until))
             }
+            ApiError::MissingScope(scope) => format!("The key lacks the {scope} scope."),
         }
     }
 }
@@ -354,14 +370,27 @@ pub fn clock(t: u64) -> String {
     }
 }
 
+/// What came back from one call, before it is judged.
+struct Reply {
+    status: u16,
+    retry_after: Option<String>,
+    /// PostHog's rate-limit headers, when it sends them: (remaining, limit).
+    remaining: Option<u64>,
+    limit: Option<u64>,
+    text: String,
+}
+
 /// A call with a bearer token against `host`. The token goes in the header only.
-fn send(
+fn fetch(
     host: &str,
     token: &str,
     method: &str,
     path: &str,
     body: Option<&Value>,
-) -> Result<Value, ApiError> {
+) -> Result<Reply, ApiError> {
+    if let Some(r) = fixture::reply(method, path, body) {
+        return Ok(r);
+    }
     let url = format!("{}{path}", host.trim_end_matches('/'));
     let request = ureq::http::Request::builder()
         .method(method)
@@ -380,19 +409,52 @@ fn send(
     };
     let mut response =
         sent.map_err(|e| ApiError::Failed(format!("Couldn't reach PostHog: {e}")))?;
+    let header = |name: &str| {
+        response
+            .headers()
+            .get(name)
+            .and_then(|h| h.to_str().ok())
+            .map(str::to_string)
+    };
+    let number = |names: &[&str]| {
+        names
+            .iter()
+            .find_map(|n| header(n))
+            .and_then(|v| v.trim().parse::<u64>().ok())
+    };
     let status = response.status().as_u16();
-    let after = response
-        .headers()
-        .get("retry-after")
-        .and_then(|h| h.to_str().ok())
-        .map(str::to_string);
+    let retry_after = header("retry-after");
+    let remaining = number(&["x-ratelimit-remaining", "ratelimit-remaining"]);
+    let limit = number(&["x-ratelimit-limit", "ratelimit-limit"]);
     let text = response
         .body_mut()
         .with_config()
         .limit(16 * 1024 * 1024)
         .read_to_string()
         .unwrap_or_default();
-    answer(status, after.as_deref(), &text, crate::model::unix_now())
+    Ok(Reply {
+        status,
+        retry_after,
+        remaining,
+        limit,
+        text,
+    })
+}
+
+fn send(
+    host: &str,
+    token: &str,
+    method: &str,
+    path: &str,
+    body: Option<&Value>,
+) -> Result<Value, ApiError> {
+    let r = fetch(host, token, method, path, body)?;
+    answer(
+        r.status,
+        r.retry_after.as_deref(),
+        &r.text,
+        crate::model::unix_now(),
+    )
 }
 
 /// Turns a status and body into the value or the error the tab shows.
@@ -418,16 +480,47 @@ fn answer(status: u16, retry: Option<&str>, text: &str, now: u64) -> Result<Valu
 }
 
 /// A call as `s`, skipped while PostHog has asked this session to wait.
-fn call(s: &Session, method: &str, path: &str, body: Option<&Value>) -> Result<Value, ApiError> {
+/// A 403 that names a scope (or hits an endpoint with a known one) comes back
+/// as `MissingScope`, so only what needs that scope stops.
+pub(crate) fn call(
+    s: &Session,
+    method: &str,
+    path: &str,
+    body: Option<&Value>,
+) -> Result<Value, ApiError> {
     let now = crate::model::unix_now();
     if let Some(until) = blocked_until(&s.id, path, now) {
         return Err(ApiError::RateLimited(until));
     }
-    let got = send(&s.host, s.credential.bearer(), method, path, body);
-    if let Err(ApiError::RateLimited(until)) = &got {
-        block(&s.id, path, *until);
+    let reply = fetch(&s.host, s.credential.bearer(), method, path, body)?;
+    if bucket(path) == "query" {
+        query::note_headers(&s.id, reply.remaining, reply.limit, now);
     }
-    got
+    let got = answer(reply.status, reply.retry_after.as_deref(), &reply.text, now);
+    match got {
+        Err(ApiError::RateLimited(until)) => {
+            block(&s.id, path, until);
+            Err(ApiError::RateLimited(until))
+        }
+        Err(ApiError::SignedOut(detail)) if reply.status == 403 => {
+            Err(scope::forbidden(path, &detail)
+                .map_or(ApiError::SignedOut(detail), ApiError::MissingScope))
+        }
+        other => other,
+    }
+}
+
+/// `s` for a URL query value.
+pub(crate) fn encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -808,6 +901,7 @@ pub fn cached(p: &Project) -> Option<Overview> {
 
 fn hogql(s: &Session, project: u64, q: &str) -> Result<Vec<Value>, ApiError> {
     let body = json!({ "query": { "kind": "HogQLQuery", "query": q } });
+    query::spend(&s.id, crate::model::unix_now());
     let v = call(
         s,
         "POST",
@@ -817,7 +911,7 @@ fn hogql(s: &Session, project: u64, q: &str) -> Result<Vec<Value>, ApiError> {
     Ok(v["results"].as_array().cloned().unwrap_or_default())
 }
 
-fn num(v: &Value) -> u64 {
+pub(crate) fn num(v: &Value) -> u64 {
     v.as_u64()
         .or_else(|| v.as_f64().map(|f| f.max(0.) as u64))
         .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
@@ -910,7 +1004,9 @@ fn parse_flags(v: &Value) -> Vec<Flag> {
 }
 
 /// A finished call, or a crash of its thread as an error.
-fn joined<T>(h: std::thread::ScopedJoinHandle<'_, Result<T, ApiError>>) -> Result<T, ApiError> {
+pub(crate) fn joined<T>(
+    h: std::thread::ScopedJoinHandle<'_, Result<T, ApiError>>,
+) -> Result<T, ApiError> {
     h.join()
         .unwrap_or_else(|_| Err(ApiError::Failed("The read crashed.".into())))
 }
@@ -950,8 +1046,9 @@ pub fn load_overview(
     let previous = previous.filter(|o| o.project == id);
     if errors.len() == 4 {
         // Every part refused the sign-in: say so instead of showing stale numbers as fine.
-        if let Some(e @ ApiError::SignedOut(_)) =
-            errors.iter().find(|e| matches!(e, ApiError::SignedOut(_)))
+        if let Some(e @ (ApiError::SignedOut(_) | ApiError::MissingScope(_))) = errors
+            .iter()
+            .find(|e| matches!(e, ApiError::SignedOut(_) | ApiError::MissingScope(_)))
         {
             return Err((*e).clone());
         }

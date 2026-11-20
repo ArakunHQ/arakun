@@ -31,7 +31,7 @@ pub struct ProjectChoice {
     pub name: SharedString,
     /// The environment the session would start in.
     pub env: SharedString,
-    pub art: u8,
+    pub icon: u64,
     pub logo: u32,
 }
 
@@ -230,7 +230,7 @@ impl NewDialog {
                     .items_center()
                     .justify_center()
                     .size(px(16.))
-                    .child(ui::pixel_art(ui::project_art(p.art), 1.5, logo)),
+                    .child(ui::project_icon(p.icon, 1.5, logo)),
             )
             .child(
                 div()
@@ -385,7 +385,7 @@ impl super::Shell {
                 .get(p.active_env)
                 .map(|e| e.name.clone())
                 .unwrap_or_default(),
-            art: p.art,
+            icon: p.icon,
             logo: p.logo,
         };
         let open = self

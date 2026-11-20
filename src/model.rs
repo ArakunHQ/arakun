@@ -993,7 +993,8 @@ pub struct Project {
     pub path: PathBuf,
     pub name: SharedString,
     pub logo: u32,
-    pub art: u8,
+    /// The project's 8×8 pixel-art icon (`ui::project_icon`), drawn in `logo`.
+    pub icon: u64,
     pub environments: Vec<Environment>,
     pub active_env: usize,
     /// Shell command run in a terminal when a new environment is created.
@@ -1104,9 +1105,9 @@ pub fn worktree_path(project: &str, branch: &str) -> PathBuf {
     path
 }
 
-/// Logo colors and pixel-art for new projects, picked from the path so a project
+/// Logo colors for new projects, picked from the path so a project
 /// keeps its look if it is removed and added again.
-const LOGO_COLORS: [u32; 8] = {
+pub const LOGO_COLORS: [u32; 8] = {
     let c = crate::theme::CATEGORY;
     [c[7], c[0], c[2], c[6], c[3], c[1], c[5], c[4]]
 };
@@ -1125,17 +1126,133 @@ pub fn current_logo(logo: u32) -> u32 {
         .map_or(logo, |i| LOGO_COLORS[i])
 }
 
-pub fn logo_for(path: &Path) -> (u32, u8) {
-    let mut h: u32 = 2166136261;
+fn path_hash(path: &Path) -> u64 {
+    let mut h: u64 = 0xcbf29ce484222325;
     for b in path.as_os_str().as_encoded_bytes() {
-        h = (h ^ *b as u32).wrapping_mul(16777619);
+        h = (h ^ *b as u64).wrapping_mul(0x100000001b3);
     }
-    (LOGO_COLORS[(h % 8) as usize], ((h >> 8) % 2) as u8)
+    h
+}
+
+/// A new project's logo color and icon, from its path.
+pub fn logo_for(path: &Path) -> (u32, u64) {
+    let h = path_hash(path);
+    (LOGO_COLORS[(h % 8) as usize], icon_from_seed(h))
+}
+
+fn splitmix(state: &mut u64) -> u64 {
+    *state = state.wrapping_add(0x9e3779b97f4a7c15);
+    let mut z = *state;
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d049bb133111eb);
+    z ^ (z >> 31)
+}
+
+/// A mirrored 8×8 sprite, the same for the same seed. Pixels near the middle
+/// are likelier lit, and drafts that are too sparse, too full or in pieces
+/// are thrown away, so it reads as one shape and not as noise.
+pub fn icon_from_seed(seed: u64) -> u64 {
+    // How likely each column of the left half is lit, outer column first.
+    const COLUMN: [u64; 4] = [30, 50, 62, 72];
+    let mut state = seed;
+    loop {
+        let mut bits = 0u64;
+        for y in 0..8 {
+            let r = splitmix(&mut state);
+            for (x, &column) in COLUMN.iter().enumerate() {
+                let mut chance = column;
+                if y == 0 || y == 7 {
+                    chance -= 15;
+                }
+                if (r >> (x * 8)) & 0xff < chance * 256 / 100 {
+                    bits |= 1 << (y * 8 + x);
+                    bits |= 1 << (y * 8 + 7 - x);
+                }
+            }
+        }
+        if icon_reads_well(bits) {
+            return bits;
+        }
+    }
+}
+
+fn icon_reads_well(bits: u64) -> bool {
+    let lit = bits.count_ones();
+    let rows = (0..8).filter(|y| (bits >> (y * 8)) & 0xff != 0).count();
+    (20..=40).contains(&lit) && rows >= 6 && icon_in_one_piece(bits)
+}
+
+/// Every lit pixel reaches every other through lit neighbors, diagonals too.
+fn icon_in_one_piece(bits: u64) -> bool {
+    if bits == 0 {
+        return true;
+    }
+    let mut seen = bits.isolate_lowest_one();
+    let mut stack = vec![seen.trailing_zeros()];
+    while let Some(i) = stack.pop() {
+        let (x, y) = ((i % 8) as i32, (i / 8) as i32);
+        for (dx, dy) in [
+            (-1, -1),
+            (0, -1),
+            (1, -1),
+            (-1, 0),
+            (1, 0),
+            (-1, 1),
+            (0, 1),
+            (1, 1),
+        ] {
+            let (nx, ny) = (x + dx, y + dy);
+            if !(0..8).contains(&nx) || !(0..8).contains(&ny) {
+                continue;
+            }
+            let bit = 1u64 << (ny * 8 + nx);
+            if bits & bit != 0 && seen & bit == 0 {
+                seen |= bit;
+                stack.push((ny * 8 + nx) as u32);
+            }
+        }
+    }
+    seen == bits
+}
+
+/// `icon`, or a new one if another project already has it.
+pub fn unique_icon(icon: u64, taken: impl Fn(u64) -> bool) -> u64 {
+    let mut seed = icon;
+    let mut icon = icon;
+    while taken(icon) {
+        seed = seed.wrapping_add(1);
+        icon = icon_from_seed(seed);
+    }
+    icon
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn project_icons_are_mirrored_shapes_that_differ() {
+        let mut seen = std::collections::HashSet::new();
+        for n in 0..500 {
+            let (_, icon) = logo_for(Path::new(&format!("/home/me/code/project-{n}")));
+            assert!(icon_reads_well(icon));
+            for y in 0..8 {
+                let row = (icon >> (y * 8)) as u8;
+                assert_eq!(row, row.reverse_bits(), "row {y} of {icon:#x} is mirrored");
+            }
+            seen.insert(icon);
+        }
+        assert!(seen.len() > 495, "only {} different icons", seen.len());
+        assert_eq!(logo_for(Path::new("/a")), logo_for(Path::new("/a")));
+    }
+
+    #[test]
+    fn a_taken_icon_is_drawn_again() {
+        let first = icon_from_seed(1);
+        let other = unique_icon(first, |i| i == first);
+        assert_ne!(other, first);
+        assert_eq!(unique_icon(first, |_| false), first);
+    }
 
     #[test]
     fn old_logo_colors_move_to_the_palette() {

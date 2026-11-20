@@ -653,7 +653,6 @@ impl Shell {
                 .iter()
                 .flat_map(|e| e.changes.iter())
                 .fold((0, 0), |(a, r), c| (a + c.added, r + c.removed));
-            let art = ui::project_art(project.art);
             let logo: Hsla = gpui::rgb(project.logo).into();
             projects = projects.child(
                 div()
@@ -680,7 +679,7 @@ impl Shell {
                             .items_center()
                             .justify_center()
                             .size(px(16.))
-                            .child(ui::pixel_art(art, 1.5, logo)),
+                            .child(ui::project_icon(project.icon, 1.5, logo)),
                     )
                     .child(
                         div()
@@ -897,7 +896,7 @@ impl Shell {
                             .items_center()
                             .justify_center()
                             .size(px(16.))
-                            .child(ui::pixel_art(ui::project_art(project.art), 1.5, logo)),
+                            .child(ui::project_icon(project.icon, 1.5, logo)),
                     )
                     .child(
                         div()
@@ -1041,7 +1040,7 @@ impl Shell {
                             .items_center()
                             .justify_center()
                             .size(px(14.))
-                            .child(ui::pixel_art(ui::project_art(project.art), 1., logo)),
+                            .child(ui::project_icon(project.icon, 1., logo)),
                     )
                     .child(
                         div()

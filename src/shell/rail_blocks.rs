@@ -1056,8 +1056,8 @@ impl Shell {
                     .when(!selected, |d| {
                         d.opacity(0.65).hover(|s| s.bg(theme::hover()).opacity(1.))
                     })
-                    .child(ui::pixel_art(
-                        ui::project_art(project.art),
+                    .child(ui::project_icon(
+                        project.icon,
                         1.5,
                         gpui::rgb(project.logo).into(),
                     ))

@@ -127,7 +127,8 @@ pub struct Account {
 
 impl Account {
     /// Whether it can take requests at `now`: its windows were read, none of
-    /// them is full, and the proxy is not holding it back.
+    /// the account-wide ones is full, and the proxy is not holding it back.
+    /// A model's own full window leaves room for the other models.
     pub fn has_room(&self, now: u64) -> bool {
         match &self.state {
             State::SignIn => return false,
@@ -146,6 +147,8 @@ impl Account {
         }
         let cooling = match &self.state {
             State::SignIn => return None,
+            // Held back with no end the proxy gave: unknown.
+            State::Cooling { until: None, .. } => return None,
             State::Cooling { until, .. } => *until,
             _ => None,
         };
@@ -171,9 +174,11 @@ impl Account {
     }
 }
 
-/// A window that is at its limit and has not started over since it was read.
+/// An account-wide window that is at its limit and has not started over
+/// since it was read. A model's own window ("Weekly · Opus") is left out:
+/// the account still takes requests for the other models.
 fn full(w: &Window, now: u64) -> bool {
-    w.active && w.percent >= 100 && !w.reset_by(now)
+    !w.one_model() && w.active && w.percent >= 100 && !w.reset_by(now)
 }
 
 /// "3 of 4 Claude accounts have room · one is back in 1h 12m": the pool at a
@@ -284,19 +289,33 @@ pub fn save_address(typed: &str) -> Result<String> {
     Ok(base)
 }
 
+/// Held while the key or the cache is read or written, so a read that
+/// started with a key cannot write its cache after the key is forgotten.
+static FILES: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn files() -> std::sync::MutexGuard<'static, ()> {
+    FILES.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// Forgets the typed address, the key saved for it and its last read, so the
 /// tab goes back to Claude Code's endpoint.
 pub fn forget_address() -> Result<()> {
+    let _files = files();
     let base = typed_base();
     remove(&address_path())?;
     if base.is_some_and(|b| saved_key().is_some_and(|k| k.base == b)) {
-        forget_key()?;
+        remove_key()?;
     }
     Ok(())
 }
 
 /// Forgets the management key and what was read with it.
 pub fn forget_key() -> Result<()> {
+    let _files = files();
+    remove_key()
+}
+
+fn remove_key() -> Result<()> {
     remove(&key_path())?;
     remove(&cache_path())
 }
@@ -318,6 +337,7 @@ pub fn save_key(key: &str, base: &str) -> Result<()> {
         base: base.to_string(),
         key: key.trim().to_string(),
     };
+    let _files = files();
     crate::durable::write_private(&key_path(), &serde_json::to_vec(&saved)?)?;
     Ok(())
 }
@@ -379,6 +399,7 @@ fn store(p: &Proxy) {
 /// not, or now with `force` (a key was just saved, or Refresh). Reads files
 /// and the network; keep it off the UI thread.
 pub fn refresh(force: bool) -> Option<Proxy> {
+    let _files = files();
     let (base, typed) = current_base()?;
     let key = key_for(saved_key(), &base);
     let cache = cached().filter(|c| c.base == base);
@@ -953,6 +974,27 @@ mod tests {
         );
         assert_eq!(cooling.back_at(now), Some(1_500));
         assert!(cooling.has_room(1_500));
+        // A model's own full window leaves room for the other models.
+        let opus = account(
+            Provider::Claude,
+            State::Ready,
+            Some(vec![
+                window("5-hour limit", 20, Some(2_000)),
+                window("Weekly · Opus", 100, Some(9_000)),
+            ]),
+        );
+        assert!(opus.has_room(now) && opus.back_at(now).is_none());
+        // Held back with no end given: when it is back is unknown, whatever
+        // its windows say.
+        let held = account(
+            Provider::Claude,
+            State::Cooling {
+                until: None,
+                why: String::new(),
+            },
+            Some(vec![window("5-hour limit", 100, Some(2_000))]),
+        );
+        assert!(!held.has_room(2_000) && held.back_at(now).is_none());
         let signed_out = account(Provider::Claude, State::SignIn, None);
         assert!(!signed_out.has_room(now) && signed_out.back_at(now).is_none());
         // Windows that were not read: not known to have room.

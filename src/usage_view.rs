@@ -276,6 +276,9 @@ pub struct UsageView {
     proxy_busy: Option<&'static str>,
     /// Why the last save, refresh or forget failed.
     proxy_note: Option<String>,
+    /// Counts the proxy's controls' jobs, so a background read that began
+    /// before one (say, Forget key) does not put back what it changed.
+    proxy_jobs: u64,
     /// The key field shows although a key is saved (Change key).
     proxy_key_open: bool,
     /// The address field shows (Add CLIProxyAPI, Change address).
@@ -429,11 +432,18 @@ impl UsageView {
         // other plans should not wait for it.
         let proxy_poll = cx.spawn(async move |this, cx| {
             loop {
+                let Ok(jobs) = this.update(cx, |v, _| v.proxy_jobs) else {
+                    break;
+                };
                 let proxy = cx
                     .background_spawn(crate::guard::task(async move { cliproxy::refresh(false) }))
                     .await;
                 if this
                     .update(cx, |v, cx| {
+                        // A control ran meanwhile: its own read is newer.
+                        if v.proxy_busy.is_some() || v.proxy_jobs != jobs {
+                            return;
+                        }
                         if v.proxy != proxy {
                             // A key typed for the old proxy must not be saved for the new one.
                             if proxy_switched(v.proxy.as_ref(), proxy.as_ref()) {
@@ -481,6 +491,7 @@ impl UsageView {
             proxy_address,
             proxy_busy: None,
             proxy_note: None,
+            proxy_jobs: 0,
             proxy_key_open: false,
             proxy_address_open: false,
             _proxy_subs: [proxy_key_sub, proxy_address_sub],
@@ -655,6 +666,7 @@ impl UsageView {
             return;
         }
         self.proxy_busy = Some(busy);
+        self.proxy_jobs += 1;
         self.proxy_note = None;
         cx.notify();
         cx.spawn(async move |this, cx| {
@@ -677,6 +689,18 @@ impl UsageView {
             });
         })
         .detach();
+    }
+
+    /// Opens the address form or the key field. The key field is shared, and
+    /// a key typed for one proxy must not be saved for another, so it starts
+    /// empty whenever the form changes.
+    fn open_proxy_form(&mut self, address: bool, cx: &mut Context<Self>) {
+        if self.proxy_address_open != address {
+            self.proxy_key.update(cx, |i, cx| i.set_text("", cx));
+        }
+        self.proxy_address_open = address;
+        self.proxy_key_open = !address;
+        cx.notify();
     }
 
     /// Saves the typed management key and reads the proxy's accounts with it.
@@ -733,8 +757,7 @@ impl UsageView {
                                 true,
                             )
                             .on_click(cx.listener(|this, _, _, cx| {
-                                this.proxy_address_open = true;
-                                cx.notify();
+                                this.open_proxy_form(true, cx);
                             })),
                         )
                         .into_any_element(),
@@ -748,6 +771,12 @@ impl UsageView {
                     "Add the address and management key of a CLIProxyAPI to see the 5-hour and weekly limits of the Claude and Codex accounts behind it.".into(),
                     theme::text_subtle(),
                 ))
+                .when_some(self.proxy_note.as_ref(), |d, note| {
+                    d.child(proxy_note(
+                        crate::redact::text(note).into_owned(),
+                        theme::error().into(),
+                    ))
+                })
                 .child(self.proxy_address_form(cx));
             return Some(limits_block(AgentKind::Claude, "CLIProxyAPI", None, rows));
         };
@@ -886,6 +915,7 @@ impl UsageView {
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.proxy_address_open = false;
                             this.proxy_note = None;
+                            this.proxy_key.update(cx, |i, cx| i.set_text("", cx));
                             cx.notify();
                         })),
                     ),
@@ -931,13 +961,9 @@ impl UsageView {
                 proxy.has_key && !proxy.key_refused() && !self.proxy_key_open,
                 |d| {
                     d.child(
-                        ghost("usage-cliproxy-change-key", "Change key").on_click(cx.listener(
-                            |this, _, _, cx| {
-                                this.proxy_key_open = true;
-                                this.proxy_address_open = false;
-                                cx.notify();
-                            },
-                        )),
+                        ghost("usage-cliproxy-change-key", "Change key").on_click(
+                            cx.listener(|this, _, _, cx| this.open_proxy_form(false, cx)),
+                        ),
                     )
                 },
             )
@@ -970,13 +996,8 @@ impl UsageView {
             })
             .when(!self.proxy_address_open, |d| {
                 d.child(
-                    ghost("usage-cliproxy-change-address", "Change address").on_click(cx.listener(
-                        |this, _, _, cx| {
-                            this.proxy_address_open = true;
-                            this.proxy_key_open = false;
-                            cx.notify();
-                        },
-                    )),
+                    ghost("usage-cliproxy-change-address", "Change address")
+                        .on_click(cx.listener(|this, _, _, cx| this.open_proxy_form(true, cx))),
                 )
             })
             .when(proxy.typed, |d| {

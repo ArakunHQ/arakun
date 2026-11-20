@@ -169,6 +169,12 @@ impl Window {
         }
     }
 
+    /// The window limits one model ("Weekly · Opus", "5-hour · GPT-5.3-Codex-Spark"),
+    /// not the whole account.
+    pub fn one_model(&self) -> bool {
+        self.label.contains(" · ")
+    }
+
     /// The window has started over by `now`, so what it said is past.
     pub fn reset_by(&self, now: u64) -> bool {
         self.resets_at.is_some_and(|at| at <= now)

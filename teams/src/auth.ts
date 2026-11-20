@@ -29,6 +29,9 @@ export interface Session {
   hash: string;
   githubId: number;
   login: string;
+  /// Whether the user has the flag `session()` was asked about; false when
+  /// it was asked about none.
+  flagged: boolean;
 }
 
 interface GitHubUser {
@@ -96,20 +99,25 @@ export async function logout(request: Request, env: Env): Promise<Response> {
 }
 
 /// The session the request's bearer token names, if it is still valid. Every
-/// endpoint that needs a user goes through here; team endpoints then check
-/// the `teams` flag.
-export async function session(request: Request, env: Env, { renew = true } = {}): Promise<Session | null> {
+/// endpoint that needs a user goes through here. Team endpoints pass `flag`,
+/// so the flag is read in the same query rather than in a second round trip.
+export async function session(
+  request: Request,
+  env: Env,
+  { renew = true, flag = null }: { renew?: boolean; flag?: string | null } = {},
+): Promise<Session | null> {
   const token = bearer(request);
   if (!token || !SESSION_TOKEN.test(token)) return null;
   const hash = hex(await sha256(token));
   // A lookup by the hash itself, so no secret is compared here.
   const row = await env.DB.prepare(
-    `SELECT s.github_id, s.created_at, s.expires_at, s.last_used_at, u.login
+    `SELECT s.github_id, s.created_at, s.expires_at, s.last_used_at, u.login, f.flag IS NOT NULL AS flagged
      FROM sessions s JOIN users u ON u.github_id = s.github_id
-     WHERE s.token_hash = ?`,
+     LEFT JOIN user_flags f ON f.github_id = s.github_id AND f.flag = ?2
+     WHERE s.token_hash = ?1`,
   )
-    .bind(hash)
-    .first<{ github_id: number; created_at: number; expires_at: number; last_used_at: number; login: string }>();
+    .bind(hash, flag)
+    .first<{ github_id: number; created_at: number; expires_at: number; last_used_at: number; login: string; flagged: number }>();
   if (!row) return null;
   const t = now();
   if (row.expires_at <= t) {
@@ -131,7 +139,7 @@ export async function session(request: Request, env: Env, { renew = true } = {})
       env.DB.prepare("UPDATE users SET last_seen_at = ? WHERE github_id = ? AND last_seen_at < ?").bind(t, row.github_id, t),
     ]);
   }
-  return { hash, githubId: row.github_id, login: row.login };
+  return { hash, githubId: row.github_id, login: row.login, flagged: row.flagged === 1 };
 }
 
 /// A body over the limit. A symbol, so no token string can be mistaken for it.

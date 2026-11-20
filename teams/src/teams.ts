@@ -95,10 +95,9 @@ export async function teams(request: Request, env: Env, url: URL): Promise<Respo
   for (const [method, pattern, handler] of ROUTES) {
     const match = pattern.exec(url.pathname);
     if (!match || request.method !== method) continue;
-    const me = await session(request, env);
+    const me = await session(request, env, { flag: FLAG });
     if (!me) return error(401, "not signed in");
-    const flagged = await env.DB.prepare("SELECT 1 FROM user_flags WHERE github_id = ? AND flag = ?").bind(me.githubId, FLAG).first();
-    if (!flagged) return error(403, "teams is not enabled for this account");
+    if (!me.flagged) return error(403, "teams is not enabled for this account");
     return handler({ request, env, url, me }, ...match.slice(1));
   }
   return null;

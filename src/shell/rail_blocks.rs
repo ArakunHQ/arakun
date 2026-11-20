@@ -584,16 +584,7 @@ impl Shell {
                         .any(|i| i.piece.same(&Piece::View { view: *v }))
                 })
                 .and_then(|v| self.rail_subnav(v, 0., cx))
-                // A fixed segment doesn't scroll: a long list scrolls itself.
-                .map(|p| {
-                    div()
-                        .id(("rail-row-pages", si))
-                        .max_h(px(RAIL_ROW_PAGES_MAX_H))
-                        .overflow_y_scroll()
-                        .px(crate::ui::sp(8.))
-                        .pt(crate::ui::sp(4.))
-                        .child(p)
-                })
+                .map(|p| div().px(crate::ui::sp(8.)).pt(crate::ui::sp(4.)).child(p))
         } else {
             None
         };
@@ -1229,9 +1220,6 @@ impl Shell {
             .into_any_element()
     }
 }
-
-/// How tall the open view's pages get under a row of icons before they scroll.
-const RAIL_ROW_PAGES_MAX_H: f32 = 360.;
 
 #[cfg(test)]
 mod tests {

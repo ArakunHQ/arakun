@@ -380,6 +380,9 @@ impl ExtensionsView {
     fn refresh(&mut self, cx: &mut Context<Self>) {
         if self.which == Which::Claude && self.kind == Kind::Marketplace {
             self.ask_remote(true, cx);
+            // Asked for, a failed load is tried again at once.
+            self.ms.failed_at = None;
+            self.open_market(cx);
         }
         match self.which {
             Which::Claude => self.load_claude(cx),

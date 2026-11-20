@@ -29,11 +29,18 @@ pub(super) struct Installing {
     fields: Vec<(Input, Entity<TextInput>)>,
 }
 
+/// How long a failed load waits before opening the Marketplace asks again.
+const RETRY: Duration = Duration::from_secs(60);
+
 #[derive(Default)]
 pub(super) struct MarketState {
     pub(super) catalog: Option<Vec<PluginEntry>>,
     pub(super) catalog_loading: bool,
     pub(super) catalog_error: Option<SharedString>,
+    /// When a load of the catalog or a server list last failed. Opening the
+    /// Marketplace doesn't ask again until `RETRY` has passed, so a failure
+    /// stays on screen instead of restarting at every redraw.
+    pub(super) failed_at: Option<Instant>,
     /// The plugin category, or the company of official servers, the list is narrowed to.
     pub(super) category: Option<String>,
     pub(super) registry: Option<Vec<RegistryServer>>,
@@ -65,6 +72,9 @@ impl ExtensionsView {
     pub(super) fn open_market(&mut self, cx: &mut Context<Self>) {
         // A server says which plugins and MCP servers it has in one answer.
         self.ask_remote(false, cx);
+        if self.ms.failed_at.is_some_and(|t| t.elapsed() < RETRY) {
+            return;
+        }
         match self.market {
             Market::Plugins if self.targets.target.is_some() => {}
             Market::Plugins if self.ms.catalog.is_none() && !self.ms.catalog_loading => {
@@ -107,7 +117,10 @@ impl ExtensionsView {
                 this.ms.official_loading = false;
                 match found {
                     Ok(list) => this.ms.official = Some(list),
-                    Err(e) => this.ms.registry_error = Some(format!("{e:#}").into()),
+                    Err(e) => {
+                        this.ms.registry_error = Some(format!("{e:#}").into());
+                        this.ms.failed_at = Some(Instant::now());
+                    }
                 }
                 cx.notify();
             });
@@ -133,7 +146,10 @@ impl ExtensionsView {
                 this.ms.catalog_loading = false;
                 match found {
                     Ok(list) => this.ms.catalog = Some(list),
-                    Err(e) => this.ms.catalog_error = Some(format!("{e:#}").into()),
+                    Err(e) => {
+                        this.ms.catalog_error = Some(format!("{e:#}").into());
+                        this.ms.failed_at = Some(Instant::now());
+                    }
                 }
                 cx.notify();
             });
@@ -186,7 +202,10 @@ impl ExtensionsView {
                         this.ms.registry_next = next;
                         this.ms.registry_for = query;
                     }
-                    Err(e) => this.ms.registry_error = Some(format!("{e:#}").into()),
+                    Err(e) => {
+                        this.ms.registry_error = Some(format!("{e:#}").into());
+                        this.ms.failed_at = Some(Instant::now());
+                    }
                 }
                 cx.notify();
             });

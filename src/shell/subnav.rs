@@ -15,6 +15,9 @@ use crate::subnav::{self, Line, Pick};
 /// the icon.
 pub(super) const RAIL_INSET: f32 = 16.;
 
+/// How tall the open view's pages get in the rail before they scroll.
+const RAIL_PAGES_MAX_H: f32 = 360.;
+
 impl Shell {
     /// The view of the focused tab, when it has pages of its own.
     pub(super) fn subnav_view(&self) -> Option<View> {
@@ -80,9 +83,13 @@ impl Shell {
             return None;
         }
         let pick = self.subnav_pick(view);
+        // A fixed segment doesn't scroll, so a long list scrolls itself.
         Some(
-            subnav::render("rail-subnav", lines, inset, pick)
-                .pb(crate::ui::sp(4.))
+            div()
+                .id("rail-subnav-scroll")
+                .max_h(px(RAIL_PAGES_MAX_H))
+                .overflow_y_scroll()
+                .child(subnav::render("rail-subnav", lines, inset, pick).pb(crate::ui::sp(4.)))
                 .into_any_element(),
         )
     }

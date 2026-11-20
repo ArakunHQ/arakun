@@ -499,6 +499,9 @@ function handle(msg) {
       settlePending();
       break;
     }
+    // The agent's slash commands, for the desktop composer; the phone has none.
+    case "commands":
+      break;
     case "state": {
       const s = state.session;
       if (!s || s.id !== msg.id) return;

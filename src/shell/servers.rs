@@ -157,6 +157,9 @@ pub(super) struct ServersLink {
     /// The model and reasoning each server offers a new session of an agent
     /// in one of its folders, by server, place and agent, as it last said.
     options: HashMap<OptionsKey, SettingList>,
+    /// The slash commands each server's agent offered last in one of its
+    /// folders: a session opened there has them before its agent runs again.
+    commands: HashMap<OptionsKey, Vec<crate::agent::Choice>>,
     /// Phones that asked for the options of a server's folder, by server,
     /// place and agent, with the environment and agent they asked about:
     /// the server's answer goes to them too.
@@ -866,6 +869,7 @@ impl Shell {
             no_new_env: HashSet::new(),
             first_prompts: HashMap::new(),
             options: HashMap::new(),
+            commands: HashMap::new(),
             phone_options: HashMap::new(),
             deleting: Vec::new(),
             pairing: None,
@@ -1268,6 +1272,18 @@ impl Shell {
         let (agent, title, status) = (s.agent.kind(), s.title.to_string(), s.status);
         let thread = Thread::viewer(empty_transcript(agent, &title), thread_status(status), cx);
         thread.update(cx, |t, _| t.set_remote());
+        let known = self
+            .find_env(env_path)
+            .and_then(|e| e.remote.as_ref())
+            .and_then(|r| {
+                let link = self.servers.as_ref()?;
+                link.commands
+                    .get(&(r.server.clone(), r.place.clone(), agent))
+                    .cloned()
+            });
+        if let Some(commands) = known {
+            thread.update(cx, |t, cx| t.set_remote_commands(commands, cx));
+        }
         self.attach(env_path, id, thread, window, cx);
     }
 
@@ -2935,6 +2951,25 @@ impl Shell {
                     self.phone_send(client, reply);
                 }
                 cx.notify();
+            }
+            "commands" => {
+                let Some(f) = following else { return };
+                let commands = wire::read_commands(&msg["commands"]);
+                let (env_path, session, agent) = (f.env_path.clone(), f.session.clone(), f.agent);
+                if let Some(place) = self
+                    .find_env(&env_path)
+                    .and_then(|e| e.remote.as_ref())
+                    .map(|r| r.place.clone())
+                    && let Some(link) = &mut self.servers
+                {
+                    link.commands
+                        .insert((id.to_string(), place, agent), commands.clone());
+                }
+                if let Some(thread) = thread_of(&self.projects, &env_path, &session) {
+                    thread.update(cx, |t, cx| t.set_remote_commands(commands, cx));
+                }
+                // A `/` typed before they came shows them now.
+                self.update_completion(cx);
             }
             "session" | "state" => {
                 let Some(f) = following else { return };

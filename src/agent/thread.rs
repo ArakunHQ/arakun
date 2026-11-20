@@ -504,6 +504,8 @@ pub enum ThreadEvent {
     Reset,
     /// Metadata changed: modes, models, config, queue, usage, commands.
     Changed,
+    /// The agent's slash commands changed (also a [`ThreadEvent::Changed`]).
+    CommandsChanged,
     StatusChanged,
     TitleChanged,
     NeedsPermission,
@@ -658,6 +660,8 @@ pub struct Thread {
     models: Option<(String, Vec<Choice>)>,
     config: Vec<ConfigOption>,
     commands: Vec<Choice>,
+    /// The agent said which commands it has, even if none: an empty list is then the real one.
+    commands_known: bool,
     permissions: VecDeque<PermissionRequest>,
     queue: Vec<String>,
     queue_paused: bool,
@@ -1146,6 +1150,7 @@ impl Thread {
             models: None,
             config: Vec::new(),
             commands: Vec::new(),
+            commands_known: false,
             permissions: VecDeque::new(),
             queue: Vec::new(),
             queue_paused: false,
@@ -1324,6 +1329,19 @@ impl Thread {
     /// Slash commands the agent advertised.
     pub fn commands(&self) -> &[Choice] {
         &self.commands
+    }
+
+    /// Whether the agent has said which slash commands it has yet.
+    pub fn commands_known(&self) -> bool {
+        self.commands_known
+    }
+
+    /// The slash commands of a server's session, as the server sent them:
+    /// a viewer has no agent of its own to advertise them.
+    pub fn set_remote_commands(&mut self, commands: Vec<Choice>, cx: &mut Context<Self>) {
+        self.commands = commands;
+        self.commands_known = true;
+        self.meta_changed(cx);
     }
 
     pub fn usage(&self) -> &Usage {
@@ -3532,6 +3550,8 @@ impl Thread {
             }
             "available_commands_update" => {
                 self.commands = parse_choices(u.get("availableCommands"), "name");
+                self.commands_known = true;
+                cx.emit(ThreadEvent::CommandsChanged);
                 self.meta_changed(cx);
             }
             "current_mode_update" => {

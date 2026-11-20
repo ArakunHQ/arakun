@@ -769,6 +769,15 @@ impl GitHubView {
             .into_any_element()
     }
 
+    /// Whether a key goes to the picked card first.
+    pub(super) fn pilot_keys_apply(&self, held: bool, cx: &App) -> bool {
+        let card = self
+            .pilot_focus
+            .as_deref()
+            .and_then(|id| self.pilot.read(cx).find(id).and_then(Item::item_ref));
+        card_keys_apply(held, self.sheet_open, card.as_ref(), self.item().as_ref())
+    }
+
     /// The card's pull request, picked in the tab.
     fn pilot_see(&mut self, item: &Item, cx: &mut Context<Self>) {
         self.pilot_focus = Some(item.id.clone());
@@ -874,6 +883,7 @@ impl GitHubView {
                     Ok(()) => {
                         if this.pilot_other.as_deref() == Some(id.as_str()) {
                             this.pilot_other = None;
+                            this.pilot_refocus = true;
                         }
                         if this.pilot_focus.as_deref() == Some(id.as_str()) {
                             let cards = this.pilot_cards(cx);
@@ -1083,6 +1093,26 @@ impl GitHubView {
     }
 }
 
+/// Whether the picked card takes a key: not a held key's repeats (after an
+/// answer the next card is picked, and a repeat would answer it without a
+/// press), and with the sheet open only when it shows the card's own pull
+/// request, so a key never answers a card hidden behind another one.
+fn card_keys_apply(
+    held: bool,
+    sheet_open: bool,
+    card: Option<&ItemRef>,
+    shown: Option<&ItemRef>,
+) -> bool {
+    use crate::github::queue::key_of;
+    if held {
+        return false;
+    }
+    if !sheet_open {
+        return true;
+    }
+    card.zip(shown).is_some_and(|(c, s)| key_of(c) == key_of(s))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1100,6 +1130,27 @@ mod tests {
             kind,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn a_card_with_its_pull_request_open_still_takes_its_keys() {
+        let pr = |number| {
+            Item {
+                repo: pilot::REPO.into(),
+                number,
+                ..card("a", Kind::Other)
+            }
+            .item_ref()
+            .unwrap()
+        };
+        let (card, other) = (pr(95), pr(96));
+        // A click on the card opens the sheet on its pull request.
+        assert!(card_keys_apply(false, true, Some(&card), Some(&card)));
+        assert!(card_keys_apply(false, false, Some(&card), None));
+        assert!(!card_keys_apply(false, true, Some(&card), Some(&other)));
+        assert!(!card_keys_apply(false, true, None, Some(&card)));
+        // A held key's repeats never answer.
+        assert!(!card_keys_apply(true, false, Some(&card), None));
     }
 
     #[test]

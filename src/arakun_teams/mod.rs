@@ -306,6 +306,7 @@ async fn device_flow(
     .map_err(|e| e.to_string())?;
 
     let mut interval = code.interval.max(1);
+    let mut dropped = 0;
     let token = loop {
         cx.background_executor()
             .timer(Duration::from_secs(interval))
@@ -314,10 +315,20 @@ async fn device_flow(
             return Err(EXPIRED.into());
         }
         let device = code.device_code.clone();
-        let answer = cx
+        let answer = match cx
             .background_spawn(async move { api::poll_token(&device) })
             .await
-            .map_err(|e| format!("GitHub: {e}"))?;
+        {
+            Ok(answer) => {
+                dropped = 0;
+                answer
+            }
+            Err(e) if poll_again(&e, dropped) => {
+                dropped += 1;
+                continue;
+            }
+            Err(e) => return Err(format!("GitHub: {e}")),
+        };
         match api::next_poll(&answer, interval) {
             Poll::Wait(secs) => interval = secs,
             Poll::Token(token) => break token,
@@ -343,6 +354,15 @@ async fn device_flow(
 }
 
 const EXPIRED: &str = "The code ran out before it was entered on GitHub. Try again.";
+
+/// Polls in a row that may get no answer before the sign-in gives up.
+const POLL_DROPS: u32 = 3;
+
+/// The user may be halfway through approving on GitHub, so a poll that got no
+/// answer is tried again at the next interval, a few times in a row at most.
+fn poll_again(e: &ApiError, dropped: u32) -> bool {
+    matches!(e, ApiError::Network(_)) && dropped < POLL_DROPS
+}
 
 /// The server's sessions are 32 random bytes in base64url.
 fn session_ok(s: &str) -> bool {
@@ -381,6 +401,16 @@ mod tests {
         assert!(!session_ok("short"));
         assert!(!session_ok("has spaces in it, which no session has"));
         assert!(!session_ok("Qm9vbXNoYWthbGFrYS1ib29tc2hha2FsYWthLWJvb20\n"));
+    }
+
+    #[test]
+    fn a_poll_without_an_answer_is_tried_again_a_few_times() {
+        let offline = ApiError::Network("timed out".into());
+        assert!(poll_again(&offline, 0));
+        assert!(poll_again(&offline, POLL_DROPS - 1));
+        assert!(!poll_again(&offline, POLL_DROPS));
+        assert!(!poll_again(&ApiError::Status(500, "down".into()), 0));
+        assert!(!poll_again(&ApiError::Unreadable, 0));
     }
 
     #[test]

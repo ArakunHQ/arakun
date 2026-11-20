@@ -973,6 +973,11 @@ fn skill_dirs(dir: &Path) -> Vec<PathBuf> {
         .flatten()
         .flatten()
         .map(|e| e.path())
+        // A hidden folder is no skill: an install copying, a tool's own state.
+        .filter(|p| {
+            p.file_name()
+                .is_some_and(|n| !n.to_string_lossy().starts_with('.'))
+        })
         .filter(|p| p.join("SKILL.md").is_file())
         .collect();
     v.sort();

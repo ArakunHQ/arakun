@@ -290,8 +290,10 @@ impl ExtensionsView {
     /// Asks the registry for the search box's words, after a pause in typing.
     pub(super) fn query_changed(&mut self, cx: &mut Context<Self>) {
         if self.kind == Kind::Marketplace && self.market == Market::Skills {
-            // This drops a search on its way, so it is asked again.
+            // This drops a search on its way: it is asked again, and nothing is
+            // loading until it is (the words may be back to ones already answered).
             self.ms.skills_asking = None;
+            self.ms.skills_loading = false;
             self.ms.skills_task = Some(cx.spawn(async move |this, cx| {
                 cx.background_executor().timer(DEBOUNCE).await;
                 let _ = this.update(cx, |this, cx| this.search_skills(cx));
@@ -634,13 +636,14 @@ impl ExtensionsView {
                     .as_ref()
                     .is_some_and(|x| x.servers.iter().any(|i| i.name == s.short_name()))
             }),
-            // A personal or project skill of that name; a plugin's has its prefix.
+            // Its folder in ~/.claude/skills, where Install puts it. A project's or a
+            // plugin's skill of that name leaves room for a copy of your own.
             Item::Skill(k) => {
                 self.targets.target.is_none()
                     && self.claude.as_ref().is_some_and(|x| {
                         x.skills.iter().any(|i| {
-                            i.name.eq_ignore_ascii_case(&k.skill_id)
-                                || i.path.file_name().is_some_and(|f| {
+                            i.source == "personal"
+                                && i.path.file_name().is_some_and(|f| {
                                     f.to_string_lossy().eq_ignore_ascii_case(&k.skill_id)
                                 })
                         })

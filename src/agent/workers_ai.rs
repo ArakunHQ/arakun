@@ -797,7 +797,17 @@ const SKILLS_BYTES: usize = 10_000;
 /// The skills this session can load. A sandboxed one's home is empty, so it gets
 /// only the project's.
 fn skills(cwd: &Path) -> Vec<claude_ext::Skill> {
-    claude_ext::agent_skills(cwd, jail().is_none())
+    // Tests never read the real home: what they check would change with who runs them.
+    let jailed = jail().is_some();
+    let mut found = claude_ext::agent_skills(cwd, !jailed && !cfg!(test));
+    if jailed {
+        // A link out of the project would read a host file the sandbox hides.
+        let root = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
+        found.retain(|s| {
+            std::fs::canonicalize(s.path.join("SKILL.md")).is_ok_and(|p| p.starts_with(&root))
+        });
+    }
+    found
 }
 
 /// The system prompt's list of skills, empty when there are none.
@@ -835,9 +845,12 @@ fn skills_prompt(skills: &[claude_ext::Skill]) -> String {
 /// The `skill` tool: the named skill's SKILL.md without its front matter, and the
 /// folder its relative paths start from.
 fn load_skill(cwd: &Path, args: &Value) -> Result<String, String> {
+    load_skill_in(&skills(cwd), cwd, args)
+}
+
+fn load_skill_in(all: &[claude_ext::Skill], cwd: &Path, args: &Value) -> Result<String, String> {
     let name = args["name"].as_str().ok_or("name is missing")?;
     let name = name.trim().trim_start_matches('/');
-    let all = skills(cwd);
     let Some(skill) = all.iter().find(|s| s.name == name) else {
         let names: Vec<&str> = all.iter().map(|s| s.name.as_str()).collect();
         return Err(if names.is_empty() {
@@ -850,8 +863,8 @@ fn load_skill(cwd: &Path, args: &Value) -> Result<String, String> {
         });
     };
     let path = skill.path.join("SKILL.md");
-    let text = std::fs::read_to_string(&path)
-        .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    // Through the sandbox when there is one, as read_file reads.
+    let text = String::from_utf8_lossy(&read_bytes(cwd, &path)?).into_owned();
     let body = claude_ext::skill_body(&text);
     let max = tool_chars();
     let cut = floor_boundary(body, max);
@@ -3562,7 +3575,8 @@ mod tests {
             ),
         )
         .unwrap();
-        let listed = skills_prompt(&claude_ext::agent_skills(&dir, false));
+        let found = claude_ext::agent_skills(&dir, false);
+        let listed = skills_prompt(&found);
         assert!(listed.contains("# Skills"));
         assert!(listed.contains(&format!(
             "\n- {name}: {}…",
@@ -3570,10 +3584,10 @@ mod tests {
         )));
         assert!(system_prompt(&dir).contains(&format!("- {name}: ")));
 
-        let loaded = load_skill(&dir, &json!({"name": format!("/{name}")})).unwrap();
+        let loaded = load_skill_in(&found, &dir, &json!({"name": format!("/{name}")})).unwrap();
         assert!(loaded.starts_with(&format!("Skill {name}, from {}.", folder.display())));
         assert!(loaded.ends_with("\n\nRun ./go.sh"));
-        let missing = load_skill(&dir, &json!({"name": "nope"})).unwrap_err();
+        let missing = load_skill_in(&found, &dir, &json!({"name": "nope"})).unwrap_err();
         assert!(missing.contains(&name));
         let _ = std::fs::remove_dir_all(&dir);
     }

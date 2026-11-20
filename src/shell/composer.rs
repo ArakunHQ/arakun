@@ -548,10 +548,12 @@ impl Shell {
             if name.contains(char::is_whitespace) {
                 return None;
             }
-            let skills = matches!(
-                self.composer_agent(),
-                model::Agent::Claude | model::Agent::WorkersAi
-            )
+            // This computer's skills; a server's session says what it has there.
+            let skills = (self.env().remote.is_none()
+                && matches!(
+                    self.composer_agent(),
+                    model::Agent::Claude | model::Agent::WorkersAi
+                ))
             .then(|| self.skill_index(cx))
             .flatten();
             let thread = self.active_thread(cx);

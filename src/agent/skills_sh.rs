@@ -92,6 +92,8 @@ fn parse_search(v: &Value) -> Result<Vec<SkillEntry>> {
 #[derive(Clone, Debug, PartialEq)]
 pub struct SkillSource {
     pub source: String,
+    /// The commit everything was read at, so Install copies what the details showed.
+    pub rev: String,
     /// The folder holding SKILL.md, `""` for the repository's root.
     pub dir: String,
     pub description: String,
@@ -104,9 +106,12 @@ pub struct SkillSource {
 impl SkillSource {
     pub fn url(&self) -> String {
         if self.dir.is_empty() {
-            format!("https://github.com/{}", self.source)
+            format!("https://github.com/{}/tree/{}", self.source, self.rev)
         } else {
-            format!("https://github.com/{}/tree/HEAD/{}", self.source, self.dir)
+            format!(
+                "https://github.com/{}/tree/{}/{}",
+                self.source, self.rev, self.dir
+            )
         }
     }
 
@@ -125,16 +130,25 @@ struct Blob {
 
 /// Blocking, a request or a few: finds the skill's folder and reads its SKILL.md.
 pub fn locate(entry: &SkillEntry) -> Result<SkillSource> {
+    let rev = head_commit(&entry.source)?;
     let tree = github_json(&format!(
-        "repos/{}/git/trees/HEAD?recursive=1",
+        "repos/{}/git/trees/{rev}?recursive=1",
         entry.source
     ))?;
+    // A cut list could leave out files the skill needs.
+    if tree["truncated"].as_bool() == Some(true) {
+        bail!(
+            "{} has too many files for GitHub to list at once",
+            entry.source
+        );
+    }
     let blobs = blobs(&tree);
     let dir = match pick_dir(&blobs, &entry.skill_id, &repo_name(&entry.source)) {
         Some(d) => d,
-        None => probe(entry, &blobs)?,
+        None => probe(entry, &rev, &blobs)?,
     };
-    let text = String::from_utf8_lossy(&raw(&entry.source, &join(&dir, "SKILL.md"))?).into_owned();
+    let text =
+        String::from_utf8_lossy(&raw(&entry.source, &rev, &join(&dir, "SKILL.md"))?).into_owned();
     let (_, description) = super::claude_ext::parse_skill_frontmatter(&text);
     let prefix = if dir.is_empty() {
         String::new()
@@ -147,6 +161,7 @@ pub fn locate(entry: &SkillEntry) -> Result<SkillSource> {
         .collect();
     Ok(SkillSource {
         source: entry.source.clone(),
+        rev,
         description,
         files: inside
             .iter()
@@ -209,7 +224,8 @@ fn skill_dirs(blobs: &[Blob]) -> Vec<&str> {
 }
 
 /// The folder named as the skill; of several, the shallowest. A repository that is
-/// one skill has it at the root.
+/// one skill has it at the root. A folder named otherwise is only taken when its
+/// SKILL.md says it is the skill (`probe`): a lone folder may be another skill.
 fn pick_dir(blobs: &[Blob], skill: &str, repo: &str) -> Option<String> {
     let dirs = skill_dirs(blobs);
     let named = |d: &&str| {
@@ -218,21 +234,17 @@ fn pick_dir(blobs: &[Blob], skill: &str, repo: &str) -> Option<String> {
     };
     let mut hits: Vec<&str> = dirs.iter().copied().filter(named).collect();
     hits.sort_by_key(|d| (d.matches('/').count(), d.len()));
-    if let Some(d) = hits.first() {
-        return Some(d.to_string());
-    }
-    // Only one skill there: it is the one, whatever its folder is called.
-    (dirs.len() == 1).then(|| dirs[0].to_string())
+    hits.first().map(|d| d.to_string())
 }
 
 /// The folder whose SKILL.md names the skill, for folders named otherwise.
-fn probe(entry: &SkillEntry, blobs: &[Blob]) -> Result<String> {
+fn probe(entry: &SkillEntry, rev: &str, blobs: &[Blob]) -> Result<String> {
     let dirs = skill_dirs(blobs);
     if dirs.is_empty() {
         bail!("{} has no SKILL.md", entry.source);
     }
     for dir in dirs.iter().take(MAX_PROBES) {
-        let Ok(bytes) = raw(&entry.source, &join(dir, "SKILL.md")) else {
+        let Ok(bytes) = raw(&entry.source, rev, &join(dir, "SKILL.md")) else {
             continue;
         };
         let (name, _) =
@@ -253,7 +265,7 @@ pub fn skills_root() -> PathBuf {
 }
 
 /// Blocking: copies the skill's folder into `root/<skill>`. A folder already there
-/// is left alone, and a half-copied one is never left behind.
+/// is left alone, and a half-copied one is never where agents look for skills.
 pub fn install(entry: &SkillEntry, found: &SkillSource, root: &Path) -> Result<PathBuf> {
     let name = folder_name(&entry.skill_id)?;
     let dest = root.join(name);
@@ -261,18 +273,33 @@ pub fn install(entry: &SkillEntry, found: &SkillSource, root: &Path) -> Result<P
         bail!("{} already exists", dest.display());
     }
     check_size(found)?;
-    let staging = root.join(format!(".{name}.installing-{}", std::process::id()));
+    std::fs::create_dir_all(root).with_context(|| format!("cannot create {}", root.display()))?;
+    // Beside the skills folder, not in it: agents list every folder there with a
+    // SKILL.md. The same file system keeps the final move a rename.
+    let staging = root
+        .parent()
+        .unwrap_or(root)
+        .join(format!(".arakun-skill-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&staging);
     let result = (|| -> Result<()> {
+        let mut received = 0u64;
         for (path, _) in &found.files {
             let rel = safe_relative(path)?;
-            let bytes = raw(&found.source, &join(&found.dir, path))?;
+            let bytes = raw(&found.source, &found.rev, &join(&found.dir, path))?;
+            // The sizes were read before; a file may have grown since.
+            received += bytes.len() as u64;
+            if received > MAX_BYTES {
+                bail!(
+                    "it is more than the {} MB a skill is copied with",
+                    MAX_BYTES >> 20
+                );
+            }
             let to = staging.join(rel);
             if let Some(dir) = to.parent() {
                 std::fs::create_dir_all(dir)
                     .with_context(|| format!("cannot create {}", dir.display()))?;
             }
-            std::fs::write(&to, bytes).with_context(|| format!("cannot write {}", to.display()))?;
+            write_new(&to, &bytes)?;
             #[cfg(unix)]
             if found.executable.contains(path) {
                 use std::os::unix::fs::PermissionsExt as _;
@@ -282,13 +309,44 @@ pub fn install(entry: &SkillEntry, found: &SkillSource, root: &Path) -> Result<P
         if !staging.join("SKILL.md").is_file() {
             bail!("the copy has no SKILL.md");
         }
-        std::fs::rename(&staging, &dest)
-            .with_context(|| format!("cannot move it to {}", dest.display()))
+        publish(&staging, &dest)
     })();
     if result.is_err() {
         let _ = std::fs::remove_dir_all(&staging);
     }
     result.map(|_| dest)
+}
+
+/// Writes a file that must not be there yet: two paths that name one file (`A.md`
+/// and `a.md` where case does not count) stop the copy instead of overwriting.
+fn write_new(to: &Path, bytes: &[u8]) -> Result<()> {
+    use std::io::Write as _;
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(to)
+        .with_context(|| format!("cannot write {}", to.display()))?;
+    f.write_all(bytes)
+        .with_context(|| format!("cannot write {}", to.display()))
+}
+
+/// Moves the finished copy to `dest`, never over a folder someone made there.
+fn publish(staging: &Path, dest: &Path) -> Result<()> {
+    // On Unix a rename replaces an empty folder, so `dest` is claimed first: making
+    // it fails if it is there, and only this empty folder can then be replaced.
+    #[cfg(unix)]
+    if let Err(e) = std::fs::create_dir(dest) {
+        if e.kind() == std::io::ErrorKind::AlreadyExists {
+            bail!("{} already exists", dest.display());
+        }
+        return Err(e).with_context(|| format!("cannot create {}", dest.display()));
+    }
+    // Elsewhere a rename onto a folder that is there fails by itself.
+    std::fs::rename(staging, dest).map_err(|e| {
+        #[cfg(unix)]
+        let _ = std::fs::remove_dir(dest);
+        anyhow!(e).context(format!("cannot move it to {}", dest.display()))
+    })
 }
 
 fn check_size(found: &SkillSource) -> Result<()> {
@@ -334,13 +392,39 @@ fn safe_relative(path: &str) -> Result<PathBuf> {
 // ---------------------------------------------------------------------------
 // Fetching.
 
+/// The commit the repository's default branch is at.
+fn head_commit(source: &str) -> Result<String> {
+    let sha = github_get(
+        &format!("repos/{source}/commits/HEAD"),
+        "Accept: application/vnd.github.sha",
+    )?;
+    let sha = String::from_utf8_lossy(&sha).trim().to_string();
+    if sha.len() != 40 || !sha.chars().all(|c| c.is_ascii_hexdigit()) {
+        bail!("GitHub did not say which commit {source} is at");
+    }
+    Ok(sha)
+}
+
+fn github_json(path: &str) -> Result<Value> {
+    let body = github_get(path, "Accept: application/vnd.github+json")?;
+    let v: Value =
+        serde_json::from_slice(&body).context("GitHub answered something that is not JSON")?;
+    if let Some(m) = v["message"].as_str() {
+        bail!("GitHub: {m}");
+    }
+    Ok(v)
+}
+
 /// The GitHub API with `gh`'s token when it has one (5,000 calls an hour), else
 /// without (60).
-fn github_json(path: &str) -> Result<Value> {
+fn github_get(path: &str, accept: &str) -> Result<Vec<u8>> {
     let url = format!("https://api.github.com/{path}");
-    let accept = "Accept: application/vnd.github+json";
-    let body = match gh_token() {
-        Some(token) => curl_with(&url, &[accept], Some(&format!("Authorization: Bearer {token}"))),
+    match gh_token() {
+        Some(token) => curl_with(
+            &url,
+            &[accept],
+            Some(&format!("Authorization: Bearer {token}")),
+        ),
         None => curl(&url, &[accept]),
     }
     .map_err(|e| {
@@ -352,13 +436,7 @@ fn github_json(path: &str) -> Result<Value> {
         } else {
             anyhow!("GitHub: {e}")
         }
-    })?;
-    let v: Value =
-        serde_json::from_slice(&body).context("GitHub answered something that is not JSON")?;
-    if let Some(m) = v["message"].as_str() {
-        bail!("GitHub: {m}");
-    }
-    Ok(v)
+    })
 }
 
 /// `GH_TOKEN`, `GITHUB_TOKEN`, or the token `gh` is signed in with.
@@ -379,11 +457,11 @@ fn gh_token() -> Option<String> {
     .map(|t| t.trim().to_string())
 }
 
-/// A file of the repository at its default branch.
-fn raw(source: &str, path: &str) -> Result<Vec<u8>> {
+/// A file of the repository at commit `rev`.
+fn raw(source: &str, rev: &str, path: &str) -> Result<Vec<u8>> {
     let path: String = path.split('/').map(encode).collect::<Vec<_>>().join("/");
     curl(
-        &format!("https://raw.githubusercontent.com/{source}/HEAD/{path}"),
+        &format!("https://raw.githubusercontent.com/{source}/{rev}/{path}"),
         &[],
     )
 }
@@ -397,7 +475,15 @@ fn curl(url: &str, headers: &[&str]) -> Result<Vec<u8>> {
 fn curl_with(url: &str, headers: &[&str], secret: Option<&str>) -> Result<Vec<u8>> {
     use std::io::Write as _;
     let mut cmd = crate::platform::command("curl");
-    cmd.args(["-sSfL", "-m", "30", "--max-filesize", "26214400"]);
+    // `--disable` first: a curlrc that turns on a trace would write the token to it.
+    cmd.args([
+        "--disable",
+        "-sSfL",
+        "-m",
+        "30",
+        "--max-filesize",
+        "26214400",
+    ]);
     for h in headers {
         cmd.args(["-H", h]);
     }
@@ -492,11 +578,9 @@ mod tests {
 
         let root = tree(&[("SKILL.md", "100644"), ("ref.md", "100644")]);
         assert_eq!(pick_dir(&root, "my-skill", "my-skill").as_deref(), Some(""));
+        // A lone folder named otherwise may be another skill: `probe` reads its name.
         let single = tree(&[("src/thing/SKILL.md", "100644")]);
-        assert_eq!(
-            pick_dir(&single, "other-name", "repo").as_deref(),
-            Some("src/thing")
-        );
+        assert_eq!(pick_dir(&single, "other-name", "repo"), None);
     }
 
     #[test]
@@ -525,6 +609,7 @@ mod tests {
         };
         let mut found = SkillSource {
             source: "a/b".into(),
+            rev: "0".repeat(40),
             dir: "pdf".into(),
             description: String::new(),
             files: vec![("SKILL.md".into(), 10)],
@@ -545,9 +630,38 @@ mod tests {
     }
 
     #[test]
+    fn files_that_name_one_file_and_folders_made_meanwhile_stop_the_copy() {
+        let dir = std::env::temp_dir().join(format!("arakun-skills-pub-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        write_new(&dir.join("a.md"), b"one").unwrap();
+        assert!(write_new(&dir.join("a.md"), b"two").is_err());
+        assert_eq!(std::fs::read(dir.join("a.md")).unwrap(), b"one");
+
+        let staging = dir.join("staging");
+        std::fs::create_dir_all(&staging).unwrap();
+        std::fs::write(staging.join("SKILL.md"), "x").unwrap();
+        // Someone made the folder after the first look: it stays as it was.
+        let dest = dir.join("taken");
+        std::fs::create_dir(&dest).unwrap();
+        let e = publish(&staging, &dest).unwrap_err();
+        #[cfg(unix)]
+        assert!(format!("{e:#}").contains("already exists"), "{e:#}");
+        let _ = e;
+        assert!(staging.join("SKILL.md").is_file());
+        assert!(!dest.join("SKILL.md").exists());
+
+        publish(&staging, &dir.join("free")).unwrap();
+        assert!(dir.join("free/SKILL.md").is_file());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn source_links_point_at_the_folder() {
+        let rev = "a".repeat(40);
         let mut s = SkillSource {
             source: "anthropics/skills".into(),
+            rev: rev.clone(),
             dir: "skills/pdf".into(),
             description: String::new(),
             files: vec![("SKILL.md".into(), 3), ("a.py".into(), 4)],
@@ -555,11 +669,14 @@ mod tests {
         };
         assert_eq!(
             s.url(),
-            "https://github.com/anthropics/skills/tree/HEAD/skills/pdf"
+            format!("https://github.com/anthropics/skills/tree/{rev}/skills/pdf")
         );
         assert_eq!(s.bytes(), 7);
         s.dir.clear();
-        assert_eq!(s.url(), "https://github.com/anthropics/skills");
+        assert_eq!(
+            s.url(),
+            format!("https://github.com/anthropics/skills/tree/{rev}")
+        );
     }
 
     #[test]

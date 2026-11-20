@@ -1385,6 +1385,13 @@ impl Shell {
             return;
         };
         let settings = super::sessions::server_picks(env, agent);
+        // As in `servers_start`: a pick the server does not offer would only
+        // fail the new session there, after the old one is gone.
+        let offered = self.servers.as_ref().and_then(|link| {
+            link.options
+                .get(&(remote.server.clone(), remote.place.clone(), agent.kind()))
+        });
+        let settings = offered_picks(&settings, offered);
         let msg = json!({ "type": "continue_with", "agent": agent.key(), "settings": settings });
         self.servers_send(&remote.server, id, msg, cx);
     }

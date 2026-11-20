@@ -936,6 +936,19 @@ impl Environment {
         self.branch = branch;
     }
 
+    /// A folder outside any repository has no branch, detached or not: `branch`
+    /// stays empty and the folder's name labels it.
+    pub fn set_no_branch(&mut self) {
+        self.branch = SharedString::default();
+        self.name = dir_name(&self.path).into();
+    }
+
+    /// The branch checked out here: None on a detached HEAD and outside a
+    /// repository.
+    pub fn checked_out(&self) -> Option<&str> {
+        Some(self.branch.as_ref()).filter(|b| !b.is_empty() && *b != "detached HEAD")
+    }
+
     pub fn session_index(&self, id: &str) -> Option<usize> {
         self.sessions.iter().position(|s| s.id.as_ref() == id)
     }
@@ -1148,6 +1161,21 @@ mod tests {
         // `git branch -m` in a terminal, to a name that also looks random, then a refresh.
         env.set_branch(Some("env/bright-fox".into()));
         assert!(!env.awaits_name());
+    }
+
+    #[test]
+    fn a_folder_outside_a_repository_has_no_branch() {
+        let mut env = Environment::new(Remote::env_path("s1", "/srv/notes"), None, false);
+        // A repository's checkout with no branch is on a detached HEAD.
+        assert_eq!(env.branch.as_ref(), "detached HEAD");
+        assert_eq!(env.checked_out(), None);
+        // A plain folder has none at all, and its name labels it.
+        env.set_no_branch();
+        assert_eq!(env.branch.as_ref(), "");
+        assert_eq!(env.name.as_ref(), "notes");
+        assert_eq!(env.checked_out(), None);
+        env.set_branch(Some("main".into()));
+        assert_eq!(env.checked_out(), Some("main"));
     }
 
     #[test]

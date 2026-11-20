@@ -595,33 +595,36 @@ impl Shell {
             .gap(crate::ui::sp(6.))
             .text_size(px(ui::TEXT_XS))
             .text_color(theme::text_subtle())
-            .child(
-                div()
-                    .id("status-branch")
-                    .flex()
-                    .items_center()
-                    .gap(crate::ui::sp(6.))
-                    .h(px(ui::DOCK_TAB_H))
-                    .px(crate::ui::sp(6.))
-                    .rounded(ui::nested(ui::RADIUS_XL, ui::DOCK_INSET))
-                    .cursor_pointer()
-                    .hover(|s| s.bg(theme::fill_selected()).text_color(theme::content()))
-                    .child(icon("git-branch", 12.).text_color(theme::text_subtle()))
-                    .child(env.branch.clone())
-                    .when(added + removed > 0, |d| {
-                        d.child(
-                            div()
-                                .text_color(theme::diff_add())
-                                .child(format!("+{added}")),
-                        )
-                        .child(
-                            div()
-                                .text_color(theme::diff_del())
-                                .child(format!("-{removed}")),
-                        )
-                    })
-                    .on_click(cx.listener(|this, _, _, cx| this.show_changes(cx))),
-            )
+            // A folder outside a repository has no branch and nothing to show changed.
+            .when(!env.branch.is_empty(), |d| {
+                d.child(
+                    div()
+                        .id("status-branch")
+                        .flex()
+                        .items_center()
+                        .gap(crate::ui::sp(6.))
+                        .h(px(ui::DOCK_TAB_H))
+                        .px(crate::ui::sp(6.))
+                        .rounded(ui::nested(ui::RADIUS_XL, ui::DOCK_INSET))
+                        .cursor_pointer()
+                        .hover(|s| s.bg(theme::fill_selected()).text_color(theme::content()))
+                        .child(icon("git-branch", 12.).text_color(theme::text_subtle()))
+                        .child(env.branch.clone())
+                        .when(added + removed > 0, |d| {
+                            d.child(
+                                div()
+                                    .text_color(theme::diff_add())
+                                    .child(format!("+{added}")),
+                            )
+                            .child(
+                                div()
+                                    .text_color(theme::diff_del())
+                                    .child(format!("-{removed}")),
+                            )
+                        })
+                        .on_click(cx.listener(|this, _, _, cx| this.show_changes(cx))),
+                )
+            })
             .when(
                 env.sync.ahead + env.sync.behind > 0 || env.pr.is_some(),
                 |d| {

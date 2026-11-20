@@ -1277,7 +1277,11 @@ impl Shell {
             })
             .child(lead)
             .when_some(label.clone(), |d, (title, more, _)| {
-                d.tooltip(ui::tip_text(format!("{} · {}", title, env.branch)))
+                let tip = match env.branch.as_ref() {
+                    "" => title.to_string(),
+                    branch => format!("{title} · {branch}"),
+                };
+                d.tooltip(ui::tip_text(tip))
                     .child(div().flex_1().min_w_0().truncate().child(title))
                     .when(more > 0, |d| {
                         d.child(

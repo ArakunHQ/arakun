@@ -1170,7 +1170,10 @@ impl Shell {
                 }
             };
             let env = &mut p.environments[ei];
-            if !place.branch.is_empty() && env.branch.as_ref() != place.branch {
+            if place.repo.is_empty() {
+                // Not a repository: no branch, where git would say a detached HEAD.
+                env.set_no_branch();
+            } else if !place.branch.is_empty() && env.branch.as_ref() != place.branch {
                 env.set_branch(Some(place.branch.clone()));
             }
             env.remote = Some(remote);
@@ -2112,7 +2115,7 @@ impl Shell {
         let Some(remote) = env.remote.clone().filter(|_| !env.is_checkout) else {
             return;
         };
-        let branch = (env.branch.as_ref() != "detached HEAD").then(|| env.branch.to_string());
+        let branch = env.checked_out().map(str::to_string);
         let place = PathBuf::from(&remote.place);
         let machine = remote.machine.clone();
         let confirmed = branch.clone();

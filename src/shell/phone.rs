@@ -995,7 +995,7 @@ impl Shell {
                     path: &e.path,
                     project: &p.name,
                     env: &e.name,
-                    branch: Some(&e.branch),
+                    branch: Some(e.branch.as_ref()).filter(|b| !b.is_empty()),
                     agent: e.agent.key(),
                     repo: Some(&p.path),
                     // The page a phone opens has no use for it.

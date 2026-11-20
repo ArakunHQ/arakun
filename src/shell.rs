@@ -2255,7 +2255,7 @@ impl Shell {
         }
         let repo = project.path.clone();
         let path = env.path.clone();
-        let branch = (env.branch.as_ref() != "detached HEAD").then(|| env.branch.to_string());
+        let branch = env.checked_out().map(str::to_string);
         let dirty = env.changes.len();
         // Taken now: a refresh that sees the worktree gone can drop the
         // environment, sessions and all, before `Deleted` arrives.

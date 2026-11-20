@@ -1961,6 +1961,7 @@ mod tests {
     /// Secret Service needs a desktop session that CI and headless Linux lack.
     #[cfg(windows)]
     #[test]
+    #[ignore = "writes to this machine's Credential Manager"]
     fn a_stored_secret_is_found_again_and_cleared() {
         let account = format!("test-roundtrip-{}", std::process::id());
         keyring::store(&account, "arakun: test", "s3cret").unwrap();

@@ -220,9 +220,10 @@ impl EventsTab {
         self.loading = true;
         cx.notify();
         // The read keeps this edge on every page, so arrivals in between
-        // cannot shift what a later page returns.
-        self.filter.until = Some(crate::model::unix_now());
-        let filter = self.filter.clone();
+        // cannot shift what a later page returns. It is committed with the
+        // rows: a failed refresh keeps the window its retained rows came from.
+        let mut filter = self.filter.clone();
+        filter.until = Some(crate::model::unix_now());
         self._load = Some(cx.spawn(async move |this, cx| {
             let f = filter.clone();
             let got = cx
@@ -248,6 +249,7 @@ impl EventsTab {
                         // The page resets with the rows, not at the request: a
                         // failed refresh keeps its rows and the page they fill.
                         this.page = Paging::first(PAGE);
+                        this.filter.until = filter.until;
                         let (rows, more) = this.page.split(ev::parse_rows(&list.rows));
                         this.keys = ev::key_columns(&rows, KEY_COLUMNS);
                         this.events = rows;

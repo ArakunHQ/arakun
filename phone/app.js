@@ -73,16 +73,54 @@ let relay = null; // { label } when this host is a relay
 let link = null;
 let retry = 500;
 let retryTimer = 0; // the next attempt while the computer is not there
+// The newest local attempt. One that Retry overtook while it waited on `/me`
+// must not open a second socket or call the current one lost.
+let attempt = 0;
+let attemptAbort = null;
+
+// A socket of the computer's own is pinged this often and given up on after
+// this long without a word, or when it does not open in time. A dead network
+// can leave it looking open for minutes, and closing it can take as long, so
+// the page lets go of it and tries again at once.
+const LOCAL_PING_MS = 15_000;
+const LOCAL_SILENT_MS = 40_000;
+const LOCAL_OPEN_MS = 15_000;
 
 function openLocal() {
   const proto = location.protocol === "https:" ? "wss" : "ws";
   const ws = new WebSocket(`${proto}://${location.host}/ws?t=${encodeURIComponent(token)}`);
+  // Wall-clock time: a phone that slept counts the time it slept.
+  let heard = Date.now();
+  let pinger = 0;
+  const quiet = () => {
+    clearInterval(pinger);
+    clearTimeout(opening);
+  };
+  const dead = () => {
+    quiet();
+    ws.onclose = null;
+    ws.close();
+    if (link && link.ws === ws) lost();
+  };
+  const opening = setTimeout(dead, LOCAL_OPEN_MS);
+  ws.addEventListener("open", () => {
+    clearTimeout(opening);
+    pinger = setInterval(() => {
+      if (Date.now() - heard > LOCAL_SILENT_MS) return dead();
+      if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "ping" }));
+    }, LOCAL_PING_MS);
+  });
+  ws.addEventListener("message", () => {
+    heard = Date.now();
+  });
+  ws.addEventListener("close", quiet);
   return {
     ws,
     send(obj) {
       if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
     },
     close() {
+      quiet();
       ws.onclose = null;
       ws.close();
     },
@@ -169,9 +207,16 @@ async function connect() {
     render();
     return;
   }
+  const mine = ++attempt;
+  if (attemptAbort) attemptAbort.abort();
+  const abort = new AbortController();
+  attemptAbort = abort;
+  // A computer that went away without a word would leave this hanging.
+  const timer = setTimeout(() => abort.abort(), LOCAL_OPEN_MS);
   let ok;
   try {
-    const res = await api("/me");
+    const res = await api("/me", { signal: abort.signal });
+    if (mine !== attempt) return;
     if (res.status === 403) {
       forgetToken();
       state.pairError = "This phone is no longer paired. Pair it again from Arakun.";
@@ -180,16 +225,27 @@ async function connect() {
       return;
     }
     ok = res.ok;
-    if (ok) tookMe(await res.json());
+    if (ok) {
+      const me = await res.json();
+      if (mine !== attempt) return;
+      tookMe(me);
+    }
   } catch (e) {
     ok = false;
+  } finally {
+    clearTimeout(timer);
   }
+  if (mine !== attempt) return;
+  attemptAbort = null;
   if (!ok) return lost();
   link = openLocal();
-  link.ws.onopen = linked;
-  link.ws.onmessage = (ev) => handle(JSON.parse(ev.data));
-  link.ws.onclose = lost;
-  link.ws.onerror = () => link.ws.close();
+  const ws = link.ws;
+  ws.onopen = linked;
+  ws.onmessage = (ev) => handle(JSON.parse(ev.data));
+  ws.onclose = lost;
+  // Its own socket: one closed by Retry can still report an error after
+  // `link` has moved on to the next.
+  ws.onerror = () => ws.close();
 }
 
 // The computer is there and knows us: pick up where the screen was.
@@ -220,9 +276,19 @@ function lost() {
   retry = Math.min(retry * 2, 8000);
 }
 
-// Back on screen, back online or asked to: an attempt that was waiting goes now.
+// Back on screen or back online: an attempt that was waiting goes now.
 function reconnectNow() {
   if (!retryTimer) return;
+  retry = 500;
+  connect();
+}
+
+// The Retry button: start over now, also when an attempt is still under way
+// and nothing is waiting to go.
+function retryNow() {
+  if (link) link.close();
+  link = null;
+  state.connected = false;
   retry = 500;
   connect();
 }
@@ -362,6 +428,9 @@ if (window.visualViewport) {
 
 function handle(msg) {
   switch (msg.type) {
+    case "pong":
+      // Only says the computer is there (openLocal).
+      break;
     case "inbox":
       state.host = msg.host;
       state.inbox = msg.sessions;
@@ -1308,7 +1377,7 @@ function renderOffline() {
     state.pcOffline ? "" : '<button class="btn outline small" id="retry">Retry</button>'
   }</div>`;
   const b = document.getElementById("retry");
-  if (b) b.addEventListener("click", reconnectNow);
+  if (b) b.addEventListener("click", retryNow);
 }
 
 function renderPair() {

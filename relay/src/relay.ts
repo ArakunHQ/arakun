@@ -73,6 +73,13 @@ const PLAN_CACHE_MS = 60_000;
 /// loses at most this many, which is cheaper than a write per frame.
 const COUNT_FLUSH_EVERY = 50;
 
+/// The page pings ("ping", as text) and the runtime answers "pong" itself, so a
+/// ping neither wakes the object nor counts as a frame. A phone that pinged once
+/// and then went this long without one is gone without having closed (it left
+/// the network, its tab froze): it is closed, so the computer hears the channel
+/// close and sends its notifications again. Pages ping every 30 seconds.
+const PHONE_SILENT_MS = 90_000;
+
 /// A computer not seen for this long has moved on: its object empties itself.
 /// Nothing is lost, the computer sends its key and tickets again on connecting.
 const PURGE_AFTER_MS = 90 * 24 * 3_600_000;
@@ -91,6 +98,13 @@ export class Relay extends DurableObject<Env> {
   private today: Today | null = null;
   /// Claims that started writing storage, so a purge can tell one came in while it waited.
   private claims = 0;
+  /// PHONE_SILENT_MS; tests shorten it rather than wait.
+  private silentMs = PHONE_SILENT_MS;
+
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, env);
+    ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"));
+  }
 
   override async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
@@ -251,6 +265,7 @@ export class Relay extends DurableObject<Env> {
     if (!this.introduce(channel, admitted.device)) {
       server.send(phoneControl({ type: "pc_offline", since: (await this.ctx.storage.get<number>("last_seen")) ?? null }));
     }
+    await this.schedule();
     return new Response(null, { status: 101, webSocket: client });
   }
 
@@ -369,6 +384,10 @@ export class Relay extends DurableObject<Env> {
     for (const ws of this.unclaimed()) {
       if ((ws.deserializeAttachment() as Tag & { role: "pc" }).until <= now) this.bye(ws, "claim_timeout", CLOSE_UNAUTHORIZED);
     }
+    for (const phone of this.phones()) {
+      const silentAt = this.silentAt(phone);
+      if (silentAt !== null && silentAt <= now) this.bye(phone, "silent", CLOSE_GONE);
+    }
     if (!this.computer()) {
       const due = await this.purgeAt();
       if (due !== null && due <= now) await this.purge();
@@ -400,10 +419,19 @@ export class Relay extends DurableObject<Env> {
     return (await this.ctx.storage.list({ limit: 1 })).size > 0 ? 0 : null;
   }
 
+  /// When a phone counts as gone if it pings no more; null until its first ping.
+  private silentAt(phone: WebSocket): number | null {
+    const last = this.ctx.getWebSocketAutoResponseTimestamp(phone);
+    return last ? last.getTime() + this.silentMs : null;
+  }
+
   /// Sets the alarm for the next thing it has to do, so every object that
-  /// keeps a socket or state wakes again: a claim running out, or the purge.
+  /// keeps a socket or state wakes again: a claim running out, a phone gone
+  /// quiet, or the purge.
   private async schedule(): Promise<void> {
     const times = this.unclaimed().map((ws) => (ws.deserializeAttachment() as Tag & { role: "pc" }).until);
+    // A phone that has not pinged yet (a page from before pings) is looked at again later.
+    for (const phone of this.phones()) times.push(this.silentAt(phone) ?? Date.now() + this.silentMs);
     if (!this.computer()) {
       const due = await this.purgeAt();
       if (due !== null) times.push(due);

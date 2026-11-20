@@ -1383,7 +1383,7 @@ impl Shell {
                 "Glass window",
                 "Customize › Shape",
                 "Lets the desktop show through the window's background.",
-                theme::glass(),
+                theme::glass_chosen(),
             ),
             (
                 Setting::Arcade,
@@ -1596,7 +1596,7 @@ impl Shell {
                 self.save(cx);
             }
             Setting::Glass => {
-                theme::set_glass(!theme::glass());
+                theme::set_glass(!theme::glass_chosen());
                 window.set_background_appearance(theme::window_background());
                 self.save(cx);
                 cx.refresh_windows();

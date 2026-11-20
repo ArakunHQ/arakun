@@ -42,6 +42,9 @@ pub struct State {
     pub diff_palette: String,
     #[serde(default)]
     pub glass: bool,
+    /// `theme::Contrast` id; empty follows the system.
+    #[serde(default)]
+    pub contrast: String,
     /// `theme::Grays` id; empty is the default ramp.
     #[serde(default)]
     pub grays: String,
@@ -264,6 +267,7 @@ pub struct Layout {
     pub arcade: bool,
     pub diff_palette: crate::theme::DiffPalette,
     pub glass: bool,
+    pub contrast: crate::theme::Contrast,
     pub grays: crate::theme::Grays,
     pub type_scale: crate::ui::TypeScale,
     /// Whether the rail's usage card shows Claude, Droid, OpenCode and Devin.
@@ -883,6 +887,7 @@ pub fn snapshot_with(
         arcade: layout.arcade,
         diff_palette: layout.diff_palette.id().to_string(),
         glass: layout.glass,
+        contrast: layout.contrast.id().to_string(),
         grays: layout.grays.id().to_string(),
         type_scale: layout.type_scale.id().to_string(),
         rail_hidden: [
@@ -1109,6 +1114,7 @@ pub fn restore(state: State) -> (Vec<Project>, usize, Layout, TabStrip) {
         arcade: state.arcade,
         diff_palette: crate::theme::DiffPalette::from_id(&state.diff_palette),
         glass: state.glass,
+        contrast: crate::theme::Contrast::from_id(&state.contrast),
         grays: crate::theme::Grays::from_id(&state.grays),
         type_scale: crate::ui::TypeScale::from_id(&state.type_scale),
         rail_usage: ["claude", "droid", "opencode", "devin"]
@@ -1365,6 +1371,7 @@ mod tests {
             arcade: false,
             diff_palette: crate::theme::DiffPalette::Default,
             glass: false,
+            contrast: crate::theme::Contrast::System,
             grays: crate::theme::Grays::Crisp,
             type_scale: crate::ui::TypeScale::Compact,
             rail_usage: [true, true, true, true],
@@ -1399,6 +1406,7 @@ mod tests {
             arcade: false,
             diff_palette: crate::theme::DiffPalette::Default,
             glass: false,
+            contrast: crate::theme::Contrast::System,
             grays: crate::theme::Grays::Crisp,
             type_scale: crate::ui::TypeScale::Compact,
             rail_usage: [true, true, true, true],
@@ -1432,6 +1440,7 @@ mod tests {
             arcade: false,
             diff_palette: crate::theme::DiffPalette::Default,
             glass: false,
+            contrast: crate::theme::Contrast::System,
             grays: crate::theme::Grays::Soft,
             type_scale: crate::ui::TypeScale::Comfortable,
             rail_usage: [true, false, true, false],
@@ -1468,6 +1477,7 @@ mod tests {
             arcade: false,
             diff_palette: crate::theme::DiffPalette::Default,
             glass: false,
+            contrast: crate::theme::Contrast::System,
             grays: crate::theme::Grays::Crisp,
             type_scale: crate::ui::TypeScale::Compact,
             rail_usage: [true, true, true, true],
@@ -1501,6 +1511,7 @@ mod tests {
             arcade: false,
             diff_palette: crate::theme::DiffPalette::Default,
             glass: false,
+            contrast: crate::theme::Contrast::System,
             grays: crate::theme::Grays::Crisp,
             type_scale: crate::ui::TypeScale::Compact,
             rail_usage: [true, true, true, true],
@@ -1538,6 +1549,7 @@ mod tests {
             arcade: false,
             diff_palette: crate::theme::DiffPalette::Default,
             glass: false,
+            contrast: crate::theme::Contrast::System,
             grays: crate::theme::Grays::Crisp,
             type_scale: crate::ui::TypeScale::Compact,
             rail_usage: [true, true, true, true],
@@ -1604,6 +1616,7 @@ mod tests {
             arcade: false,
             diff_palette: crate::theme::DiffPalette::Default,
             glass: false,
+            contrast: crate::theme::Contrast::System,
             grays: crate::theme::Grays::Crisp,
             type_scale: crate::ui::TypeScale::Compact,
             rail_usage: [true, true, true, true],

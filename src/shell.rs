@@ -685,6 +685,7 @@ impl Shell {
             let active = window.is_window_active();
             if active {
                 this.refresh_visible(cx);
+                crate::ui::contrast::follow_system(cx);
             }
             #[cfg(feature = "coderlabs")]
             this.coderspace
@@ -710,6 +711,7 @@ impl Shell {
         }));
         theme::set_diff_palette(layout.diff_palette);
         theme::set_glass(layout.glass);
+        theme::set_contrast(layout.contrast);
         theme::set_grays(layout.grays);
         crate::palettes::apply_saved();
         account_view::set_rail_shows(AgentKind::Claude, layout.rail_usage[0]);
@@ -721,7 +723,7 @@ impl Shell {
             crate::ui_zoom::set_pct(layout.ui_zoom);
             window.bounds_changed(cx);
         }
-        if layout.glass {
+        if theme::glass() {
             window.set_background_appearance(theme::window_background());
         }
         let account = cx.new(Account::new);
@@ -1380,7 +1382,8 @@ impl Shell {
             subagents_w: self.subagents_w,
             arcade: self.arcade,
             diff_palette: theme::diff_palette(),
-            glass: theme::glass(),
+            glass: theme::glass_chosen(),
+            contrast: theme::contrast_setting(),
             grays: theme::grays(),
             type_scale: crate::ui::type_scale(),
             rail_usage: [
@@ -2818,6 +2821,11 @@ impl Shell {
                             window.set_background_appearance(theme::window_background());
                             this.save(cx);
                             cx.refresh_windows();
+                        }
+                        CustomizeEvent::Contrast(c) => {
+                            theme::set_contrast(*c);
+                            this.save(cx);
+                            crate::ui::contrast::apply(cx);
                         }
                         CustomizeEvent::SidebarStyle(style) => {
                             let style = *style;

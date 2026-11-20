@@ -715,18 +715,31 @@ pub fn commit_diff(dir: &Path, all: bool, cap: usize) -> Result<(String, String,
     };
     let mut stat = read(dir, &args(&["--stat=200"]))?;
     let mut diff = read(dir, &args(&[]))?;
+    // Counted in characters, as `cut_at_line` cuts.
+    let mut chars = diff.chars().count();
+    let mut skipped = false;
     if all {
         let new = read(dir, &["ls-files", "--others", "--exclude-standard", "-z"])?;
         for path in new.split('\0').filter(|p| !p.is_empty()) {
             stat.push_str(&format!(" {path} (new file)\n"));
             // The list of files is whole; the diffs stop once past the cap.
-            if diff.len() <= cap {
-                diff.push_str(&self::diff(dir, path, true)?);
+            if chars > cap {
+                skipped = true;
+                continue;
             }
+            // A file of more than 4 bytes per character of the cap has a diff
+            // past it: skip it rather than hold all of it in memory.
+            if std::fs::metadata(dir.join(path)).is_ok_and(|m| m.len() > 4 * cap as u64) {
+                skipped = true;
+                continue;
+            }
+            let more = self::diff(dir, path, true)?;
+            chars += more.chars().count();
+            diff.push_str(&more);
         }
     }
     let (diff, cut) = cut_at_line(diff, cap);
-    Ok((stat, diff, cut))
+    Ok((stat, diff, cut || skipped))
 }
 
 /// The subjects of the last `n` commits on HEAD, newest first: the style a
@@ -1777,6 +1790,20 @@ test: cover the resize\u{1f}\u{1e}\n";
         // Past the cap, the files are still all listed.
         let (stat, _, cut) = super::commit_diff(&dir, true, 10).unwrap();
         assert!(cut && stat.contains("new.txt"), "{stat}");
+
+        // Under the cap in characters but over it in bytes: new files still
+        // come in, and nothing is cut.
+        std::fs::write(dir.join("staged.txt"), "é".repeat(400)).unwrap();
+        super::stage(&dir, "staged.txt").unwrap();
+        let (_, diff, cut) = super::commit_diff(&dir, true, 700).unwrap();
+        assert!(diff.contains("+fresh") && !cut, "{diff}");
+
+        // A new file too large for the cap is listed, not read, and the diff
+        // says it is cut.
+        std::fs::write(dir.join("big.txt"), "x".repeat(5_000)).unwrap();
+        let (stat, diff, cut) = super::commit_diff(&dir, true, 1_000).unwrap();
+        assert!(stat.contains("big.txt (new file)"), "{stat}");
+        assert!(!diff.contains("xxxx") && cut, "{diff}");
 
         assert_eq!(super::recent_subjects(&dir, 5), vec!["x".to_string()]);
         let _ = std::fs::remove_dir_all(&dir);

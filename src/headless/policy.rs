@@ -60,7 +60,7 @@ pub struct Finding {
     pub kind: Kind,
     /// Why it needs confirmation, for the user.
     pub why: String,
-    /// What it does, in a few words (Spanish).
+    /// What it does, in a few words.
     pub summary: String,
     /// What the user says to approve it.
     pub phrase: String,
@@ -137,9 +137,9 @@ pub fn judge_tool(policy: Policy, cx: &Ctx, kind: &str, title: &str, input: &Val
         };
         return Verdict {
             level: Level::Always,
-            why: s("arakun_why", "acción fuera del sandbox"),
+            why: s("arakun_why", "action outside the sandbox"),
             summary: s("arakun_summary", title),
-            phrase: s("arakun_phrase", "confirmo: usar herramienta"),
+            phrase: s("arakun_phrase", "confirm: use tool"),
         };
     }
     let command = match input.get("command").or_else(|| input.get("cmd")) {
@@ -165,7 +165,7 @@ pub fn judge_tool(policy: Policy, cx: &Ctx, kind: &str, title: &str, input: &Val
             if kind == "delete" {
                 delete_target(p, Some(&ws), cx, &mut found);
             } else {
-                write_target(p, Some(&ws), cx, &mut found, "escribe");
+                write_target(p, Some(&ws), cx, &mut found, "writes");
             }
         }
         _ => {
@@ -176,16 +176,16 @@ pub fn judge_tool(policy: Policy, cx: &Ctx, kind: &str, title: &str, input: &Val
             ];
             if risky.iter().any(|w| name.contains(w)) {
                 found.push(always(
-                    format!("la herramienta «{title}» puede actuar fuera de esta máquina"),
-                    format!("Usar {title}"),
-                    "confirmo: usar herramienta",
+                    format!("the tool \"{title}\" can act beyond this machine"),
+                    format!("Use {title}"),
+                    "confirm: use tool",
                 ));
             } else {
                 found.push(Finding {
                     kind: Kind::External,
-                    why: format!("herramienta sin revisar: {title}"),
-                    summary: format!("Usar {title}"),
-                    phrase: "confirmo: usar herramienta".into(),
+                    why: format!("unreviewed tool: {title}"),
+                    summary: format!("Use {title}"),
+                    phrase: "confirm: use tool".into(),
                 });
             }
         }
@@ -795,38 +795,38 @@ fn write_target(raw: &str, cwd: Option<&Path>, cx: &Ctx, out: &mut Vec<Finding>,
         Place::Inside | Place::Root => out.push(finding(
             Kind::Write,
             format!("{verb} {raw}"),
-            format!("Modificar {raw}"),
-            format!("confirmo: modificar {}", name_of(raw)),
+            format!("Change {raw}"),
+            format!("confirm: change {}", name_of(raw)),
         )),
         Place::Scratch if raw.starts_with("/dev/") => {}
         Place::Scratch => out.push(finding(
             Kind::Write,
             format!("{verb} {raw}"),
-            format!("Escribir {raw}"),
-            format!("confirmo: escribir {}", name_of(raw)),
+            format!("Write {raw}"),
+            format!("confirm: write {}", name_of(raw)),
         )),
         Place::Outside(p) => {
             let s = short(&p, cx);
             out.push(finding(
                 Kind::Outside,
-                format!("{verb} {s}, fuera del proyecto"),
-                format!("Escribir {s} (fuera del proyecto)"),
-                format!("confirmo: escribir {}", name_of(raw)),
+                format!("{verb} {s}, outside the project"),
+                format!("Write {s} (outside the project)"),
+                format!("confirm: write {}", name_of(raw)),
             ))
         }
         Place::Guarded(p) => {
             let s = short(&p, cx);
             out.push(always(
-                format!("{verb} {s}: configuración del sistema o de arakun"),
-                format!("Modificar {s}"),
-                format!("confirmo: modificar {}", name_of(raw)),
+                format!("{verb} {s}: system or arakun settings"),
+                format!("Change {s}"),
+                format!("confirm: change {}", name_of(raw)),
             ))
         }
         Place::Unknown(r) => out.push(finding(
             Kind::Outside,
-            format!("{verb} {r}, una ruta que no se puede saber de antemano"),
-            format!("Escribir {r}"),
-            format!("confirmo: escribir {}", name_of(&r)),
+            format!("{verb} {r}, a path that can't be known in advance"),
+            format!("Write {r}"),
+            format!("confirm: write {}", name_of(&r)),
         )),
     }
 }
@@ -836,36 +836,36 @@ fn delete_target(raw: &str, cwd: Option<&Path>, cx: &Ctx, out: &mut Vec<Finding>
     if raw.is_empty() {
         return;
     }
-    let phrase = format!("confirmo: borrar {}", name_of(raw));
+    let phrase = format!("confirm: delete {}", name_of(raw));
     match place(raw, cwd, cx) {
         Place::Inside => out.push(finding(
             Kind::Write,
-            format!("borra {raw}"),
-            format!("Borrar {raw}"),
+            format!("deletes {raw}"),
+            format!("Delete {raw}"),
             phrase,
         )),
         Place::Scratch => out.push(finding(
             Kind::Write,
-            format!("borra {raw}"),
-            format!("Borrar {raw}"),
+            format!("deletes {raw}"),
+            format!("Delete {raw}"),
             phrase,
         )),
         Place::Root => out.push(always(
-            "borra el proyecto entero",
-            format!("Borrar todo {}", short(&cx.workspace, cx)),
-            "confirmo: borrar el proyecto",
+            "deletes the whole project",
+            format!("Delete all of {}", short(&cx.workspace, cx)),
+            "confirm: delete the project",
         )),
         Place::Outside(p) | Place::Guarded(p) => {
             let s = short(&p, cx);
             out.push(always(
-                format!("borra {s}, fuera del proyecto"),
-                format!("Borrar {s} (fuera del proyecto)"),
+                format!("deletes {s}, outside the project"),
+                format!("Delete {s} (outside the project)"),
                 phrase,
             ))
         }
         Place::Unknown(r) => out.push(always(
-            format!("borra {r}, una ruta que no se puede saber de antemano"),
-            format!("Borrar {r}"),
+            format!("deletes {r}, a path that can't be known in advance"),
+            format!("Delete {r}"),
             phrase,
         )),
     }
@@ -1065,26 +1065,18 @@ fn backstop(text: &str, out: &mut Vec<Finding>) {
     let pairs: &[(&str, &str, &str)] = &[
         (
             "git push",
-            "publica commits con git push",
-            "confirmo: git push",
+            "pushes commits with git push",
+            "confirm: git push",
         ),
-        ("sendmail", "envía correo", "confirmo: enviar correo"),
-        ("msmtp", "envía correo", "confirmo: enviar correo"),
-        (
-            "smtplib",
-            "envía correo por SMTP",
-            "confirmo: enviar correo",
-        ),
+        ("sendmail", "sends mail", "confirm: send mail"),
+        ("msmtp", "sends mail", "confirm: send mail"),
+        ("smtplib", "sends mail over SMTP", "confirm: send mail"),
         (
             "arakun restart",
-            "reinicia arakun",
-            "confirmo: reiniciar arakun",
+            "restarts arakun",
+            "confirm: restart arakun",
         ),
-        (
-            "systemctl",
-            "cambia servicios del sistema",
-            "confirmo: systemctl",
-        ),
+        ("systemctl", "changes system services", "confirm: systemctl"),
         #[cfg(feature = "coderlabs")]
         (
             "okc submit",
@@ -1093,27 +1085,27 @@ fn backstop(text: &str, out: &mut Vec<Finding>) {
         ),
         (
             "gh pr create",
-            "abre un pull request",
-            "confirmo: abrir pull request",
+            "opens a pull request",
+            "confirm: open pull request",
         ),
         (
             "gh pr merge",
-            "fusiona un pull request",
-            "confirmo: fusionar pull request",
+            "merges a pull request",
+            "confirm: merge pull request",
         ),
-        ("npm publish", "publica un paquete", "confirmo: publicar"),
-        ("cargo publish", "publica un crate", "confirmo: publicar"),
+        ("npm publish", "publishes a package", "confirm: publish"),
+        ("cargo publish", "publishes a crate", "confirm: publish"),
         (
             "agent approve",
-            "aprueba una confirmación pendiente",
-            "confirmo: aprobar",
+            "approves a pending confirmation",
+            "confirm: approve",
         ),
     ];
     for &(needle, why, phrase) in pairs {
         if t.contains(needle) {
             out.push(always(
-                format!("el script {why}"),
-                format!("Ejecutar un script que {why}"),
+                format!("the script {why}"),
+                format!("Run a script that {why}"),
                 phrase,
             ));
         }
@@ -1124,9 +1116,9 @@ fn backstop(text: &str, out: &mut Vec<Finding>) {
             .any(|w| t.contains(w))
     {
         out.push(always(
-            "el script envía correo con himalaya",
-            "Ejecutar un script que envía correo",
-            "confirmo: enviar correo",
+            "the script sends mail with himalaya",
+            "Run a script that sends mail",
+            "confirm: send mail",
         ));
     }
 }
@@ -1179,9 +1171,9 @@ fn judge_command(src: &str, cx: &Ctx, out: &mut Vec<Finding>) {
         let reads = LINE_READS.with(|r| r.borrow().clone());
         if let Some((f, _)) = reads.iter().find(|(f, d)| !own_file(f, d.as_deref(), cx)) {
             out.push(always(
-                "pone en un borrador de GitHub un archivo fuera del espacio de trabajo",
-                format!("Borrador de GitHub con {f}: {}", clip(src, 80)),
-                "confirmo: borrador con ese archivo",
+                "puts a file from outside the workspace in a GitHub draft",
+                format!("GitHub draft with {f}: {}", clip(src, 80)),
+                "confirm: draft with that file",
             ));
         } else if !reads.is_empty() {
             DRAFT_FILE.set(true);
@@ -1199,9 +1191,9 @@ fn judge_command(src: &str, cx: &Ctx, out: &mut Vec<Finding>) {
     };
     if DRAFT_FILE.get() && !alone() {
         out.push(always(
-            "el borrador de GitHub lee un archivo que otro comando de la línea puede cambiar",
-            format!("Ejecutar: {}", clip(src, 80)),
-            "confirmo: borrador de GitHub",
+            "the GitHub draft reads a file that another command on the line can change",
+            format!("Run: {}", clip(src, 80)),
+            "confirm: GitHub draft",
         ));
     }
 }
@@ -1210,9 +1202,9 @@ fn script(src: &str, cwd: &mut Option<PathBuf>, cx: &Ctx, out: &mut Vec<Finding>
     if depth > 6 {
         out.push(finding(
             Kind::External,
-            "comando demasiado anidado para revisarlo",
-            format!("Ejecutar: {}", clip(src, 80)),
-            "confirmo: ejecutar",
+            "command nested too deep to review",
+            format!("Run: {}", clip(src, 80)),
+            "confirm: run",
         ));
         return;
     }
@@ -1417,7 +1409,7 @@ fn simple(
 ) {
     let before = out.len();
     for t in &cmd.writes {
-        write_target(t, cwd.as_deref(), cx, out, "escribe en");
+        write_target(t, cwd.as_deref(), cx, out, "writes to");
     }
     let mut w: Vec<&str> = cmd.words.iter().map(String::as_str).collect();
     // Keywords and assignments before the command itself.
@@ -1459,9 +1451,9 @@ fn simple(
         let n = match program(first) {
             "sudo" | "doas" | "pkexec" | "run0" => {
                 out.push(always(
-                    "corre como root",
-                    format!("Ejecutar como root: {}", clip(&w[1..].join(" "), 80)),
-                    "confirmo: ejecutar como root",
+                    "runs as root",
+                    format!("Run as root: {}", clip(&w[1..].join(" "), 80)),
+                    "confirm: run as root",
                 ));
                 skip(&w, &["-u", "-g", "-C", "-p", "-h", "-U", "-D"])
             }
@@ -1529,22 +1521,22 @@ fn simple(
             }) =>
         {
             out.push(always(
-                "el nombre del comando sale de una variable que cambia la propia línea",
-                format!("Ejecutar: {line}"),
-                "confirmo: ejecutar",
+                "the command name comes from a variable the line itself changes",
+                format!("Run: {line}"),
+                "confirm: run",
             ))
         }
         p if p.starts_with('$') => out.push(finding(
             Kind::External,
-            "el nombre del comando sale de una variable",
-            format!("Ejecutar: {line}"),
-            "confirmo: ejecutar",
+            "the command name comes from a variable",
+            format!("Run: {line}"),
+            "confirm: run",
         )),
         "source" | "." => out.push(finding(
             Kind::Write,
-            format!("ejecuta el script {}", args.first().unwrap_or(&"")),
-            format!("Ejecutar: {line}"),
-            "confirmo: ejecutar script",
+            format!("runs the script {}", args.first().unwrap_or(&"")),
+            format!("Run: {line}"),
+            "confirm: run script",
         )),
         s if SHELLS.contains(&s) => {
             if let Some(i) = args.iter().position(|a| {
@@ -1575,9 +1567,9 @@ fn simple(
                     }
                     _ => out.push(finding(
                         Kind::External,
-                        format!("ejecuta {file}, que no se pudo revisar"),
-                        format!("Ejecutar: {line}"),
-                        "confirmo: ejecutar script",
+                        format!("runs {file}, which could not be reviewed"),
+                        format!("Run: {line}"),
+                        "confirm: run script",
                     )),
                 }
             }
@@ -1591,9 +1583,9 @@ fn simple(
             backstop(&text, out);
             out.push(finding(
                 Kind::Write,
-                format!("corre código {s} que puede cambiar archivos"),
-                format!("Ejecutar: {line}"),
-                format!("confirmo: ejecutar {s}"),
+                format!("runs {s} code that can change files"),
+                format!("Run: {line}"),
+                format!("confirm: run {s}"),
             ));
             paths_in(&args, cwd.as_deref(), cx, out, &line);
         }
@@ -1608,7 +1600,7 @@ fn simple(
             .into_iter()
             .find(|a| a.contains('@'));
             let (summary, phrase) = mail_words(to.map(str::to_string), subject_in(cmd, &args));
-            out.push(always(format!("envía correo ({prog})"), summary, phrase));
+            out.push(always(format!("sends mail ({prog})"), summary, phrase));
         }
         "curl" => curl(&args, cwd.as_deref(), cx, out, &line),
         "wget" => wget(&args, cwd.as_deref(), cx, out, &line),
@@ -1632,9 +1624,9 @@ fn simple(
             {
                 let host = host_of(url.unwrap_or(""));
                 out.push(always(
-                    format!("envía datos a {host}"),
-                    format!("Enviar datos a {host}"),
-                    format!("confirmo: enviar a {host}"),
+                    format!("sends data to {host}"),
+                    format!("Send data to {host}"),
+                    format!("confirm: send to {host}"),
                 ));
             }
         }
@@ -1647,23 +1639,23 @@ fn simple(
         )),
         "arakun" => match args.first().copied() {
             Some("restart") | Some("quit") => out.push(always(
-                "reinicia arakun",
-                "Reiniciar arakun",
-                "confirmo: reiniciar arakun",
+                "restarts arakun",
+                "Restart arakun",
+                "confirm: restart arakun",
             )),
             Some("agent") if matches!(args.get(1).copied(), Some("approve" | "deny")) => {
                 out.push(always(
-                    "responde una confirmación pendiente de un agente",
-                    format!("Ejecutar: {line}"),
-                    "confirmo: responder confirmación",
+                    "answers an agent's pending confirmation",
+                    format!("Run: {line}"),
+                    "confirm: answer confirmation",
                 ))
             }
             // `--yes` confirms it without the user.
             Some("agent") if args.get(1) == Some(&"run") && args.contains(&"--no-sandbox") => out
                 .push(always(
-                    "lanza un agente sin sandbox",
-                    format!("Ejecutar: {line}"),
-                    "confirmo: agente sin sandbox",
+                    "starts an agent without the sandbox",
+                    format!("Run: {line}"),
+                    "confirm: agent without sandbox",
                 )),
             Some("mem")
                 if matches!(
@@ -1681,9 +1673,9 @@ fn simple(
             Some("ls") | Some("logs") | Some("help") => {}
             _ => out.push(finding(
                 Kind::Write,
-                "usa arakun",
-                format!("Ejecutar: {line}"),
-                "confirmo: ejecutar arakun",
+                "uses arakun",
+                format!("Run: {line}"),
+                "confirm: run arakun",
             )),
         },
         "systemctl" => {
@@ -1717,9 +1709,9 @@ fn simple(
             ];
             if !ops.first().is_some_and(|s| readonly.contains(s)) {
                 out.push(always(
-                    "cambia servicios del sistema (systemctl)",
-                    format!("Ejecutar: {line}"),
-                    "confirmo: systemctl",
+                    "changes system services (systemctl)",
+                    format!("Run: {line}"),
+                    "confirm: systemctl",
                 ));
             }
         }
@@ -1727,14 +1719,14 @@ fn simple(
         | "sfdisk" | "parted" | "wipefs" | "mkswap" | "swapoff" | "cryptsetup" | "mount"
         | "umount" | "chsh" | "passwd" | "useradd" | "userdel" | "usermod" | "visudo"
         | "iptables" | "nft" | "ufw" => out.push(always(
-            format!("cambia el sistema ({prog})"),
-            format!("Ejecutar: {line}"),
-            format!("confirmo: {prog}"),
+            format!("changes the system ({prog})"),
+            format!("Run: {line}"),
+            format!("confirm: {prog}"),
         )),
         p if p.starts_with("mkfs.") => out.push(always(
-            "formatea un disco",
-            format!("Ejecutar: {line}"),
-            "confirmo: formatear",
+            "formats a disk",
+            format!("Run: {line}"),
+            "confirm: format",
         )),
         "loginctl"
             if !args
@@ -1742,17 +1734,17 @@ fn simple(
                 .is_some_and(|s| s.starts_with("show") || s.starts_with("list")) =>
         {
             out.push(always(
-                "cambia la sesión del sistema",
-                format!("Ejecutar: {line}"),
-                "confirmo: loginctl",
+                "changes the system session",
+                format!("Run: {line}"),
+                "confirm: loginctl",
             ))
         }
         "crontab" => {
             if args != ["-l"] {
                 out.push(always(
-                    "cambia las tareas programadas (crontab)",
-                    format!("Ejecutar: {line}"),
-                    "confirmo: crontab",
+                    "changes scheduled tasks (crontab)",
+                    format!("Run: {line}"),
+                    "confirm: crontab",
                 ));
             }
         }
@@ -1760,9 +1752,9 @@ fn simple(
             if prog == "gio" && args.first() != Some(&"trash") && args.first() != Some(&"remove") {
                 out.push(finding(
                     Kind::Write,
-                    "usa gio",
-                    format!("Ejecutar: {line}"),
-                    "confirmo: ejecutar gio",
+                    "uses gio",
+                    format!("Run: {line}"),
+                    "confirm: run gio",
                 ));
                 return;
             }
@@ -1770,9 +1762,9 @@ fn simple(
             if from_stdin || targets.is_empty() {
                 out.push(finding(
                     Kind::External,
-                    "borra archivos de una lista que no se ve aquí",
-                    format!("Ejecutar: {line}"),
-                    "confirmo: borrar",
+                    "deletes files from a list not shown here",
+                    format!("Run: {line}"),
+                    "confirm: delete",
                 ));
             }
             for t in targets {
@@ -1792,16 +1784,16 @@ fn simple(
                 if matches!(place(s, cwd.as_deref(), cx), Place::Inside | Place::Scratch) {
                     out.push(finding(
                         Kind::Write,
-                        format!("mueve {s}"),
-                        format!("Mover {s}"),
-                        "confirmo: mover",
+                        format!("moves {s}"),
+                        format!("Move {s}"),
+                        "confirm: move",
                     ));
                 } else {
                     delete_target(s, cwd.as_deref(), cx, out);
                 }
             }
             if let Some(d) = dest {
-                write_target(d, cwd.as_deref(), cx, out, "mueve a");
+                write_target(d, cwd.as_deref(), cx, out, "moves to");
             }
         }
         "cp" | "install" | "ln" | "rsync" | "scp" | "sftp" | "rclone" => {
@@ -1837,20 +1829,20 @@ fn simple(
                     .map(|d| d.split(':').next().unwrap_or(d).to_string())
                     .unwrap_or_default();
                 out.push(always(
-                    format!("copia archivos a otra máquina ({to})"),
-                    format!("Copiar archivos a {to}"),
-                    "confirmo: copiar fuera",
+                    format!("copies files to another machine ({to})"),
+                    format!("Copy files to {to}"),
+                    "confirm: copy out",
                 ));
             } else if let Some(d) = dest {
                 if ops.iter().any(|s| remote(s)) {
                     out.push(finding(
                         Kind::External,
-                        "trae archivos de otra máquina",
-                        format!("Ejecutar: {line}"),
-                        "confirmo: copiar",
+                        "fetches files from another machine",
+                        format!("Run: {line}"),
+                        "confirm: copy",
                     ));
                 }
-                write_target(d, cwd.as_deref(), cx, out, "escribe en");
+                write_target(d, cwd.as_deref(), cx, out, "writes to");
             }
         }
         "tee" | "touch" | "mkdir" | "truncate" | "mkfifo" | "split" | "csplit" => {
@@ -1873,19 +1865,19 @@ fn simple(
             if ops.is_empty() && prog != "tee" {
                 out.push(finding(
                     Kind::Write,
-                    format!("usa {prog}"),
-                    format!("Ejecutar: {line}"),
-                    format!("confirmo: {prog}"),
+                    format!("uses {prog}"),
+                    format!("Run: {line}"),
+                    format!("confirm: {prog}"),
                 ));
             }
             for t in ops {
-                write_target(t, cwd.as_deref(), cx, out, "escribe en");
+                write_target(t, cwd.as_deref(), cx, out, "writes to");
             }
         }
         "chmod" | "chown" | "chgrp" | "setfacl" | "chattr" => {
             let ops = operands(&args, &["--reference"]);
             for t in ops.iter().skip(1) {
-                write_target(t, cwd.as_deref(), cx, out, "cambia permisos de");
+                write_target(t, cwd.as_deref(), cx, out, "changes permissions of");
             }
         }
         "dd" => {
@@ -1895,12 +1887,12 @@ fn simple(
                         && !matches!(of, "/dev/null" | "/dev/stdout" | "/dev/stderr")
                     {
                         out.push(always(
-                            "escribe directo a un disco",
-                            format!("Ejecutar: {line}"),
-                            "confirmo: escribir disco",
+                            "writes straight to a disk",
+                            format!("Run: {line}"),
+                            "confirm: write disk",
                         ));
                     } else {
-                        write_target(of, cwd.as_deref(), cx, out, "escribe en");
+                        write_target(of, cwd.as_deref(), cx, out, "writes to");
                     }
                 }
             }
@@ -1921,7 +1913,7 @@ fn simple(
                 ops.into_iter().skip(1).collect()
             };
             for f in files {
-                write_target(f, cwd.as_deref(), cx, out, "edita");
+                write_target(f, cwd.as_deref(), cx, out, "edits");
             }
         }
         "sed" => {}
@@ -1933,16 +1925,16 @@ fn simple(
                 backstop(&text, out);
                 out.push(finding(
                     Kind::Write,
-                    "awk puede ejecutar comandos o editar archivos",
-                    format!("Ejecutar: {line}"),
-                    "confirmo: ejecutar awk",
+                    "awk can run commands or edit files",
+                    format!("Run: {line}"),
+                    "confirm: run awk",
                 ));
             } else if text.contains("> \"") || text.contains(">\"") || text.contains("| \"") {
                 out.push(finding(
                     Kind::Outside,
-                    "awk escribe en un archivo o corre un comando",
-                    format!("Ejecutar: {line}"),
-                    "confirmo: ejecutar awk",
+                    "awk writes to a file or runs a command",
+                    format!("Run: {line}"),
+                    "confirm: run awk",
                 ));
             }
         }
@@ -1953,12 +1945,12 @@ fn simple(
                 .and_then(|i| args.get(i + 1))
                 .copied();
             match target {
-                Some(t) => write_target(t, cwd.as_deref(), cx, out, "escribe en"),
+                Some(t) => write_target(t, cwd.as_deref(), cx, out, "writes to"),
                 None => out.push(finding(
                     Kind::Write,
-                    format!("{prog} edita archivos"),
-                    format!("Ejecutar: {line}"),
-                    format!("confirmo: {prog}"),
+                    format!("{prog} edits files"),
+                    format!("Run: {line}"),
+                    format!("confirm: {prog}"),
                 )),
             }
         }
@@ -1992,7 +1984,7 @@ fn simple(
                     if !matches!(place(s, cwd.as_deref(), cx), Place::Inside | Place::Root)
                         && out.iter().any(|f| f.kind >= Kind::Write)
                     {
-                        write_target(s, cwd.as_deref(), cx, out, "ejecuta comandos sobre");
+                        write_target(s, cwd.as_deref(), cx, out, "runs commands on");
                     }
                 }
             }
@@ -2002,22 +1994,22 @@ fn simple(
                     .position(|a| *a == flag)
                     .and_then(|i| args.get(i + 1))
                 {
-                    write_target(t, cwd.as_deref(), cx, out, "escribe en");
+                    write_target(t, cwd.as_deref(), cx, out, "writes to");
                 }
             }
         }
         "kill" | "pkill" | "killall" | "xkill" => out.push(finding(
             Kind::External,
-            "detiene procesos",
-            format!("Ejecutar: {line}"),
-            "confirmo: detener procesos",
+            "stops processes",
+            format!("Run: {line}"),
+            "confirm: stop processes",
         )),
         "ssh" | "mosh" | "nc" | "ncat" | "netcat" | "socat" | "telnet" | "ftp" => {
             out.push(finding(
                 Kind::External,
-                format!("se conecta a otra máquina ({prog})"),
-                format!("Ejecutar: {line}"),
-                format!("confirmo: {prog}"),
+                format!("connects to another machine ({prog})"),
+                format!("Run: {line}"),
+                format!("confirm: {prog}"),
             ))
         }
         "pip" | "pip3" | "pipx" | "uv" | "conda" | "mamba" | "gem" | "go" | "rustup" => {
@@ -2037,16 +2029,16 @@ fn simple(
             {
                 out.push(finding(
                     Kind::External,
-                    "instala o quita paquetes",
-                    format!("Ejecutar: {line}"),
-                    "confirmo: instalar",
+                    "installs or removes packages",
+                    format!("Run: {line}"),
+                    "confirm: install",
                 ));
             } else {
                 out.push(finding(
                     Kind::Write,
-                    format!("usa {prog}"),
-                    format!("Ejecutar: {line}"),
-                    format!("confirmo: {prog}"),
+                    format!("uses {prog}"),
+                    format!("Run: {line}"),
+                    format!("confirm: {prog}"),
                 ));
             }
         }
@@ -2065,9 +2057,9 @@ fn simple(
             .is_some()
             {
                 out.push(always(
-                    format!("publica en un registro público ({prog})"),
-                    format!("Publicar: {line}"),
-                    "confirmo: publicar",
+                    format!("publishes to a public registry ({prog})"),
+                    format!("Publish: {line}"),
+                    "confirm: publish",
                 ));
             } else if has_flag(&args, 'g', &["--global", "--location=global"])
                 || pick(&["global"]).is_some()
@@ -2075,16 +2067,16 @@ fn simple(
             {
                 out.push(finding(
                     Kind::External,
-                    "instala paquetes fuera del proyecto",
-                    format!("Ejecutar: {line}"),
-                    "confirmo: instalar",
+                    "installs packages outside the project",
+                    format!("Run: {line}"),
+                    "confirm: install",
                 ));
             } else {
                 out.push(finding(
                     Kind::Write,
-                    format!("usa {prog}"),
-                    format!("Ejecutar: {line}"),
-                    format!("confirmo: {prog}"),
+                    format!("uses {prog}"),
+                    format!("Run: {line}"),
+                    format!("confirm: {prog}"),
                 ));
                 paths_in(&args, cwd.as_deref(), cx, out, &line);
             }
@@ -2097,25 +2089,25 @@ fn simple(
             if !query {
                 out.push(finding(
                     Kind::External,
-                    "instala o quita paquetes del sistema",
-                    format!("Ejecutar: {line}"),
-                    "confirmo: instalar",
+                    "installs or removes system packages",
+                    format!("Run: {line}"),
+                    "confirm: install",
                 ));
             }
         }
         "docker" | "podman" => {
             if pick(&["push", "login"]).is_some() {
                 out.push(always(
-                    "publica una imagen",
-                    format!("Ejecutar: {line}"),
-                    "confirmo: publicar imagen",
+                    "publishes an image",
+                    format!("Run: {line}"),
+                    "confirm: publish image",
                 ));
             } else if pick(&["ps", "images", "inspect", "logs", "version", "info"]).is_none() {
                 out.push(finding(
                     Kind::External,
-                    format!("usa {prog}"),
-                    format!("Ejecutar: {line}"),
-                    format!("confirmo: {prog}"),
+                    format!("uses {prog}"),
+                    format!("Run: {line}"),
+                    format!("confirm: {prog}"),
                 ));
             }
         }
@@ -2182,16 +2174,16 @@ fn simple(
                 || (prog == "vercel" && args.iter().all(|a| a.starts_with('-')))
             {
                 out.push(always(
-                    format!("cambia servicios en la nube o cobra ({prog})"),
-                    format!("Ejecutar: {line}"),
-                    format!("confirmo: {prog}"),
+                    format!("changes cloud services or charges money ({prog})"),
+                    format!("Run: {line}"),
+                    format!("confirm: {prog}"),
                 ));
             } else if pick(&dev).is_none() {
                 out.push(finding(
                     Kind::Write,
-                    format!("usa {prog}"),
-                    format!("Ejecutar: {line}"),
-                    format!("confirmo: {prog}"),
+                    format!("uses {prog}"),
+                    format!("Run: {line}"),
+                    format!("confirm: {prog}"),
                 ));
             }
         }
@@ -2201,27 +2193,27 @@ fn simple(
                 return;
             }
             out.push(always(
-                format!("envía un mensaje ({prog})"),
-                format!("Enviar un mensaje con {prog}"),
-                "confirmo: enviar mensaje",
+                format!("sends a message ({prog})"),
+                format!("Send a message with {prog}"),
+                "confirm: send message",
             ));
         }
         p if READ_ONLY.contains(&p) => {
             if p == "env" && w.len() > 1 {
                 out.push(finding(
                     Kind::Write,
-                    "corre un comando",
-                    format!("Ejecutar: {line}"),
-                    "confirmo: ejecutar",
+                    "runs a command",
+                    format!("Run: {line}"),
+                    "confirm: run",
                 ));
             }
         }
         _ => {
             out.push(finding(
                 Kind::Write,
-                format!("corre {prog}"),
-                format!("Ejecutar: {line}"),
-                format!("confirmo: ejecutar {}", name_of(prog)),
+                format!("runs {prog}"),
+                format!("Run: {line}"),
+                format!("confirm: run {}", name_of(prog)),
             ));
             // A script run by its path (`./send.sh`): what it does is what's inside.
             if let Some(first) = w.first().filter(|f| f.contains('/'))
@@ -2252,12 +2244,12 @@ fn simple(
     {
         let dir = cwd
             .as_deref()
-            .map_or_else(|| "una carpeta desconocida".to_string(), |d| short(d, cx));
+            .map_or_else(|| "an unknown folder".to_string(), |d| short(d, cx));
         out.push(finding(
             Kind::Outside,
-            format!("corre {prog} en {dir}, fuera del proyecto"),
-            format!("Ejecutar en {dir}: {line}"),
-            format!("confirmo: ejecutar {}", name_of(prog)),
+            format!("runs {prog} in {dir}, outside the project"),
+            format!("Run in {dir}: {line}"),
+            format!("confirm: run {}", name_of(prog)),
         ));
     }
 }
@@ -2280,25 +2272,25 @@ fn paths_in(args: &[&str], cwd: Option<&Path>, cx: &Ctx, out: &mut Vec<Finding>,
                 let s = short(&p, cx);
                 out.push(finding(
                     Kind::Outside,
-                    format!("usa {s}, fuera del proyecto"),
-                    format!("Ejecutar: {line}"),
-                    format!("confirmo: usar {}", name_of(value)),
+                    format!("uses {s}, outside the project"),
+                    format!("Run: {line}"),
+                    format!("confirm: use {}", name_of(value)),
                 ));
             }
             Place::Guarded(p) if !system.iter().any(|s| p.starts_with(s)) => {
                 let s = short(&p, cx);
                 out.push(always(
-                    format!("usa {s}: configuración del sistema o de arakun"),
-                    format!("Ejecutar: {line}"),
-                    format!("confirmo: usar {}", name_of(value)),
+                    format!("uses {s}: system or arakun settings"),
+                    format!("Run: {line}"),
+                    format!("confirm: use {}", name_of(value)),
                 ));
             }
             Place::Unknown(r) if r.starts_with('$') && !r.starts_with("$(") => {
                 out.push(finding(
                     Kind::Outside,
-                    format!("usa {r}, una ruta que no se puede saber de antemano"),
-                    format!("Ejecutar: {line}"),
-                    "confirmo: ejecutar",
+                    format!("uses {r}, a path that can't be known in advance"),
+                    format!("Run: {line}"),
+                    "confirm: run",
                 ));
             }
             _ => {}
@@ -2320,9 +2312,9 @@ fn github_draft(
 ) {
     let ask = |out: &mut Vec<Finding>, body: &str| {
         out.push(always(
-            "pone en un borrador de GitHub un archivo fuera del espacio de trabajo",
-            format!("Borrador de GitHub con {}: {}", body, clip(line, 80)),
-            "confirmo: borrador con ese archivo",
+            "puts a file from outside the workspace in a GitHub draft",
+            format!("GitHub draft with {}: {}", body, clip(line, 80)),
+            "confirm: draft with that file",
         ))
     };
     // Read the arguments with the command's own parser, so the policy judges
@@ -2335,9 +2327,9 @@ fn github_draft(
     // are gone by now, so even a quoted one asks.
     if rest.iter().any(|a| a.contains(['*', '?', '[', '{', '$'])) {
         return out.push(always(
-            "borrador de GitHub con argumentos que el shell expande",
-            format!("Ejecutar: {line}"),
-            "confirmo: borrador de GitHub",
+            "GitHub draft with arguments the shell expands",
+            format!("Run: {line}"),
+            "confirm: GitHub draft",
         ));
     }
     let body = match crate::github::pr::parse_draft_args(&rest) {
@@ -2345,9 +2337,9 @@ fn github_draft(
         // The command refuses these too, but don't bet on it: ask.
         Err(_) => {
             return out.push(always(
-                "borrador de GitHub con argumentos que no se entienden",
-                format!("Ejecutar: {line}"),
-                "confirmo: borrador de GitHub",
+                "GitHub draft with arguments that can't be parsed",
+                format!("Run: {line}"),
+                "confirm: GitHub draft",
             ));
         }
     };
@@ -2411,9 +2403,9 @@ fn git(args: &[&str], cwd: Option<&Path>, cx: &Ctx, out: &mut Vec<Finding>, line
             "-c" if args.get(i + 1).is_some_and(|v| v.starts_with("alias.")) => {
                 out.push(finding(
                     Kind::External,
-                    "git con un alias de una sola vez",
-                    format!("Ejecutar: {line}"),
-                    "confirmo: git",
+                    "git with a one-off alias",
+                    format!("Run: {line}"),
+                    "confirm: git",
                 ));
                 i += 2;
             }
@@ -2479,33 +2471,33 @@ fn git(args: &[&str], cwd: Option<&Path>, cx: &Ctx, out: &mut Vec<Finding>, line
     match sub {
         s if s.starts_with('$') => out.push(finding(
             Kind::External,
-            "el subcomando de git sale de una variable",
-            format!("Ejecutar: {line}"),
-            "confirmo: git",
+            "the git subcommand comes from a variable",
+            format!("Run: {line}"),
+            "confirm: git",
         )),
         "push" => {
             let remote = ops.first().copied().unwrap_or("origin");
             let branch = ops
                 .get(1)
-                .map_or_else(|| "la rama actual".to_string(), |b| b.to_string());
+                .map_or_else(|| "the current branch".to_string(), |b| b.to_string());
             let force = rest
                 .iter()
                 .any(|a| a.starts_with("--force") || *a == "-f" || a.starts_with('+'));
             let why = if force {
-                "git push --force reescribe la historia en el remoto"
+                "git push --force rewrites history on the remote"
             } else {
-                "git push publica commits en el remoto"
+                "git push publishes commits to the remote"
             };
             out.push(always(
                 why,
-                format!("Hacer git push de {branch} a {remote}"),
-                "confirmo: git push",
+                format!("Push {branch} to {remote}"),
+                "confirm: git push",
             ));
         }
         "send-email" | "request-pull" => out.push(always(
-            "envía parches por correo",
-            format!("Ejecutar: {line}"),
-            "confirmo: enviar correo",
+            "sends patches by mail",
+            format!("Run: {line}"),
+            "confirm: send mail",
         )),
         s if readonly.contains(&s) => {}
         "branch"
@@ -2543,27 +2535,27 @@ fn git(args: &[&str], cwd: Option<&Path>, cx: &Ctx, out: &mut Vec<Finding>, line
                     .any(|a| a.starts_with("--get") || *a == "--list" || *a == "-l")
                     || ops.len() == 1) => {}
         "config" if global => out.push(always(
-            "cambia la configuración global de git",
-            format!("Ejecutar: {line}"),
-            "confirmo: git config",
+            "changes the global git config",
+            format!("Run: {line}"),
+            "confirm: git config",
         )),
         "reset" if rest.contains(&"--hard") => out.push(finding(
             Kind::External,
-            "git reset --hard tira cambios sin guardar",
-            format!("Ejecutar: {line}"),
-            "confirmo: git reset",
+            "git reset --hard discards uncommitted changes",
+            format!("Run: {line}"),
+            "confirm: git reset",
         )),
         "clean" if has_flag(rest, 'f', &["--force"]) => out.push(finding(
             Kind::External,
-            "git clean borra archivos sin seguimiento",
-            format!("Ejecutar: {line}"),
-            "confirmo: git clean",
+            "git clean deletes untracked files",
+            format!("Run: {line}"),
+            "confirm: git clean",
         )),
         "stash" if matches!(ops.first().copied(), Some("drop" | "clear")) => out.push(finding(
             Kind::External,
-            "tira cambios guardados con stash",
-            format!("Ejecutar: {line}"),
-            "confirmo: git stash",
+            "discards stashed changes",
+            format!("Run: {line}"),
+            "confirm: git stash",
         )),
         "branch"
             if has_flag(rest, 'D', &[])
@@ -2572,9 +2564,9 @@ fn git(args: &[&str], cwd: Option<&Path>, cx: &Ctx, out: &mut Vec<Finding>, line
         {
             out.push(finding(
                 Kind::External,
-                "borra ramas",
-                format!("Ejecutar: {line}"),
-                "confirmo: borrar rama",
+                "deletes branches",
+                format!("Run: {line}"),
+                "confirm: delete branch",
             ))
         }
         "clone" => {
@@ -2582,7 +2574,7 @@ fn git(args: &[&str], cwd: Option<&Path>, cx: &Ctx, out: &mut Vec<Finding>, line
                 let url = ops.first().copied().unwrap_or("repo");
                 name_of(url).trim_end_matches(".git").to_string()
             });
-            write_target(&dest, dir.as_deref(), cx, out, "clona en");
+            write_target(&dest, dir.as_deref(), cx, out, "clones into");
         }
         _ => {
             match dir
@@ -2591,9 +2583,9 @@ fn git(args: &[&str], cwd: Option<&Path>, cx: &Ctx, out: &mut Vec<Finding>, line
             {
                 Some(Place::Inside | Place::Root) => out.push(finding(
                     Kind::Write,
-                    format!("git {sub} cambia el repositorio"),
-                    format!("Ejecutar: {line}"),
-                    format!("confirmo: git {sub}"),
+                    format!("git {sub} changes the repository"),
+                    format!("Run: {line}"),
+                    format!("confirm: git {sub}"),
                 )),
                 _ => write_target(
                     &dir.map(|d| d.display().to_string())
@@ -2601,7 +2593,7 @@ fn git(args: &[&str], cwd: Option<&Path>, cx: &Ctx, out: &mut Vec<Finding>, line
                     None,
                     cx,
                     out,
-                    &format!("git {sub} cambia el repositorio en"),
+                    &format!("git {sub} changes the repository in"),
                 ),
             }
         }
@@ -2632,18 +2624,18 @@ fn header(cmd: &Simple, args: &[&str], name: &str) -> Option<String> {
 
 fn mail_words(to: Option<String>, subject: Option<String>) -> (String, String) {
     let mut summary = match &to {
-        Some(t) => format!("Enviar correo a {t}"),
-        None => "Enviar un correo".to_string(),
+        Some(t) => format!("Send mail to {t}"),
+        None => "Send mail".to_string(),
     };
     if let Some(s) = subject {
-        summary.push_str(&format!(" con asunto «{}»", clip(&s, 60)));
+        summary.push_str(&format!(" with subject \"{}\"", clip(&s, 60)));
     }
     let phrase = match to {
         Some(t) => format!(
-            "confirmo: enviar correo a {}",
+            "confirm: send mail to {}",
             t.split('@').next().unwrap_or(&t).trim_start_matches('<')
         ),
-        None => "confirmo: enviar correo".into(),
+        None => "confirm: send mail".into(),
     };
     (summary, phrase)
 }
@@ -2662,7 +2654,7 @@ fn himalaya(args: &[&str], cmd: &Simple, out: &mut Vec<Finding>, line: &str) {
                 .map(|s| s.to_string())
         });
         let (summary, phrase) = mail_words(to, header(cmd, args, "subject"));
-        out.push(always("envía correo con himalaya", summary, phrase));
+        out.push(always("sends mail with himalaya", summary, phrase));
     } else if has(&[
         "delete",
         "move",
@@ -2678,9 +2670,9 @@ fn himalaya(args: &[&str], cmd: &Simple, out: &mut Vec<Finding>, line: &str) {
     ]) {
         out.push(finding(
             Kind::External,
-            "cambia tu buzón de correo",
-            format!("Ejecutar: {line}"),
-            "confirmo: cambiar correo",
+            "changes your mailbox",
+            format!("Run: {line}"),
+            "confirm: change mailbox",
         ));
     }
 }
@@ -2778,7 +2770,7 @@ fn curl(args: &[&str], cwd: Option<&Path>, cx: &Ctx, out: &mut Vec<Finding>, lin
             | "-F" | "--form" | "--form-string" | "-T" | "--upload-file" => sends = true,
             "-o" | "--output" | "-D" | "--dump-header" | "-c" | "--cookie-jar" => {
                 if let Some(v) = value.filter(|v| *v != "-") {
-                    write_target(v, cwd, cx, out, "descarga en");
+                    write_target(v, cwd, cx, out, "downloads to");
                 }
             }
             "--url" => urls.extend(value),
@@ -2797,7 +2789,7 @@ fn curl(args: &[&str], cwd: Option<&Path>, cx: &Ctx, out: &mut Vec<Finding>, lin
             sends = true;
         }
         if *a == "-O" || *a == "--remote-name" || *a == "-J" {
-            write_target("./downloaded", cwd, cx, out, "descarga en");
+            write_target("./downloaded", cwd, cx, out, "downloads to");
         }
         if with_value.contains(a) {
             i += 2;
@@ -2825,14 +2817,14 @@ fn curl(args: &[&str], cwd: Option<&Path>, cx: &Ctx, out: &mut Vec<Finding>, lin
         .iter()
         .any(|p| u.contains(p));
         let why = if payment {
-            format!("envía un pago o compra a {host}")
+            format!("sends a payment or purchase to {host}")
         } else {
-            format!("envía datos a {host}")
+            format!("sends data to {host}")
         };
         out.push(always(
             why,
-            format!("Enviar datos a {host}: {}", clip(line, 80)),
-            format!("confirmo: enviar a {host}"),
+            format!("Send data to {host}: {}", clip(line, 80)),
+            format!("confirm: send to {host}"),
         ));
     }
 }
@@ -2853,9 +2845,9 @@ fn wget(args: &[&str], cwd: Option<&Path>, cx: &Ctx, out: &mut Vec<Finding>, lin
     if sends && let Some(u) = urls.iter().find(|u| !local_url(u)) {
         let host = host_of(u);
         out.push(always(
-            format!("envía datos a {host}"),
-            format!("Enviar datos a {host}: {}", clip(line, 80)),
-            format!("confirmo: enviar a {host}"),
+            format!("sends data to {host}"),
+            format!("Send data to {host}: {}", clip(line, 80)),
+            format!("confirm: send to {host}"),
         ));
     }
     let target = args
@@ -2884,8 +2876,8 @@ fn wget(args: &[&str], cwd: Option<&Path>, cx: &Ctx, out: &mut Vec<Finding>, lin
         });
     match target {
         Some("-") => {}
-        Some(t) => write_target(t, cwd, cx, out, "descarga en"),
-        None => write_target("./downloaded", cwd, cx, out, "descarga en"),
+        Some(t) => write_target(t, cwd, cx, out, "downloads to"),
+        None => write_target("./downloaded", cwd, cx, out, "downloads to"),
     }
 }
 
@@ -2970,14 +2962,14 @@ fn gh(args: &[&str], out: &mut Vec<Finding>, line: &str) {
     };
     if mutating {
         let summary = match (group, action) {
-            ("pr", "create") => "Abrir un pull request en GitHub".to_string(),
-            ("pr", "merge") => "Fusionar un pull request en GitHub".to_string(),
-            _ => format!("En GitHub: {}", clip(line, 80)),
+            ("pr", "create") => "Open a pull request on GitHub".to_string(),
+            ("pr", "merge") => "Merge a pull request on GitHub".to_string(),
+            _ => format!("On GitHub: {}", clip(line, 80)),
         };
         out.push(always(
-            format!("gh {group} {action} actúa en GitHub"),
+            format!("gh {group} {action} acts on GitHub"),
             summary,
-            format!("confirmo: gh {group} {action}")
+            format!("confirm: gh {group} {action}")
                 .trim_end()
                 .to_string(),
         ));
@@ -2987,9 +2979,9 @@ fn gh(args: &[&str], out: &mut Vec<Finding>, line: &str) {
     ) {
         out.push(finding(
             Kind::External,
-            format!("gh {group} cambia tu configuración de GitHub"),
-            format!("Ejecutar: {line}"),
-            format!("confirmo: gh {group}"),
+            format!("gh {group} changes your GitHub settings"),
+            format!("Run: {line}"),
+            format!("confirm: gh {group}"),
         ));
     }
 }
@@ -3420,24 +3412,24 @@ mod tests {
         let v = judge(
             Policy::Full,
             &cx(),
-            "himalaya template send <<EOF\nFrom: yo@x.com\nTo: juan@empresa.com\nSubject: Reunión del lunes\n\nhola\nEOF",
+            "himalaya template send <<EOF\nFrom: me@x.com\nTo: juan@empresa.com\nSubject: Monday meeting\n\nhi\nEOF",
         );
         assert_eq!(v.level, Level::Always);
         assert_eq!(
             v.summary,
-            "Enviar correo a juan@empresa.com con asunto «Reunión del lunes»"
+            "Send mail to juan@empresa.com with subject \"Monday meeting\""
         );
-        assert_eq!(v.phrase, "confirmo: enviar correo a juan");
+        assert_eq!(v.phrase, "confirm: send mail to juan");
         let v = judge(Policy::Workspace, &cx(), "git push origin feat");
-        assert_eq!(v.summary, "Hacer git push de feat a origin");
-        assert_eq!(v.phrase, "confirmo: git push");
+        assert_eq!(v.summary, "Push feat to origin");
+        assert_eq!(v.phrase, "confirm: git push");
         let v = judge(Policy::Workspace, &cx(), "echo x > ../other/a.txt");
         assert_eq!(v.level, Level::Confirm);
-        assert_eq!(v.summary, "Escribir ~/other/a.txt (fuera del proyecto)");
-        assert_eq!(v.phrase, "confirmo: escribir a.txt");
+        assert_eq!(v.summary, "Write ~/other/a.txt (outside the project)");
+        assert_eq!(v.phrase, "confirm: write a.txt");
         let v = judge(Policy::Workspace, &cx(), "rm -rf ~/Downloads/old");
-        assert_eq!(v.summary, "Borrar ~/Downloads/old (fuera del proyecto)");
-        assert_eq!(v.phrase, "confirmo: borrar old");
+        assert_eq!(v.summary, "Delete ~/Downloads/old (outside the project)");
+        assert_eq!(v.phrase, "confirm: delete old");
         assert_eq!(judge(Policy::Workspace, &cx(), "ls").level, Level::Allow);
     }
 
@@ -3563,12 +3555,12 @@ mod tests {
 
     #[test]
     fn actions_ask_under_every_policy_whatever_they_carry() {
-        let input = json!({"action": "run_on_host", "host_command": "ls", "command": "ls", "arakun_summary": "Ejecutar: ls", "arakun_phrase": "confirmo: ejecutar en mi máquina", "arakun_why": "ver"});
+        let input = json!({"action": "run_on_host", "host_command": "ls", "command": "ls", "arakun_summary": "Run: ls", "arakun_phrase": "confirm: run on my machine", "arakun_why": "check"});
         for p in [Policy::ReadOnly, Policy::Workspace, Policy::Full] {
             let v = judge_tool(p, &cx(), "other", "request_action run_on_host", &input);
             assert_eq!(
                 (v.level, v.phrase.as_str(), v.why.as_str()),
-                (X, "confirmo: ejecutar en mi máquina", "ver")
+                (X, "confirm: run on my machine", "check")
             );
             assert_eq!(judge_tool(p, &cx(), "execute", "ls", &input).level, X);
         }

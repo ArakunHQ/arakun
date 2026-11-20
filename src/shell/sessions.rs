@@ -1971,8 +1971,8 @@ impl Shell {
             .and_then(|e| e.session_index(id).map(|i| e.sessions[i].title.to_string()))
             .filter(|t| !t.is_empty())
             .unwrap_or_else(|| thread.read(cx).title().to_string());
-        let (text, lang) = crate::voice::question_text(&title, &questions);
-        crate::voice::speak(key, text, lang);
+        let text = crate::voice::question_text(&title, &questions);
+        crate::voice::speak(key, text);
     }
 
     // ---- desktop notifications ---------------------------------------------

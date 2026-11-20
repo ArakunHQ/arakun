@@ -302,7 +302,7 @@ fn has_any(text: &str, words: &[&str]) -> bool {
     words.iter().any(|w| text.contains(w))
 }
 
-/// Reads common Spanish and English phrasings. `repo` is the project's GitHub
+/// Reads common English phrasings. `repo` is the project's GitHub
 /// repository, for `#64`; `sessions` are (id, title) to find "when X finishes".
 pub fn parse(text: &str, repo: Option<&str>, sessions: &[(String, String)]) -> Option<Draft> {
     if let Some(d) = parse_reminder(text, &Clock::system(crate::memory::now())) {
@@ -310,10 +310,7 @@ pub fn parse(text: &str, repo: Option<&str>, sessions: &[(String, String)]) -> O
     }
     let t = text.to_lowercase();
     let number = pr_number(&t);
-    let when = has_any(
-        &t,
-        &["cuando", "when", "once ", "after ", "en cuanto", "si "],
-    );
+    let when = has_any(&t, &["when", "once ", "after "]);
     if !when {
         return None;
     }
@@ -323,12 +320,6 @@ pub fn parse(text: &str, repo: Option<&str>, sessions: &[(String, String)]) -> O
             &[
                 "checks pass",
                 "checks are green",
-                "pasen los checks",
-                "pasen las pruebas",
-                "pase el ci",
-                "pasen",
-                "esté verde",
-                "este verde",
                 "is green",
                 "goes green",
                 "ci passes",
@@ -339,34 +330,21 @@ pub fn parse(text: &str, repo: Option<&str>, sessions: &[(String, String)]) -> O
             number: n,
         }
     } else if let (Some(n), Some(repo)) = (number, repo)
-        && has_any(
-            &t,
-            &[
-                "se mergee",
-                "lo mergeen",
-                "se fusione",
-                "is merged",
-                "gets merged",
-                "merges",
-                "se haga merge",
-            ],
-        )
+        && has_any(&t, &["is merged", "gets merged", "merges"])
     {
         Trigger::PrMerged {
             repo: repo.to_string(),
             number: n,
         }
-    } else if has_any(&t, &["falle", "fails", "falla", "breaks", "se rompa"])
-        && has_any(&t, &["ci", "build", "checks"])
-    {
-        let branch = word_after(text, &["de ", "on ", "en "])
+    } else if has_any(&t, &["fails", "breaks"]) && has_any(&t, &["ci", "build", "checks"]) {
+        let branch = word_after(text, &["on "])
             .or_else(|| plain_branch(text))
             .unwrap_or_else(|| "main".into());
         Trigger::CiFailed {
             branch,
             project: None,
         }
-    } else if has_any(&t, &["termine", "acabe", "finishes", "is done", "finish"]) {
+    } else if has_any(&t, &["finishes", "is done", "finish"]) {
         let (id, title) = sessions
             .iter()
             .filter(|(_, title)| !title.is_empty() && t.contains(&title.to_lowercase()))
@@ -379,15 +357,7 @@ pub fn parse(text: &str, repo: Option<&str>, sessions: &[(String, String)]) -> O
         return None;
     };
     let mut steps = Vec::new();
-    let merge_words = [
-        "mergea",
-        "mergear",
-        "merge it",
-        "merge #",
-        "fusiona",
-        "haz merge",
-        "squash",
-    ];
+    let merge_words = ["merge it", "merge #", "squash"];
     if trigger.pull().is_some()
         && matches!(trigger, Trigger::PrChecksPass { .. })
         && (has_any(&t, &merge_words) || t.starts_with("merge"))
@@ -406,30 +376,10 @@ pub fn parse(text: &str, repo: Option<&str>, sessions: &[(String, String)]) -> O
     if let Some(cmd) = between(text, '`') {
         steps.push(Step::Run { command: cmd });
     }
-    if let Some(prompt) = after_any(
-        text,
-        &[
-            "pídele a un agente que ",
-            "pide a un agente que ",
-            "ask an agent to ",
-            "have an agent ",
-        ],
-    ) {
+    if let Some(prompt) = after_any(text, &["ask an agent to ", "have an agent "]) {
         steps.push(Step::Agent { prompt });
     }
-    let notify = has_any(
-        &t,
-        &[
-            "avísame",
-            "avisame",
-            "notifícame",
-            "notificame",
-            "notify me",
-            "tell me",
-            "let me know",
-            "ping me",
-        ],
-    );
+    let notify = has_any(&t, &["notify me", "tell me", "let me know", "ping me"]);
     if notify || steps.is_empty() {
         steps.push(Step::Notify {
             text: notice_text(&trigger),
@@ -451,17 +401,7 @@ pub fn sounds_like_rule(text: &str) -> bool {
     }
     let t = text.to_lowercase();
     t.split_whitespace().count() >= 4
-        && has_any(
-            &t,
-            &[
-                "cuando ",
-                "when ",
-                "once ",
-                "after ",
-                "en cuanto",
-                "as soon as",
-            ],
-        )
+        && has_any(&t, &["when ", "once ", "after ", "as soon as"])
         && !text.trim_end().ends_with('?')
 }
 
@@ -577,25 +517,10 @@ impl Clock {
 }
 
 /// Words that ask for a reminder or a timer, matched as whole words.
-const REMIND_WORDS: &[&str] = &[
-    "recuérdame",
-    "recuerdame",
-    "recordatorio",
-    "recuerda",
-    "remind me",
-    "reminder",
-    "temporizador",
-    "timer",
-    "alarma",
-    "alarm",
-    "avísame en",
-    "avisame en",
-    "avísame a las",
-    "avisame a las",
-];
+const REMIND_WORDS: &[&str] = &["remind me", "reminder", "timer", "alarm"];
 
 /// Words that ask for a timer, which may give its length bare: "timer 10 min".
-const TIMER_WORDS: &[&str] = &["temporizador", "timer"];
+const TIMER_WORDS: &[&str] = &["timer"];
 
 /// The words of a sentence, lower case, without the punctuation around them.
 /// `src/timer.rs` stays one word, so it does not read as "timer".
@@ -627,8 +552,8 @@ fn asks_reminder(text: &str) -> bool {
     has_phrase(&words(text), REMIND_WORDS)
 }
 
-/// A reminder or a timer in a sentence: "recuérdame en 20 min revisar el PR",
-/// "recordatorio mañana a las 9 de llamar a Dani", "remind me at 5pm to stretch",
+/// A reminder or a timer in a sentence: "remind me in 20 min to review the PR",
+/// "reminder tomorrow at 9 to call Dani", "remind me at 5pm to stretch",
 /// "timer 10 min". `clock` places clock times on the local day.
 pub fn parse_reminder(text: &str, clock: &Clock) -> Option<Draft> {
     let w = words(text);
@@ -672,7 +597,7 @@ pub fn parse_reminder(text: &str, clock: &Clock) -> Option<Draft> {
     })
 }
 
-/// "créame un recordatorio de comprar leche": a reminder with no time in it.
+/// "set a reminder to buy milk": a reminder with no time in it.
 /// What to remember, so it can be kept as a to-do instead of being lost.
 pub fn timeless_reminder(text: &str) -> Option<String> {
     if !asks_reminder(text) {
@@ -687,20 +612,8 @@ pub fn timeless_reminder(text: &str) -> Option<String> {
 
 /// The sentence without its asking words: what the person wants to remember.
 fn what_to_remember(text: &str) -> String {
-    const ASKING: &[&str] = &[
-        "créame un",
-        "creame un",
-        "crea un",
-        "pon un",
-        "ponme un",
-        "set a",
-        "set an",
-        "hazme un",
-        "make a",
-        "avísame",
-        "avisame",
-    ];
-    const LEADS: &[&str] = &["de", "que", "to", "para", "about", "of", "a", "for"];
+    const ASKING: &[&str] = &["set a", "set an", "make a"];
+    const LEADS: &[&str] = &["to", "about", "of", "for"];
     let mut kept: Vec<&str> = text.split_whitespace().collect();
     for phrase in REMIND_WORDS.iter().chain(ASKING) {
         let lower: Vec<String> = kept.iter().map(|k| words(k).concat()).collect();
@@ -732,14 +645,9 @@ fn word_start(t: &str, i: usize) -> bool {
         .is_none_or(|c| !c.is_alphanumeric())
 }
 
-/// "20 min", "2 hours", "media hora" at the start of `after`: minutes and bytes used.
+/// "20 min", "2 hours", "half an hour" at the start of `after`: minutes and bytes used.
 fn duration(after: &str) -> Option<(f64, usize)> {
-    for (words, minutes) in [
-        ("media hora", 30.0),
-        ("half an hour", 30.0),
-        ("una hora", 60.0),
-        ("an hour", 60.0),
-    ] {
+    for (words, minutes) in [("half an hour", 30.0), ("an hour", 60.0)] {
         if after.starts_with(words) && !word_start_after(after, words.len()) {
             return Some((minutes, words.len()));
         }
@@ -755,12 +663,10 @@ fn duration(after: &str) -> Option<(f64, usize)> {
         .take_while(|c| c.is_alphabetic())
         .collect();
     let minutes = match unit.as_str() {
-        "s" | "seg" | "segs" | "segundo" | "segundos" | "sec" | "secs" | "second" | "seconds" => {
-            v / 60.
-        }
-        "m" | "min" | "mins" | "minuto" | "minutos" | "minute" | "minutes" => v,
-        "h" | "hr" | "hrs" | "hora" | "horas" | "hour" | "hours" => v * 60.,
-        "d" | "dia" | "día" | "dias" | "días" | "day" | "days" => v * 1440.,
+        "s" | "sec" | "secs" | "second" | "seconds" => v / 60.,
+        "m" | "min" | "mins" | "minute" | "minutes" => v,
+        "h" | "hr" | "hrs" | "hour" | "hours" => v * 60.,
+        "d" | "day" | "days" => v * 1440.,
         _ => return None,
     };
     Some((minutes, unit_start + unit.len()))
@@ -771,14 +677,10 @@ fn word_start_after(t: &str, i: usize) -> bool {
     t[i..].chars().next().is_some_and(char::is_alphanumeric)
 }
 
-/// "en 20 min", "in 2 hours", "dentro de media hora": the moment and where it was in `t`.
+/// "in 20 min", "in 2 hours", "in half an hour": the moment and where it was in `t`.
 /// With `bare` (a timer), a length on its own counts too: "timer 10 min", "10 min timer".
 fn relative_time(t: &str, now: u64, bare: bool) -> Option<(u64, (usize, usize))> {
-    let heads: &[&str] = if bare {
-        &["dentro de ", "en ", "in ", ""]
-    } else {
-        &["dentro de ", "en ", "in "]
-    };
+    let heads: &[&str] = if bare { &["in ", ""] } else { &["in "] };
     for head in heads {
         let starts: Vec<usize> = if head.is_empty() {
             t.char_indices().map(|(i, _)| i).collect()
@@ -806,116 +708,103 @@ fn relative_time(t: &str, now: u64, bare: bool) -> Option<(u64, (usize, usize))>
     None
 }
 
-/// Where "mañana" or "tomorrow" shows in `t` as a whole word meaning the next
-/// day, not the morning ("de la mañana"), with its length.
+/// Where "tomorrow" shows in `t` as a whole word meaning the next day, with
+/// its length.
 fn tomorrow_words(t: &str) -> Vec<(usize, usize)> {
     let mut out = Vec::new();
-    for word in ["mañana", "manana", "tomorrow"] {
-        for (j, _) in t.match_indices(word) {
-            let after = &t[j + word.len()..];
-            if word_start(t, j)
-                && !word_start_after(t, j + word.len())
-                && !t[..j].ends_with("de la ")
-                // "tomorrow's meeting" names a thing, not the day.
-                && !after.starts_with("'s")
-                && !after.starts_with("’s")
-            {
-                out.push((j, word.len()));
-            }
+    let word = "tomorrow";
+    for (j, _) in t.match_indices(word) {
+        let after = &t[j + word.len()..];
+        if word_start(t, j)
+            && !word_start_after(t, j + word.len())
+            // "tomorrow's meeting" names a thing, not the day.
+            && !after.starts_with("'s")
+            && !after.starts_with("’s")
+        {
+            out.push((j, word.len()));
         }
     }
     out
 }
 
-/// "a las 5pm", "at 17:30", "mañana a las 9", "tomorrow at 9am": the moment and the
+/// "at 5pm", "at 17:30", "tomorrow at 9am": the moment and the
 /// spans of `t` that said it. The day is counted in local dates and the time placed
 /// with `clock`, so a day that changes to or from summer time still rings at the hour
 /// said.
 fn clock_time(t: &str, clock: &Clock) -> Option<(u64, Vec<(usize, usize)>)> {
-    for head in ["a las ", "a la ", "at "] {
-        for (i, _) in t.match_indices(head) {
-            if !word_start(t, i) {
-                continue;
-            }
-            let after = &t[i + head.len()..];
-            let hour: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
-            let Ok(mut h) = hour.parse::<i32>() else {
-                continue;
-            };
-            let mut used = hour.len();
-            let mut m = 0;
-            if let Some(r) = after[used..].strip_prefix(':') {
-                let min: String = r.chars().take_while(|c| c.is_ascii_digit()).collect();
-                m = min.parse().unwrap_or(0);
-                used += 1 + min.len();
-            }
-            let tail = after[used..].trim_start();
-            let gap = after[used..].len() - tail.len();
-            let mut pm = None;
-            for (word, is_pm) in [
-                ("pm", true),
-                ("p.m.", true),
-                ("am", false),
-                ("a.m.", false),
-                ("de la tarde", true),
-                ("de la noche", true),
-                ("de la mañana", false),
-                ("de la manana", false),
-            ] {
-                if tail.starts_with(word) && !word_start_after(tail, word.len()) {
-                    pm = Some(is_pm);
-                    used += gap + word.len();
-                    break;
-                }
-            }
-            match pm {
-                Some(true) if h < 12 => h += 12,
-                Some(false) if h == 12 => h = 0,
-                _ => {}
-            }
-            if h > 23 || m > 59 {
-                continue;
-            }
-            // "Tomorrow" sets the day only next to the time or to the asking
-            // words: in "remind me at 5pm to plan tomorrow" it is the message.
-            // A comma between them ("at 5pm, tomorrow") still keeps them together.
-            let next_to = |gap: &str| gap.chars().all(|c| c.is_whitespace() || c == ',');
-            let mut start = i;
-            let mut end = i + head.len() + used;
-            let mut extra = None;
-            let mut tomorrow = false;
-            for (j, len) in tomorrow_words(t) {
-                if j + len <= start && next_to(&t[j + len..start]) {
-                    start = j;
-                    tomorrow = true;
-                } else if j >= end && next_to(&t[end..j]) {
-                    end = j + len;
-                    tomorrow = true;
-                } else {
-                    let pre = t[..j].trim_end();
-                    if REMIND_WORDS
-                        .iter()
-                        .any(|p| pre.ends_with(p) && word_start(pre, pre.len() - p.len()))
-                    {
-                        extra = Some((j, j + len));
-                        tomorrow = true;
-                    }
-                }
-            }
-            let today = (clock.to_local)(clock.now)?;
-            let on =
-                |days: i32| (clock.from_local)(today.year, today.month, today.day + days, h, m);
-            let at = if tomorrow {
-                on(1)?
-            } else {
-                // A time already gone today means the next one.
-                on(0).filter(|at| *at > clock.now).or_else(|| on(1))?
-            };
-            let mut spans = vec![(start, end)];
-            // Said twice ("recordatorio mañana a las 9") it is cut once.
-            spans.extend(extra.filter(|&(j, _)| j < start || j >= end));
-            return Some((at, spans));
+    let head = "at ";
+    for (i, _) in t.match_indices(head) {
+        if !word_start(t, i) {
+            continue;
         }
+        let after = &t[i + head.len()..];
+        let hour: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+        let Ok(mut h) = hour.parse::<i32>() else {
+            continue;
+        };
+        let mut used = hour.len();
+        let mut m = 0;
+        if let Some(r) = after[used..].strip_prefix(':') {
+            let min: String = r.chars().take_while(|c| c.is_ascii_digit()).collect();
+            m = min.parse().unwrap_or(0);
+            used += 1 + min.len();
+        }
+        let tail = after[used..].trim_start();
+        let gap = after[used..].len() - tail.len();
+        let mut pm = None;
+        for (word, is_pm) in [("pm", true), ("p.m.", true), ("am", false), ("a.m.", false)] {
+            if tail.starts_with(word) && !word_start_after(tail, word.len()) {
+                pm = Some(is_pm);
+                used += gap + word.len();
+                break;
+            }
+        }
+        match pm {
+            Some(true) if h < 12 => h += 12,
+            Some(false) if h == 12 => h = 0,
+            _ => {}
+        }
+        if h > 23 || m > 59 {
+            continue;
+        }
+        // "Tomorrow" sets the day only next to the time or to the asking
+        // words: in "remind me at 5pm to plan tomorrow" it is the message.
+        // A comma between them ("at 5pm, tomorrow") still keeps them together.
+        let next_to = |gap: &str| gap.chars().all(|c| c.is_whitespace() || c == ',');
+        let mut start = i;
+        let mut end = i + head.len() + used;
+        let mut extra = None;
+        let mut tomorrow = false;
+        for (j, len) in tomorrow_words(t) {
+            if j + len <= start && next_to(&t[j + len..start]) {
+                start = j;
+                tomorrow = true;
+            } else if j >= end && next_to(&t[end..j]) {
+                end = j + len;
+                tomorrow = true;
+            } else {
+                let pre = t[..j].trim_end();
+                if REMIND_WORDS
+                    .iter()
+                    .any(|p| pre.ends_with(p) && word_start(pre, pre.len() - p.len()))
+                {
+                    extra = Some((j, j + len));
+                    tomorrow = true;
+                }
+            }
+        }
+        let today = (clock.to_local)(clock.now)?;
+        let on = |days: i32| (clock.from_local)(today.year, today.month, today.day + days, h, m);
+        let at = if tomorrow {
+            on(1)?
+        } else {
+            // A time already gone today means the next one.
+            on(0).filter(|at| *at > clock.now).or_else(|| on(1))?
+        };
+        let mut spans = vec![(start, end)];
+        // Said twice ("reminder tomorrow at 9") it is cut once.
+        spans.extend(extra.filter(|&(j, _)| j < start || j >= end));
+        return Some((at, spans));
     }
     None
 }
@@ -951,31 +840,12 @@ fn branch_token(raw: &str) -> Option<String> {
 /// A branch named without `-` or `/` ("CI fails on develop"), read only
 /// after the CI is named, so "notify me on Slack when CI fails" has none.
 fn plain_branch(text: &str) -> Option<String> {
-    const CI: &[&str] = &[
-        "ci", "build", "checks", "fails", "falle", "falla", "breaks", "rompa",
-    ];
-    const HEADS: &[&str] = &["de", "on", "en", "rama", "branch"];
+    const CI: &[&str] = &["ci", "build", "checks", "fails", "breaks"];
+    const HEADS: &[&str] = &["on", "branch"];
     // Skipped between a head and the branch: "on the develop branch".
-    const ARTICLES: &[&str] = &["el", "la", "the", "my", "mi", "our", "nuestra"];
+    const ARTICLES: &[&str] = &["the", "my", "our"];
     const NOT_BRANCHES: &[&str] = &[
-        "ci",
-        "build",
-        "checks",
-        "rama",
-        "branch",
-        "proyecto",
-        "project",
-        "repo",
-        "que",
-        "a",
-        "an",
-        "any",
-        "un",
-        "una",
-        "this",
-        "este",
-        "esta",
-        "cualquier",
+        "ci", "build", "checks", "branch", "project", "repo", "a", "an", "any", "this",
     ];
     let words: Vec<String> = text
         .split_whitespace()
@@ -1037,7 +907,7 @@ fn after_any(text: &str, heads: &[&str]) -> Option<String> {
     })
 }
 
-/// "por 2 horas", "for 3 hours", "48h".
+/// "for 3 hours", "48h".
 fn hours_in(t: &str) -> Option<u64> {
     let words: Vec<&str> = t.split_whitespace().collect();
     for (i, w) in words.iter().enumerate() {
@@ -1045,9 +915,7 @@ fn hours_in(t: &str) -> Option<u64> {
             return Some(n);
         }
         if let Ok(n) = w.parse::<u64>()
-            && words
-                .get(i + 1)
-                .is_some_and(|u| u.starts_with("hora") || u.starts_with("hour"))
+            && words.get(i + 1).is_some_and(|u| u.starts_with("hour"))
         {
             return Some(n);
         }
@@ -1412,20 +1280,20 @@ mod tests {
         // Thursday 15 January 2026, 10:00 local.
         let now = local(2026, 1, 15, 10, 0);
         let c = zone(now);
-        let d = parse_reminder("recuérdame en 20 min revisar el PR de Rik", &c).unwrap();
+        let d = parse_reminder("remind me in 20 min to review Rik's PR", &c).unwrap();
         assert_eq!(d.trigger, Trigger::At { at: now + 20 * 60 });
-        assert_eq!(notice(&d), "revisar el PR de Rik");
-        let d = parse_reminder("créame un recordatorio de llamar a Dani a las 5pm", &c).unwrap();
+        assert_eq!(notice(&d), "review Rik's PR");
+        let d = parse_reminder("set a reminder to call Dani at 5pm", &c).unwrap();
         assert_eq!(d.trigger, Trigger::At { at: now + 7 * 3600 });
-        assert_eq!(notice(&d), "llamar a Dani");
-        let d = parse_reminder("recordatorio mañana a las 9 de pagar la luz", &c).unwrap();
+        assert_eq!(notice(&d), "call Dani");
+        let d = parse_reminder("reminder tomorrow at 9 to pay the power bill", &c).unwrap();
         assert_eq!(
             d.trigger,
             Trigger::At {
                 at: local(2026, 1, 16, 9, 0)
             }
         );
-        assert_eq!(notice(&d), "pagar la luz");
+        assert_eq!(notice(&d), "pay the power bill");
         let d = parse_reminder("remind me at 17:30 to stretch", &c).unwrap();
         assert_eq!(
             d.trigger,
@@ -1435,24 +1303,24 @@ mod tests {
         );
         assert_eq!(notice(&d), "stretch");
         // A time already gone today rings tomorrow.
-        let d = parse_reminder("recuérdame a las 8 de la mañana correr", &c).unwrap();
+        let d = parse_reminder("remind me at 8 am to run", &c).unwrap();
         assert_eq!(
             d.trigger,
             Trigger::At {
                 at: local(2026, 1, 16, 8, 0)
             }
         );
-        assert_eq!(notice(&d), "correr");
-        let d = parse_reminder("pon un timer en 10 minutos", &c).unwrap();
+        assert_eq!(notice(&d), "run");
+        let d = parse_reminder("set a timer in 10 minutes", &c).unwrap();
         assert_eq!(d.trigger, Trigger::At { at: now + 600 });
         assert_eq!(notice(&d), "Time's up");
-        let d = parse_reminder("recuérdame en media hora sacar la ropa", &c).unwrap();
+        let d = parse_reminder("remind me in half an hour to take out the laundry", &c).unwrap();
         assert_eq!(d.trigger, Trigger::At { at: now + 1800 });
-        assert_eq!(notice(&d), "sacar la ropa");
-        let d = parse_reminder("avísame en 5 min", &c).unwrap();
+        assert_eq!(notice(&d), "take out the laundry");
+        let d = parse_reminder("alarm in 5 min", &c).unwrap();
         assert_eq!(notice(&d), "Time's up");
-        assert!(parse_reminder("en 20 min revisa el PR", &c).is_none());
-        assert!(sounds_like_rule("créame un recordatorio de algo"));
+        assert!(parse_reminder("in 20 min review the PR", &c).is_none());
+        assert!(sounds_like_rule("set a reminder for something"));
         assert!(title_for(&d.trigger, &d.steps).starts_with("Reminder: "));
     }
 
@@ -1466,8 +1334,8 @@ mod tests {
         assert_eq!(d.trigger, Trigger::At { at: now + 300 });
         assert!(notice(&d).contains('é'));
         // Letters that keep their length keep their case too.
-        let d = parse_reminder("recuérdame en 5 min llamar a José 🦀", &c).unwrap();
-        assert_eq!(notice(&d), "llamar a José 🦀");
+        let d = parse_reminder("remind me in 5 min to call José 🦀", &c).unwrap();
+        assert_eq!(notice(&d), "call José 🦀");
         let d = parse_reminder("İstanbul: remind me in 10 min", &c).unwrap();
         assert_eq!(d.trigger, Trigger::At { at: now + 600 });
         // The message is cut from the typed text, so one `İ` keeps the case
@@ -1476,8 +1344,8 @@ mod tests {
         assert_eq!(notice(&d), "Review İstanbul/README.md");
         let d = parse_reminder("İİ reminder in 5 min é\u{212A}", &c).unwrap();
         assert_eq!(notice(&d), "İİ é\u{212A}");
-        let d = parse_reminder("recuérdame mañana a las 9 de ver İzmir", &c).unwrap();
-        assert_eq!(notice(&d), "ver İzmir");
+        let d = parse_reminder("remind me tomorrow at 9 to see İzmir", &c).unwrap();
+        assert_eq!(notice(&d), "see İzmir");
     }
 
     #[test]
@@ -1493,14 +1361,13 @@ mod tests {
         let d = parse_reminder("remind me at 5pm to plan tomorrow", &c).unwrap();
         assert_eq!(d.trigger, Trigger::At { at: today });
         assert_eq!(notice(&d), "plan tomorrow");
-        assert_eq!(at("recuérdame a las 5pm preparar lo de mañana"), today);
         assert_eq!(at("remind me tomorrow at 5pm to stretch"), tomorrow);
         let d = parse_reminder("remind me at 5pm tomorrow to stretch", &c).unwrap();
         assert_eq!(d.trigger, Trigger::At { at: tomorrow });
         assert_eq!(notice(&d), "stretch");
-        let d = parse_reminder("recuérdame mañana llamar a Dani a las 5pm", &c).unwrap();
+        let d = parse_reminder("remind me tomorrow to call Dani at 5pm", &c).unwrap();
         assert_eq!(d.trigger, Trigger::At { at: tomorrow });
-        assert_eq!(notice(&d), "llamar a Dani");
+        assert_eq!(notice(&d), "call Dani");
         let d = parse_reminder("remind me to stretch at 5pm, tomorrow", &c).unwrap();
         assert_eq!(d.trigger, Trigger::At { at: tomorrow });
         assert_eq!(notice(&d), "stretch");
@@ -1526,10 +1393,8 @@ mod tests {
             ("timer 10 min", 10),
             ("Timer 10min", 10),
             ("10 min timer", 10),
-            ("temporizador 5 minutos", 5),
-            ("pon un temporizador de 5 minutos", 5),
             ("set a timer for 1 hour", 60),
-            ("timer media hora", 30),
+            ("timer half an hour", 30),
         ] {
             let d = parse_reminder(text, &c).unwrap_or_else(|| panic!("{text:?}"));
             assert_eq!(
@@ -1541,8 +1406,8 @@ mod tests {
             );
             assert_eq!(notice(&d), "Time's up", "{text:?}");
         }
-        // A bare length is only a timer's: a reminder needs "en", "in" or a clock time.
-        assert!(parse_reminder("recuérdame revisar los 2 días de logs", &c).is_none());
+        // A bare length is only a timer's: a reminder needs "in" or a clock time.
+        assert!(parse_reminder("remind me to check the 2 days of logs", &c).is_none());
     }
 
     #[test]
@@ -1554,7 +1419,6 @@ mod tests {
             "open src/timer.rs",
             "the alarmed users at 5pm",
             "reminders.rs fails in 2 min",
-            "recuerdas el bug de las 5? en 10 min lo vemos",
         ] {
             assert!(parse_reminder(text, &c).is_none(), "{text:?}");
             assert!(!sounds_like_rule(text), "{text:?}");
@@ -1570,7 +1434,7 @@ mod tests {
         // Saturday 7 March 2026, 18:00 winter time; summer time starts overnight.
         let now = local(2026, 3, 7, 18, 0);
         let c = zone(now);
-        let d = parse_reminder("recuérdame mañana a las 9 pagar la luz", &c).unwrap();
+        let d = parse_reminder("remind me tomorrow at 9 to pay the power bill", &c).unwrap();
         let at = local(2026, 3, 8, 9, 0);
         assert_eq!(d.trigger, Trigger::At { at });
         // Counting a day in seconds from today's offset would land an hour late.
@@ -1591,7 +1455,7 @@ mod tests {
     fn a_reminder_fires_at_its_moment_and_lasts_until_then() {
         let mut rules = Rules::default();
         let now = local(2026, 1, 15, 10, 0);
-        let d = parse_reminder("recuérdame en 3 días renovar el dominio", &zone(now)).unwrap();
+        let d = parse_reminder("remind me in 3 days to renew the domain", &zone(now)).unwrap();
         let id = rules.add(d, None, now);
         let r = rules.items.iter_mut().find(|r| r.id == id).unwrap();
         assert!(r.expires > now + 3 * 86_400, "it outlives the usual day");
@@ -1606,7 +1470,7 @@ mod tests {
     fn a_missed_reminder_still_rings_once_and_says_so() {
         let mut rules = Rules::default();
         let now = local(2026, 1, 15, 14, 0);
-        let d = parse_reminder("recuérdame en 5 min llamar a Dani", &zone(now)).unwrap();
+        let d = parse_reminder("remind me in 5 min to call Dani", &zone(now)).unwrap();
         let id = rules.add(d, None, now);
         let at = now + 300;
         let r = rules.items.iter_mut().find(|r| r.id == id).unwrap();
@@ -1671,7 +1535,7 @@ mod tests {
     #[test]
     fn the_mock_sentence_reads_as_merge_when_green() {
         let d = parse(
-            "mergea #64 cuando pasen los checks y avísame",
+            "merge #64 when the checks pass and let me know",
             Some(REPO),
             &[],
         )
@@ -1697,7 +1561,7 @@ mod tests {
         let d = parse("tell me when #12 is merged", Some(REPO), &[]).unwrap();
         assert!(matches!(d.trigger, Trigger::PrMerged { number: 12, .. }));
         assert_eq!(d.steps.len(), 1);
-        let d = parse("avísame cuando falle el CI de phone-local", Some(REPO), &[]).unwrap();
+        let d = parse("tell me when CI fails on phone-local", Some(REPO), &[]).unwrap();
         assert_eq!(
             d.trigger,
             Trigger::CiFailed {
@@ -1707,7 +1571,7 @@ mod tests {
         );
         let sessions = vec![("s1".to_string(), "Sidebar redesign".to_string())];
         let d = parse(
-            "cuando termine Sidebar redesign corre `cargo test` por 2 horas",
+            "when Sidebar redesign finishes run `cargo test` for 2 hours",
             None,
             &sessions,
         )
@@ -1738,9 +1602,9 @@ mod tests {
     #[test]
     fn plain_searches_are_not_rules() {
         assert!(parse("sidebar", Some(REPO), &[]).is_none());
-        assert!(parse("mergea #64", Some(REPO), &[]).is_none());
+        assert!(parse("merge #64", Some(REPO), &[]).is_none());
         // A PR trigger needs a repository to point at.
-        assert!(parse("mergea #64 cuando pasen los checks", None, &[]).is_none());
+        assert!(parse("merge #64 when checks pass", None, &[]).is_none());
     }
 
     #[test]
@@ -1989,7 +1853,7 @@ mod tests {
     fn cancelled_rules_do_not_fire() {
         let mut rules = Rules::default();
         let id = rules.add(
-            parse("avísame cuando #3 se mergee", Some(REPO), &[]).unwrap(),
+            parse("tell me when #3 is merged", Some(REPO), &[]).unwrap(),
             None,
             0,
         );
@@ -2054,7 +1918,7 @@ mod tests {
         let mut rules = Rules::default();
         rules.add(
             parse(
-                "mergea #64 cuando pasen los checks y avísame",
+                "merge #64 when the checks pass and let me know",
                 Some(REPO),
                 &[],
             )
@@ -2105,16 +1969,16 @@ mod tests {
     #[test]
     fn a_reminder_with_no_time_is_kept_as_a_to_do() {
         assert_eq!(
-            timeless_reminder("créame un recordatorio de comprar leche").as_deref(),
-            Some("comprar leche")
+            timeless_reminder("set a reminder to buy milk").as_deref(),
+            Some("buy milk")
         );
         assert_eq!(
-            timeless_reminder("recuérdame llamar a Dani").as_deref(),
-            Some("llamar a Dani")
+            timeless_reminder("remind me to call Dani").as_deref(),
+            Some("call Dani")
         );
-        assert_eq!(timeless_reminder("recuérdame en 5 min llamar a Dani"), None);
+        assert_eq!(timeless_reminder("remind me in 5 min to call Dani"), None);
         assert_eq!(timeless_reminder("timer 10 min"), None);
-        assert_eq!(timeless_reminder("abre el PR 12"), None);
+        assert_eq!(timeless_reminder("open PR 12"), None);
         // Not whole reminder words: not to-dos either.
         assert_eq!(timeless_reminder("open src/alarms.rs"), None);
         assert_eq!(timeless_reminder("open src/timer.rs"), None);
@@ -2128,13 +1992,13 @@ mod tests {
             t => panic!("{t:?}"),
         };
         assert_eq!(branch("tell me when CI fails on develop"), "develop");
-        assert_eq!(branch("avísame si el CI falla en staging."), "staging");
+        assert_eq!(branch("tell me when the CI fails on staging."), "staging");
         assert_eq!(
             branch("when the build breaks on the develop branch"),
             "develop"
         );
         assert_eq!(
-            branch("avísame si falla el CI en la rama release"),
+            branch("tell me when the CI fails on the release branch"),
             "release"
         );
         // Not a prefix of the name: the whole of it.
@@ -2151,10 +2015,7 @@ mod tests {
         );
         // "on Slack" comes before the CI: it isn't a branch.
         assert_eq!(branch("notify me on Slack when CI fails"), "main");
-        assert_eq!(
-            branch("avísame cuando falle el CI de este proyecto"),
-            "main"
-        );
+        assert_eq!(branch("tell me when CI fails on this project"), "main");
     }
 
     #[test]

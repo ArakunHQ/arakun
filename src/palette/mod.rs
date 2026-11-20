@@ -2030,7 +2030,7 @@ impl Palette {
                 )
                 .section("To-do")
                 .meta(crate::memory::ago(t.done.unwrap_or(t.created), now))
-                .extra("todo to-do pendiente pendientes".to_string())
+                .extra("todo to-do todos to-dos".to_string())
                 .boost(if done { -20 } else { 30 });
                 item.dim = done;
                 item

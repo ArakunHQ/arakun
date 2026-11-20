@@ -1184,7 +1184,7 @@ mod tests {
             let pending = serde_json::json!({
                 "req_id": req, "session": id, "tool": "execute", "title": "git push", "level": "always",
                 "why": "git push publica commits en el remoto", "summary": "Hacer git push de main a origin",
-                "phrase": "confirmo: git push", "created": now, "expires": now + 60,
+                "phrase": "confirm: git push", "created": now, "expires": now + 60,
             });
             std::fs::write(d.join("pending.json"), pending.to_string()).unwrap();
         };

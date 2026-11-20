@@ -141,18 +141,11 @@ pub fn is_question(text: &str) -> bool {
     if t.ends_with('?') && t.split_whitespace().count() >= 2 {
         return true;
     }
-    let first = t
-        .split_whitespace()
-        .next()
-        .unwrap_or("")
-        .to_lowercase()
-        .trim_start_matches('¿')
-        .to_string();
+    let first = t.split_whitespace().next().unwrap_or("").to_lowercase();
     const ASK: &[&str] = &[
-        "why", "how", "what", "when", "where", "which", "who", "explain", "por", "porqué", "qué",
-        "que", "cómo", "como", "cuándo", "dónde", "cuál", "quién",
+        "why", "how", "what", "when", "where", "which", "who", "explain",
     ];
-    t.split_whitespace().count() >= 3 && ASK.contains(&first.as_str()) || t.starts_with('¿')
+    t.split_whitespace().count() >= 3 && ASK.contains(&first.as_str())
 }
 
 #[cfg(test)]
@@ -192,13 +185,13 @@ mod tests {
     #[test]
     fn a_model_word_becomes_a_chip() {
         assert_eq!(
-            take("@opus arregla", false, &[]),
+            take("@opus fix it", false, &[]),
             Some((
                 Lead::Chip(Chip::Model {
                     id: "claude-opus-5-5".into(),
                     label: "Opus 5.5".into()
                 }),
-                "arregla".into()
+                "fix it".into()
             ))
         );
         // Not until the word is finished.
@@ -273,20 +266,20 @@ mod tests {
     #[test]
     fn a_known_branch_becomes_a_chip() {
         assert_eq!(
-            take("phone-local arregla el build", false, &branches()),
+            take("phone-local fix the build", false, &branches()),
             Some((
                 Lead::Chip(Chip::Branch("phone-local".into())),
-                "arregla el build".into()
+                "fix the build".into()
             ))
         );
-        assert_eq!(take("main arregla", false, &branches()), None);
+        assert_eq!(take("main fix", false, &branches()), None);
         assert_eq!(take("phone-local", false, &branches()), None);
         assert_eq!(take("unknown-branch x", false, &branches()), None);
     }
 
     #[test]
     fn questions_are_told_from_searches() {
-        assert!(is_question("¿por qué falló el CI de phone-local?"));
+        assert!(is_question("why did CI fail on phone-local?"));
         assert!(is_question("why did the relay build fail"));
         assert!(is_question("is the relay down?"));
         assert!(!is_question("sidebar"));

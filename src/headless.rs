@@ -157,7 +157,7 @@ pub struct Pending {
     /// `confirm` (the policy asks) or `always` (asks under every policy).
     pub level: Level,
     pub why: String,
-    /// What it does, in Spanish.
+    /// What it does, in a few words.
     pub summary: String,
     /// What the user says to approve it.
     pub phrase: String,
@@ -1309,7 +1309,7 @@ fn pending_cmd(json: bool) -> i32 {
             "confirm"
         };
         println!(
-            "{}  {}  [{level}]  {title}\n  {}\n  why: {}\n  di: «{}»",
+            "{}  {}  [{level}]  {title}\n  {}\n  why: {}\n  say: \"{}\"",
             p.session, p.req_id, p.summary, p.why, p.phrase
         );
         if let Some(c) = &p.command {
@@ -1554,13 +1554,13 @@ impl Host {
             command: None,
             args: Value::Null,
             level: Level::Always,
-            why: "sin sandbox, sus comandos corren con tus credenciales y tu red".into(),
+            why: "no sandbox: its commands run with your credentials and your network".into(),
             summary: format!(
-                "Dejar que el agente «{}» corra sin sandbox en {}",
+                "Let the agent \"{}\" run without a sandbox in {}",
                 self.meta.title,
                 self.meta.cwd.display()
             ),
-            phrase: "confirmo: sin sandbox".into(),
+            phrase: "confirm: no sandbox".into(),
             created,
             expires: created + PENDING_TTL,
             answer: None,
@@ -2207,7 +2207,7 @@ mod tests {
             level: Level::Always,
             why: "w".into(),
             summary: "s".into(),
-            phrase: "confirmo: git push".into(),
+            phrase: "confirm: git push".into(),
             created: 1,
             expires: 2,
             answer: Some(Answer::Denied),

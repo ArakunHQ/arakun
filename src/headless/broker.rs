@@ -273,12 +273,12 @@ pub fn prepare(args: &Value, jail: &Jail) -> Result<Value, String> {
                 }
             }
             let more = if to.len() > 1 {
-                format!(" y {} más", to.len() - 1)
+                format!(" and {} more", to.len() - 1)
             } else {
                 String::new()
             };
             let mut summary = format!(
-                "Enviar correo a {}{more} con asunto «{}»",
+                "Send mail to {}{more} with subject \"{}\"",
                 to.join(", "),
                 clip(&subject, 80)
             );
@@ -295,14 +295,10 @@ pub fn prepare(args: &Value, jail: &Jail) -> Result<Value, String> {
                             .into_owned()
                     })
                     .collect();
-                summary.push_str(&format!(", adjuntos: {}", names.join(", ")));
+                summary.push_str(&format!(", attachments: {}", names.join(", ")));
             }
             let v = json!({"action": kind, "to": to, "cc": cc, "subject": subject, "body": body, "attachments": attachments});
-            (
-                v,
-                summary,
-                format!("confirmo: enviar correo a {}{more}", to[0]),
-            )
+            (v, summary, format!("confirm: send mail to {}{more}", to[0]))
         }
         "git_push" => {
             let repo = inside(jail, &text(args, "repo").unwrap_or_else(|| ".".into()))?;
@@ -340,14 +336,14 @@ pub fn prepare(args: &Value, jail: &Jail) -> Result<Value, String> {
             let subject = git(&repo, &["log", "-1", "--format=%s", &sha]).unwrap_or_default();
             let v = json!({"action": kind, "repo": repo, "remote": remote, "url": url, "branch": branch, "sha": sha});
             let summary = format!(
-                "Subir la rama {branch} ({} «{}») a {url}",
+                "Push the branch {branch} ({} \"{}\") to {url}",
                 &sha[..sha.len().min(10)],
                 clip(&subject, 60)
             );
             (
                 v,
                 summary,
-                format!("confirmo: git push {branch} a {remote}"),
+                format!("confirm: git push {branch} to {remote}"),
             )
         }
         "gh" => {
@@ -385,7 +381,7 @@ pub fn prepare(args: &Value, jail: &Jail) -> Result<Value, String> {
                     return Err("gh pr create needs --head and no positional arguments".into());
                 }
                 format!(
-                    "Abrir un pull request en {repo}: «{}»",
+                    "Open a pull request in {repo}: \"{}\"",
                     clip(gh_value(rest, &["--title", "-t"]).unwrap_or(""), 80)
                 )
             } else {
@@ -393,7 +389,7 @@ pub fn prepare(args: &Value, jail: &Jail) -> Result<Value, String> {
                     return Err("gh pr comment needs one pull request and --body".into());
                 }
                 format!(
-                    "Comentar en el pull request {} de {repo}: «{}»",
+                    "Comment on pull request {} in {repo}: \"{}\"",
                     positional[0],
                     clip(gh_value(rest, &["--body", "-b"]).unwrap_or(""), 80)
                 )
@@ -401,7 +397,7 @@ pub fn prepare(args: &Value, jail: &Jail) -> Result<Value, String> {
             (
                 json!({"action": kind, "args": a}),
                 summary,
-                format!("confirmo: gh pr {verb}"),
+                format!("confirm: gh pr {verb}"),
             )
         }
         #[cfg(feature = "coderlabs")]
@@ -427,13 +423,13 @@ pub fn prepare(args: &Value, jail: &Jail) -> Result<Value, String> {
                 return Err("run_on_host needs why".into());
             }
             let summary = format!(
-                "Ejecutar en tu máquina, fuera del sandbox: {}",
+                "Run on your computer, outside the sandbox: {}",
                 clip(&command, 200)
             );
             (
                 json!({"action": kind, "host_command": command}),
                 summary,
-                "confirmo: ejecutar en mi máquina".to_string(),
+                "confirm: run on my computer".to_string(),
             )
         }
         other => {
@@ -446,7 +442,7 @@ pub fn prepare(args: &Value, jail: &Jail) -> Result<Value, String> {
     v["arakun_summary"] = json!(summary);
     v["arakun_phrase"] = json!(phrase);
     v["arakun_why"] = json!(why.unwrap_or_else(|| format!(
-        "{kind}: lo hace arakun con tus credenciales, fuera del sandbox"
+        "{kind}: arakun does it with your credentials, outside the sandbox"
     )));
     Ok(v)
 }
@@ -678,12 +674,12 @@ mod tests {
             &j,
         )
         .unwrap();
-        assert_eq!(v["arakun_phrase"], "confirmo: enviar correo a juan@x.com");
+        assert_eq!(v["arakun_phrase"], "confirm: send mail to juan@x.com");
         assert!(
             v["arakun_summary"]
                 .as_str()
                 .unwrap()
-                .starts_with("Enviar correo a juan@x.com con asunto «Hola»")
+                .starts_with("Send mail to juan@x.com with subject \"Hola\"")
         );
         assert_eq!(v["attachments"][0], json!(j.workspace.join("report.pdf")));
         let v = prepare(
@@ -693,7 +689,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             v["arakun_phrase"],
-            "confirmo: enviar correo a a@x.com y 1 más"
+            "confirm: send mail to a@x.com and 1 more"
         );
         let bad = |a: Value| prepare(&a, &j).unwrap_err();
         assert!(
@@ -724,7 +720,7 @@ mod tests {
                 "pr", "create", "--repo", "o/r", "--head", "b", "--title", "T", "--body", "B"
             ])
             .unwrap()["arakun_phrase"],
-            "confirmo: gh pr create"
+            "confirm: gh pr create"
         );
         assert!(ok(&["pr", "comment", "12", "--repo", "o/r", "--body", "hi"]).is_ok());
         assert!(ok(&["pr", "merge", "12", "--repo", "o/r"]).is_err());
@@ -845,7 +841,7 @@ mod tests {
             &j,
         )
         .unwrap();
-        assert_eq!(v["arakun_phrase"], "confirmo: git push main a origin");
+        assert_eq!(v["arakun_phrase"], "confirm: git push main to origin");
         assert!(v["url"].as_str().unwrap().ends_with("remote.git"));
         execute(&v, &j.workspace).unwrap();
         assert!(!ws.join("pwned").exists());

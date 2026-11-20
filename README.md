@@ -1313,8 +1313,11 @@ forward through tabs, `Ctrl+Cmd+F` toggles full screen, and `Cmd+H`, `Cmd+M` and
   `C` comment, `R` review with an agent, `U` catch me up, `S` summarize, `D` all or
   fewer details, `O` open on GitHub. `Enter` opens the selected item's sheet, and `Esc` closes it (the sheet an
   island notice opened over another tab too). While the sheet is closed, `J` / `K`
-  only move through the list; while it is open, they open the next item. In the
-  comment box, `Enter` sends the comment and `/` lists the actions
+  only move through the list; while it is open, they open the next item. On a pilot
+  card you clicked, `1` to `4` send its ready answers, `E` opens "Other answer…" and
+  `Y` marks a fixed or failed card dealt with; the buttons show their keys, and after
+  an answer the next question is picked. In the comment box, `Enter` sends the
+  comment and `/` lists the actions
 
 ## Contributing
 

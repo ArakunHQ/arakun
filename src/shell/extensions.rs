@@ -13,7 +13,7 @@ impl Shell {
         self.menu = None;
         self.env_menu_open = false;
         if !self.has_projects() {
-            self.open_picker(window, cx);
+            self.pick_project_for("The Marketplace tab", Self::open_extensions_tab, window, cx);
             return;
         }
         self.show_view_tab("Marketplace", TabKind::Extensions, |k| {

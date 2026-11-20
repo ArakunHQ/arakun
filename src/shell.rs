@@ -258,6 +258,9 @@ enum MenuKey {
     OpenUsage,
 }
 
+/// Opens a view, once what it needs is there (`Shell::pick_project_for`).
+type OpenView = fn(&mut Shell, &mut Window, &mut Context<Shell>);
+
 pub struct Shell {
     projects: Vec<Project>,
     /// The one row of tabs, for every project and environment.
@@ -510,11 +513,9 @@ pub struct Shell {
     notices: RefCell<crate::notices::History>,
     /// The Inbox was open at the last frame: when it closes, what it showed counts as seen.
     inbox_open: bool,
-    /// The GitHub tab shown with no project added: the queue reads GitHub,
-    /// not a project, so it doesn't need one. It takes the welcome's place.
-    github_alone: bool,
-    /// The Servers tab shows in the welcome's place: no project was added.
-    servers_alone: bool,
+    /// The view shown in the welcome's place: one that needs no project,
+    /// opened before any was added.
+    alone: Option<home::Alone>,
     /// A sign-in's terminal, in the welcome's place: no project was added.
     terminal_alone: Option<dock::TerminalAlone>,
     /// `History::arrived` when the Inbox last drew: what it showed.
@@ -1016,9 +1017,8 @@ impl Shell {
             team: None,
             notices: RefCell::new(crate::notices::load()),
             inbox_open: false,
-            github_alone: false,
             onboarding: None,
-            servers_alone: false,
+            alone: None,
             terminal_alone: None,
             inbox_shown: Cell::new(0),
             clear_armed: false,
@@ -1578,18 +1578,52 @@ impl Shell {
     // Projects, environments and dialogs
 
     fn open_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_picker_then(None, window, cx);
+    }
+
+    /// The Add-project picker, opened because `what` (a view's name) needs a
+    /// project: it says so, and `then` opens `what` once one is added.
+    pub(super) fn pick_project_for(
+        &mut self,
+        what: &str,
+        then: OpenView,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let why = format!("{what} works in a project. Pick a git repository to open it in.");
+        self.open_picker_then(Some((why, then)), window, cx);
+    }
+
+    fn open_picker_then(
+        &mut self,
+        why: Option<(String, OpenView)>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.menu = None;
         self.env_menu_open = false;
         let existing = self.projects.iter().map(|p| p.path.clone()).collect();
-        let picker = cx.new(|cx| FolderPicker::new(existing, window, cx));
+        let (why, then) = why.unzip();
+        let picker = cx.new(|cx| {
+            let picker = FolderPicker::new(existing, window, cx);
+            match why {
+                Some(why) => picker.because(why),
+                None => picker,
+            }
+        });
         let sub = cx.subscribe_in(
             &picker,
             window,
-            |this, _, ev: &PickerEvent, window, cx| match ev {
+            move |this, _, ev: &PickerEvent, window, cx| match ev {
                 PickerEvent::Picked(path) => {
                     let path = path.clone();
                     this.close_modal(window, cx);
                     this.add_project(path, window, cx);
+                    if let Some(then) = then
+                        && this.has_projects()
+                    {
+                        then(this, window, cx);
+                    }
                 }
                 PickerEvent::Dismissed => this.close_modal(window, cx),
             },
@@ -2058,7 +2092,7 @@ impl Shell {
     /// Opens (or focuses) the Notes tab of the visible environment.
     fn open_notes_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.has_projects() {
-            self.open_picker(window, cx);
+            self.pick_project_for("The Notes tab", Self::open_notes_tab, window, cx);
             return;
         }
         self.show_view_tab("Notes", TabKind::Notes, |k| matches!(k, TabKind::Notes));
@@ -2071,7 +2105,7 @@ impl Shell {
     /// Opens (or focuses) the Memory tab of the visible environment.
     fn open_memory_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.has_projects() {
-            self.open_picker(window, cx);
+            self.pick_project_for("The Memory tab", Self::open_memory_tab, window, cx);
             return;
         }
         self.show_view_tab("Memory", TabKind::Memory, |k| matches!(k, TabKind::Memory));
@@ -2084,14 +2118,15 @@ impl Shell {
         cx.notify();
     }
 
-    /// Opens (or focuses) the Usage tab of the visible environment.
+    /// Opens (or focuses) the Usage tab of the visible environment. Plans
+    /// belong to no project: with none, it shows in the welcome's place.
     fn open_usage_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.has_projects() {
-            self.open_picker(window, cx);
-            return;
+        if self.has_projects() {
+            self.show_view_tab("Usage", TabKind::Usage, |k| matches!(k, TabKind::Usage));
+            self.note_active_tab(cx);
+        } else {
+            self.show_alone(Some(home::Alone::Usage), cx);
         }
-        self.show_view_tab("Usage", TabKind::Usage, |k| matches!(k, TabKind::Usage));
-        self.note_active_tab(cx);
         self.sync_usage_view(cx);
         self.usage_view.update(cx, |v, cx| v.focus(window, cx));
         cx.notify();
@@ -2113,7 +2148,7 @@ impl Shell {
     /// Opens (or focuses) the Design system tab of the visible environment.
     fn open_gallery_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.has_projects() {
-            self.open_picker(window, cx);
+            self.pick_project_for("The Design system tab", Self::open_gallery_tab, window, cx);
             return;
         }
         self.show_view_tab("Design system", TabKind::Gallery, |k| {
@@ -2127,7 +2162,7 @@ impl Shell {
     /// Opens (or focuses) the Isometric tab of the visible environment.
     fn open_iso_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.has_projects() {
-            self.open_picker(window, cx);
+            self.pick_project_for("The Isometric tab", Self::open_iso_tab, window, cx);
             return;
         }
         self.show_view_tab("Isometric", TabKind::Isometric, |k| {
@@ -3509,13 +3544,11 @@ impl Render for Shell {
         let has_projects = self.has_projects();
         self.fit_side_cards(window);
         if has_projects {
-            // With a project the GitHub tab is a tab again; without one later,
-            // the welcome comes back first. The Servers tab too.
-            self.github_alone = false;
-            // The Servers tab in the welcome's place goes with the welcome, and
-            // the server is told nobody is looking. After this frame: telling
-            // it updates the view, which cannot happen while this one draws.
-            if std::mem::take(&mut self.servers_alone) {
+            // With a project a view in the welcome's place is a tab again;
+            // without one later, the welcome comes back first. The server is
+            // told nobody looks at its tab now. After this frame: telling it
+            // updates the view, which cannot happen while this one draws.
+            if self.alone.take() == Some(home::Alone::Servers) {
                 cx.defer_in(window, |this, _, cx| this.servers_tab_closed(cx));
             }
             // A sign-in started before the first project goes on in its dock.
@@ -3581,10 +3614,8 @@ impl Render for Shell {
         } else if let Some(alone) = &self.terminal_alone {
             self.render_terminal_alone(alone, window, cx)
                 .into_any_element()
-        } else if self.servers_alone {
-            self.render_servers_alone(window, cx).into_any_element()
-        } else if self.github_alone {
-            self.render_github_alone(window, cx).into_any_element()
+        } else if let Some(alone) = self.alone {
+            self.render_view_alone(alone, window, cx).into_any_element()
         } else {
             self.render_welcome(window, cx).into_any_element()
         };

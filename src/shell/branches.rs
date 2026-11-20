@@ -15,7 +15,7 @@ impl Shell {
     pub(super) fn open_branches_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.menu = None;
         if !self.has_projects() {
-            self.open_picker(window, cx);
+            self.pick_project_for("The Branches tab", Self::open_branches_tab, window, cx);
             return;
         }
         self.show_view_tab("Branches", TabKind::Branches, |k| {

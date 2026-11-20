@@ -3,8 +3,8 @@
 //! lingering on, so it runs while nobody is logged in and starts at boot; as
 //! root (a VPS often has only root) it is a system unit instead. macOS gets a
 //! launchd agent. Each runs this same binary with `serve`, the `PATH` of the
-//! shell that installed it (where the agents are) and `ARAKUN_SERVER_DIR` if
-//! it is set.
+//! shell that installed it (where the agents are), `ARAKUN_SERVER_DIR` if
+//! it is set, and `ARAKUN_GITHUB=readonly` if that is.
 //!
 //! Both restart the server when it fails, but not after `quit`: `quit` exits
 //! cleanly, and stopping the server is what the user asked for.
@@ -261,6 +261,11 @@ fn service_env(
             value
         };
         env.push((key.to_string(), text(key, &value)?.to_string()));
+    }
+    // A server set up not to push or open pull requests stays that way once
+    // it runs as a service. Only that one value means anything.
+    if get("ARAKUN_GITHUB").is_some_and(|v| v == "readonly") {
+        env.push(("ARAKUN_GITHUB".to_string(), "readonly".to_string()));
     }
     Ok(env)
 }
@@ -909,6 +914,16 @@ mod tests {
             service_env(other, false).unwrap(),
             vec![("ARAKUN_SERVER_DIR".into(), "/srv/a".into())]
         );
+        for root in [false, true] {
+            let read_only =
+                |key: &str| (key == "ARAKUN_GITHUB").then(|| OsString::from("readonly"));
+            assert_eq!(
+                service_env(read_only, root).unwrap(),
+                vec![("ARAKUN_GITHUB".into(), "readonly".into())]
+            );
+        }
+        let other_value = |key: &str| (key == "ARAKUN_GITHUB").then(|| OsString::from("on"));
+        assert!(service_env(other_value, false).unwrap().is_empty());
     }
 
     #[test]

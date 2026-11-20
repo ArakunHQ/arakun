@@ -157,11 +157,17 @@ impl Client {
     /// when the server acknowledges. After the connection gave up for good,
     /// it is told back at once.
     pub fn send(&self, msg: &Value) {
-        let closed = self.closed.lock().unwrap_or_else(|e| e.into_inner());
-        if *closed || self.out.send(Out::Say(msg.to_string())).is_err() {
-            let _ = self
-                .events
-                .unbounded_send((self.id.clone(), Event::Undelivered(msg.clone())));
+        send(&self.id, &self.out, &self.closed, &self.events, msg);
+    }
+
+    /// What sends to the server from any thread, as [`Client::send`] does.
+    /// It stops working once the connection is dropped or gives up.
+    pub fn sender(&self) -> Sender {
+        Sender {
+            id: self.id.clone(),
+            out: self.out.clone(),
+            closed: self.closed.clone(),
+            events: self.events.clone(),
         }
     }
 
@@ -170,6 +176,28 @@ impl Client {
     /// list; the token it gave is gone from here all the same.
     pub fn unpair(&self) {
         let _ = self.out.send(Out::Unpair);
+    }
+}
+
+/// [`Client::sender`]: sends to a server from another thread.
+#[derive(Clone)]
+pub struct Sender {
+    id: String,
+    out: std_mpsc::Sender<Out>,
+    closed: Arc<Mutex<bool>>,
+    events: Events,
+}
+
+impl Sender {
+    pub fn send(&self, msg: &Value) {
+        send(&self.id, &self.out, &self.closed, &self.events, msg);
+    }
+}
+
+fn send(id: &str, out: &std_mpsc::Sender<Out>, closed: &Mutex<bool>, events: &Events, msg: &Value) {
+    let closed = closed.lock().unwrap_or_else(|e| e.into_inner());
+    if *closed || out.send(Out::Say(msg.to_string())).is_err() {
+        let _ = events.unbounded_send((id.to_string(), Event::Undelivered(msg.clone())));
     }
 }
 

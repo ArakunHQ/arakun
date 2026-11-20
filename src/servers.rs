@@ -12,6 +12,7 @@
 
 pub mod balance;
 pub mod client;
+pub mod git;
 
 use std::collections::HashMap;
 use std::path::PathBuf;

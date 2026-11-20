@@ -907,6 +907,12 @@ impl Shell {
                 client,
                 wire::error("settle or delete this computer's environments in Arakun itself"),
             ),
+            // Answered with its `ref`, so whoever waits on it stops waiting.
+            ClientMsg::Git { reference, .. } => {
+                let why = anyhow::anyhow!("commit this computer's changes in Arakun itself");
+                let reply = crate::git_call::reply(reference, Err(why));
+                self.phone_send(client, reply.to_string());
+            }
             ClientMsg::Ping => {}
         }
     }

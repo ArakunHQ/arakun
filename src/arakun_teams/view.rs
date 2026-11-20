@@ -476,7 +476,8 @@ impl TeamsView {
 
     fn create_team(&mut self, cx: &mut Context<Self>) {
         let name = self.team_name.read(cx).text().trim().to_string();
-        if name.is_empty() {
+        // Enter while a team is being made or opened would make a second one.
+        if name.is_empty() || self.creating || self.hub.read(cx).busy.contains("create-team") {
             return;
         }
         // The name stays in the field until the team opens, to fix on a refusal.
@@ -2796,6 +2797,7 @@ impl TeamsView {
             return div().into_any_element();
         };
         let mine = hub.device_id().unwrap_or_default().to_string();
+        let my_login = hub.me().map(|m| m.login.clone());
         let mut devices: Vec<(String, DeviceRow, bool)> = t
             .detail
             .members
@@ -2839,7 +2841,11 @@ impl TeamsView {
                             .min_w_0()
                             .truncate()
                             .text_color(theme::text())
-                            .child(format!("{login} · {}", crate::redact::text(&d.name))),
+                            .child(format!(
+                                "{} · {}",
+                                shown_login(&login, my_login.as_deref()),
+                                crate::redact::text(&d.name)
+                            )),
                     )
                     .when(verified, |r| {
                         r.child(icon("tick02", 14.).text_color(theme::success()))
@@ -2874,6 +2880,8 @@ impl TeamsView {
                 Self::footnote("That device is not in this team any more.").into_any_element(),
             );
         };
+        // One of your own devices shows your login: mask it in redacted mode.
+        let login = shown_login(&login, hub.me().map(|m| m.login.as_str()));
         let name = crate::redact::text(&device.name).into_owned();
         let numbers = hub
             .sig_pub()

@@ -33,6 +33,7 @@ pub mod plan;
 pub mod plugins;
 pub mod publishers;
 mod rpc;
+pub mod sandbox;
 pub mod saved;
 mod search;
 mod selection;

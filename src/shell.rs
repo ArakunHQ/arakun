@@ -691,6 +691,12 @@ impl Shell {
             this.spy_from_composer(window, cx)
         });
         let (projects, active_project, layout, strip) = state::restore(state::load());
+        crate::agent::sandbox::set_projects(
+            projects
+                .iter()
+                .filter(|p| p.sandbox)
+                .map(|p| p.path.clone()),
+        );
         theme::set_diff_palette(layout.diff_palette);
         theme::set_glass(layout.glass);
         theme::set_grays(layout.grays);
@@ -1281,6 +1287,12 @@ impl Shell {
     // Persistence and git refresh
 
     fn save(&self, cx: &mut Context<Self>) {
+        crate::agent::sandbox::set_projects(
+            self.projects
+                .iter()
+                .filter(|p| p.sandbox)
+                .map(|p| p.path.clone()),
+        );
         state::queue(self.state_bytes());
         cx.background_spawn(crate::guard::task(async move {
             if let Err(e) = state::write_queued() {
@@ -2543,6 +2555,7 @@ impl Shell {
                 setup: p.setup.clone(),
                 check: p.check.clone(),
                 base: p.base.clone(),
+                sandbox: p.sandbox,
                 remote: p.is_remote(),
             }
         });
@@ -2611,6 +2624,12 @@ impl Shell {
                         } else {
                             p.setup = command.clone();
                         }
+                        this.save(cx);
+                    }
+                }
+                SettingsEvent::ProjectSandbox { project, on } => {
+                    if let Some(p) = this.projects.iter_mut().find(|p| p.path == *project) {
+                        p.sandbox = *on;
                         this.save(cx);
                     }
                 }

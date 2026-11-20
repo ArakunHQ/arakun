@@ -1003,6 +1003,8 @@ pub struct Project {
     pub check: Option<String>,
     /// The user doesn't want arakun to suggest a check here.
     pub check_declined: bool,
+    /// Its agents run in a sandbox (`agent::sandbox`).
+    pub sandbox: bool,
     /// The branch new environments start from; None for origin's default branch.
     pub base: Option<String>,
     /// Scratch notes, shown by the Notes tab.

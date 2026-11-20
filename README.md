@@ -224,6 +224,16 @@ terminal-only. The status line and keybindings from your settings don't apply in
   (`--policy readonly|workspace|full`) decides which tool calls need your approval
   (`arakun agent approve|deny`). The sandbox is bubblewrap on Linux (needs `bwrap`) and
   Seatbelt (`sandbox-exec`) on macOS; headless runs use Workers AI models for now.
+- **Sandboxed agents.** Turn on Sandbox agents in Settings › Project and the agents
+  of that project's sessions run in a sandbox: Seatbelt on macOS, bubblewrap on Linux
+  (needs `bwrap`). They can write the environment, the repository's Git folder (not
+  its config or hooks), package caches and temporary folders; other tools' logins,
+  browser profiles and files that look like secrets (`.env`, keys) stay hidden. They
+  keep the network and their own login (on macOS the keychain), and reach Arakun
+  through a socket of their own that refuses `arakun run`, `arakun agent` and anything
+  else that would act outside. Workers AI sessions can't be sandboxed yet. A sandboxed
+  agent can still change what you later run outside it: the project's files, and its
+  own settings such as `~/.claude.json`.
 - **Server.** `arakun server serve` is Arakun without a window, for a machine nobody
   sits at: a build box, the workstation at the office, a VPS. It runs sessions of any
   agent signed in on that machine and keeps them going while nothing is connected.

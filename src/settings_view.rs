@@ -48,6 +48,11 @@ pub enum SettingsEvent {
         check: bool,
         command: Option<String>,
     },
+    /// A project's agents run sandboxed, or not.
+    ProjectSandbox {
+        project: std::path::PathBuf,
+        on: bool,
+    },
     /// The branch a project's new environments start from; `None` for origin's default.
     ProjectBase {
         project: std::path::PathBuf,
@@ -73,6 +78,7 @@ pub struct ProjectSettings {
     pub setup: Option<String>,
     pub check: Option<String>,
     pub base: Option<String>,
+    pub sandbox: bool,
     /// The project lives on a server: its commands are not saved here.
     pub remote: bool,
 }
@@ -205,7 +211,9 @@ impl Section {
             Section::Appearance => {
                 "Zoom here. Colors, shape and the sidebar are edited beside the app, not in this dialog."
             }
-            Section::Project => "The open project's commands and base branch, on this computer.",
+            Section::Project => {
+                "The open project's commands, base branch and sandbox, on this computer."
+            }
             Section::Branches => {
                 "A new environment starts on a random branch name; an agent can rename it after the task. A merged pull request is archived."
             }
@@ -240,7 +248,8 @@ impl Section {
             }
             Section::Project => {
                 "setup script install new environment worktree check command test lint build verify \
-                 base branch start from origin main default"
+                 base branch start from origin main default sandbox seatbelt bubblewrap isolate \
+                 security secrets"
             }
             Section::Branches => {
                 "branch name naming environment worktree rename model haiku agent merge merged \
@@ -1080,7 +1089,7 @@ impl SettingsDialog {
                 ])
             }
             Section::Appearance => self.render_appearance(cx),
-            Section::Project => self.render_project(),
+            Section::Project => self.render_project(cx),
             Section::Branches => {
                 let current = self.namer.choice;
                 let mut choices = ui::segmented();
@@ -1750,7 +1759,7 @@ impl SettingsDialog {
     }
 
     /// The open project's setup script, check and base branch, saved as they are typed.
-    fn render_project(&self) -> AnyElement {
+    fn render_project(&self, cx: &mut Context<Self>) -> AnyElement {
         let Some(project) = &self.project else {
             return group(vec![
                 row(
@@ -1794,6 +1803,29 @@ impl SettingsDialog {
                     "New environments of this project on this computer start from this branch as it is on origin, fetched first, or from the local branch when origin has none. Empty uses origin's default branch, usually main.",
                     field(self.base_input.clone(), 420.).into_any_element(),
                 )
+                .into_any_element(),
+                row(
+                    "Sandbox agents",
+                    if cfg!(target_os = "macos") {
+                        "Agents of this project run in a Seatbelt sandbox. They can write only the environment, its Git folder (not its config or hooks), build caches and temporary folders, and can't read other tools' logins or files that look like secrets. They keep the network and the keychain. Applies to sessions started afterwards."
+                    } else {
+                        "Agents of this project run in a bubblewrap sandbox. They can write only the environment, its Git folder (not its config or hooks), build caches and temporary folders, and can't read other tools' logins or files that look like secrets. They keep the network. Applies to sessions started afterwards."
+                    },
+                    switch(project.sandbox).into_any_element(),
+                )
+                .id("set-project-sandbox")
+                .cursor_pointer()
+                .on_click(cx.listener(|this, _, _, cx| {
+                    let Some(p) = this.project.as_mut().filter(|p| !p.remote) else {
+                        return;
+                    };
+                    p.sandbox = !p.sandbox;
+                    cx.emit(SettingsEvent::ProjectSandbox {
+                        project: p.path.clone(),
+                        on: p.sandbox,
+                    });
+                    cx.notify();
+                }))
                 .into_any_element(),
             ],
         )])

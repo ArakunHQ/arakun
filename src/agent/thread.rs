@@ -5,6 +5,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::path::{Component, Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result, anyhow};
@@ -619,6 +620,9 @@ struct Caps {
 pub struct Thread {
     kind: AgentKind,
     backend: Backend,
+    /// The sandbox the agent runs in, when its project has one; its `fs/*`
+    /// requests follow the same rules.
+    sandbox: Option<Arc<super::sandbox::Session>>,
     /// The session runs on a server: this thread shows it, and what the user
     /// does goes out as [`ThreadEvent::Remote`].
     remote: bool,
@@ -1127,6 +1131,7 @@ impl Thread {
             auth_hint: None,
             needs_login: false,
             needs_install: None,
+            sandbox: None,
             install_approved: false,
             modes: None,
             models: None,
@@ -1652,12 +1657,25 @@ impl Thread {
         self._connect = Some(cx.spawn(async move |this, cx| {
             let (progress_tx, mut progress_rx) = fmpsc::unbounded::<String>();
             let resolve = cx.background_executor().spawn(async move {
-                if native {
-                    return launch::resolve_droid_native(Some(&cwd));
+                let spec = if native {
+                    launch::resolve_droid_native(Some(&cwd))
+                } else {
+                    launch::resolve(kind, Some(&cwd), install, &|line| {
+                        let _ = progress_tx.unbounded_send(line);
+                    })
+                }?;
+                if !super::sandbox::wanted(&cwd) {
+                    return Ok((spec, None));
                 }
-                launch::resolve(kind, Some(&cwd), install, &|line| {
-                    let _ = progress_tx.unbounded_send(line);
-                })
+                // Its tools would run in arakun itself, outside any sandbox.
+                if kind == AgentKind::WorkersAi {
+                    anyhow::bail!(
+                        "Workers AI runs its tools inside arakun, which has no sandbox for them yet. Turn off Sandbox agents in Settings › Project to use it here."
+                    );
+                }
+                let sandbox = super::sandbox::Session::new(kind, &cwd)?;
+                let spec = sandbox.wrap(spec);
+                Ok((spec, Some(Arc::new(sandbox))))
             });
             let progress = {
                 let this = this.clone();
@@ -1673,7 +1691,10 @@ impl Thread {
             let spec = resolve.await;
             progress.await;
             let _ = this.update(cx, |t, cx| match spec {
-                Ok(spec) => t.launch(spec, cx),
+                Ok((spec, sandbox)) => {
+                    t.sandbox = sandbox;
+                    t.launch(spec, cx)
+                }
                 Err(e) => {
                     t.needs_install = e.downcast_ref::<launch::AdapterInstall>().cloned();
                     t.fail(FailedAt::Resolve, format!("{e:#}"), cx)
@@ -3330,12 +3351,13 @@ impl Thread {
             // Off the main thread: a big file, or one on a slow disk, would freeze the window.
             "fs/read_text_file" => {
                 let cwd = self.cwd.clone();
+                let sandbox = self.sandbox.clone();
                 let conn = Rc::downgrade(&conn);
                 cx.spawn(async move |_, cx| {
                     let read = cx
-                        .background_spawn(crate::guard::task(
-                            async move { read_file(&cwd, &params) },
-                        ))
+                        .background_spawn(crate::guard::task(async move {
+                            read_file(&cwd, sandbox.as_deref(), &params)
+                        }))
                         .await;
                     // The agent may have gone in the meantime.
                     let Some(conn) = conn.upgrade() else {
@@ -3367,6 +3389,12 @@ impl Thread {
 
     fn write_file(&self, params: &Value) -> Result<()> {
         let path = confine(&self.cwd, params["path"].as_str().unwrap_or(""))?;
+        if self.sandbox.as_ref().is_some_and(|s| !s.may_write(&path)) {
+            return Err(anyhow!(
+                "the sandbox does not let the agent write {}",
+                path.display()
+            ));
+        }
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
@@ -3801,8 +3829,15 @@ const READ_MAX: usize = 8 << 20;
 
 /// Answers the agent's `fs/read_text_file`: the whole file, or `limit` lines
 /// from `line` (1-based). Runs off the main thread.
-fn read_file(cwd: &Path, params: &Value) -> Result<String> {
+fn read_file(
+    cwd: &Path,
+    sandbox: Option<&super::sandbox::Session>,
+    params: &Value,
+) -> Result<String> {
     let path = confine(cwd, params["path"].as_str().unwrap_or(""))?;
+    if sandbox.is_some_and(|s| !s.may_read(&path)) {
+        return Err(anyhow!("{} is hidden from the sandbox", path.display()));
+    }
     let line = params["line"].as_u64().map(|l| l.max(1) as usize);
     let limit = params["limit"].as_u64().map(|l| l as usize);
     read_text(&path, line, limit)
@@ -4559,9 +4594,9 @@ mod tests {
         assert_eq!(read(Some(9), None), "");
         assert_eq!(read(None, Some(0)), "");
         let params = json!({"path": "a.txt", "line": 0, "limit": 1});
-        assert_eq!(read_file(&dir, &params).unwrap(), "one\n");
+        assert_eq!(read_file(&dir, None, &params).unwrap(), "one\n");
         let outside = json!({"path": "../elsewhere.txt"});
-        assert!(read_file(&dir, &outside).is_err());
+        assert!(read_file(&dir, None, &outside).is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -1539,7 +1539,7 @@ impl SettingsDialog {
             rows.push(
                 row(
                     "Checking…",
-                    "Reading the session from the system keyring.",
+                    "Checking the session with the Teams server.",
                     div().into_any_element(),
                 )
                 .into_any_element(),

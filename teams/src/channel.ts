@@ -240,10 +240,7 @@ export class Channel extends DurableObject<Env> {
       console.error("send check failed:", e);
       return this.refuse(ws, msg.id, CHECK_FAILED);
     }
-    if (!team || !live(allowed, who.session)) {
-      this.refuse(ws, msg.id, "not a member of this team");
-      return this.close(ws, CLOSE_FORBIDDEN, "not a member of this team");
-    }
+    if (!team || !live(allowed, who.session)) return this.forbidSend(ws, msg.id);
     if (!epochAllowed(msg.epoch, team.keyed_epoch)) return this.refuse(ws, msg.id, epochRefused(msg.epoch, team.epoch, team.keyed_epoch));
     // A socket admitted while that read ran had its own check, but D1 does not
     // order two separate reads, so a logout between its check and ours could
@@ -278,6 +275,9 @@ export class Channel extends DurableObject<Env> {
       console.error("send epoch check failed:", e);
       return this.refuse(ws, msg.id, CHECK_FAILED);
     }
+    // A full recheck can withdraw the sender's access, and the session may
+    // have expired during the last read. Nothing awaits after this check.
+    if (!live(allowed, who.session)) return this.forbidSend(ws, msg.id);
     if (!keyedNow || keyedNow.keyed_epoch !== team.keyed_epoch)
       return this.refuse(ws, msg.id, epochRefused(msg.epoch, team.epoch, keyedNow?.keyed_epoch ?? team.keyed_epoch));
 
@@ -411,6 +411,12 @@ export class Channel extends DurableObject<Env> {
         // closing
       }
     }
+  }
+
+  private forbidSend(ws: WebSocket, id: string): void {
+    const reason = "not a member of this team";
+    this.refuse(ws, id, reason);
+    this.close(ws, CLOSE_FORBIDDEN, reason);
   }
 
   private refuse(ws: WebSocket, id: string | null, message: string): void {

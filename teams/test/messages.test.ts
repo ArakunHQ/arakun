@@ -194,6 +194,38 @@ describe("channel sockets", () => {
     a.ws.close();
   });
 
+  it("refuse a send denied by the final session check without storing or delivering it", async () => {
+    const t = await team();
+    const m = await join(t);
+    const a = await openChannel(t.owner.user, t.owner.device, t.teamId, t.channelId);
+    const b = await openChannel(m.user, m.device, t.teamId, t.channelId);
+    const stub = env.CHANNEL.get(env.CHANNEL.idFromName(`${t.teamId}/${t.channelId}`)) as DurableObjectStub;
+    await runInDurableObject<Channel, void>(stub, (instance) => {
+      const ch = instance as any;
+      const allowed = ch.allowed.bind(ch);
+      // Stand in for an ongoing admission and a policy that denies the recheck.
+      ch.admitting.set("test-admission", 1);
+      let reads = 0;
+      ch.allowed = async (teamId: string, sessions: string[]) => {
+        if (sessions.includes("test-admission") && ++reads === 2) {
+          ch.admitting.delete("test-admission");
+          return new Map();
+        }
+        return allowed(teamId, sessions);
+      };
+    });
+    const key = t.keys.get(1)!;
+    const sent = await message(t.teamId, t.channelId, t.owner.device, 1, key, "denied");
+    a.send(sent);
+    expect(await refused(a)).toEqual({ type: "error", id: sent.id, error: "not a member of this team" });
+    expect((await a.inbox.closedWith()).code).toBe(4403);
+    expect(await storedCount(t)).toBe(0);
+    const next = await message(t.teamId, t.channelId, m.device, 1, key, "still connected");
+    b.send(next);
+    expect(await stored(b)).toMatchObject({ seq: 1, message: { id: next.id } });
+    b.ws.close();
+  });
+
   it("close a socket a send could not check, so its client reads the history again", async () => {
     const t = await team();
     const m = await join(t);

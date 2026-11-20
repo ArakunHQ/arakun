@@ -9,7 +9,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use gpui::{
     Animation, AnimationExt as _, AnyElement, AppContext as _, Context, IntoElement, SharedString,
-    Styled, div,
+    Styled, Task, div,
 };
 
 use super::Shell;
@@ -44,6 +44,9 @@ pub(super) struct Ahead {
     stamp: Stamp,
     /// `None` while it is still being read.
     read: Option<anyhow::Result<Option<Restored>>>,
+    /// The read, then the wait until it is stale: dropping the entry
+    /// cancels whichever is left.
+    task: Task<()>,
 }
 
 /// The pane's thread as last drawn, and the fade it started.
@@ -85,6 +88,7 @@ impl Shell {
         opens: Option<SharedString>,
         cx: &mut Context<Self>,
     ) {
+        self.drop_stale_ahead();
         let Some(env) = self.projects.get(pi).and_then(|p| p.environments.get(ei)) else {
             return;
         };
@@ -115,16 +119,9 @@ impl Shell {
         for gone in to_drop(&self.ahead, Instant::now()) {
             self.ahead.remove(&gone);
         }
-        self.ahead.insert(
-            id.clone(),
-            Ahead {
-                at: Instant::now(),
-                stamp: None,
-                read: None,
-            },
-        );
         let path = state::transcript_path(&id);
-        cx.spawn(async move |this, cx| {
+        let key = id.clone();
+        let task = cx.spawn(async move |this, cx| {
             let (stamp, read) = cx
                 .background_spawn(crate::guard::task(async move {
                     // Before the read: a write during it makes the stamp old.
@@ -137,8 +134,36 @@ impl Shell {
                     a.read = Some(read);
                 }
             });
-        })
-        .detach();
+            // Nobody clicked: the transcript goes even if no other row is
+            // hovered.
+            cx.background_executor().timer(STALE).await;
+            let _ = this.update(cx, |this, _| this.drop_stale_ahead());
+        });
+        self.ahead.insert(
+            key,
+            Ahead {
+                at: Instant::now(),
+                stamp: None,
+                read: None,
+                task,
+            },
+        );
+    }
+
+    /// Drops the reads ahead nobody clicked on in time. Their tasks are let
+    /// go rather than cancelled: one of them is the task calling this.
+    fn drop_stale_ahead(&mut self) {
+        let stale: Vec<SharedString> = self
+            .ahead
+            .iter()
+            .filter(|(_, a)| a.at.elapsed() >= STALE)
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in stale {
+            if let Some(a) = self.ahead.remove(&id) {
+                a.task.detach();
+            }
+        }
     }
 
     /// The transcript of session `id` read ahead, if it is done and the
@@ -146,7 +171,10 @@ impl Shell {
     pub(super) fn take_ahead(&mut self, id: &str) -> Option<anyhow::Result<Option<Restored>>> {
         let a = self.ahead.remove(id)?;
         let read = a.read?;
-        (a.stamp == stamp(&state::transcript_path(id))).then_some(read)
+        // A failed read may have been passing: the click reads it again
+        // instead of starting the session empty.
+        let fresh = a.at.elapsed() < STALE && read.is_ok();
+        (fresh && a.stamp == stamp(&state::transcript_path(id))).then_some(read)
     }
 
     /// Notes which session the pane draws, and whether its transcript is
@@ -209,6 +237,7 @@ mod tests {
             at,
             stamp: None,
             read: None,
+            task: Task::ready(()),
         }
     }
 

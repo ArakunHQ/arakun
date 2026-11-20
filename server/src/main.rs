@@ -21,6 +21,10 @@ mod durable;
 #[allow(dead_code)]
 #[path = "../../src/fetch.rs"]
 mod fetch;
+// The server stages a session's files (`/stage`); the rest is the app's.
+#[allow(dead_code)]
+#[path = "../../src/git.rs"]
+mod git;
 #[path = "../../src/guard.rs"]
 mod guard;
 #[path = "../../src/rotate.rs"]
@@ -34,6 +38,15 @@ mod headless {
     pub(crate) use crate::{broker, sandbox};
     pub fn root() -> std::path::PathBuf {
         crate::platform::app_dir().join("headless")
+    }
+}
+mod github {
+    // The server opens no pull requests: `git.rs`'s `pr_create` is the app's.
+    pub fn read_only() -> bool {
+        true
+    }
+    pub mod pr {
+        pub const READ_ONLY: &str = "The server opens no pull requests.";
     }
 }
 mod memory {

@@ -1129,6 +1129,43 @@ impl Shell {
         }
     }
 
+    /// Starts a session with `text` in the environment in front, shown in a
+    /// tab: what an action elsewhere (the GitHub tab, the palette) hands an
+    /// agent. On a server it starts there, as a prompt typed in its composer would.
+    pub(super) fn ask_agent(
+        &mut self,
+        title: SharedString,
+        text: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (path, agent) = (self.env().path.clone(), self.env().agent);
+        if self.env().remote.is_none() {
+            self.start_session_in(&path, agent, title, text, true, window, cx);
+            return;
+        }
+        // One session per worktree, as in `send_prompt`: the server makes one
+        // for it unless this folder takes sessions in place.
+        let env = self.env();
+        if (env.is_checkout || !env.sessions.is_empty()) && !self.servers_start_in_place(&path) {
+            let prompt = self.queue_prompt(text);
+            self.quick_create_env_then(self.active_project, Some(prompt), window, cx);
+            return;
+        }
+        let picks = server_picks(self.env(), agent);
+        let first = super::servers::FirstPrompt {
+            env: path,
+            text,
+            agent,
+            note: None,
+            mentions_from: None,
+            // When the server does not start it, it waits in the composer.
+            desktop: true,
+        };
+        self.servers_start_first(first, agent, &picks, cx);
+        cx.notify();
+    }
+
     /// Starts a session in any environment with `text` as its first prompt; `show`
     /// opens it in a tab (the active one of that environment).
     pub(super) fn start_session_in(
@@ -1160,6 +1197,11 @@ impl Shell {
     ) -> Option<SharedString> {
         // Its folder is going away this moment (`shell::cleanup`).
         if self.being_cleaned_up(env_path) {
+            return None;
+        }
+        // A server's folder is not on this machine: an agent started here
+        // would fail as if it were not installed. `ask_agent` starts it there.
+        if model::Remote::is_path(env_path) {
             return None;
         }
         let visible = self.has_projects() && self.env().path == env_path;

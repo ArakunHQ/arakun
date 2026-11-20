@@ -17,7 +17,7 @@ use anyhow::{Result, anyhow};
 use super::AgentKind;
 use super::launch::LaunchSpec;
 use crate::headless::sandbox::{
-    self as hs, Hidden, READ, Runner, sbpl_list, sbpl_str, sbpl_subpath,
+    self as hs, Hidden, READ, Runner, sbpl_list, sbpl_pin, sbpl_str, sbpl_subpath,
 };
 
 /// Projects whose agents run sandboxed, as the shell last saved them, each with
@@ -369,7 +369,7 @@ impl Session {
         ]);
         out.push_str(&format!(
             "(deny file-write*)\n(allow file-write* {} (literal \"/dev/null\") \
-             (literal \"/dev/zero\") (literal \"/dev/dtracehelper\") (regex #\"^/dev/tty\") \
+             (literal \"/dev/zero\") (literal \"/dev/dtracehelper\") (literal \"/dev/tty\") \
              (regex #\"^/dev/fd/\"))\n",
             sbpl_list(&writable)
         ));
@@ -405,6 +405,15 @@ impl Session {
                 sbpl_list(&paths(&self.frozen))
             ));
         }
+        // Folders above a hidden or read-only path can't be renamed out from under
+        // its rule (`mv ~/.claude ~/.cache/c` to edit its settings).
+        let roots: Vec<&Path> = writable
+            .iter()
+            .copied()
+            .chain(paths(&self.shown_rw))
+            .collect();
+        let pinned: Vec<&Path> = hidden.iter().copied().chain(paths(&self.frozen)).collect();
+        out.push_str(&sbpl_pin(&roots, &pinned));
         // Unix sockets: its own, and arakun's socket for sandboxed agents. Not the
         // host's (ssh-agent, Docker, tmux, arakun's main socket).
         let ws = sbpl_subpath(&self.workspace);
@@ -516,6 +525,10 @@ mod tests {
         assert!(p.contains("(subpath \"/home/u/.cargo/credentials.toml\")"));
         assert!(p.contains("(path-literal \"/run/user/1/arakun/sandbox/control.sock\")"));
         assert!(p.contains("(regex #\"^/home/u/\\.claude\\.json\")"));
+        // Their folders can't be renamed away from the rules, nor ttys written.
+        assert!(p.contains("(literal \"/home/u/proj/.git\")"));
+        assert!(p.contains("(literal \"/home/u/ws/env-a\")"));
+        assert!(!p.contains("^/dev/tty"));
         // Logins in the keychain still work.
         assert!(!p.contains("SecurityServer"));
     }

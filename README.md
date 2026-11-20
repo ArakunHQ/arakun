@@ -154,6 +154,7 @@ copy of it, rename it back, and start a version that can read it.
   or 30 days; also asked during the setup) removes an environment's worktree once its
   pull request is merged or closed and it sat unused that long. Arakun checks every hour,
   asking `git` and `gh`. An environment stays when it has uncommitted or untracked files,
+  git-ignored files other than build output (`target/`, `node_modules/` and the like),
   a commit that isn't in the pull request, an agent working or waiting for you, an
   automation that is on and runs in it, or is the one on screen. The branch is kept. Off by default; the first time an environment
   would have gone, a notice suggests it once. Saved in `~/.local/share/arakun/env-cleanup`

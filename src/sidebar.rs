@@ -33,6 +33,8 @@ pub enum View {
     Phone,
     Servers,
     Automations,
+    /// Arakun Teams (`arakun_teams`); only for accounts the server lets in.
+    Teams,
     /// What the team hub holds (`team_view`).
     #[cfg(feature = "team")]
     Team,
@@ -61,6 +63,7 @@ impl View {
         View::Phone,
         View::Servers,
         View::Automations,
+        View::Teams,
         #[cfg(feature = "team")]
         View::Team,
     ];
@@ -106,6 +109,7 @@ impl View {
             View::Phone => "Phone",
             View::Servers => "Servers",
             View::Automations => "Automations",
+            View::Teams => "Teams",
             #[cfg(feature = "team")]
             View::Team => "Team",
         }
@@ -133,6 +137,7 @@ impl View {
             View::Phone => "signal-full02",
             View::Servers => "computer",
             View::Automations => "flash",
+            View::Teams => "message-multiple01",
             #[cfg(feature = "team")]
             View::Team => "ungroup-items",
         }
@@ -161,6 +166,7 @@ impl View {
             View::Phone => "Arakun on your phone",
             View::Servers => "Sessions on your other machines",
             View::Automations => "Scheduled agent runs",
+            View::Teams => "Your team in Arakun",
             #[cfg(feature = "team")]
             View::Team => "What the team finds, kept to read",
         }
@@ -650,6 +656,7 @@ impl Preset {
             View::Phone,
             View::Servers,
             View::Automations,
+            View::Teams,
             #[cfg(feature = "team")]
             View::Team,
         ];
@@ -1006,10 +1013,13 @@ impl Sidebar {
         !self.known.contains(&view)
     }
 
-    pub fn mark_known(&mut self) -> bool {
+    /// Marks every view as offered but `hidden`: a view the rail can't show
+    /// yet stays new, so it is placed once it can (Teams, before the server
+    /// lets the account in).
+    pub fn mark_known(&mut self, hidden: &[View]) -> bool {
         let before = self.known.len();
         for &v in View::ALL {
-            if !self.known.contains(&v) {
+            if !self.known.contains(&v) && !hidden.contains(&v) {
                 self.known.push(v);
             }
         }

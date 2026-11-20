@@ -101,7 +101,7 @@ pub fn parse_config(bytes: &[u8]) -> Option<Config> {
 
 /// Plain `http://` only to this machine: the tokens must never cross a
 /// network unencrypted, and `admin_token` can hand the agent work.
-fn local_http(url: &str) -> bool {
+pub(crate) fn local_http(url: &str) -> bool {
     let Some(rest) = url.strip_prefix("http://") else {
         return false;
     };

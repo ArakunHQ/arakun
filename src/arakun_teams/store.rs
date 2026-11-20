@@ -428,6 +428,10 @@ pub struct Kept {
     /// as PROTOCOL.md asks, no team key goes to their owner after a restart.
     #[serde(default)]
     mismatched: BTreeSet<String>,
+    /// Channel (`team/channel`) → the newest `seq` this device showed, for
+    /// the unread counts.
+    #[serde(default)]
+    read: BTreeMap<String, u64>,
 }
 
 impl Kept {
@@ -622,15 +626,35 @@ impl Kept {
         add.insert(device_id.to_string()) || dropped
     }
 
+    /// The newest `seq` this device showed in a channel, if it ever showed it.
+    pub fn last_read(&self, channel: &str) -> Option<u64> {
+        self.read.get(channel).copied()
+    }
+
+    /// Moves a channel's last-read mark forward; whether it moved.
+    pub fn mark_read(&mut self, channel: &str, seq: u64) -> bool {
+        let slot = self.read.entry(channel.to_string()).or_default();
+        if seq > *slot {
+            *slot = seq;
+            true
+        } else {
+            false
+        }
+    }
+
     /// Forgets a team this user is no longer in.
     pub fn forget_team(&mut self, team_id: &str) {
         self.keys.remove(team_id);
         self.grants.remove(team_id);
+        let prefix = format!("{team_id}/");
+        self.read.retain(|k, _| !k.starts_with(&prefix));
     }
 
     pub(super) fn retain_teams(&mut self, ids: &std::collections::HashSet<&str>) {
         self.keys.retain(|id, _| ids.contains(id.as_str()));
         self.grants.retain(|id, _| ids.contains(id.as_str()));
+        self.read
+            .retain(|k, _| k.split_once('/').is_some_and(|(t, _)| ids.contains(t)));
     }
 }
 
@@ -1034,6 +1058,17 @@ mod tests {
         assert_eq!(k.newest("T"), Some((2, [2; 32])));
         k.forget_team("T");
         assert_eq!(k.newest("T"), None);
+    }
+
+    #[test]
+    fn the_last_read_mark_only_moves_forward() {
+        let mut k = Kept::default();
+        assert_eq!(k.last_read("T/c"), None);
+        assert!(k.mark_read("T/c", 5));
+        assert!(!k.mark_read("T/c", 3));
+        assert_eq!(k.last_read("T/c"), Some(5));
+        k.forget_team("T");
+        assert_eq!(k.last_read("T/c"), None);
     }
 
     #[test]

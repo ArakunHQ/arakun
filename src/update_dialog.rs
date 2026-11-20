@@ -38,12 +38,12 @@ impl UpdateDialog {
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
         // The dialog covers the window, but a shortcut would still reach the
-        // Shell's actions behind it (a new environment, the palette). Stopped
-        // here, no binding runs; key listeners still do, so Tab, Escape and
-        // the buttons' Enter and Space keep working.
+        // Shell's actions behind it (a new environment, the palette). A key
+        // stopped here reaches neither a binding nor a key listener, so the
+        // keys the dialog uses itself go through.
         let ours = window.window_handle();
-        let _keys = cx.intercept_keystrokes(move |_, window, cx| {
-            if window.window_handle() == ours {
+        let _keys = cx.intercept_keystrokes(move |ev, window, cx| {
+            if window.window_handle() == ours && !passes(&ev.keystroke) {
                 cx.stop_propagation();
             }
         });
@@ -63,6 +63,22 @@ impl Focusable for UpdateDialog {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus.clone()
     }
+}
+
+/// Whether a key reaches the window while the dialog is open: Tab moves
+/// between its buttons, Escape puts it off, Enter and Space press a button.
+/// Cmd+Q, Cmd+H and Cmd+M belong to the app, not to the window behind it.
+fn passes(k: &gpui::Keystroke) -> bool {
+    let m = k.modifiers;
+    if !m.control && !m.alt && !m.platform && !m.function {
+        return matches!(k.key.as_str(), "tab" | "escape" | "enter" | "space");
+    }
+    cfg!(target_os = "macos")
+        && m.platform
+        && !m.control
+        && !m.alt
+        && !m.shift
+        && matches!(k.key.as_str(), "q" | "h" | "m")
 }
 
 /// Only Linux and macOS can start Arakun again by themselves.
@@ -153,5 +169,32 @@ impl Render for UpdateDialog {
                             .child(main),
                     ),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn key(s: &str) -> gpui::Keystroke {
+        gpui::Keystroke::parse(s).unwrap()
+    }
+
+    #[test]
+    fn only_the_dialogs_own_keys_pass() {
+        for k in ["tab", "shift-tab", "escape", "enter", "space"] {
+            assert!(passes(&key(k)), "{k}");
+        }
+        for k in [
+            "a",
+            "ctrl-tab",
+            "cmd-n",
+            "cmd-k",
+            "alt-enter",
+            "cmd-shift-q",
+        ] {
+            assert!(!passes(&key(k)), "{k}");
+        }
+        assert_eq!(passes(&key("cmd-q")), cfg!(target_os = "macos"));
     }
 }

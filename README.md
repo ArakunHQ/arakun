@@ -601,8 +601,12 @@ curl -fsSL https://arakun.dev/install | sh -s -- --server    # the same
 ```
 
 It is the install script with `--server`: it checks the release the same way and installs
-`~/.local/bin/arakun-server` (uninstall: `rm ~/.local/bin/arakun-server`). It takes
-`--version` too. Releases after v0.4.0 carry it. It does not update itself: run the line
+`~/.local/bin/arakun-server` (uninstall: `rm ~/.local/bin/arakun-server`). It also
+installs what the server runs agents with, if it is missing: git and gh with the system's
+package manager (as root, or with `sudo` that needs no password; otherwise it prints the
+command to run), and Node.js 22 from nodejs.org in `~/.local/share/arakun/node`, linked
+as `node`, `npm` and `npx` in `~/.local/bin`. Without Node, a new session fails as it
+starts. `--no-tools` leaves all three to you. It takes `--version` too. Releases after v0.4.0 carry it. It does not update itself: run the line
 again for a new release, then restart the service if it runs as one:
 `systemctl --user restart arakun-server`. A server in another folder
 (`ARAKUN_SERVER_DIR`) is the unit `arakun-server-<folder>`, and a service installed as
@@ -1050,7 +1054,8 @@ arakun-server service install   # keep it running; see Keep it running
   settings. An agent set to allow everything there asks for nothing here either.
   Claude Code and Codex also need their ACP adapter. The server installs a missing one
   with npm the first time a session needs it, into `~/.local/share/arakun/agents`
-  (`%LOCALAPPDATA%\arakun\agents` on Windows), so Node must be on the server's `PATH`. The service keeps the `PATH` it was installed
+  (`%LOCALAPPDATA%\arakun\agents` on Windows), so Node 22 or newer must be on the
+  server's `PATH`; the server install script puts one there. The service keeps the `PATH` it was installed
   with: if Node comes from mise or nvm, run `arakun-server service install` from a shell
   where `node` works.
 - **How devices reach it.** `serve --reach relay` (the default) dials out to the relay,

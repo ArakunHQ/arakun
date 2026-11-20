@@ -776,7 +776,7 @@ impl Shell {
                     reachable && thread.is_some()
                 }
                 None => {
-                    if self.servers_start_first(&path, agent, &text, note.clone(), cx) {
+                    if self.servers_start_first(&path, agent, &text, note.clone(), None, cx) {
                         self.composer_changed(cx);
                         cx.notify();
                         return;
@@ -885,21 +885,31 @@ impl Shell {
     }
 
     /// Asks the server of the environment at `path` to start a session there
-    /// with `text`, and `note` for the agent only. The server's answer opens
-    /// it and names the branch; the island says why when it could not be asked.
+    /// with `text`, and `note` for the agent only. What `text` mentions is
+    /// also looked for in `mentions_from`, where it was written. The server's
+    /// answer opens it and names the branch; the island says why when it
+    /// could not be asked.
     pub(super) fn servers_start_first(
         &mut self,
         path: &Path,
         agent: model::Agent,
         text: &str,
         note: Option<String>,
+        mentions_from: Option<&Path>,
         cx: &mut Context<Self>,
     ) -> bool {
         let prompt = match &note {
             Some(note) => format!("{text}{}", crate::agent::chart::hint(note)),
             None => text.to_string(),
         };
-        let sent = self.servers_start(path, agent, &prompt, &[], super::servers::Asker::Desktop);
+        let sent = self.servers_start(
+            path,
+            agent,
+            &prompt,
+            &[],
+            super::servers::Asker::Desktop,
+            mentions_from,
+        );
         // Until the server answers: it names the branch once the session
         // started, and the prompt comes back if it did not.
         if let Some(reference) = sent {
@@ -940,7 +950,8 @@ impl Shell {
         };
         env.agent = p.agent;
         let note = self.rename_notes.remove(env_path);
-        if !self.servers_start_first(env_path, p.agent, &p.text, note.clone(), cx) {
+        let from = p.from.clone();
+        if !self.servers_start_first(env_path, p.agent, &p.text, note.clone(), Some(&from), cx) {
             if let Some(env) = self.find_env_mut(env_path) {
                 env.draft.set(&p.text);
             }

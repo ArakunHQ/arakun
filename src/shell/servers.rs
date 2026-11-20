@@ -1319,8 +1319,16 @@ impl Shell {
         text: &str,
         settings: &[(String, String)],
         by: Asker,
+        mentions_from: Option<&Path>,
     ) -> Option<u64> {
         let remote = self.find_env(env_path).and_then(|e| e.remote.clone())?;
+        // The server finds what the prompt mentions there too, when it is
+        // one of its folders other than where the session starts.
+        let mentions_from = mentions_from
+            .and_then(|p| self.find_env(p))
+            .and_then(|e| e.remote.as_ref())
+            .filter(|r| r.server == remote.server && r.place != remote.place)
+            .map(|r| r.place.clone());
         let Some(link) = &mut self.servers else {
             return None;
         };
@@ -1343,10 +1351,15 @@ impl Shell {
             return None;
         }
         let reference = link.starts.sent(&remote.server, by);
-        conn.client.send(&json!({
+        let mut start = json!({
             "type": "start", "env": remote.place, "agent": agent.key(), "text": text,
             "settings": settings, "ref": reference,
-        }));
+        });
+        // Left out otherwise: a server from before it reads none the same.
+        if let Some(from) = mentions_from {
+            start["mentions_from"] = from.into();
+        }
+        conn.client.send(&start);
         Some(reference)
     }
 
@@ -2181,6 +2194,16 @@ impl Shell {
                         let message = text(&msg, "message");
                         // A new environment: said to whoever asked for it.
                         match link.new_env.remove(id) {
+                            // Its repository has no commits to make a worktree
+                            // of: the prompt starts where it was written, as
+                            // it does here then.
+                            Some(NewEnv {
+                                prompt: Some(prompt),
+                                ..
+                            }) if msg["no_commits"] == true => {
+                                let from = prompt.from().to_path_buf();
+                                self.start_queued_on_server(&from, prompt, cx);
+                            }
                             Some(new) => self.servers_new_env_failed(new, message, cx),
                             None => link.error = Some(message),
                         }

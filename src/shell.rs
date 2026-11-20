@@ -1759,7 +1759,20 @@ impl Shell {
             .is_some_and(|e| e.remote.is_some())
             || project.is_remote();
         if on_server {
-            let from = server_source(project, |p| self.server_env_retired(p));
+            // A queued prompt goes only to the server it was written on,
+            // never to another that has this project too.
+            let written_on = prompt.as_ref().map(|p| {
+                self.find_env(p.from())
+                    .and_then(|e| e.remote.as_ref())
+                    .map(|r| r.server.clone())
+            });
+            let from = server_source(project, |p| self.server_env_retired(p)).filter(|&i| {
+                written_on.as_ref().is_none_or(|server| {
+                    server.is_some()
+                        && project.environments[i].remote.as_ref().map(|r| &r.server)
+                            == server.as_ref()
+                })
+            });
             let Some(from) = from else {
                 if let Some(prompt) = prompt {
                     self.unqueue(prompt, cx);

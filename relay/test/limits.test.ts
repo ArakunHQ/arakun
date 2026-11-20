@@ -323,3 +323,46 @@ describe("a phone that switched networks", () => {
     expect(tab.inbox.closed).toBeNull();
   });
 });
+
+describe("a phone that went quiet", () => {
+  it("gets a pong from the relay itself, and is closed once its pings stop", async () => {
+    const { me, pc } = await connectedComputer();
+    await issueTickets(pc, me.label, "t");
+    const phone = await openPhone(me.label, "d=dev-1&t=t&s=aaaaaaaa");
+    expect(await phone.inbox.control()).toEqual({ type: "open", channel: 1 });
+    await pc.inbox.control();
+    const stub = env.RELAY.get(env.RELAY.idFromName(me.label));
+    // The alarm comes back to it, as it does for every phone.
+    const at = await runInDurableObject(stub, (_i, state) => state.storage.getAlarm());
+    expect((at as number) - Date.now()).toBeLessThanOrEqual(90_000);
+
+    phone.ws.send("ping");
+    expect(await phone.inbox.next()).toEqual({ text: "pong" });
+
+    // Pinging recently: it stays.
+    expect(await runDurableObjectAlarm(stub)).toBe(true);
+    expect(phone.inbox.closed).toBeNull();
+
+    await runInDurableObject(stub, async (instance, state) => {
+      (instance as unknown as { silentMs: number }).silentMs = 0;
+      await state.storage.setAlarm(Date.now());
+    });
+    expect(await runDurableObjectAlarm(stub)).toBe(true);
+    expect(await phone.inbox.control()).toEqual({ type: "bye", reason: "silent" });
+    expect(await pc.inbox.control()).toEqual({ type: "close", channel: 1, reason: "silent" });
+  });
+
+  it("is left alone while it has never pinged, as a page from before pings", async () => {
+    const { me, pc } = await connectedComputer();
+    await issueTickets(pc, me.label, "t");
+    const phone = await openPhone(me.label, "d=dev-1&t=t&s=aaaaaaaa");
+    expect(await phone.inbox.control()).toEqual({ type: "open", channel: 1 });
+    const stub = env.RELAY.get(env.RELAY.idFromName(me.label));
+    await runInDurableObject(stub, async (instance, state) => {
+      (instance as unknown as { silentMs: number }).silentMs = 0;
+      await state.storage.setAlarm(Date.now());
+    });
+    expect(await runDurableObjectAlarm(stub)).toBe(true);
+    expect(phone.inbox.closed).toBeNull();
+  });
+});

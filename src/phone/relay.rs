@@ -34,6 +34,7 @@ use tungstenite::{Message, WebSocket, stream::MaybeTlsStream};
 
 use super::e2e::{Handshake, PhoneHello, Session};
 use super::identity::Identity;
+use super::quiet::Quiet;
 use super::{ClientId, ClientMsg, Effect, Head, Incoming, Shared, wire};
 
 pub const HELLO: u8 = 0x01;
@@ -624,20 +625,21 @@ impl Link {
 
     /// The claimed connection: frames in, commands out, pings in the silences.
     fn talk(&mut self, ws: &mut Socket) -> Ended {
-        let mut last_heard = Instant::now();
-        let mut last_ping = Instant::now();
+        // Counts sleep: a laptop that wakes gives up on the old socket at once.
+        let mut last_heard = Quiet::now();
+        let mut last_ping = Quiet::now();
         loop {
             if self.stop.load(Ordering::Relaxed) {
                 return Ended::Stopped;
             }
             match read(ws) {
                 Ok(Read::Frame(kind, channel, payload)) => {
-                    last_heard = Instant::now();
+                    last_heard = Quiet::now();
                     if let Err(ended) = self.heard(ws, kind, channel, payload) {
                         return ended;
                     }
                 }
-                Ok(Read::Alive) => last_heard = Instant::now(),
+                Ok(Read::Alive) => last_heard = Quiet::now(),
                 Ok(Read::Nothing) => {}
                 Err(ended) => return ended,
             }
@@ -645,7 +647,7 @@ impl Link {
                 return Ended::Retry("The relay went quiet".into());
             }
             if last_ping.elapsed() > PING_EVERY {
-                last_ping = Instant::now();
+                last_ping = Quiet::now();
                 if ws.send(Message::Ping(Vec::new().into())).is_err() {
                     return Ended::Retry("Could not write to the relay".into());
                 }

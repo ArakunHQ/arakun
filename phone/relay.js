@@ -15,6 +15,15 @@ const RELAY = (() => {
   /// between tabs, even duplicated ones, so live tabs never replace each other.
   const PAGE = Array.from(crypto.getRandomValues(new Uint8Array(12)), (b) => b.toString(16).padStart(2, "0")).join("");
   const { HELLO, DATA, CONTROL, utf8, text } = E2E;
+  /// The page pings the relay this often, and the relay answers by itself
+  /// (relay.ts), without waking up or counting a frame. A link that hears
+  /// nothing for two pings and some is dead, though the socket may not know
+  /// it yet; the relay closes ours after as long without a ping.
+  const PING_MS = 30_000;
+  const SILENT_MS = 75_000;
+  /// How long the computer may take to answer a hello. The relay can't tell
+  /// that the computer's socket died, and keeps passing the hello into it.
+  const HELLO_MS = 15_000;
 
   /// What the computer gave this phone when it paired, kept on the phone: in
   /// localStorage and in a cookie, since an iOS home-screen app gets storage of
@@ -129,10 +138,27 @@ const RELAY = (() => {
     // counters say so. Each direction waits its turn.
     let reading = Promise.resolve();
     let writing = Promise.resolve();
+    // Wall-clock time: a phone that slept counts the time it slept.
+    let heard = Date.now();
+    let pinger = 0;
+    let waiting = 0; // the handshake's deadline, while one is running
+
+    const quiet = () => {
+      clearInterval(pinger);
+      clearTimeout(waiting);
+    };
+    /// Gives up unless the computer has answered within HELLO_MS; armed from
+    /// the start, so a relay that never says `open` is given up on too.
+    const expect = () => {
+      clearTimeout(waiting);
+      waiting = setTimeout(() => end("gone", "no answer from the computer"), HELLO_MS);
+    };
+    expect();
 
     const end = (kind, detail) => {
       if (ended) return;
       ended = true;
+      quiet();
       for (const p of pending.values()) p.reject(new Error("link closed"));
       pending.clear();
       try {
@@ -159,6 +185,7 @@ const RELAY = (() => {
       joined = joiner();
       handshake = await E2E.begin();
       ws.send(E2E.encodeFrame(HELLO, handshake.hello));
+      expect();
     };
 
     const control = async (msg) => {
@@ -168,6 +195,8 @@ const RELAY = (() => {
           await greet();
           break;
         case "pc_offline":
+          // Nobody to answer until `pc_online`: no deadline meanwhile.
+          clearTimeout(waiting);
           session = null;
           ready = false;
           for (const p of pending.values()) p.reject(new Error("computer offline"));
@@ -202,9 +231,11 @@ const RELAY = (() => {
         creds = { id: msg.paired.id, ticket: msg.paired.ticket, token: msg.paired.token };
         keep(creds);
         ready = true;
+        clearTimeout(waiting);
         handlers.onopen({ id: msg.paired.id, name: msg.paired.name, host: msg.paired.host, paired: true });
       } else if (msg.ok) {
         ready = true;
+        clearTimeout(waiting);
         handlers.onopen({ id: msg.ok.id, name: msg.ok.name, host: msg.ok.host, paired: false });
       } else if (msg.res) {
         const r = msg.res;
@@ -248,7 +279,22 @@ const RELAY = (() => {
       return sealed(f.payload);
     };
 
+    ws.onopen = () => {
+      const ping = () => {
+        if (Date.now() - heard > SILENT_MS) return end("gone", "the relay went quiet");
+        try {
+          ws.send("ping");
+        } catch {
+          // Closing; onclose takes it from here.
+        }
+      };
+      ping();
+      pinger = setInterval(ping, PING_MS);
+    };
     ws.onmessage = (ev) => {
+      heard = Date.now();
+      // The relay's "pong": it only says it is there.
+      if (typeof ev.data === "string") return;
       reading = reading.then(() => frame(new Uint8Array(ev.data))).catch((e) => end("gone", e.message));
     };
     ws.onclose = (ev) => end(kindOf(ev.reason || "", ev.code), ev.reason || `closed (${ev.code})`);
@@ -272,6 +318,7 @@ const RELAY = (() => {
       close() {
         if (ended) return;
         ended = true;
+        quiet();
         pending.clear();
         try {
           ws.close();

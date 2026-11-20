@@ -75,6 +75,11 @@ pub fn error(message: &str) -> String {
     json!({ "type": "error", "message": message }).to_string()
 }
 
+/// The answer to a page's `ping`, so it knows the computer is still there.
+pub fn pong() -> String {
+    json!({ "type": "pong" }).to_string()
+}
+
 /// The entries from `from` on, as the phone shows them.
 pub fn entries(all: &[Entry], from: usize, scope: &Scope) -> Vec<Value> {
     all.get(from..)

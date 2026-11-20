@@ -1757,8 +1757,10 @@ impl Shell {
             .unwrap_or(0);
         // Spread: the machine it would go to without asking, the open one
         // first on a tie.
+        // The others keep their order, as in `spread_target`.
         let mut order: Vec<usize> = (0..machines.len()).collect();
-        order.swap(0, open_pick);
+        order.remove(open_pick);
+        order.insert(0, open_pick);
         let ids: Vec<Option<&str>> = order
             .iter()
             .map(|&i| machines[i].server.as_ref().map(|(s, _)| s.as_str()))

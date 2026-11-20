@@ -2033,12 +2033,21 @@ impl Shell {
 
     /// Where a new environment goes while they are spread: one of `machines`, each a server's id or `None` for this computer,
     /// listed with the open environment's machine first. `None` when they
-    /// are not spread.
+    /// are not spread or none of them can take it.
     pub(super) fn servers_spread_pick(&self, machines: &[Option<&str>]) -> Option<usize> {
         let link = self.servers.as_ref().filter(|l| l.balance.spread)?;
         let working = |status: Status| status == Status::Working;
-        let candidates: Vec<Candidate> = machines
+        // A server that refused `new_env` before, or is still making a folder,
+        // would refuse this one too.
+        let can_take = |m: &Option<&str>| {
+            m.is_none_or(|id| !link.no_new_env.contains(id) && !link.adding.contains(id))
+        };
+        let eligible: Vec<usize> = (0..machines.len())
+            .filter(|&i| can_take(&machines[i]))
+            .collect();
+        let candidates: Vec<Candidate> = eligible
             .iter()
+            .map(|&i| &machines[i])
             .map(|m| Candidate {
                 preference: link.balance.of(*m),
                 busy: match m {
@@ -2056,7 +2065,7 @@ impl Shell {
                 },
             })
             .collect();
-        balance::pick(&candidates)
+        balance::pick(&candidates).map(|i| eligible[i])
     }
 
     /// Whether a first prompt in the server environment at `env_path` starts

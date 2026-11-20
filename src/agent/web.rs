@@ -1081,10 +1081,7 @@ fn html_convert(html: &str, markdown: bool, links: bool, focused: bool) -> Strin
             .to_ascii_lowercase();
         if !closing && SKIP.contains(&name.as_str()) {
             let close = format!("</{name}");
-            rest = rest
-                .to_ascii_lowercase()
-                .find(&close)
-                .map_or("", |e| &rest[e..]);
+            rest = find_ignore_case(rest, &close).map_or("", |e| &rest[e..]);
             continue;
         }
         let heading =
@@ -1092,8 +1089,7 @@ fn html_convert(html: &str, markdown: bool, links: bool, focused: bool) -> Strin
         if focused {
             match name.as_str() {
                 "pre" if !closing && !in_cell => {
-                    let lower = rest.to_ascii_lowercase();
-                    let (inner, after) = match lower.find("</pre") {
+                    let (inner, after) = match find_ignore_case(rest, "</pre") {
                         Some(e) => (
                             &rest[..e],
                             rest[e..].find('>').map_or("", |g| &rest[e + g + 1..]),
@@ -1217,6 +1213,15 @@ fn html_convert(html: &str, markdown: bool, links: bool, focused: bool) -> Strin
     text
 }
 
+/// Where ASCII `needle` first starts in `hay`, in any case. It stops at the
+/// match, so a page is not copied or lowercased again for every tag.
+fn find_ignore_case(hay: &str, needle: &str) -> Option<usize> {
+    let n = needle.as_bytes();
+    hay.as_bytes()
+        .windows(n.len())
+        .position(|w| w.eq_ignore_ascii_case(n))
+}
+
 /// A `<pre>` block's text as a fenced code block, its line breaks and
 /// indentation kept. The fence is longer than any backtick run inside.
 fn push_code(out: &mut String, inner: &str) {
@@ -1282,7 +1287,9 @@ fn markdown_to_text(md: &str) -> String {
     while let Some(open) = md[pos..].find('[').map(|o| pos + o) {
         if mid.is_none_or(|m| m <= open) {
             mid = md[open + 1..].find("](").map(|m| open + 1 + m);
-            newline = mid.and_then(|m| md[..m].rfind('\n'));
+            // Only the label can hold it: looking further back would rescan
+            // the line for every link on it.
+            newline = mid.and_then(|m| md[open + 1..m].rfind('\n').map(|n| open + 1 + n));
         }
         // With no `](` or no `)` after it, no link follows.
         let Some(m) = mid else { break };
@@ -1461,6 +1468,10 @@ mod tests {
         // A label does not span lines; brackets with no link stay.
         assert_eq!(markdown_to_text("a [b\nc](d) [f](g)"), "a [b\nc](d) f");
         assert_eq!(markdown_to_text("[[[x"), "[[[x");
+        assert_eq!(
+            markdown_to_text("x\n[a](1) [b](2) [c\nd](3)"),
+            "x\na b [c\nd](3)"
+        );
     }
 
     #[test]
@@ -1617,6 +1628,9 @@ mod tests {
             text.ends_with("Guide\n# Example\nfn  start() {\n    run();\n}"),
             "{text}"
         );
+        // Closing tags match in any case.
+        let upper = Page::Html("<PRE>a  b</PRE><SCRIPT>x</SCRIPT><p>c</p>".into()).focus("b", true);
+        assert!(upper.ends_with("```\na  b\n```\n"), "{upper}");
         // A caption stands apart, so the table starts at its header.
         let html = "<table><caption>Plans</caption><tr><th>Plan</th><th>Price</th></tr>\
             <tr><td>Free</td><td>0</td></tr><tr><td>Pro</td><td>20</td></tr></table>";

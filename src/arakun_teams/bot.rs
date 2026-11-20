@@ -852,6 +852,12 @@ pub struct Run {
     /// How many parts a long range is summed up in, once known; 0 while it
     /// is read at once.
     pub parts: usize,
+    /// The messages it reads, in the order it numbers them from 1. Kept from
+    /// the start: a message that opens later must not shift the numbers the
+    /// answer cites.
+    pub ids: Vec<String>,
+    /// The project it reads, as it was when the question was sent.
+    pub project: Option<PathBuf>,
     stop: Arc<AtomicBool>,
 }
 
@@ -888,6 +894,9 @@ pub struct Bots {
     /// The project open in Arakun: where the runs read code. `None` gives
     /// them an empty folder.
     pub project: Option<PathBuf>,
+    /// The project open when each question still on its way was sent, by
+    /// the question's ID: the user may switch before the server stores it.
+    pub asked: HashMap<String, Option<PathBuf>>,
 }
 
 impl Bots {
@@ -907,16 +916,19 @@ impl Bots {
             r.stop.store(true, Ordering::Relaxed);
         }
         self.rejected.clear();
+        self.asked.clear();
     }
 }
 
 impl Hub {
-    /// Runs the bot for the asking message `ask_id`, once the server stored it.
+    /// Runs the bot for the asking message `ask_id`, once the server stored
+    /// it, on `project` (`None`: an empty folder).
     pub fn start_bot(
         &mut self,
         team_id: &str,
         channel_id: &str,
         ask_id: &str,
+        project: Option<PathBuf>,
         cx: &mut Context<Self>,
     ) {
         self.stop_bot(ask_id, cx);
@@ -930,6 +942,8 @@ impl Hub {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |d| d.as_secs()),
             parts: 0,
+            ids: Vec::new(),
+            project: project.clone(),
             stop: Arc::new(AtomicBool::new(false)),
         };
         let key = channel_key(team_id, channel_id);
@@ -947,15 +961,15 @@ impl Hub {
             return;
         };
         run.read = range.len();
+        run.ids = range.lines.iter().map(|l| l.id.clone()).collect();
         let stop = run.stop.clone();
         self.bot.runs.push(run);
         cx.notify();
         let job = Job {
             range,
             asker: me.login.clone(),
-            project: self.bot.project.is_some(),
+            project: project.is_some(),
         };
-        let project = self.bot.project.clone();
         let (team_id, channel_id, ask_id) = (
             team_id.to_string(),
             channel_id.to_string(),
@@ -1039,7 +1053,7 @@ impl Hub {
     /// Runs a failed one again.
     pub fn retry_bot(&mut self, ask_id: &str, cx: &mut Context<Self>) {
         if let Some(r) = self.bot.runs.iter().find(|r| r.ask_id == ask_id).cloned() {
-            self.start_bot(&r.team_id, &r.channel_id, ask_id, cx);
+            self.start_bot(&r.team_id, &r.channel_id, ask_id, r.project, cx);
         }
     }
 
@@ -1542,6 +1556,8 @@ mod tests {
             state: RunState::Running(Step::Reading),
             started: 0,
             parts: 0,
+            ids: Vec::new(),
+            project: None,
             stop: Arc::new(AtomicBool::new(false)),
         };
         assert_eq!(r.label(), "@bot is reading 23 messages…");

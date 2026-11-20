@@ -54,9 +54,18 @@ impl Decision {
     }
 }
 
-/// The bot message a `decision_accept` accepts.
+/// The bot message a `decision_accept` accepts, once the server stored it:
+/// until then no one else has it, and the server may still refuse it.
 pub fn accepts(m: &Msg) -> Option<&str> {
-    if m.body.kind != "decision_accept" || matches!(m.delivery, Delivery::Failed(_)) {
+    if m.delivery != Delivery::Sent {
+        return None;
+    }
+    accepting(m)
+}
+
+/// The bot message a `decision_accept` accepts, sent or not.
+pub fn accepting(m: &Msg) -> Option<&str> {
+    if m.body.kind != "decision_accept" {
         return None;
     }
     m.body.decision.as_ref()?.get("of")?.as_str()
@@ -280,6 +289,11 @@ mod tests {
         failed.truncate(4);
         failed[3].delivery = Delivery::Failed("refused".into());
         assert!(channel_log("c1", &failed).is_empty());
+        // One still on its way.
+        failed[3].delivery = Delivery::Sending;
+        assert!(channel_log("c1", &failed).is_empty());
+        assert!(acceptances(&failed, "b1").is_empty());
+        assert_eq!(accepting(&failed[3]), Some("b1"));
         // An accept of a message that isn't a bot's.
         let mut text = channel();
         text[3].body.decision = Some(serde_json::json!({ "of": "m1" }));

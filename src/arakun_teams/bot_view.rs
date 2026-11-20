@@ -31,6 +31,8 @@ pub(super) struct BotState {
     pub numbers: HashMap<String, usize>,
     /// Who accepted each @bot answer that someone accepted, by its ID.
     pub decided: HashMap<String, Vec<Acceptance>>,
+    /// Answers this user's acceptance of is still on its way to the server.
+    pub accepting: HashSet<String>,
     pub me: u64,
     pub my_login: String,
     /// Answers this user turned down on this device.
@@ -70,6 +72,30 @@ fn read_note(read: Option<usize>, parts: Option<usize>) -> Option<String> {
     Some(note)
 }
 
+/// Each message's number in the runs that read it, from the range each run
+/// read when it started. A message two runs number differently gets none,
+/// so a number never points at another run's citation.
+fn run_numbers<'a>(ranges: impl IntoIterator<Item = &'a [String]>) -> HashMap<String, usize> {
+    let mut numbers: HashMap<String, Option<usize>> = HashMap::new();
+    for ids in ranges.into_iter().filter(|ids| ids.len() > 1) {
+        for (i, id) in ids.iter().enumerate() {
+            let n = i + 1;
+            numbers
+                .entry(id.clone())
+                .and_modify(|had| {
+                    if *had != Some(n) {
+                        *had = None;
+                    }
+                })
+                .or_insert(Some(n));
+        }
+    }
+    numbers
+        .into_iter()
+        .filter_map(|(id, n)| Some((id, n?)))
+        .collect()
+}
+
 impl TeamsView {
     pub(super) fn bot_state(
         &self,
@@ -97,14 +123,7 @@ impl TeamsView {
         };
         let hub = self.hub.read(cx);
         let runs: Vec<Run> = hub.bot.in_channel(team_id, channel_id).cloned().collect();
-        let mut numbers = HashMap::new();
-        for run in &runs {
-            if let Ok(r) = bot::select_range(messages, &run.ask_id)
-                && r.len() > 1
-            {
-                numbers.extend(r.lines.into_iter().map(|l| (l.id, l.n)));
-            }
-        }
+        let numbers = run_numbers(runs.iter().map(|r| r.ids.as_slice()));
         let decided: HashMap<String, Vec<Acceptance>> = messages
             .iter()
             .filter(|m| m.delivery == Delivery::Sent && bot::meta(m).is_some())
@@ -112,12 +131,19 @@ impl TeamsView {
             .filter(|(_, a)| !a.is_empty())
             .collect();
         let me = hub.me();
+        let accepting = messages
+            .iter()
+            .filter(|m| m.delivery == Delivery::Sending)
+            .filter_map(decisions::accepting)
+            .map(String::from)
+            .collect();
         BotState {
             draft,
             hint,
             runs,
             numbers,
             decided,
+            accepting,
             me: me.map_or(0, |m| m.github_id),
             my_login: me.map(|m| m.login.clone()).unwrap_or_default(),
             rejected: hub.bot.rejected.clone(),
@@ -610,6 +636,8 @@ impl TeamsView {
     ) -> AnyElement {
         let sent = m.delivery == Delivery::Sent;
         let rejected = bot.rejected.contains(&m.id);
+        // Accepted here, but not stored yet: the team doesn't have it.
+        let pending = !mine && bot.accepting.contains(&m.id);
         let (t, c, id) = (
             team_channel.0.to_string(),
             team_channel.1.to_string(),
@@ -650,7 +678,17 @@ impl TeamsView {
                         )),
                 )
             })
-            .when(!mine, |d| {
+            .when(pending, |d| {
+                d.child(
+                    ui::text(
+                        Type::Label,
+                        theme::text_subtle(),
+                        "Sending your acceptance…",
+                    )
+                    .pr(ui::sp(4.)),
+                )
+            })
+            .when(!mine && !pending, |d| {
                 d.child(
                     ui::button(
                         ("teams-bot-accept", index),
@@ -948,5 +986,25 @@ mod tests {
             Some("read 214 messages, in 4 parts")
         );
         assert_eq!(read_note(Some(0), None), None);
+    }
+
+    #[test]
+    fn numbers_come_from_each_runs_own_range() {
+        let ids = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let (a, b, single) = (
+            ids(&["m1", "m2", "m3"]),
+            ids(&["m2", "m3", "m4"]),
+            ids(&["m9"]),
+        );
+        let n = run_numbers([a.as_slice(), b.as_slice(), single.as_slice()]);
+        assert_eq!(n.get("m1"), Some(&1));
+        // m2 and m3 are [2] and [3] in one run, [1] and [2] in the other.
+        assert_eq!(n.get("m2"), None);
+        assert_eq!(n.get("m3"), None);
+        assert_eq!(n.get("m4"), Some(&3));
+        // A run of one message numbers nothing.
+        assert_eq!(n.get("m9"), None);
+        let same = run_numbers([a.as_slice(), a.as_slice()]);
+        assert_eq!(same.get("m2"), Some(&2));
     }
 }

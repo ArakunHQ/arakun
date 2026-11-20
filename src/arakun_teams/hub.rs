@@ -1744,7 +1744,12 @@ impl Hub {
         let team_id = c.team_id.clone();
         let channel_id = c.channel_id.clone();
         for id in asked {
-            self.start_bot(&team_id, &channel_id, &id, cx);
+            let project = self
+                .bot
+                .asked
+                .remove(&id)
+                .unwrap_or_else(|| self.bot.project.clone());
+            self.start_bot(&team_id, &channel_id, &id, project, cx);
         }
         if unknown_seen
             && self
@@ -1808,6 +1813,9 @@ impl Hub {
             &body,
         );
         let frame = serde_json::json!({ "type": "send", "message": wire }).to_string();
+        if body.kind == "text" && body.mentions.iter().any(|m| m == "bot") {
+            self.bot.asked.insert(id.clone(), self.bot.project.clone());
+        }
         let me = self.me.clone();
         c.messages.push(Msg {
             id: id.clone(),
@@ -1834,11 +1842,22 @@ impl Hub {
         let Some(c) = self.channels.get_mut(&ckey) else {
             return;
         };
-        let Some(i) = c.messages.iter().position(|m| m.id == id) else {
+        let Some(body) = c
+            .messages
+            .iter()
+            .find(|m| m.id == id)
+            .map(|m| m.body.clone())
+        else {
             return;
         };
-        let m = c.messages.remove(i);
-        self.send_body(team_id, channel_id, m.body, cx);
+        // Dropped only once the copy is queued: if it can't be (no key yet),
+        // the failed one stays with its Send again, a bot answer included.
+        if self.send_body(team_id, channel_id, body, cx)
+            && let Some(c) = self.channels.get_mut(&ckey)
+        {
+            c.messages.retain(|m| m.id != id);
+            self.bot.asked.remove(id);
+        }
     }
 }
 

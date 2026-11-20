@@ -2550,8 +2550,10 @@ impl TeamsView {
         let mut placed = vec![false; notices.len()];
         let mut runs_placed = vec![false; bot.runs.len()];
         for (i, m) in messages.iter().enumerate() {
-            // An acceptance shows as the "Decided" line under its answer.
-            if m.body.kind == "decision_accept" {
+            // An acceptance shows as the "Decided" line under its answer, and
+            // one on its way as a note there. A refused one stays a row, so
+            // its error and Send again show.
+            if m.body.kind == "decision_accept" && !matches!(m.delivery, Delivery::Failed(_)) {
                 continue;
             }
             for (n, (notice, at)) in notices.iter().enumerate() {

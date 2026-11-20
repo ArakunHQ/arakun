@@ -1724,6 +1724,11 @@ impl Shell {
 
     /// Where git runs for the environment at `env_path`: in its folder here,
     /// or on the server that has it.
+    ///
+    /// A server reached over plain http gets its git too: its diffs and commit
+    /// messages cross the network in the clear, but so does everything else on
+    /// that link, sessions and token included. Refusing git alone would not
+    /// protect the code, and the README says so.
     pub(super) fn git_at(&self, env_path: &Path) -> servers::git::GitAt {
         use servers::git::{GitAt, ServerGit};
         let Some(remote) = self.find_env(env_path).and_then(|e| e.remote.as_ref()) else {

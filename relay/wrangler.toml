@@ -33,7 +33,7 @@ binding = "CONFIG"
 id = "00000000000000000000000000000000"
 
 # The hosted relay at *.arakun.dev, which .github/workflows/relay-deploy.yml
-# deploys from main (`npx wrangler deploy --env production`). None of this is
+# deploys with each release (`npx wrangler deploy --env production`). None of this is
 # secret: the ADMIN_SECRET stays a Worker secret. An environment inherits no
 # vars or bindings, so they are all here again.
 [env.production]

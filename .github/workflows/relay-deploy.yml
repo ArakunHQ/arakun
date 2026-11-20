@@ -1,58 +1,126 @@
 name: Relay deploy
 
 # Deploys the hosted relay (relay/) and the phone page it serves (phone/) to
-# *.arakun.dev when a change to either lands on main, after the same tests the
-# CI's "Relay (types and tests)" job runs. Before this, the relay was deployed
-# by hand, so what ran could differ from main (#20).
+# *.arakun.dev. The relay ships with the app's versions: release.yml calls this
+# workflow after it publishes a release, so the relay that runs is always the
+# one from the latest release, and a relay change merged on main waits for the
+# next version like any other change.
+#
+# Three ways in:
+#
+# - A release: release.yml calls this after its publish job, on the v* tag.
+#   Pre-releases (a `-` in the tag) don't deploy: most installs still run the
+#   last release.
+# - A redeploy of the latest release (to undo a hotfix): run this workflow by
+#   hand on its tag.
+#
+#     gh workflow run relay-deploy.yml --ref v1.2.3
+#
+# - A hotfix, without a new version: merge the fix on main as usual, then
+#   cherry-pick it onto a `relay-hotfix/<tag>` branch made from the latest
+#   release's tag, push it and run this workflow on it.
+#
+#     git switch -c relay-hotfix/v1.2.3 v1.2.3
+#     git cherry-pick <the fix's commit on main>
+#     git push origin relay-hotfix/v1.2.3
+#     gh workflow run relay-deploy.yml --ref relay-hotfix/v1.2.3
+#
+#   The branch may only change relay/ and phone/, so what runs is the release
+#   plus the fix. A second hotfix for the same release goes on the same branch.
+#   A commit that is not on main gets a warning: the next release deploys
+#   main, and a fix only on the hotfix branch would go away again.
+#
+# Whatever the way in, only the latest published release, or a hotfix branch
+# made from it, deploys. So re-running an old release's run can't put an old
+# relay back.
 #
 # The `production` environment holds CLOUDFLARE_API_TOKEN, a token for the
 # CoderLabs account that can edit Workers scripts and routes and read KV; it can
-# also require a reviewer before a deploy. The settings live in relay/wrangler.toml
-# under [env.production]. The deploy's message names the commit it came from.
+# also require a reviewer before a deploy. Its deployment rules must let v*
+# tags and relay-hotfix/* branches through. The settings live in
+# relay/wrangler.toml under [env.production]. The deploy's message names the
+# tag, or the hotfix branch and its commit.
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "relay/**"
-      - "phone/**"
-      - ".github/workflows/relay-deploy.yml"
+  workflow_call:
   workflow_dispatch:
 
 permissions: {}
 
-# One deploy at a time, and never one cancelled half way. The group carries the
-# ref, so a manual run from another branch (skipped below) can't take the place
-# of a main deploy waiting in the queue.
-concurrency:
-  group: relay-deploy-${{ github.ref }}
-  cancel-in-progress: false
-
 jobs:
   deploy:
     name: Deploy the relay
-    # A manual run can pick any branch, and the environment lets every protected
-    # branch through (cla-signatures too), so only main may deploy.
-    if: github.ref == 'refs/heads/main'
+    # Pre-releases don't deploy; a branch other than a hotfix one never does.
+    # The step below checks the rest exactly.
+    if: >-
+      (startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-'))
+      || startsWith(github.ref, 'refs/heads/relay-hotfix/v')
     runs-on: depot-ubuntu-24.04
     environment:
       name: production
       url: https://arakun.dev
+    # One deploy at a time, never one cancelled half way. Not per ref: a hotfix
+    # and a release must not deploy at the same time.
+    concurrency:
+      group: relay-deploy
+      cancel-in-progress: false
     permissions:
       contents: read
     defaults:
       run:
         working-directory: relay
     steps:
-      # The `if` above compares without case, so a branch named MAIN gets this
-      # far. The shell compares exactly, before anything is checked out.
-      - name: Only main deploys
-        working-directory: .
-        run: '[ "$GITHUB_REF" = "refs/heads/main" ] || { echo "::error::$GITHUB_REF is not refs/heads/main"; exit 1; }'
-
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # The release's tag and main, to compare a hotfix branch with.
+          fetch-depth: 0
+
+      # The `if` above compares without case and only by prefix. This compares
+      # exactly, and finds the release the ref belongs to.
+      - name: Check the ref is the latest release
+        id: ref
+        working-directory: .
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          REF: ${{ github.ref }}
+        run: |
+          case "$REF" in
+            refs/tags/v*) tag=${REF#refs/tags/} kind=release ;;
+            refs/heads/relay-hotfix/v*) tag=${REF#refs/heads/relay-hotfix/} kind=hotfix ;;
+            *) echo "::error::$REF is neither a v* tag nor a relay-hotfix/v* branch"; exit 1 ;;
+          esac
+          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::$tag is not a release version"; exit 1; }
+
+          # GitHub's latest release: published, not a draft or pre-release.
+          latest=$(gh release view --json tagName --jq .tagName)
+          if [ "$tag" != "$latest" ]; then
+            echo "::error::$tag is not the latest release ($latest); only the latest release's relay deploys"
+            exit 1
+          fi
+
+          if [ "$kind" = hotfix ]; then
+            git merge-base --is-ancestor "$tag" HEAD || {
+              echo "::error::$REF is not made from $tag"; exit 1
+            }
+            other=$(git diff --name-only "$tag" HEAD | grep -Ev '^(relay|phone)/' || true)
+            if [ -n "$other" ]; then
+              printf '%s\n' "$other"
+              echo "::error::a relay hotfix may only change relay/ and phone/; the files above differ from $tag"
+              exit 1
+            fi
+            # `git cherry` matches by patch, so a cherry-pick of main's commit counts.
+            missing=$(git cherry origin/main HEAD "$tag" | sed -n 's/^+ //p')
+            for c in $missing; do
+              echo "::warning::$(git log -1 --format='%h %s' "$c") is not on main; the next release would deploy without it"
+            done
+            message="hotfix $tag $(git rev-parse --short HEAD)"
+          else
+            message="release $tag"
+          fi
+          echo "message=$message" >> "$GITHUB_OUTPUT"
+          echo "::notice::deploying: $message"
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -73,5 +141,5 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: 0156eeaadfaba2bf822554cefa9ea5d8
-          SHA: ${{ github.sha }}
-        run: npx wrangler deploy --env production --message "main $SHA"
+          MESSAGE: ${{ steps.ref.outputs.message }}
+        run: npx wrangler deploy --env production --message "$MESSAGE"

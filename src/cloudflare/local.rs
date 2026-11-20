@@ -59,7 +59,7 @@ pub fn mcp_server(agent: Agent) -> Option<String> {
         // but Arakun does not read or change their MCP config yet.
         Agent::WorkersAi | Agent::Devin | Agent::Cursor => return None,
     };
-    let v: Value = serde_json::from_slice(&std::fs::read(file).ok()?).ok()?;
+    let v: Value = crate::durable::load_json(file)?;
     v["mcpServers"].as_object()?.iter().find_map(|(name, s)| {
         (s["url"]
             .as_str()
@@ -78,7 +78,7 @@ fn opencode_mcp_server() -> Option<String> {
         .unwrap_or_else(|| crate::platform::home().join(".config"))
         .join("opencode");
     ["opencode.json", "opencode.jsonc"].iter().find_map(|f| {
-        let v: Value = serde_json::from_slice(&std::fs::read(config.join(f)).ok()?).ok()?;
+        let v: Value = crate::durable::load_json(config.join(f))?;
         v["mcp"].as_object()?.iter().find_map(|(name, s)| {
             (s["url"]
                 .as_str()

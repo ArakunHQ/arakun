@@ -174,11 +174,11 @@ pub fn load(file: &Path) -> Store {
     // alone, and the one holding the lock deals with it.
     match try_lock_store(file) {
         Ok(Some(_lock)) => load_locked(file),
-        Ok(None) => crate::stored::peek(file).unwrap_or_default(),
+        Ok(None) => crate::durable::load_json(file).unwrap_or_default(),
         // Without the lock (say, no write access to it), only read.
         Err(e) => {
             eprintln!("arakun: reading {} without its lock: {e}", file.display());
-            crate::stored::peek(file).unwrap_or_default()
+            crate::durable::load_json(file).unwrap_or_default()
         }
     }
 }

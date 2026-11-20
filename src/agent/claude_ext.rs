@@ -281,17 +281,12 @@ fn cache_file(cwd: &Path) -> PathBuf {
 }
 
 fn read_checked(cwd: &Path) -> Checked {
-    std::fs::read(cache_file(cwd))
-        .ok()
-        .and_then(|b| serde_json::from_slice(&b).ok())
-        .unwrap_or_default()
+    crate::durable::load_json(cache_file(cwd)).unwrap_or_default()
 }
 
 fn save_checked(cwd: &Path, checked: &Checked) {
     let file = cache_file(cwd);
-    if let Ok(json) = serde_json::to_vec(checked) {
-        let _ = crate::durable::write(&file, &json);
-    }
+    crate::durable::cache_json(&file, checked);
 }
 
 /// Instant: Claude's files, with the health the last check found (if any).
@@ -754,10 +749,7 @@ fn scope_rank(s: &Scope) -> u8 {
 // Files.
 
 fn read_json(path: &Path) -> Value {
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or(Value::Null)
+    crate::durable::load_json(path).unwrap_or(Value::Null)
 }
 
 /// This folder's entry in `~/.claude.json` (keyed by absolute path).

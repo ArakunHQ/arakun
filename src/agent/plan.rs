@@ -324,13 +324,11 @@ fn seats_path() -> PathBuf {
 
 /// The last fetch of both seats, however old.
 fn cached_seats() -> Option<Seats> {
-    serde_json::from_str(&std::fs::read_to_string(seats_path()).ok()?).ok()
+    crate::durable::load_json(seats_path())
 }
 
 fn store_seats(seats: &Seats) {
-    if let Ok(json) = serde_json::to_vec_pretty(seats) {
-        let _ = crate::durable::write(&seats_path(), &json);
-    }
+    crate::durable::cache_json(&seats_path(), seats);
 }
 
 /// The last usage any view fetched, for surfaces that only render (the rail).
@@ -587,8 +585,7 @@ struct Oauth {
 /// Claude Code's sign-in, shared with every tool that reads ~/.claude. Read
 /// only: see `cli_login`.
 fn credentials() -> Option<Oauth> {
-    let json: Value =
-        serde_json::from_str(&std::fs::read_to_string(credentials_path()).ok()?).ok()?;
+    let json: Value = crate::durable::load_json(credentials_path())?;
     let o = json.get("claudeAiOauth")?;
     Some(Oauth {
         access_token: o["accessToken"].as_str()?.to_string(),

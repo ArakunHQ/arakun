@@ -470,7 +470,7 @@ fn trim(list: &mut Vec<String>) {
 }
 
 fn load_book() -> Option<Book> {
-    serde_json::from_slice(&std::fs::read(book_file()).ok()?).ok()
+    crate::durable::load_json(book_file())
 }
 
 fn store_book(book: &Book) {

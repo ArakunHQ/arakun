@@ -218,8 +218,7 @@ pub fn codex_sign_in() -> Option<&'static str> {
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
         .unwrap_or_else(|| home().join(".codex"));
-    let v: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(dir.join("auth.json")).ok()?).ok()?;
+    let v: serde_json::Value = crate::durable::load_json(dir.join("auth.json"))?;
     codex_auth_label(&v)
 }
 

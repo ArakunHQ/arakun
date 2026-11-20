@@ -41,9 +41,8 @@ list.
 
 `arakun dev` runs a second, fresh Arakun from your build. On Linux it runs on a
 virtual display and needs `Xvfb`. On macOS it opens a window of its own that
-never takes the focus, and `dev shot` captures that window alone. That needs
-Screen Recording permission for the app the command runs from; if `dev shot`
-says so, ask the user to grant it. Input goes into the test Arakun directly, so
+never takes the focus, and `dev shot` has it render its own window, so it needs
+no Screen Recording permission and works while the window is covered. Input goes into the test Arakun directly, so
 it never touches the user's pointer, keyboard or own Arakun. `dev text` and
 clicking by text need `tesseract` (`tools/setup-dev.sh --yes --display`
 installs what is missing).

@@ -121,6 +121,8 @@ const BODY_LH: f32 = 17.;
 const BODY_LINES: usize = 4;
 /// The fillets' radius where the card hangs from the island, at full join.
 const NECK_R: f32 = 12.;
+/// Long after a card's drip or melt has settled: where reduced motion draws it.
+const SETTLED: f32 = 10.;
 /// How long a card takes to melt back in; the next one drips after.
 const MELT_FOR: f32 = 0.9;
 /// How long a confirmation card is up before a click on "Approve" counts.
@@ -1723,8 +1725,13 @@ impl Island {
             self.from = ((self.w.x - tw).abs() + (self.h.x - th).abs()).max(1.);
             self.progress = 0.;
         }
-        self.w.step(tw, dt);
-        self.h.step(th, dt);
+        if self.still {
+            self.w = Spring { x: tw, v: 0. };
+            self.h = Spring { x: th, v: 0. };
+        } else {
+            self.w.step(tw, dt);
+            self.h.step(th, dt);
+        }
         let left = (self.w.x - tw).abs() + (self.h.x - th).abs();
         // Never back down: the overshoot must not dim the content again.
         self.progress = self.progress.max(1. - left / self.from);
@@ -2757,6 +2764,7 @@ impl Render for Island {
         while self.frames.len() > 400 {
             self.frames.pop_front();
         }
+        self.still = cx.reduce_motion();
         let moving = self.step(dt);
         if let Some(c) = &mut self.call {
             let live = c.levels.get(c.phase == Phase::Listening);
@@ -2803,18 +2811,20 @@ impl Render for Island {
         }
         let card = self.card.as_ref().and_then(|c| {
             let l = c.layout.as_ref()?;
-            let g = card_geom(
-                l.w,
-                l.h,
-                w,
-                h,
-                c.born.elapsed().as_secs_f32(),
-                c.gone.map(|at| at.elapsed().as_secs_f32()),
-            );
+            // Held still, a card is out or in at once: no drip, wobble or melt.
+            let since = |at: Instant| {
+                if self.still {
+                    SETTLED
+                } else {
+                    at.elapsed().as_secs_f32()
+                }
+            };
+            let g = card_geom(l.w, l.h, w, h, since(c.born), c.gone.map(since));
             Some((c, l, g))
         });
         let bounced = self
             .melted
+            .filter(|_| !self.still)
             .map_or(0., |at| bounce(at.elapsed().as_secs_f32()));
         let ih = h + bounced;
         let island = Rounded {
@@ -2873,7 +2883,6 @@ impl Render for Island {
             self.region = Some(region);
         }
         // Frames only while the shape moves or something pulses.
-        self.still = cx.reduce_motion();
         let pulsing = !self.still && self.feed.rows.iter().any(|r| r.status == Status::Working);
         let animated = match self.view {
             View::Compact(Phase::Speaking | Phase::Listening) | View::Call => true,
@@ -3314,6 +3323,16 @@ mod tests {
         assert_eq!(g.join, 0.);
         let g = card_geom(w, h, iw, ih, 3., None);
         assert!((g.top - ih - CARD_GAP).abs() < 0.1 && (g.h - h).abs() < 0.1 && g.alpha == 1.);
+    }
+
+    #[test]
+    fn a_still_card_is_drawn_settled_out_or_in() {
+        let (w, h, iw, ih) = (440., 150., 240., 32.);
+        let g = card_geom(w, h, iw, ih, SETTLED, None);
+        assert!((g.top - ih - CARD_GAP).abs() < 0.01 && (g.h - h).abs() < 0.01);
+        assert!(g.alpha == 1. && g.join == 0. && g.bulge.abs() < 0.01);
+        let g = card_geom(w, h, iw, ih, SETTLED, Some(SETTLED));
+        assert!(g.join == 0. && g.alpha == 0. && g.top + g.h < ih);
     }
 
     #[test]

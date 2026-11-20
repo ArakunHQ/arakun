@@ -849,6 +849,11 @@ mod host {
             };
             if choice != motion::choice() {
                 motion::set_choice(choice, cx);
+                // The system's setting was read at start; it may have changed
+                // while the app's choice ruled.
+                if choice == motion::Reduce::System {
+                    motion::follow_system(cx);
+                }
             }
             #[cfg(windows)]
             let feed = super::external::merge(feed, &mut self.external);

@@ -1276,11 +1276,37 @@ impl Mascot {
             || now >= self.next_event()
     }
 
+    fn snap(&mut self, p: &Pose) {
+        let rest = |s: &mut Spring, t: f32| {
+            s.x = t;
+            s.v = 0.;
+        };
+        for (s, &t) in self.head.iter_mut().zip(&p.head) {
+            rest(s, t);
+        }
+        for i in 0..2 {
+            rest(&mut self.ears[i][0], p.ears[i][0]);
+            rest(&mut self.ears[i][1], p.ears[i][1]);
+            rest(&mut self.gaze[i], p.look[i]);
+        }
+        for (s, &t) in self.eye.iter_mut().zip(&p.eye) {
+            rest(s, t);
+        }
+        rest(&mut self.nose, p.nose);
+    }
+
     fn step(&mut self, now: f64, dt: f32) -> Frame {
         self.pointer_dirty = false;
         let p = self.plan(now);
-        let sub = (dt / 0.006).ceil().max(1.) as usize;
-        let h = dt / sub as f32;
+        // Held still, every spring sits on its target, so no kick (a key, an
+        // ear flick) can swing it.
+        let sub = if animated() {
+            (dt / 0.006).ceil().max(1.) as usize
+        } else {
+            self.snap(&p);
+            0
+        };
+        let h = dt / sub.max(1) as f32;
         for _ in 0..sub {
             for (s, &t) in self.head.iter_mut().zip(&p.head) {
                 s.step(t, h);

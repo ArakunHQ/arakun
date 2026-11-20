@@ -219,11 +219,11 @@ terminal-only. The status line and keybindings from your settings don't apply in
   global one. `arakun mem scripts` lists the scripts agents wrote again and again in a
   project's sessions, worth keeping as a script of the project.
 - **Headless agents.** `arakun agent run` starts an agent in its own process that keeps
-  going with the app closed. Its tools run inside a bubblewrap sandbox (workspace
-  writable, the rest read-only, no credentials, no network unless `--allow net`), and a
-  policy (`--policy readonly|workspace|full`) decides which tool calls need your approval
-  (`arakun agent approve|deny`). Linux only (needs `bwrap`); headless runs use Workers AI
-  models for now.
+  going with the app closed. Its tools run inside a sandbox (workspace writable, the
+  rest read-only, no credentials, no network unless `--allow net`), and a policy
+  (`--policy readonly|workspace|full`) decides which tool calls need your approval
+  (`arakun agent approve|deny`). The sandbox is bubblewrap on Linux (needs `bwrap`) and
+  Seatbelt (`sandbox-exec`) on macOS; headless runs use Workers AI models for now.
 - **Server.** `arakun server serve` is Arakun without a window, for a machine nobody
   sits at: a build box, the workstation at the office, a VPS. It runs sessions of any
   agent signed in on that machine and keeps them going while nothing is connected.
@@ -792,7 +792,7 @@ next to an `ARAKUN_USAGE_LOG` file) and a new one starts. Arakun keeps only that
 older copy: each move replaces the previous one.
 
 Optional tools: `git` (Changes, worktrees, branches), `gh` (CI, GitHub tab), `bwrap`
-(headless agents), `secret-tool` from libsecret (stored logins on Linux), `tailscale`
+(headless agents on Linux), `secret-tool` from libsecret (stored logins on Linux), `tailscale`
 (phone over Tailscale), `cf` (Cloudflare tab).
 
 ## Build from source

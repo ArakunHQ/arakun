@@ -767,8 +767,11 @@ fn unpack(archive: &Path, work: &Path, name: &str, to: &Path) -> Result<(), Stri
     std::fs::copy(&from, to).map_err(|e| format!("{}: {e}", to.display()))?;
     let pdb = x.join(name).join("arakun.pdb");
     if cfg!(windows) && pdb.is_file() {
+        // Only crash reports need it: without it the binary still stages.
         let at = pdb_beside(to);
-        std::fs::copy(&pdb, &at).map_err(|e| format!("{}: {e}", at.display()))?;
+        if std::fs::copy(&pdb, &at).is_err() {
+            let _ = remove_any(&at);
+        }
     }
     #[cfg(unix)]
     {

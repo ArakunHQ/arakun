@@ -582,11 +582,13 @@ fn output_tail(output: &str, n: usize) -> (u64, String) {
             break;
         }
     }
-    let hidden = output[..start].bytes().filter(|&b| b == b'\n').count() as u64;
     let mut from = start.max(output.len().saturating_sub(SHOWN_MAX));
     while !output.is_char_boundary(from) {
         from += 1;
     }
+    // Lines the size cut removes whole are hidden too; a line cut through
+    // still shows its end.
+    let hidden = output[..from].bytes().filter(|&b| b == b'\n').count() as u64;
     (hidden, strip_ansi(&output[from..]).trim_end().to_string())
 }
 
@@ -680,5 +682,10 @@ mod tests {
         let (hidden, shown) = output_tail(&line, 40);
         assert_eq!(hidden, 0);
         assert!(shown.len() <= 16 * 1024 && shown.chars().all(|c| c == 'é'));
+        // Forty long lines: the ones cut away by size count as earlier lines.
+        let output: String = (0..40).map(|_| format!("{}\n", "y".repeat(1024))).collect();
+        let (hidden, shown) = output_tail(&output, 40);
+        assert_eq!(hidden as usize + shown.lines().count(), 40);
+        assert!(hidden >= 24);
     }
 }

@@ -208,7 +208,10 @@ impl ToolCall {
         }
         // Start at a line so an escape sequence isn't cut in half. One line
         // longer than the whole tail is cut where it is.
-        if let Some(nl) = self.terminal_output[cut..].find('\n') {
+        // Not when that newline ends the output: the tail would be empty.
+        if let Some(nl) = self.terminal_output[cut..].find('\n')
+            && cut + nl + 1 < len
+        {
             cut += nl + 1;
         }
         // A line cut through the middle still counts once, by its kept end.
@@ -4148,6 +4151,10 @@ mod tests {
         t.push_terminal_output(&"é".repeat(3 * super::TERMINAL_KEEP));
         assert!(t.terminal_output.len() <= 2 * super::TERMINAL_KEEP);
         assert!(t.terminal_output.ends_with('é'));
+        // A long line that ends the output keeps its end, not nothing.
+        t.push_terminal_output(&format!("{}\n", "x".repeat(3 * super::TERMINAL_KEEP)));
+        assert!(t.terminal_output.len() >= super::TERMINAL_KEEP);
+        assert!(t.terminal_output.ends_with("x\n"));
     }
 
     #[test]

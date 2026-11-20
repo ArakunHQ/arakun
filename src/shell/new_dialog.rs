@@ -7,8 +7,8 @@ use gpui::AppContext as _;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     Context, EventEmitter, FocusHandle, Focusable, FontWeight, Hsla, InteractiveElement as _,
-    IntoElement, ParentElement as _, Render, SharedString, StatefulInteractiveElement as _,
-    Styled as _, Window, div, px,
+    IntoElement, ParentElement as _, Render, ScrollHandle, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Window, div, px,
 };
 
 use crate::theme;
@@ -49,6 +49,8 @@ pub struct NewDialog {
     others: Vec<ProjectChoice>,
     at: usize,
     focus: FocusHandle,
+    /// The list of other projects, which can be longer than it shows.
+    scroll: ScrollHandle,
 }
 
 impl EventEmitter<NewDialogEvent> for NewDialog {}
@@ -67,6 +69,7 @@ impl NewDialog {
             others,
             at: 0,
             focus,
+            scroll: ScrollHandle::new(),
         }
     }
 
@@ -95,6 +98,11 @@ impl NewDialog {
     fn step(&mut self, by: isize, cx: &mut Context<Self>) {
         let n = self.choices().len() as isize;
         self.at = (self.at as isize + by).rem_euclid(n) as usize;
+        // The list holds the choices after the cards: keep the picked one in view.
+        let cards = n as usize - self.others.len();
+        if let Some(row) = self.at.checked_sub(cards) {
+            self.scroll.scroll_to_item(row);
+        }
         cx.notify();
     }
 
@@ -282,17 +290,21 @@ impl Render for NewDialog {
                     "up" | "left" => this.step(-1, cx),
                     "tab" if ev.keystroke.modifiers.shift => this.step(-1, cx),
                     "tab" => this.step(1, cx),
-                    // The cards answer to the same keys as everywhere else.
-                    "t" if ev.keystroke.modifiers.secondary() => {
-                        if let Some(c) = session {
-                            this.pick(c, cx)
-                        }
-                    }
-                    "o" if ev.keystroke.modifiers.secondary() => this.pick(Choice::Project, cx),
                     _ => return,
                 }
                 cx.stop_propagation();
             }))
+            // The cards answer to the same keys as everywhere else. Those keys
+            // are bound to the shell's actions, which run before any key-down,
+            // so the dialog takes the actions and closes itself first.
+            .on_action(cx.listener(move |this, _: &super::NewSession, _, cx| {
+                if let Some(c) = session {
+                    this.pick(c, cx)
+                }
+            }))
+            .on_action(
+                cx.listener(|this, _: &super::AddProject, _, cx| this.pick(Choice::Project, cx)),
+            )
             .child(ui::modal_header(
                 "New",
                 Some("Start a session, or add a project to work in.".into()),
@@ -351,6 +363,7 @@ impl Render for NewDialog {
                                         .gap(ui::sp(1.))
                                         .max_h(px(240.))
                                         .overflow_y_scroll()
+                                        .track_scroll(&self.scroll)
                                         .children(others),
                                 ),
                         )

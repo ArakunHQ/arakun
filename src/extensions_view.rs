@@ -247,7 +247,7 @@ impl EventEmitter<ExtensionsEvent> for ExtensionsView {}
 
 impl ExtensionsView {
     pub fn new(views: sidebar::Extensions, cx: &mut Context<Self>) -> Self {
-        let query = cx.new(|cx| TextInput::new("Search plugins and MCP servers…", cx));
+        let query = cx.new(|cx| TextInput::new("Search plugins, MCP servers and skills…", cx));
         let sub = cx.subscribe(&query, |this, input, ev: &InputEvent, cx| match ev {
             InputEvent::Changed => {
                 this.query_changed(cx);
@@ -382,6 +382,8 @@ impl ExtensionsView {
             self.ask_remote(true, cx);
             // Asked for, a failed load is tried again at once.
             self.ms.failed_at = None;
+            // A failed skills.sh search too, for the same words.
+            self.ms.skills_error = None;
             self.open_market(cx);
         }
         match self.which {
@@ -2567,7 +2569,7 @@ impl ExtensionsView {
         self.kind = kind;
         self.open = None;
         let hint = match kind {
-            Kind::Marketplace => "Search plugins and MCP servers…",
+            Kind::Marketplace => "Search plugins, MCP servers and skills…",
             Kind::Servers => "Filter MCP servers…",
             Kind::Plugins => "Filter plugins…",
             Kind::Skills => "Filter skills…",
@@ -2607,6 +2609,7 @@ impl ExtensionsView {
             for (m, key, label, icon_name) in [
                 (Market::Plugins, "market:plugins", "Plugins", "cube"),
                 (Market::Registry, "market:registry", "MCP servers", "link01"),
+                (Market::Skills, "market:skills", "Skills", "sparkles"),
             ] {
                 let on = self.kind == Kind::Marketplace && self.market == m;
                 out.push(Line::Entry(
@@ -2696,6 +2699,7 @@ impl ExtensionsView {
             "which:droid" => self.set_which(Which::Droid, cx),
             "market:plugins" => self.show_market(Market::Plugins, cx),
             "market:registry" => self.show_market(Market::Registry, cx),
+            "market:skills" => self.show_market(Market::Skills, cx),
             "target:" => self.pick_target(None, cx),
             "cat:" => self.pick_category(None, cx),
             _ => {
@@ -2912,7 +2916,9 @@ impl Render for ExtensionsView {
                             .child(if self.kind == Kind::Arakun {
                                 "Tabs for the sidebar, on every project".to_string()
                             } else {
-                                format!("Plugins and MCP servers for your agents in {place}")
+                                format!(
+                                    "Plugins, MCP servers and skills for your agents in {place}"
+                                )
                             }),
                     ),
             )

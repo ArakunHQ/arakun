@@ -973,26 +973,70 @@ fn skill_dirs(dir: &Path) -> Vec<PathBuf> {
         .flatten()
         .flatten()
         .map(|e| e.path())
+        // A hidden folder is no skill: an install copying, a tool's own state.
+        .filter(|p| {
+            p.file_name()
+                .is_some_and(|n| !n.to_string_lossy().starts_with('.'))
+        })
         .filter(|p| p.join("SKILL.md").is_file())
         .collect();
     v.sort();
     v
 }
 
-fn read_skills(home: &Path, cwd: &Path, plugins: &[Plugin]) -> Vec<Skill> {
-    let mut out = Vec::new();
-    let mut roots: Vec<(String, PathBuf, Option<String>)> =
-        vec![("personal".into(), home.join(".claude/skills"), None)];
-    if cwd != home {
-        roots.push(("project".into(), cwd.join(".claude/skills"), None));
-    }
-    for p in plugins.iter().filter(|p| p.enabled) {
-        roots.push((
+/// A folder of skill folders: the source it is shown as, the folder, and the prefix its
+/// skills' names get.
+type SkillRoot = (String, PathBuf, Option<String>);
+
+fn plugin_roots(plugins: &[Plugin]) -> impl Iterator<Item = SkillRoot> + '_ {
+    plugins.iter().filter(|p| p.enabled).map(|p| {
+        (
             p.short().to_string(),
             p.path.join("skills"),
             Some(p.short().to_string()),
-        ));
+        )
+    })
+}
+
+fn read_skills(home: &Path, cwd: &Path, plugins: &[Plugin]) -> Vec<Skill> {
+    let mut roots: Vec<SkillRoot> = vec![("personal".into(), home.join(".claude/skills"), None)];
+    if cwd != home {
+        roots.push(("project".into(), cwd.join(".claude/skills"), None));
     }
+    roots.extend(plugin_roots(plugins));
+    skills_in(roots)
+}
+
+/// The skills an agent arakun runs itself may use: Claude's personal, project and plugin
+/// skills, and the `.agents/skills` folders other agents read. Without `personal` only the
+/// project's, for a sandbox whose home is empty. A name seen twice keeps its first skill,
+/// so a personal skill wins over a project one, as in Claude Code.
+pub(crate) fn agent_skills(cwd: &Path, personal: bool) -> Vec<Skill> {
+    let home = launch::home();
+    let mut roots: Vec<SkillRoot> = Vec::new();
+    if personal {
+        roots.push(("personal".into(), home.join(".claude/skills"), None));
+        roots.push(("personal".into(), home.join(".agents/skills"), None));
+    }
+    if cwd != home || !personal {
+        roots.push(("project".into(), cwd.join(".claude/skills"), None));
+        roots.push(("project".into(), cwd.join(".agents/skills"), None));
+    }
+    let plugins = if personal {
+        read_plugins(&installed_plugins(&home, cwd))
+    } else {
+        Vec::new()
+    };
+    roots.extend(plugin_roots(&plugins));
+    let mut seen = HashSet::new();
+    skills_in(roots)
+        .into_iter()
+        .filter(|s| seen.insert(s.name.clone()))
+        .collect()
+}
+
+fn skills_in(roots: Vec<SkillRoot>) -> Vec<Skill> {
+    let mut out = Vec::new();
     for (source, root, prefix) in roots {
         for dir in skill_dirs(&root) {
             let (name, description) = frontmatter(&dir.join("SKILL.md"));
@@ -1017,6 +1061,24 @@ fn read_skills(home: &Path, cwd: &Path, plugins: &[Plugin]) -> Vec<Skill> {
     out
 }
 
+/// A SKILL.md's text after its front matter.
+pub(crate) fn skill_body(text: &str) -> &str {
+    let mut rest = text.trim_start_matches('\u{feff}');
+    if let Some(after) = rest.strip_prefix("---")
+        && after.starts_with(['\n', '\r'])
+    {
+        let mut at = 0;
+        for line in after.split_inclusive('\n') {
+            at += line.len();
+            if at > line.len() && line.trim() == "---" {
+                rest = &after[at..];
+                break;
+            }
+        }
+    }
+    rest.trim()
+}
+
 /// `name` and `description` of a SKILL.md's YAML front matter.
 fn frontmatter(path: &Path) -> (Option<String>, String) {
     let mut head = String::new();
@@ -1024,6 +1086,11 @@ fn frontmatter(path: &Path) -> (Option<String>, String) {
         let _ = f.take(16 * 1024).read_to_string(&mut head);
     }
     parse_frontmatter(&head)
+}
+
+/// `name` and `description` of a SKILL.md's text.
+pub(crate) fn parse_skill_frontmatter(text: &str) -> (Option<String>, String) {
+    parse_frontmatter(text)
 }
 
 fn parse_frontmatter(text: &str) -> (Option<String>, String) {
@@ -1433,6 +1500,46 @@ mod tests {
         assert_eq!(parse_probe("\n000\n").status, 0);
         assert!(d.explain(true).contains("rejected the token"));
         assert_eq!(host("https://mcp.linear.app/mcp"), "mcp.linear.app");
+    }
+
+    #[test]
+    fn agent_skills_read_both_project_folders_and_keep_the_first_of_a_name() {
+        let dir = std::env::temp_dir().join(format!("arakun-skills-{}", std::process::id()));
+        let skill = |root: &str, folder: &str, text: &str| {
+            let d = dir.join(root).join(folder);
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join("SKILL.md"), text).unwrap();
+        };
+        skill(
+            ".claude/skills",
+            "deploy",
+            "---\nname: deploy\ndescription: Ship it\n---\nsteps",
+        );
+        skill(
+            ".agents/skills",
+            "deploy",
+            "---\nname: deploy\ndescription: Other\n---\n",
+        );
+        skill(".agents/skills", "review", "no front matter");
+        std::fs::create_dir_all(dir.join(".agents/skills/empty")).unwrap();
+        let found = agent_skills(&dir, false);
+        let names: Vec<_> = found
+            .iter()
+            .map(|s| (s.name.as_str(), s.description.as_str()))
+            .collect();
+        assert_eq!(names, [("deploy", "Ship it"), ("review", "")]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn skill_bodies_lose_their_front_matter() {
+        assert_eq!(skill_body("---\nname: a\n---\n\n# Steps\n"), "# Steps");
+        assert_eq!(skill_body("---\r\nname: a\r\n---\r\nbody"), "body");
+        assert_eq!(
+            skill_body("# Just text\n---\nmore"),
+            "# Just text\n---\nmore"
+        );
+        assert_eq!(skill_body("---\nname: a\n"), "---\nname: a");
     }
 
     #[test]

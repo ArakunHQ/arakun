@@ -352,6 +352,9 @@ pub struct Shell {
     /// `git ls-files` of an environment, cached briefly for `@` completion.
     file_index: Option<(std::path::PathBuf, Instant, Arc<Vec<String>>)>,
     file_index_loading: bool,
+    /// The skills an environment's agents read, cached briefly for `/` completion.
+    skill_index: Option<(std::path::PathBuf, Instant, Arc<Vec<crate::agent::Choice>>)>,
+    skill_index_loading: bool,
     /// The ASCII face over the start and welcome screens (redraws the shell
     /// while its intro fades the screen in) and the small raccoon atop the
     /// rail, which steps aside while a raccoon shows in the main view.
@@ -925,6 +928,8 @@ impl Shell {
             completion: None,
             file_index: None,
             file_index_loading: false,
+            skill_index: None,
+            skill_index_loading: false,
             home_face,
             _home_face: home_face_sub,
             rail_mascot: cx.new(|cx| crate::mascot::Mascot::new(24., cx)),

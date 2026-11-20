@@ -219,15 +219,32 @@ impl Teams {
         }
         let base = self.base.clone().ok();
         cx.background_spawn(async move {
-            if let Some(base) = base
-                && let Err(e) = api::logout(&base, &session)
-                && e != ApiError::Unauthorized
-            {
-                eprintln!("arakun: Teams sign-out: {e}");
-            }
-            keyring::clear(KEYRING_ACCOUNT);
+            end_session(
+                &session,
+                base.as_deref(),
+                || keyring::clear(KEYRING_ACCOUNT),
+                api::logout,
+            );
         })
         .detach();
+    }
+}
+
+/// Forgets the session here before asking the server to end it. The server
+/// call can take up to 20 s: quitting during it must not leave the session
+/// stored, and a sign-in right after must not be cleared by it.
+fn end_session(
+    session: &str,
+    base: Option<&str>,
+    clear: impl FnOnce(),
+    logout: impl FnOnce(&str, &str) -> Result<(), ApiError>,
+) {
+    clear();
+    if let Some(base) = base
+        && let Err(e) = logout(base, session)
+        && e != ApiError::Unauthorized
+    {
+        eprintln!("arakun: Teams sign-out: {e}");
     }
 }
 
@@ -330,5 +347,35 @@ mod tests {
         assert!(!session_ok("short"));
         assert!(!session_ok("has spaces in it, which no session has"));
         assert!(!session_ok("Qm9vbXNoYWthbGFrYS1ib29tc2hha2FsYWthLWJvb20\n"));
+    }
+
+    #[test]
+    fn sign_out_forgets_the_session_before_asking_the_server() {
+        let steps = std::cell::RefCell::new(Vec::new());
+        end_session(
+            "the-session",
+            Some("https://teams.example"),
+            || steps.borrow_mut().push("clear".to_string()),
+            |base, session| {
+                steps.borrow_mut().push(format!("logout {base} {session}"));
+                Err(ApiError::Network("offline".into()))
+            },
+        );
+        assert_eq!(
+            steps.into_inner(),
+            ["clear", "logout https://teams.example the-session"]
+        );
+    }
+
+    #[test]
+    fn sign_out_without_a_server_still_forgets_the_session() {
+        let mut cleared = false;
+        end_session(
+            "the-session",
+            None,
+            || cleared = true,
+            |_, _| panic!("no server to ask"),
+        );
+        assert!(cleared);
     }
 }

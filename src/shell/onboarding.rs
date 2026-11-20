@@ -84,8 +84,9 @@ impl Shell {
         self.menu = None;
         self.env_menu_open = false;
         self.setup_tips = false;
-        // This setup asks about the phone again; an earlier answer is replaced.
-        self.phone_after_project = false;
+        // An earlier "Pair after setup" still waiting for a project shows as
+        // this setup's answer, which then replaces it.
+        let pair_phone = std::mem::take(&mut self.phone_after_project);
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
         let fresh = !self.has_projects();
@@ -97,7 +98,7 @@ impl Shell {
             fresh,
             agents: None,
             github: None,
-            pair_phone: false,
+            pair_phone,
             reports,
             look: crate::palettes::load(),
             reports_seen: false,

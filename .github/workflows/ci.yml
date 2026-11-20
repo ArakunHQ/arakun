@@ -68,7 +68,7 @@ jobs:
         run: |
           if [ "$MAIN_PASSED" = true ]; then
             echo "::notice::CI already passed on main for $AFTER, so every job skips"
-            { echo rust=false; echo relay=false; } >> "$GITHUB_OUTPUT"
+            { echo rust=false; echo relay=false; echo teams=false; } >> "$GITHUB_OUTPUT"
             exit 0
           fi
 

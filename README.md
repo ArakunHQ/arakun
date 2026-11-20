@@ -587,7 +587,9 @@ To install a given version, run `curl -fsSL https://arakun.dev/install | sh -s -
 or set `ARAKUN_VERSION=v0.2.1` (on Windows, `$env:ARAKUN_VERSION = "v0.2.1"`). There is
 no build for Intel Macs yet; build from source there. `v0.1.0` has no macOS build; on
 macOS, install a later version. Linux on arm64 has release builds from the release after
-v0.4.1.
+v0.4.1. `--nightly` (`ARAKUN_VERSION=nightly`, on Windows `$env:ARAKUN_VERSION = "nightly"`)
+installs the newest [nightly build](#nightly-builds) instead, and `--version` takes a
+nightly's tag, such as `0.5.1-nightly.202611180300`.
 
 **The server alone (Linux x86_64 and arm64):** for a machine with no display, such as a VPS, install
 only [`arakun-server`](#the-server-alone-no-display):
@@ -634,6 +636,13 @@ whichever is newest of the nightlies and the releases, so a release that comes o
 reaches you. `arakun update --channel stable` (or turning the switch off) goes back to
 releases: the nightly stays until a release newer than it comes out, or install the latest
 release again to go back now. `arakun update --channel` says which channel you follow.
+
+To install a nightly from scratch, pass `--nightly` to the install script:
+`curl -fsSL https://arakun.dev/install | sh -s -- --nightly`, or on Windows
+`$env:ARAKUN_VERSION = "nightly"` before `irm https://arakun.dev/install.ps1 | iex`. A
+nightly installed this way follows nightlies. For a server alone,
+`curl -fsSL https://arakun.dev/install-server | sh -s -- --nightly` installs the newest
+nightly `arakun-server`. It does not update itself, so run the line again for a newer one.
 
 Nightly `SHA256SUMS` are signed with their own key,
 [assets/nightly-key.pub](assets/nightly-key.pub), which the updater accepts for nightly

@@ -548,6 +548,14 @@ pub enum RemoteAction {
     Permission(String),
     Answer(Vec<String>),
     SkipQuestion,
+    /// Copy the session into a new one there.
+    Fork,
+    /// Summarize the conversation so far, to free context.
+    Compact,
+    /// What rewinding to before the prompt at this entry would undo.
+    RewindPlan(usize),
+    /// Rewind to before the prompt at this entry, as the plan shown said.
+    Rewind(usize),
 }
 
 /// What the user made of the offer to set up a check (see [`Thread::offer_check`]).
@@ -1308,30 +1316,7 @@ impl Thread {
 
     /// Files this session's finished edits touched, absolute, in first-touched order.
     pub fn edited_files(&self) -> Vec<PathBuf> {
-        let mut out: Vec<PathBuf> = Vec::new();
-        for e in &self.entries {
-            let Entry::Tool(t) = e else { continue };
-            if t.status != ToolStatus::Completed {
-                continue;
-            }
-            let diffs = t.content.iter().filter_map(|c| match c {
-                ToolContent::Diff { path, .. } => Some(path),
-                _ => None,
-            });
-            let moved =
-                matches!(t.kind.as_str(), "edit" | "delete" | "move").then_some(&t.locations);
-            for p in diffs.chain(moved.into_iter().flatten()) {
-                let p = if p.is_relative() {
-                    self.cwd.join(p)
-                } else {
-                    p.clone()
-                };
-                if !out.contains(&p) {
-                    out.push(p);
-                }
-            }
-        }
-        out
+        edited_files(&self.entries, &self.cwd)
     }
 
     /// A line in the transcript from arakun itself; returns its index for `update_notice`.
@@ -2041,19 +2026,10 @@ impl Thread {
     }
 
     /// What the user did did not reach the server: the questionnaire can be
-    /// answered again.
-    pub fn remote_undelivered(&mut self) {
+    /// answered again, and a rewind asked for is off.
+    pub fn remote_undelivered(&mut self, cx: &mut Context<Self>) {
         self.native.remote_answered = None;
-    }
-
-    /// Says in the session that `what` is not done for a server's session:
-    /// the agent and its history are on that machine.
-    fn remote_cannot(&mut self, what: &str, cx: &mut Context<Self>) {
-        self.post_notice(
-            format!("{what} is not available for a session on a server yet."),
-            true,
-            cx,
-        );
+        self.set_remote_rewind_plan(None, None, cx);
     }
 
     /// What a server's session waits on, as the server words it
@@ -4116,6 +4092,54 @@ fn take_next(queue: &mut Vec<String>, urgent: &mut usize, paused: bool) -> Optio
     Some(queue.remove(0))
 }
 
+/// Files the finished edits in `entries` touched, absolute (relative ones are
+/// in `cwd`), in first-touched order.
+pub fn edited_files(entries: &[Entry], cwd: &Path) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = Vec::new();
+    for e in entries {
+        let Entry::Tool(t) = e else { continue };
+        if t.status != ToolStatus::Completed {
+            continue;
+        }
+        let diffs = t.content.iter().filter_map(|c| match c {
+            ToolContent::Diff { path, .. } => Some(path),
+            _ => None,
+        });
+        let moved = matches!(t.kind.as_str(), "edit" | "delete" | "move").then_some(&t.locations);
+        for p in diffs.chain(moved.into_iter().flatten()) {
+            let p = if p.is_relative() {
+                cwd.join(p)
+            } else {
+                p.clone()
+            };
+            if !out.contains(&p) {
+                out.push(p);
+            }
+        }
+    }
+    out
+}
+
+/// What `/stage` says once it ran: the text, and whether it is an error.
+pub fn staged_notice(staged: Result<Vec<String>, String>) -> (String, bool) {
+    match staged {
+        Ok(files) if files.is_empty() => (
+            "Nothing this session changed is left to stage.".to_string(),
+            false,
+        ),
+        Ok(files) => (
+            format!(
+                "Staged {} {} this session changed: {}",
+                files.len(),
+                if files.len() == 1 { "file" } else { "files" },
+                files.join(", ")
+            ),
+            false,
+        ),
+        Err(e) => (format!("Staging failed: {e}"), true),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -4317,6 +4341,38 @@ mod tests {
             Some("https://github.com/a/b/pull/13".into())
         );
         assert_eq!(pr_url("https://github.com/a/b/issues/3"), None);
+    }
+
+    #[test]
+    fn edited_files_are_absolute_and_listed_once() {
+        let entries = vec![
+            write("t1", Path::new("src/a.rs"), None, "x"),
+            write("t2", Path::new("/p/src/a.rs"), Some("x"), "y"),
+            write("t3", Path::new("/p/b.rs"), None, "z"),
+        ];
+        assert_eq!(
+            edited_files(&entries, Path::new("/p")),
+            [PathBuf::from("/p/src/a.rs"), PathBuf::from("/p/b.rs")]
+        );
+    }
+
+    #[test]
+    fn stage_says_what_it_staged() {
+        assert_eq!(
+            staged_notice(Ok(Vec::new())),
+            (
+                "Nothing this session changed is left to stage.".into(),
+                false
+            )
+        );
+        assert_eq!(
+            staged_notice(Ok(vec!["a.rs".into()])),
+            ("Staged 1 file this session changed: a.rs".into(), false)
+        );
+        assert_eq!(
+            staged_notice(Err("not a repository".into())),
+            ("Staging failed: not a repository".into(), true)
+        );
     }
 
     #[test]

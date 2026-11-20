@@ -529,8 +529,14 @@ impl Shell {
         // Fork and compact need a session the agent knows, and for Droid its native protocol.
         let known = live.is_some_and(|t| t.session_id().is_some())
             || s.meta.as_ref().is_some_and(|m| m.session_id.is_some());
-        let can_compact = known && (s.agent == Agent::Claude || catalog::droid_native());
-        let can_fork = can_compact && live.is_none_or(|t| t.supports_fork());
+        // On a server, its agent decides, and says so when it cannot.
+        let can_compact = if env.remote.is_some() {
+            matches!(s.agent, Agent::Claude | Agent::Droid)
+        } else {
+            known && (s.agent == Agent::Claude || catalog::droid_native())
+        };
+        let can_fork =
+            can_compact && (env.remote.is_some() || live.is_none_or(|t| t.supports_fork()));
         let (rename, fork, compact, archive, remove) =
             (id.clone(), id.clone(), id.clone(), id.clone(), id);
         let env_path = env.path.clone();

@@ -373,6 +373,9 @@ pub struct RewindPlan {
     pub running: bool,
 }
 
+/// What a rewind does to the files, as [`RewindPlan`] holds it: restore, delete, evicted.
+pub type RewindFiles = (Vec<Value>, Vec<Value>, Vec<(String, String)>);
+
 impl RewindPlan {
     pub fn restore_paths(&self) -> impl Iterator<Item = &str> {
         self.restore.iter().filter_map(|f| f["filePath"].as_str())
@@ -1146,7 +1149,10 @@ impl Thread {
     /// Summarizes the conversation so far to free context (`droid.compact_session`).
     pub fn compact(&mut self, instructions: Option<String>, cx: &mut Context<Self>) {
         if self.remote {
-            return self.remote_cannot("Compacting", cx);
+            if !self.is_busy() {
+                cx.emit(ThreadEvent::Remote(super::RemoteAction::Compact));
+            }
+            return;
         }
         if !self.native_live() && !self.acp_live() {
             if !self.native.deferred.contains(&Deferred::Compact) {
@@ -1211,7 +1217,7 @@ impl Thread {
     /// Copies the session into a new one (`droid.fork_session`); emits [`ThreadEvent::Forked`].
     pub fn fork(&mut self, cx: &mut Context<Self>) {
         if self.remote {
-            return self.remote_cannot("Forking", cx);
+            return cx.emit(ThreadEvent::Remote(super::RemoteAction::Fork));
         }
         if !self.native_live() && !self.acp_live() {
             if !self.native.deferred.contains(&Deferred::Fork) {
@@ -1255,10 +1261,10 @@ impl Thread {
     }
 
     /// Whether the prompt at `ix` can be rewound to: live and idle, native Droid
-    /// or an agent that forks sessions at a message (Claude Code).
+    /// or an agent that forks sessions at a message (Claude Code). A server's
+    /// session asks its server, which says so when its agent cannot.
     pub fn can_rewind(&self, ix: usize) -> bool {
-        !self.remote
-            && (self.native_live() || (self.acp_live() && self.caps.fork))
+        (self.remote || self.native_live() || (self.acp_live() && self.caps.fork))
             && !self.is_busy()
             && matches!(
                 self.entries.get(ix),
@@ -1276,6 +1282,9 @@ impl Thread {
     /// Asks Droid what going back to before the prompt at `ix` would undo;
     /// the plan waits in [`Self::rewind_plan`] for confirmation.
     pub fn begin_rewind(&mut self, ix: usize, cx: &mut Context<Self>) {
+        if self.remote {
+            return self.remote_begin_rewind(ix, cx);
+        }
         let (Some(conn), Some(session_id)) = (self.conn.clone(), self.session_id.clone()) else {
             return;
         };
@@ -1359,6 +1368,9 @@ impl Thread {
     /// Runs the confirmed rewind: Droid restores the files and forks the
     /// session before the prompt; emits [`ThreadEvent::Rewound`].
     pub fn confirm_rewind(&mut self, cx: &mut Context<Self>) {
+        if self.remote {
+            return self.remote_confirm_rewind(cx);
+        }
         if self.backend == Backend::Acp {
             return self.acp_confirm_rewind(cx);
         }
@@ -1426,6 +1438,84 @@ impl Thread {
             });
         })
         .detach();
+    }
+
+    /// A server's session: the plan comes from the server, in
+    /// [`Self::set_remote_rewind_plan`].
+    fn remote_begin_rewind(&mut self, ix: usize, cx: &mut Context<Self>) {
+        let Some(Entry::User {
+            text,
+            message_id: Some(message_id),
+            ..
+        }) = self.entries.get(ix)
+        else {
+            return;
+        };
+        if !self.can_rewind(ix) || self.native.rewind.as_ref().is_some_and(|p| p.running) {
+            return;
+        }
+        self.native.rewind = Some(RewindPlan {
+            entry: ix,
+            message_id: message_id.clone(),
+            text: text.clone(),
+            restore: Vec::new(),
+            delete: Vec::new(),
+            evicted: Vec::new(),
+            loading: true,
+            running: false,
+        });
+        cx.emit(ThreadEvent::RewindChanged { entry: ix });
+        cx.emit(ThreadEvent::Remote(super::RemoteAction::RewindPlan(ix)));
+        cx.notify();
+    }
+
+    fn remote_confirm_rewind(&mut self, cx: &mut Context<Self>) {
+        let Some(plan) = self
+            .native
+            .rewind
+            .as_mut()
+            .filter(|p| !p.loading && !p.running)
+        else {
+            return;
+        };
+        plan.running = true;
+        let entry = plan.entry;
+        cx.emit(ThreadEvent::RewindChanged { entry });
+        cx.emit(ThreadEvent::Remote(super::RemoteAction::Rewind(entry)));
+        cx.notify();
+    }
+
+    /// What the server said rewinding to before the prompt at `entry` would
+    /// undo: the files it puts back (`restore`) and deletes (`delete`), as
+    /// Droid words them, and the ones it cannot put back. `None` ends the
+    /// rewind shown for `entry`, or any with no entry: it ran, failed or
+    /// was dropped there.
+    pub fn set_remote_rewind_plan(
+        &mut self,
+        entry: Option<usize>,
+        plan: Option<RewindFiles>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(shown) = self
+            .native
+            .rewind
+            .as_mut()
+            .filter(|p| entry.is_none_or(|e| e == p.entry))
+        else {
+            return;
+        };
+        let at = shown.entry;
+        match plan {
+            // An answer to a plan asked for; a rewind under way has its own.
+            Some((restore, delete, evicted)) if shown.loading => {
+                (shown.restore, shown.delete, shown.evicted) = (restore, delete, evicted);
+                shown.loading = false;
+            }
+            Some(_) => return,
+            None => self.native.rewind = None,
+        }
+        cx.emit(ThreadEvent::RewindChanged { entry: at });
+        cx.notify();
     }
 
     // ---- setup -------------------------------------------------------------

@@ -868,6 +868,15 @@ impl Shell {
                 client,
                 wire::error("add projects to this computer in Arakun itself"),
             ),
+            ClientMsg::Fork { .. }
+            | ClientMsg::Compact { .. }
+            | ClientMsg::Rewind { .. }
+            | ClientMsg::Stage { .. } => self.phone_send(
+                client,
+                wire::error(
+                    "fork, compact, rewind or stage this computer's sessions in Arakun itself",
+                ),
+            ),
             ClientMsg::SettleEnv { .. } | ClientMsg::DeleteEnv { .. } => self.phone_send(
                 client,
                 wire::error("settle or delete this computer's environments in Arakun itself"),

@@ -749,20 +749,12 @@ impl Shell {
         if self.env().remote.is_some() {
             let path = self.env().path.clone();
             let agent = self.env().agent;
-            // `/stage` runs git here, on files that are on the server.
+            // `/stage` runs git on the server, where the files are.
             if let Some(id) = self.active_session_id()
                 && text.trim() == "/stage"
             {
                 self.ensure_live(&path, &id, window, cx);
-                if let Some(thread) = self.active_thread(cx) {
-                    thread.update(cx, |t, cx| {
-                        t.post_notice(
-                            "/stage works on this machine's files; on the server, stage in its terminal.",
-                            true,
-                            cx,
-                        )
-                    });
-                }
+                self.servers_stage(&path, &id, cx);
                 cx.notify();
                 return;
             }
@@ -862,27 +854,12 @@ impl Shell {
             self.name_after_first_prompt(&path, &text, agent.kind(), cx);
             if text.trim() == "/stage" {
                 self.stage_session(&path, &id, window, cx, |this, staged, path, id, _, cx| {
-                    let text = match staged {
-                        Ok(files) if files.is_empty() => (
-                            "Nothing this session changed is left to stage.".to_string(),
-                            false,
-                        ),
-                        Ok(files) => (
-                            format!(
-                                "Staged {} {} this session changed: {}",
-                                files.len(),
-                                if files.len() == 1 { "file" } else { "files" },
-                                files.join(", ")
-                            ),
-                            false,
-                        ),
-                        Err(e) => (format!("Staging failed: {e}"), true),
-                    };
+                    let (text, error) = crate::agent::staged_notice(staged);
                     if let Some(thread) = this
                         .session_mut(&path, &id)
                         .and_then(|s| s.live.as_ref().map(|l| l.thread.clone()))
                     {
-                        thread.update(cx, |t, cx| t.post_notice(text.0, text.1, cx));
+                        thread.update(cx, |t, cx| t.post_notice(text, error, cx));
                     }
                 });
                 return;

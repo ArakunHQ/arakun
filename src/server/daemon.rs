@@ -128,6 +128,11 @@ pub struct Daemon {
     /// Sessions whose missing adapter the server installed: one try each, so
     /// an install that does not help is not run again and again.
     installed_for: HashSet<String>,
+    /// The device that asked each session for a fork or a rewind: the new
+    /// session is told to it.
+    asked: HashMap<String, ClientId>,
+    /// Rewinds a device asked for, until their plan is sent or they ran.
+    rewinds: HashMap<String, Rewinding>,
     /// Sessions whose entries changed since the last flush, with the lowest index that did.
     dirty: HashMap<String, usize>,
     /// Sessions whose status, permission or usage changed since the last flush.
@@ -728,6 +733,8 @@ impl Daemon {
             deleting: HashSet::new(),
             deletions: 0,
             installed_for: HashSet::new(),
+            asked: HashMap::new(),
+            rewinds: HashMap::new(),
             dirty: HashMap::new(),
             state_dirty: Vec::new(),
             inbox_dirty: false,
@@ -984,6 +991,13 @@ impl Daemon {
                     s.status = status;
                     s.updated = unix_now();
                 }
+                // A rewind asked for while the agent was starting.
+                self.rewind_step(id, thread, cx);
+            }
+            ThreadEvent::RewindChanged { .. } => self.rewind_step(id, thread, cx),
+            ThreadEvent::Forked(meta) => self.add_fork(id, meta.clone(), None, cx),
+            ThreadEvent::Rewound { meta, prompt } => {
+                self.add_fork(id, meta.clone(), Some(prompt.clone()), cx)
             }
             ThreadEvent::ShellChanges => {
                 let stats = thread.read(cx).diff_stats();
@@ -1016,6 +1030,141 @@ impl Daemon {
             }
             _ => {}
         }
+    }
+
+    /// Session `id`'s thread, for something that changes its files or its
+    /// place: not while that place is being deleted.
+    fn thread_to_change(
+        &mut self,
+        id: &str,
+        cx: &mut Context<Self>,
+    ) -> Result<Entity<Thread>, String> {
+        let place = self
+            .store
+            .session(id)
+            .ok_or("that session is gone")?
+            .place
+            .clone();
+        self.admit(&place)?;
+        self.ensure_live(id, cx)
+    }
+
+    /// Takes the rewind a device asked of session `id` one step on: its
+    /// agent starts first, then the plan is asked of it, then sent to the
+    /// device or, when it was confirmed, run.
+    fn rewind_step(&mut self, id: &str, thread: &Entity<Thread>, cx: &mut Context<Self>) {
+        let Some(r) = self.rewinds.get(id).copied() else {
+            return;
+        };
+        let t = thread.read(cx);
+        let plan = t.rewind_plan().filter(|p| p.entry == r.entry);
+        let failed = match plan {
+            Some(p) if p.loading || p.running => return,
+            Some(_) if r.confirm => {
+                self.rewinds
+                    .insert(id.to_string(), Rewinding { driving: true, ..r });
+                thread.update(cx, |t, cx| t.confirm_rewind(cx));
+                return;
+            }
+            Some(p) => {
+                let msg = rewind_plan_message(id, p);
+                self.rewinds.remove(id);
+                self.transport.send(r.client, msg);
+                return;
+            }
+            // It ran, failed or was dropped; the session says which.
+            None if r.driving => None,
+            None if matches!(t.status(), ThreadStatus::Connecting) => return,
+            None if t.is_busy() => Some("it is working; rewind once the turn is done"),
+            None if !t.can_rewind(r.entry) => Some("its agent there cannot rewind to that prompt"),
+            None => {
+                self.rewinds
+                    .insert(id.to_string(), Rewinding { driving: true, ..r });
+                thread.update(cx, |t, cx| t.begin_rewind(r.entry, cx));
+                return;
+            }
+        };
+        self.rewinds.remove(id);
+        self.transport
+            .send(r.client, rewind_gone(id, r.entry, failed));
+    }
+
+    /// Session `from` was forked, or rewound with `prompt` taken out, into a
+    /// new session of the agent's (`meta`): a session of its own here, in the
+    /// same place, and told to the device that asked.
+    fn add_fork(
+        &mut self,
+        from: &str,
+        meta: agent::SessionMeta,
+        prompt: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(parent) = self.store.session(from) else {
+            return;
+        };
+        let (place, agent) = (parent.place.clone(), parent.agent);
+        let id = store::new_id();
+        let now = unix_now();
+        self.store.sessions.insert(
+            0,
+            Record {
+                id: id.clone(),
+                title: meta.title.clone(),
+                agent,
+                place,
+                created: now,
+                updated: now,
+                added: 0,
+                removed: 0,
+                meta: Some(meta),
+                failed: false,
+                status: Status::Idle,
+            },
+        );
+        self.save_store();
+        // The inbox goes first: the device opens the session it holds.
+        self.sync_inbox(cx);
+        eprintln!("arakun server: {id} forked from {from}");
+        if let Some(client) = self.asked.remove(from) {
+            let msg = match prompt {
+                Some(prompt) => {
+                    json!({ "type": "rewound", "id": from, "session": id, "prompt": prompt })
+                }
+                None => json!({ "type": "forked", "id": from, "session": id }),
+            };
+            self.transport.send(client, msg.to_string());
+        }
+    }
+
+    /// Stages with git the files session `id` changed, and tells `client`.
+    fn stage(&mut self, client: ClientId, id: String, cx: &mut Context<Self>) {
+        let Some(place) = self.store.session(&id).map(|r| r.place.clone()) else {
+            self.transport
+                .send(client, session_error(&id, "that session is gone"));
+            return;
+        };
+        if let Err(e) = self.admit(&place) {
+            self.transport.send(client, staged_message(&id, Err(e)));
+            return;
+        }
+        let files: Vec<String> = self
+            .with_entries(&id, cx, agent::edited_files)
+            .into_iter()
+            .filter_map(|p| Some(p.strip_prefix(&place).ok()?.to_string_lossy().into_owned()))
+            .filter(|p| !p.is_empty())
+            .collect();
+        cx.spawn(async move |this, cx| {
+            // Git is run to the side: a repository that hangs holds up nothing else.
+            let staged = cx
+                .background_spawn(crate::guard::task(async move {
+                    crate::git::stage_only(&place, &files).map_err(|e| e.to_string())
+                }))
+                .await;
+            let _ = this.update(cx, |this, _| {
+                this.transport.send(client, staged_message(&id, staged))
+            });
+        })
+        .detach();
     }
 
     fn save_store(&mut self) {
@@ -1423,6 +1572,8 @@ impl Daemon {
             Incoming::Disconnected(id) => {
                 self.stop_watching(id, cx);
                 self.hidden.remove(&id);
+                self.asked.retain(|_, c| *c != id);
+                self.rewinds.retain(|_, r| r.client != id);
             }
             // The device's sockets close on their own; `Disconnected` tidies the rest.
             Incoming::Paired | Incoming::Subscribed | Incoming::Unpaired => self.save_devices(),
@@ -1674,6 +1825,43 @@ impl Daemon {
                     thread.update(cx, |t, cx| t.skip_question(cx));
                 }
             }
+            ClientMsg::Fork { session } => match self.thread_to_change(&session, cx) {
+                Ok(thread) => {
+                    self.asked.insert(session.clone(), client);
+                    // Once its agent has started, if it had to.
+                    thread.update(cx, |t, cx| t.fork(cx));
+                }
+                Err(e) => self.transport.send(client, session_error(&session, &e)),
+            },
+            ClientMsg::Compact { session } => match self.thread_to_change(&session, cx) {
+                Ok(thread) if thread.read(cx).is_busy() => self.transport.send(
+                    client,
+                    session_error(&session, "it is working; compact it once the turn is done"),
+                ),
+                Ok(thread) => thread.update(cx, |t, cx| t.compact(None, cx)),
+                Err(e) => self.transport.send(client, session_error(&session, &e)),
+            },
+            ClientMsg::Rewind {
+                session,
+                entry,
+                confirm,
+            } => match self.thread_to_change(&session, cx) {
+                Ok(thread) => {
+                    self.asked.insert(session.clone(), client);
+                    let r = Rewinding {
+                        client,
+                        entry,
+                        confirm,
+                        driving: false,
+                    };
+                    self.rewinds.insert(session.clone(), r);
+                    self.rewind_step(&session, &thread, cx);
+                }
+                Err(e) => self
+                    .transport
+                    .send(client, rewind_gone(&session, entry, Some(&e))),
+            },
+            ClientMsg::Stage { session } => self.stage(client, session, cx),
             ClientMsg::Changes { session } => {
                 if self.store.session(&session).is_none() {
                     self.transport.send(client, gone(&session));
@@ -2814,6 +3002,51 @@ fn session_error(session: &str, message: &str) -> String {
     json!({ "type": "error", "id": session, "message": message }).to_string()
 }
 
+/// A rewind a device asked of a session (`ClientMsg::Rewind`).
+#[derive(Clone, Copy)]
+struct Rewinding {
+    client: ClientId,
+    /// The prompt's entry.
+    entry: usize,
+    /// Run it once its plan is in, rather than send the plan.
+    confirm: bool,
+    /// The session's thread was asked for the plan or the rewind: a plan
+    /// gone from it now means it ran, failed or was dropped.
+    driving: bool,
+}
+
+/// What rewinding to before the prompt at `plan.entry` would undo, for the device.
+fn rewind_plan_message(session: &str, plan: &agent::RewindPlan) -> String {
+    let evicted: Vec<[&str; 2]> = plan
+        .evicted
+        .iter()
+        .map(|(path, why)| [path.as_str(), why.as_str()])
+        .collect();
+    json!({
+        "type": "rewind_plan", "id": session, "entry": plan.entry,
+        "restore": plan.restore, "delete": plan.delete, "evicted": evicted,
+    })
+    .to_string()
+}
+
+/// The rewind of session's prompt at `entry` is over, with why when it could not start.
+fn rewind_gone(session: &str, entry: usize, error: Option<&str>) -> String {
+    let mut msg = json!({ "type": "rewind_plan", "id": session, "entry": entry, "gone": true });
+    if let Some(e) = error {
+        msg["error"] = json!(e);
+    }
+    msg.to_string()
+}
+
+/// What `stage` did: the files staged, or why it could not.
+fn staged_message(session: &str, staged: Result<Vec<String>, String>) -> String {
+    match staged {
+        Ok(files) => json!({ "type": "staged", "id": session, "files": files }),
+        Err(e) => json!({ "type": "staged", "id": session, "error": e }),
+    }
+    .to_string()
+}
+
 fn unknown_agent(agent: &str) -> String {
     format!("unknown agent {agent}: claude, droid, opencode, codex, devin or workers-ai")
 }
@@ -3621,6 +3854,49 @@ fn checkout_origin(dir: &Path) -> Option<clone_source::CloneSource> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_rewind_plan_goes_out_as_the_app_reads_it() {
+        let plan = agent::RewindPlan {
+            entry: 3,
+            message_id: "m1".into(),
+            text: "fix it".into(),
+            restore: vec![json!({ "filePath": "/p/a.rs" })],
+            delete: vec![json!({ "filePath": "/p/new.rs" })],
+            evicted: vec![("/p/big.bin".into(), "too large".into())],
+            loading: false,
+            running: false,
+        };
+        let msg: serde_json::Value =
+            serde_json::from_str(&rewind_plan_message("s1", &plan)).unwrap();
+        assert_eq!(msg["type"], "rewind_plan");
+        assert_eq!(msg["entry"], 3);
+        assert_eq!(msg["restore"][0]["filePath"], "/p/a.rs");
+        assert_eq!(msg["delete"][0]["filePath"], "/p/new.rs");
+        assert_eq!(msg["evicted"][0], json!(["/p/big.bin", "too large"]));
+        assert!(msg.get("gone").is_none());
+
+        let gone: serde_json::Value =
+            serde_json::from_str(&rewind_gone("s1", 3, Some("it is working"))).unwrap();
+        assert_eq!(
+            (gone["gone"].clone(), gone["entry"].clone()),
+            (json!(true), json!(3))
+        );
+        assert_eq!(gone["error"], "it is working");
+        let ran: serde_json::Value = serde_json::from_str(&rewind_gone("s1", 3, None)).unwrap();
+        assert!(ran.get("error").is_none());
+    }
+
+    #[test]
+    fn stage_says_the_files_or_why_not() {
+        let ok: serde_json::Value =
+            serde_json::from_str(&staged_message("s1", Ok(vec!["a.rs".into()]))).unwrap();
+        assert_eq!(ok["files"], json!(["a.rs"]));
+        let failed: serde_json::Value =
+            serde_json::from_str(&staged_message("s1", Err("no repo".into()))).unwrap();
+        assert_eq!(failed["error"], "no repo");
+        assert!(failed.get("files").is_none());
+    }
+
     #[test]
     fn a_place_is_offered_only_once_it_is_saved() {
         let dir = scratch("offer");

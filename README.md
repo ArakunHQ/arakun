@@ -946,9 +946,10 @@ The link is good for two minutes and pairs one device. There are two ways to use
   go idle, and their agents stop; a running turn is left alone) or to delete it: the
   server removes the worktree, everything in it and its sessions, and the branch too if
   you ask. A repository's main folder is never deleted. A phone paired with this app sees and works in the
-  servers' sessions too. Git, terminals and the file tree stay with this machine's folders;
-  `/stage`, fork, rewind and "Continue with" are not available for a server's session
-  yet. In the Marketplace, "Install on" picks a paired server: Discover then lists
+  servers' sessions too. Git, terminals and the file tree stay with this machine's folders.
+  Fork, compact, rewind and `/stage` in a server's session run on the server, with its
+  agent and its git: a fork or a rewind opens as a new session there. "Continue with"
+  is not available for a server's session yet. In the Marketplace, "Install on" picks a paired server: Discover then lists
   the plugins its marketplaces offer, and Install adds a plugin or MCP server for
   Claude Code there, for every project. An MCP server that wants a sign-in is signed
   in to on that machine (`claude mcp login <name>`), since that opens a browser.

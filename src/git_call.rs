@@ -129,9 +129,20 @@ impl Call {
                 inside(&path)?;
                 json!(git::unstage(dir, &path)?)
             }
-            Call::Discard { change } => json!(git::discard(dir, &change)?),
+            Call::Discard { change } => {
+                inside(&change.path)?;
+                json!(git::discard(dir, &change)?)
+            }
             Call::Commit { message, all } => json!(git::commit(dir, &message, all)?),
-            Call::Push { remote, branch } => json!(git::push(dir, &remote, &branch)?),
+            Call::Push { remote, branch } => {
+                // A read-only Arakun sends nothing, the branch included.
+                if crate::github::read_only() {
+                    bail!("{}", crate::github::pr::READ_ONLY);
+                }
+                name(&remote)?;
+                name(&branch)?;
+                json!(git::push(dir, &remote, &branch)?)
+            }
             Call::Pull => json!(git::pull(dir)?),
             Call::Fetch => json!(git::fetch(dir)?),
             Call::PrView => json!(git::pr_view(dir)),
@@ -170,9 +181,13 @@ impl Call {
 }
 
 /// Refuses a path that leaves the folder: a server takes these from a device.
+/// Rooted and drive paths count on every platform, since the server may run
+/// on another one than the app.
 fn inside(path: &str) -> Result<()> {
     if path.is_empty()
         || Path::new(path).is_absolute()
+        || path.starts_with(['/', '\\'])
+        || path.as_bytes().get(1) == Some(&b':')
         || path.split(['/', '\\']).any(|c| c == "..")
     {
         bail!("refusing to touch {path}");
@@ -180,10 +195,21 @@ fn inside(path: &str) -> Result<()> {
     Ok(())
 }
 
+/// Refuses a remote or branch git would read as a flag: a server takes
+/// these from a device too.
+fn name(name: &str) -> Result<()> {
+    if name.is_empty() || name.starts_with('-') {
+        bail!("refusing to push to {name:?}");
+    }
+    Ok(())
+}
+
 /// The diff of `path`, or its size once it is past `limit`.
 pub fn diff(dir: &Path, path: &str, untracked: bool, limit: Option<u64>) -> Result<DiffText> {
-    // A file that large makes a diff at least as large: git need not read it.
-    if let Some(limit) = limit
+    // A new file that large makes a diff at least as large: git need not
+    // read it. A tracked one's diff may be a line of it.
+    if untracked
+        && let Some(limit) = limit
         && let Ok(meta) = std::fs::metadata(dir.join(path))
         && meta.len() > limit
     {
@@ -300,7 +326,16 @@ mod tests {
 
     #[test]
     fn paths_that_leave_the_folder_are_refused() {
-        for bad in ["", "/etc/passwd", "../x", "a/../../x", "a\\..\\x"] {
+        for bad in [
+            "",
+            "/etc/passwd",
+            "../x",
+            "a/../../x",
+            "a\\..\\x",
+            "\\Windows\\x",
+            "C:\\x",
+            "C:x",
+        ] {
             assert!(inside(bad).is_err(), "{bad}");
         }
         for good in ["a.rs", "src/a.rs", "a..b/c"] {
@@ -328,7 +363,52 @@ mod tests {
             panic!("no diff");
         };
         assert!(text.contains("+xxx"));
+        // A large tracked file with a small change shows that change.
+        git::stage(&dir, "big.txt").unwrap();
+        let committed = std::process::Command::new("git")
+            .current_dir(&dir)
+            .args([
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "-qm",
+                "big",
+            ])
+            .status()
+            .unwrap();
+        assert!(committed.success());
+        std::fs::write(dir.join("big.txt"), "x".repeat(99) + "y").unwrap();
+        let DiffText::Text(text) = diff(&dir, "big.txt", false, Some(1000)).unwrap() else {
+            panic!("a small diff said too large");
+        };
+        assert!(text.contains("+xxx"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn names_git_would_read_as_flags_are_refused() {
+        let push = |remote: &str, branch: &str| Call::Push {
+            remote: remote.into(),
+            branch: branch.into(),
+        };
+        let dir = Path::new("/nonexistent");
+        for (remote, branch) in [("--receive-pack=x", "main"), ("origin", "-f"), ("", "main")] {
+            let err = push(remote, branch).run(dir).unwrap_err().to_string();
+            assert!(err.contains("refusing"), "{err}");
+        }
+        let discard = Call::Discard {
+            change: Change {
+                path: "C:\\x".into(),
+                kind: git::ChangeKind::Modified,
+                added: 0,
+                removed: 0,
+                staged: false,
+                unstaged: true,
+            },
+        };
+        assert!(discard.run(dir).is_err());
     }
 
     #[test]

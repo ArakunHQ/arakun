@@ -107,7 +107,11 @@ impl Shell {
             _ => false,
         });
         let index = match existing {
-            Some(i) => i,
+            Some(i) => {
+                // A diff opened again after staging reads it as tracked.
+                strip.tabs[i].kind = kind.clone();
+                i
+            }
             None => {
                 let mut tab = Tab::of(env_path, title, kind.clone());
                 tab.doc = Some(Document::Loading);
@@ -168,6 +172,12 @@ impl Shell {
             }
             return;
         }
+        let Some(load) = self.doc_tab_mut(&env_path, &kind).map(|tab| {
+            tab.loads += 1;
+            tab.loads
+        }) else {
+            return;
+        };
         if let TabKind::File { path } = &kind
             && explorer::file_kind(path) == explorer::FileKind::Sheet
         {
@@ -182,7 +192,9 @@ impl Shell {
                     }))
                     .await;
                 let _ = this.update(cx, |this, cx| {
-                    if let Some(tab) = this.doc_tab_mut(&env_path, &kind) {
+                    if let Some(tab) = this.doc_tab_mut(&env_path, &kind)
+                        && tab.loads == load
+                    {
                         if let Document::Sheet(book) = &doc {
                             tab.sheet = tab.sheet.min(book.sheets.len() - 1);
                         }
@@ -258,7 +270,10 @@ impl Shell {
                 }))
                 .await;
             let _ = this.update(cx, |this, cx| {
-                if let Some(tab) = this.doc_tab_mut(&env_path, &kind) {
+                // An older load that finishes late would undo a newer one.
+                if let Some(tab) = this.doc_tab_mut(&env_path, &kind)
+                    && tab.loads == load
+                {
                     tab.doc = Some(doc);
                     if tab.markdown.is_some() {
                         tab.markdown = parse_markdown(tab);
@@ -494,6 +509,8 @@ impl Shell {
     pub(super) fn doc_edit_target(&self, tab: &Tab) -> Option<(std::path::PathBuf, Option<usize>)> {
         match &tab.kind {
             TabKind::File { path } => Some((path.clone(), None)),
+            // A server's file is not on this computer to open or edit.
+            TabKind::Diff { .. } if self.env().remote.is_some() => None,
             TabKind::Diff { path, .. } => {
                 let line = match &tab.doc {
                     Some(Document::Lines(doc)) => doc.lines.iter().find_map(|l| hunk_start(l)),

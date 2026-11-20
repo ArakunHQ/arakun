@@ -123,10 +123,16 @@ impl Shell {
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.git_reads.end(&path, GitRead::PullRequest);
-                if let Some(env) = this.find_env_mut(&path)
-                    && env.sync.branch.as_deref() == Some(branch.as_str())
-                    && env.pr != pr
-                {
+                let Some(env) = this.find_env_mut(&path) else {
+                    return;
+                };
+                // A server that could not be asked says nothing about the
+                // pull request: the one known stays, and the next look asks.
+                let Ok(pr) = pr else {
+                    env.pr_checked = None;
+                    return;
+                };
+                if env.sync.branch.as_deref() == Some(branch.as_str()) && env.pr != pr {
                     env.pr = pr;
                     cx.notify();
                 }
@@ -220,14 +226,25 @@ impl Shell {
         cx.spawn_in(window, async move |this, cx| {
             let (r, b) = (remote.clone(), branch.clone());
             let plan = cx
-                .background_spawn(crate::guard::task_or_default(async move {
+                .background_spawn(crate::guard::task(async move {
                     // Finding an agent's CLI reads the disk too.
                     let writer = crate::pr_writer::writer(agent, crate::env_name::installed);
-                    (at.pr_plan(&r, &b), writer)
+                    at.pr_plan(&r, &b).map(|plan| (plan, writer))
                 }))
                 .await;
-            let _ = this.update_in(cx, |this, window, cx| {
-                this.show_pull_request(path, remote, branch, needs_push, plan, window, cx)
+            let _ = this.update_in(cx, |this, window, cx| match plan {
+                Ok(plan) => {
+                    this.show_pull_request(path, remote, branch, needs_push, plan, window, cx)
+                }
+                // A server that could not be asked: a dialog would start
+                // from a plan it never read.
+                Err(e) => {
+                    if let Some(env) = this.find_env_mut(&path) {
+                        env.git_busy = None;
+                        env.git_error = Some(e.to_string().into());
+                    }
+                    cx.notify();
+                }
             });
         })
         .detach();
@@ -662,14 +679,28 @@ impl Shell {
                 )
             });
 
-        let body: AnyElement = if env.changes.is_empty() {
-            div()
+        let body: AnyElement = match &env.status_error {
+            Some(e) if env.changes.is_empty() => div()
+                .flex_1()
+                .min_h_0()
+                .child(panel_empty(&format!("Couldn't read the changes: {e}")))
+                .into_any_element(),
+            _ if env.changes.is_empty() => div()
                 .flex_1()
                 .min_h_0()
                 .child(panel_empty("No uncommitted changes in this environment."))
-                .into_any_element()
-        } else {
-            self.render_change_list(cx).into_any_element()
+                .into_any_element(),
+            Some(e) => div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_h_0()
+                .child(panel_empty(&format!(
+                    "These may be out of date. Couldn't read the changes again: {e}"
+                )))
+                .child(self.render_change_list(cx))
+                .into_any_element(),
+            None => self.render_change_list(cx).into_any_element(),
         };
 
         div()

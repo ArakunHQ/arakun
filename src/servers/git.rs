@@ -116,30 +116,35 @@ impl GitAt {
         self.call(Call::Fetch)
     }
 
-    /// The branch's pull request; None also when it could not be asked.
-    pub fn pr_view(&self) -> Option<git::PullRequest> {
-        self.call(Call::PrView).ok().flatten()
+    /// The branch's pull request, or None when it has none. An error says
+    /// only that the server could not be asked.
+    pub fn pr_view(&self) -> Result<Option<git::PullRequest>> {
+        self.call(Call::PrView)
     }
 
-    /// What a new pull request starts with; the default one when it could
-    /// not be read, as `git::pr_plan` gives when git can't tell.
-    pub fn pr_plan(&self, remote: &str, branch: &str) -> git::PrPlan {
+    /// What a new pull request starts with. Where git can't tell, the
+    /// default one, as `git::pr_plan` gives; an error only when the server
+    /// could not be asked.
+    pub fn pr_plan(&self, remote: &str, branch: &str) -> Result<git::PrPlan> {
         self.call(Call::PrPlan {
             remote: remote.into(),
             branch: branch.into(),
             onto: None,
         })
-        .unwrap_or_default()
     }
 
-    pub fn pr_plan_onto(&self, remote: &str, branch: &str, onto: &str) -> Option<git::PrPlan> {
+    /// The plan for base `onto`, or None when the remote has no such branch.
+    pub fn pr_plan_onto(
+        &self,
+        remote: &str,
+        branch: &str,
+        onto: &str,
+    ) -> Result<Option<git::PrPlan>> {
         self.call(Call::PrPlan {
             remote: remote.into(),
             branch: branch.into(),
             onto: Some(onto.into()),
         })
-        .ok()
-        .flatten()
     }
 
     /// Opens the pull request; with `web`, GitHub's form in the browser
@@ -188,15 +193,21 @@ impl ServerGit {
         };
         let wait = call.limit() + TRAVEL;
         let (reference, answer) = self.asks.open(&self.server)?;
-        link.send(&json!({
+        let msg = json!({
             "type": "git", "ref": reference, "place": self.place, "call": call,
-        }));
+        });
+        link.send(&msg);
         match answer.recv_timeout(wait) {
             Ok(Ok(value)) => Ok(value),
             Ok(Err(why)) => Err(anyhow!("{why}")),
             Err(_) => {
                 self.asks.forget(reference);
-                Err(anyhow!("The server did not answer in time."))
+                // The server may still finish a change it is slow to answer.
+                Err(anyhow!(if reads(&msg["call"]) {
+                    "The server did not answer in time."
+                } else {
+                    "The server did not answer in time, and may still finish. Check its changes before you try again."
+                }))
             }
         }
     }
@@ -309,12 +320,17 @@ impl Asks {
 /// Why a request that may not have reached the server failed. One that
 /// changes something may have run all the same.
 fn dropped(call: &Value) -> String {
-    let reads = ["status", "diff", "pr_view", "pr_plan", "pr_source", "fetch"];
-    if call["op"].as_str().is_some_and(|op| reads.contains(&op)) {
+    if reads(call) {
         "The server could not be reached.".into()
     } else {
         "The connection to the server dropped. Check its changes before you try again.".into()
     }
+}
+
+/// Whether `call` (as sent) only reads, so trying again changes nothing.
+fn reads(call: &Value) -> bool {
+    let reads = ["status", "diff", "pr_view", "pr_plan", "pr_source", "fetch"];
+    call["op"].as_str().is_some_and(|op| reads.contains(&op))
 }
 
 #[cfg(test)]

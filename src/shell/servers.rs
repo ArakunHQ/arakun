@@ -1245,6 +1245,8 @@ impl Shell {
         }
         self.servers_open_started(window, cx);
         self.servers_open_added(window, cx);
+        // A window that had no projects polls none: the server's ones need it.
+        self.sync_poll(window, cx);
         // Phones list the servers' sessions too.
         self.phone_inbox_changed(cx);
         cx.notify();

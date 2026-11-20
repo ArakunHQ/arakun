@@ -1432,19 +1432,17 @@ impl Shell {
                 let timed_out = changes.as_ref().err().or(sync.as_ref().err());
                 let timed_out = timed_out.filter(|e| git::timed_out(e));
                 let recovered = this.git_reads.status_ended(&path, timed_out.is_some());
-                // A server that cannot answer it says so in the panel, which
-                // would otherwise show no changes.
-                let older = changes
-                    .as_ref()
-                    .err()
-                    .is_some_and(|e| e.to_string() == crate::servers::git::OLDER);
                 if let Some(env) = this.find_env_mut(&path) {
-                    if older {
-                        if env.git_error.is_none() {
-                            env.git_error = Some(crate::servers::git::OLDER.into());
+                    // A server that could not be asked says so in the panel,
+                    // which would otherwise show no changes, or old ones.
+                    if env.remote.is_some() {
+                        let error = changes.as_ref().err().map(|e| e.to_string().into());
+                        if env.status_error != error {
+                            env.status_error = error;
                             cx.notify();
                         }
-                    } else if let Some(e) = timed_out {
+                    }
+                    if let Some(e) = timed_out {
                         env.git_error = Some(
                             format!(
                                 "{e}. Arakun looks again in {} minutes.",
@@ -1453,10 +1451,7 @@ impl Shell {
                             .into(),
                         );
                         cx.notify();
-                    } else if (recovered && env.git_error.is_some())
-                        || (changes.is_ok()
-                            && env.git_error.as_deref() == Some(crate::servers::git::OLDER))
-                    {
+                    } else if recovered && env.git_error.is_some() {
                         env.git_error = None;
                         cx.notify();
                     }

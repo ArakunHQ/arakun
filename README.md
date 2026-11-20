@@ -1062,7 +1062,8 @@ The link is good for two minutes and pairs one device. There are two ways to use
   follows for an hour is hung up. The Changes panel of a server's environment shows
   that folder's changes and diffs, and stage, discard, commit, pull, push and the pull
   request button run there, with the server's `git` and `gh` logins
-  (`ARAKUN_GITHUB=readonly` on the server keeps it from pushing or opening pull requests).
+  (`ARAKUN_GITHUB=readonly` on the server keeps it from pushing or opening pull requests;
+  set it before `service install`).
   Merging into the main checkout and GitHub's form stay with this machine's folders, and
   so does the file tree. Fork, compact, rewind and `/stage` in a server's session run on the server, with its
   agent and its git: a fork or a rewind opens as a new session there. "Continue with"
@@ -1165,6 +1166,7 @@ arakun-server service uninstall   # stop it and remove the service; the data sta
   restarts the server.
 - **Agents.** The service gets the `PATH` of the shell you install it from, so it finds
   the same agents. If you install an agent somewhere else later, run `install` again.
+  It also keeps `ARAKUN_GITHUB=readonly` when that is set in that shell.
   It also keeps `XDG_DATA_HOME` and `ARAKUN_SERVER_DIR` when they are set, so it uses
   the folder the other commands look in.
 - **Logged out (Linux).** As a normal user it turns on lingering

@@ -286,6 +286,9 @@ pub struct PullRequestDialog {
     busy: Option<bool>,
     /// The base whose commits are being read for the description.
     planning: Option<String>,
+    /// The base whose commits could not be read: the server could not be
+    /// asked, which says nothing about whether it has that branch.
+    unread: Option<String>,
     error: Option<SharedString>,
     _subs: Vec<Subscription>,
 }
@@ -361,6 +364,7 @@ impl PullRequestDialog {
             draft: true,
             busy: None,
             planning: None,
+            unread: None,
             error: None,
             _subs: subs,
         }
@@ -379,11 +383,12 @@ impl PullRequestDialog {
             return;
         }
         self.planning = Some(base.clone());
+        self.unread = None;
         let (at, remote, branch) = (self.at.clone(), self.remote.clone(), self.branch.clone());
         cx.spawn(async move |this, cx| {
             let onto = base.clone();
             let plan = cx
-                .background_spawn(crate::guard::task_or_default(async move {
+                .background_spawn(crate::guard::task(async move {
                     at.pr_plan_onto(&remote, &branch, &onto)
                 }))
                 .await;
@@ -391,8 +396,21 @@ impl PullRequestDialog {
                 if this.planning.as_deref() == Some(base.as_str()) {
                     this.planning = None;
                 }
-                // Typed on since, or no such branch: the plan shown stays.
-                let (Some(plan), true) = (plan, this.base.read(cx).text().trim() == base) else {
+                if this.base.read(cx).text().trim() != base {
+                    return;
+                }
+                let plan = match plan {
+                    Ok(plan) => plan,
+                    // Not "no such branch": the server could not be asked.
+                    Err(e) => {
+                        this.unread = Some(base);
+                        this.error = Some(e.to_string().into());
+                        cx.notify();
+                        return;
+                    }
+                };
+                // No such branch: the plan shown stays.
+                let Some(plan) = plan else {
                     return;
                 };
                 if this.title.read(cx).text() == this.plan.title {
@@ -422,6 +440,14 @@ impl PullRequestDialog {
             self.error = Some(
                 format!("Still reading the commits for {base}. Try again in a moment.").into(),
             );
+            cx.notify();
+            return;
+        }
+        if !web && self.unread.as_deref() == Some(base.as_str()) {
+            self.error = Some(
+                format!("Reading the commits for {base} again. Try again in a moment.").into(),
+            );
+            self.refresh_plan(cx);
             cx.notify();
             return;
         }

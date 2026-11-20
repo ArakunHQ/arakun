@@ -1265,8 +1265,45 @@ impl Shell {
             RemoteAction::Permission(option) => json!({ "type": "permission", "option": option }),
             RemoteAction::Answer(answers) => json!({ "type": "answer", "answers": answers }),
             RemoteAction::SkipQuestion => json!({ "type": "skip_question" }),
+            RemoteAction::Fork => json!({ "type": "fork" }),
+            RemoteAction::Compact => json!({ "type": "compact" }),
+            RemoteAction::RewindPlan(entry) => json!({ "type": "rewind", "entry": entry }),
+            RemoteAction::Rewind(entry) => {
+                json!({ "type": "rewind", "entry": entry, "confirm": true })
+            }
         };
         self.servers_send(&remote.server, id, msg, cx);
+    }
+
+    /// `/stage` in a server's session: git runs there, where the files are.
+    pub(super) fn servers_stage(&mut self, env_path: &Path, id: &str, cx: &mut Context<Self>) {
+        let Some(remote) = self.find_env(env_path).and_then(|e| e.remote.clone()) else {
+            return;
+        };
+        self.servers_send(&remote.server, id, json!({ "type": "stage" }), cx);
+    }
+
+    /// The rewinds shown in `server`'s sessions end: what the server says of
+    /// them is not coming. One under way may still have run there; its new
+    /// session then shows up with the inbox.
+    fn servers_drop_rewinds(&mut self, server: &str, cx: &mut Context<Self>) {
+        let threads: Vec<Entity<Thread>> = self
+            .projects
+            .iter()
+            .flat_map(|p| &p.environments)
+            .filter(|e| e.remote.as_ref().is_some_and(|r| r.server == server))
+            .flat_map(|e| &e.sessions)
+            .filter_map(|s| s.live.as_ref().map(|l| l.thread.clone()))
+            .collect();
+        for thread in threads {
+            thread.update(cx, |t, cx| t.set_remote_rewind_plan(None, None, cx));
+        }
+    }
+
+    /// The thread on screen for `server`'s session `session`, if any.
+    fn server_thread(&self, server: &str, session: &str) -> Option<Entity<Thread>> {
+        let env = self.server_session_env(server, session)?;
+        thread_of(&self.projects, &env, session)
     }
 
     /// A prompt phone `client` sent to `server`'s session `id`. One that
@@ -1311,7 +1348,7 @@ impl Shell {
             && let Some(thread) = thread_of(&self.projects, &env, id)
         {
             thread.update(cx, |t, cx| {
-                t.remote_undelivered();
+                t.remote_undelivered(cx);
                 t.post_notice(
                     String::from("The server is not connected, so this did not reach it."),
                     true,
@@ -1546,14 +1583,14 @@ impl Shell {
                 );
                 return;
             }
-            // An answer that did not go can be given again.
-            Some("answer" | "skip_question") => {
+            // An answer that did not go can be given again, and the rest asked again.
+            Some("answer" | "skip_question" | "fork" | "compact" | "rewind" | "stage") => {
                 let session = text(msg, "session");
                 if let Some(env) = self.server_session_env(server, &session)
                     && let Some(thread) = thread_of(&self.projects, &env, &session)
                 {
                     thread.update(cx, |t, cx| {
-                        t.remote_undelivered();
+                        t.remote_undelivered(cx);
                         t.post_notice(
                             String::from("The connection dropped before this reached the server."),
                             true,
@@ -2185,6 +2222,8 @@ impl Shell {
                 }
                 if back {
                     self.server_terms_back(id, cx);
+                } else {
+                    self.servers_drop_rewinds(id, cx);
                 }
             }
             Event::Message(msg) => {
@@ -2290,6 +2329,18 @@ impl Shell {
                     }
                     // The server sends its inbox before this: the session is here.
                     self.servers_open_started(window, cx);
+                } else if msg["type"] == "forked" || msg["type"] == "rewound" {
+                    // The server sends its inbox before this: the session is here.
+                    let session = text(&msg, "session");
+                    self.servers_open_session(id, &session, window, cx);
+                    if msg["type"] == "rewound"
+                        && let Some(env_path) = self.server_session_env(id, &session)
+                        && let Some(env) = self.find_env_mut(&env_path)
+                    {
+                        env.draft.set(text(&msg, "prompt"));
+                        self.composer_changed(cx);
+                        window.focus(&self.composer_focus, cx);
+                    }
                 } else if msg["type"] == "branch_renamed" {
                     let env_path = Remote::env_path(id, &text(&msg, "place"));
                     let (from, to) = (text(&msg, "from"), text(&msg, "to"));
@@ -2390,6 +2441,17 @@ impl Shell {
                     crate::island::AlertKind::Warning,
                     "Could not archive the environment",
                     "This server runs an older Arakun. Update it to archive from here.",
+                    None,
+                    cx,
+                );
+                true
+            }
+            _ if older_server_refused(&message, &["fork", "compact", "rewind", "stage"]) => {
+                self.servers_drop_rewinds(id, cx);
+                self.notify(
+                    crate::island::AlertKind::Warning,
+                    "The server cannot do that yet",
+                    "This server runs an older Arakun. Update it to fork, compact, rewind or stage its sessions from here.",
                     None,
                     cx,
                 );
@@ -2560,6 +2622,47 @@ impl Shell {
                         }
                     });
                 }
+            }
+            "rewind_plan" => {
+                let Some(thread) = self.server_thread(id, &text(msg, "id")) else {
+                    return;
+                };
+                let list = |k: &str| msg[k].as_array().cloned().unwrap_or_default();
+                let evicted = list("evicted")
+                    .iter()
+                    .filter_map(|e| {
+                        let why = e[1].as_str().unwrap_or("").to_string();
+                        Some((e[0].as_str()?.to_string(), why))
+                    })
+                    .collect();
+                let plan =
+                    (msg["gone"] != true).then(|| (list("restore"), list("delete"), evicted));
+                let entry = msg["entry"].as_u64().map(|e| e as usize);
+                let error = msg["error"]
+                    .as_str()
+                    .map(|e| format!("Rewind is not available: {e}."));
+                thread.update(cx, |t, cx| {
+                    t.set_remote_rewind_plan(entry, plan, cx);
+                    if let Some(error) = error {
+                        t.post_notice(error, true, cx);
+                    }
+                });
+            }
+            "staged" => {
+                let Some(thread) = self.server_thread(id, &text(msg, "id")) else {
+                    return;
+                };
+                let staged = match msg["error"].as_str() {
+                    Some(e) => Err(e.to_string()),
+                    None => Ok(msg["files"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|f| f.as_str().map(str::to_string))
+                        .collect()),
+                };
+                let (notice, error) = crate::agent::staged_notice(staged);
+                thread.update(cx, |t, cx| t.post_notice(notice, error, cx));
             }
             "error" => {
                 let message = text(msg, "message");

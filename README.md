@@ -970,9 +970,10 @@ The link is good for two minutes and pairs one device. There are two ways to use
   servers' sessions too. A terminal in a server's environment is a shell in that folder
   on the server, and the project commands from Settings run there too. It keeps running
   while the connection is down and picks up where it was once it is back; one no app
-  follows for an hour is hung up. Git and the file tree stay with this machine's folders;
-  `/stage`, fork, rewind and "Continue with" are not available for a server's session
-  yet. In the Marketplace, "Install on" picks a paired server: Discover then lists
+  follows for an hour is hung up. Git and the file tree stay with this machine's folders.
+  Fork, compact, rewind and `/stage` in a server's session run on the server, with its
+  agent and its git: a fork or a rewind opens as a new session there. "Continue with"
+  is not available for a server's session yet. In the Marketplace, "Install on" picks a paired server: Discover then lists
   the plugins its marketplaces offer, and Install adds a plugin or MCP server for
   Claude Code there, for every project. An MCP server that wants a sign-in is signed
   in to on that machine (`claude mcp login <name>`), since that opens a browser.

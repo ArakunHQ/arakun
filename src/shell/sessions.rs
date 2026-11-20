@@ -762,20 +762,12 @@ impl Shell {
         if self.env().remote.is_some() {
             let path = self.env().path.clone();
             let agent = self.env().agent;
-            // `/stage` runs git here, on files that are on the server.
+            // `/stage` runs git on the server, where the files are.
             if let Some(id) = self.active_session_id()
                 && text.trim() == "/stage"
             {
                 self.ensure_live(&path, &id, window, cx);
-                if let Some(thread) = self.active_thread(cx) {
-                    thread.update(cx, |t, cx| {
-                        t.post_notice(
-                            "/stage works on this machine's files; on the server, stage in its terminal.",
-                            true,
-                            cx,
-                        )
-                    });
-                }
+                self.servers_stage(&path, &id, cx);
                 cx.notify();
                 return;
             }
@@ -873,27 +865,12 @@ impl Shell {
             self.name_after_first_prompt(&path, &text, agent.kind(), cx);
             if text.trim() == "/stage" {
                 self.stage_session(&path, &id, window, cx, |this, staged, path, id, _, cx| {
-                    let text = match staged {
-                        Ok(files) if files.is_empty() => (
-                            "Nothing this session changed is left to stage.".to_string(),
-                            false,
-                        ),
-                        Ok(files) => (
-                            format!(
-                                "Staged {} {} this session changed: {}",
-                                files.len(),
-                                if files.len() == 1 { "file" } else { "files" },
-                                files.join(", ")
-                            ),
-                            false,
-                        ),
-                        Err(e) => (format!("Staging failed: {e}"), true),
-                    };
+                    let (text, error) = crate::agent::staged_notice(staged);
                     if let Some(thread) = this
                         .session_mut(&path, &id)
                         .and_then(|s| s.live.as_ref().map(|l| l.thread.clone()))
                     {
-                        thread.update(cx, |t, cx| t.post_notice(text.0, text.1, cx));
+                        thread.update(cx, |t, cx| t.post_notice(text, error, cx));
                     }
                 });
                 return;
@@ -1049,23 +1026,28 @@ impl Shell {
         ) + 'static,
     ) {
         self.ensure_live(env_path, id, window, cx);
-        let files: Vec<String> = self
+        let thread = self
             .session_mut(env_path, id)
-            .and_then(|s| s.live.as_ref().map(|l| l.thread.read(cx).edited_files()))
-            .unwrap_or_default()
-            .into_iter()
-            .filter_map(|p| {
-                Some(
-                    p.strip_prefix(env_path)
-                        .ok()?
-                        .to_string_lossy()
-                        .into_owned(),
-                )
-            })
-            .filter(|p| !p.is_empty())
-            .collect();
+            .and_then(|s| s.live.as_ref().map(|l| l.thread.clone()));
+        // What the last turn's shell commands changed may still be worked out.
+        let pending = thread.as_ref().and_then(|t| t.read(cx).shell_pending());
         let (dir, id) = (env_path.to_path_buf(), SharedString::from(id.to_string()));
         cx.spawn_in(window, async move |this, cx| {
+            if let Some(pending) = pending {
+                pending.await;
+            }
+            let Ok(edited) = cx.update(|_, cx| {
+                thread
+                    .map(|t| t.read(cx).edited_files())
+                    .unwrap_or_default()
+            }) else {
+                return;
+            };
+            let files: Vec<String> = edited
+                .into_iter()
+                .filter_map(|p| Some(p.strip_prefix(&dir).ok()?.to_string_lossy().into_owned()))
+                .filter(|p| !p.is_empty())
+                .collect();
             let d = dir.clone();
             let staged = cx
                 .background_spawn(crate::guard::task(async move {

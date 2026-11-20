@@ -154,6 +154,32 @@ pub enum ClientMsg {
     SkipQuestion {
         session: String,
     },
+    /// Copies the session into a new one. Answered with `forked` once the new
+    /// one is in the inbox.
+    Fork {
+        session: String,
+    },
+    /// Summarizes the session's conversation so far, to free context. What it
+    /// did shows in the session.
+    Compact {
+        session: String,
+    },
+    /// Rewinding the session to before its prompt at `entry`. Without
+    /// `confirm`, what it would undo, answered with `rewind_plan`; with it,
+    /// the rewind itself: the files go back, and the session before the
+    /// prompt is a new one, answered with `rewound`. A `rewind_plan` with
+    /// `gone` ends either, and says why when it failed.
+    Rewind {
+        session: String,
+        entry: usize,
+        #[serde(default)]
+        confirm: bool,
+    },
+    /// Stages with git only the files the session changed. Answered with
+    /// `staged`.
+    Stage {
+        session: String,
+    },
     /// The files the session changed, turn by turn.
     Changes {
         session: String,
@@ -1566,6 +1592,33 @@ mod tests {
             read(r#"{"type":"settle_env","place":"/w/fix"}"#),
             ClientMsg::SettleEnv {
                 place: "/w/fix".into()
+            }
+        );
+    }
+
+    #[test]
+    fn a_rewind_asks_for_its_plan_unless_confirmed() {
+        let read = |json: &str| serde_json::from_str::<ClientMsg>(json).unwrap();
+        assert_eq!(
+            read(r#"{"type":"rewind","session":"s1","entry":4}"#),
+            ClientMsg::Rewind {
+                session: "s1".into(),
+                entry: 4,
+                confirm: false,
+            }
+        );
+        assert_eq!(
+            read(r#"{"type":"rewind","session":"s1","entry":4,"confirm":true}"#),
+            ClientMsg::Rewind {
+                session: "s1".into(),
+                entry: 4,
+                confirm: true,
+            }
+        );
+        assert_eq!(
+            read(r#"{"type":"stage","session":"s1"}"#),
+            ClientMsg::Stage {
+                session: "s1".into()
             }
         );
     }

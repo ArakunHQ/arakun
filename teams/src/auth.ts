@@ -34,7 +34,7 @@ export interface Session {
   flagged: boolean;
 }
 
-interface GitHubUser {
+export interface GitHubUser {
   id: number;
   login: string;
 }
@@ -190,11 +190,65 @@ async function githubUser(token: string, clientId: string, clientSecret: string)
     return "unreachable";
   }
   const user = typeof body === "object" && body !== null ? (body as Record<string, unknown>)["user"] : null;
-  if (typeof user !== "object" || user === null) return "unreachable";
-  const { id, login } = user as Record<string, unknown>;
-  if (typeof id !== "number" || !Number.isSafeInteger(id) || id <= 0) return "unreachable";
-  if (typeof login !== "string" || !GITHUB_LOGIN.test(login)) return "unreachable";
+  return asUser(user) ?? "unreachable";
+}
+
+/// The ID and login of a GitHub user object, if both look right.
+function asUser(v: unknown): GitHubUser | null {
+  if (typeof v !== "object" || v === null) return null;
+  const { id, login } = v as Record<string, unknown>;
+  if (typeof id !== "number" || !Number.isSafeInteger(id) || id <= 0) return null;
+  if (typeof login !== "string" || !GITHUB_LOGIN.test(login)) return null;
   return { id, login };
+}
+
+/// The user who has this login on GitHub now. Asked with the app's
+/// credentials, so it counts against the app's limit rather than the
+/// Worker's IP, which Cloudflare shares with everyone. "missing" when no user
+/// has it: GitHub answers 404, or the login belongs to an organization.
+export async function githubAccount(login: string, env: Env): Promise<GitHubUser | "missing" | "unreachable"> {
+  if (!env.GITHUB_CLIENT_ID || !env.GITHUB_CLIENT_SECRET) return "unreachable";
+  let res: Response;
+  try {
+    res = await fetch(`https://api.github.com/users/${encodeURIComponent(login)}`, {
+      // As in applicationToken: a redirect must not carry the credentials.
+      redirect: "manual",
+      headers: githubHeaders(env.GITHUB_CLIENT_ID, env.GITHUB_CLIENT_SECRET),
+      signal: AbortSignal.timeout(GITHUB_TIMEOUT_MS),
+    });
+  } catch {
+    return "unreachable";
+  }
+  if (res.status === 404) {
+    await discard(res);
+    return "missing";
+  }
+  if (!res.ok) {
+    if (res.status === 401) console.error("GitHub refused the app's client credentials");
+    await discard(res);
+    return "unreachable";
+  }
+  let body: unknown;
+  try {
+    body = await res.json();
+  } catch {
+    return "unreachable";
+  }
+  if (typeof body === "object" && body !== null && (body as Record<string, unknown>)["type"] !== "User") return "missing";
+  const user = asUser(body);
+  // GitHub answers for the login asked about, in any case; anything else is
+  // not an answer we can trust.
+  if (!user || user.login.toLowerCase() !== login.toLowerCase()) return "unreachable";
+  return user;
+}
+
+function githubHeaders(clientId: string, clientSecret: string): Record<string, string> {
+  return {
+    Authorization: `Basic ${btoa(`${clientId}:${clientSecret}`)}`,
+    Accept: "application/vnd.github+json",
+    "User-Agent": "arakun-teams",
+    "X-GitHub-Api-Version": "2022-11-28",
+  };
 }
 
 /// Revokes this one token, not the user's other tokens of our app. 404 means
@@ -220,13 +274,7 @@ async function applicationToken(method: "POST" | "DELETE", token: string, client
       // A 3xx is not ok, so it counts as GitHub being unreachable.
       redirect: "manual",
       method,
-      headers: {
-        Authorization: `Basic ${btoa(`${clientId}:${clientSecret}`)}`,
-        Accept: "application/vnd.github+json",
-        "Content-Type": "application/json",
-        "User-Agent": "arakun-teams",
-        "X-GitHub-Api-Version": "2022-11-28",
-      },
+      headers: { ...githubHeaders(clientId, clientSecret), "Content-Type": "application/json" },
       body: JSON.stringify({ access_token: token }),
       signal: AbortSignal.timeout(GITHUB_TIMEOUT_MS),
     });

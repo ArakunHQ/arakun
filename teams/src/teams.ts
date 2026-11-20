@@ -8,7 +8,7 @@
 // device endorsements, the signatures on envelopes and messages, and that
 // every device gets the keys it should.
 
-import { session, type Session } from "./auth";
+import { githubAccount, session, type Session } from "./auth";
 import { TRUSTED, epochAllowed, epochRefused } from "./channel";
 import { DAY, GITHUB_ID, GITHUB_LOGIN, TEAMS_FLAG as FLAG, ULID, error, fromB64url, isObject, jsonBody, now, ulid, type Env } from "./util";
 import {
@@ -306,15 +306,28 @@ async function invite(c: Ctx, teamId: string): Promise<Response> {
   const body = await jsonBody(c.request, 4096);
   const given = isObject(body) ? body["github_login"] : null;
   if (typeof given !== "string" || !GITHUB_LOGIN.test(given)) return error(400, 'expected {"github_login": "..."}');
-  const login = given.toLowerCase();
+  let limited: boolean;
+  try {
+    limited = !(await c.env.INVITE_LIMIT.limit({ key: String(c.me.githubId) })).success;
+  } catch (e) {
+    console.error("invite limit failed:", e);
+    return error(503, "the server could not check the invite: try again");
+  }
+  if (limited) return error(429, "too many invites, try again in a minute");
+  // The invite names the account that has the login now, by its ID. The
+  // login we hold for a user is only as new as their last sign-in, so a user
+  // who gave up this login could otherwise see and accept the invite.
+  const account = await githubAccount(given, c.env);
+  if (account === "missing") return error(404, `no GitHub user has the login ${given}`);
+  if (account === "unreachable") return error(502, "could not reach GitHub");
+  const login = account.login.toLowerCase();
   const db = c.env.DB;
   const already = await db
     .prepare(
-      `SELECT 1 FROM users u WHERE lower(u.login) = ?2 AND (
-         EXISTS (SELECT 1 FROM members m WHERE m.team_id = ?1 AND m.github_id = u.github_id) OR
-         EXISTS (SELECT 1 FROM pending p WHERE p.team_id = ?1 AND p.github_id = u.github_id))`,
+      `SELECT 1 WHERE EXISTS (SELECT 1 FROM members WHERE team_id = ?1 AND github_id = ?2)
+         OR EXISTS (SELECT 1 FROM pending WHERE team_id = ?1 AND github_id = ?2)`,
     )
-    .bind(teamId, login)
+    .bind(teamId, account.id)
     .first();
   if (already) return error(409, "already a member of this team, or waiting for approval");
   const inviteId = ulid();
@@ -322,16 +335,18 @@ async function invite(c: Ctx, teamId: string): Promise<Response> {
   const expiresAt = t + INVITE_DAYS * DAY;
   await db.batch([
     db.prepare("DELETE FROM invites WHERE expires_at <= ?").bind(t),
+    // One open invite per person: one under a login they had before goes.
+    db.prepare("DELETE FROM invites WHERE team_id = ? AND github_id = ? AND login <> ?").bind(teamId, account.id, login),
     // Inviting again replaces the open invite, with a new ID and expiry.
     db
       .prepare(
-        `INSERT INTO invites (invite_id, team_id, login, invited_by, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)
-         ON CONFLICT (team_id, login) DO UPDATE SET invite_id = excluded.invite_id, invited_by = excluded.invited_by,
-           created_at = excluded.created_at, expires_at = excluded.expires_at`,
+        `INSERT INTO invites (invite_id, team_id, login, github_id, invited_by, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT (team_id, login) DO UPDATE SET invite_id = excluded.invite_id, github_id = excluded.github_id,
+           invited_by = excluded.invited_by, created_at = excluded.created_at, expires_at = excluded.expires_at`,
       )
-      .bind(inviteId, teamId, login, c.me.githubId, t, expiresAt),
+      .bind(inviteId, teamId, login, account.id, c.me.githubId, t, expiresAt),
   ]);
-  return Response.json({ invite_id: inviteId, expires_at: expiresAt }, { status: 201 });
+  return Response.json({ invite_id: inviteId, expires_at: expiresAt, github_id: account.id, login: account.login }, { status: 201 });
 }
 
 async function teamInvites(c: Ctx, teamId: string): Promise<Response> {
@@ -366,9 +381,9 @@ async function listInvites(c: Ctx): Promise<Response> {
     `SELECT i.invite_id, i.team_id, t.name AS team_name, u.login AS invited_by_login, i.created_at, i.expires_at,
        (SELECT COUNT(*) FROM members m WHERE m.team_id = i.team_id) AS member_count
      FROM invites i JOIN teams t ON t.team_id = i.team_id LEFT JOIN users u ON u.github_id = i.invited_by
-     WHERE i.login = ? AND i.expires_at > ? ORDER BY i.created_at, i.invite_id`,
+     WHERE i.github_id = ? AND i.expires_at > ? ORDER BY i.created_at, i.invite_id`,
   )
-    .bind(c.me.login.toLowerCase(), now())
+    .bind(c.me.githubId, now())
     .all();
   return Response.json(results);
 }
@@ -376,8 +391,8 @@ async function listInvites(c: Ctx): Promise<Response> {
 async function decline(c: Ctx, inviteId: string): Promise<Response> {
   // Someone else's invite is answered like one that does not exist, as in accept.
   const result = ULID.test(inviteId)
-    ? await c.env.DB.prepare("DELETE FROM invites WHERE invite_id = ? AND login = ? AND expires_at > ?")
-        .bind(inviteId, c.me.login.toLowerCase(), now())
+    ? await c.env.DB.prepare("DELETE FROM invites WHERE invite_id = ? AND github_id = ? AND expires_at > ?")
+        .bind(inviteId, c.me.githubId, now())
         .run()
     : null;
   if (!result?.meta.changes) return error(404, "no such invite");
@@ -390,11 +405,11 @@ async function accept(c: Ctx, inviteId: string): Promise<Response> {
   if (!ULID.test(inviteId)) return notFound();
   const db = c.env.DB;
   const inv = await db
-    .prepare("SELECT team_id, login, invited_by, expires_at FROM invites WHERE invite_id = ?")
+    .prepare("SELECT team_id, github_id, invited_by, expires_at FROM invites WHERE invite_id = ?")
     .bind(inviteId)
-    .first<{ team_id: string; login: string; invited_by: number; expires_at: number }>();
+    .first<{ team_id: string; github_id: number; invited_by: number; expires_at: number }>();
   // Someone else's invite is answered like one that does not exist.
-  if (!inv || inv.login !== c.me.login.toLowerCase() || inv.expires_at <= now()) return error(404, "no such invite");
+  if (!inv || inv.github_id !== c.me.githubId || inv.expires_at <= now()) return error(404, "no such invite");
   const member = await db.prepare("SELECT 1 FROM members WHERE team_id = ? AND github_id = ?").bind(inv.team_id, c.me.githubId).first();
   if (member) return error(409, "already a member of this team");
   // The invite and the membership are checked again in the batch: a replaced
@@ -402,17 +417,17 @@ async function accept(c: Ctx, inviteId: string): Promise<Response> {
   // the read above must not leave the user in members and pending at once.
   // The insert's outcome, not the invite's deletion, says it was accepted.
   const t = now();
-  const valid = "FROM invites WHERE invite_id = ?1 AND login = ?2 AND expires_at > ?3";
+  const valid = "FROM invites WHERE invite_id = ?1 AND github_id = ?2 AND expires_at > ?3";
   const results = await db.batch([
     db
       .prepare(
         `INSERT INTO pending (team_id, github_id, invited_by, requested_at, request_id, invited_login)
-         SELECT team_id, ?4, invited_by, ?3, invite_id, login ${valid}
-           AND NOT EXISTS (SELECT 1 FROM members m WHERE m.team_id = invites.team_id AND m.github_id = ?4)
+         SELECT team_id, ?2, invited_by, ?3, invite_id, login ${valid}
+           AND NOT EXISTS (SELECT 1 FROM members m WHERE m.team_id = invites.team_id AND m.github_id = ?2)
          ON CONFLICT DO NOTHING`,
       )
-      .bind(inviteId, inv.login, t, c.me.githubId),
-    db.prepare(`DELETE ${valid}`).bind(inviteId, inv.login, t),
+      .bind(inviteId, c.me.githubId, t),
+    db.prepare(`DELETE ${valid}`).bind(inviteId, c.me.githubId, t),
   ]);
   if (results[1]!.meta.changes !== 1) return error(404, "no such invite");
   if (results[0]!.meta.changes !== 1) return error(409, "already a member of this team");

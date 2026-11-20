@@ -27,8 +27,8 @@ GITHUB_CLIENT_ID = "Ov23lipgmMeATCa5aTr3"
 
 # Sign-in calls GitHub and writes to D1, so each client IP gets a few a minute.
 # Rate limits with the same namespace_id in one account share their counters,
-# so every id here is used once: this Worker has 1003 and 1004, production
-# 1001 and 1002. relay/ has none.
+# so every id here is used once: this Worker has 1003, 1004 and 1005,
+# production 1001, 1002 and 1006. relay/ has none.
 [[ratelimits]]
 name = "SIGN_IN_LIMIT"
 namespace_id = "1003"
@@ -45,6 +45,16 @@ namespace_id = "1004"
   [ratelimits.simple]
   limit = 60
   period = 10
+
+# Each invite asks GitHub who has the login, which counts against the OAuth
+# App's hourly limit that sign-in needs too: 30 a minute per inviting user.
+[[ratelimits]]
+name = "INVITE_LIMIT"
+namespace_id = "1005"
+
+  [ratelimits.simple]
+  limit = 30
+  period = 60
 
 # One SQLite-backed object per channel: its messages, their seq and the live
 # sockets.
@@ -83,6 +93,14 @@ namespace_id = "1002"
   [env.production.ratelimits.simple]
   limit = 60
   period = 10
+
+[[env.production.ratelimits]]
+name = "INVITE_LIMIT"
+namespace_id = "1006"
+
+  [env.production.ratelimits.simple]
+  limit = 30
+  period = 60
 
 [[env.production.durable_objects.bindings]]
 name = "CHANNEL"

@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { b64url, ulid } from "../src/util";
 import { deviceSigned, sigKey, verify } from "../src/wire";
 import { api, envelope, expectJson, makeDevice, newKey, register, seal, signText, team, user, join } from "./clients";
-import { nowSeconds } from "./helpers";
+import { github, nowSeconds, onGitHub } from "./helpers";
 
 /// The same bytes in base64url with the last character's lowest bit flipped.
 /// A 65-byte key leaves its two lowest bits unused, so the bytes do not change.
@@ -457,6 +457,9 @@ describe("teams", () => {
   it("lists a team's open invites to its admins, newest first, and lets them withdraw one", async () => {
     const t = await team();
     const path = `/teams/${t.teamId}/invites`;
+    onGitHub(2001, "First-One");
+    onGitHub(2002, "second");
+    onGitHub(2003, "old");
     const first = await expectJson(api(t.owner.user, "POST", path, { body: { github_login: "First-One" } }), 201);
     const second = await expectJson(api(t.owner.user, "POST", path, { body: { github_login: "second" } }), 201);
     const old = await expectJson(api(t.owner.user, "POST", path, { body: { github_login: "old" } }), 201);
@@ -483,6 +486,58 @@ describe("teams", () => {
     await expectJson(register(u, d), 201);
     expect(await expectJson(api(u, "GET", "/invites"), 200)).toEqual([]);
     await expectJson(api(u, "POST", `/invites/${first.invite_id}/accept`, { device: d }), 404);
+  });
+
+  it("invites the account that has the login on GitHub now, not whoever had it when they signed in", async () => {
+    const t = await team();
+    // Signed in as bob, then gave the login up; the row still says bob.
+    const former = await user(2001, "bob");
+    const fd = await makeDevice();
+    await expectJson(register(former, fd), 201);
+    onGitHub(2002, "Bob");
+    const created = await expectJson(api(t.owner.user, "POST", `/teams/${t.teamId}/invites`, { body: { github_login: "bob" } }), 201);
+    expect(created).toMatchObject({ github_id: 2002, login: "Bob" });
+    expect(await expectJson(api(former, "GET", "/invites"), 200)).toEqual([]);
+    await expectJson(api(former, "POST", `/invites/${created.invite_id}/accept`, { device: fd }), 404);
+    await expectJson(api(former, "POST", `/invites/${created.invite_id}/decline`), 404);
+    // A former login does not make the old holder look like a member already.
+    const bob = await user(2002, "Bob");
+    const bd = await makeDevice();
+    await expectJson(register(bob, bd), 201);
+    expect((await expectJson<{ invite_id: string }[]>(api(bob, "GET", "/invites"), 200)).map((i) => i.invite_id)).toEqual([created.invite_id]);
+    await expectJson(api(bob, "POST", `/invites/${created.invite_id}/accept`, { device: bd }), 200);
+    const pending = await expectJson<{ github_id: number }[]>(api(t.owner.user, "GET", `/teams/${t.teamId}/pending`), 200);
+    expect(pending.map((p) => p.github_id)).toEqual([2002]);
+  });
+
+  it("keeps one open invite per person when they are invited again under a new login", async () => {
+    const t = await team();
+    onGitHub(2001, "before");
+    await expectJson(api(t.owner.user, "POST", `/teams/${t.teamId}/invites`, { body: { github_login: "before" } }), 201);
+    github.accounts.delete("before");
+    onGitHub(2001, "after");
+    const again = await expectJson(api(t.owner.user, "POST", `/teams/${t.teamId}/invites`, { body: { github_login: "after" } }), 201);
+    const open = await expectJson<{ invite_id: string; login: string }[]>(api(t.owner.user, "GET", `/teams/${t.teamId}/invites`), 200);
+    expect(open.map((i) => [i.invite_id, i.login])).toEqual([[again.invite_id, "after"]]);
+  });
+
+  it("refuses an invite for a login no GitHub user has, and says when GitHub cannot be asked", async () => {
+    const t = await team();
+    const path = `/teams/${t.teamId}/invites`;
+    expect((await expectJson(api(t.owner.user, "POST", path, { body: { github_login: "nobody-here" } }), 404)).error).toMatch(/no GitHub user/);
+    onGitHub(9001, "some-org", "Organization");
+    await expectJson(api(t.owner.user, "POST", path, { body: { github_login: "some-org" } }), 404);
+    onGitHub(2001, "someone");
+    for (const outage of ["throw", 500, 403] as const) {
+      github.outage = outage;
+      await expectJson(api(t.owner.user, "POST", path, { body: { github_login: "someone" } }), 502);
+    }
+    github.outage = null;
+    expect(await expectJson(api(t.owner.user, "GET", path), 200)).toEqual([]);
+    // Asked with the app's credentials, and only about the login given.
+    const asked = github.calls.filter((r) => r.url.startsWith("https://api.github.com/users/"));
+    expect(asked.map((r) => r.url)).toContain("https://api.github.com/users/someone");
+    expect(asked.every((r) => r.headers.get("Authorization") === `Basic ${btoa("Iv-test:client-secret")}`)).toBe(true);
   });
 
   it("lets the invitee decline an invite, and no one else", async () => {

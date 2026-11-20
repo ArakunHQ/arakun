@@ -152,10 +152,12 @@ npx wrangler d1 create arakun-teams-dev
 npx wrangler d1 migrations apply arakun-teams-dev --remote
 ```
 
-Two rate limits are set in `wrangler.toml` under `[[ratelimits]]`: `POST /auth/github`
+Three rate limits are set in `wrangler.toml` under `[[ratelimits]]`: `POST /auth/github`
 (about 10 a minute per client IP, `namespace_id` 1001 in production, 1003 in the
-top-level Worker) and the messages each device sends on channel sockets (about 60
-every 10 seconds, `namespace_id` 1002 in production, 1004 in the top-level Worker).
+top-level Worker), the messages each device sends on channel sockets (about 60
+every 10 seconds, `namespace_id` 1002 in production, 1004 in the top-level Worker)
+and the invites each user makes, since each asks GitHub who has the login (about
+30 a minute, `namespace_id` 1006 in production, 1005 in the top-level Worker).
 Rate limits with the same `namespace_id` in one account share their counters for
 the same key, so a device sending through the test Worker would use up its
 production allowance; give a new rate limit an id nothing else in the account uses.
@@ -252,7 +254,7 @@ devices: `400` without it, `403` if it is someone else's.
 | `POST /teams` `{name}` | anyone | `201 {team_id, epoch: 1}`; the caller is the owner. `409` if the caller is in 50 teams already. |
 | `GET /teams` | anyone | `200 [{team_id, name, role, epoch, rotation_pending}]` |
 | `GET /teams/<team_id>` | member | `200 {team_id, name, epoch, keyed_epoch, rotation_pending, members, channels}` |
-| `POST /teams/<team_id>/invites` `{github_login}` | admin | `201 {invite_id, expires_at}`, 7 days. `409` if a member or pending already. |
+| `POST /teams/<team_id>/invites` `{github_login}` | admin | `201 {invite_id, expires_at, github_id, login}`, 7 days, for the GitHub user who has the login now. `404` if none has it, `502` if GitHub could not be asked, `409` if a member or pending already. |
 | `GET /teams/<team_id>/invites` | admin | `200 [{invite_id, login, invited_by_login, created_at, expires_at}]`, open ones, newest first. |
 | `DELETE /teams/<team_id>/invites/<invite_id>` | admin | `204`. `404` if the team has no such open invite. |
 | `GET /invites` | anyone | `200 [{invite_id, team_id, team_name, invited_by_login, created_at, expires_at, member_count}]` |

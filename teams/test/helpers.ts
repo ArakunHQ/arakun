@@ -9,6 +9,9 @@ export const ADMIN = { Authorization: "Bearer test-secret" };
 export const github = {
   /// Access token → the user GitHub would answer with.
   users: new Map<string, { id: number; login: string }>(),
+  /// Lower-case login → who has it now, for GET /users/<login>. Signing in
+  /// adds the user; a test can give a login to someone else.
+  accounts: new Map<string, { id: number; login: string; type?: string }>(),
   /// "throw": the network fails; a number: GitHub answers with that status.
   outage: null as "throw" | number | null,
   /// The same, for revoking a token only.
@@ -20,12 +23,15 @@ export const github = {
 
 export function fakeGitHub(): void {
   github.users.clear();
+  github.accounts.clear();
   github.outage = null;
   github.revokeOutage = null;
   github.calls = [];
   github.bodies = [];
   vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     const req = new Request(input, init);
+    const lookup = /^https:\/\/api\.github\.com\/users\/([^/]+)$/.exec(req.url);
+    if (lookup && req.method === "GET") return lookupUser(req, decodeURIComponent(lookup[1]!));
     if (req.url !== "https://api.github.com/applications/Iv-test/token" || (req.method !== "POST" && req.method !== "DELETE"))
       throw new Error(`unexpected fetch: ${req.method} ${req.url}`);
     const body = await req.text();
@@ -48,6 +54,24 @@ export function fakeGitHub(): void {
     // Real answers carry much more; the Worker must keep none of it.
     return Response.json({ id: 1, token: null, user: { ...user, email: "someone@example.com", name: "Some One" } });
   });
+}
+
+/// GET /users/<login>: public data, asked with the app's credentials.
+function lookupUser(req: Request, login: string): Response {
+  github.calls.push(req);
+  github.bodies.push("");
+  if (github.outage === "throw") throw new TypeError("Network connection lost.");
+  if (github.outage !== null) return new Response("unavailable", { status: github.outage });
+  if (req.headers.get("Authorization") !== `Basic ${btoa("Iv-test:client-secret")}`)
+    return Response.json({ message: "Bad credentials" }, { status: 401 });
+  const account = github.accounts.get(login.toLowerCase());
+  if (!account) return Response.json({ message: "Not Found" }, { status: 404 });
+  return Response.json({ type: "User", ...account, name: "Some One" });
+}
+
+/// Tells the fake GitHub that this account has the login now.
+export function onGitHub(id: number, login: string, type = "User"): void {
+  github.accounts.set(login.toLowerCase(), { id, login, type });
 }
 
 let nextIp = 1;
@@ -77,6 +101,7 @@ export interface SignedIn {
 /// Signs in as a user GitHub knows, and returns the Worker's answer.
 export async function signIn(id: number, login: string, accessToken = `gho_${id}_${login}`): Promise<SignedIn> {
   github.users.set(accessToken, { id, login });
+  onGitHub(id, login);
   const res = await signInRequest(accessToken);
   if (res.status !== 200) throw new Error(`sign-in failed: ${res.status} ${await res.text()}`);
   return res.json();

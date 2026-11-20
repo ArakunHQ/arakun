@@ -103,11 +103,14 @@ without it, `403` if it is not one of the caller's devices.
 ## Invites and approval
 
 1. An admin invites by GitHub login: `POST /teams/<team_id>/invites
-   { "github_login": "rikvisser-dev" }` → `201 { invite_id, expires_at }`. The
-   server resolves nothing with GitHub; the login is matched, ignoring case,
-   against the login of the invitee's session. Invites expire after 7 days.
-   Inviting the same login again replaces the invite; `409` if they are a member
-   or pending already.
+   { "github_login": "rikvisser-dev" }` → `201 { invite_id, expires_at,
+   github_id, login }`. The server asks GitHub which user has the login now and
+   keeps that user's numeric ID; the invite is theirs, whatever login they have
+   when they sign in. `login` is that user's login as GitHub spells it. `404` if
+   no GitHub user has the login (an organization's login included), `502` if
+   GitHub could not be asked, `429` after 30 invites in a minute by one admin.
+   Invites expire after 7 days. Inviting the same person again replaces their
+   invite; `409` if they are a member or pending already.
    Admins see the team's open invites in `GET /teams/<team_id>/invites` →
    `[{ invite_id, login, invited_by_login, created_at, expires_at }]`, newest
    first, without expired ones (`login` is lower case). An admin withdraws one
@@ -134,9 +137,10 @@ without it, `403` if it is not one of the caller's devices.
    login, invited_login, request_id, requested_at, reminded_at, devices: [...] }]`
    (`reminded_at` is null until the first reminder). `login` is the user's login
    now, `invited_login` the one the invite named, and `request_id` the accepted
-   invite's ID (an opaque string for requests made before it was kept). GitHub
-   can give a login that was renamed or deleted to someone else, so the invite
-   may reach another person than the admin meant. The admin's client shows the
+   invite's ID (an opaque string for requests made before it was kept). The
+   invite went to whoever had the login when it was made. GitHub can give a
+   login that was renamed or deleted to someone else, so that may be another
+   person than the admin meant. The admin's client shows the
    `github_id` and the login next to each other when it asks to approve, and
    warns when `login` and `invited_login` differ (ignoring case). The `github_id`
    is who asked, and the one the client pins.

@@ -1119,6 +1119,9 @@ jobs:
     name: Relay
     needs: release
     uses: $/.github/workflows/relay-deploy.yml
+    # It lives in the `production` environment, which the called job uses.
+    secrets:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
     permissions:
       contents: read
 

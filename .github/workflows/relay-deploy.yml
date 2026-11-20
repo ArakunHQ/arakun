@@ -43,6 +43,11 @@ name: Relay deploy
 
 on:
   workflow_call:
+    # A called workflow gets an environment secret only when the caller passes
+    # it; otherwise it is empty and wrangler fails to log in.
+    secrets:
+      CLOUDFLARE_API_TOKEN:
+        required: true
   workflow_dispatch:
 
 permissions: {}
@@ -60,10 +65,13 @@ jobs:
       name: production
       url: https://arakun.dev
     # One deploy at a time, never one cancelled half way. Not per ref: a hotfix
-    # and a release must not deploy at the same time.
+    # and a release must not deploy at the same time. `queue: max` keeps every
+    # waiting run: by default a new one cancels the one pending, so a manual
+    # run could drop a release's deploy.
     concurrency:
       group: relay-deploy
       cancel-in-progress: false
+      queue: max
     permissions:
       contents: read
     defaults:

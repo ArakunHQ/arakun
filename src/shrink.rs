@@ -62,8 +62,7 @@ pub fn cli(args: &[String]) -> i32 {
 }
 
 fn run(line: &str) -> std::io::Result<i32> {
-    let path = saved_path();
-    let mut file = std::fs::File::create(&path)?;
+    let (path, file) = saved_file()?;
     // One pipe for both, so errors stay where they were among the other lines.
     let (mut reader, writer) = std::io::pipe()?;
     let mut cmd = crate::platform::shell_command(line);
@@ -80,20 +79,99 @@ fn run(line: &str) -> std::io::Result<i32> {
             }
         }
     });
-    let (mut held, mut total, mut cut) = (Vec::new(), 0usize, false);
+    let got = match capture(&mut child, &rx, file) {
+        Ok(got) => got,
+        Err(e) => {
+            // A command left running would go on changing files after we report failure.
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(e);
+        }
+    };
+    let code = exit_code(got.status);
+    let text = String::from_utf8_lossy(&got.held);
+    let out = std::io::stdout();
+    let mut out = out.lock();
+    if got.total <= SMALL && !got.stopped {
+        let _ = std::fs::remove_file(&path);
+        out.write_all(text.as_bytes())?;
+        return Ok(code);
+    }
+    let summary = if got.total <= SMALL {
+        Summary {
+            text: text.into_owned(),
+            notes: Vec::new(),
+        }
+    } else {
+        summarize(&text)
+    };
+    let mut what = summary.notes;
+    if got.cut {
+        what.push(format!("only its last {} MB read", HELD >> 20));
+    }
+    if got.stopped {
+        what.push(
+            "reading stopped 1 s after it exited, as something it started kept the output open"
+                .into(),
+        );
+    }
+    let what = what.join(", ");
+    writeln!(out, "{}", summary.text.trim_end())?;
+    writeln!(
+        out,
+        "[arakun shrink: {} bytes of output, {} shown{}; exit code {code}; {} is in {}]",
+        got.total,
+        summary.text.len(),
+        if what.is_empty() {
+            String::new()
+        } else {
+            format!(" ({what})")
+        },
+        if got.stopped {
+            "the output read"
+        } else {
+            "the whole output"
+        },
+        path.display()
+    )?;
+    Ok(code)
+}
+
+/// What [`capture`] read of a command's output.
+struct Captured {
+    status: std::process::ExitStatus,
+    /// The end of the output, at most `2 * HELD` bytes.
+    held: Vec<u8>,
+    total: usize,
+    /// The start of the output fell out of `held`.
+    cut: bool,
+    /// Reading stopped at the deadline after the exit, so later output is missing.
+    stopped: bool,
+}
+
+/// Reads the output into `file` and memory until the pipe closes, or until a
+/// second after the command exits.
+fn capture(
+    child: &mut std::process::Child,
+    rx: &mpsc::Receiver<Vec<u8>>,
+    mut file: std::fs::File,
+) -> std::io::Result<Captured> {
+    let (mut held, mut total, mut cut, mut stopped) = (Vec::new(), 0usize, false, false);
+    let mut take = |bytes: Vec<u8>| -> std::io::Result<()> {
+        file.write_all(&bytes)?;
+        total += bytes.len();
+        held.extend_from_slice(&bytes);
+        // The end matters most: test runners print failures last.
+        if held.len() > 2 * HELD {
+            held.drain(..held.len() - HELD);
+            cut = true;
+        }
+        Ok(())
+    };
     let mut exited = None::<(std::process::ExitStatus, Instant)>;
     loop {
         match rx.recv_timeout(Duration::from_millis(100)) {
-            Ok(bytes) => {
-                file.write_all(&bytes)?;
-                total += bytes.len();
-                held.extend_from_slice(&bytes);
-                // The end matters most: test runners print failures last.
-                if held.len() > 2 * HELD {
-                    held.drain(..held.len() - HELD);
-                    cut = true;
-                }
-            }
+            Ok(bytes) => take(bytes)?,
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
             Err(mpsc::RecvTimeoutError::Timeout) => {}
         }
@@ -104,6 +182,20 @@ fn run(line: &str) -> std::io::Result<i32> {
         }
         // Something it left running in the background may hold the pipe open.
         if exited.is_some_and(|(_, at)| at.elapsed() > Duration::from_secs(1)) {
+            // Take what is already queued, but not for long: a background
+            // writer could keep the queue full forever.
+            let until = Instant::now() + Duration::from_millis(200);
+            stopped = true;
+            while Instant::now() < until {
+                match rx.try_recv() {
+                    Ok(bytes) => take(bytes)?,
+                    Err(mpsc::TryRecvError::Empty) => break,
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        stopped = false;
+                        break;
+                    }
+                }
+            }
             break;
         }
     }
@@ -111,42 +203,42 @@ fn run(line: &str) -> std::io::Result<i32> {
         Some((status, _)) => status,
         None => child.wait()?,
     };
-    drop(file);
-    let code = exit_code(status);
-    let text = String::from_utf8_lossy(&held);
-    let out = std::io::stdout();
-    let mut out = out.lock();
-    if total <= SMALL {
-        let _ = std::fs::remove_file(&path);
-        out.write_all(text.as_bytes())?;
-        return Ok(code);
-    }
-    let summary = summarize(&text);
-    let mut what = summary.notes.join(", ");
-    if cut {
-        what.push_str(if what.is_empty() { "" } else { ", " });
-        what.push_str(&format!("only its last {} MB read", HELD >> 20));
-    }
-    writeln!(out, "{}", summary.text.trim_end())?;
-    writeln!(
-        out,
-        "[arakun shrink: {total} bytes of output, {} shown{}; exit code {code}; the whole output is in {}]",
-        summary.text.len(),
-        if what.is_empty() {
-            String::new()
-        } else {
-            format!(" ({what})")
-        },
-        path.display()
-    )?;
-    Ok(code)
+    Ok(Captured {
+        status,
+        held,
+        total,
+        cut,
+        stopped,
+    })
 }
 
-fn saved_path() -> PathBuf {
+/// A new file for the whole output, readable only by this user. A name that is
+/// taken (or a link someone put there) is skipped, never opened.
+fn saved_file() -> std::io::Result<(PathBuf, std::fs::File)> {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
-    std::env::temp_dir().join(format!("arakun-shrink-{secs}-{}.log", std::process::id()))
+    let pid = std::process::id();
+    let mut n = 0u32;
+    loop {
+        let name = match n {
+            0 => format!("arakun-shrink-{secs}-{pid}.log"),
+            _ => format!("arakun-shrink-{secs}-{pid}-{n}.log"),
+        };
+        let path = std::env::temp_dir().join(name);
+        let mut open = std::fs::OpenOptions::new();
+        open.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            open.mode(0o600);
+        }
+        match open.open(&path) {
+            Ok(file) => return Ok((path, file)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && n < 100 => n += 1,
+            Err(e) => return Err(e),
+        }
+    }
 }
 
 /// The command's exit code, as a shell reports it: 128 plus the signal that ended it.
@@ -656,5 +748,45 @@ mod tests {
         let s = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         assert_eq!(cli(&s(&["--", "exit", "3"])), 3);
         assert_eq!(cli(&s(&["true"])), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_saved_file_is_new_and_private() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let (a, _fa) = saved_file().unwrap();
+        let (b, _fb) = saved_file().unwrap();
+        assert_ne!(a, b, "a taken name is skipped");
+        let mode = std::fs::metadata(&a).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+        let _ = std::fs::remove_file(a);
+        let _ = std::fs::remove_file(b);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_background_process_does_not_hold_the_read() {
+        let (_path, file) = saved_file().unwrap();
+        let (mut reader, writer) = std::io::pipe().unwrap();
+        let mut cmd = crate::platform::shell_command("sleep 5 & echo done");
+        cmd.stdout(writer.try_clone().unwrap()).stderr(writer);
+        let mut child = cmd.spawn().unwrap();
+        drop(cmd);
+        let (tx, rx) = mpsc::sync_channel::<Vec<u8>>(64);
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 8192];
+            while let Ok(n) = reader.read(&mut buf) {
+                if n == 0 || tx.send(buf[..n].to_vec()).is_err() {
+                    break;
+                }
+            }
+        });
+        let start = Instant::now();
+        let got = capture(&mut child, &rx, file).unwrap();
+        let _ = std::fs::remove_file(_path);
+        assert!(start.elapsed() < Duration::from_secs(3));
+        assert!(got.stopped);
+        assert_eq!(got.held, b"done\n");
+        assert_eq!(exit_code(got.status), 0);
     }
 }

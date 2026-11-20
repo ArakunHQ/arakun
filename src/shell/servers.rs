@@ -113,6 +113,9 @@ pub(super) enum Watcher {
 /// Settings with their current value and choices, as `wire::settings` sends them.
 type SettingList = Vec<(Setting, (String, Vec<SettingOption>))>;
 
+/// A server's folder and an agent there: what its `options` are about.
+type OptionsKey = (String, String, AgentKind);
+
 pub(super) struct ServersLink {
     saved: Vec<Saved>,
     conns: HashMap<String, Conn>,
@@ -148,7 +151,11 @@ pub(super) struct ServersLink {
     first_prompts: HashMap<u64, (String, FirstPrompt)>,
     /// The model and reasoning each server offers a new session of an agent
     /// in one of its folders, by server, place and agent, as it last said.
-    options: HashMap<(String, String, AgentKind), SettingList>,
+    options: HashMap<OptionsKey, SettingList>,
+    /// Phones that asked for the options of a server's folder, by server,
+    /// place and agent, with the environment and agent they asked about:
+    /// the server's answer goes to them too.
+    phone_options: HashMap<OptionsKey, Vec<(ClientId, PathBuf, model::Agent)>>,
     /// The environments servers were asked to delete, by server and place,
     /// until each answers, with the Delete environment dialog that waits on it.
     deleting: Vec<(String, String, gpui::EntityId)>,
@@ -526,12 +533,22 @@ fn offered_picks(
             .map(|(_, (_, o))| o);
         choices.is_none_or(|o| o.is_empty() || o.iter().any(|c| c.id == value))
     };
-    let model = Setting::Model.key();
+    let (model, effort) = (Setting::Model.key(), Setting::Effort.key());
     let model_dropped = settings.iter().any(|(k, v)| k == model && !takes(k, v));
+    // The levels offered are those of the model the server would start on.
+    // Another model it offers may have others: its reasoning goes as picked,
+    // for the server to check against that model.
+    let other_model = settings.iter().any(|(k, v)| {
+        k == model
+            && offered
+                .iter()
+                .find(|(d, _)| *d == Setting::Model)
+                .is_some_and(|(_, (current, _))| current != v)
+    });
     settings
         .iter()
-        .filter(|(k, v)| takes(k, v))
-        .filter(|(k, _)| !(model_dropped && k == Setting::Effort.key()))
+        .filter(|(k, v)| (other_model && k == effort) || takes(k, v))
+        .filter(|(k, _)| !(model_dropped && k == effort))
         .cloned()
         .collect()
 }
@@ -825,6 +842,7 @@ impl Shell {
             no_new_env: HashSet::new(),
             first_prompts: HashMap::new(),
             options: HashMap::new(),
+            phone_options: HashMap::new(),
             deleting: Vec::new(),
             pairing: None,
             pairing_timeout: None,
@@ -1508,6 +1526,38 @@ impl Shell {
         if let Some(id) = session {
             conn.client
                 .send(&json!({ "type": "settings", "session": id }));
+        }
+    }
+
+    /// A phone's `options` for a server's environment: the server is asked,
+    /// and its answer goes to `client` as well.
+    pub(super) fn servers_ask_options_for(
+        &mut self,
+        client: ClientId,
+        env_path: &Path,
+        agent: model::Agent,
+    ) {
+        let Some(remote) = self.find_env(env_path).and_then(|e| e.remote.clone()) else {
+            return;
+        };
+        let connected = self.servers.as_ref().is_some_and(|link| {
+            link.conns
+                .get(&remote.server)
+                .is_some_and(|c| c.reach == Reach::Connected)
+        });
+        if !connected {
+            return;
+        }
+        self.servers_ask_settings(env_path, None);
+        if let Some(link) = &mut self.servers {
+            let key = (remote.server, remote.place, agent.kind());
+            let waiting = link.phone_options.entry(key).or_default();
+            if !waiting
+                .iter()
+                .any(|(c, p, a)| *c == client && p == env_path && *a == agent)
+            {
+                waiting.push((client, env_path.to_path_buf(), agent));
+            }
         }
     }
 
@@ -2650,6 +2700,8 @@ impl Shell {
                     let list = wire::read_settings(&msg["settings"]);
                     thread.update(cx, |t, cx| t.set_remote_settings(list, cx));
                 }
+                // The composer reads them from the thread, and draws again.
+                cx.notify();
             }
             // What a new session of an agent in one of its folders starts on.
             "options" => {
@@ -2657,8 +2709,13 @@ impl Shell {
                     return;
                 };
                 let key = (id.to_string(), text(msg, "env"), agent);
+                let waiting = link.phone_options.remove(&key).unwrap_or_default();
                 link.options
                     .insert(key, wire::read_settings(&msg["settings"]));
+                for (client, env_path, agent) in waiting {
+                    let reply = self.phone_options(&env_path, agent);
+                    self.phone_send(client, reply);
+                }
                 cx.notify();
             }
             "session" | "state" => {
@@ -2970,6 +3027,10 @@ mod tests {
             offered_picks(&unknown_effort, Some(&offered)),
             vec![pair(Setting::Model, "m1")]
         );
+        // Another of its models: the levels offered are not its own, so its
+        // reasoning is not checked against them.
+        let other = vec![pair(Setting::Model, "m2"), pair(Setting::Effort, "max")];
+        assert_eq!(offered_picks(&other, Some(&offered)), other);
     }
 
     #[test]

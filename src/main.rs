@@ -176,6 +176,7 @@ fn main() {
         .with_assets(assets::Assets)
         .run(move |cx: &mut App| {
             assets::load_fonts(cx);
+            terminal::on_link(shell::open_terminal_link);
             #[cfg(target_os = "macos")]
             if let Some(icon) = assets::Assets::get("brand/arakun-macos.png") {
                 platform::set_dock_icon(&icon.data);

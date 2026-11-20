@@ -18,6 +18,17 @@ use gpui::{
 };
 
 use super::element::{FONT_SIZE, Geometry, TerminalElement};
+
+/// Gets a clicked link before the desktop browser does, and says whether it
+/// took it. The app sets it so a pull request opens in its GitHub tab; this
+/// module also builds alone (the terminal demo), so it can't ask that itself.
+static LINK_HOOK: std::sync::OnceLock<fn(&str, &mut Window, &mut App) -> bool> =
+    std::sync::OnceLock::new();
+
+/// Sets the hook clicked links go through first; only the first call counts.
+pub fn on_link(hook: fn(&str, &mut Window, &mut App) -> bool) {
+    let _ = LINK_HOOK.set(hook);
+}
 use super::keys;
 use super::model::Terminal;
 use super::mouse::{self, Button};
@@ -439,7 +450,10 @@ impl TerminalView {
                 if (e.modifiers.control || cfg!(target_os = "macos") && e.modifiers.platform)
                     && let Some(url) = self.url_at(point, cx)
                 {
-                    cx.open_url(&url);
+                    let taken = LINK_HOOK.get().is_some_and(|hook| hook(&url, window, cx));
+                    if !taken {
+                        cx.open_url(&url);
+                    }
                     return;
                 }
                 let ty = match e.click_count {

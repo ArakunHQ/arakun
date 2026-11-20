@@ -3078,6 +3078,22 @@ fn signed_in_host() -> String {
     kept.0.clone().unwrap_or_else(|| "github.com".into())
 }
 
+/// Whether `gh` looks able to read: installed, and signed in to a host or
+/// given a token. For a click, not while drawing: the first call runs
+/// `gh --version`, and every call reads `gh`'s small sign-in file.
+pub fn gh_ready() -> bool {
+    let token = [
+        "GH_TOKEN",
+        "GITHUB_TOKEN",
+        "GH_ENTERPRISE_TOKEN",
+        "GITHUB_ENTERPRISE_TOKEN",
+    ]
+    .iter()
+    .any(|k| std::env::var_os(k).is_some_and(|v| !v.is_empty()));
+    let signed_in = || read_hosts_yml().is_some_and(|y| !signed_in_hosts(&y).is_empty());
+    crate::git::gh_available() && (token || signed_in())
+}
+
 /// `gh`'s sign-ins. Tests never read the real ones: what they check would
 /// change with who runs them.
 fn read_hosts_yml() -> Option<String> {

@@ -67,7 +67,8 @@ const ICON_PAD: &str = "\u{a0}\u{a0}";
 /// big block streaming in is not re-highlighted on every chunk.
 const LIVE_HIGHLIGHT_LINES: usize = 200;
 
-/// A web link clicked in the chat. The shell opens it in a arakun browser tab.
+/// A web link clicked in the chat or a terminal. The shell opens a pull
+/// request or issue in the GitHub tab, anything else in a arakun browser tab.
 #[derive(Clone, PartialEq, gpui::Action)]
 #[action(namespace = arakun, no_json)]
 pub struct OpenLink {

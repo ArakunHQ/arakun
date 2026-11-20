@@ -219,6 +219,16 @@ describe("teams", () => {
     await expectJson(api(u, "POST", "/teams", { body: { name: "x".repeat(101) } }), 400);
   });
 
+  it("refuses a new team once the caller is in 50", async () => {
+    const u = await user(1001, "octocat");
+    for (let i = 0; i < 49; i++) await expectJson(api(u, "POST", "/teams", { body: { name: `t${i}` } }), 201);
+    await expectJson(api(u, "POST", "/teams", { body: { name: "fiftieth" } }), 201);
+    expect((await expectJson(api(u, "POST", "/teams", { body: { name: "one more" } }), 409)).error).toMatch(/50 teams/);
+    expect((await expectJson<unknown[]>(api(u, "GET", "/teams"), 200)).length).toBe(50);
+    const orphans = await env.DB.prepare("SELECT COUNT(*) AS n FROM teams WHERE team_id NOT IN (SELECT team_id FROM members)").first<{ n: number }>();
+    expect(orphans!.n).toBe(0);
+  });
+
   it("runs the whole flow: invite, accept, pending, approve with envelopes, member", async () => {
     const t = await team();
     const owner = t.owner;

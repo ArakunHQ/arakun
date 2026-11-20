@@ -249,7 +249,7 @@ devices: `400` without it, `403` if it is someone else's.
 | --- | --- | --- |
 | `POST /devices` `{sig_pub, enc_pub, name, endorsement}` | anyone | `201 {device_id}`, `200` if registered already. `400` for a bad key, name or endorsement; `409` if another account has the key, or past 20 devices. |
 | `GET /users/<github_id>/devices` | the user, or someone in a team with them | `200 [{device_id, sig_pub, enc_pub, name, created_at, endorsed_by, endorsement_sig}]` |
-| `POST /teams` `{name}` | anyone | `201 {team_id, epoch: 1}`; the caller is the owner. |
+| `POST /teams` `{name}` | anyone | `201 {team_id, epoch: 1}`; the caller is the owner. `409` if the caller is in 50 teams already. |
 | `GET /teams` | anyone | `200 [{team_id, name, role, epoch, rotation_pending}]` |
 | `GET /teams/<team_id>` | member | `200 {team_id, name, epoch, keyed_epoch, rotation_pending, members, channels}` |
 | `POST /teams/<team_id>/invites` `{github_login}` | admin | `201 {invite_id, expires_at}`, 7 days. `409` if a member or pending already. |

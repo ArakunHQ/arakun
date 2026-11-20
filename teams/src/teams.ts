@@ -29,6 +29,9 @@ const MAX_DEVICES = 20;
 /// With 20 devices each, a rotation is at most 500 envelopes: one request.
 const MAX_MEMBERS = 25;
 const MAX_CHANNELS = 500;
+/// Teams a user may be in when they create one, so one account cannot fill
+/// the database with teams.
+const MAX_TEAMS = 50;
 const MAX_NAME = 100;
 const INVITE_DAYS = 7;
 /// A pending user may remind a team's admins once per this many seconds.
@@ -232,10 +235,19 @@ async function createTeam(c: Ctx): Promise<Response> {
   const teamId = ulid();
   const t = now();
   const db = c.env.DB;
-  await db.batch([
-    db.prepare("INSERT INTO teams (team_id, name, epoch, keyed_epoch, created_by, created_at) VALUES (?, ?, 1, 0, ?, ?)").bind(teamId, name, c.me.githubId, t),
-    db.prepare("INSERT INTO members (team_id, github_id, role, joined_at) VALUES (?, ?, 'owner', ?)").bind(teamId, c.me.githubId, t),
+  // The count is checked in the insert, so requests at once cannot all pass.
+  const [made] = await db.batch([
+    db
+      .prepare(
+        `INSERT INTO teams (team_id, name, epoch, keyed_epoch, created_by, created_at)
+         SELECT ?1, ?2, 1, 0, ?3, ?4 WHERE (SELECT COUNT(*) FROM members WHERE github_id = ?3) < ${MAX_TEAMS}`,
+      )
+      .bind(teamId, name, c.me.githubId, t),
+    db
+      .prepare("INSERT INTO members (team_id, github_id, role, joined_at) SELECT ?1, ?2, 'owner', ?3 WHERE EXISTS (SELECT 1 FROM teams WHERE team_id = ?1)")
+      .bind(teamId, c.me.githubId, t),
   ]);
+  if (made!.meta.changes !== 1) return error(409, `at most ${MAX_TEAMS} teams per account`);
   return Response.json({ team_id: teamId, epoch: 1 }, { status: 201 });
 }
 

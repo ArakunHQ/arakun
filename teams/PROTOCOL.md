@@ -84,7 +84,8 @@ without it, `403` if it is not one of the caller's devices.
 - `POST /teams` `{ "name": "Arakun" }` → `201 { team_id, epoch: 1 }`. The caller
   becomes `owner`. The name is plaintext (it shows in invites before anyone holds
   a key). The creating device then makes the epoch-1 key and uploads an envelope
-  for each of its user's devices (below).
+  for each of its user's devices (below). `409` if the caller is in 50 teams
+  already.
 - `GET /teams` → the caller's teams: `[{ team_id, name, role, epoch,
   rotation_pending }]`.
 - `GET /teams/<team_id>` → `{ team_id, name, epoch, keyed_epoch, roster_epoch,

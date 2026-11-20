@@ -662,7 +662,7 @@ impl Sandbox {
         out.push_str("(deny file-write*)\n");
         out.push_str(&format!(
             "(allow file-write* {ws} {tmp} (literal \"/dev/null\") (literal \"/dev/zero\") \
-             (literal \"/dev/dtracehelper\") (regex #\"^/dev/tty\") (regex #\"^/dev/fd/\"))\n"
+             (literal \"/dev/dtracehelper\") (literal \"/dev/tty\") (regex #\"^/dev/fd/\"))\n"
         ));
         let frozen: Vec<&Path> = self.frozen.iter().map(PathBuf::as_path).collect();
         if !frozen.is_empty() {
@@ -697,6 +697,8 @@ impl Sandbox {
             out.push_str(&format!("(deny {READ} {})\n", list(&hidden)));
             out.push_str(&format!("(deny file-write* {})\n", list(&hidden)));
         }
+        let pinned: Vec<&Path> = frozen.iter().chain(&hidden).copied().collect();
+        out.push_str(&sbpl_pin(&[self.workspace.as_path()], &pinned));
         // The sandbox's own /tmp, last: it may sit under a hidden folder.
         out.push_str(&format!("(allow {READ} {tmp})\n"));
         out.push_str(&format!("(allow file-write* {tmp})\n"));
@@ -921,6 +923,29 @@ pub fn sbpl_str(p: &Path) -> String {
 /// `(subpath "p")`: `p` and everything under it.
 pub fn sbpl_subpath(p: &Path) -> String {
     format!("(subpath {})", sbpl_str(p))
+}
+
+/// Seatbelt judges a path when it is used, so renaming a folder above a hidden or
+/// read-only path moves it out from under its rule (`mv sub x && cat x/.env`).
+/// This denies renaming or removing each folder from a writable `root` down to a
+/// `pinned` path; what is inside those folders stays writable.
+pub fn sbpl_pin(roots: &[&Path], pinned: &[&Path]) -> String {
+    let mut dirs: Vec<&Path> = pinned
+        .iter()
+        .flat_map(|p| p.ancestors().skip(1))
+        // The root too: moving the whole workspace into its /tmp would do the same.
+        .filter(|a| roots.iter().any(|r| a.starts_with(r)))
+        .collect();
+    dirs.sort();
+    dirs.dedup();
+    if dirs.is_empty() {
+        return String::new();
+    }
+    let lits: Vec<String> = dirs
+        .iter()
+        .map(|d| format!("(literal {})", sbpl_str(d)))
+        .collect();
+    format!("(deny file-write-unlink {})\n", lits.join(" "))
 }
 
 pub fn sbpl_list(ps: &[&Path]) -> String {
@@ -1303,6 +1328,11 @@ mod tests {
         assert!(p.contains("(deny file-write* (subpath \"/home/u/proj/.git/hooks\"))"));
         assert!(p.contains("(global-name \"com.apple.SecurityServer\")"));
         assert!(p.contains("(deny network-outbound (remote ip))"));
+        // Their folders can't be renamed away from the rules, nor ttys written.
+        assert!(p.contains(
+            "(deny file-write-unlink (literal \"/home/u/proj\") (literal \"/home/u/proj/.git\"))"
+        ));
+        assert!(!p.contains("^/dev/tty"));
         let net = Sandbox {
             caps: vec![Cap::Net],
             ..b.clone()
@@ -1536,6 +1566,28 @@ mod tests {
         assert!(!run("touch /etc/x").0);
         assert!(!run(&format!("cat {}/token", secret.display())).0);
         assert!(!run("touch /private/tmp/arakun-sbx-x").0);
+        // A rename can't move a secret out from under its rule.
+        std::fs::create_dir_all(ws.join("sub")).unwrap();
+        std::fs::write(ws.join("sub/.env"), "KEY=1").unwrap();
+        let sb = Sandbox::with(find_runner(), &ws, &d.join("session"), &[], &[]).unwrap();
+        let run = |c: &str| {
+            let o = sb
+                .output(
+                    &ws,
+                    &["sh".into(), "-c".into(), c.into()],
+                    None,
+                    Duration::from_secs(20),
+                )
+                .unwrap();
+            (
+                o.status.success(),
+                String::from_utf8_lossy(&o.stdout).trim().to_string(),
+            )
+        };
+        assert!(!run("cat sub/.env").0);
+        assert!(!run("mv sub sub2").0);
+        assert!(!run(&format!("mv {} \"$TMPDIR/ws\"", ws.display())).0);
+        assert!(run("touch sub/a && rm sub/a").0);
         // Tools still work: git (through xcrun) and a C compiler.
         if Path::new("/Library/Developer/CommandLineTools").is_dir() {
             assert!(run("git init -q . && git status --short > /dev/null").0);

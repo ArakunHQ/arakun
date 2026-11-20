@@ -288,7 +288,7 @@ impl Shell {
 
     fn run_title_action(&mut self, a: TitleAction, window: &mut Window, cx: &mut Context<Self>) {
         match a {
-            TitleAction::AddProject => self.open_picker(window, cx),
+            TitleAction::New => self.open_new_dialog(window, cx),
             TitleAction::NewSession => window.dispatch_action(Box::new(NewSession), cx),
             TitleAction::NewTerminal => window.dispatch_action(Box::new(NewTerminal), cx),
         }
@@ -473,7 +473,12 @@ impl Shell {
                 .gap(crate::ui::sp(4.))
                 .h(px(28.))
                 .mx(px(8.))
-                .px(crate::ui::sp(8.))
+                .pl(crate::ui::sp(8.))
+                .pr(crate::ui::sp(if section.action.is_some() {
+                    3.
+                } else {
+                    8.
+                }))
                 .rounded(crate::ui::rad(8.))
                 .text_size(px(ui::TEXT_SM))
                 .text_color(theme::text_subtle())
@@ -527,17 +532,7 @@ impl Shell {
                 })
                 .when_some(section.action, |d, a| {
                     d.child(
-                        div()
-                            .id(("rail-section-action", si))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .size(px(20.))
-                            .rounded(crate::ui::rad(6.))
-                            .cursor_pointer()
-                            .hover(|s| s.bg(theme::fill_selected()))
-                            .tooltip(ui::tip(a.label()))
-                            .child(icon("add01", 14.).text_color(theme::text_subtle()))
+                        super::rail::heading_button(("rail-section-action", si), a.label())
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 cx.stop_propagation();
                                 this.run_title_action(a, window, cx)
@@ -1015,9 +1010,10 @@ impl Shell {
                         1.5,
                         gpui::rgb(project.logo).into(),
                     ))
-                    // Another project's work shows here, as the rail has no rows.
-                    .when(!selected, |d| {
-                        let status = super::rail::Activity::of_project(project).status();
+                    // Every project's work shows here, the open one's too, as
+                    // the narrowed rail has no rows.
+                    .map(|d| {
+                        let status = self.project_activity(pi, cx).status();
                         d.when(status != Status::Idle, |d| {
                             d.child(
                                 div()

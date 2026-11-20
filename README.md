@@ -95,9 +95,14 @@ copy of it, rename it back, and start a version that can read it.
 - **Projects and worktrees.** A rail of projects, each with its environments (the main
   checkout plus git worktrees). The default sidebar shows the open project, with the
   others in its dropdown, and its sessions as a flat list: a status dot, the title,
-  and one signal (Needs you, CI failed, or the diff). If you take the Active list
-  out, **Other projects** under them lists the environments elsewhere that run or need
-  you. The dropdown says the same per project. `Ctrl+Shift+N` always makes a new
+  and one signal (Needs you, CI failed, Changes requested, Conflicts, or the diff).
+  An environment needs you when a session asks something, when a session finished a
+  turn you haven't opened yet, when CI on its branch fails, or when its pull request
+  has changes requested or conflicts; CI that is still going shows it as running. If
+  you take the Active list out, **Other projects** under them lists the environments
+  elsewhere that run or need you. The dropdown says the same per project. The **+** on
+  the Projects heading opens **New**: a session in the open project or another one, or
+  a project to add (`Ctrl+T` and `Ctrl+O` pick them). `Ctrl+Shift+N` always makes a new
   worktree at once on a random branch from the current branch as it is on `origin`,
   fetched first (or the local commit when origin has none; on a server, from that
   server's checkout, with no fetch). File › New Environment with Options… asks for

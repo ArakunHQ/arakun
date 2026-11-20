@@ -455,6 +455,7 @@ pub(super) fn session_card(
     branch: &SharedString,
 ) -> gpui::Stateful<gpui::Div> {
     let (status, color): (SharedString, Hsla) = match s.status {
+        Status::Idle if s.unread => ("Finished".into(), theme::needs_you()),
         Status::Idle => (model::age(s.updated), theme::mix(0.45)),
         Status::Error => ("Error".into(), theme::diff_del().into()),
         Status::Working => ("Working...".into(), theme::working()),

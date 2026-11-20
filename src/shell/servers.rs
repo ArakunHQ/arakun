@@ -1040,6 +1040,8 @@ impl Shell {
                 p.environments.get(p.active_env).map(|e| e.path.clone()),
             )
         });
+        let on_screen = self.sessions_on_screen();
+        let mut unread = false;
         let mut moving = take_misplaced(&mut self.projects, &keep);
         self.projects
             .retain(|p| !p.is_remote() || !p.environments.is_empty());
@@ -1079,7 +1081,7 @@ impl Shell {
                 env.set_branch(Some(place.branch.clone()));
             }
             env.remote = Some(remote);
-            sync_sessions(&self.strip, env, sessions);
+            unread |= sync_sessions(&self.strip, &on_screen, env, sessions);
         }
 
         // An environment on screen that moved to another project is followed there.
@@ -1100,6 +1102,9 @@ impl Shell {
         // The tabs of a folder the servers no longer list close; one that
         // moved to another project keeps its tabs, which go by its path.
         self.settle_strip(cx);
+        if unread {
+            self.save(cx);
+        }
         self.servers_open_started(window, cx);
         self.servers_open_added(window, cx);
         // Phones list the servers' sessions too.
@@ -2464,8 +2469,16 @@ fn take_misplaced(
 }
 
 /// Brings an environment's sessions in line with the server's list, newest
-/// first. A session with a tab open stays until its tab closes.
-fn sync_sessions(strip: &model::TabStrip, env: &mut Environment, rows: Vec<SessionRow>) {
+/// first. A session with a tab open stays until its tab closes, and one that
+/// finishes while the user looks elsewhere waits on them until opened. True
+/// when one did.
+fn sync_sessions(
+    strip: &model::TabStrip,
+    on_screen: &[(PathBuf, SharedString)],
+    env: &mut Environment,
+    rows: Vec<SessionRow>,
+) -> bool {
+    let mut unread = false;
     let ids: HashSet<&str> = rows.iter().map(|r| r.id.as_str()).collect();
     let open: HashSet<SharedString> = strip
         .tabs
@@ -2491,13 +2504,21 @@ fn sync_sessions(strip: &model::TabStrip, env: &mut Environment, rows: Vec<Sessi
                 i.min(env.sessions.len() - 1)
             }
         };
+        let away = !on_screen
+            .iter()
+            .any(|(p, id)| *p == env.path && id.as_ref() == row.id);
         let s = &mut env.sessions[at];
+        if away && s.status == Status::Working && row.status == Status::Idle {
+            s.unread = true;
+            unread = true;
+        }
         s.status = row.status;
         s.updated = row.updated;
         if !row.title.is_empty() {
             s.title = row.title.into();
         }
     }
+    unread
 }
 
 /// An empty transcript for a session that is about to be read.
@@ -3069,5 +3090,31 @@ mod tests {
             ("gone:old", "old")
         );
         assert!(sessions[..2].iter().all(|s| s.in_place(&gone[0])));
+    }
+
+    #[test]
+    fn a_remote_session_that_finishes_off_screen_waits_on_the_user() {
+        let row = |id: &str, status| SessionRow {
+            id: id.into(),
+            title: String::new(),
+            agent: "codex".into(),
+            status,
+            updated: 0,
+            place: String::new(),
+            env: String::new(),
+        };
+        let strip = model::TabStrip::default();
+        let mut env = Environment::new(PathBuf::from("/srv/app"), None, true);
+        let rows = || vec![row("a", Status::Working), row("b", Status::Working)];
+        assert!(!sync_sessions(&strip, &[], &mut env, rows()));
+        let on_screen = [(env.path.clone(), SharedString::from("b"))];
+        let done = || vec![row("a", Status::Idle), row("b", Status::Idle)];
+        assert!(sync_sessions(&strip, &on_screen, &mut env, done()));
+        let unread = |id: &str| env.sessions[env.session_index(id).unwrap()].unread;
+        assert!(unread("a"));
+        assert!(!unread("b"), "it finished on screen");
+        // One that stays idle is not marked again once read.
+        env.sessions.iter_mut().for_each(|s| s.unread = false);
+        assert!(!sync_sessions(&strip, &[], &mut env, done()));
     }
 }

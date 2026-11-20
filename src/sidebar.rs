@@ -463,21 +463,24 @@ impl Item {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TitleAction {
-    AddProject,
+    /// The New dialog: a session, or a project. Saved layouts from before it
+    /// had "Add project" here, which the dialog also does.
+    #[serde(alias = "add_project")]
+    New,
     NewSession,
     NewTerminal,
 }
 
 impl TitleAction {
     pub const ALL: [TitleAction; 3] = [
-        TitleAction::AddProject,
+        TitleAction::New,
         TitleAction::NewSession,
         TitleAction::NewTerminal,
     ];
 
     pub fn label(self) -> &'static str {
         match self {
-            TitleAction::AddProject => "Add project",
+            TitleAction::New => "New session or project",
             TitleAction::NewSession => "New session",
             TitleAction::NewTerminal => "New terminal",
         }
@@ -652,7 +655,7 @@ impl Preset {
         ];
         let projects = Section::new("Projects", Mode::Scroll, vec![Piece::projects()])
             .titled()
-            .with_action(TitleAction::AddProject);
+            .with_action(TitleAction::New);
         let account = |pieces| Section::new("Account", Mode::Fixed, pieces);
         let active = || Section::new("Active", Mode::Scroll, vec![Piece::active()]);
         let mut style = Style::default();
@@ -1626,6 +1629,13 @@ mod tests {
         assert_eq!(Extensions::load_from(&path, &Sidebar::default(), true), e);
         assert_eq!(crate::stored::tests::kept(&path).as_deref(), Some("{}"));
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_saved_add_project_button_opens_the_new_dialog() {
+        let a: TitleAction = serde_json::from_str("\"add_project\"").unwrap();
+        assert_eq!(a, TitleAction::New);
+        assert_eq!(serde_json::to_string(&a).unwrap(), "\"new\"");
     }
 
     #[test]

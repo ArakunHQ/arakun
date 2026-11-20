@@ -222,7 +222,11 @@ Manager (Windows Credentials, Generic Credentials).
   it restarts the Dynamic Island with the new version. A later start deletes the old
   file once nothing runs it; an old file still in use is moved aside, with a number
   after its name, and deleted the same way. Settings has no **Restart now** button on
-  Windows: quit Arakun and open it again. Not tested on real Windows yet.
+  Windows: quit Arakun and open it again. The dialog the `update-policy` feature flag
+  opens (see "Updates" in the README) says **Quit and update** instead of **Restart
+  now**: it quits Arakun, which installs the release, and you open it again. A forced
+  one can't be closed: it offers that, **Quit Arakun**, and **Try again** after a
+  failed download. Not tested on real Windows yet.
 - **Dynamic Island:** an always-on-top window at the top center of the main display's
   work area, where Linux uses a layer-shell surface. Clicks around its shape reach the
   windows below, and clicking it never takes the focus from the window you type in.

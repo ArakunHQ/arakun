@@ -368,6 +368,9 @@ pub struct Shell {
     _quit: [Subscription; 2],
     /// `arakun restart` asked to quit: save for the next arakun and launch it.
     restarting: bool,
+    /// The `update-policy` feature flag's dialog (`shell::updates`), over
+    /// everything else, dialogs included.
+    update_dialog: Option<(Entity<crate::update_dialog::UpdateDialog>, Subscription)>,
     /// The pages last marked visible, so tab switches can tell when to update CEF.
     shown_browsers: Vec<gpui::EntityId>,
     /// Answers `arakun <command>` from the control socket.
@@ -1039,6 +1042,7 @@ impl Shell {
             inbox_shown: Cell::new(0),
             clear_armed: false,
             restarting: false,
+            update_dialog: None,
             _runs: runs_subs,
             _quit: [
                 cx.on_app_quit(|this, cx| {
@@ -3581,10 +3585,16 @@ impl Shell {
         step(window, cx);
         // gpui's tab order spans the window, so an open dialog would let Tab
         // reach the controls behind it. Step on to the next stop inside one;
-        // back at the first stop means no dialog is open.
+        // back at the first stop means no dialog is open. The update dialog
+        // covers any other dialog, so while it is open only its stops count.
+        let update = self.update_dialog.as_ref().map(|(d, _)| d.focus_handle(cx));
+        let inside = |window: &Window, cx: &App| match &update {
+            Some(update) => update.contains_focused(window, cx),
+            None => in_modal(&window.context_stack()),
+        };
         let first = window.focused(cx);
         for _ in 0..MAX_TAB_STOPS {
-            if in_modal(&window.context_stack()) {
+            if inside(window, cx) {
                 break;
             }
             step(window, cx);
@@ -3593,7 +3603,7 @@ impl Shell {
                 break;
             }
         }
-        if !in_modal(&window.context_stack())
+        if !inside(window, cx)
             && let Some(first) = first
         {
             window.focus(&first, cx);
@@ -3722,6 +3732,7 @@ impl Render for Shell {
             self.render_welcome(window, cx).into_any_element()
         };
 
+        let update_dialog = self.update_dialog.as_ref().map(|(d, _)| d.clone());
         let palette_open = matches!(self.modal, Some((Modal::Palette(_), _)));
         // Dialogs sit in the middle, like the system's own. Lists that filter
         // as you type stay near the top, so they don't jump as their height changes.
@@ -3967,7 +3978,9 @@ impl Render for Shell {
             })
             .capture_key_down(cx.listener(|this, ev: &gpui::KeyDownEvent, window, cx| {
                 let k = &ev.keystroke;
+                // The update dialog's Enter and Space press its own buttons.
                 if this.menu.is_some()
+                    && this.update_dialog.is_none()
                     && !k.modifiers.control
                     && !k.modifiers.alt
                     && !k.modifiers.platform
@@ -4126,6 +4139,24 @@ impl Render for Shell {
                                 d.bg(gpui::black().opacity(dim * ui::motion::ease_out(t)))
                             },
                         ),
+                )
+            })
+            .when_some(update_dialog, |d, dialog| {
+                d.child(
+                    div()
+                        .id("update-backdrop")
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .size_full()
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .pt(relative(0.10))
+                        .px(crate::ui::sp(12.))
+                        .occlude()
+                        .bg(gpui::black().opacity(0.4))
+                        .child(dialog),
                 )
             })
             .when(self.env_menu_open, |d| {

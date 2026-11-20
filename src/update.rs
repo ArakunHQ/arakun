@@ -557,6 +557,53 @@ fn listed(sums: &str, file: &str) -> Option<String> {
     })
 }
 
+/// The feature flag (`flags`) that tells a version to update: a multivariate
+/// flag whose variant is `request` (ask the user to restart into the new
+/// release) or `force` (no way on until they do). Its release conditions pick
+/// the versions, such as `$app_version` below 0.9.0 (semver). The payload may
+/// carry `{"message": "…"}`, said in the dialog.
+pub const POLICY_FLAG: &str = "update-policy";
+
+/// How hard to push for the newest release.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Push {
+    Request,
+    Force,
+}
+
+/// What the policy flag says to this build.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Policy {
+    pub push: Push,
+    pub message: Option<String>,
+}
+
+/// The policy for this build, `None` when it may stay as it is.
+/// Blocking: call it off the UI thread.
+pub fn policy() -> Result<Option<Policy>, String> {
+    if !release_build() {
+        return Ok(None);
+    }
+    Ok(policy_from(crate::flags::fetch()?.get(POLICY_FLAG)))
+}
+
+fn policy_from(flag: Option<&crate::flags::Flag>) -> Option<Policy> {
+    let flag = flag.filter(|f| f.enabled)?;
+    let push = match flag.variant.as_deref()? {
+        "request" => Push::Request,
+        "force" => Push::Force,
+        _ => return None,
+    };
+    // A bare string works too, and anything past a short paragraph is cut.
+    let message = flag
+        .payload
+        .as_ref()
+        .and_then(|p| p.get("message").unwrap_or(p).as_str())
+        .map(|m| m.trim().chars().take(400).collect::<String>())
+        .filter(|m| !m.is_empty());
+    Some(Policy { push, message })
+}
+
 /// What a check ended in.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Outcome {
@@ -1590,5 +1637,43 @@ E/PXP6NV7MfZ8NxQICz/mogdfOuIowQ5VLFE/4IC5gtsY2py3mp1d7ahKcI0zkxlgjsjCCpqCaO/ndQ+
             let t = s.text();
             assert!(t.ends_with('.') || t.ends_with('…'), "{t}");
         }
+    }
+
+    #[test]
+    fn the_policy_flag_says_how_hard_to_push() {
+        use crate::flags::Flag;
+        let flag =
+            |enabled: bool, variant: Option<&str>, payload: Option<serde_json::Value>| Flag {
+                enabled,
+                variant: variant.map(str::to_string),
+                payload,
+            };
+        assert_eq!(policy_from(None), None);
+        assert_eq!(policy_from(Some(&flag(false, Some("force"), None))), None);
+        assert_eq!(policy_from(Some(&flag(true, None, None))), None);
+        assert_eq!(policy_from(Some(&flag(true, Some("other"), None))), None);
+        assert_eq!(
+            policy_from(Some(&flag(true, Some("request"), None))),
+            Some(Policy {
+                push: Push::Request,
+                message: None
+            })
+        );
+        assert_eq!(
+            policy_from(Some(&flag(
+                true,
+                Some("force"),
+                Some(serde_json::json!({"message": " Fixes data loss. "}))
+            ))),
+            Some(Policy {
+                push: Push::Force,
+                message: Some("Fixes data loss.".into())
+            })
+        );
+        assert_eq!(
+            policy_from(Some(&flag(true, Some("force"), Some("Plain words".into()))))
+                .and_then(|p| p.message),
+            Some("Plain words".into())
+        );
     }
 }

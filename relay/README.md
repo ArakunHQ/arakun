@@ -138,8 +138,10 @@ A single Worker serves every computer:
    landing page stays where it is.
 3. `npx wrangler deploy --env=""` under the normal name (`arakun-relay`). For `arakun.dev` itself
    this is `[env.production]` in `wrangler.toml`, which `.github/workflows/relay-deploy.yml`
-   deploys when a change to `relay/` or `phone/` lands on `main` (or by hand from the
-   Actions tab). The deploy's message names the commit.
+   deploys from the tag when a release is published, so a relay change on `main` waits
+   for the next version. A hotfix without a new version goes on a
+   `relay-hotfix/v<version>` branch made from the latest release's tag; the steps are at
+   the top of that workflow. The deploy's message names the release or the hotfix.
 4. A zone rate-limiting rule (one rule is free) on `/ws` and `/pc` per IP, so nobody can
    open labels or connections without limit.
 

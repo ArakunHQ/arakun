@@ -246,7 +246,7 @@ impl Shell {
     /// be handed over.
     fn menu_agents(&self) -> Vec<AgentKind> {
         if self.can_switch_agent() {
-            AgentKind::WITH_PLAN.to_vec()
+            AgentKind::ALL.to_vec()
         } else {
             vec![self.composer_agent()]
         }

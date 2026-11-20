@@ -737,7 +737,7 @@ impl AutomationsDialog {
                     .text_color(theme::text_faint())
                     .child(
                         "Scheduled runs happen while Arakun is open; one missed by less than an hour runs \
-                         when Arakun notices. AgentKind runs show up in Sessions and the Inbox.",
+                         when Arakun notices. Agent runs show up in Sessions and the Inbox.",
                     ),
             );
         }

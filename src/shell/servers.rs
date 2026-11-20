@@ -24,7 +24,8 @@ use serde_json::{Value, json};
 
 use super::{Modal, Shell};
 use crate::agent::{
-    AgentKind, Entry, RemoteAction, SessionMeta, Thread, ThreadStatus, Transcript, Usage,
+    AgentKind, Entry, RemoteAction, SessionMeta, Setting, SettingOption, Thread, ThreadStatus,
+    Transcript, Usage,
 };
 use crate::dialogs::{DeleteEnvDialog, DialogEvent};
 use crate::extensions_view::ServerTarget;
@@ -109,6 +110,12 @@ pub(super) enum Watcher {
     Phone(ClientId),
 }
 
+/// Settings with their current value and choices, as `wire::settings` sends them.
+type SettingList = Vec<(Setting, (String, Vec<SettingOption>))>;
+
+/// A server's folder and an agent there: what its `options` are about.
+type OptionsKey = (String, String, AgentKind);
+
 pub(super) struct ServersLink {
     saved: Vec<Saved>,
     conns: HashMap<String, Conn>,
@@ -142,6 +149,13 @@ pub(super) struct ServersLink {
     /// until the server answers: they name the branch once it started, and
     /// go back in the composer if it did not. Each with its server.
     first_prompts: HashMap<u64, (String, FirstPrompt)>,
+    /// The model and reasoning each server offers a new session of an agent
+    /// in one of its folders, by server, place and agent, as it last said.
+    options: HashMap<OptionsKey, SettingList>,
+    /// Phones that asked for the options of a server's folder, by server,
+    /// place and agent, with the environment and agent they asked about:
+    /// the server's answer goes to them too.
+    phone_options: HashMap<OptionsKey, Vec<(ClientId, PathBuf, model::Agent)>>,
     /// The environments servers were asked to delete, by server and place,
     /// until each answers, with the Delete environment dialog that waits on it.
     deleting: Vec<(String, String, gpui::EntityId)>,
@@ -503,6 +517,72 @@ fn status_from(word: &str) -> Status {
     }
 }
 
+/// The `settings` of a start without those the server does not offer, when
+/// it said what it offers. The reasoning goes with the model it was picked
+/// for: without that model it would be checked against another.
+fn offered_picks(
+    settings: &[(String, String)],
+    offered: Option<&SettingList>,
+) -> Vec<(String, String)> {
+    let Some(offered) = offered else {
+        return settings.to_vec();
+    };
+    let takes = |key: &str, value: &str| {
+        let choices = Setting::from_key(key)
+            .and_then(|s| offered.iter().find(|(d, _)| *d == s))
+            .map(|(_, (_, o))| o);
+        choices.is_none_or(|o| o.is_empty() || o.iter().any(|c| c.id == value))
+    };
+    let (model, effort) = (Setting::Model.key(), Setting::Effort.key());
+    let model_dropped = settings.iter().any(|(k, v)| k == model && !takes(k, v));
+    // The levels offered are those of the model the server would start on.
+    // Another model it offers may have others: its reasoning goes as picked,
+    // for the server to check against that model.
+    let other_model = settings.iter().any(|(k, v)| {
+        k == model
+            && offered
+                .iter()
+                .find(|(d, _)| *d == Setting::Model)
+                .is_some_and(|(_, (current, _))| current != v)
+    });
+    settings
+        .iter()
+        .filter(|(k, v)| (other_model && k == effort) || takes(k, v))
+        .filter(|(k, _)| !(model_dropped && k == effort))
+        .cloned()
+        .collect()
+}
+
+/// A setting of a new session on a server, from what the server offers and
+/// what the environment picked (`draft`).
+fn draft_on_server(
+    offered: &SettingList,
+    draft: &[(Setting, String)],
+    s: Setting,
+) -> Option<(String, Vec<SettingOption>)> {
+    let on_offer = |s: Setting| {
+        offered
+            .iter()
+            .find(|(d, (_, o))| *d == s && !o.is_empty())
+            .map(|(_, v)| v)
+    };
+    let picked = |s: Setting| draft.iter().find(|(d, _)| *d == s).map(|(_, v)| v);
+    // The reasoning levels offered are those of the model the server would
+    // start on; another model picked here may have others.
+    if s == Setting::Effort
+        && let Some(model) = picked(Setting::Model)
+        && on_offer(Setting::Model)
+            .is_some_and(|(current, o)| current != model && o.iter().any(|c| c.id == *model))
+    {
+        return None;
+    }
+    let (mut current, options) = on_offer(s)?.clone();
+    if let Some(v) = picked(s).filter(|v| options.iter().any(|o| o.id == **v)) {
+        current = v.clone();
+    }
+    Some((current, options))
+}
+
 fn text(v: &Value, key: &str) -> String {
     v[key].as_str().unwrap_or("").to_string()
 }
@@ -761,6 +841,8 @@ impl Shell {
             new_env: HashMap::new(),
             no_new_env: HashSet::new(),
             first_prompts: HashMap::new(),
+            options: HashMap::new(),
+            phone_options: HashMap::new(),
             deleting: Vec::new(),
             pairing: None,
             pairing_timeout: None,
@@ -1271,6 +1353,9 @@ impl Shell {
             RemoteAction::Rewind(entry) => {
                 json!({ "type": "rewind", "entry": entry, "confirm": true })
             }
+            RemoteAction::Setting(s, value) => {
+                json!({ "type": "setting", "key": s.key(), "value": value })
+            }
         };
         self.servers_send(&remote.server, id, msg, cx);
     }
@@ -1399,6 +1484,12 @@ impl Shell {
             ));
             return None;
         }
+        // A pick the server does not offer (one from this machine's
+        // catalog) would only fail there: it starts on its own instead.
+        let offered =
+            link.options
+                .get(&(remote.server.clone(), remote.place.clone(), agent.kind()));
+        let settings = offered_picks(settings, offered);
         let reference = link.starts.sent(&remote.server, by);
         let mut start = json!({
             "type": "start", "env": remote.place, "agent": agent.key(), "text": text,
@@ -1410,6 +1501,80 @@ impl Shell {
         }
         conn.client.send(&start);
         Some(reference)
+    }
+
+    /// Asks the server of the environment at `env_path` what its model menu
+    /// offers: the model and reasoning of a new session of each agent there,
+    /// and what `session` is on. Asking for a session's settings starts its
+    /// agent there, as a phone's does, so it waits for the menu to open.
+    pub(super) fn servers_ask_settings(&self, env_path: &Path, session: Option<&str>) {
+        let Some(remote) = self.find_env(env_path).and_then(|e| e.remote.as_ref()) else {
+            return;
+        };
+        let Some(conn) = self
+            .servers
+            .as_ref()
+            .and_then(|link| link.conns.get(&remote.server))
+            .filter(|c| c.reach == Reach::Connected)
+        else {
+            return;
+        };
+        for agent in model::Agent::ALL {
+            conn.client
+                .send(&json!({ "type": "options", "env": remote.place, "agent": agent.key() }));
+        }
+        if let Some(id) = session {
+            conn.client
+                .send(&json!({ "type": "settings", "session": id }));
+        }
+    }
+
+    /// A phone's `options` for a server's environment: the server is asked,
+    /// and its answer goes to `client` as well.
+    pub(super) fn servers_ask_options_for(
+        &mut self,
+        client: ClientId,
+        env_path: &Path,
+        agent: model::Agent,
+    ) {
+        let Some(remote) = self.find_env(env_path).and_then(|e| e.remote.clone()) else {
+            return;
+        };
+        let connected = self.servers.as_ref().is_some_and(|link| {
+            link.conns
+                .get(&remote.server)
+                .is_some_and(|c| c.reach == Reach::Connected)
+        });
+        if !connected {
+            return;
+        }
+        self.servers_ask_settings(env_path, None);
+        if let Some(link) = &mut self.servers {
+            let key = (remote.server, remote.place, agent.kind());
+            let waiting = link.phone_options.entry(key).or_default();
+            if !waiting
+                .iter()
+                .any(|(c, p, a)| *c == client && p == env_path && *a == agent)
+            {
+                waiting.push((client, env_path.to_path_buf(), agent));
+            }
+        }
+    }
+
+    /// What a new `agent` session in a server's environment starts on for a
+    /// setting, and the server's choices: the environment's pick when the
+    /// server offers it. None until the server said, and for settings it
+    /// takes none of from a device.
+    pub(super) fn server_draft_choices(
+        &self,
+        env: &Environment,
+        agent: model::Agent,
+        s: Setting,
+    ) -> Option<(String, Vec<SettingOption>)> {
+        let remote = env.remote.as_ref()?;
+        let key = (remote.server.clone(), remote.place.clone(), agent.kind());
+        let offered = self.servers.as_ref()?.options.get(&key)?;
+        draft_on_server(offered, super::sessions::agent_draft(env, agent), s)
     }
 
     /// Keeps the first prompt of the start `reference` until its server answers.
@@ -1584,7 +1749,9 @@ impl Shell {
                 return;
             }
             // An answer that did not go can be given again, and the rest asked again.
-            Some("answer" | "skip_question" | "fork" | "compact" | "rewind" | "stage") => {
+            Some(
+                "answer" | "skip_question" | "fork" | "compact" | "rewind" | "stage" | "setting",
+            ) => {
                 let session = text(msg, "session");
                 if let Some(env) = self.server_session_env(server, &session)
                     && let Some(thread) = thread_of(&self.projects, &env, &session)
@@ -2526,6 +2693,31 @@ impl Shell {
             .iter_mut()
             .find(|f| f.server == id && msg["id"] == f.session.as_str());
         match msg["type"].as_str().unwrap_or("") {
+            // A session's model and reasoning, asked for or just changed.
+            "settings" => {
+                let Some(f) = following else { return };
+                if let Some(thread) = thread_of(&self.projects, &f.env_path, &f.session) {
+                    let list = wire::read_settings(&msg["settings"]);
+                    thread.update(cx, |t, cx| t.set_remote_settings(list, cx));
+                }
+                // The composer reads them from the thread, and draws again.
+                cx.notify();
+            }
+            // What a new session of an agent in one of its folders starts on.
+            "options" => {
+                let Some(agent) = AgentKind::parse(msg["agent"].as_str().unwrap_or("")) else {
+                    return;
+                };
+                let key = (id.to_string(), text(msg, "env"), agent);
+                let waiting = link.phone_options.remove(&key).unwrap_or_default();
+                link.options
+                    .insert(key, wire::read_settings(&msg["settings"]));
+                for (client, env_path, agent) in waiting {
+                    let reply = self.phone_options(&env_path, agent);
+                    self.phone_send(client, reply);
+                }
+                cx.notify();
+            }
             "session" | "state" => {
                 let Some(f) = following else { return };
                 f.status = status_from(msg["status"].as_str().unwrap_or(""));
@@ -2798,6 +2990,72 @@ fn empty_transcript(agent: AgentKind, title: &str) -> Transcript {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn offer(current: &str, ids: &[&str]) -> (String, Vec<SettingOption>) {
+        let options = ids
+            .iter()
+            .map(|id| SettingOption {
+                id: id.to_string(),
+                name: id.to_uppercase(),
+                detail: None,
+                description: None,
+                disabled: None,
+            })
+            .collect();
+        (current.to_string(), options)
+    }
+
+    fn pair(k: Setting, v: &str) -> (String, String) {
+        (k.key().to_string(), v.to_string())
+    }
+
+    #[test]
+    fn a_start_sends_only_the_picks_its_server_offers() {
+        let offered: SettingList = vec![
+            (Setting::Model, offer("m1", &["m1", "m2"])),
+            (Setting::Effort, offer("low", &["low", "high"])),
+        ];
+        let picks = vec![pair(Setting::Model, "m2"), pair(Setting::Effort, "high")];
+        assert_eq!(offered_picks(&picks, Some(&offered)), picks);
+        // Not said yet: they all go, as before.
+        assert_eq!(offered_picks(&picks, None), picks);
+        // A model from this machine's catalog is left out, its reasoning too.
+        let local = vec![pair(Setting::Model, "local"), pair(Setting::Effort, "high")];
+        assert!(offered_picks(&local, Some(&offered)).is_empty());
+        let unknown_effort = vec![pair(Setting::Model, "m1"), pair(Setting::Effort, "max")];
+        assert_eq!(
+            offered_picks(&unknown_effort, Some(&offered)),
+            vec![pair(Setting::Model, "m1")]
+        );
+        // Another of its models: the levels offered are not its own, so its
+        // reasoning is not checked against them.
+        let other = vec![pair(Setting::Model, "m2"), pair(Setting::Effort, "max")];
+        assert_eq!(offered_picks(&other, Some(&offered)), other);
+    }
+
+    #[test]
+    fn a_server_draft_shows_the_pick_among_the_servers_choices() {
+        let offered: SettingList = vec![
+            (Setting::Model, offer("m1", &["m1", "m2"])),
+            (Setting::Effort, offer("low", &["low", "high"])),
+        ];
+        let current =
+            |draft: &[(Setting, String)], s| draft_on_server(&offered, draft, s).map(|(c, _)| c);
+        assert_eq!(current(&[], Setting::Model).as_deref(), Some("m1"));
+        assert_eq!(current(&[], Setting::Mode), None);
+        let picked = [
+            (Setting::Model, "m1".to_string()),
+            (Setting::Effort, "high".into()),
+        ];
+        assert_eq!(current(&picked, Setting::Effort).as_deref(), Some("high"));
+        // Not offered there: the server's own stays.
+        let local = [(Setting::Model, "local".to_string())];
+        assert_eq!(current(&local, Setting::Model).as_deref(), Some("m1"));
+        // Another of its models: the levels offered are the first one's.
+        let other = [(Setting::Model, "m2".to_string())];
+        assert_eq!(current(&other, Setting::Model).as_deref(), Some("m2"));
+        assert_eq!(current(&other, Setting::Effort), None);
+    }
 
     #[test]
     fn an_older_server_refusing_a_settle_is_told_apart() {

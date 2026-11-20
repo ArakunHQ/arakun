@@ -556,6 +556,8 @@ pub enum RemoteAction {
     RewindPlan(usize),
     /// Rewind to before the prompt at this entry, as the plan shown said.
     Rewind(usize),
+    /// Change the model or reasoning the session is on.
+    Setting(Setting, String),
 }
 
 /// What the user made of the offer to set up a check (see [`Thread::offer_check`]).

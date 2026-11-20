@@ -837,6 +837,34 @@ pub fn settings(list: Vec<(Setting, (String, Vec<SettingOption>))>) -> Value {
     Value::Array(list.collect())
 }
 
+/// The settings a server sends as [`settings`] writes them; one it does not
+/// know of here is left out.
+pub fn read_settings(v: &Value) -> Vec<(Setting, (String, Vec<SettingOption>))> {
+    let str_of = |v: &Value| v.as_str().map(str::to_string);
+    v.as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|set| {
+            let s = Setting::from_key(set["key"].as_str()?)?;
+            let options = set["options"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|o| {
+                    Some(SettingOption {
+                        id: str_of(&o["id"])?,
+                        name: str_of(&o["name"]).unwrap_or_default(),
+                        detail: str_of(&o["detail"]),
+                        description: None,
+                        disabled: str_of(&o["disabled"]),
+                    })
+                })
+                .collect();
+            Some((s, (str_of(&set["current"]).unwrap_or_default(), options)))
+        })
+        .collect()
+}
+
 /// The most text one message carries. The relay passes frames of 256 KiB at
 /// most, and sealing adds to what goes in one.
 pub const FRAME_TEXT: usize = 180 * 1024;
@@ -943,6 +971,38 @@ impl Parts {
 mod tests {
     use super::*;
     use crate::agent::{ToolCall, ToolStatus};
+
+    #[test]
+    fn settings_read_back_as_they_were_written() {
+        let option = |id: &str, disabled: Option<&str>| SettingOption {
+            id: id.into(),
+            name: id.to_uppercase(),
+            detail: Some("1x".into()),
+            description: None,
+            disabled: disabled.map(Into::into),
+        };
+        let list = vec![
+            (
+                Setting::Model,
+                (
+                    "a".to_string(),
+                    vec![option("a", None), option("b", Some("no"))],
+                ),
+            ),
+            (
+                Setting::Effort,
+                ("high".to_string(), vec![option("high", None)]),
+            ),
+        ];
+        let mut sent = settings(list.clone());
+        assert_eq!(read_settings(&sent), list);
+        // One this app does not know is left out; the rest still read.
+        sent.as_array_mut()
+            .unwrap()
+            .push(json!({ "key": "newThing", "current": "x", "options": [] }));
+        assert_eq!(read_settings(&sent), list);
+        assert!(read_settings(&json!("nonsense")).is_empty());
+    }
 
     fn scope(cwd: &std::path::Path) -> Scope {
         Scope {

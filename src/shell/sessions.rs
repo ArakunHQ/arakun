@@ -1538,6 +1538,11 @@ impl Shell {
         s: Setting,
     ) -> Option<(String, Vec<SettingOption>)> {
         let env = self.find_env(env_path)?;
+        // A server's session starts on what that server offers, not this
+        // machine's catalogs.
+        if env.remote.is_some() {
+            return self.server_draft_choices(env, agent, s);
+        }
         match agent {
             model::Agent::Droid => {
                 if s == Setting::Fast {
@@ -1629,6 +1634,9 @@ impl Shell {
             return thread.read(cx).setting_label(s);
         }
         let (current, options) = self.setting_choices(s, cx)?;
+        if self.env().remote.is_some() {
+            return Some(crate::agent::acp_label(s, &current, &options));
+        }
         Some(match self.env().agent {
             model::Agent::Droid => {
                 let settings = self.draft_settings()?;
@@ -1694,8 +1702,10 @@ impl Shell {
             return;
         };
         // What OpenCode takes from the pick made anywhere, until this
-        // environment has a model of its own.
-        let inherited = (agent == model::Agent::OpenCode).then(|| opencode_draft(env));
+        // environment has a model of its own. A server's models are its own:
+        // they neither come from nor go to this machine's picks.
+        let local_opencode = agent == model::Agent::OpenCode && env.remote.is_none();
+        let inherited = local_opencode.then(|| opencode_draft(env));
         let draft = match agent {
             model::Agent::Droid => &mut env.draft_settings,
             model::Agent::Claude => &mut env.claude_settings,
@@ -1712,7 +1722,7 @@ impl Shell {
             value,
         );
         // Other environments' next OpenCode sessions start on this model too.
-        if agent == model::Agent::OpenCode && matches!(s, Setting::Model | Setting::Effort) {
+        if local_opencode && matches!(s, Setting::Model | Setting::Effort) {
             let model_settings = opencode_draft(env)
                 .into_iter()
                 .filter(|(d, _)| matches!(d, Setting::Model | Setting::Effort));
@@ -1753,6 +1763,7 @@ impl Shell {
         let (current, options) = self.agent_choices(agent, s, cx)?;
         // Droid's short model name, as its chip shows it.
         if agent == model::Agent::Droid
+            && self.env().remote.is_none()
             && let Some(settings) = self.draft_settings()
         {
             return Some(if settings.get(s).is_empty() {
@@ -1850,9 +1861,11 @@ impl Shell {
             }
         }
         self.save(cx);
+        // A server's session keeps what it is on: the defaults below are
+        // this machine's, not the server's.
         if let Some(thread) = self
             .composer_thread()
-            .filter(|_| agent == self.composer_agent())
+            .filter(|t| agent == self.composer_agent() && !t.read(cx).is_remote())
         {
             let defaults: Vec<(Setting, String)> = match agent {
                 model::Agent::Droid => {
@@ -2554,15 +2567,7 @@ fn value_changed(
 /// a server's `start` takes them, the model first. Only picks: with none, the
 /// server starts the session on what it remembers.
 fn server_picks(env: &model::Environment, agent: model::Agent) -> Vec<(String, String)> {
-    let picked = match agent {
-        model::Agent::Droid => &env.draft_settings,
-        model::Agent::Claude => &env.claude_settings,
-        model::Agent::OpenCode => &env.opencode_settings,
-        model::Agent::Codex => &env.codex_settings,
-        model::Agent::Devin => &env.devin_settings,
-        model::Agent::WorkersAi => &env.workers_ai_settings,
-    };
-    let mut picks: Vec<(Setting, String)> = picked
+    let mut picks: Vec<(Setting, String)> = agent_draft(env, agent)
         .iter()
         .filter(|(s, _)| matches!(s, Setting::Model | Setting::Effort))
         .cloned()
@@ -2572,6 +2577,18 @@ fn server_picks(env: &model::Environment, agent: model::Agent) -> Vec<(String, S
         .into_iter()
         .map(|(s, v)| (s.key().to_string(), v))
         .collect()
+}
+
+/// What an environment picked for its next `agent` session.
+pub(super) fn agent_draft(env: &model::Environment, agent: model::Agent) -> &[(Setting, String)] {
+    match agent {
+        model::Agent::Droid => &env.draft_settings,
+        model::Agent::Claude => &env.claude_settings,
+        model::Agent::OpenCode => &env.opencode_settings,
+        model::Agent::Codex => &env.codex_settings,
+        model::Agent::Devin => &env.devin_settings,
+        model::Agent::WorkersAi => &env.workers_ai_settings,
+    }
 }
 
 /// The OpenCode settings an environment's next session starts with: its own

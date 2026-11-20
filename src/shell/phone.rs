@@ -72,6 +72,20 @@ pub(super) struct PhoneLink {
 const PHONE_SETTINGS: [Setting; 2] = [Setting::Model, Setting::Effort];
 
 impl Shell {
+    /// The `options` answer for a phone: what a new `agent` session in the
+    /// environment at `env_path` starts on, and its choices.
+    pub(super) fn phone_options(&self, env_path: &Path, agent: crate::model::Agent) -> String {
+        let list = PHONE_SETTINGS
+            .into_iter()
+            .filter_map(|s| Some((s, self.draft_choices(env_path, agent, s)?)))
+            .collect();
+        json!({
+            "type": "options", "env": env_path.to_string_lossy(), "agent": agent.key(),
+            "settings": wire::settings(list),
+        })
+        .to_string()
+    }
+
     /// Whether a phone is looking at this session, so it stays live like an open tab.
     pub(super) fn phone_watching(&self, env_path: &Path, id: &str) -> bool {
         let pid = self.phone_id(env_path, id);
@@ -694,12 +708,11 @@ impl Shell {
             ClientMsg::Options { env, agent } => {
                 let path = PathBuf::from(&env);
                 let agent = crate::model::Agent::from_key(&agent);
-                let list = PHONE_SETTINGS
-                    .into_iter()
-                    .filter_map(|s| Some((s, self.draft_choices(&path, agent, s)?)))
-                    .collect();
-                let reply = json!({ "type": "options", "env": env, "agent": agent.key(), "settings": wire::settings(list) });
-                self.phone_send(client, reply.to_string());
+                // A server's folder: what that server offers, as last said,
+                // and again once it answers.
+                self.servers_ask_options_for(client, &path, agent);
+                let reply = self.phone_options(&path, agent);
+                self.phone_send(client, reply);
             }
             ClientMsg::Settings { session } => {
                 let Some((env_path, sid)) = self.phone_session(&session) else {

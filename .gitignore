@@ -9,7 +9,8 @@
 /teams/node_modules
 /teams/bun.lock
 /teams/.wrangler
-/teams/.dev.vars
+/teams/.dev.vars*
+/teams/.env*
 __pycache__/
 /shots
 /.cef-sdk

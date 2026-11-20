@@ -2885,6 +2885,11 @@ impl Thread {
         self.check_offered
     }
 
+    /// The sandbox the agent runs in, so what runs for it can run there too.
+    pub fn sandbox(&self) -> Option<Arc<super::sandbox::Session>> {
+        self.sandbox.clone()
+    }
+
     /// Offers `command` as the project's check, once per session.
     pub fn offer_check(&mut self, command: String, cx: &mut Context<Self>) {
         if self.check_offered {

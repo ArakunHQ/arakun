@@ -510,6 +510,18 @@ impl Session {
         }
     }
 
+    /// `script` run by `sh` inside, as the agent would run it.
+    pub fn shell_command(&self, script: &str) -> std::process::Command {
+        let spec = self.wrap(LaunchSpec {
+            program: "/bin/sh".into(),
+            args: vec!["-c".into(), script.into()],
+            env: Vec::new(),
+        });
+        let mut cmd = crate::platform::command(&spec.program);
+        cmd.args(spec.args).envs(spec.env);
+        cmd
+    }
+
     fn inside_env(&self) -> Vec<(String, std::ffi::OsString)> {
         let mut env = vec![
             ("TMPDIR".to_string(), self.tmp.clone().into_os_string()),

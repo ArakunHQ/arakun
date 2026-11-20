@@ -530,8 +530,11 @@ after a week).
   from that one down to yours light up, and a line over the composer says how many it
   will read. A plain `@bot`, with no reply, reads only your message. It runs on your
   own Claude Code (the `claude` CLI and its login), on your machine, read-only: it may
-  read the open project's code and docs and search the web, and nothing else. A long
-  range is summed up in parts first, and the answer says so. The answer judges each
+  read the open project's code and docs and search the web, and nothing else. To
+  answer, Claude Code sends the messages and the code it reads to its model service
+  (Anthropic, or the one you set it up with), as any Claude Code session does; the
+  Teams server still sees only sealed messages. A long range is summed up in parts
+  first, and the answer says so. The answer judges each
   idea (Works, Works with conditions, Won't work) with numbered citations that jump to
   the message, lists what it verified in code, docs or on the web, what it assumed and
   what it could not check, and ends with a **Proposed decision**. **Accept decision**

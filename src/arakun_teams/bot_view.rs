@@ -193,7 +193,13 @@ impl TeamsView {
                     )
                     .child(div().min_w_0().truncate().child(rest)),
             )
-            .child(Self::outline_pill("Runs on your Claude Code, read-only"))
+            .child(
+                Self::outline_pill("Runs on your Claude Code, read-only")
+                    .id("teams-bot-where")
+                    .tooltip(ui::tip(
+                        "Claude Code runs on this machine and sends these messages, and the code it reads, to its model service to answer. The Teams server sees only sealed messages",
+                    )),
+            )
             .into_any_element()
     }
 

@@ -1105,6 +1105,14 @@ impl Shell {
         &p.environments[p.active_env]
     }
 
+    /// `env()` for code that can run after the last project is removed, such
+    /// as work queued for the next frame or a focus change.
+    fn try_env(&self) -> Option<&Environment> {
+        self.projects
+            .get(self.active_project)
+            .and_then(|p| p.environments.get(p.active_env))
+    }
+
     fn env_mut(&mut self) -> &mut Environment {
         let p = &mut self.projects[self.active_project];
         &mut p.environments[p.active_env]

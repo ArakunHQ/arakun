@@ -820,13 +820,11 @@ fn news(
             .map(|item| queue::key_of(&item))
             .collect();
         // Only a complete search can prove that a request ended.
-        if count < queue::SEARCH_LIMIT
-            && keys.len() == count
-            && let Some(s) = seen.as_mut()
-        {
+        let complete = count < queue::SEARCH_LIMIT && keys.len() == count;
+        if complete && let Some(s) = seen.as_mut() {
             s.reviews.retain(|key| keys.contains(key));
         }
-        keys
+        (keys, complete)
     });
     // The search can retire requests even when the inbox read fails. Only
     // a successful inbox read can establish the baseline or emit a notice.
@@ -835,7 +833,9 @@ fn news(
     };
     let first = seen.is_none();
     let s = seen.get_or_insert_with(Seen::default);
-    if first && let Some(keys) = &requested {
+    // The baseline takes both lists: the search covers requests whose inbox
+    // thread is already read, the inbox covers what a full search left out.
+    if first && let Some((keys, _)) = &requested {
         s.reviews.extend(keys.iter().cloned());
     }
     let mut out = Vec::new();
@@ -843,11 +843,16 @@ fn news(
         let fresh = if n.reason == "review_requested" {
             pr::ItemRef::from_notification(n).is_some_and(|item| {
                 let key = queue::key_of(&item);
-                if first && requested.is_none() {
+                if first {
                     s.reviews.insert(key);
                     return false;
                 }
-                requested.as_ref().is_some_and(|r| r.contains(&key)) && s.reviews.insert(key)
+                // A full search can leave a pending request out; its unread
+                // thread still alerts once rather than waiting to be listed.
+                requested
+                    .as_ref()
+                    .is_some_and(|(r, complete)| r.contains(&key) || !complete)
+                    && s.reviews.insert(key)
             })
         } else {
             s.at.get(&n.id) != Some(&n.updated_at) && n.updated_at >= s.newest
@@ -2303,6 +2308,41 @@ mod tests {
         assert!(news(&mut seen, None, Some(&[])).is_empty());
         assert_eq!(news(&mut seen, Some(&notes), Some(&active)), notes);
         assert!(news(&mut seen, Some(&notes), Some(&active)).is_empty());
+    }
+
+    fn review_note(number: usize) -> Notification {
+        note(
+            &number.to_string(),
+            "PullRequest",
+            "review_requested",
+            Some(&format!("https://api.github.com/repos/o/r/pulls/{number}")),
+            "o/r",
+            "2026-11-14T10:00:00Z",
+        )
+    }
+
+    #[test]
+    fn a_full_search_neither_hides_nor_repeats_review_requests() {
+        let mut seen = None;
+        let full: Vec<_> = (1..=queue::SEARCH_LIMIT).map(review_search).collect();
+        let waiting = review_note(queue::SEARCH_LIMIT + 1);
+
+        // Pending at startup but left out of the full search: no alert later.
+        assert!(news(&mut seen, Some(std::slice::from_ref(&waiting)), Some(&full)).is_empty());
+        let mut again = waiting.clone();
+        again.updated_at = "2026-11-14T11:00:00Z".into();
+        let mut listed = full.clone();
+        listed.push(review_search(queue::SEARCH_LIMIT + 1));
+        assert!(news(&mut seen, Some(&[again]), Some(&listed)).is_empty());
+
+        // New while the search is full: alerts once, though the search omits it.
+        let new = review_note(queue::SEARCH_LIMIT + 2);
+        let new = [new];
+        assert_eq!(news(&mut seen, Some(&new), Some(&full)), new);
+        let [new] = new;
+        let mut busy = new;
+        busy.updated_at = "2026-11-14T12:00:00Z".into();
+        assert!(news(&mut seen, Some(&[busy]), Some(&full)).is_empty());
     }
 
     /// Reads this machine's own inbox through gh; nothing is marked read.

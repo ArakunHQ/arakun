@@ -1407,6 +1407,14 @@ impl Shell {
             .children(pr)
             .children(self.render_machine(env, pi * 1000 + ei))
             .children(end.map(|e| div().flex_none().child(e)))
+            .on_hover(cx.listener({
+                let opens = opens.clone();
+                move |this, hovered: &bool, _, cx| {
+                    if *hovered {
+                        this.read_ahead(pi, ei, opens.clone(), cx);
+                    }
+                }
+            }))
             .on_click(cx.listener(move |this, ev: &gpui::ClickEvent, window, cx| {
                 this.click_env(pi, ei, opens.clone(), ev.modifiers(), window, cx)
             }))

@@ -12,6 +12,9 @@ export default defineConfig(async () => {
         miniflare: { bindings: { ADMIN_SECRET: "test-secret", GITHUB_CLIENT_ID: "Iv-test", GITHUB_CLIENT_SECRET: "client-secret", TEST_MIGRATIONS: migrations } },
       }),
     ],
-    test: { setupFiles: ["./test/setup.ts"] },
+    // Durable Object WebSockets do not work with per-file storage isolation
+    // (Cloudflare's known issues), so the files share storage, one at a time.
+    // setup.ts empties the tables before each test, so none sees another's.
+    test: { setupFiles: ["./test/setup.ts"], maxWorkers: 1, isolate: false },
   };
 });

@@ -487,6 +487,9 @@ describe("presence", () => {
           const got = await allowed(teamId, list);
           ch.heldOld = true;
           await oldGate;
+          // The rest of the old run has no await, so it is over before the
+          // next event reaches the object.
+          ch.oldResumed = true;
           return got;
         }
         if (!ch.heldNew && list.length > 1 && list.includes(mine)) {
@@ -515,13 +518,16 @@ describe("presence", () => {
     }
     expect(a.inbox.here.latest).toEqual([t.owner.user.id]);
     await runInDurableObject<Channel, void>(stub, (ch) => (ch as any).releaseOld());
-    // A send is a barrier: its ack comes after any presence sent before it.
-    a.send(await message(t.teamId, t.channelId, t.owner.device, 1, t.keys.get(1)!, "barrier"));
-    await stored(a);
+    await until("oldResumed");
+    // A refused frame is a barrier that closes no socket: a close would start
+    // a presence list of its own. Its answer comes after anything the old run
+    // sent.
+    a.ws.send(JSON.stringify({ type: "barrier" }));
+    await refused(a);
     // The older run sent nothing: no frame past the newer run's.
     expect(a.inbox.here.count).toBe(had + 1);
     expect(b.inbox.here.count).toBe(0);
-    for (const s of [a, a2]) s.ws.close();
+    for (const s of [a, a2, b]) s.ws.close();
   });
 
   it("drops a removed member", async () => {

@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 use std::rc::Rc;
 
-use gpui::{Hsla, ListAlignment, ListOffset, ListState, list};
+use gpui::{ListAlignment, ListOffset, ListState, list};
 
 use super::*;
 use serde_json::json;
@@ -29,11 +29,18 @@ pub(super) struct Installing {
     fields: Vec<(Input, Entity<TextInput>)>,
 }
 
+/// How long a failed load waits before opening the Marketplace asks again.
+const RETRY: Duration = Duration::from_secs(60);
+
 #[derive(Default)]
 pub(super) struct MarketState {
     pub(super) catalog: Option<Vec<PluginEntry>>,
     pub(super) catalog_loading: bool,
     pub(super) catalog_error: Option<SharedString>,
+    /// When a load of the catalog or a server list last failed. Opening the
+    /// Marketplace doesn't ask again until `RETRY` has passed, so a failure
+    /// stays on screen instead of restarting at every redraw.
+    pub(super) failed_at: Option<Instant>,
     /// The plugin category, or the company of official servers, the list is narrowed to.
     pub(super) category: Option<String>,
     pub(super) registry: Option<Vec<RegistryServer>>,
@@ -65,6 +72,9 @@ impl ExtensionsView {
     pub(super) fn open_market(&mut self, cx: &mut Context<Self>) {
         // A server says which plugins and MCP servers it has in one answer.
         self.ask_remote(false, cx);
+        if self.ms.failed_at.is_some_and(|t| t.elapsed() < RETRY) {
+            return;
+        }
         match self.market {
             Market::Plugins if self.targets.target.is_some() => {}
             Market::Plugins if self.ms.catalog.is_none() && !self.ms.catalog_loading => {
@@ -107,7 +117,10 @@ impl ExtensionsView {
                 this.ms.official_loading = false;
                 match found {
                     Ok(list) => this.ms.official = Some(list),
-                    Err(e) => this.ms.registry_error = Some(format!("{e:#}").into()),
+                    Err(e) => {
+                        this.ms.registry_error = Some(format!("{e:#}").into());
+                        this.ms.failed_at = Some(Instant::now());
+                    }
                 }
                 cx.notify();
             });
@@ -133,7 +146,10 @@ impl ExtensionsView {
                 this.ms.catalog_loading = false;
                 match found {
                     Ok(list) => this.ms.catalog = Some(list),
-                    Err(e) => this.ms.catalog_error = Some(format!("{e:#}").into()),
+                    Err(e) => {
+                        this.ms.catalog_error = Some(format!("{e:#}").into());
+                        this.ms.failed_at = Some(Instant::now());
+                    }
                 }
                 cx.notify();
             });
@@ -186,7 +202,10 @@ impl ExtensionsView {
                         this.ms.registry_next = next;
                         this.ms.registry_for = query;
                     }
-                    Err(e) => this.ms.registry_error = Some(format!("{e:#}").into()),
+                    Err(e) => {
+                        this.ms.registry_error = Some(format!("{e:#}").into());
+                        this.ms.failed_at = Some(Instant::now());
+                    }
                 }
                 cx.notify();
             });
@@ -520,8 +539,8 @@ impl ExtensionsView {
     }
 
     /// Discover's categories for plugins, or the companies of official servers,
-    /// for the left column.
-    pub(super) fn render_market_filters(&self, cx: &mut Context<Self>) -> Option<Div> {
+    /// for the sidebar.
+    pub(super) fn category_lines(&self) -> Vec<Line> {
         let mut groups: Vec<(String, usize)> = Vec::new();
         let mut add = |g: &str| match groups.iter_mut().find(|(n, _)| n == g) {
             Some((_, n)) => *n += 1,
@@ -549,54 +568,41 @@ impl ExtensionsView {
                 }
                 "Companies"
             }
-            Market::Registry => return None,
+            Market::Registry => return Vec::new(),
         };
         if groups.is_empty() {
-            return None;
+            return Vec::new();
         }
         groups.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
         let total = self.discover_count(self.market).unwrap_or(0);
-        let mut out = div()
-            .flex()
-            .flex_col()
-            .flex_none()
-            .gap(crate::ui::sp(2.))
-            .child(nav_heading(heading, true))
-            .child(
-                nav_row(
-                    "ext-cat-all",
-                    "dashboard-square01",
-                    "All",
-                    Some(total),
-                    self.ms.category.is_none(),
-                )
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.ms.category = None;
-                    this.ms.rows.top();
-                    cx.notify();
-                })),
-            );
-        for (i, (g, n)) in groups.into_iter().enumerate() {
+        let mut out = vec![
+            Line::Heading(heading.into()),
+            Line::Entry(
+                Entry::new("cat:", Lead::Icon("dashboard-square01"), "All")
+                    .count(Some(total))
+                    .on(self.ms.category.is_none()),
+            ),
+        ];
+        for (g, n) in groups {
             let on = self.ms.category.as_ref() == Some(&g);
-            let row = match self.market {
-                Market::Plugins => nav_dot_row(
-                    ("ext-cat", i),
-                    rgb(category_color(&g)).into(),
-                    capitalize(&g),
-                    n,
-                    on,
-                ),
-                Market::Registry => {
-                    nav_mark_row(("ext-cat", i), logos::mark(&g, ""), g.clone(), n, on)
-                }
+            let (lead, label) = match self.market {
+                Market::Plugins => (Lead::Dot(rgb(category_color(&g)).into()), capitalize(&g)),
+                Market::Registry => (Lead::Mark(logos::mark(&g, "")), g.clone()),
             };
-            out = out.child(row.on_click(cx.listener(move |this, _, _, cx| {
-                this.ms.category = Some(g.clone());
-                this.ms.rows.top();
-                cx.notify();
-            })));
+            out.push(Line::Entry(
+                Entry::new(format!("cat:{g}"), lead, label)
+                    .count(Some(n))
+                    .on(on),
+            ));
         }
-        Some(out)
+        out
+    }
+
+    /// Shows one category (or company) of Discover, or all of them.
+    pub(super) fn pick_category(&mut self, category: Option<String>, cx: &mut Context<Self>) {
+        self.ms.category = category;
+        self.ms.rows.top();
+        cx.notify();
     }
 
     /// Discover: what needs you, the featured strip, the heading with its
@@ -1834,107 +1840,6 @@ fn by_line(by: Option<String>, verified: bool) -> Div {
                     .child(format!("by {by}")),
             )
         })
-}
-
-fn nav_base(id: impl Into<gpui::ElementId>, on: bool) -> Stateful<Div> {
-    div()
-        .id(id)
-        .flex()
-        .flex_none()
-        .items_center()
-        .gap(crate::ui::sp(8.))
-        .h(px(30.))
-        .px(crate::ui::sp(8.))
-        .rounded(crate::ui::rad(ui::RADIUS))
-        .cursor_pointer()
-        .ty(Type::Label)
-        .when(on, |d| {
-            d.bg(theme::fill_selected()).text_color(theme::text())
-        })
-        .when(!on, |d| {
-            d.text_color(theme::text_muted())
-                .hover(|d| d.bg(theme::fill_hover()).text_color(theme::text()))
-        })
-}
-
-fn nav_count(n: Option<usize>) -> Div {
-    div()
-        .flex_none()
-        .ty(Type::Caption)
-        .text_color(theme::text_faint())
-        .children(n.map(|n| n.to_string()))
-}
-
-pub(super) fn nav_row(
-    id: impl Into<gpui::ElementId>,
-    icon_name: &str,
-    label: &str,
-    n: Option<usize>,
-    on: bool,
-) -> Stateful<Div> {
-    nav_base(id, on)
-        .child(icon(icon_name, 14.).text_color(if on {
-            theme::text()
-        } else {
-            theme::text_subtle()
-        }))
-        .child(div().flex_1().min_w_0().truncate().child(label.to_string()))
-        .child(nav_count(n))
-}
-
-/// A row of the left column whose count says how many need you.
-pub(super) fn nav_alert_row(
-    id: impl Into<gpui::ElementId>,
-    icon_name: &str,
-    label: &str,
-    n: usize,
-    on: bool,
-) -> Stateful<Div> {
-    let warn = Tone::Warning.color();
-    nav_base(id, on)
-        .child(icon(icon_name, 14.).text_color(if on {
-            theme::text()
-        } else {
-            theme::text_subtle()
-        }))
-        .child(div().flex_1().min_w_0().truncate().child(label.to_string()))
-        .child(
-            div()
-                .flex()
-                .flex_none()
-                .items_center()
-                .gap(crate::ui::sp(5.))
-                .ty(Type::Caption)
-                .text_color(warn)
-                .child(div().size(px(6.)).rounded_full().bg(warn))
-                .child(n.to_string()),
-        )
-}
-
-fn nav_dot_row(
-    id: impl Into<gpui::ElementId>,
-    color: Hsla,
-    label: String,
-    n: usize,
-    on: bool,
-) -> Stateful<Div> {
-    nav_base(id, on)
-        .child(div().flex_none().size(px(8.)).rounded_full().bg(color))
-        .child(div().flex_1().min_w_0().truncate().child(label))
-        .child(nav_count(Some(n)))
-}
-
-fn nav_mark_row(
-    id: impl Into<gpui::ElementId>,
-    mark: logos::Mark,
-    label: String,
-    n: usize,
-    on: bool,
-) -> Stateful<Div> {
-    nav_base(id, on)
-        .child(logos::tile(mark, 18.))
-        .child(div().flex_1().min_w_0().truncate().child(label))
-        .child(nav_count(Some(n)))
 }
 
 /// A marketplace card: logo, name and line under it, what it does, tags and the action.

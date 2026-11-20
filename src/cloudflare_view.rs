@@ -30,18 +30,16 @@ use crate::ui::{self, ButtonKind, icon, icon_button};
 /// Opening the tab reloads data older than this; the GraphQL API has a tight budget.
 mod overview;
 
-/// Under this width the side navigation shows only its icons.
-const RAIL_UNDER: f32 = 760.;
-const NAV_W: f32 = 216.;
-const RAIL_W: f32 = 58.;
+/// Under this width the page keeps less room at its sides.
+const NARROW_UNDER: f32 = 760.;
 /// The pages never get wider than this.
 const PAGE_MAX: f32 = 1320.;
 
 /// How the tab lays itself out at a width.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Layout {
-    /// The navigation shows icons only.
-    rail: bool,
+    /// The page is narrow: less room at its sides.
+    narrow: bool,
     /// The page's padding at the sides.
     pad: f32,
     /// The width the page's content gets.
@@ -49,18 +47,17 @@ struct Layout {
 }
 
 /// The page's padding at the sides, before the Spacing setting scales it.
-fn page_pad(rail: bool) -> f32 {
-    if rail { 16. } else { 28. }
+fn page_pad(narrow: bool) -> f32 {
+    if narrow { 16. } else { 28. }
 }
 
 fn layout(w: f32) -> Layout {
-    let rail = w < RAIL_UNDER;
-    let nav = if rail { RAIL_W } else { NAV_W };
-    let pad = f32::from(crate::ui::sp(page_pad(rail)));
+    let narrow = w < NARROW_UNDER;
+    let pad = f32::from(crate::ui::sp(page_pad(narrow)));
     Layout {
-        rail,
+        narrow,
         pad,
-        content: ((w - nav).min(PAGE_MAX) - 2. * pad).max(0.),
+        content: (w.min(PAGE_MAX) - 2. * pad).max(0.),
     }
 }
 
@@ -116,6 +113,37 @@ enum Page {
 }
 
 impl Page {
+    const ALL: [Page; 11] = [
+        Page::Summary,
+        Page::Domains,
+        Page::Tunnels,
+        Page::Workers,
+        Page::Logs,
+        Page::Containers,
+        Page::Storage,
+        Page::Security,
+        Page::Email,
+        Page::Activity,
+        Page::Tools,
+    ];
+
+    /// What the sidebar gets back when the page is picked.
+    fn key(self) -> &'static str {
+        match self {
+            Page::Summary => "summary",
+            Page::Domains => "domains",
+            Page::Tunnels => "tunnels",
+            Page::Workers => "workers",
+            Page::Logs => "logs",
+            Page::Containers => "containers",
+            Page::Storage => "storage",
+            Page::Security => "security",
+            Page::Email => "email",
+            Page::Activity => "activity",
+            Page::Tools => "tools",
+        }
+    }
+
     fn label(self) -> &'static str {
         match self {
             Page::Summary => "Overview",
@@ -2726,7 +2754,6 @@ impl Render for CloudflareView {
                 .flex()
                 .flex_1()
                 .min_h_0()
-                .child(self.render_nav(&s, lay.rail, cx))
                 .child(
                     div()
                         .id("cloudflare-body")
@@ -2744,7 +2771,7 @@ impl Render for CloudflareView {
                                 .w_full()
                                 .max_w(px(PAGE_MAX))
                                 .mx_auto()
-                                .px(crate::ui::sp(page_pad(lay.rail)))
+                                .px(crate::ui::sp(page_pad(lay.narrow)))
                                 .py(crate::ui::sp(24.))
                                 .children(access)
                                 .children(waiting)
@@ -2823,13 +2850,13 @@ mod tests {
 
     #[test]
     fn the_layout_follows_the_width() {
-        // A small window: the navigation folds to icons and the page keeps its width.
+        // A small window: less room at the sides, the page keeps its width.
         let l = layout(530.);
-        assert!(l.rail);
-        assert_eq!(l.content, 530. - RAIL_W - 2. * l.pad);
-        // A wide one: the full navigation, the page capped.
+        assert!(l.narrow);
+        assert_eq!(l.content, 530. - 2. * l.pad);
+        // A wide one: the page capped.
         let l = layout(2400.);
-        assert!(!l.rail);
+        assert!(!l.narrow);
         assert_eq!(l.content, PAGE_MAX - 2. * l.pad);
         assert_eq!(layout(0.).content, 0.);
     }

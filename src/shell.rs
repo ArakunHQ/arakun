@@ -67,6 +67,7 @@ mod sidebar_builder;
 #[cfg(feature = "coderlabs")]
 mod site;
 mod subagents;
+mod subnav;
 #[cfg(feature = "coderlabs")]
 mod tasks;
 #[cfg(feature = "team")]
@@ -438,7 +439,7 @@ pub struct Shell {
     memory_view: Entity<MemoryView>,
     _memory_view: Subscription,
     cloudflare_view: Entity<CloudflareView>,
-    _cloudflare_view: Subscription,
+    _cloudflare_view: [Subscription; 2],
     #[cfg(feature = "coderlabs")]
     site_view: Entity<SiteView>,
     #[cfg(feature = "coderlabs")]
@@ -455,7 +456,7 @@ pub struct Shell {
     pilot: Entity<crate::github::pilot::Pilot>,
     _github: [Subscription; 5],
     extensions_view: Entity<ExtensionsView>,
-    _extensions_view: Subscription,
+    _extensions_view: [Subscription; 2],
     _branches_view: Subscription,
     /// The phone's server and what each phone watches, while the phone is on.
     phone: Option<phone::PhoneLink>,
@@ -784,10 +785,17 @@ impl Shell {
             },
         );
         let cloudflare_view = cx.new(CloudflareView::new);
-        let cloudflare_sub =
+        let cloudflare_sub = [
             cx.subscribe_in(&cloudflare_view, window, |this, _, ev, window, cx| {
                 this.on_cloudflare_event(ev, window, cx)
-            });
+            }),
+            // Open, its pages are in the rail: their counts follow the view.
+            cx.observe(&cloudflare_view, |this, _, cx| {
+                if this.subnav_view() == Some(crate::sidebar::View::Cloudflare) {
+                    cx.notify();
+                }
+            }),
+        ];
         #[cfg(feature = "coderlabs")]
         let site_view = cx.new(SiteView::new);
         #[cfg(feature = "coderlabs")]
@@ -813,10 +821,16 @@ impl Shell {
         let sidebar = crate::sidebar::Sidebar::load();
         let views = crate::sidebar::Extensions::load(&sidebar);
         let extensions_view = cx.new(|cx| ExtensionsView::new(views, cx));
-        let extensions_sub =
+        let extensions_sub = [
             cx.subscribe_in(&extensions_view, window, |this, _, ev, window, cx| {
                 this.on_extensions_event(ev, window, cx)
-            });
+            }),
+            cx.observe(&extensions_view, |this, _, cx| {
+                if this.subnav_view() == Some(crate::sidebar::View::Extensions) {
+                    cx.notify();
+                }
+            }),
+        ];
         let branches_sub = cx.subscribe_in(&branches_view, window, |this, _, ev, window, cx| {
             this.on_branches_event(ev, window, cx)
         });
@@ -3477,7 +3491,9 @@ impl Shell {
                 self.memory_view.update(cx, |v, cx| v.set_dir(&dir, cx));
                 self.memory_view.clone().into_any_element()
             }
-            Some(TabKind::Cloudflare) => self.cloudflare_view.clone().into_any_element(),
+            Some(TabKind::Cloudflare) => {
+                self.with_subnav(index, self.cloudflare_view.clone().into_any_element(), cx)
+            }
             #[cfg(feature = "coderlabs")]
             Some(TabKind::Site) => self.site_view.clone().into_any_element(),
             #[cfg(feature = "team")]
@@ -3502,7 +3518,7 @@ impl Shell {
                     v.set_dir(dir, cx);
                     v.refresh_if_stale(cx);
                 });
-                self.extensions_view.clone().into_any_element()
+                self.with_subnav(index, self.extensions_view.clone().into_any_element(), cx)
             }
             Some(TabKind::Phone) => self.phone_view.clone().into_any_element(),
             Some(TabKind::Servers) => self.servers_view.clone().into_any_element(),

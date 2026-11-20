@@ -661,9 +661,13 @@ fn stage(tag: &str, version: Version, install: &Install) -> Result<(), String> {
 /// Moves a complete, checked `incoming` to `staged`.
 fn promote(install: &Install) -> std::io::Result<()> {
     remove_any(&install.staged)?;
-    remove_any(&pdb_beside(&install.staged))?;
     std::fs::rename(&install.incoming, &install.staged)?;
-    move_pdb(&pdb_beside(&install.incoming), &pdb_beside(&install.staged))
+    // Only crash reports need it: a .pdb that won't move doesn't stop the
+    // update, and a stale one beside `staged` doesn't match the new binary.
+    let staged_pdb = pdb_beside(&install.staged);
+    let _ = remove_any(&staged_pdb);
+    let _ = move_pdb(&pdb_beside(&install.incoming), &staged_pdb);
+    Ok(())
 }
 
 /// Where a staged or incoming Windows binary's .pdb waits: its name plus
@@ -874,8 +878,16 @@ fn install_runtime(from: &Path, to: &Path) -> std::io::Result<()> {
         }
         return std::fs::rename(from, to).or_else(|_| copy_tree(from, to));
     }
-    // The binary is swapped at quit, and the papers are not the runtime's.
-    let skip = ["arakun.exe", "LICENSE", "NOTICE", "README.md", LIBCEF];
+    // The binary and its .pdb are swapped at quit, and the papers are not the
+    // runtime's.
+    let skip = [
+        "arakun.exe",
+        "arakun.pdb",
+        "LICENSE",
+        "NOTICE",
+        "README.md",
+        LIBCEF,
+    ];
     for entry in std::fs::read_dir(from)? {
         let entry = entry?;
         let name = entry.file_name();

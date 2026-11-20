@@ -24,7 +24,8 @@ feature: `arakun browse` opened a page, and `arakun page text` and `arakun page
 screenshot` read and showed it. Typing, clicking, downloads and DevTools were not tested.
 
 Release builds for Windows (from GitHub Releases) include the browser: `arakun.exe`,
-`arakun-helper.exe` and the CEF runtime next to them. Links you click open in a browser
+`arakun-helper.exe`, `arakun.pdb` (function names for crash reports) and the CEF
+runtime next to them. Links you click open in a browser
 tab; Settings › General › Open links in Arakun sends them to your own browser instead.
 To install the latest release, run this in PowerShell; it puts them in
 `%LOCALAPPDATA%\Programs\Arakun` and adds that folder to your user `PATH`:
@@ -143,7 +144,7 @@ start `arakun-server serve` from Task Scheduler, with the trigger "At log on".
 | Crash reports and usage counts: the random install id, and your answer (Settings › Privacy) | `telemetry-id`, `telemetry.json` in `%LOCALAPPDATA%\arakun\` |
 | Redacted mode, while it is on (Settings › Privacy) | `redacted` in `%LOCALAPPDATA%\arakun\` |
 | Updates: the version waiting, the lock, the switch while it is off, the download (Settings › General) | `update.json`, `update.lock`, `no-auto-update`, `update-channel`, `update-channel.lock`, `update-download\` in `%LOCALAPPDATA%\arakun\` |
-| A downloaded update, until Arakun quits | `.arakun.exe.update` next to `arakun.exe` |
+| A downloaded update, until Arakun quits | `.arakun.exe.update` and `.arakun.exe.update.pdb` next to `arakun.exe` |
 
 On Linux those sessions live in the keyring (`secret-tool`); on Windows, in the Credential
 Manager (Windows Credentials, Generic Credentials).
@@ -221,7 +222,9 @@ Manager (Windows Credentials, Generic Credentials).
   it renames `arakun.exe` to `.arakun.exe.old` and puts the new one in its place. Then
   it restarts the Dynamic Island with the new version. A later start deletes the old
   file once nothing runs it; an old file still in use is moved aside, with a number
-  after its name, and deleted the same way. Settings has no **Restart now** button on
+  after its name, and deleted the same way. The release's `arakun.pdb` waits as
+  `.arakun.exe.update.pdb` and replaces `arakun.pdb` at the same time; a release
+  without one updates the same way. Settings has no **Restart now** button on
   Windows: quit Arakun and open it again. Not tested on real Windows yet.
 - **Dynamic Island:** an always-on-top window at the top center of the main display's
   work area, where Linux uses a layer-shell surface. Clicks around its shape reach the

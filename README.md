@@ -635,7 +635,7 @@ one updater runs), `no-auto-update` (there while **Update automatically** is off
 follows nightlies and a release follows releases), `update-channel.lock` (held while the
 channel changes or an update is installed) and `update-download/` (the download, removed when it is done). The new version waits next to
 the installed one as `.arakun.update` (`.Arakun.app.update` on macOS, `.arakun.exe.update`
-on Windows), unpacked first as `.arakun.incoming`.
+on Windows, with its `.pdb` as `.arakun.exe.update.pdb`), unpacked first as `.arakun.incoming`.
 
 Arakun updates itself where it runs from, so that folder and the binary must be yours
 (the install scripts' folders are). A binary that belongs to another user, such as one a
@@ -707,7 +707,8 @@ window. On Ubuntu 23.10 and later, browser tabs also need the AppArmor profile i
 [Browser tabs on Ubuntu](#browser-tabs-on-ubuntu).
 
 **Windows:** extract `arakun-<version>-windows-x86_64.zip` and run `arakun.exe`. Keep the
-files next to it together: `arakun-helper.exe` and the CEF runtime are for browser tabs.
+files next to it together: `arakun-helper.exe` and the CEF runtime are for browser tabs,
+and `arakun.pdb` gives crash reports Arakun's function names.
 
 **macOS:** open `arakun-<version>-macos-arm64.dmg` and drag `Arakun.app` into
 `Applications`. The app and the disk image are signed with a Developer ID and notarized by

@@ -9,63 +9,64 @@ use crate::sidebar::View;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Step {
+    /// The raccoon and the check of this machine: only the first time.
+    Welcome,
     Agents,
-    Look,
-    Connections,
-    /// Crash reports and usage counts: only while the question is unanswered.
-    Reports,
     Project,
+    Look,
+    /// GitHub, the phone and crash reports.
+    Connect,
 }
 
 impl Step {
-    /// Its name in the list of steps.
+    /// Its name in the step bar and in telemetry.
     pub fn label(self) -> &'static str {
         match self {
+            Step::Welcome => "Welcome",
             Step::Agents => "Agents",
-            Step::Look => "Preferences",
-            Step::Connections => "Connections",
-            Step::Reports => "Crash reports",
-            Step::Project => "First project",
+            Step::Project => "Project",
+            Step::Look => "Look",
+            Step::Connect => "Connect",
         }
     }
 
     pub fn title(self) -> &'static str {
         match self {
-            Step::Agents => "Which agent do you start with?",
+            Step::Welcome => "Welcome to Arakun",
+            Step::Agents => "Which agent starts new sessions?",
+            Step::Project => "Where do you work?",
             Step::Look => "Make it yours",
-            Step::Connections => "Connect the rest",
-            Step::Reports => "Send crash reports and usage counts?",
-            Step::Project => "Add your first project",
+            Step::Connect => "Anything outside this machine?",
         }
     }
 
     pub fn blurb(self) -> &'static str {
         match self {
+            Step::Welcome => "One window for the coding agents you already have.",
             Step::Agents => {
-                "Arakun runs the agents you already have. New environments start with the one you pick, and you can switch for any session."
-            }
-            Step::Look => {
-                "Pick a mode and when old environments go. Color schemes, corners, spacing and the rest are in Settings."
-            }
-            Step::Connections => "Both are optional, and both can wait.",
-            Step::Reports => {
-                "They tell us what breaks and what gets used. Nothing is sent unless you say yes."
+                "Arakun runs the agents you already have. You can switch for any session later."
             }
             Step::Project => {
-                "Pick a git repository. Every branch you work on gets its own environment: a git worktree with its own agents, terminals and browser."
+                "Pick a git repository. Every branch you work on gets its own environment, with its own agents, terminals and browser."
+            }
+            Step::Look => {
+                "The window changes as you pick. Corners, spacing and the rest are in Settings."
+            }
+            Step::Connect => {
+                "All three are optional. Each one can wait, and each one is in Settings later."
             }
         }
     }
 }
 
-/// The steps in order. The question about reports is one of them only while
-/// it is unanswered, so nobody is asked twice.
-pub fn steps(ask_reports: bool) -> Vec<Step> {
-    let mut steps = vec![Step::Agents, Step::Look, Step::Connections];
-    if ask_reports {
-        steps.push(Step::Reports);
+/// The steps in order. The welcome is for someone new; a setup opened again
+/// from the palette starts at the questions.
+pub fn steps(fresh: bool) -> Vec<Step> {
+    let mut steps = Vec::with_capacity(5);
+    if fresh {
+        steps.push(Step::Welcome);
     }
-    steps.push(Step::Project);
+    steps.extend([Step::Agents, Step::Project, Step::Look, Step::Connect]);
     steps
 }
 
@@ -252,20 +253,21 @@ mod tests {
     }
 
     #[test]
-    fn reports_are_a_step_only_while_unanswered() {
+    fn the_welcome_is_only_for_someone_new() {
         assert_eq!(
             steps(true),
             [
+                Step::Welcome,
                 Step::Agents,
+                Step::Project,
                 Step::Look,
-                Step::Connections,
-                Step::Reports,
-                Step::Project
+                Step::Connect
             ]
         );
-        assert!(!steps(false).contains(&Step::Reports));
-        // The project is what the setup is for: always last.
-        assert_eq!(steps(false).last(), Some(&Step::Project));
+        assert_eq!(
+            steps(false),
+            [Step::Agents, Step::Project, Step::Look, Step::Connect]
+        );
     }
 
     #[test]

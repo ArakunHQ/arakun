@@ -542,6 +542,9 @@ pub struct Shell {
     clear_armed: bool,
     /// The setup, while it shows in the window's place (`shell::onboarding`).
     onboarding: Option<onboarding::Onboarding>,
+    /// A few keys on the start screen, right after someone new finishes the
+    /// setup, until they close them.
+    setup_tips: bool,
 }
 
 struct InboxItem {
@@ -1058,6 +1061,7 @@ impl Shell {
             notices: RefCell::new(crate::notices::load()),
             inbox_open: false,
             onboarding: None,
+            setup_tips: false,
             alone: None,
             terminal_alone: None,
             inbox_shown: Cell::new(0),
@@ -1716,8 +1720,9 @@ impl Shell {
         window.focus(&self.composer_focus, cx);
         self.ensure_terminal(window, cx);
         self.sync_poll(window, cx);
-        // A project is what the setup was for, however it was added.
-        self.finish_onboarding(window, cx);
+        // The setup goes on to its next step, or ends when the project
+        // came some other way.
+        self.onboarding_project_added(window, cx);
         cx.notify();
     }
 

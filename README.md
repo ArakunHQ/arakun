@@ -434,7 +434,8 @@ only sums up what is chosen. It opens without a project too.
   sidebar, the workspace panel and the status line sit on the window itself, and the
   accent is kept for what needs you. Duplicate one to change its tint, background and
   accent; Arakun warns when text or the accent gets hard to read. Grays sets how bright
-  secondary text and borders are, and Diff colors how added and removed lines look.
+  secondary text and borders are, and Diff colors how added and removed lines look, with a
+  few lines of a diff under it to see the choice.
   Reset colors goes back to Arakun Black, dark, and keeps your color schemes. The mode,
   the choice and your color schemes are kept in `palettes.json` next to the state.
 

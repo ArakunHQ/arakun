@@ -50,6 +50,17 @@ impl DiffPalette {
             .unwrap_or(DiffPalette::Default)
     }
 
+    /// What the choice is for, said under it in Customize.
+    pub fn note(self) -> &'static str {
+        match self {
+            DiffPalette::Default => "Green and red.",
+            DiffPalette::Colorblind => {
+                "Blue and orange, which red-green colorblindness keeps apart."
+            }
+            DiffPalette::HighContrast => "Brighter text and stronger line backgrounds.",
+        }
+    }
+
     /// Text, line bar and line background alpha for (added, removed). Light
     /// mode takes GitHub's light colors, since the dark ones are too pale to
     /// read on white.

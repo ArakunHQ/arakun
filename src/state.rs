@@ -408,6 +408,9 @@ pub struct SessionState {
     pub continues: Vec<crate::model::Earlier>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub settled: bool,
+    /// It finished a turn the user has not looked at yet.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub unread: bool,
 }
 
 fn is_session(t: &Tab) -> bool {
@@ -814,6 +817,7 @@ pub fn snapshot_with(
                                 auto_allow: s.auto_allow,
                                 continues: s.continues.clone(),
                                 settled: s.settled,
+                                unread: s.unread,
                             })
                             .collect(),
                         open: tabs_of(strip, e)
@@ -957,6 +961,7 @@ pub fn restore(state: State) -> (Vec<Project>, usize, Layout, TabStrip) {
                             session.auto_allow = s.auto_allow;
                             session.continues = s.continues;
                             session.settled = s.settled;
+                            session.unread = s.unread;
                             session.status = Status::Idle;
                             session
                         })

@@ -38,6 +38,12 @@ impl Shell {
     /// A visible dock always has a shell in it.
     pub(super) fn ensure_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.dock_open && self.has_projects() && self.env().terminals.is_empty() {
+            // A server that is away gets one once it is back and asked for.
+            if let Some(remote) = &self.env().remote
+                && !self.server_connected(&remote.server)
+            {
+                return;
+            }
             self.spawn_terminal(false, window, cx);
         }
     }
@@ -64,11 +70,17 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // A terminal would open here, not on the server: there is none for it.
-        if !self.has_projects() || self.env().remote.is_some() {
+        if !self.has_projects() {
             return;
         }
         let cwd = self.env().path.clone();
+        if self.env().remote.is_some() {
+            // A command is this machine's (a sign-in): it does not run there.
+            if command.is_none() {
+                self.spawn_server_terminal(&cwd, None, focus, window, cx);
+            }
+            return;
+        }
         self.spawn_terminal_in(&cwd, command, focus, window, cx);
     }
 
@@ -195,8 +207,13 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> Option<usize> {
         self.prune_finished_runs(env_path, command, cx);
-        let cmd = crate::platform::run_then_shell(command);
-        let i = self.spawn_terminal_in(env_path, Some(cmd), focus, window, cx)?;
+        let i = if crate::model::Remote::is_path(env_path) {
+            // The server wraps it for its own shell.
+            self.spawn_server_terminal(env_path, Some(command.to_string()), focus, window, cx)?
+        } else {
+            let cmd = crate::platform::run_then_shell(command);
+            self.spawn_terminal_in(env_path, Some(cmd), focus, window, cx)?
+        };
         let tab = self.find_env_mut(env_path)?.terminals.get_mut(i)?;
         tab.command = Some(command.into());
         Some(i)
@@ -281,18 +298,31 @@ impl Shell {
         if crate::model::Remote::is_path(env_path) {
             return None;
         }
-        let visible = self.has_projects() && self.env().path == env_path;
-        let cwd = env_path.to_path_buf();
-        let terminal = match Terminal::spawn(cwd.clone(), command, cx) {
+        let terminal = match Terminal::spawn(env_path.to_path_buf(), command, cx) {
             Ok(t) => t,
             Err(e) => {
                 eprintln!(
                     "arakun: could not start a shell in {}: {e:#}",
-                    cwd.display()
+                    env_path.display()
                 );
                 return None;
             }
         };
+        self.add_terminal(env_path, terminal, focus, window, cx)
+    }
+
+    /// Puts `terminal` in the dock of `env_path`, as its newest tab, and
+    /// returns its index there.
+    pub(super) fn add_terminal(
+        &mut self,
+        env_path: &std::path::Path,
+        terminal: Entity<Terminal>,
+        focus: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<usize> {
+        let visible = self.has_projects() && self.env().path == env_path;
+        let cwd = env_path.to_path_buf();
         let view = cx.new(|cx| TerminalView::new(terminal.clone(), window, cx));
         let events = cx.subscribe_in(
             &terminal,

@@ -15,22 +15,76 @@ const NEW_ENV_TIP: &str = "New session in its own worktree (Ctrl+Shift+N). Alt+c
 pub(super) enum EnvSignal {
     NeedsYou,
     CiFailed,
+    /// The pull request wants changes: what it says.
+    Review(&'static str),
     /// Lines added and removed.
     Changes(u32, u32),
     Nothing,
 }
 
-/// A row says one thing so the list stays easy to scan: what needs the user
-/// beats a red build, which beats the diff.
+/// What GitHub says about an environment's branch.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(super) struct GitHubState {
+    /// The failed run, when CI on the branch fails.
+    pub failed_run: Option<u64>,
+    /// CI on the branch is still going.
+    pub ci_running: bool,
+    /// The pull request needs changes: what it says, and its address.
+    pub review: Option<(&'static str, String)>,
+}
+
+impl GitHubState {
+    /// A red build or a pull request that wants changes waits on the user.
+    pub(super) fn needs_you(&self) -> bool {
+        self.failed_run.is_some() || self.review.is_some()
+    }
+
+    fn of(ci: Option<ci::State>, failed_run: Option<u64>, pr: Option<&crate::ci::Pr>) -> Self {
+        let review = pr.and_then(|pr| {
+            let what = if pr.review() == crate::ci::Review::ChangesRequested {
+                "Changes requested"
+            } else if pr.conflicts() {
+                "Conflicts"
+            } else {
+                return None;
+            };
+            Some((what, pr.url.clone()))
+        });
+        Self {
+            failed_run: failed_run.filter(|_| ci == Some(ci::State::Failed)),
+            ci_running: ci.is_some_and(|s| !s.done()),
+            review,
+        }
+    }
+}
+
+/// An environment's state from its sessions and GitHub together: CI that
+/// fails or a review that wants changes needs the user; CI that runs counts
+/// as work going on.
+pub(super) fn env_status(sessions: Status, github: &GitHubState) -> Status {
+    if sessions == Status::NeedsInput || github.needs_you() {
+        Status::NeedsInput
+    } else if sessions == Status::Working || github.ci_running {
+        Status::Working
+    } else {
+        // Keeps a session's error.
+        sessions
+    }
+}
+
+/// A row says one thing so the list stays easy to scan: a session that needs
+/// the user beats a red build, which beats a review, which beats the diff.
 pub(super) fn env_signal(
-    status: Status,
-    ci_failed: bool,
+    sessions: Status,
+    github: &GitHubState,
     changes: Option<(u32, u32)>,
 ) -> EnvSignal {
-    if status == Status::NeedsInput {
+    if sessions == Status::NeedsInput {
         EnvSignal::NeedsYou
-    } else if ci_failed {
+    } else if github.failed_run.is_some() {
         EnvSignal::CiFailed
+    } else if let Some((what, _)) = &github.review {
+        EnvSignal::Review(what)
     } else {
         match changes {
             Some((a, r)) if a + r > 0 => EnvSignal::Changes(a, r),
@@ -50,6 +104,33 @@ fn diff_label(a: u32, r: u32) -> gpui::Div {
         .when(r > 0, |d| {
             d.child(div().text_color(theme::diff_del()).child(format!("-{r}")))
         })
+}
+
+/// The + at the end of a rail heading. Faint until the pointer is on it, so
+/// a column of headings doesn't read as a column of buttons.
+pub(super) fn heading_button(
+    id: impl Into<gpui::ElementId>,
+    tip: &'static str,
+) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .group("rail-heading-add")
+        .flex()
+        .flex_none()
+        .items_center()
+        .justify_center()
+        .size(px(22.))
+        .rounded(crate::ui::rad(6.))
+        .cursor_pointer()
+        .hover(|s| s.bg(theme::fill_selected()))
+        .tooltip(ui::tip(tip))
+        .child(hover_icon(
+            "add01",
+            14.,
+            theme::text_subtle(),
+            theme::content(),
+            "rail-heading-add",
+        ))
 }
 
 /// An environment whose worktree is still being made: there at once, with a
@@ -107,10 +188,6 @@ impl Activity {
             }
             a
         })
-    }
-
-    pub(super) fn of_project(project: &Project) -> Self {
-        Self::of(project.environments.iter().map(|e| e.aggregate_status()))
     }
 
     /// The most urgent state, for a dot.
@@ -217,6 +294,40 @@ pub(super) fn ci_mark(state: ci::State) -> gpui::Div {
 }
 
 impl Shell {
+    /// What GitHub says about an environment's branch; nothing when its
+    /// project's runs are not read.
+    pub(super) fn env_github(&self, pi: usize, ei: usize, cx: &App) -> GitHubState {
+        let Some(p) = self.projects.get(pi) else {
+            return GitHubState::default();
+        };
+        let Some(env) = p.environments.get(ei) else {
+            return GitHubState::default();
+        };
+        let Some(repo) = self.ci.read(cx).repo(&p.path) else {
+            return GitHubState::default();
+        };
+        let ci = repo.branch_state(&env.branch);
+        let pr = repo
+            .prs
+            .iter()
+            .find(|pr| pr.head_ref_name == env.branch.as_ref());
+        GitHubState::of(ci.map(|(s, _)| s), ci.map(|(_, r)| r.id), pr)
+    }
+
+    /// An environment's state for its dot, its sessions and GitHub together.
+    pub(super) fn env_status(&self, pi: usize, ei: usize, cx: &App) -> Status {
+        let Some(env) = self.projects.get(pi).and_then(|p| p.environments.get(ei)) else {
+            return Status::Idle;
+        };
+        env_status(env.aggregate_status(), &self.env_github(pi, ei, cx))
+    }
+
+    /// What a project's environments are doing, GitHub included.
+    pub(super) fn project_activity(&self, pi: usize, cx: &App) -> Activity {
+        let n = self.projects.get(pi).map_or(0, |p| p.environments.len());
+        Activity::of((0..n).map(|ei| self.env_status(pi, ei, cx)))
+    }
+
     pub(super) fn render_rail(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let inbox = self.inbox_items();
         let mood = if inbox.iter().any(|i| i.status == Status::NeedsInput) {
@@ -335,6 +446,9 @@ impl Shell {
                 d.child(self.render_rail_narrow_header(window, cx))
             })
             .when(!narrow, |d| d.child(header))
+            .when(!narrow && self.arranging(), |d| {
+                d.child(self.render_arranging_bar(cx))
+            })
             .child(
                 // Below the header everything scrolls together once the
                 // window is too short for the fixed sections and the
@@ -346,10 +460,83 @@ impl Shell {
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
+                    .when(!narrow, |d| d.children(self.render_switcher_offer(cx)))
                     .children(self.render_pinned_block(cx))
                     .children(self.render_rail_sections(cx)),
             )
             .pb(crate::ui::sp(4.))
+    }
+
+    /// Offers the Switcher to someone whose layout predates it, once: "Try it"
+    /// swaps it in and asks whether to keep it, "Go back" restores theirs.
+    fn render_switcher_offer(&self, cx: &mut Context<Self>) -> Option<gpui::Div> {
+        let trying = self.sidebar.trial_of.is_some();
+        if !trying && !self.sidebar.offers_switcher() {
+            return None;
+        }
+        let (title, body, yes, no) = if trying {
+            (
+                "This is the new sidebar",
+                "Change it any time in Customize sidebar.",
+                "Keep it",
+                "Go back",
+            )
+        } else {
+            (
+                "Try the new sidebar",
+                "One project at a time with its environments, and the views as icons.",
+                "Try it",
+                "No thanks",
+            )
+        };
+        let yes = ui::button("switcher-yes", yes, ui::ButtonKind::Primary, true).on_click(
+            cx.listener(move |this, _, _, cx| {
+                if trying {
+                    this.change_sidebar(cx, |s| s.trial_of = None);
+                } else {
+                    this.change_sidebar(cx, |s| *s = s.as_switcher());
+                }
+            }),
+        );
+        let no = ui::button("switcher-no", no, ui::ButtonKind::Ghost, true).on_click(cx.listener(
+            move |this, _, _, cx| match this.sidebar.trial_of.clone() {
+                Some(old) => this.change_sidebar(cx, |s| *s = *old),
+                None => this.change_sidebar(cx, |s| s.switcher_offered = true),
+            },
+        ));
+        Some(
+            div()
+                .flex()
+                .flex_col()
+                .flex_none()
+                .gap(crate::ui::sp(8.))
+                .mx(crate::ui::sp(8.))
+                .mb(crate::ui::sp(8.))
+                .p(crate::ui::sp(12.))
+                .rounded(crate::ui::rad(10.))
+                .border_1()
+                .border_color(theme::stroke())
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(crate::ui::sp(2.))
+                        .child(
+                            div()
+                                .text_size(px(ui::TEXT_MD))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(theme::text())
+                                .child(title),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(ui::TEXT_SM))
+                                .text_color(theme::text_subtle())
+                                .child(body),
+                        ),
+                )
+                .child(div().flex().gap(crate::ui::sp(6.)).child(yes).child(no)),
+        )
     }
 
     /// What the rail, the workspace panel and the subagents column sit in,
@@ -429,7 +616,8 @@ impl Shell {
                         d.bg(theme::selection_strong()).text_color(theme::content())
                     })
                     .when(!selected, |d| {
-                        d.opacity(0.65).hover(|s| s.bg(theme::hover()).opacity(1.))
+                        d.text_color(theme::text_muted())
+                            .hover(|s| s.bg(theme::hover()).text_color(theme::content()))
                     })
                     .child(
                         div()
@@ -447,7 +635,7 @@ impl Shell {
                             .child(project.name.clone()),
                     )
                     .when(!selected, |d| {
-                        let status = Activity::of_project(project).status();
+                        let status = self.project_activity(pi, cx).status();
                         d.when(status != Status::Idle, |d| d.child(status_dot(status)))
                     })
                     // The env rows below repeat these totals; keep them here
@@ -518,6 +706,22 @@ impl Shell {
                         active_above,
                         cx,
                     ));
+                }
+                let archived = self.archived_count(pi);
+                if archived > 0 {
+                    envs = envs.child(
+                        super::panel::archived_toggle(
+                            ("rail-archived", pi),
+                            archived,
+                            "",
+                            self.show_settled,
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.show_settled = !this.show_settled;
+                            this.drop_pick();
+                            cx.notify();
+                        })),
+                    );
                 }
                 if !self.pick_bar_under_active() {
                     envs = envs.children(self.render_pick_bar(cx));
@@ -616,7 +820,7 @@ impl Shell {
                 .flat_map(|e| e.changes.iter())
                 .fold((0, 0), |(a, r), c| (a + c.added, r + c.removed));
             let logo: Hsla = gpui::rgb(project.logo).into();
-            let activity = (!selected).then(|| Activity::of_project(project));
+            let activity = (!selected).then(|| self.project_activity(pi, cx));
             let label = activity.and_then(Activity::label);
             let label_none = label.is_none();
             panel = panel.child(
@@ -719,7 +923,7 @@ impl Shell {
         if ev.modifiers().alt {
             self.open_create_env(pi, window, cx)
         } else {
-            self.quick_create_env(pi, window, cx)
+            self.draft_new_session(pi, window, cx)
         }
     }
 
@@ -730,10 +934,10 @@ impl Shell {
         let statuses: Vec<Vec<Status>> = self
             .projects
             .iter()
-            .map(|p| {
-                p.environments
-                    .iter()
-                    .map(|e| e.aggregate_status())
+            .enumerate()
+            .map(|(pi, p)| {
+                (0..p.environments.len())
+                    .map(|ei| self.env_status(pi, ei, cx))
                     .collect()
             })
             .collect();
@@ -940,17 +1144,17 @@ impl Shell {
     ) -> impl IntoElement {
         let active = self.projects.get(pi).is_some_and(|p| p.active_env == ei);
         let picked = self.is_picked(&env.path);
-        let status = env.aggregate_status();
-        let ci = self.env_ci(pi, ei, cx);
-        let ci_failed = ci.as_ref().is_some_and(|(s, _)| *s == ci::State::Failed);
+        let sessions = env.aggregate_status();
+        let github = self.env_github(pi, ei, cx);
+        let status = env_status(sessions, &github);
         // The diff of the open row; the others show theirs on hover.
         let changes = show_changes.then(|| env.diff_totals());
-        let signal = env_signal(status, ci_failed, changes);
+        let signal = env_signal(sessions, &github, changes);
         // The sessions in the Active list are named there; this row names the rest.
         let named: Vec<&model::Session> = env
             .sessions
             .iter()
-            .filter(|s| !active_above || !super::active::is_active(s.status))
+            .filter(|s| !active_above || !super::active::is_active(s.shown_status()))
             .collect();
         let titles: Vec<(&str, u64)> = named
             .iter()
@@ -963,6 +1167,10 @@ impl Shell {
         let lead: AnyElement = if picked {
             icon("tick02", 14.)
                 .text_color(theme::content())
+                .into_any_element()
+        } else if env.archived() && status == Status::Idle {
+            icon("archive02", 14.)
+                .text_color(theme::text_faint())
                 .into_any_element()
         } else if env.is_checkout && status == Status::Idle {
             icon("folder01", 14.)
@@ -989,8 +1197,7 @@ impl Shell {
                     .child("Needs you")
                     .into_any_element(),
             ),
-            EnvSignal::CiFailed => ci.map(|(_, run)| {
-                let id = run.id;
+            EnvSignal::CiFailed => github.failed_run.map(|id| {
                 div()
                     .id(("env-ci", pi * 1000 + ei))
                     .px(crate::ui::sp(4.))
@@ -1004,6 +1211,23 @@ impl Shell {
                         cx.stop_propagation();
                         this.select_env(pi, ei, window, cx);
                         this.open_runs_tab(Some(id), window, cx);
+                    }))
+                    .into_any_element()
+            }),
+            EnvSignal::Review(what) => github.review.clone().map(|(_, url)| {
+                div()
+                    .id(("env-review", pi * 1000 + ei))
+                    .px(crate::ui::sp(4.))
+                    .rounded(crate::ui::rad(4.))
+                    .text_size(px(ui::TEXT_XS))
+                    .text_color(theme::needs_you())
+                    .hover(|s| s.bg(theme::fill_selected()))
+                    .tooltip(ui::tip("Open the pull request"))
+                    .child(what)
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        cx.stop_propagation();
+                        this.select_env(pi, ei, window, cx);
+                        this.open_url(url.clone(), window, cx);
                     }))
                     .into_any_element()
             }),
@@ -1038,7 +1262,7 @@ impl Shell {
             .rounded(crate::ui::rad(8.))
             .cursor_pointer()
             .text_size(px(ui::TEXT_MD))
-            .text_color(if active || signal == EnvSignal::NeedsYou {
+            .text_color(if active || status == Status::NeedsInput {
                 theme::content()
             } else {
                 theme::text_muted()
@@ -1148,23 +1372,92 @@ mod tests {
         assert_eq!(Activity::of([Idle, Error]).label(), None);
     }
 
+    fn failing() -> GitHubState {
+        GitHubState {
+            failed_run: Some(7),
+            ..Default::default()
+        }
+    }
+
+    fn wants(what: &'static str) -> GitHubState {
+        GitHubState {
+            review: Some((what, "https://github.com/o/r/pull/1".into())),
+            ..Default::default()
+        }
+    }
+
     #[test]
     fn a_row_says_the_most_urgent_thing() {
         let diff = Some((12, 3));
+        let quiet = GitHubState::default();
         assert_eq!(
-            env_signal(Status::NeedsInput, true, diff),
+            env_signal(Status::NeedsInput, &failing(), diff),
             EnvSignal::NeedsYou
         );
-        assert_eq!(env_signal(Status::Working, true, diff), EnvSignal::CiFailed);
         assert_eq!(
-            env_signal(Status::Working, false, diff),
+            env_signal(Status::Working, &failing(), diff),
+            EnvSignal::CiFailed
+        );
+        assert_eq!(
+            env_signal(Status::Working, &wants("Changes requested"), diff),
+            EnvSignal::Review("Changes requested")
+        );
+        assert_eq!(
+            env_signal(Status::Working, &quiet, diff),
             EnvSignal::Changes(12, 3)
         );
         assert_eq!(
-            env_signal(Status::Idle, false, Some((0, 0))),
+            env_signal(Status::Idle, &quiet, Some((0, 0))),
             EnvSignal::Nothing
         );
         // Changes turned off in the builder.
-        assert_eq!(env_signal(Status::Idle, false, None), EnvSignal::Nothing);
+        assert_eq!(env_signal(Status::Idle, &quiet, None), EnvSignal::Nothing);
+    }
+
+    #[test]
+    fn github_can_need_you_or_keep_a_row_running() {
+        let running = GitHubState {
+            ci_running: true,
+            ..Default::default()
+        };
+        assert_eq!(env_status(Status::Idle, &running), Status::Working);
+        assert_eq!(env_status(Status::Idle, &failing()), Status::NeedsInput);
+        assert_eq!(
+            env_status(Status::Working, &wants("Conflicts")),
+            Status::NeedsInput
+        );
+        assert_eq!(
+            env_status(Status::Idle, &GitHubState::default()),
+            Status::Idle
+        );
+        assert_eq!(
+            env_status(Status::Error, &GitHubState::default()),
+            Status::Error
+        );
+    }
+
+    #[test]
+    fn a_pull_request_says_what_it_wants() {
+        let pr = |decision: &str, mergeable: &str| crate::ci::Pr {
+            number: 1,
+            title: "t".into(),
+            head_ref_name: "b".into(),
+            url: "u".into(),
+            is_draft: false,
+            review_decision: Some(decision.into()),
+            mergeable: Some(mergeable.into()),
+        };
+        let of = |p| GitHubState::of(None, None, Some(&p)).review.map(|(w, _)| w);
+        assert_eq!(
+            of(pr("CHANGES_REQUESTED", "MERGEABLE")),
+            Some("Changes requested")
+        );
+        assert_eq!(of(pr("APPROVED", "CONFLICTING")), Some("Conflicts"));
+        assert_eq!(of(pr("APPROVED", "MERGEABLE")), None);
+        // A failed run counts only while the branch's state is failed.
+        let passed = GitHubState::of(Some(ci::State::Passed), Some(3), None);
+        assert_eq!(passed.failed_run, None);
+        assert!(!passed.ci_running);
+        assert!(GitHubState::of(Some(ci::State::Running), Some(3), None).ci_running);
     }
 }

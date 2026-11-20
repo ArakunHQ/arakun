@@ -189,11 +189,11 @@ impl Section {
         match self {
             Section::General => "How Arakun behaves when nothing is going on.",
             Section::Appearance => {
-                "Zoom here. Colors and shape are edited beside the app, not in this dialog."
+                "Zoom here. Colors, shape and the sidebar are edited beside the app, not in this dialog."
             }
             Section::Project => "The open project's commands, on this computer.",
             Section::Branches => {
-                "A new environment starts on a random branch name; an agent can rename it after the task. A merged pull request settles its threads."
+                "A new environment starts on a random branch name; an agent can rename it after the task. A merged pull request is archived."
             }
             Section::Voice => "Droid's questions, read aloud with an ElevenLabs voice.",
             Section::Privacy => {
@@ -229,7 +229,7 @@ impl Section {
             }
             Section::Branches => {
                 "branch name naming environment worktree rename model haiku agent merge merged \
-                 settle resolve threads review notifications pull request cleanup clean up \
+                 archive settle resolve threads review notifications pull request cleanup clean up \
                  remove delete old stale environments"
             }
             Section::Voice => {
@@ -1082,8 +1082,8 @@ impl SettingsDialog {
                 )
                 .into_any_element();
                 let settle = row(
-                    "Settle threads after merge",
-                    "Once an environment's pull request is merged: its open review threads are resolved on GitHub, its notifications are marked read, and the environment's sessions stop asking for you and leave the sessions list. The GitHub tab marks read the notifications of every merged pull request.",
+                    "Archive after merge",
+                    "Once an environment's pull request is merged: its open review threads are resolved on GitHub, its notifications are marked read, and the environment's sessions stop asking for you and are archived. The GitHub tab marks read the notifications of every merged pull request.",
                     switch(crate::settle::on()).into_any_element(),
                 )
                 .id("set-settle-after-merge")
@@ -1711,6 +1711,7 @@ impl SettingsDialog {
             group(vec![
                 row("Colors", "", value(self.look.colors.clone())).into_any_element(),
                 row("Shape", "", value(self.look.shape.clone())).into_any_element(),
+                row("Sidebar", "", value(self.look.sidebar.clone())).into_any_element(),
             ]),
             open,
             titled("Window", vec![zoom]),
@@ -2285,6 +2286,7 @@ mod tests {
 
     #[test]
     fn searching_for_merge_finds_branches() {
+        assert!(Section::Branches.matches("archive after merge"));
         assert!(Section::Branches.matches("settle threads"));
         assert!(Section::Branches.matches("after merge"));
     }

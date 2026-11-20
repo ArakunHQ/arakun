@@ -11,6 +11,8 @@ mod browser;
 #[allow(dead_code)]
 mod durable;
 // The new-tab page's raccoon.
+#[path = "../src/frame_timer.rs"]
+mod frame_timer;
 #[allow(dead_code)]
 #[path = "../src/mascot.rs"]
 mod mascot;

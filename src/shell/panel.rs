@@ -4,8 +4,47 @@
 use super::*;
 
 impl Shell {
+    /// The sidebar as Customize's Sidebar tab shows it.
+    fn rail_look(&self) -> crate::customize_view::RailLook {
+        crate::customize_view::RailLook {
+            style: self.sidebar.style,
+            width: self.rail_w,
+            preset: crate::sidebar::Preset::ALL
+                .into_iter()
+                .find(|p| p.layout().sections == self.sidebar.sections),
+            can_undo: !self.builder.undo.is_empty(),
+            can_redo: !self.builder.redo.is_empty(),
+            note: self.builder.flash.clone(),
+            summary: {
+                let pieces = self
+                    .sidebar
+                    .sections
+                    .iter()
+                    .flat_map(|s| &s.items)
+                    .filter(|i| !i.piece.is_decoration())
+                    .count();
+                let style = match self.sidebar.style.variant {
+                    crate::sidebar::Variant::Card => "Card",
+                    crate::sidebar::Variant::Flush => "Flush",
+                    crate::sidebar::Variant::Floating => "Floating",
+                };
+                let side = match self.sidebar.style.side {
+                    crate::sidebar::Side::Left => "left",
+                    crate::sidebar::Side::Right => "right",
+                };
+                format!(
+                    "{pieces} pieces in {} segments, {style}, on the {side}",
+                    self.sidebar.sections.len()
+                )
+                .into()
+            },
+        }
+    }
+
     pub(super) fn render_panel(&self, cx: &mut Context<Self>) -> AnyElement {
         if let Some((view, _)) = &self.customize {
+            let look = self.rail_look();
+            view.update(cx, |v, cx| v.sync_rail(look, cx));
             return self
                 .side_card()
                 .id("customize-card")
@@ -281,7 +320,7 @@ impl Shell {
         let on_screen = |s: &model::Session| {
             active_id.as_ref() == Some(&s.id) || other_id.as_ref() == Some(&s.id)
         };
-        // A search looks through settled sessions too.
+        // A search looks through archived sessions too.
         let show_settled = self.show_settled || !query.trim().is_empty();
         let listed =
             |s: &model::Session| matches(s) && (show_settled || !s.settled || on_screen(s));
@@ -341,7 +380,7 @@ impl Shell {
                             .text_size(px(ui::TEXT_SM))
                             .text_color(theme::text_faint())
                             .child(if settled > 0 && !show_settled && filter.is_none() {
-                                "Every session here is settled"
+                                "Every session here is archived"
                             } else {
                                 "No sessions match"
                             }),
@@ -400,12 +439,11 @@ impl Shell {
                 )
                 .when(settled > 0 && query.trim().is_empty(), |d| {
                     d.child(
-                        settled_toggle(settled, self.show_settled).on_click(cx.listener(
-                            |this, _, _, cx| {
+                        archived_toggle("sessions-settled", settled, "session", self.show_settled)
+                            .on_click(cx.listener(|this, _, _, cx| {
                                 this.show_settled = !this.show_settled;
                                 cx.notify();
-                            },
-                        )),
+                            })),
                     )
                 })
                 .into_any_element()
@@ -421,15 +459,21 @@ impl Shell {
     }
 }
 
-/// The row under the sessions list that shows or hides the settled ones.
-fn settled_toggle(n: usize, open: bool) -> gpui::Stateful<gpui::Div> {
-    let label = match (open, n) {
-        (true, _) => "Hide settled".to_string(),
-        (false, 1) => "1 settled session".to_string(),
-        (false, n) => format!("{n} settled sessions"),
+/// The row under a list that shows or hides its `n` archived `noun`s
+/// ("session"; empty for just "N archived").
+pub(super) fn archived_toggle(
+    id: impl Into<gpui::ElementId>,
+    n: usize,
+    noun: &str,
+    open: bool,
+) -> gpui::Stateful<gpui::Div> {
+    let label = match (open, noun) {
+        (true, _) => "Hide archived".to_string(),
+        (false, "") => format!("{n} archived"),
+        (false, noun) => format!("{n} archived {noun}{}", if n == 1 { "" } else { "s" }),
     };
     div()
-        .id("sessions-settled")
+        .id(id)
         .flex()
         .items_center()
         .gap(crate::ui::sp(6.))
@@ -455,6 +499,7 @@ pub(super) fn session_card(
     branch: &SharedString,
 ) -> gpui::Stateful<gpui::Div> {
     let (status, color): (SharedString, Hsla) = match s.status {
+        Status::Idle if s.unread => ("Finished".into(), theme::needs_you()),
         Status::Idle => (model::age(s.updated), theme::mix(0.45)),
         Status::Error => ("Error".into(), theme::diff_del().into()),
         Status::Working => ("Working...".into(), theme::working()),

@@ -74,11 +74,11 @@ copy of it, rename it back, and start a version that can read it.
 - **Active.** The top of the sidebar lists the sessions of every project that need
   you (waiting for an answer, or failed), then the ones running. A click opens the
   session in its project. It stays the same whichever project is open. The open
-  project's list below holds the rest, so nothing shows twice. Move or remove it in
-  the sidebar builder.
+  project's list below holds the rest, so nothing shows twice. Move or remove it from
+  Customize › Sidebar.
 - **One session, one worktree.** **New session** at the top of the sidebar's list, or
-  `Ctrl+T`, gives a session its own worktree on a random branch, and the first prompt
-  names the branch. An open worktree is used only while it has no session yet; `Alt`+click
+  `Ctrl+T`, opens a composer at once and gives the session its own worktree on a random
+  branch when you send the first prompt, which names the branch. An open worktree is used only while it has no session yet; `Alt`+click
   on New session asks for the branch. A prompt written in the main checkout, such as on
   a project's start screen, starts its session in a new worktree too, on a server as here (a server that runs
   an older Arakun, or a folder there that is no repository, starts it where it was
@@ -96,9 +96,14 @@ copy of it, rename it back, and start a version that can read it.
 - **Projects and worktrees.** A rail of projects, each with its environments (the main
   checkout plus git worktrees). The default sidebar shows the open project, with the
   others in its dropdown, and its sessions as a flat list: a status dot, the title,
-  and one signal (Needs you, CI failed, or the diff). If you take the Active list
-  out, **Other projects** under them lists the environments elsewhere that run or need
-  you. The dropdown says the same per project. `Ctrl+Shift+N` always makes a new
+  and one signal (Needs you, CI failed, Changes requested, Conflicts, or the diff).
+  An environment needs you when a session asks something, when a session finished a
+  turn you haven't opened yet, when CI on its branch fails, or when its pull request
+  has changes requested or conflicts; CI that is still going shows it as running. If
+  you take the Active list out, **Other projects** under them lists the environments
+  elsewhere that run or need you. The dropdown says the same per project. The **+** on
+  the Projects heading opens **New**: a session in the open project or another one, or
+  a project to add (`Ctrl+T` and `Ctrl+O` pick them). `Ctrl+Shift+N` always makes a new
   worktree at once on a random branch from the current branch as it is on `origin`,
   fetched first (or the local commit when origin has none; on a server, from that
   server's checkout, with no fetch). File › New Environment with Options… asks for
@@ -126,16 +131,23 @@ copy of it, rename it back, and start a version that can read it.
   Settings › Branches can pick Claude Code or Droid for every environment, or turn naming
   off; it saves that in `~/.local/share/arakun/branch-namer.json`
   (`%LOCALAPPDATA%\arakun\branch-namer.json` on Windows).
-- **Settled after merge.** Once an environment's pull request is merged (Arakun asks
-  `gh` every few minutes), its open review threads are resolved on GitHub, its
-  notifications are marked read, and the environment's sessions from before the merge
-  stop asking for you and leave the Sessions list (a "settled sessions" row at its end
-  shows them, a search finds them, and a new prompt brings one back); agents that are
-  idle and not open in a tab stop. The GitHub tab
+- **Archive.** Right-click an environment in the sidebar and pick Archive (or pick
+  several rows and use the bar's archive button): its sessions that aren't working stop
+  asking for you and leave the lists, the open review threads of its branch's pull
+  request are resolved on GitHub, and that pull request's notifications are marked read.
+  A session's own right-click menu archives just that session, without touching
+  GitHub. An "N archived" row at the end of the sidebar's list (and "N archived
+  sessions" under the Sessions list) shows them again, a search finds them, and Restore
+  on the right-click menu or a new prompt brings one back. Agents that are idle and not
+  open in a tab stop.
+- **Archived after merge.** Once an environment's pull request is merged (Arakun asks
+  `gh` every few minutes), it is archived the same way: its open review threads are
+  resolved, its notifications are marked read, and the environment's sessions from
+  before the merge are archived. The GitHub tab
   also marks read the notifications of every merged pull request it reads. Each merge is
-  settled once, within a week of it; threads that fail to resolve are tried again at the
-  next few checks. Settled merges are noted in `~/.local/share/arakun/settled.json`.
-  On by default; turn off Settings › Branches › Settle threads after merge (saved in
+  archived once, within a week of it; threads that fail to resolve are tried again at the
+  next few checks. Archived merges are noted in `~/.local/share/arakun/settled.json`.
+  On by default; turn off Settings › Branches › Archive after merge (saved in
   `~/.local/share/arakun/settle-after-merge`, `%LOCALAPPDATA%\arakun\` on Windows).
 - **Old environments removed.** Settings › Branches › Remove old environments (Off, 7, 14
   or 30 days; also asked during the setup) removes an environment's worktree once its
@@ -223,10 +235,11 @@ terminal-only. The status line and keybindings from your settings don't apply in
   pull request template, else the commit messages). It opens as a draft unless you turn
   that off, pushes the branch first when it has commits GitHub doesn't, and then shows
   the new pull request in the GitHub tab. "Open GitHub's form" opens the page in your
-  browser instead, to write the description there. "Write with AI" has Claude Code
+  browser instead, to write the description there. "Write with Claude Code" has Claude Code
   write the title and the description from the branch's commits, its diff (up to 60,000
   characters) and the template, when it is the environment's agent or the one picked for
-  naming branches. It answers once with its tools off, so it reads nothing else, and
+  naming branches; the button names the agent, so you see where the diff goes before
+  you click. It answers once with its tools off, so it reads nothing else, and
   nothing goes to GitHub until you create the pull request. Other agents don't write it:
   they can read files while they answer.
 - **Queue.** The GitHub tab opens on one line that says how many things need you,
@@ -247,6 +260,12 @@ terminal-only. The status line and keybindings from your settings don't apply in
   or "Comment"), and says why when a comment doesn't go out. Approve, request changes
   and merge ask a second time, and an approval or a merge stops if new commits came
   after you looked.
+- **Agent fixes.** When a pull request conflicts with its base branch, "Fix conflicts"
+  starts a session that merges the base in (no rebase), settles the conflicts, runs the
+  tests and commits the merge. When it has open review threads, "Address N comments"
+  starts a session with those threads (CodeRabbit's too): the agent fixes each one or
+  says why not, and lists a reply per thread for you to post. Neither pushes, replies
+  or resolves anything on GitHub. In the box, `/conflicts` and `/comments` do the same.
 - **Failed checks.** When checks failed, the Checks tab says how many, and a failed
   GitHub Actions job opens the end of its failing step's log under its row (the link at
   the end of the row opens its page). "Re-run failed" starts the failed jobs again
@@ -386,7 +405,7 @@ after a week).
   and permission rules the agents load now. Under Arakun › Extensions (or Settings ›
   General › Sidebar) you turn on the tabs the sidebar shows besides Inbox, Runs, Branches and Marketplace: GitHub, Notes,
   Memory, Usage, Cloudflare, PostHog, Isometric, Phone, Servers and Automations. The
-  palette and the sidebar builder list only the tabs that are on. A new install starts
+  palette and Customize › Sidebar list only the tabs that are on. A new install starts
   with none on, except what you set up in the first-run setup: GitHub once the GitHub
   CLI is signed in, and Phone if you chose to pair one. An update keeps the ones your
   sidebar already had. The choice is kept in `extensions.json` next to the state.
@@ -394,7 +413,7 @@ after a week).
   folded next time. Folded, it says how many pieces it holds, with a dot when one of
   them wants you (red for a failure or something waiting), so the projects get the
   room. Right-click a title for Ungroup, which removes the segment and keeps its
-  pieces in the one above. In the sidebar builder, a segment can be set to start
+  pieces in the one above. In Customize › Sidebar, a segment can be set to start
   folded or not to say what is inside; a new one is born titled and collapsible.
 - **Automations.** Scheduled shell commands or agent prompts per project.
 
@@ -411,9 +430,8 @@ only sums up what is chosen. It opens without a project too.
   sidebar, the workspace panel and the status line sit on the window itself, and the
   accent is kept for what needs you. Duplicate one to change its tint, background and
   accent; Arakun warns when text or the accent gets hard to read. Grays sets how bright
-  secondary text and borders are, and Diff colors how added and removed lines look. A
-  palette fits in one line (`arakun:palette/v1:…`): Export copies it and Import pastes
-  one. Reset colors goes back to Arakun Black, dark, and keeps your palettes. The mode,
+  secondary text and borders are, and Diff colors how added and removed lines look.
+  Reset colors goes back to Arakun Black, dark, and keeps your palettes. The mode,
   the choice and your palettes are kept in `palettes.json` next to the state.
 
   <img src="docs/screenshots/palettes.png" alt="The built-in palettes" width="520">
@@ -424,6 +442,27 @@ only sums up what is chosen. It opens without a project too.
   None, Default, Wide). The defaults (100%, 100%, 8 px) look as before and are kept in
   `palettes.json` too. Text size and Glass are here as well. Reset shape goes back to
   the defaults.
+- **Sidebar.** Start from a preset (Switcher, Focused, Developer, Notion, Icons,
+  Everything); it lays out the pieces and keeps the style you chose. Style (Card, Flush,
+  Floating), Rows, Width, Side, what Ctrl+B does, Counters and Shortcuts change the whole
+  sidebar. While this tab is open the sidebar is being arranged: it shows in full,
+  every segment opens as a list with its outline and title, and a click on a piece or a title selects it instead of
+  opening it. The tab then shows its options (name, emoji, folding, Fixed or Scroll,
+  Ungroup, remove) and chips to add a group, a link, a command, a title, a separator,
+  a spacer or what the sidebar does not hold yet, into the selected segment with a
+  click. The pieces among them (not Group, Link, Command or Title, which ask for more
+  first) can also be dragged onto the sidebar where they should go. Pieces and segment
+  titles drag into another order on the sidebar itself. The panel's header has undo
+  and redo for these changes. Done closes the panel, and "Customize sidebar…" in the
+  sidebar's right-click menu opens this tab. Reset sidebar goes back to the default
+  layout and width. The layout is kept in `sidebar.json`.
+- **Share a look.** Export… at the foot of the panel, on any tab, copies the colors,
+  the shape or the sidebar, the ones you tick, as one line (`arakun:look/v1:…`).
+  Import reads a look line and asks again which parts to use; the sidebar is off until
+  ticked, since it replaces the whole layout. A sidebar layout comes without its
+  commands, which run on a click: add those with Command…, where their text can be
+  read. Import also takes a palette line (`arakun:palette/v1:…`) or a sidebar layout
+  copied before looks existed.
 - **Design system.** The card at the foot of the panel opens the Design system tab:
   every color, type style and component, live, so a change can be judged on all of
   them at once.
@@ -924,11 +963,14 @@ The link is good for two minutes and pairs one device. There are two ways to use
   the open environment's machine. It goes in
   `~/arakun-workspaces/<project>/<branch>` there. Unless naming is off in Settings ›
   Branches, Arakun names its branch after the first prompt, as here. Right-click a
-  server's environment to settle its threads there (the sessions that ask for attention
+  server's environment to archive it there (the sessions that ask for attention
   go idle, and their agents stop; a running turn is left alone) or to delete it: the
   server removes the worktree, everything in it and its sessions, and the branch too if
   you ask. A repository's main folder is never deleted. A phone paired with this app sees and works in the
-  servers' sessions too. Git, terminals and the file tree stay with this machine's folders;
+  servers' sessions too. A terminal in a server's environment is a shell in that folder
+  on the server, and the project commands from Settings run there too. It keeps running
+  while the connection is down and picks up where it was once it is back; one no app
+  follows for an hour is hung up. Git and the file tree stay with this machine's folders;
   `/stage`, fork, rewind and "Continue with" are not available for a server's session
   yet. In the Marketplace, "Install on" picks a paired server: Discover then lists
   the plugins its marketplaces offer, and Install adds a plugin or MCP server for
@@ -1051,7 +1093,7 @@ On macOS, `Cmd` takes the place of `Ctrl` in the shortcuts below, except for
 forward through tabs, `Ctrl+Cmd+F` toggles full screen, and `Cmd+H`, `Cmd+M` and
 `Cmd+Q` hide, minimize and quit.
 
-- `Ctrl+T` new session (in a new worktree unless the open one is a worktree without one), `Ctrl+J` toggle the terminal dock, `Ctrl+B` toggle the sidebar
+- `Ctrl+T` new session (in a new worktree, made when you send the first prompt, unless the open one is a worktree without one), `Ctrl+J` toggle the terminal dock, `Ctrl+B` toggle the sidebar
 - `Ctrl+Alt+B` toggle the workspace panel, `Ctrl+Alt+S` toggle the subagents panel
 - `Ctrl+D` / `Ctrl+Shift+D` split right / down, `Ctrl+Alt+arrows` move between panes
 - `Ctrl+Tab`, `Ctrl+1...9` switch tabs, across environments; `Alt+Up` / `Alt+Down`

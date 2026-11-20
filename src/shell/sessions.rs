@@ -134,6 +134,41 @@ impl Shell {
         Some(&mut env.sessions[i])
     }
 
+    /// The sessions in the panes on screen: the active tab and the split's other one.
+    pub(super) fn sessions_on_screen(&self) -> Vec<(PathBuf, SharedString)> {
+        let other = self
+            .strip
+            .split
+            .and_then(|s| self.strip.position(s.other))
+            .and_then(|i| self.strip.tabs.get(i));
+        self.strip
+            .active()
+            .into_iter()
+            .chain(other)
+            .filter_map(|t| match (&t.kind, &t.env) {
+                (TabKind::Session { id, .. }, Some(env)) => Some((env.clone(), id.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// What the user has on screen is read: it no longer waits on them.
+    pub(super) fn mark_on_screen_read(&mut self, cx: &mut Context<Self>) {
+        let mut changed = false;
+        for (env, id) in self.sessions_on_screen() {
+            if let Some(s) = self.session_mut(&env, &id)
+                && s.unread
+            {
+                s.unread = false;
+                changed = true;
+            }
+        }
+        if changed {
+            self.save(cx);
+            cx.notify();
+        }
+    }
+
     pub(super) fn active_session_id(&self) -> Option<SharedString> {
         if !self.has_projects() {
             return None;
@@ -546,7 +581,13 @@ impl Shell {
                     t.edited_files(),
                     since,
                 );
+                // Done while the user looked elsewhere: it waits on them until opened.
+                let away = !self
+                    .sessions_on_screen()
+                    .iter()
+                    .any(|(p, sid)| p.as_path() == env_path && sid.as_ref() == id.as_ref());
                 if let Some(s) = self.session_mut(env_path, id) {
+                    s.unread = away && status == Status::Idle;
                     s.status = status;
                     s.added = added;
                     s.removed = removed;

@@ -4,9 +4,11 @@ use super::*;
 
 impl ThreadView {
     pub(super) fn toggle_changes(&mut self, turn_start: usize, cx: &mut Context<Self>) {
-        if !self.changes_open.remove(&turn_start) {
+        let open = !self.changes_open.remove(&turn_start);
+        if open {
             self.changes_open.insert(turn_start);
         }
+        self.opened(Fold::Changes, turn_start, open);
         self.remeasure_entry(turn_start);
         cx.notify();
     }

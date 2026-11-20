@@ -36,6 +36,7 @@ mod env_name;
 mod explorer;
 mod extensions_view;
 mod fetch;
+mod frame_timer;
 mod gallery_view;
 mod git;
 mod git_dialogs;
@@ -53,6 +54,7 @@ mod iso_view;
 #[cfg(feature = "coderlabs")]
 mod lab;
 mod logos;
+mod look;
 mod mascot;
 mod memory;
 mod memory_view;

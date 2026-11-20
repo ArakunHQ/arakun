@@ -106,7 +106,7 @@ impl Shell {
                                     plural(env.terminals.len(), "terminal")
                                 )),
                         )
-                        .child(status_dot(env.aggregate_status()))
+                        .child(status_dot(self.env_status(pi, ei, cx)))
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.select_env(pi, ei, window, cx)
                         }))
@@ -1111,8 +1111,8 @@ impl Shell {
                     .child(
                         ui::menu_item(
                             "cm-server-settle",
-                            "checkmark-circle02",
-                            "Settle threads",
+                            "archive02",
+                            "Archive",
                             false,
                             can_settle,
                         )
@@ -1148,8 +1148,35 @@ impl Shell {
                 let env = self.projects.get(pi).and_then(|p| p.environments.get(ei));
                 let path = env.map(|e| e.path.clone()).unwrap_or_default();
                 let deletable = env.is_some_and(|e| !e.is_checkout);
+                let archived = env.is_some_and(|e| e.archived());
+                let can_archive = env.is_some_and(|e| {
+                    e.sessions
+                        .iter()
+                        .any(|s| !s.settled && s.status != Status::Working)
+                });
                 let reveal = path.clone();
+                let archive = path.clone();
                 panel = panel
+                    .child(if archived {
+                        ui::menu_item("cm-restore", "undo", "Restore", false, true).on_click(
+                            cx.listener(move |this, _, _, cx| {
+                                this.menu = None;
+                                this.restore_sessions(&archive, None, cx);
+                            }),
+                        )
+                    } else {
+                        ui::menu_item("cm-archive", "archive02", "Archive", false, can_archive)
+                            .tooltip(ui::tip(
+                                "Hide its sessions and resolve its pull request's review threads",
+                            ))
+                            .when(can_archive, |d| {
+                                d.on_click(cx.listener(move |this, _, _, cx| {
+                                    this.menu = None;
+                                    this.archive_env(&archive, cx);
+                                }))
+                            })
+                    })
+                    .child(div().my(px(4.)).h(px(1.)).bg(theme::stroke()))
                     .child(
                         ui::menu_item(
                             "cm-reveal",

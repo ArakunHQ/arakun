@@ -623,6 +623,7 @@ fn new_tool(id: &str) -> ToolCall {
         added: 0,
         removed: 0,
         terminal_output: String::new(),
+        terminal_dropped_lines: 0,
         exit_code: None,
         parent: None,
         tool_name: None,

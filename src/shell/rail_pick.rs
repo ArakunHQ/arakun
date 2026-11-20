@@ -57,12 +57,30 @@ impl Shell {
             .environments
             .iter()
             .enumerate()
-            .filter(|(_, env)| {
+            .filter(|(ei, env)| {
                 let statuses: Vec<Status> = env.sessions.iter().map(|s| s.status).collect();
                 listed(env.is_checkout, &statuses, active_above)
+                    && (self.show_settled || !self.archive_hides(pi, *ei))
             })
             .map(|(ei, _)| ei)
             .collect()
+    }
+
+    /// Whether row `ei` of project `pi` is archived and would leave the list.
+    /// The open one stays, so going to it shows where you are.
+    pub(super) fn archive_hides(&self, pi: usize, ei: usize) -> bool {
+        self.projects.get(pi).is_some_and(|p| {
+            p.active_env != ei && p.environments.get(ei).is_some_and(|e| e.archived())
+        })
+    }
+
+    /// The archived rows of project `pi` that the "archived" row shows or hides.
+    pub(super) fn archived_count(&self, pi: usize) -> usize {
+        self.projects.get(pi).map_or(0, |p| {
+            (0..p.environments.len())
+                .filter(|&ei| self.archive_hides(pi, ei))
+                .count()
+        })
     }
 
     pub(super) fn is_picked(&self, path: &Path) -> bool {
@@ -185,32 +203,19 @@ impl Shell {
         out
     }
 
-    /// The waiting and failed sessions of the picked rows stop asking for
-    /// attention. On a server, the server settles them.
-    fn settle_picked(&mut self, cx: &mut Context<Self>) {
-        let mut retire = Vec::new();
-        let mut remote = Vec::new();
-        for (pi, ei) in self.picked() {
-            let env = &mut self.projects[pi].environments[ei];
-            if env.remote.is_some() {
-                remote.push(env.path.clone());
-                continue;
-            }
-            for s in &mut env.sessions {
-                if let Some(status) = settled(s.status) {
-                    s.status = status;
-                    retire.push((env.path.clone(), s.id.clone()));
-                }
-            }
-        }
-        for path in remote {
-            self.servers_settle_env(&path, cx);
-        }
-        for (path, id) in retire {
-            self.retire_if_hidden(&path, &id, cx);
+    /// Archives the picked rows: their sessions that are not working leave
+    /// the lists, and their pull requests' threads are resolved. On a server,
+    /// the server settles them.
+    fn archive_picked(&mut self, cx: &mut Context<Self>) {
+        let paths: Vec<PathBuf> = self
+            .picked()
+            .into_iter()
+            .map(|(pi, ei)| self.projects[pi].environments[ei].path.clone())
+            .collect();
+        for path in paths {
+            self.archive_env(&path, cx);
         }
         self.drop_pick();
-        self.save(cx);
         cx.notify();
     }
 
@@ -393,7 +398,11 @@ impl Shell {
                 .iter()
                 .map(|&(pi, ei)| &self.projects[pi].environments[ei])
         };
-        let can_settle = envs().any(|e| e.sessions.iter().any(|s| settled(s.status).is_some()));
+        let can_archive = envs().any(|e| {
+            e.sessions
+                .iter()
+                .any(|s| s.status != Status::Working && (e.remote.is_some() || !s.settled))
+        });
         let can_close = envs().any(|e| !e.sessions.is_empty());
         let can_delete = envs().any(|e| !e.is_checkout);
         let action = |id: &'static str, icon_name: &'static str, tip: &'static str, on: bool| {
@@ -423,13 +432,13 @@ impl Shell {
                 )
                 .child(
                     action(
-                        "pick-settle",
-                        "checkmark-circle02",
-                        "Settle their sessions",
-                        can_settle,
+                        "pick-archive",
+                        "archive02",
+                        "Archive: hide their sessions and resolve their review threads",
+                        can_archive,
                     )
-                    .when(can_settle, |d| {
-                        d.on_click(cx.listener(|this, _, _, cx| this.settle_picked(cx)))
+                    .when(can_archive, |d| {
+                        d.on_click(cx.listener(|this, _, _, cx| this.archive_picked(cx)))
                     }),
                 )
                 .child(

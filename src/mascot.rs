@@ -14,7 +14,7 @@ use std::f32::consts::{PI, TAU};
 use std::rc::Rc;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use gpui::{
     Bounds, ContentMask, Context, DispatchPhase, Hsla, IntoElement, MouseButton, MouseDownEvent,
@@ -592,29 +592,23 @@ pub struct Mascot {
     dance_t0: Option<f64>,
 
     _tick: Task<()>,
+    wake: crate::frame_timer::Waker,
     _keys: Subscription,
 }
 
 impl Mascot {
     /// A mascot `width` px wide; its height follows the drawing (about 0.8).
     pub fn new(width: f32, cx: &mut Context<Self>) -> Self {
-        // Wakes often but only redraws while something moves or is due, so a
-        // settled raccoon costs no frames.
-        let tick = cx.spawn(async move |this, cx| {
-            loop {
-                cx.background_executor()
-                    .timer(Duration::from_millis(33))
-                    .await;
-                let alive = this.update(cx, |m, cx| {
-                    if m.wants_frame() {
-                        m.rendered = false;
-                        cx.notify();
-                    }
-                });
-                if alive.is_err() {
-                    break;
-                }
+        // Redraws only while something moves or is due, so a settled raccoon
+        // costs no frames, and its timer sleeps until the pointer, a key or a
+        // render wakes it. An event that comes due waits at most the sleep.
+        let (tick, wake) = crate::frame_timer::start(cx, |m: &mut Self, cx| {
+            if !m.wants_frame() {
+                return false;
             }
+            m.rendered = false;
+            cx.notify();
+            true
         });
         let keys = cx.observe_keystrokes(|m, _, _, _| m.input());
         let seed = std::time::SystemTime::now()
@@ -681,6 +675,7 @@ impl Mascot {
             color: None,
             dance_t0: None,
             _tick: tick,
+            wake,
             _keys: keys,
         }
     }
@@ -858,6 +853,7 @@ impl Mascot {
     fn input(&mut self) {
         let now = self.now();
         self.last_input = now;
+        self.wake.wake();
         if self.auto_sleep && self.state == State::Sleeping {
             self.enter(State::Idle, now);
             self.start_act(Act::Wake, now);
@@ -1741,6 +1737,7 @@ impl Render for Mascot {
         let dt = self.last_frame.map_or(1. / 60., |l| (now - l).min(0.05)) as f32;
         self.last_frame = Some(now);
         self.rendered = true;
+        self.wake.wake();
         self.active = self.awake || window.is_window_active();
         let frame = self.step(now, dt);
         let color = self.color.unwrap_or_else(theme::brand_paper);

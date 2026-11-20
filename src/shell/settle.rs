@@ -2,6 +2,10 @@
 //! (`crate::settle`): its review threads resolved, its notifications read, and
 //! the environment's sessions no longer asking for attention and hidden from
 //! the sessions list.
+//!
+//! Archiving does the same by hand, whether the pull request merged or not:
+//! for a whole environment from the sidebar, or for one session. Restoring
+//! brings the sessions back into the list.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -190,6 +194,116 @@ impl Shell {
     }
 }
 
+impl Shell {
+    /// Archives the environment at `path` by hand: its sessions that are not
+    /// working stop asking for attention and leave the lists, and the open
+    /// review threads and unread notifications of its branch's pull request
+    /// are settled too. A server's environment is settled by the server.
+    pub(super) fn archive_env(&mut self, path: &Path, cx: &mut Context<Self>) {
+        let Some(env) = self.find_env(path) else {
+            return;
+        };
+        if env.remote.is_some() {
+            self.servers_settle_env(path, cx);
+            return;
+        }
+        let ids: Vec<String> = env.sessions.iter().map(|s| s.id.to_string()).collect();
+        let github = env.sync.github && env.sync.gh && !env.is_checkout;
+        self.archive_sessions(path, &ids, cx);
+        if github {
+            self.settle_pr_of(path, cx);
+        }
+    }
+
+    /// Archives the sessions `ids` of the environment at `path`, leaving out
+    /// the ones still working. Their agents stop unless a tab shows them.
+    pub(super) fn archive_sessions(&mut self, path: &Path, ids: &[String], cx: &mut Context<Self>) {
+        let Some(env) = self.find_env_mut(path) else {
+            return;
+        };
+        let mut retire = Vec::new();
+        for s in env
+            .sessions
+            .iter_mut()
+            .filter(|s| ids.iter().any(|id| *id == *s.id))
+        {
+            if let Some(status) = archived_status(s.status) {
+                s.status = status;
+                s.settled = true;
+                retire.push(s.id.to_string());
+            }
+        }
+        for id in retire {
+            self.retire_if_hidden(path, &id, cx);
+        }
+        self.save(cx);
+        cx.notify();
+    }
+
+    /// Brings the archived sessions of the environment at `path` back into
+    /// the lists; with `id`, only that one.
+    pub(super) fn restore_sessions(
+        &mut self,
+        path: &Path,
+        id: Option<&str>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(env) = self.find_env_mut(path) else {
+            return;
+        };
+        for s in env
+            .sessions
+            .iter_mut()
+            .filter(|s| id.is_none_or(|id| *s.id == *id))
+        {
+            s.settled = false;
+        }
+        self.save(cx);
+        cx.notify();
+    }
+
+    /// Resolves the open review threads of the pull request of the branch at
+    /// `path` and marks its notifications read. Nothing when it has none.
+    fn settle_pr_of(&mut self, path: &Path, cx: &mut Context<Self>) {
+        let dir = path.to_path_buf();
+        cx.spawn(async move |this, cx| {
+            let done = cx
+                .background_spawn(crate::guard::task(async move {
+                    let pr = crate::git::pr_view(&dir)?;
+                    let (host, item) = pr::ItemRef::host_and_item(&pr.url)?;
+                    let done = pr::resolve_open_threads(&host, &item).map_err(|e| e.text());
+                    Some((queue::key_of(&item), item.number, done))
+                }))
+                .await;
+            let Some((key, number, done)) = done else {
+                return;
+            };
+            let _ = this.update(cx, |this, cx| {
+                this.github.update(cx, |g, cx| g.mark_read_of(&key, cx));
+                if let Err(e) = done {
+                    this.notify(
+                        crate::island::AlertKind::Warning,
+                        "Could not resolve the review threads",
+                        &format!("Pull request #{number}: {e}"),
+                        None,
+                        cx,
+                    );
+                }
+            });
+        })
+        .detach();
+    }
+}
+
+/// What a session's status becomes when it is archived by hand; None for one
+/// still working, which is left alone.
+fn archived_status(status: Status) -> Option<Status> {
+    match status {
+        Status::Working => None,
+        _ => Some(Status::Idle),
+    }
+}
+
 /// What a session's status becomes once its pull request merged at
 /// `merged_at`; None for one to leave alone.
 fn settled_status(status: Status, updated: u64, merged_at: u64, open: bool) -> Option<Status> {
@@ -217,6 +331,14 @@ mod tests {
         assert!(w.tried("u", false));
         assert!(w.tried("v", true));
         assert!(!w.tries.contains_key("v"));
+    }
+
+    #[test]
+    fn archiving_leaves_a_working_session_alone() {
+        assert_eq!(archived_status(Status::NeedsInput), Some(Status::Idle));
+        assert_eq!(archived_status(Status::Error), Some(Status::Idle));
+        assert_eq!(archived_status(Status::Idle), Some(Status::Idle));
+        assert_eq!(archived_status(Status::Working), None);
     }
 
     #[test]

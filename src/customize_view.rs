@@ -1202,7 +1202,21 @@ impl CustomizeView {
                     )),
                 );
             }
-            stacked("Diff colors", None, seg.into_any_element())
+            div()
+                .flex()
+                .flex_col()
+                .gap(crate::ui::sp(8.))
+                .child(stacked("Diff colors", None, seg.into_any_element()))
+                // The session in the middle seldom shows a diff while
+                // this is picked, so a few lines show the choice here.
+                .child(diff_sample())
+                .child(
+                    div()
+                        .text_size(px(ui::TEXT_XS))
+                        .text_color(theme::text_faint())
+                        .child(now.note()),
+                )
+                .into_any_element()
         };
         vec![mode, self.render_palettes(cx), grays, diffs]
     }
@@ -1783,6 +1797,116 @@ fn stacked(title: &'static str, note: Option<&'static str>, control: AnyElement)
         .gap(crate::ui::sp(8.))
         .child(heading(title, note))
         .child(control)
+        .into_any_element()
+}
+
+/// The lines of the diff sample: added (`Some(true)`), removed
+/// (`Some(false)`) or around them (`None`).
+const DIFF_SAMPLE: [(Option<bool>, &str); 5] = [
+    (None, "fn wait(n: u32) -> u64 {"),
+    (Some(false), "    let ms = 100;"),
+    (Some(true), "    let ms = 100 * 2u64.pow(n);"),
+    (Some(true), "    ms.min(30_000)"),
+    (None, "}"),
+];
+
+/// A few lines of a diff drawn the way the chat draws one, in the diff
+/// colors now chosen.
+fn diff_sample() -> AnyElement {
+    let count = |kind: bool| DIFF_SAMPLE.iter().filter(|(k, _)| *k == Some(kind)).count();
+    let line = |(kind, text): (Option<bool>, &'static str)| {
+        let (mark, color, bar, bg) = match kind {
+            Some(true) => (
+                "+",
+                gpui::Hsla::from(theme::diff_add()),
+                Some(theme::diff_add_bar()),
+                Some(theme::diff_add_bg()),
+            ),
+            Some(false) => (
+                "−",
+                gpui::Hsla::from(theme::diff_del()),
+                Some(theme::diff_del_bar()),
+                Some(theme::diff_del_bg()),
+            ),
+            None => (" ", gpui::transparent_black(), None, None),
+        };
+        div()
+            .relative()
+            .flex()
+            .items_center()
+            .h(px(18.))
+            .when_some(bg, |d, bg| d.bg(bg))
+            .when_some(bar, |d, bar| {
+                d.child(
+                    div()
+                        .absolute()
+                        .left_0()
+                        .top_0()
+                        .bottom_0()
+                        .w(px(2.))
+                        .bg(bar),
+                )
+            })
+            .child(
+                div()
+                    .flex_none()
+                    .w(px(20.))
+                    .flex()
+                    .justify_center()
+                    .text_color(color)
+                    .child(mark),
+            )
+            .child(
+                div()
+                    .text_color(if kind.is_some() {
+                        theme::text_muted()
+                    } else {
+                        theme::text_subtle()
+                    })
+                    .child(text),
+            )
+    };
+    div()
+        .flex()
+        .flex_col()
+        .overflow_hidden()
+        .rounded(crate::ui::rad(8.))
+        .border_1()
+        .border_color(theme::border())
+        .bg(theme::sunk())
+        .font_family(theme::FONT_MONO)
+        .text_size(px(ui::TEXT_XS))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(crate::ui::sp(8.))
+                .h(px(22.))
+                .px(crate::ui::sp(10.))
+                .border_b_1()
+                .border_color(theme::border_subtle())
+                .child(
+                    div()
+                        .flex_1()
+                        .text_color(theme::text_subtle())
+                        .child("retry.rs"),
+                )
+                .child(
+                    div()
+                        .text_color(theme::diff_add())
+                        .child(format!("+{}", count(true))),
+                )
+                .child(
+                    div()
+                        .text_color(theme::diff_del())
+                        .child(format!("−{}", count(false))),
+                ),
+        )
+        .child(
+            div()
+                .py(crate::ui::sp(2.))
+                .children(DIFF_SAMPLE.into_iter().map(line)),
+        )
         .into_any_element()
 }
 

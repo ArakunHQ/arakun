@@ -10,7 +10,7 @@
 
 import { session, type Session } from "./auth";
 import { TRUSTED, epochAllowed, epochRefused } from "./channel";
-import { DAY, GITHUB_ID, ULID, error, fromB64url, isObject, jsonBody, now, ulid, type Env } from "./util";
+import { DAY, GITHUB_ID, GITHUB_LOGIN, TEAMS_FLAG as FLAG, ULID, error, fromB64url, isObject, jsonBody, now, ulid, type Env } from "./util";
 import {
   DEVICE_ID,
   deviceIdOf,
@@ -24,7 +24,6 @@ import {
   type Envelope,
 } from "./wire";
 
-const FLAG = "teams";
 const DEVICE_HEADER = "X-Arakun-Device";
 const MAX_DEVICES = 20;
 /// With 20 devices each, a rotation is at most 500 envelopes: one request.
@@ -40,9 +39,6 @@ const REMIND_EVERY = 60 * 60;
 const MAX_ENVELOPES = 500;
 const MAX_BODY = 1024 * 1024;
 const HISTORY_LIMIT = 200;
-/// GitHub logins: letters, digits and hyphens, at most 39. Enterprise Managed
-/// Users also have an underscore, as sign-in allows.
-const LOGIN = /^[A-Za-z0-9_-]{1,39}$/;
 
 type Role = "owner" | "admin" | "member";
 
@@ -115,16 +111,20 @@ function isAdmin(role: Role): boolean {
   return role === "owner" || role === "admin";
 }
 
-/// The team, if the caller is a member of it.
-async function teamOf(c: Ctx, teamId: string): Promise<Team | null> {
-  if (!ULID.test(teamId)) return null;
+/// The team, if the caller is a member of it, as a statement to run alone or
+/// in a batch. Every check of who may see a team goes through here.
+function teamQuery(c: Ctx, teamId: string): D1PreparedStatement {
   return c.env.DB.prepare(
     `SELECT t.team_id, t.name, t.epoch, t.keyed_epoch, m.role
      FROM members m JOIN teams t ON t.team_id = m.team_id
      WHERE m.team_id = ? AND m.github_id = ?`,
-  )
-    .bind(teamId, c.me.githubId)
-    .first<Team>();
+  ).bind(teamId, c.me.githubId);
+}
+
+/// The team, if the caller is a member of it.
+async function teamOf(c: Ctx, teamId: string): Promise<Team | null> {
+  if (!ULID.test(teamId)) return null;
+  return teamQuery(c, teamId).first<Team>();
 }
 
 /// The device the request names in X-Arakun-Device, if it is the caller's.
@@ -257,13 +257,7 @@ async function getTeam(c: Ctx, teamId: string): Promise<Response> {
   // One snapshot: a removal that lands between reads would otherwise list
   // members that no longer match the epoch and rotation status reported.
   const [team, members, channels] = await db.batch([
-    db
-      .prepare(
-        `SELECT t.team_id, t.name, t.epoch, t.keyed_epoch, m.role
-         FROM members m JOIN teams t ON t.team_id = m.team_id
-         WHERE m.team_id = ? AND m.github_id = ?`,
-      )
-      .bind(teamId, c.me.githubId),
+    teamQuery(c, teamId),
     db
       .prepare(
         `SELECT m.github_id, u.login, m.role, m.joined_at,
@@ -300,7 +294,7 @@ async function invite(c: Ctx, teamId: string): Promise<Response> {
   if (!isAdmin(team.role)) return notAdmin();
   const body = await jsonBody(c.request, 4096);
   const given = isObject(body) ? body["github_login"] : null;
-  if (typeof given !== "string" || !LOGIN.test(given)) return error(400, 'expected {"github_login": "..."}');
+  if (typeof given !== "string" || !GITHUB_LOGIN.test(given)) return error(400, 'expected {"github_login": "..."}');
   const login = given.toLowerCase();
   const db = c.env.DB;
   const already = await db
@@ -981,9 +975,9 @@ async function history(c: Ctx, teamId: string, channelId: string): Promise<Respo
     `SELECT s.expires_at FROM sessions s
      JOIN members m ON m.github_id = s.github_id AND m.team_id = ?2
      JOIN devices d ON d.github_id = s.github_id AND d.device_id = ?3
-     JOIN user_flags f ON f.github_id = s.github_id AND f.flag = 'teams'
+     JOIN user_flags f ON f.github_id = s.github_id AND f.flag = ?4
      WHERE s.token_hash = ?1`,
-  ).bind(c.me.hash, teamId, access.device.device_id).first<{ expires_at: number }>();
+  ).bind(c.me.hash, teamId, access.device.device_id, FLAG).first<{ expires_at: number }>();
   if (!grant || grant.expires_at <= now()) return notFound();
   return Response.json(rows);
 }

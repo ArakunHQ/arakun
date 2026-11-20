@@ -14,7 +14,7 @@
 // per message, and another when sockets were admitted during it.
 
 import { DurableObject } from "cloudflare:workers";
-import { error, isObject, now, type Env } from "./util";
+import { TEAMS_FLAG, error, isObject, now, type Env } from "./util";
 import { messageSigned, parseMessage, sigKey, verify, type WireMessage } from "./wire";
 
 /// Headers only the Worker sets, on a request it builds from scratch.
@@ -361,10 +361,10 @@ export class Channel extends DurableObject<Env> {
     const { results } = await this.env.DB.prepare(
       `SELECT s.token_hash, s.expires_at FROM sessions s
        JOIN members m ON m.github_id = s.github_id AND m.team_id = ?1
-       JOIN user_flags f ON f.github_id = s.github_id AND f.flag = 'teams'
+       JOIN user_flags f ON f.github_id = s.github_id AND f.flag = ?3
        WHERE s.token_hash IN (SELECT value FROM json_each(?2))`,
     )
-      .bind(teamId, JSON.stringify(sessions))
+      .bind(teamId, JSON.stringify(sessions), TEAMS_FLAG)
       .all<{ token_hash: string; expires_at: number }>();
     return new Map(results.map((r) => [r.token_hash, r.expires_at]));
   }

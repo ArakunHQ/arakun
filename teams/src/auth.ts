@@ -10,7 +10,7 @@
 // app's client secret, which lives only here as a Worker secret: the desktop
 // app's device flow has no secret.
 
-import { DAY, b64url, bearer, bodyText, discard, error, flagList, flagsQuery, hex, now, sha256, type Env } from "./util";
+import { DAY, GITHUB_LOGIN, b64url, bearer, bodyText, discard, error, flagList, flagsQuery, hex, now, sha256, type Env } from "./util";
 
 const SESSION_DAYS = 90;
 /// Renewal never takes a session past this many days after its sign-in, so a
@@ -185,9 +185,7 @@ async function githubUser(token: string, clientId: string, clientSecret: string)
   if (typeof user !== "object" || user === null) return "unreachable";
   const { id, login } = user as Record<string, unknown>;
   if (typeof id !== "number" || !Number.isSafeInteger(id) || id <= 0) return "unreachable";
-  // GitHub logins: letters, digits and hyphens, at most 39. Enterprise Managed
-  // Users also have an underscore before their enterprise's short code.
-  if (typeof login !== "string" || !/^[A-Za-z0-9_-]{1,39}$/.test(login)) return "unreachable";
+  if (typeof login !== "string" || !GITHUB_LOGIN.test(login)) return "unreachable";
   return { id, login };
 }
 

@@ -2,6 +2,15 @@ export type Env = Cloudflare.Env;
 
 export const DAY = 24 * 60 * 60;
 
+/// The flag every team endpoint and channel socket needs. One name, so the
+/// checks in the Worker, the SQL and the channel object cannot drift apart.
+export const TEAMS_FLAG = "teams";
+
+/// GitHub logins: letters, digits and hyphens, at most 39. Enterprise Managed
+/// Users also have an underscore before their enterprise's short code. Sign-in
+/// and invites share it, so anyone who can sign in can be invited.
+export const GITHUB_LOGIN = /^[A-Za-z0-9_-]{1,39}$/;
+
 /// Unix seconds, the unit every time in the database uses.
 export function now(): number {
   return Math.floor(Date.now() / 1000);

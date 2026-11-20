@@ -8,7 +8,7 @@
 // The flag routes answer { github_id, flags } with the user's flags after the
 // change; the sessions route answers { github_id, closed } with how many ended.
 
-import { GITHUB_ID, error, flagList, flagsQuery, now, sha256, type Env } from "./util";
+import { GITHUB_ID, bearer, error, flagList, flagsQuery, now, sha256, type Env } from "./util";
 
 const FLAG = /^[a-z][a-z0-9_]{0,31}$/;
 
@@ -63,7 +63,7 @@ async function closeSessions(env: Env, idText: string): Promise<Response> {
 /// leak either. No secret configured means no admin at all.
 async function authorized(request: Request, env: Env): Promise<boolean> {
   const secret = env.ADMIN_SECRET;
-  const given = /^Bearer +(.+)$/i.exec(request.headers.get("Authorization") ?? "")?.[1];
+  const given = bearer(request);
   if (!secret || !given) return false;
   const [a, b] = await Promise.all([sha256(secret), sha256(given)]);
   return crypto.subtle.timingSafeEqual(a, b);

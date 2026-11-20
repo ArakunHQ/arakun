@@ -24,6 +24,7 @@ use super::anthropic;
 use super::claude_ext;
 use super::knobs;
 use super::launch;
+use super::ledger;
 use super::rpc::{RpcError, unix_now, uuid_v4};
 use super::thread::{ConfigOption, Setting, parse_config};
 use crate::headless::broker;
@@ -1725,6 +1726,8 @@ struct Used {
     cached: u64,
     output: u64,
     reasoning: u64,
+    /// What each tool's results added to the context, by [`ledger::tool_key`].
+    tools: BTreeMap<String, ledger::ToolUse>,
 }
 
 /// Text deltas coalesced, so a fast stream doesn't redraw the session per token.
@@ -2137,12 +2140,16 @@ impl Agent {
     }
 
     fn done(stop: &str, used: &Used) -> Value {
-        json!({"stopReason": stop, "usage": {
+        let mut v = json!({"stopReason": stop, "usage": {
             "inputTokens": used.input,
             "outputTokens": used.output,
             "cachedReadTokens": used.cached,
             "thoughtTokens": used.reasoning,
-        }})
+        }});
+        if !used.tools.is_empty() {
+            v["_meta"] = json!({ "arakun": { "tools": used.tools } });
+        }
+        v
     }
 
     /// What one attached photo shows, in Spanish, in enough detail for a
@@ -2464,6 +2471,13 @@ impl Agent {
                         content.push_str("\n\n");
                         content.push_str(&rem);
                     }
+                    used.tools
+                        .entry(ledger::tool_key(&call.name, cmd))
+                        .or_default()
+                        .add(ledger::ToolUse {
+                            calls: 1,
+                            bytes: content.len() as u64,
+                        });
                     let mut s = lock(session);
                     s.messages
                         .push(json!({"role": "tool", "tool_call_id": call.id, "content": content}));
@@ -3219,6 +3233,21 @@ mod tests {
             lane.take(3, t0 + Duration::from_secs(70)),
             Some(Duration::from_secs(20))
         );
+    }
+
+    #[test]
+    fn the_turn_says_what_each_tool_used() {
+        let mut used = Used::default();
+        assert!(Agent::done("end_turn", &used).get("_meta").is_none());
+        used.tools.insert(
+            ledger::tool_key("bash", Some("cargo test")),
+            ledger::ToolUse {
+                calls: 1,
+                bytes: 42,
+            },
+        );
+        let v = Agent::done("end_turn", &used);
+        assert_eq!(v["_meta"]["arakun"]["tools"]["bash cargo"]["bytes"], 42);
     }
 
     #[test]

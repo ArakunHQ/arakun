@@ -2,7 +2,7 @@
 //! ACP; Droid speaks its native `stream-jsonrpc` (see `native.rs`) unless
 //! `ARAKUN_DROID_ACP=1` keeps it on ACP too.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::{Component, Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -674,6 +674,9 @@ pub struct Thread {
     turn_tokens: u64,
     /// Session usage when the turn started, for the usage log.
     turn_usage: Usage,
+    /// What each tool's results used in the turn, when the agent says
+    /// (arakun's Workers AI loop), for the usage log.
+    turn_tools: BTreeMap<String, ledger::ToolUse>,
     /// The last cost Claude Code reported in this process; it counts from the
     /// agent's start, or from the saved total when it resumes a session.
     cost_seen: Option<f64>,
@@ -1163,6 +1166,7 @@ impl Thread {
             turn_started: None,
             turn_tokens: 0,
             turn_usage: Usage::default(),
+            turn_tools: BTreeMap::new(),
             cost_seen: None,
             cost_base: 0.,
             fork_point: None,
@@ -2285,6 +2289,7 @@ impl Thread {
         }
         self.turn_tokens = self.usage.total_tokens();
         self.turn_usage = self.usage.clone();
+        self.turn_tools.clear();
         self.last_prompt = Some(text.clone());
         self.last_message_id = None;
         self.cancelling = false;
@@ -2439,6 +2444,7 @@ impl Thread {
         self.auto_turn = true;
         self.turn_started = Some(Instant::now());
         self.turn_usage = self.usage.clone();
+        self.turn_tools.clear();
         self.set_status(ThreadStatus::Working, cx);
     }
 
@@ -2627,6 +2633,13 @@ impl Thread {
     /// lists the turn by model in `_meta.quota.model_usage`, subagents and
     /// compaction included, which the flat `usage` leaves out.
     fn add_turn_tokens(&mut self, v: &Value) {
+        if let Some(tools) = v["_meta"]["arakun"]["tools"].as_object() {
+            for (k, u) in tools {
+                if let Ok(u) = serde_json::from_value::<ledger::ToolUse>(u.clone()) {
+                    self.turn_tools.entry(k.clone()).or_default().add(u);
+                }
+            }
+        }
         let rows: Vec<&Value> = v["_meta"]["quota"]["model_usage"]
             .as_array()
             .map(|a| {
@@ -2706,6 +2719,7 @@ impl Thread {
                 .unwrap_or(0)
                 .saturating_sub(before.credits.unwrap_or(0)),
             ms: elapsed_ms.unwrap_or(0),
+            tools: std::mem::take(&mut self.turn_tools),
         };
         self.turn_usage = self.usage.clone();
         if turn.is_empty() {

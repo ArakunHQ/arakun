@@ -40,10 +40,14 @@ import { planFor, type Plan } from "./limits";
 /// What a socket is, kept on it across hibernation.
 type Tag =
   | { role: "pc"; nonce: string; claimed: boolean; label: string; until: number }
-  | { role: "phone"; channel: number; device: string | null; ticketHash: string | null; page: string | null };
+  | { role: "phone"; channel: number; device: string | null; ticketHash: string | null; page: string | null; since?: number };
 
 /// Who a phone is, once admitted.
 type Admitted = { device: string | null; ticketHash: string | null; page: string | null };
+
+/// A phone that may come in: who it is, and the hash of the pairing code it
+/// brought, spent only once it is actually let in.
+type Admit = Admitted & { code: string | null };
 
 /// What the computer opened for the next phone to pair with.
 interface Pairing {
@@ -247,20 +251,28 @@ export class Relay extends DurableObject<Env> {
   /// refused upgrade would look like a dead network to the page.
   private async acceptPhone(query: URLSearchParams): Promise<Response> {
     const [client, server] = pair();
-    const admitted = await this.admit(query);
-    if (typeof admitted !== "string" && (await this.full()) === "phones") this.replaceStale(admitted);
-    const full = typeof admitted === "string" ? null : await this.full();
-    if (typeof admitted === "string" || full) {
+    const admit = await this.admit(query);
+    let refused: string | null = typeof admit === "string" ? admit : null;
+    let full: "phones" | "daily" | null = null;
+    if (typeof admit !== "string") {
+      if ((await this.full()) === "phones") this.makeRoom(admit);
+      full = await this.full();
+      // Spent only now, so a phone sent away by a limit can try the same link
+      // again. Checked again because full() may have let another phone in.
+      if (!full && admit.code) refused = await this.spendCode(admit.code);
+    }
+    if (typeof admit === "string" || refused || full) {
       this.ctx.acceptWebSocket(server, ["phone"]);
       server.serializeAttachment({ role: "phone", channel: 0, device: null, ticketHash: null, page: null } satisfies Tag);
       if (full) this.limited(server, full);
-      else this.bye(server, admitted as string, CLOSE_UNAUTHORIZED);
+      else this.bye(server, refused ?? "refused", CLOSE_UNAUTHORIZED);
       return new Response(null, { status: 101, webSocket: client });
     }
+    const admitted: Admitted = { device: admit.device, ticketHash: admit.ticketHash, page: admit.page };
     const channel = ((await this.ctx.storage.get<number>("next_channel")) ?? 0) + 1;
     await this.ctx.storage.put("next_channel", channel);
     this.ctx.acceptWebSocket(server, ["phone", `ch:${channel}`]);
-    server.serializeAttachment({ role: "phone", channel, ...admitted } satisfies Tag);
+    server.serializeAttachment({ role: "phone", channel, ...admitted, since: Date.now() } satisfies Tag);
     server.send(phoneControl({ type: "open", channel }));
     if (!this.introduce(channel, admitted.device)) {
       server.send(phoneControl({ type: "pc_offline", since: (await this.ctx.storage.get<number>("last_seen")) ?? null }));
@@ -269,17 +281,36 @@ export class Relay extends DurableObject<Env> {
     return new Response(null, { status: 101, webSocket: client });
   }
 
+  /// When the phone places are taken, one of them is given up if it is the
+  /// newcomer's own old socket, or else a socket that never pinged and has
+  /// been open longer than a pinging one may stay silent. A socket like that
+  /// is left behind (a pairing page closed early) or a client from before
+  /// pings, which comes back on its own; while there is room, it stays.
+  private makeRoom(admitted: Admitted): void {
+    if (this.replaceStale(admitted)) return;
+    const now = Date.now();
+    const dead = this.phones()
+      .filter((ws) => this.silentAt(ws) === null)
+      .map((ws) => ({ ws, tag: ws.deserializeAttachment() as Tag & { role: "phone" } }))
+      // Sockets from before `since` was kept are as old as can be.
+      .filter(({ tag }) => (tag.since ?? 0) + this.silentMs <= now)
+      .sort((a, b) => a.tag.channel - b.tag.channel);
+    if (dead[0]) this.bye(dead[0].ws, "silent", CLOSE_GONE);
+  }
+
   /// A phone that moves between networks reconnects before the relay sees its
   /// old socket die. When that would leave it out, the oldest socket of the
   /// same page (device, ticket and the page's own name) makes room. Another
   /// tab is another page, so live tabs never replace each other.
-  private replaceStale(admitted: Admitted): void {
-    if (!admitted.device || !admitted.ticketHash || !admitted.page) return;
+  private replaceStale(admitted: Admitted): boolean {
+    if (!admitted.device || !admitted.ticketHash || !admitted.page) return false;
     const same = this.phones()
       .map((ws) => ({ ws, tag: ws.deserializeAttachment() as Tag & { role: "phone" } }))
       .filter(({ tag }) => tag.device === admitted.device && tag.ticketHash === admitted.ticketHash && tag.page === admitted.page)
       .sort((a, b) => a.tag.channel - b.tag.channel);
-    if (same[0]) this.bye(same[0].ws, "replaced", CLOSE_REPLACED);
+    if (!same[0]) return false;
+    this.bye(same[0].ws, "replaced", CLOSE_REPLACED);
+    return true;
   }
 
   /// Why one more phone cannot come in right now, if it cannot.
@@ -290,8 +321,9 @@ export class Relay extends DurableObject<Env> {
     return null;
   }
 
-  /// Who the phone is, or why it is not coming in.
-  private async admit(query: URLSearchParams): Promise<Admitted | string> {
+  /// Who the phone is, or why it is not coming in. A pairing code is only
+  /// checked here; `spendCode` spends it once the phone is let in.
+  private async admit(query: URLSearchParams): Promise<Admit | string> {
     const ticket = query.get("t");
     const device = query.get("d");
     const code = query.get("p");
@@ -300,16 +332,28 @@ export class Relay extends DurableObject<Env> {
     if (ticket && device) {
       const h = hex(await sha256(utf8(ticket)));
       const tickets = (await this.ctx.storage.get<string[]>("tickets")) ?? [];
-      return tickets.includes(h) ? { device, ticketHash: h, page } : "bad_ticket";
+      return tickets.includes(h) ? { device, ticketHash: h, page, code: null } : "bad_ticket";
     }
     if (code) {
-      const open = await this.ctx.storage.get<Pairing>("pair");
-      if (!open || open.until < Date.now()) return "no_pairing";
-      if (hex(await sha256(utf8(code))) !== open.hash) return "bad_code";
-      await this.ctx.storage.delete("pair"); // one use
-      return { device: null, ticketHash: null, page: null };
+      const h = hex(await sha256(utf8(code)));
+      return (await this.pairingRefusal(h)) ?? { device: null, ticketHash: null, page: null, code: h };
     }
     return "no_credentials";
+  }
+
+  /// Why a code with this hash does not pair right now, or null if it does.
+  private async pairingRefusal(hash: string): Promise<string | null> {
+    const open = await this.ctx.storage.get<Pairing>("pair");
+    if (!open || open.until < Date.now()) return "no_pairing";
+    return hash === open.hash ? null : "bad_code";
+  }
+
+  /// Spends the pairing code: one use. Read and delete are storage calls
+  /// only, so no other phone comes in between them.
+  private async spendCode(hash: string): Promise<string | null> {
+    const refused = await this.pairingRefusal(hash);
+    if (!refused) await this.ctx.storage.delete("pair");
+    return refused;
   }
 
   /// A phone's frames go to the computer on the phone's channel. Control is

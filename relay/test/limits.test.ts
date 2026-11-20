@@ -2,7 +2,7 @@ import { SELF, env, runDurableObjectAlarm, runInDurableObject } from "cloudflare
 import { beforeEach, describe, expect, it } from "vitest";
 import { DATA, pcFrame, phoneFrame } from "../src/frames";
 import { FREE, disabledReason, isBlocked, planFor } from "../src/limits";
-import { claim, computer, connectedComputer, issueTickets, openPc, openPhone, stored } from "./helpers";
+import { claim, computer, connectedComputer, issueTickets, openPairing, openPc, openPhone, stored } from "./helpers";
 
 const LABEL = "k7f3q2m4xwab4c5d";
 
@@ -388,6 +388,73 @@ describe("a phone that went quiet", () => {
       await state.storage.setAlarm(Date.now());
     });
     expect(await runDurableObjectAlarm(stub)).toBe(true);
+    expect(phone.inbox.closed).toBeNull();
+  });
+});
+
+describe("pairing while the phone places are taken", () => {
+  it("keeps the code for another try when a limit sends the phone away", async () => {
+    await plans({ phones: 1 });
+    const { me, pc } = await connectedComputer();
+    await issueTickets(pc, me.label, "t");
+    const phone = await openPhone(me.label, "d=dev-1&t=t&s=aaaaaaaa");
+    expect(await phone.inbox.control()).toEqual({ type: "open", channel: 1 });
+    await pc.inbox.control();
+    phone.ws.send("ping");
+    expect(await phone.inbox.next()).toEqual({ text: "pong" });
+
+    await openPairing(pc, me.label, "code-123");
+    const pairing = await openPhone(me.label, "p=code-123");
+    expect(await pairing.inbox.control()).toEqual({ type: "limit", which: "phones" });
+    expect(await stored(me.label, "pair")).toBeDefined();
+
+    phone.ws.close(1000, "done");
+    await pc.inbox.control();
+    const again = await openPhone(me.label, "p=code-123");
+    expect(await again.inbox.control()).toEqual({ type: "open", channel: 2 });
+    expect(await stored(me.label, "pair")).toBeUndefined();
+  });
+
+  it("gives up a place held by a socket that never pinged", async () => {
+    await plans({ phones: 1 });
+    const { me, pc } = await connectedComputer();
+    await openPairing(pc, me.label, "code-1");
+    const left = await openPhone(me.label, "p=code-1");
+    expect(await left.inbox.control()).toEqual({ type: "open", channel: 1 });
+    await pc.inbox.control();
+
+    // Still within the time a pinging socket may be quiet: it stays.
+    await openPairing(pc, me.label, "code-2");
+    const early = await openPhone(me.label, "p=code-2");
+    expect(await early.inbox.control()).toEqual({ type: "limit", which: "phones" });
+    expect(left.inbox.closed).toBeNull();
+
+    const stub = env.RELAY.get(env.RELAY.idFromName(me.label));
+    await runInDurableObject(stub, (instance) => {
+      (instance as unknown as { silentMs: number }).silentMs = 0;
+    });
+    const late = await openPhone(me.label, "p=code-2");
+    expect(await left.inbox.control()).toEqual({ type: "bye", reason: "silent" });
+    expect(await pc.inbox.control()).toEqual({ type: "close", channel: 1, reason: "silent" });
+    expect(await late.inbox.control()).toEqual({ type: "open", channel: 2 });
+  });
+
+  it("never gives up a place held by a socket that pings", async () => {
+    await plans({ phones: 1 });
+    const { me, pc } = await connectedComputer();
+    await issueTickets(pc, me.label, "t");
+    const phone = await openPhone(me.label, "d=dev-1&t=t&s=aaaaaaaa");
+    expect(await phone.inbox.control()).toEqual({ type: "open", channel: 1 });
+    phone.ws.send("ping");
+    expect(await phone.inbox.next()).toEqual({ text: "pong" });
+    const stub = env.RELAY.get(env.RELAY.idFromName(me.label));
+    await runInDurableObject(stub, (instance) => {
+      (instance as unknown as { silentMs: number }).silentMs = 0;
+    });
+
+    await openPairing(pc, me.label, "code-1");
+    const pairing = await openPhone(me.label, "p=code-1");
+    expect(await pairing.inbox.control()).toEqual({ type: "limit", which: "phones" });
     expect(phone.inbox.closed).toBeNull();
   });
 });

@@ -445,10 +445,7 @@ fn file() -> PathBuf {
 }
 
 pub fn load() -> Settings {
-    std::fs::read(file())
-        .ok()
-        .and_then(|b| serde_json::from_slice(&b).ok())
-        .unwrap_or_default()
+    crate::durable::load_json(file()).unwrap_or_default()
 }
 
 pub fn store(settings: &Settings) {
@@ -2440,10 +2437,9 @@ mod tests {
             return;
         };
         let items = pilot::fetch(&cfg).unwrap_or_else(|e| panic!("{e}"));
-        let book: pilot::Book = std::fs::read(crate::state::data_dir().join("pilot.json"))
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or_default();
+        let book: pilot::Book =
+            crate::durable::load_json(crate::state::data_dir().join("pilot.json"))
+                .unwrap_or_default();
         let shown: Vec<&pilot::Item> = items.iter().filter(|i| !book.handled(&i.id)).collect();
         let mut kinds: HashMap<String, usize> = HashMap::new();
         for c in &shown {

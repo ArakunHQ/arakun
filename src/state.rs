@@ -558,8 +558,8 @@ pub fn sweep_orphans(listed: std::collections::HashSet<String>) {
         (data_dir().join("linked"), "md"),
     ];
     let seen = sweep(&dirs, seen, &listed, crate::model::unix_now());
-    if let Ok(bytes) = serde_json::to_vec(&seen) {
-        let _ = crate::durable::write(&seen_path, &bytes);
+    if let Err(e) = crate::durable::save_json(&seen_path, &seen) {
+        eprintln!("arakun: could not save the sessions seen listed: {e}");
     }
 }
 

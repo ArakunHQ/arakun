@@ -114,10 +114,7 @@ fn file() -> PathBuf {
 }
 
 pub fn load() -> Balance {
-    std::fs::read(file())
-        .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_default()
+    crate::durable::load_json(file()).unwrap_or_default()
 }
 
 pub fn save(balance: &Balance) {

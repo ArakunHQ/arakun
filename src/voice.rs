@@ -82,12 +82,7 @@ fn cached() -> &'static Mutex<Option<Settings>> {
 
 pub fn settings() -> Settings {
     lock(cached())
-        .get_or_insert_with(|| {
-            std::fs::read(file())
-                .ok()
-                .and_then(|b| serde_json::from_slice(&b).ok())
-                .unwrap_or_default()
-        })
+        .get_or_insert_with(|| crate::durable::load_json(file()).unwrap_or_default())
         .clone()
 }
 

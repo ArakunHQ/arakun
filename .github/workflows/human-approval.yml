@@ -1,11 +1,17 @@
 name: Human approval
 
 # Sets the "Human approval" commit status, which the main ruleset requires.
-# It stays pending on a pull request from outside the team until someone on
-# the team approves its head commit, and passes at once for the team. The
-# Reviewers workflow dismisses CodeRabbit's approval of such a pull request,
-# but only after the approval, so it can't stop a merge in between; this
-# status does.
+# It stays pending until a maintainer other than the author approves the
+# head commit when the pull request:
+# - comes from outside the team. The Reviewers workflow dismisses
+#   CodeRabbit's approval of it, but only after the approval, so it can't
+#   stop a merge in between; this status does.
+# - changes a critical path (CRITICAL below). CodeRabbit never approves
+#   those (the overrides in .coderabbit.yaml), but it reads that file from
+#   the pull request, so a pull request could change the rule for itself.
+#   This file runs from main, so it can't.
+# It passes at once for any other pull request from the team, so CodeRabbit's
+# approval is enough there.
 #
 # It is its own workflow, not a job in Reviewers, because a pull_request_target
 # run shows on the pull request: a skipped "Request reviewers" job there looks
@@ -14,7 +20,8 @@ name: Human approval
 # When it runs:
 # - pull_request_target: a new head commit needs its status. The old head, or
 #   the head of a closed pull request, may be shared with another open pull
-#   request, so its status is worked out again.
+#   request, so its status is worked out again. A new base branch changes
+#   the files the pull request changes (edited, only when the base changed).
 # - workflow_run: the "Review submitted" workflow ran, so a review was
 #   submitted or dismissed and the status may change.
 # - workflow_dispatch: by hand, for a pull request whose status is missing.
@@ -27,7 +34,7 @@ name: Human approval
 on:
   # Safe as the comment above says; zizmor can't see that no job checks out.
   pull_request_target: # zizmor: ignore[dangerous-triggers]
-    types: [opened, reopened, synchronize, closed]
+    types: [opened, reopened, synchronize, closed, edited]
   workflow_run: # zizmor: ignore[dangerous-triggers]
     workflows: [Review submitted]
     types: [completed]
@@ -44,6 +51,18 @@ env:
   # read team membership, so keep this in step by hand, here and in
   # reviewers.yml.
   TEAM: KarloAldrete rikvisser-dev daniektj
+  # Paths a maintainer has to approve, whoever wrote the pull request. Bash
+  # patterns, where * also matches /. Keep in step with the overrides in
+  # .coderabbit.yaml and with reviewers.yml.
+  CRITICAL: >-
+    .github/* AGENTS.md CLAUDE.md CONTRIBUTING.md .claude/* .coderabbit.yaml
+    lefthook.yml src/headless* src/control.rs src/account.rs src/fetch.rs
+    src/voice.rs src/cloudflare/* src/posthog/* src/github/* src/phone/*
+    relay/* phone/* Cargo.toml Cargo.lock deny.toml build.rs
+    rust-toolchain.toml tools/setup-dev.* tools/install* src/platform.rs
+    src/git.rs src/agent/launch.rs src/agent/rpc.rs src/state.rs
+    src/memory.rs src/stored.rs src/durable.rs src/update.rs src/server/*
+    src/server.rs
 
 jobs:
   approval:
@@ -52,6 +71,9 @@ jobs:
     # it was given, such as the old head after two quick pushes. Instead
     # every run reads the reviews again after it writes (see update), so
     # overlapping runs end on the latest verdict.
+    # Title and description edits start no run; CodeRabbit edits the
+    # description many times.
+    if: github.event.action != 'edited' || github.event.changes.base
     runs-on: depot-ubuntu-24.04
     # Each head gets its own deadline (see HEAD_BUDGET), so a slow head
     # leaves time for the next. The default six hours is far too long for a
@@ -123,6 +145,33 @@ jobs:
 
           in_team() { grep -qxF "$1" <<<"${TEAM// /$'\n'}"; }
 
+          # Prints the first critical path the pull request changes, or
+          # nothing. Old paths count too, so moving a file away needs a
+          # maintainer as well.
+          critical_change() {
+            local count files file pat pats
+            count=$(gh api "repos/$GH_REPO/pulls/$1" --jq .changed_files) || return 1
+            # The files API lists at most 3000 files.
+            if [ "$count" -gt 3000 ]; then
+              echo "more than 3000 files"
+              return 0
+            fi
+            files=$(gh api "repos/$GH_REPO/pulls/$1/files" --paginate \
+              --jq '.[] | .filename, (.previous_filename // empty)') || return 1
+            # read, not a for loop over $CRITICAL: that would expand the
+            # patterns against the runner's files.
+            read -ra pats <<<"$CRITICAL"
+            while IFS= read -r file; do
+              for pat in "${pats[@]}"; do
+                # shellcheck disable=SC2053 # A pattern on purpose.
+                if [[ $file == $pat ]]; then
+                  echo "$file"
+                  return 0
+                fi
+              done
+            done <<<"$files"
+          }
+
           # A status belongs to a commit, not a pull request, so it must hold
           # for every open pull request with this head. Prints the state and
           # the description, or nothing when no open pull request has it.
@@ -137,10 +186,11 @@ jobs:
               --jq '.[] | select(.head.sha == env.HEAD) | "\(.number) \(.user.login)"') || return 1
             [ -n "$prs" ] || return 0
 
-            local state=success description="" pr author approvers approver user
+            local state=success description="" waiting="" pr author critical approvers approver user
             while read -r pr author; do
-              if in_team "$author"; then
-                echo "#$pr: the author is on the team." >&2
+              critical=$(critical_change "$pr") || return 1
+              if in_team "$author" && [ -z "$critical" ]; then
+                echo "#$pr: the author is on the team and it changes no critical path." >&2
                 continue
               fi
               # Each reviewer's last verdict on the head commit. A dismissed
@@ -152,7 +202,7 @@ jobs:
                 return 1
               approver=""
               for user in $approvers; do
-                if in_team "$user"; then
+                if in_team "$user" && [ "$user" != "$author" ]; then
                   approver=$user
                   break
                 fi
@@ -161,15 +211,22 @@ jobs:
                 echo "#$pr: approved by $approver." >&2
                 description=${description:-"Approved by $approver."}
               else
-                echo "#$pr: waiting for a maintainer." >&2
+                echo "#$pr: waiting for a maintainer${critical:+ (changes $critical)}." >&2
                 state=pending
+                if [ -n "$critical" ]; then
+                  waiting=${waiting:-"it changes $critical"}
+                else
+                  waiting=${waiting:-"the author is outside the team"}
+                fi
               fi
             done <<<"$prs"
 
             if [ "$state" = pending ]; then
-              description="Waiting for a maintainer to approve: the author is outside the team."
+              description="Waiting for a maintainer to approve: $waiting."
             fi
-            printf '%s\t%s\n' "$state" "${description:-"Not needed: the author is on the team."}"
+            description=${description:-"Not needed: the author is on the team."}
+            # GitHub rejects a status description over 140 characters.
+            printf '%s\t%s\n' "$state" "${description:0:140}"
           }
 
           # Writes the status, then reads the reviews again and writes again

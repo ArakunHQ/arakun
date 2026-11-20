@@ -403,6 +403,11 @@ impl Shell {
                         archived_toggle("sessions-settled", settled, "session", self.show_settled)
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.show_settled = !this.show_settled;
+                                // The rail hides archived environments too, so a
+                                // picked one would stay in bulk actions unseen.
+                                if !this.show_settled {
+                                    this.drop_pick();
+                                }
                                 cx.notify();
                             })),
                     )

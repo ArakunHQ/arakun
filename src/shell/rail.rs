@@ -1036,9 +1036,12 @@ impl Shell {
         let changes = show_changes.then(|| env.diff_totals());
         let signal = env_signal(status, ci_failed, changes);
         // The sessions in the Active list are named there; this row names the rest.
+        // Archived sessions name the row only once every session here is archived.
+        let all_archived = env.archived();
         let named: Vec<&model::Session> = env
             .sessions
             .iter()
+            .filter(|s| all_archived || !s.settled)
             .filter(|s| !active_above || !super::active::is_active(s.status))
             .collect();
         let titles: Vec<(&str, u64)> = named

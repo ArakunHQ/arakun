@@ -119,7 +119,9 @@ impl Shell {
         cx.spawn(async move |this, cx| {
             let p = path.clone();
             let pr = cx
-                .background_spawn(crate::guard::task(async move { git::pr_view(&p) }))
+                .background_spawn(crate::guard::task(async move {
+                    git::pr_view(&p).ok().flatten()
+                }))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.git_reads.end(&path, GitRead::PullRequest);

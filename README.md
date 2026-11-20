@@ -133,7 +133,8 @@ copy of it, rename it back, and start a version that can read it.
   GitHub. An "N archived" row at the end of the sidebar's list (and "N archived
   sessions" under the Sessions list) shows them again, a search finds them, and Restore
   on the right-click menu or a new prompt brings one back. Agents that are idle and not
-  open in a tab stop.
+  open in a tab stop. On a server's environment, Archive only asks the server to make
+  its sessions idle: they stay in the lists, and there is nothing to restore.
 - **Archived after merge.** Once an environment's pull request is merged (Arakun asks
   `gh` every few minutes), it is archived the same way: its open review threads are
   resolved, its notifications are marked read, and the environment's sessions from

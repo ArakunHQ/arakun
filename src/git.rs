@@ -1071,18 +1071,36 @@ pub(crate) fn gh(dir: &Path) -> Command {
     cmd
 }
 
-/// The pull request for the checked-out branch; None when there is none or `gh`
-/// can't tell (not logged in, offline).
-pub fn pr_view(dir: &Path) -> Option<PullRequest> {
+/// The pull request for the checked-out branch; None when it has none. An
+/// error when `gh` can't tell (not logged in, offline).
+pub fn pr_view(dir: &Path) -> Result<Option<PullRequest>> {
     let out = output(
         gh(dir).args(["pr", "view", "--json", "url,state,number,isDraft"]),
         GIT_REMOTE,
-    )
-    .ok()?;
+    )?;
     if !out.status.success() {
-        return None;
+        let err = strip_ansi(&String::from_utf8_lossy(&out.stderr));
+        if no_pull_request(&err) {
+            return Ok(None);
+        }
+        bail!(
+            "{}",
+            if err.trim().is_empty() {
+                "gh pr view failed"
+            } else {
+                err.trim()
+            }
+        );
     }
-    serde_json::from_slice(&out.stdout).ok()
+    Ok(Some(
+        serde_json::from_slice(&out.stdout).context("gh pr view printed no pull request")?,
+    ))
+}
+
+/// `gh pr view` failed because the branch has no pull request, not because
+/// it could not ask GitHub.
+fn no_pull_request(stderr: &str) -> bool {
+    stderr.contains("no pull requests found")
 }
 
 /// Opens GitHub's "new pull request" page for `branch`. GitHub fills in the
@@ -1464,6 +1482,20 @@ pub(crate) const NICE_OF_SHELL: &str =
 #[cfg(test)]
 mod tests {
     use std::process::Command;
+
+    #[test]
+    fn a_branch_without_a_pull_request_is_not_a_failed_lookup() {
+        use super::no_pull_request;
+        assert!(no_pull_request(
+            "no pull requests found for branch \"feat/x\"\n"
+        ));
+        assert!(!no_pull_request(
+            "error connecting to api.github.com\ncheck your internet connection"
+        ));
+        assert!(!no_pull_request(
+            "To get started with GitHub CLI, please run:  gh auth login"
+        ));
+    }
 
     #[test]
     fn a_branch_on_a_fork_is_named_with_its_owner() {

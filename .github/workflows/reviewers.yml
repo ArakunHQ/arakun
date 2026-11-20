@@ -5,7 +5,9 @@ name: Reviewers
 # change from the team, so nobody is asked then, unless a review thread is
 # still open: the main ruleset requires every thread resolved, and authors
 # leave CodeRabbit's threads to a person (CONTRIBUTING.md), so someone has to
-# be asked or the pull request sits blocked. CodeRabbit's approval is
+# be asked or the pull request sits blocked. Someone is asked as well when
+# it changes a critical path, which a maintainer has to approve (see
+# human-approval.yml). CodeRabbit's approval is
 # dismissed then, and when the author resolved one of its threads, so an
 # author can't clear its findings to get approved. Nothing runs this again
 # when a thread is resolved, which is why an open thread dismisses it too.
@@ -84,6 +86,18 @@ env:
   # read team membership, so keep this in step by hand, here and in
   # human-approval.yml.
   TEAM: KarloAldrete rikvisser-dev daniektj
+  # Paths a maintainer has to approve, even after CodeRabbit approved: the
+  # "Human approval" status waits for one, so someone has to be asked. Keep
+  # in step with human-approval.yml, which explains the patterns.
+  CRITICAL: >-
+    .github/* AGENTS.md CLAUDE.md CONTRIBUTING.md .claude/* .coderabbit.yaml
+    lefthook.yml src/headless* src/control.rs src/account.rs src/fetch.rs
+    src/voice.rs src/cloudflare/* src/posthog/* src/github/* src/phone/*
+    relay/* phone/* Cargo.toml Cargo.lock deny.toml build.rs
+    rust-toolchain.toml tools/setup-dev.* tools/install* src/platform.rs
+    src/git.rs src/agent/launch.rs src/agent/rpc.rs src/state.rs
+    src/memory.rs src/stored.rs src/durable.rs src/update.rs src/server/*
+    src/server.rs
 
 jobs:
   request:
@@ -187,6 +201,29 @@ jobs:
           }
 
           in_team() { grep -qxF "$1" <<<"${TEAM// /$'\n'}"; }
+
+          # The first critical path the pull request changes, or nothing.
+          # Keep in step with human-approval.yml.
+          critical_change() {
+            local count files file pat pats
+            count=$(gh api "repos/$GH_REPO/pulls/$1" --jq .changed_files) || return 1
+            if [ "$count" -gt 3000 ]; then
+              echo "more than 3000 files"
+              return 0
+            fi
+            files=$(gh api "repos/$GH_REPO/pulls/$1/files" --paginate \
+              --jq '.[] | .filename, (.previous_filename // empty)') || return 1
+            read -ra pats <<<"$CRITICAL"
+            while IFS= read -r file; do
+              for pat in "${pats[@]}"; do
+                # shellcheck disable=SC2053 # A pattern on purpose.
+                if [[ $file == $pat ]]; then
+                  echo "$file"
+                  return 0
+                fi
+              done
+            done <<<"$files"
+          }
 
           # CodeRabbit's verdict on the head commit: APPROVED, CHANGES_REQUESTED
           # or nothing. COMMENTED doesn't change a reviewer's verdict on GitHub.
@@ -313,9 +350,15 @@ jobs:
                   "Review threads are still open; a person resolves them and approves. CodeRabbit's comments still apply." \
                   "${approvals[@]}"
               elif [ "$(coderabbit_verdict "$pr")" = APPROVED ]; then
-                echo "CodeRabbit approved $HEAD and every thread is resolved; no reviewer needed."
-                echo "::endgroup::"
-                return
+                local critical
+                # A failed lookup fails the step (see dismiss_approvals).
+                critical=$(critical_change "$pr")
+                if [ -z "$critical" ]; then
+                  echo "CodeRabbit approved $HEAD and every thread is resolved; no reviewer needed."
+                  echo "::endgroup::"
+                  return
+                fi
+                echo "CodeRabbit approved $HEAD, but it changes $critical, so a maintainer approves too."
               else
                 # Only an older commit's approval: it would still count.
                 dismiss_approvals "$pr" \

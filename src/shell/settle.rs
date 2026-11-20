@@ -269,22 +269,41 @@ impl Shell {
         cx.spawn(async move |this, cx| {
             let done = cx
                 .background_spawn(crate::guard::task(async move {
-                    let pr = crate::git::pr_view(&dir)?;
+                    // A failed lookup is reported: the threads stay open.
+                    let pr = match crate::git::pr_view(&dir) {
+                        Ok(pr) => pr?,
+                        Err(e) => return Some(Err(format!("{e:#}"))),
+                    };
                     let (host, item) = pr::ItemRef::host_and_item(&pr.url)?;
-                    let done = pr::resolve_open_threads(&host, &item).map_err(|e| e.text());
-                    Some((queue::key_of(&item), item.number, done))
+                    let done = pr::resolve_open_threads(&host, &item)
+                        .map_err(|e| format!("Pull request #{}: {}", item.number, e.text()));
+                    let key = queue::key_of(&item);
+                    // Without them the inbox's own list still gets marked.
+                    let fetched: Vec<_> = crate::github::unread_of_repo(&item.repo)
+                        .unwrap_or_default()
+                        .into_iter()
+                        .filter(|n| {
+                            pr::ItemRef::from_notification(n)
+                                .is_some_and(|i| queue::key_of(&i) == key)
+                        })
+                        .collect();
+                    Some(Ok((key, fetched, done)))
                 }))
                 .await;
-            let Some((key, number, done)) = done else {
+            let Some(done) = done else {
                 return;
             };
             let _ = this.update(cx, |this, cx| {
-                this.github.update(cx, |g, cx| g.mark_read_of(&key, cx));
+                let done = done.and_then(|(key, fetched, done)| {
+                    this.github
+                        .update(cx, |g, cx| g.mark_read_of(&key, fetched, cx));
+                    done
+                });
                 if let Err(e) = done {
                     this.notify(
                         crate::island::AlertKind::Warning,
                         "Could not resolve the review threads",
-                        &format!("Pull request #{number}: {e}"),
+                        &e,
                         None,
                         cx,
                     );

@@ -287,7 +287,11 @@ which git ignores. Turn the hooks off with `lefthook uninstall`.
   unless CodeRabbit approved and every review thread is resolved. A pull request from
   outside the team always needs a
   maintainer's approval: a workflow dismisses CodeRabbit's, and the **Human approval**
-  status waits for a person.
+  status waits for a person. So does one that changes a critical path, whoever wrote
+  it: workflows, agent instructions, the sandbox and control socket, code that handles
+  tokens, the phone and relay, Cargo files, install scripts, git, the server and stored
+  formats (the `CRITICAL` list in `.github/workflows/human-approval.yml`). A maintainer
+  other than the author approves those, and CodeRabbit's approval does not count.
 - **Answer every CodeRabbit comment.** Fix it and push, or reply with the reason you
   won't. CodeRabbit reviews each push and resolves the comments it sees fixed. It
   approves only once its blocking comments are resolved. Don't resolve its comments

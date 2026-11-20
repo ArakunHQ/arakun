@@ -43,6 +43,8 @@ reviews:
     # paths in merge_risk_instructions below.
     overrides:
       - enabled: false
+        # The CRITICAL lists in human-approval.yml and reviewers.yml repeat
+        # these paths, so a maintainer must approve them; keep them in step.
         paths:
           - ".github/**"
           - "AGENTS.md"

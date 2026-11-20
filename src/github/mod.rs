@@ -583,6 +583,24 @@ pub fn list(all: bool) -> Result<(Vec<Notification>, Option<Duration>), Problem>
     Ok((list, interval))
 }
 
+/// Every unread notification of the repository `repo` (`owner/name`), all
+/// pages: the inbox keeps only the newest, and none before the tab opens.
+pub fn unread_of_repo(repo: &str) -> Result<Vec<Notification>, Problem> {
+    let path = format!("repos/{repo}/notifications?per_page={PER_PAGE}");
+    let out = gh_out(&["api", "--paginate", &path])?;
+    parse_pages(&out)
+}
+
+/// The notifications in what `gh api --paginate` prints: one JSON array per
+/// page, one after the other.
+fn parse_pages(out: &[u8]) -> Result<Vec<Notification>, Problem> {
+    let mut list = Vec::new();
+    for page in serde_json::Deserializer::from_slice(out).into_iter::<Vec<Notification>>() {
+        list.extend(page.map_err(|e| Problem::Other(format!("unexpected answer from gh: {e}")))?);
+    }
+    Ok(list)
+}
+
 /// Splits what `gh api --include` prints into the `X-Poll-Interval` header
 /// and the body. Output without headers is all body.
 fn split_response(out: &[u8]) -> (Option<Duration>, &[u8]) {
@@ -1624,8 +1642,14 @@ impl GitHub {
     }
 
     /// Marks read the unread notifications of the pull request `key` once,
-    /// for one archived by hand: later ones still come in.
-    pub fn mark_read_of(&mut self, key: &str, cx: &mut Context<Self>) {
+    /// for one archived by hand: later ones still come in. `fetched` holds
+    /// the ones read from GitHub for this, which the inbox may not have.
+    pub fn mark_read_of(&mut self, key: &str, fetched: Vec<Notification>, cx: &mut Context<Self>) {
+        for n in fetched {
+            if !self.unread.iter().any(|u| u.id == n.id) {
+                self.unread.push(n);
+            }
+        }
         let ids = notifications_of(&self.unread, key);
         self.mark_all_read(ids, cx);
     }
@@ -1980,6 +2004,25 @@ mod tests {
     }
 
     const AT: &str = "2026-11-14T21:20:45Z";
+
+    #[test]
+    fn reads_every_page_gh_paginate_prints() {
+        let page = |id: &str| {
+            format!(
+                r#"[{{"id":"{id}","unread":true,"subject":{{"title":"t","url":null,"type":"PullRequest"}},
+                "repository":{{"full_name":"a/b","html_url":"https://github.com/a/b","owner":{{"login":"a"}}}}}}]"#
+            )
+        };
+        let out = format!("{}\n{}[]", page("1"), page("2"));
+        let ids: Vec<String> = parse_pages(out.as_bytes())
+            .unwrap()
+            .into_iter()
+            .map(|n| n.id)
+            .collect();
+        assert_eq!(ids, ["1", "2"]);
+        assert!(parse_pages(b"[{").is_err());
+        assert!(parse_pages(b"").unwrap().is_empty());
+    }
 
     #[test]
     fn parses_what_gh_returns() {

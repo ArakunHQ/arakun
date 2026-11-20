@@ -87,11 +87,14 @@ without it, `403` if it is not one of the caller's devices.
   for each of its user's devices (below).
 - `GET /teams` → the caller's teams: `[{ team_id, name, role, epoch,
   rotation_pending }]`.
-- `GET /teams/<team_id>` → `{ team_id, name, epoch, rotation_pending, members:
-  [{ github_id, login, role, joined_at }], channels: [{ channel_id, name_ct,
-  created_at }] }`.
+- `GET /teams/<team_id>` → `{ team_id, name, epoch, keyed_epoch,
+  rotation_pending, members: [{ github_id, login, role, joined_at }], channels:
+  [{ channel_id, name_ct, created_at }] }`.
 - `rotation_pending` is true while the current epoch has no envelopes yet: from
   creation until the first key, and after every removal (see Rotation).
+- `keyed_epoch` is the newest epoch with envelopes (0 before the first key). A
+  client sends the one it read here as `keyed_epoch` with an envelope upload, so a
+  rotation that lost is refused (see below).
 
 ## Invites and approval
 
@@ -138,7 +141,10 @@ without it, `403` if it is not one of the caller's devices.
    and every epoch they may read (all of them, by default):
    `{ "request_id": "...", "envelopes": [Envelope, ...] }`. `409` if the
    request is no longer that one: it was rejected and the user accepted a new
-   invite, so the admin looks again. The server checks there is one envelope per
+   invite, so the admin looks again. Clients also send what the admin reviewed,
+   `"devices": [device_id, ...]` (the new member's) and `"keyed_epoch"` (from
+   `GET /teams/<team_id>`), so a device added or a rotation ended since then
+   answers `409` rather than `400`. The server checks there is one envelope per
    (device, epoch) it expects, stores them, and makes the user a `member`:
    `200 { github_id, role: "member" }`. It expects every device of the new member
    and every epoch with a key (one that has envelopes) from the lowest one given
@@ -149,8 +155,10 @@ without it, `403` if it is not one of the caller's devices.
    member's devices with `PUT /teams/<team_id>/envelopes`, 500 at a time. While a rotation is
    pending, the rotation then covers the new member too. `409` if the team has no
    key yet, has 25 members already, or its newest key or the new member's devices
-   changed since the admin read them (fetch them again and retry). `.../reject`
-   drops the request: `204`.
+   changed since the admin read them (fetch them again and retry). `403` if the
+   caller stopped being an owner or admin, or lost the session or the flag, while
+   the approval ran; nobody is added then. `.../reject` `{ "request_id": "..." }`
+   drops that request: `204`, or `409` if the request is no longer that one.
 
 The approval happens on the admin's device because only it holds the team key.
 A server that follows the protocol cannot let anyone in by itself; one that acts
@@ -242,6 +250,8 @@ already read, and once the rotation ends, never what comes after.
 { "v": 1, "epoch": 3, "nonce": "...", "ct": "..." }
 ```
 
+`nonce` is 12 random bytes, new for each encryption: the server refuses any
+other length, and a nonce used twice with one key breaks AES-GCM.
 `ct` = AES-256-GCM(team key of `epoch`, `nonce`, plaintext), associated data =
 UTF-8 `arakun-teams/v1/<what>|<team_id>|<channel_id>|<id>` where `<what>` is
 `channel` or `message`, and `<id>` is the message's `id` for a message and the

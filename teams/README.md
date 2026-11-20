@@ -206,6 +206,7 @@ To sign a user out everywhere, as when a session token may have leaked (they can
 sign in again; take their flags away to keep them out):
 
 ```sh
+read -rs ADMIN_SECRET
 printf 'Authorization: Bearer %s\n' "$ADMIN_SECRET" |
   curl -fsS -X DELETE -H @- "https://<teams host>/admin/users/<id>/sessions"
 ```
@@ -250,7 +251,7 @@ devices: `400` without it, `403` if it is someone else's.
 | `GET /users/<github_id>/devices` | the user, or someone in a team with them | `200 [{device_id, sig_pub, enc_pub, name, created_at, endorsed_by, endorsement_sig}]` |
 | `POST /teams` `{name}` | anyone | `201 {team_id, epoch: 1}`; the caller is the owner. |
 | `GET /teams` | anyone | `200 [{team_id, name, role, epoch, rotation_pending}]` |
-| `GET /teams/<team_id>` | member | `200 {team_id, name, epoch, rotation_pending, members, channels}` |
+| `GET /teams/<team_id>` | member | `200 {team_id, name, epoch, keyed_epoch, rotation_pending, members, channels}` |
 | `POST /teams/<team_id>/invites` `{github_login}` | admin | `201 {invite_id, expires_at}`, 7 days. `409` if a member or pending already. |
 | `GET /teams/<team_id>/invites` | admin | `200 [{invite_id, login, invited_by_login, created_at, expires_at}]`, open ones, newest first. |
 | `DELETE /teams/<team_id>/invites/<invite_id>` | admin | `204`. `404` if the team has no such open invite. |
@@ -260,8 +261,8 @@ devices: `400` without it, `403` if it is someone else's.
 | `GET /pending` | anyone | `200 [{team_id, team_name, requested_at, invited_by_login, invited_by_id, reminded_at}]`, the caller's own requests. |
 | `POST /teams/<team_id>/remind` | pending in that team | `204`, sets `reminded_at`. `429 {error, retry_at}` within an hour of the last one; `404` for anyone not pending there, members included. |
 | `GET /teams/<team_id>/pending` | admin | `200 [{github_id, login, invited_login, request_id, requested_at, reminded_at, devices}]` |
-| `POST /teams/<team_id>/pending/<github_id>/approve` `{request_id, envelopes}` | admin, device | `200 {github_id, role: "member"}`. `400` unless there is one envelope per device of theirs and epoch with a key; `409` before the team's first key, at 25 members, or if the request, the team's key or their devices changed meanwhile. |
-| `POST /teams/<team_id>/pending/<github_id>/reject` | admin | `204` |
+| `POST /teams/<team_id>/pending/<github_id>/approve` `{request_id, envelopes, devices?, keyed_epoch?}` | admin, device | `200 {github_id, role: "member"}`. `400` unless there is one envelope per device of theirs and epoch with a key; `409` before the team's first key, at 25 members, or if the request, the team's key or their devices changed meanwhile. `403` if the caller lost admin, the session or the flag meanwhile. |
+| `POST /teams/<team_id>/pending/<github_id>/reject` `{request_id}` | admin | `204`; `409` if the request changed. |
 | `PUT /teams/<team_id>/envelopes` `{envelopes}` | admin, device | `200 {stored, epoch, rotation_pending}`; `stored` counts what was written. At most 500. `409` when a new key lost to a removal, another device's key or a new member or device. |
 | `GET /teams/<team_id>/envelopes` | member, device | `200 [Envelope + made_at]`, the device's own; `made_at` is when the epoch's key first reached the team. |
 | `DELETE /teams/<team_id>/members/<github_id>` | admin, or the member themselves | `200 {epoch, rotation_pending: true}`. Their sockets close. `409` for the last owner. |

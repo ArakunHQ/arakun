@@ -316,9 +316,12 @@ describe("teams", () => {
     await expectJson(register(u, d), 201);
     const { invite_id } = await expectJson(api(t.owner.user, "POST", `/teams/${t.teamId}/invites`, { body: { github_login: "asker" } }), 201);
     await expectJson(api(u, "POST", `/invites/${invite_id}/accept`, { device: d }), 200);
-    expect((await api(t.owner.user, "POST", `/teams/${t.teamId}/pending/2001/reject`)).status).toBe(204);
+    const rejectPath = `/teams/${t.teamId}/pending/2001/reject`;
+    // Without the request it reviewed.
+    await expectJson(api(t.owner.user, "POST", rejectPath), 400);
+    expect((await api(t.owner.user, "POST", rejectPath, { body: { request_id: invite_id } })).status).toBe(204);
     expect(await expectJson(api(t.owner.user, "GET", `/teams/${t.teamId}/pending`), 200)).toEqual([]);
-    await expectJson(api(t.owner.user, "POST", `/teams/${t.teamId}/pending/2001/reject`), 404);
+    await expectJson(api(t.owner.user, "POST", rejectPath, { body: { request_id: invite_id } }), 404);
     await expectJson(api(t.owner.user, "POST", `/teams/${t.teamId}/pending/2001/approve`, { device: t.owner.device, body: { envelopes: [] } }), 404);
   });
 
@@ -364,13 +367,64 @@ describe("teams", () => {
     const envelopes = [await envelope(t.teamId, 1, t.keys.get(1)!, d, t.owner.device)];
     // Another admin rejects it, and the user accepts a new invite, before the
     // approval of the first request arrives.
-    expect((await api(t.owner.user, "POST", `/teams/${t.teamId}/pending/2003/reject`)).status).toBe(204);
+    const rejectPath = `/teams/${t.teamId}/pending/2003/reject`;
+    expect((await api(t.owner.user, "POST", rejectPath, { body: { request_id: reviewed } })).status).toBe(204);
     const asked = await ask();
     const res = await expectJson(api(t.owner.user, "POST", path, { device: t.owner.device, body: { request_id: reviewed, envelopes } }), 409);
     expect(res.error).toMatch(/request changed/);
+    // A late reject of the old request leaves the new one alone.
+    expect((await expectJson(api(t.owner.user, "POST", rejectPath, { body: { request_id: reviewed } }), 409)).error).toMatch(/request changed/);
     await expectJson(api(u, "GET", `/teams/${t.teamId}`), 404);
     expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM envelopes WHERE device_id = ?").bind(d.id).first("n")).toBe(0);
     await expectJson(api(t.owner.user, "POST", path, { device: t.owner.device, body: { request_id: asked, envelopes } }), 200);
+  });
+
+  it("answers an approval made from an old view of the devices or the key with 409", async () => {
+    const t = await team();
+    const u = await user(2004, "growing");
+    const laptop = await makeDevice();
+    await expectJson(register(u, laptop), 201);
+    const { invite_id } = await expectJson(api(t.owner.user, "POST", `/teams/${t.teamId}/invites`, { body: { github_login: "growing" } }), 201);
+    await expectJson(api(u, "POST", `/invites/${invite_id}/accept`, { device: laptop }), 200);
+    const path = `/teams/${t.teamId}/pending/2004/approve`;
+    const envelopes = [await envelope(t.teamId, 1, t.keys.get(1)!, laptop, t.owner.device)];
+    // The admin reviewed one device; a second one arrives before the approval.
+    await expectJson(register(u, await makeDevice(), laptop), 201);
+    const body = { request_id: invite_id, envelopes, devices: [laptop.id], keyed_epoch: 1 };
+    expect((await expectJson(api(t.owner.user, "POST", path, { device: t.owner.device, body }), 409)).error).toMatch(/devices changed/);
+    // Without what it reviewed, the same envelopes are only incomplete.
+    await expectJson(api(t.owner.user, "POST", path, { device: t.owner.device, body: { request_id: invite_id, envelopes } }), 400);
+    // A keyed_epoch other than the team's is an old view too.
+    await expectJson(api(t.owner.user, "POST", path, { device: t.owner.device, body: { ...body, devices: undefined, keyed_epoch: 0 } }), 409);
+    await expectJson(api(t.owner.user, "POST", path, { device: t.owner.device, body: { ...body, devices: "all" } }), 400);
+    await expectJson(api(u, "GET", `/teams/${t.teamId}`), 404);
+  });
+
+  it("adds nobody when the approving admin loses the flag while the approval runs", async () => {
+    const t = await team();
+    const u = await user(2005, "late");
+    const d = await makeDevice();
+    await expectJson(register(u, d), 201);
+    const { invite_id } = await expectJson(api(t.owner.user, "POST", `/teams/${t.teamId}/invites`, { body: { github_login: "late" } }), 201);
+    await expectJson(api(u, "POST", `/invites/${invite_id}/accept`, { device: d }), 200);
+    const path = `/teams/${t.teamId}/pending/2005/approve`;
+    const envelopes = [await envelope(t.teamId, 1, t.keys.get(1)!, d, t.owner.device)];
+    // The flag goes after the handler checked it, before its batch commits.
+    const batch = env.DB.batch.bind(env.DB);
+    let raced = false;
+    vi.spyOn(env.DB, "batch").mockImplementation(async (statements) => {
+      if (!raced && statements.length === 3) {
+        raced = true;
+        await env.DB.prepare("DELETE FROM user_flags WHERE github_id = ? AND flag = 'teams'").bind(t.owner.user.id).run();
+      }
+      return batch(statements);
+    });
+    await expectJson(api(t.owner.user, "POST", path, { device: t.owner.device, body: { request_id: invite_id, envelopes } }), 403);
+    expect(raced).toBe(true);
+    vi.restoreAllMocks();
+    expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM members WHERE github_id = ?").bind(2005).first("n")).toBe(0);
+    expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM envelopes WHERE device_id = ?").bind(d.id).first("n")).toBe(0);
+    expect(await env.DB.prepare("SELECT request_id FROM pending WHERE github_id = ?").bind(2005).first("request_id")).toBe(invite_id);
   });
 
   it("lists a team's open invites to its admins, newest first, and lets them withdraw one", async () => {
@@ -438,7 +492,7 @@ describe("teams", () => {
     ]);
     // Only their own.
     expect(await expectJson(api(t.owner.user, "GET", "/pending"), 200)).toEqual([]);
-    expect((await api(t.owner.user, "POST", `/teams/${t.teamId}/pending/2001/reject`)).status).toBe(204);
+    expect((await api(t.owner.user, "POST", `/teams/${t.teamId}/pending/2001/reject`, { body: { request_id: invite_id } })).status).toBe(204);
     expect(await expectJson(api(u, "GET", "/pending"), 200)).toEqual([]);
   });
 

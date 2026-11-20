@@ -493,6 +493,16 @@ async function remind(c: Ctx, teamId: string): Promise<Response> {
   );
 }
 
+/// SQL that holds while the session `session` is live at time `t`, its user
+/// has the flag, and is an owner or admin of team `team`. For a write that
+/// must not commit after the caller lost any of them while it ran.
+function stillAdmin(team: string, session: string, t: string): string {
+  return `EXISTS (SELECT 1 FROM sessions s
+    JOIN members a ON a.github_id = s.github_id AND a.team_id = ${team} AND a.role IN ('owner', 'admin')
+    JOIN user_flags f ON f.github_id = s.github_id AND f.flag = '${FLAG}'
+    WHERE s.token_hash = ${session} AND s.expires_at > ${t})`;
+}
+
 async function approve(c: Ctx, teamId: string, id: string): Promise<Response> {
   const team = await teamOf(c, teamId);
   if (!team) return notFound();
@@ -519,6 +529,18 @@ async function approve(c: Ctx, teamId: string, id: string): Promise<Response> {
   if (envelopes instanceof Response) return envelopes;
   const { results } = await db.prepare("SELECT device_id FROM devices WHERE github_id = ?").bind(githubId).all<{ device_id: string }>();
   const theirs = new Set(results.map((d) => d.device_id));
+  // What the admin reviewed: their devices and the team's keyed_epoch. An
+  // applicant who added a device, or a rotation that ended, since then is a
+  // refresh and retry (409), not a bad request. Without these fields an
+  // approval is only checked against what is there now.
+  const seen = reviewed(body);
+  if (typeof seen === "string") return error(400, seen);
+  if (
+    (seen.keyedEpoch !== null && seen.keyedEpoch !== team.keyed_epoch) ||
+    (seen.devices !== null && (seen.devices.size !== theirs.size || [...seen.devices].some((d) => !theirs.has(d))))
+  ) {
+    return error(409, "the team's key or their devices changed: fetch them again and retry");
+  }
   for (const e of envelopes) {
     if (!theirs.has(e.device_id)) return error(400, `device ${e.device_id} is not one of the new member's`);
     if (e.epoch > team.keyed_epoch) return error(400, `epoch ${e.epoch} has no key yet`);
@@ -536,9 +558,10 @@ async function approve(c: Ctx, teamId: string, id: string): Promise<Response> {
     return error(400, `expected one envelope per device of the new member and epoch with a key, ${first} to ${team.keyed_epoch}`);
   }
 
-  // The checks above hold at commit, or nobody is added: the same request
-  // still pending, the same newest key, the same devices (they are never
-  // deleted, so the same count is the same set), and room in the team.
+  // The checks above hold at commit, or nobody is added: the caller still an
+  // owner or admin with a live session and the flag, the same request still
+  // pending, the same newest key, the same devices (they are never deleted,
+  // so the same count is the same set), and room in the team.
   const t = now();
   const done = await db.batch([
     db
@@ -546,12 +569,13 @@ async function approve(c: Ctx, teamId: string, id: string): Promise<Response> {
         `INSERT INTO members (team_id, github_id, role, joined_at)
          SELECT ?1, ?2, 'member', ?3
          WHERE EXISTS (SELECT 1 FROM pending WHERE team_id = ?1 AND github_id = ?2 AND request_id = ?6)
+           AND ${stillAdmin("?1", "?7", "?3")}
            AND (SELECT keyed_epoch FROM teams WHERE team_id = ?1) = ?4
            AND (SELECT COUNT(*) FROM devices WHERE github_id = ?2) = ?5
            AND (SELECT COUNT(*) FROM members WHERE team_id = ?1) < ${MAX_MEMBERS}
          ON CONFLICT DO NOTHING`,
       )
-      .bind(teamId, githubId, t, team.keyed_epoch, theirs.size, requestId),
+      .bind(teamId, githubId, t, team.keyed_epoch, theirs.size, requestId, c.me.hash),
     // Before the pending row goes: it still being there, with the member
     // added (insertEnvelope checks that), means this batch added them. An
     // approval that lost to another one, or whose request changed, writes
@@ -570,25 +594,52 @@ async function approve(c: Ctx, teamId: string, id: string): Promise<Response> {
       .bind(teamId, githubId, requestId),
   ]);
   if (done[0]!.meta.changes === 1) return Response.json({ github_id: githubId, role: "member" });
-  const [still, count] = await db.batch([
+  const [allowed, still, count] = await db.batch([
+    db.prepare(`SELECT 1 WHERE ${stillAdmin("?1", "?2", "?3")}`).bind(teamId, c.me.hash, now()),
     db.prepare("SELECT request_id FROM pending WHERE team_id = ? AND github_id = ?").bind(teamId, githubId),
     db.prepare("SELECT COUNT(*) AS n FROM members WHERE team_id = ?").bind(teamId),
   ]);
+  if (allowed!.results.length === 0) return notAdmin();
   if (still!.results.length === 0) return error(404, "no such request");
   if ((still!.results[0] as { request_id: string }).request_id !== requestId) return error(409, "the request changed: fetch the pending list again");
   if ((count!.results[0] as { n: number }).n >= MAX_MEMBERS) return error(409, `at most ${MAX_MEMBERS} members per team`);
   return error(409, "the team's key or their devices changed: fetch them again and retry");
 }
 
+/// The optional `devices` and `keyed_epoch` of an approval: the applicant's
+/// device IDs and the team's keyed_epoch as the admin saw them.
+function reviewed(body: unknown): { devices: Set<string> | null; keyedEpoch: number | null } | string {
+  const devices = isObject(body) ? body["devices"] : undefined;
+  const keyedEpoch = isObject(body) ? body["keyed_epoch"] : undefined;
+  if (devices !== undefined && (!Array.isArray(devices) || devices.length > MAX_ENVELOPES || !devices.every((d) => typeof d === "string")))
+    return "devices is a list of the device IDs you reviewed";
+  if (keyedEpoch !== undefined && !Number.isSafeInteger(keyedEpoch)) return "keyed_epoch is the team's keyed_epoch you reviewed";
+  return {
+    devices: devices === undefined ? null : new Set(devices as string[]),
+    keyedEpoch: keyedEpoch === undefined ? null : (keyedEpoch as number),
+  };
+}
+
 async function reject(c: Ctx, teamId: string, id: string): Promise<Response> {
   const team = await teamOf(c, teamId);
   if (!team) return notFound();
   if (!isAdmin(team.role)) return notAdmin();
-  const result = GITHUB_ID.test(id)
-    ? await c.env.DB.prepare("DELETE FROM pending WHERE team_id = ? AND github_id = ?").bind(teamId, Number(id)).run()
-    : null;
-  if (!result?.meta.changes) return error(404, "no such request");
-  return new Response(null, { status: 204 });
+  if (!GITHUB_ID.test(id)) return error(404, "no such request");
+  const body = await jsonBody(c.request, MAX_BODY);
+  // As in approve: a reject and a new accept in between make a new request,
+  // which a late reject of the old one must leave alone.
+  const requestId = isObject(body) ? body["request_id"] : null;
+  if (typeof requestId !== "string" || requestId.length === 0 || requestId.length > 64) {
+    return error(400, 'expected {"request_id"} as GET .../pending lists it');
+  }
+  const db = c.env.DB;
+  const [result, still] = await db.batch([
+    db.prepare("DELETE FROM pending WHERE team_id = ? AND github_id = ? AND request_id = ?").bind(teamId, Number(id), requestId),
+    db.prepare("SELECT 1 FROM pending WHERE team_id = ? AND github_id = ?").bind(teamId, Number(id)),
+  ]);
+  if (result!.meta.changes) return new Response(null, { status: 204 });
+  if (still!.results.length > 0) return error(409, "the request changed: fetch the pending list again");
+  return error(404, "no such request");
 }
 
 // ---- envelopes -----------------------------------------------------------------

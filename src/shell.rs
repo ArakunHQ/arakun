@@ -691,8 +691,10 @@ impl Shell {
             this.spy_from_composer(window, cx)
         });
         let (projects, active_project, layout, strip) = state::restore(state::load());
-        crate::agent::sandbox::set_projects(projects.iter().filter(|p| p.sandbox).flat_map(|p| {
-            std::iter::once(p.path.clone()).chain(p.environments.iter().map(|e| e.path.clone()))
+        crate::agent::sandbox::set_projects(projects.iter().flat_map(|p| {
+            std::iter::once(&p.path)
+                .chain(p.environments.iter().map(|e| &e.path))
+                .map(|path| (path.clone(), p.sandbox))
         }));
         theme::set_diff_palette(layout.diff_palette);
         theme::set_glass(layout.glass);
@@ -1286,11 +1288,11 @@ impl Shell {
     fn save(&self, cx: &mut Context<Self>) {
         // Its environments too: an environment elsewhere stays the project's
         // even if its Git metadata says otherwise.
-        crate::agent::sandbox::set_projects(self.projects.iter().filter(|p| p.sandbox).flat_map(
-            |p| {
-                std::iter::once(p.path.clone()).chain(p.environments.iter().map(|e| e.path.clone()))
-            },
-        ));
+        crate::agent::sandbox::set_projects(self.projects.iter().flat_map(|p| {
+            std::iter::once(&p.path)
+                .chain(p.environments.iter().map(|e| &e.path))
+                .map(|path| (path.clone(), p.sandbox))
+        }));
         state::queue(self.state_bytes());
         cx.background_spawn(crate::guard::task(async move {
             if let Err(e) = state::write_queued() {

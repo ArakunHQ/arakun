@@ -21,37 +21,61 @@ use crate::headless::sandbox::{
     sbpl_str, sbpl_subpath,
 };
 
-/// Projects whose agents run sandboxed, as the shell last saved them, each with
-/// its repository's shared Git folder.
-static PROJECTS: RwLock<Vec<(PathBuf, Option<PathBuf>)>> = RwLock::new(Vec::new());
+/// The folders of every project and environment, as the shell last saved
+/// them: whether its agents run sandboxed, and for a sandboxed one its
+/// repository's shared Git folder.
+static PROJECTS: RwLock<Vec<Folder>> = RwLock::new(Vec::new());
 
-pub fn set_projects(paths: impl IntoIterator<Item = PathBuf>) {
-    let projects = paths
+struct Folder {
+    path: PathBuf,
+    sandbox: bool,
+    git: Option<PathBuf>,
+}
+
+/// Each folder with its project's choice: `true` runs its agents sandboxed.
+pub fn set_projects(folders: impl IntoIterator<Item = (PathBuf, bool)>) {
+    let folders = folders
         .into_iter()
-        .map(|p| {
-            let p = crate::platform::canonicalize(&p).unwrap_or(p);
-            let git = git_dirs(&p).ok().flatten().map(|(common, _)| common);
-            (p, git)
+        .map(|(p, sandbox)| {
+            let path = crate::platform::canonicalize(&p).unwrap_or(p);
+            // Only a sandboxed project's repository is looked up: an untrusted
+            // one elsewhere must not stop that project's sessions.
+            let git = sandbox
+                .then(|| git_dirs(&path).ok().flatten().map(|(common, _)| common))
+                .flatten();
+            Folder { path, sandbox, git }
         })
         .collect();
-    *PROJECTS.write().unwrap() = projects;
+    *PROJECTS.write().unwrap() = folders;
 }
 
 /// The session in `cwd` belongs to a project with the sandbox on: `cwd` is in
 /// it or one of its environments (the shell lists both), or in another
 /// worktree of its repository. An error, so nothing starts, when `cwd`'s Git
 /// metadata can't be trusted: unsandboxed would be the quiet way out of it.
+///
+/// A folder the shell knows answers with its own project's choice, so a project
+/// without the sandbox never has its Git metadata checked.
 pub fn wanted(cwd: &Path) -> Result<bool, String> {
-    let projects = PROJECTS.read().unwrap();
-    if projects.is_empty() {
+    let folders = PROJECTS.read().unwrap();
+    if !folders.iter().any(|f| f.sandbox) {
         return Ok(false);
     }
     let cwd = crate::platform::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
-    if projects.iter().any(|(p, _)| cwd.starts_with(p)) {
-        return Ok(true);
+    // The deepest one: a project inside another answers for its own folders.
+    if let Some(f) = folders
+        .iter()
+        .filter(|f| cwd.starts_with(&f.path))
+        .max_by_key(|f| f.path.components().count())
+    {
+        return Ok(f.sandbox);
     }
     let git = git_dirs(&cwd)?.map(|(common, _)| common);
-    Ok(git.is_some_and(|git| projects.iter().any(|(_, g)| g.as_ref() == Some(&git))))
+    Ok(git.is_some_and(|git| {
+        folders
+            .iter()
+            .any(|f| f.sandbox && f.git.as_ref() == Some(&git))
+    }))
 }
 
 /// The repository's shared Git folder and this checkout's own: `.git` itself
@@ -193,6 +217,11 @@ fn materialize(p: &Path) -> std::io::Result<()> {
 /// copy is the user's alone (0600), as Claude Code keeps it.
 fn seed(from: &Path, to: &Path) -> std::io::Result<()> {
     use std::io::Write as _;
+    // Already there: no need to read the source. `create_new` below still covers
+    // one made after this check.
+    if std::fs::symlink_metadata(to).is_ok() {
+        return Ok(());
+    }
     let bytes = match std::fs::read(from) {
         Ok(b) => b,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -1054,18 +1083,22 @@ mod tests {
             git_dirs(&wt).unwrap().map(|(_, own)| own),
             Some(main_real.join(".git/worktrees/env-a"))
         );
-        set_projects([main.clone()]);
+        set_projects([(main.clone(), true)]);
         assert!(wanted(&wt).unwrap() && wanted(&main.join("src")).unwrap());
         // Metadata it can't trust stops the launch rather than skipping the sandbox,
         // unless the shell listed the folder as one of the project's environments.
         assert!(wanted(&forged).is_err());
-        set_projects([main.clone(), forged.clone()]);
+        set_projects([(main.clone(), true), (forged.clone(), true)]);
         assert!(wanted(&forged).unwrap());
-        set_projects([main.clone()]);
+        set_projects([(main.clone(), true)]);
         // A project opened at a worktree covers the main checkout too.
-        set_projects([wt.clone()]);
+        set_projects([(wt.clone(), true)]);
         assert!(wanted(&main).unwrap());
         assert!(!wanted(&d).unwrap());
+        // A project without the sandbox answers for its own folders, broken
+        // metadata or not, even beside one with it.
+        set_projects([(main.clone(), true), (forged.clone(), false)]);
+        assert!(!wanted(&forged).unwrap());
         set_projects([]);
         assert!(!wanted(&wt).unwrap());
         std::fs::remove_dir_all(&d).unwrap();

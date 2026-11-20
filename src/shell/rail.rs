@@ -335,7 +335,7 @@ impl Shell {
                 d.child(self.render_rail_narrow_header(window, cx))
             })
             .when(!narrow, |d| d.child(header))
-            .when(!narrow && self.arranging(cx), |d| {
+            .when(!narrow && self.arranging(), |d| {
                 d.child(self.render_arranging_bar(cx))
             })
             .child(

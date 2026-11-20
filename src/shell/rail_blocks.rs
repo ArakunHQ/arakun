@@ -21,10 +21,6 @@ pub(super) struct Badge {
 }
 
 impl Badge {
-    pub(super) fn count(self) -> usize {
-        self.count
-    }
-
     fn color(self) -> Hsla {
         self.color.unwrap_or_else(theme::text_faint)
     }
@@ -149,7 +145,10 @@ pub(super) fn avatar(name: &str, size: f32) -> gpui::Div {
 impl Shell {
     /// Narrowed to icons: the rail's collapse is Icons and it is closed.
     pub(super) fn rail_narrow(&self) -> bool {
-        self.sidebar.style.collapse == Collapse::Icons && !self.rail_open && self.has_projects()
+        self.sidebar.style.collapse == Collapse::Icons
+            && !self.rail_open
+            && self.has_projects()
+            && !self.arranging()
     }
 
     pub(super) fn view_badge(&self, view: View, cx: &mut Context<Self>) -> Option<Badge> {
@@ -361,7 +360,10 @@ impl Shell {
             );
         };
         for (si, section) in self.sidebar.sections.iter().enumerate() {
-            if (narrow && section.hide_in_icons) || self.rail_section_hidden(section, cx) {
+            // Arranging, no segment hides: its title is how it is reached.
+            if (narrow && section.hide_in_icons)
+                || (!self.arranging() && self.rail_section_hidden(section, cx))
+            {
                 continue;
             }
             let el = self.render_section(si, section, cx);
@@ -423,10 +425,11 @@ impl Shell {
 
     fn render_section(&self, si: usize, section: &Section, cx: &mut Context<Self>) -> AnyElement {
         let narrow = self.rail_narrow();
-        let arranging = self.arranging(cx);
-        let folded = section.collapsible && section.collapsed && !narrow;
+        let arranging = self.arranging();
+        let folded = section.collapsible && section.collapsed && !narrow && !arranging;
         // Narrowed, the rail is a column of icons already.
-        let in_row = section.row && !narrow;
+        // Arranging, a row of icons is a list too: every piece can be reached.
+        let in_row = section.row && !narrow && !arranging;
         let mut body = div()
             .flex()
             .when(in_row, |d| d.flex_row().flex_wrap().items_center())
@@ -435,7 +438,7 @@ impl Shell {
             .px(crate::ui::sp(8.));
         if !folded {
             // Narrowed or in a row, every piece is one icon, so Inbox keeps its own.
-            let pair = if narrow || in_row {
+            let pair = if narrow || in_row || arranging {
                 None
             } else {
                 section.inbox_by_search()
@@ -455,6 +458,12 @@ impl Shell {
                     }
                     _ => self.render_item((si, ii), item, in_row, cx),
                 };
+                // Arranging, a piece that draws nothing now (empty, quiet)
+                // still gets a row, so it can be selected and moved.
+                let el = el.or_else(|| {
+                    (arranging && self.rail_shows(&item.piece, cx))
+                        .then(|| self.arrange_placeholder(item))
+                });
                 if let Some(el) = el {
                     body = body.child(if arranging {
                         self.arrange_target(BuilderSel::Item((si, ii)), el, cx)
@@ -568,6 +577,7 @@ impl Shell {
                 t.into_any_element()
             }
         });
+        let end = (arranging && !folded).then(|| self.arrange_end(si, section.items.len(), cx));
         let selected = arranging && self.builder.sel == Some(BuilderSel::Section(si));
         div()
             .flex()
@@ -590,6 +600,7 @@ impl Shell {
             })
             .children(title)
             .child(body)
+            .children(end)
             .into_any_element()
     }
 
@@ -610,7 +621,12 @@ impl Shell {
             Piece::View { view } if style.badges => self.view_badge(*view, cx),
             _ => None,
         };
-        if item.only_when_busy && badge.is_none() && matches!(item.piece, Piece::View { .. }) {
+        // Arranging, a quiet piece still shows, so it can be selected and moved.
+        if item.only_when_busy
+            && badge.is_none()
+            && matches!(item.piece, Piece::View { .. })
+            && !self.arranging()
+        {
             return None;
         }
         let name = item.name();
@@ -896,7 +912,7 @@ impl Shell {
         } else {
             None
         };
-        if item.only_when_busy && badge.is_none() {
+        if item.only_when_busy && badge.is_none() && !self.arranging() {
             return None;
         }
         let open = matches!(

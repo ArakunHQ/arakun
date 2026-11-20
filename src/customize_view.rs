@@ -47,20 +47,27 @@ pub enum CustomizeEvent {
     SidebarPreset(Preset),
     RailWidth(f32),
     ResetSidebar,
-    /// Open the editor that moves, adds and removes the sidebar's pieces.
-    ArrangeSidebar,
+    /// The panel moved to another tab.
+    Tab(CustomizeTab),
+    /// Undo the last sidebar change, or redo it with `true`.
+    UndoSidebar(bool),
+    /// Copy the sidebar's layout, or use one from the clipboard.
+    ExportSidebar,
+    ImportSidebar,
 }
 
 /// What the Sidebar tab shows of the window's sidebar, handed over by the
 /// window as it draws the panel.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct RailLook {
     pub style: Style,
     pub width: f32,
     /// The preset the pieces are laid out as, if they still are.
     pub preset: Option<Preset>,
-    /// Whether the pieces can be arranged: the editor needs a project.
-    pub can_arrange: bool,
+    pub can_undo: bool,
+    pub can_redo: bool,
+    /// What the last import or export did.
+    pub note: Option<SharedString>,
 }
 
 /// Draws the Sidebar tab's Add and Selected parts: the sidebar and its
@@ -193,14 +200,10 @@ impl CustomizeView {
 
     /// The window's sidebar as it is now; redraws only when it changed.
     pub fn sync_rail(&mut self, look: RailLook, cx: &mut Context<Self>) {
-        if self.rail != Some(look) {
+        if self.rail.as_ref() != Some(&look) {
             self.rail = Some(look);
             cx.notify();
         }
-    }
-
-    pub fn tab(&self) -> CustomizeTab {
-        self.tab
     }
 
     pub fn set_arrange(&mut self, slot: ArrangeSlot) {
@@ -208,7 +211,10 @@ impl CustomizeView {
     }
 
     pub fn set_tab(&mut self, tab: CustomizeTab, cx: &mut Context<Self>) {
-        self.tab = tab;
+        if self.tab != tab {
+            self.tab = tab;
+            cx.emit(CustomizeEvent::Tab(tab));
+        }
         cx.notify();
     }
 
@@ -388,6 +394,30 @@ impl CustomizeView {
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(theme::text())
                     .child("Customize"),
+            )
+            .when_some(
+                self.rail
+                    .as_ref()
+                    .filter(|_| self.tab == CustomizeTab::Sidebar)
+                    .map(|l| (l.can_undo, l.can_redo)),
+                |d, (undo, redo)| {
+                    d.child(
+                        ui::icon_button("customize-undo", "undo", 14.)
+                            .tooltip(ui::tip("Undo"))
+                            .when(!undo, |b| b.opacity(0.4))
+                            .on_click(cx.listener(|_, _, _, cx| {
+                                cx.emit(CustomizeEvent::UndoSidebar(false))
+                            })),
+                    )
+                    .child(
+                        ui::icon_button("customize-redo", "arrow-turn-forward", 14.)
+                            .tooltip(ui::tip("Redo"))
+                            .when(!redo, |b| b.opacity(0.4))
+                            .on_click(cx.listener(|_, _, _, cx| {
+                                cx.emit(CustomizeEvent::UndoSidebar(true))
+                            })),
+                    )
+                },
             )
             .child(
                 ui::icon_button("customize-close", "cancel01", 14.)
@@ -991,7 +1021,7 @@ impl CustomizeView {
     }
 
     fn render_sidebar(&self, window: &mut Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        let Some(look) = self.rail else {
+        let Some(look) = self.rail.clone() else {
             return Vec::new();
         };
         let arranged = self.arrange.clone().and_then(|slot| slot(window, cx));
@@ -1066,32 +1096,7 @@ impl CustomizeView {
                 }))
                 .into_any_element()
         };
-        let arrange = div()
-            .flex()
-            .flex_col()
-            .gap(crate::ui::sp(8.))
-            .child(heading("Move pieces", None))
-            .child(hint_label(
-                "Drag pieces and groups into another order in the sidebar editor.",
-            ))
-            .child(
-                ui::button_with(
-                    "cz-arrange",
-                    Some("dashboard-square01"),
-                    "Arrange pieces",
-                    ButtonKind::Outline,
-                    look.can_arrange,
-                )
-                .w_full()
-                .justify_center()
-                .when(look.can_arrange, |b| {
-                    b.on_click(cx.listener(|_, _, _, cx| cx.emit(CustomizeEvent::ArrangeSidebar)))
-                }),
-            )
-            .when(!look.can_arrange, |d| {
-                d.child(hint_label("Add a project to arrange its pieces."))
-            })
-            .into_any_element();
+
         let switches = div()
             .flex()
             .flex_col()
@@ -1103,14 +1108,19 @@ impl CustomizeView {
                 s.shortcuts = !s.shortcuts
             }))
             .into_any_element();
-        let mut parts: Vec<AnyElement> = arranged.into_iter().collect();
+        let mut parts: Vec<AnyElement> = look
+            .note
+            .clone()
+            .map(|n| hint_label(n).into_any_element())
+            .into_iter()
+            .chain(arranged)
+            .collect();
         parts.extend([
             stacked(
                 "Start from",
                 look.preset.is_none().then_some("Arranged by you"),
                 presets,
             ),
-            arrange,
             stacked(
                 "Style",
                 None,
@@ -1265,6 +1275,28 @@ impl CustomizeView {
                 })),
             )
             .child(div().flex_1())
+            .when(tab == CustomizeTab::Sidebar, |d| {
+                d.child(
+                    ui::button(
+                        "customize-sidebar-import",
+                        "Import",
+                        ButtonKind::Ghost,
+                        true,
+                    )
+                    .tooltip(ui::tip("Use a sidebar layout copied from Arakun"))
+                    .on_click(cx.listener(|_, _, _, cx| cx.emit(CustomizeEvent::ImportSidebar))),
+                )
+                .child(
+                    ui::button(
+                        "customize-sidebar-export",
+                        "Export",
+                        ButtonKind::Outline,
+                        true,
+                    )
+                    .tooltip(ui::tip("Copy the sidebar's layout to share or keep"))
+                    .on_click(cx.listener(|_, _, _, cx| cx.emit(CustomizeEvent::ExportSidebar))),
+                )
+            })
             .when(colors, |d| {
                 d.child(
                     ui::button("customize-import", "Import", ButtonKind::Ghost, true).on_click(

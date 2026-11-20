@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Benchmarks Arakun: how fast the app is, and how well Claude works in it.
 
-    tools/bench/bench.py perf  [--bin B] [--runs N] [--only a,b] [--out F]
+    tools/bench/bench.py perf  [--bin B] [--runs N] [--only a,b] [--label L] [--out F]
     tools/bench/bench.py agent [--bin B] [--model M] [--runner arakun,claude]
                                [--tasks a,b] [--repeat N] [--timeout S] [--out F]
     tools/bench/bench.py compare <before.json> <after.json> [--markdown]
@@ -205,12 +205,20 @@ def scenario_scroll(dev):
 
 def scenario_terminal(dev):
     # About 4 MB of output, then wait for the last line. `arakun run` joins its
-    # arguments into one shell line, so the command goes as one string.
-    dev.run("run", "--", "seq 1 600000; echo bench-done")
+    # arguments into one shell line, so the command goes as one string. No `--`
+    # before it: v0.1.0 does not know it and hands it to the shell, which stops.
+    reply = dev.run("run", "seq 1 600000; echo bench-done")
+    # Ask for that terminal by number: with no number and more than one
+    # terminal open, `logs` lists them, and the list shows the command itself.
+    m = re.search(r"terminal (\d+)", reply)
+    which = [m.group(1)] if m else []
     deadline = time.monotonic() + 60
-    while "bench-done" not in dev.run("logs", "-n", "10", check=False):
-        if time.monotonic() > deadline:
-            raise RuntimeError("the terminal scenario's output never finished")
+    while True:
+        out = dev.run("logs", "-n", "10", *which, check=False)
+        if "bench-done" in out:
+            return
+        if re.search(r"^\[exit \d+\]", out, re.M) or time.monotonic() > deadline:
+            raise RuntimeError(f"the terminal scenario's output never finished; the terminal shows:\n{out}")
         time.sleep(0.2)
 
 
@@ -296,6 +304,8 @@ def cmd_perf(args):
             log(f"perf run {i + 1}/{args.runs}")
             runs.append(perf_run(binary, only, fixture))
     result = {**meta("perf", binary), "runs": runs, "summary": median_runs(runs)}
+    if args.label:
+        result["label"] = args.label
     print_perf(result["summary"])
     save(result, args.out)
 
@@ -519,7 +529,11 @@ def cmd_compare(args):
             elif up_is_worse and change < -args.threshold and old - new > noise_floor(metric):
                 flag = "better"
             rows.append((group, metric, old, new, change, flag))
-    print(f"before: {a.get('commit', '?')} ({a.get('time')})\nafter:  {b.get('commit', '?')} ({b.get('time')})\n")
+    # A label names the build that ran; the commit is only the checkout bench.py ran from.
+    name = lambda r: r.get("label") or r.get("commit", "?")
+    # As a list in Markdown, where two plain lines would run into one.
+    dash = "- " if args.markdown else ""
+    print(f"{dash}before: {name(a)} ({a.get('time')})\n{dash}after:  {name(b)} ({b.get('time')})\n")
     if args.markdown:
         print("| | metric | before | after | change | |\n|---|---|--:|--:|--:|---|")
         for g, m, o, n, c, f in rows:
@@ -593,6 +607,7 @@ def main():
     p.add_argument("--bin", help="the arakun to test (default: target/release, else target/debug)")
     p.add_argument("--runs", type=int, default=3)
     p.add_argument("--only", help=f"scenarios, comma-separated: {','.join(SCENARIOS)}")
+    p.add_argument("--label", help="a name for the build, such as its release tag; compare shows it")
     p.add_argument("--out")
     p.set_defaults(fn=cmd_perf)
     p = sub.add_parser("agent", help="Claude Code on the tasks, in Arakun and bare")

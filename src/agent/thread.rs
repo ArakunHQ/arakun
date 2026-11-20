@@ -670,6 +670,9 @@ pub struct Thread {
     urgent: usize,
     usage: Usage,
     turn_started: Option<Instant>,
+    /// When each running tool call was first seen, for its timer. Not saved:
+    /// a call replayed from a transcript has no clock worth showing.
+    tool_started: HashMap<String, Instant>,
     /// Session tokens when the turn started, to stamp the turn with what it used.
     turn_tokens: u64,
     /// Session usage when the turn started, for the usage log.
@@ -1164,6 +1167,7 @@ impl Thread {
                 ..Usage::default()
             },
             turn_started: None,
+            tool_started: HashMap::new(),
             turn_tokens: 0,
             turn_usage: Usage::default(),
             turn_tools: BTreeMap::new(),
@@ -1292,6 +1296,26 @@ impl Thread {
             self.status,
             ThreadStatus::Working | ThreadStatus::NeedsInput
         )
+    }
+
+    /// Starts a call's clock when it first runs and drops it when it ends.
+    fn clock_tool(&mut self, id: &str, status: ToolStatus) {
+        match status {
+            ToolStatus::Completed | ToolStatus::Failed => {
+                self.tool_started.remove(id);
+            }
+            _ if !self.replaying => {
+                self.tool_started
+                    .entry(id.to_string())
+                    .or_insert_with(Instant::now);
+            }
+            _ => {}
+        }
+    }
+
+    /// How long a running tool call has been going.
+    pub fn tool_elapsed(&self, id: &str) -> Option<Duration> {
+        self.tool_started.get(id).map(Instant::elapsed)
     }
 
     /// How long the running turn has been going.
@@ -2738,6 +2762,7 @@ impl Thread {
             self.add_turn_tokens(v);
         }
         self.settle_turn(cx);
+        self.tool_started.clear();
         let cancelled = std::mem::take(&mut self.cancelling);
         let stop_reason = match result {
             Ok(v) => {
@@ -3304,6 +3329,7 @@ impl Thread {
                 self.native.questions.clear();
                 self._prompt = None;
                 self.turn_started = None;
+                self.tool_started.clear();
                 (self.prompting, self.held, self.auto_turn) = (false, false, false);
                 self.stop_subagents(cx);
                 let tail: Vec<&str> = stderr_tail.lines().rev().take(6).collect();
@@ -3810,6 +3836,11 @@ impl Thread {
         if let Some(status) = u["status"].as_str() {
             t.status = parse_tool_status(status);
         }
+        let status = t.status;
+        self.clock_tool(&id, status);
+        let Some(Entry::Tool(t)) = self.entries.get_mut(ix) else {
+            return;
+        };
         if let Some(content) = u.get("content").filter(|c| c.is_array()) {
             t.content = parse_tool_content(content);
             recount(t);

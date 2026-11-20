@@ -42,6 +42,9 @@ pub struct State {
     pub diff_palette: String,
     #[serde(default)]
     pub glass: bool,
+    /// `theme::Contrast` id; empty follows the system.
+    #[serde(default)]
+    pub contrast: String,
     /// `theme::Grays` id; empty is the default ramp.
     #[serde(default)]
     pub grays: String,
@@ -60,6 +63,9 @@ pub struct State {
     /// The Dynamic Island was turned off in Settings (`island`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub island_off: bool,
+    /// `ui::motion::Reduce` id; empty follows the system.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub reduce_motion: String,
     /// Closing the window hides it instead of quitting (`background`, Linux).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub background: bool,
@@ -264,6 +270,7 @@ pub struct Layout {
     pub arcade: bool,
     pub diff_palette: crate::theme::DiffPalette,
     pub glass: bool,
+    pub contrast: crate::theme::Contrast,
     pub grays: crate::theme::Grays,
     pub type_scale: crate::ui::TypeScale,
     /// Whether the rail's usage card shows Claude, Droid, OpenCode and Devin.
@@ -883,6 +890,7 @@ pub fn snapshot_with(
         arcade: layout.arcade,
         diff_palette: layout.diff_palette.id().to_string(),
         glass: layout.glass,
+        contrast: layout.contrast.id().to_string(),
         grays: layout.grays.id().to_string(),
         type_scale: layout.type_scale.id().to_string(),
         rail_hidden: [
@@ -898,6 +906,7 @@ pub fn snapshot_with(
         ui_zoom: layout.ui_zoom,
         last_agent: crate::model::default_agent().id().to_string(),
         island_off: !crate::island::enabled(),
+        reduce_motion: crate::ui::motion::choice().id().to_string(),
         background: crate::background::enabled(),
         window: layout.window,
     };
@@ -912,6 +921,7 @@ pub fn restore(state: State) -> (Vec<Project>, usize, Layout, TabStrip) {
     let last_agent = state.last_agent.clone();
     crate::island::set_enabled(!state.island_off);
     crate::background::set_enabled(state.background);
+    crate::ui::motion::restore(crate::ui::motion::Reduce::from_id(&state.reduce_motion));
     let projects: Vec<Project> = state
         .projects
         .into_iter()
@@ -1109,6 +1119,7 @@ pub fn restore(state: State) -> (Vec<Project>, usize, Layout, TabStrip) {
         arcade: state.arcade,
         diff_palette: crate::theme::DiffPalette::from_id(&state.diff_palette),
         glass: state.glass,
+        contrast: crate::theme::Contrast::from_id(&state.contrast),
         grays: crate::theme::Grays::from_id(&state.grays),
         type_scale: crate::ui::TypeScale::from_id(&state.type_scale),
         rail_usage: ["claude", "droid", "opencode", "devin"]
@@ -1365,6 +1376,7 @@ mod tests {
             arcade: false,
             diff_palette: crate::theme::DiffPalette::Default,
             glass: false,
+            contrast: crate::theme::Contrast::System,
             grays: crate::theme::Grays::Crisp,
             type_scale: crate::ui::TypeScale::Compact,
             rail_usage: [true, true, true, true],
@@ -1399,6 +1411,7 @@ mod tests {
             arcade: false,
             diff_palette: crate::theme::DiffPalette::Default,
             glass: false,
+            contrast: crate::theme::Contrast::System,
             grays: crate::theme::Grays::Crisp,
             type_scale: crate::ui::TypeScale::Compact,
             rail_usage: [true, true, true, true],
@@ -1432,6 +1445,7 @@ mod tests {
             arcade: false,
             diff_palette: crate::theme::DiffPalette::Default,
             glass: false,
+            contrast: crate::theme::Contrast::System,
             grays: crate::theme::Grays::Soft,
             type_scale: crate::ui::TypeScale::Comfortable,
             rail_usage: [true, false, true, false],
@@ -1468,6 +1482,7 @@ mod tests {
             arcade: false,
             diff_palette: crate::theme::DiffPalette::Default,
             glass: false,
+            contrast: crate::theme::Contrast::System,
             grays: crate::theme::Grays::Crisp,
             type_scale: crate::ui::TypeScale::Compact,
             rail_usage: [true, true, true, true],
@@ -1501,6 +1516,7 @@ mod tests {
             arcade: false,
             diff_palette: crate::theme::DiffPalette::Default,
             glass: false,
+            contrast: crate::theme::Contrast::System,
             grays: crate::theme::Grays::Crisp,
             type_scale: crate::ui::TypeScale::Compact,
             rail_usage: [true, true, true, true],
@@ -1538,6 +1554,7 @@ mod tests {
             arcade: false,
             diff_palette: crate::theme::DiffPalette::Default,
             glass: false,
+            contrast: crate::theme::Contrast::System,
             grays: crate::theme::Grays::Crisp,
             type_scale: crate::ui::TypeScale::Compact,
             rail_usage: [true, true, true, true],
@@ -1604,6 +1621,7 @@ mod tests {
             arcade: false,
             diff_palette: crate::theme::DiffPalette::Default,
             glass: false,
+            contrast: crate::theme::Contrast::System,
             grays: crate::theme::Grays::Crisp,
             type_scale: crate::ui::TypeScale::Compact,
             rail_usage: [true, true, true, true],

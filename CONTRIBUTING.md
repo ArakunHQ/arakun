@@ -185,9 +185,9 @@ which git ignores. Turn the hooks off with `lefthook uninstall`.
 
 ### Benchmarks
 
-[`tools/bench/bench.py`](tools/bench/bench.py) measures Arakun. CI doesn't run it.
-Run it when a change could make the app slower, and put the `compare` table in the
-pull request.
+[`tools/bench/bench.py`](tools/bench/bench.py) measures Arakun. CI doesn't run it on
+pull requests. Run it when a change could make the app slower, and put the `compare`
+table in the pull request.
 
 ```sh
 cargo build --release --locked --no-default-features
@@ -202,6 +202,17 @@ Arakun (`arakun dev`, Linux and macOS) and reads the time GPUI took for each fra
 `--runner arakun,claude`, as bare `claude -p`, and scores each run with tests the
 agent never saw. It uses your Claude account or API key, so it costs money. The
 [`bench` skill](.claude/skills/bench/SKILL.md) has the details.
+
+To compare two releases, start the **Benchmark releases** workflow from the Actions
+tab, or with `gh`. It downloads both Linux builds, runs `perf` on one after the other
+on the same runner and puts the `compare` table on the run's summary page. The run
+fails when the newer release is slower past the threshold.
+
+```sh
+gh workflow run bench-releases.yml -f before=v0.10.0 -f after=v0.11.1
+gh workflow run bench-releases.yml            # the latest release against the one before
+tools/bench/releases.sh v0.10.0 v0.11.1       # the same on your own Linux machine
+```
 
 ## Writing code
 

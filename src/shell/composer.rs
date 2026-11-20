@@ -6,6 +6,8 @@ use super::*;
 /// The composer caret, in pixels.
 const CARET_WIDTH: f32 = 1.5;
 const CARET_HEIGHT: f32 = 16.;
+/// What an empty composer says; the setup's preview of the window shows it too.
+pub(super) const PLACEHOLDER: &str = "Ask, build, / for commands, @ for references...";
 /// The line the placeholder sits on, which centers the caret before the text.
 const PLACEHOLDER_LINE: f32 = 22.;
 /// Space above and below the composer's text, kept around the caret when it scrolls.
@@ -1111,7 +1113,7 @@ impl Shell {
             div()
                 .relative()
                 .text_color(theme::text_faint())
-                .child("Ask, build, / for commands, @ for references...")
+                .child(PLACEHOLDER)
                 .into_any_element()
         } else {
             let sel = draft.selection();

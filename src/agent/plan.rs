@@ -145,7 +145,7 @@ impl Seats {
 
 /// The windows a seat's room is judged by: the 5-hour one and the weekly one
 /// for every model. A model's own weekly window says nothing about the others.
-const FIVE_HOUR: &str = "5-hour limit";
+pub(crate) const FIVE_HOUR: &str = "5-hour limit";
 /// A token's headers and the older fields say "Weekly limit"; the endpoint's
 /// `limits[]` list calls the same window `weekly_all`.
 const WEEKLY: [&str; 2] = ["Weekly limit", "Weekly all"];
@@ -169,6 +169,12 @@ impl Window {
         }
     }
 
+    /// The window limits one model ("Weekly · Opus", "5-hour · GPT-5.3-Codex-Spark"),
+    /// not the whole account.
+    pub fn one_model(&self) -> bool {
+        self.label.contains(" · ")
+    }
+
     /// The window has started over by `now`, so what it said is past.
     pub fn reset_by(&self, now: u64) -> bool {
         self.resets_at.is_some_and(|at| at <= now)
@@ -186,32 +192,37 @@ impl Window {
         if at <= now {
             return Some("resetting…".into());
         }
-        let delta = at - now;
-        if delta < 90 * 60 {
-            return Some(format!("resets in {}m", delta.div_ceil(60)));
-        }
-        if delta < 36 * 3600 {
-            return Some(format!(
-                "resets in {}h {:02}m",
-                delta / 3600,
-                delta % 3600 / 60
-            ));
-        }
-        let t = crate::platform::local_time(at)?;
-        if delta >= 7 * 86_400 {
-            return Some(format!(
-                "resets {} {}",
-                MONTH[t.month.rem_euclid(12) as usize],
-                t.day
-            ));
-        }
-        Some(format!(
-            "resets {} {:02}:{:02}",
-            WEEKDAY[t.wday.rem_euclid(7) as usize],
-            t.hour,
-            t.minute
-        ))
+        Some(format!("resets {}", when_text(at, now)?))
     }
+}
+
+/// "in 2h 14m", "Tue 21:00", or "Dec 2" a week or more out: when `at` comes,
+/// for a sentence such as "resets …". `None` once `at` is past.
+pub fn when_text(at: u64, now: u64) -> Option<String> {
+    if at <= now {
+        return None;
+    }
+    let delta = at - now;
+    if delta < 90 * 60 {
+        return Some(format!("in {}m", delta.div_ceil(60)));
+    }
+    if delta < 36 * 3600 {
+        return Some(format!("in {}h {:02}m", delta / 3600, delta % 3600 / 60));
+    }
+    let t = crate::platform::local_time(at)?;
+    if delta >= 7 * 86_400 {
+        return Some(format!(
+            "{} {}",
+            MONTH[t.month.rem_euclid(12) as usize],
+            t.day
+        ));
+    }
+    Some(format!(
+        "{} {:02}:{:02}",
+        WEEKDAY[t.wday.rem_euclid(7) as usize],
+        t.hour,
+        t.minute
+    ))
 }
 
 const WEEKDAY: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -931,7 +942,7 @@ pub(crate) fn parse_usage(json: &Value, subscription: &str, tier: &str) -> PlanU
 }
 
 /// `limits[].percent` and `spend.percent` are always 0-100: a 1 there is 1%, not a whole fraction.
-fn whole(v: &Value) -> u64 {
+pub(crate) fn whole(v: &Value) -> u64 {
     v.as_f64()
         .filter(|p| p.is_finite() && *p >= 0.)
         .map_or(0, |p| p.round() as u64)

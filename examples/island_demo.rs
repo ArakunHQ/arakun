@@ -94,6 +94,7 @@ mod demo {
             ],
             today: Some("$2.87".into()),
             viewing: None,
+            reduce_motion: None,
         }
     }
 

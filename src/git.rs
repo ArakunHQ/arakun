@@ -699,6 +699,87 @@ pub fn diff(dir: &Path, path: &str, untracked: bool) -> Result<String> {
     stdout(git(dir).args(["diff", "--no-color", diff_base(dir)?, "--", path]))
 }
 
+/// What a commit would hold, for a model to describe: `git diff --stat` and
+/// the diff (cut at `cap` characters, and whether it was). With `all`, every
+/// uncommitted change, new files too, as "Commit all" takes them; else only
+/// what is staged.
+pub fn commit_diff(dir: &Path, all: bool, cap: usize) -> Result<(String, String, bool)> {
+    let base = diff_base(dir)?;
+    let range: &[&str] = if all { &[base] } else { &["--cached", base] };
+    let args = |extra: &[&'static str]| {
+        let mut a = vec!["diff", "--no-color"];
+        a.extend_from_slice(extra);
+        a.extend_from_slice(range);
+        a.push("--");
+        a
+    };
+    let mut stat = read(dir, &args(&["--stat=200"]))?;
+    let mut diff = read(dir, &args(&[]))?;
+    // Counted in characters, as `cut_at_line` cuts.
+    let mut chars = diff.chars().count();
+    let mut skipped = false;
+    if all {
+        let new = read(dir, &["ls-files", "--others", "--exclude-standard", "-z"])?;
+        for path in new.split('\0').filter(|p| !p.is_empty()) {
+            stat.push_str(&format!(" {path} (new file)\n"));
+            // The diffs stop once past the cap; the list goes on, cut below.
+            if chars > cap {
+                skipped = true;
+                continue;
+            }
+            // A file of more than 4 bytes per character of the cap has a diff
+            // past it: skip it rather than hold all of it in memory.
+            if std::fs::metadata(dir.join(path)).is_ok_and(|m| m.len() > 4 * cap as u64) {
+                skipped = true;
+                continue;
+            }
+            let more = self::diff(dir, path, true)?;
+            chars += more.chars().count();
+            diff.push_str(&more);
+        }
+    }
+    let (diff, cut) = cut_at_line(diff, cap);
+    Ok((cap_stat(stat, STAT_LINES), diff, cut || skipped))
+}
+
+/// How many lines of the list of files a model reads: a folder of
+/// dependencies nobody ignored would otherwise list tens of thousands.
+const STAT_LINES: usize = 300;
+
+/// `stat` cut to `keep` lines, with a line that says how many files were
+/// left out. Git's summary line ("3 files changed, …") is no file: a file's
+/// line has a ` | ` or is a new file's, whatever its path says.
+fn cap_stat(stat: String, keep: usize) -> String {
+    let mut lines = stat.lines();
+    let mut kept: String = lines
+        .by_ref()
+        .take(keep)
+        .map(|l| format!("{l}\n"))
+        .collect();
+    let more = lines
+        .filter(|l| l.contains(" | ") || l.ends_with(" (new file)"))
+        .count();
+    if more > 0 {
+        kept.push_str(&format!(" … and {more} more files\n"));
+    }
+    kept
+}
+
+/// The subjects of the last `n` commits on HEAD, newest first: the style a
+/// new commit message follows. Empty before the first commit.
+pub fn recent_subjects(dir: &Path, n: usize) -> Vec<String> {
+    let count = format!("-{n}");
+    read(dir, &["log", &count, "--format=%s", "--no-merges"])
+        .map(|out| {
+            out.lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .map(String::from)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 // ---------------------------------------------------------------------------
 // Workflow: remotes, commit, push/pull, staging, merge, pull requests.
 
@@ -1796,6 +1877,69 @@ test: cover the resize\u{1f}\u{1e}\n";
             assert!(ok.success());
         }
         dir
+    }
+
+    #[test]
+    fn a_long_list_of_files_is_cut_and_says_by_how_many() {
+        let stat = " a | 1 +\n b | 2 +-\n 2 files changed, 2 insertions(+)\n c (new file)\n d (new file)\n";
+        assert_eq!(
+            super::cap_stat(stat.into(), 2),
+            " a | 1 +\n b | 2 +-\n … and 2 more files\n"
+        );
+        // Cut after git's summary line: that line is no file.
+        assert_eq!(
+            super::cap_stat(stat.into(), 1),
+            " a | 1 +\n … and 3 more files\n"
+        );
+        assert_eq!(super::cap_stat(stat.into(), 10), stat);
+        // A path that says "changed" is still a file.
+        let stat = " a | 1 +\n 1 file changed, 1 insertion(+)\n what changed/b (new file)\n";
+        assert_eq!(
+            super::cap_stat(stat.into(), 1),
+            " a | 1 +\n … and 1 more files\n"
+        );
+    }
+
+    #[test]
+    fn a_commit_diff_takes_the_staged_or_every_change() {
+        let dir = repo();
+        std::fs::write(dir.join("staged.txt"), "kept\n").unwrap();
+        std::fs::write(dir.join("new.txt"), "fresh\n").unwrap();
+        super::stage(&dir, "staged.txt").unwrap();
+
+        let (stat, diff, cut) = super::commit_diff(&dir, false, 10_000).unwrap();
+        assert!(
+            stat.contains("staged.txt") && !stat.contains("new.txt"),
+            "{stat}"
+        );
+        assert!(diff.contains("+kept") && !diff.contains("+fresh"), "{diff}");
+        assert!(!cut);
+
+        let (stat, diff, _) = super::commit_diff(&dir, true, 10_000).unwrap();
+        assert!(stat.contains("new.txt (new file)"), "{stat}");
+        assert!(diff.contains("+kept") && diff.contains("+fresh"), "{diff}");
+
+        // Past the cap, the files are still all listed.
+        let (stat, _, cut) = super::commit_diff(&dir, true, 10).unwrap();
+        assert!(cut && stat.contains("new.txt"), "{stat}");
+
+        // Under the cap in characters but over it in bytes: new files still
+        // come in, and nothing is cut.
+        std::fs::write(dir.join("staged.txt"), "é".repeat(400)).unwrap();
+        super::stage(&dir, "staged.txt").unwrap();
+        let (_, diff, cut) = super::commit_diff(&dir, true, 700).unwrap();
+        assert!(diff.contains("+fresh") && !cut, "{diff}");
+
+        // A new file too large for the cap is listed, not read, and the diff
+        // says it is cut.
+        std::fs::write(dir.join("big.txt"), "x".repeat(5_000)).unwrap();
+        let (stat, diff, cut) = super::commit_diff(&dir, true, 1_000).unwrap();
+        assert!(stat.contains("big.txt (new file)"), "{stat}");
+        assert!(!diff.contains("xxxx") && cut, "{diff}");
+
+        assert_eq!(super::recent_subjects(&dir, 5), vec!["x".to_string()]);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

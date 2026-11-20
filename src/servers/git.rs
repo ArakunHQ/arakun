@@ -15,11 +15,15 @@ use serde_json::{Value, json};
 
 use super::client::Sender;
 use crate::git;
-use crate::git_call::{Call, DiffText, NewPr, PrSource, Status};
+use crate::git_call::{Call, CommitSource, DiffText, NewPr, PrSource, Status};
 
 /// How much longer than the server's own limit the app waits for an answer:
 /// the way there and back.
 const TRAVEL: Duration = Duration::from_secs(30);
+
+/// Said when a server knows `git` requests, but not this one yet.
+pub const TOO_OLD_FOR: &str =
+    "This server runs an older Arakun that can't do this. Update it first.";
 
 /// Said when a server does not know the `git` request yet.
 pub const OLDER: &str =
@@ -178,6 +182,11 @@ impl GitAt {
             }),
         }
     }
+
+    /// What a commit of all changes, or of the staged ones, would hold.
+    pub fn commit_source(&self, all: bool, max_diff: usize) -> Result<CommitSource> {
+        self.call(Call::CommitSource { all, max_diff })
+    }
 }
 
 impl From<&Path> for GitAt {
@@ -192,7 +201,11 @@ impl ServerGit {
             return Err(anyhow!("This server is no longer paired."));
         };
         let wait = call.limit() + TRAVEL;
-        let (reference, answer) = self.asks.open(&self.server)?;
+        let op = serde_json::to_value(&call)?["op"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        let (reference, answer) = self.asks.open(&self.server, &op)?;
         let msg = json!({
             "type": "git", "ref": reference, "place": self.place, "call": call,
         });
@@ -247,8 +260,8 @@ pub struct Asks(Arc<Mutex<Waiting>>);
 #[derive(Default)]
 struct Waiting {
     next: u64,
-    /// Each request's server, and where its answer goes.
-    out: HashMap<u64, (String, mpsc::Sender<Answer>)>,
+    /// Each request's server, its `op`, and where its answer goes.
+    out: HashMap<u64, (String, String, mpsc::Sender<Answer>)>,
     /// Servers that said they do not know the request: none is sent there
     /// until they connect again, maybe updated.
     older: HashSet<String>,
@@ -259,8 +272,8 @@ impl Asks {
         self.0.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// A new request to `server`: its `ref`, and where its answer comes.
-    fn open(&self, server: &str) -> Result<(u64, mpsc::Receiver<Answer>)> {
+    /// A new request `op` to `server`: its `ref`, and where its answer comes.
+    fn open(&self, server: &str, op: &str) -> Result<(u64, mpsc::Receiver<Answer>)> {
         let mut w = self.lock();
         if w.older.contains(server) {
             return Err(anyhow!(OLDER));
@@ -268,7 +281,8 @@ impl Asks {
         w.next += 1;
         let reference = w.next;
         let (tx, rx) = mpsc::channel();
-        w.out.insert(reference, (server.to_string(), tx));
+        w.out
+            .insert(reference, (server.to_string(), op.to_string(), tx));
         Ok((reference, rx))
     }
 
@@ -283,10 +297,10 @@ impl Asks {
         };
         let mut w = self.lock();
         // Only the server it went to answers it.
-        if w.out.get(&reference).is_none_or(|(s, _)| s != server) {
+        if w.out.get(&reference).is_none_or(|(s, _, _)| s != server) {
             return;
         }
-        let Some((_, tx)) = w.out.remove(&reference) else {
+        let Some((_, _, tx)) = w.out.remove(&reference) else {
             return;
         };
         let answer = match msg["error"].as_str() {
@@ -305,10 +319,10 @@ impl Asks {
             return;
         };
         let mut w = self.lock();
-        if w.out.get(&reference).is_none_or(|(s, _)| s != server) {
+        if w.out.get(&reference).is_none_or(|(s, _, _)| s != server) {
             return;
         }
-        if let Some((_, tx)) = w.out.remove(&reference) {
+        if let Some((_, _, tx)) = w.out.remove(&reference) {
             let _ = tx.send(Err(dropped(&msg["call"]).as_str().into()));
         }
     }
@@ -320,11 +334,11 @@ impl Asks {
         let ended: Vec<u64> = w
             .out
             .iter()
-            .filter(|(_, (s, _))| s == server)
+            .filter(|(_, (s, _, _))| s == server)
             .map(|(r, _)| *r)
             .collect();
         for reference in ended {
-            if let Some((_, tx)) = w.out.remove(&reference) {
+            if let Some((_, _, tx)) = w.out.remove(&reference) {
                 let _ = tx.send(Err(why.into()));
             }
         }
@@ -335,6 +349,32 @@ impl Asks {
     pub fn older(&self, server: &str) {
         self.lock().older.insert(server.to_string());
         self.fail(server, OLDER);
+    }
+
+    /// Whether `message` is `server` refusing a request it is too old to
+    /// know (`bad message: unknown variant `commit_source``): those requests
+    /// fail at once, and the others still go there.
+    pub fn refused(&self, server: &str, message: &str) -> bool {
+        let Some(op) = message
+            .strip_prefix("bad message: unknown variant `")
+            .and_then(|rest| rest.split_once('`'))
+            .map(|(op, _)| op)
+        else {
+            return false;
+        };
+        let mut w = self.lock();
+        let ended: Vec<u64> = w
+            .out
+            .iter()
+            .filter(|(_, (s, o, _))| s == server && o == op)
+            .map(|(r, _)| *r)
+            .collect();
+        for reference in &ended {
+            if let Some((_, _, tx)) = w.out.remove(reference) {
+                let _ = tx.send(Err(TOO_OLD_FOR.into()));
+            }
+        }
+        !ended.is_empty()
     }
 
     /// `server` is connected again, maybe updated.
@@ -355,7 +395,15 @@ fn dropped(call: &Value) -> String {
 
 /// Whether `call` (as sent) only reads, so trying again changes nothing.
 fn reads(call: &Value) -> bool {
-    let reads = ["status", "diff", "pr_view", "pr_plan", "pr_source", "fetch"];
+    let reads = [
+        "status",
+        "diff",
+        "pr_view",
+        "pr_plan",
+        "pr_source",
+        "commit_source",
+        "fetch",
+    ];
     call["op"].as_str().is_some_and(|op| reads.contains(&op))
 }
 
@@ -366,8 +414,8 @@ mod tests {
     #[test]
     fn an_answer_goes_to_the_request_with_its_ref() {
         let asks = Asks::default();
-        let (a, ra) = asks.open("s1").unwrap();
-        let (b, rb) = asks.open("s1").unwrap();
+        let (a, ra) = asks.open("s1", "status").unwrap();
+        let (b, rb) = asks.open("s1", "status").unwrap();
         asks.answered("s1", &json!({ "type": "git", "ref": b, "ok": 2 }));
         asks.answered("s1", &json!({ "type": "git", "ref": a, "error": "no" }));
         assert_eq!(rb.try_recv().unwrap(), Ok(json!(2)));
@@ -377,7 +425,7 @@ mod tests {
     #[test]
     fn another_server_cannot_answer_a_request() {
         let asks = Asks::default();
-        let (a, ra) = asks.open("s1").unwrap();
+        let (a, ra) = asks.open("s1", "status").unwrap();
         asks.answered("s2", &json!({ "type": "git", "ref": a, "ok": 1 }));
         assert!(ra.try_recv().is_err());
         asks.undelivered("s2", &json!({ "type": "git", "ref": a }));
@@ -389,8 +437,8 @@ mod tests {
     #[test]
     fn a_drop_ends_the_requests_of_that_server_only() {
         let asks = Asks::default();
-        let (_, r1) = asks.open("s1").unwrap();
-        let (_, r2) = asks.open("s2").unwrap();
+        let (_, r1) = asks.open("s1", "status").unwrap();
+        let (_, r2) = asks.open("s2", "status").unwrap();
         asks.fail("s1", "dropped");
         assert_eq!(r1.try_recv().unwrap(), Err("dropped".into()));
         assert!(r2.try_recv().is_err());
@@ -399,20 +447,20 @@ mod tests {
     #[test]
     fn an_older_server_is_not_asked_until_it_is_back() {
         let asks = Asks::default();
-        let (_, r) = asks.open("s1").unwrap();
+        let (_, r) = asks.open("s1", "status").unwrap();
         asks.older("s1");
         assert_eq!(r.try_recv().unwrap(), Err(OLDER.into()));
-        assert!(asks.open("s1").is_err());
-        assert!(asks.open("s2").is_ok());
+        assert!(asks.open("s1", "status").is_err());
+        assert!(asks.open("s2", "status").is_ok());
         asks.back("s1");
-        assert!(asks.open("s1").is_ok());
+        assert!(asks.open("s1", "status").is_ok());
     }
 
     #[test]
     fn an_undelivered_change_says_to_look_first() {
         let asks = Asks::default();
-        let (a, ra) = asks.open("s1").unwrap();
-        let (b, rb) = asks.open("s1").unwrap();
+        let (a, ra) = asks.open("s1", "status").unwrap();
+        let (b, rb) = asks.open("s1", "status").unwrap();
         asks.undelivered(
             "s1",
             &json!({ "type": "git", "ref": a, "call": { "op": "status" } }),
@@ -437,7 +485,7 @@ mod tests {
     #[test]
     fn a_server_timeout_reads_as_one() {
         let asks = Asks::default();
-        let (a, ra) = asks.open("s1").unwrap();
+        let (a, ra) = asks.open("s1", "status").unwrap();
         asks.answered(
             "s1",
             &json!({ "type": "git", "ref": a, "error": "slow", "timed_out": true }),
@@ -461,5 +509,22 @@ mod tests {
         at.stage("a.txt").unwrap();
         assert!(at.status().0.unwrap()[0].staged);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_server_too_old_for_one_request_fails_only_that_one() {
+        let asks = Asks::default();
+        let (_, status) = asks.open("s1", "status").unwrap();
+        let (_, write) = asks.open("s1", "commit_source").unwrap();
+        let (_, elsewhere) = asks.open("s2", "commit_source").unwrap();
+        let refusal = "bad message: unknown variant `commit_source`, expected one of `status`";
+        assert!(asks.refused("s1", refusal));
+        assert_eq!(write.try_recv().unwrap(), Err(TOO_OLD_FOR.into()));
+        assert!(status.try_recv().is_err() && elsewhere.try_recv().is_err());
+        // The server still takes the requests it knows.
+        assert!(asks.open("s1", "status").is_ok());
+        assert!(!asks.refused("s1", refusal));
+        assert!(!asks.refused("s1", "bad message: missing field `ref`"));
+        assert!(reads(&json!({ "op": "commit_source" })));
     }
 }

@@ -197,6 +197,8 @@ enum Modal {
     Telemetry(Entity<crate::telemetry_dialog::TelemetryDialog>),
     /// A session or a project, from the + on the rail's Projects heading.
     New(Entity<new_dialog::NewDialog>),
+    /// Connecting arakun-pilot, or changing its settings.
+    Pilot(Entity<crate::github_view::connect::PilotDialog>),
 }
 
 #[derive(Clone, Copy)]
@@ -542,6 +544,12 @@ pub struct Shell {
     clear_armed: bool,
     /// The setup, while it shows in the window's place (`shell::onboarding`).
     onboarding: Option<onboarding::Onboarding>,
+    /// A few keys on the start screen, right after someone new finishes the
+    /// setup, until they close them.
+    setup_tips: bool,
+    /// Someone asked the setup to pair the phone before they had a project:
+    /// the Phone tab opens once the first one is added.
+    phone_after_project: bool,
 }
 
 struct InboxItem {
@@ -685,6 +693,9 @@ impl Shell {
             let active = window.is_window_active();
             if active {
                 this.refresh_visible(cx);
+                // The system's settings may have changed while Arakun was behind.
+                crate::ui::contrast::follow_system(cx);
+                crate::ui::motion::follow_system(cx);
             }
             #[cfg(feature = "coderlabs")]
             this.coderspace
@@ -710,6 +721,7 @@ impl Shell {
         }));
         theme::set_diff_palette(layout.diff_palette);
         theme::set_glass(layout.glass);
+        theme::set_contrast(layout.contrast);
         theme::set_grays(layout.grays);
         crate::palettes::apply_saved();
         account_view::set_rail_shows(AgentKind::Claude, layout.rail_usage[0]);
@@ -721,7 +733,7 @@ impl Shell {
             crate::ui_zoom::set_pct(layout.ui_zoom);
             window.bounds_changed(cx);
         }
-        if layout.glass {
+        if theme::glass() {
             window.set_background_appearance(theme::window_background());
         }
         let account = cx.new(Account::new);
@@ -884,6 +896,7 @@ impl Shell {
             window.focus(&composer_focus, cx);
         }
         crate::mascot::set_animated(layout.arcade);
+        crate::ui::motion::apply(cx);
         let home_face = cx.new(crate::ascii_face::AsciiFace::new);
         let ui_alpha = Cell::new(1.);
         let home_face_sub = cx.observe(&home_face, move |_, face, cx| {
@@ -1058,6 +1071,8 @@ impl Shell {
             notices: RefCell::new(crate::notices::load()),
             inbox_open: false,
             onboarding: None,
+            setup_tips: false,
+            phone_after_project: false,
             alone: None,
             terminal_alone: None,
             inbox_shown: Cell::new(0),
@@ -1380,7 +1395,8 @@ impl Shell {
             subagents_w: self.subagents_w,
             arcade: self.arcade,
             diff_palette: theme::diff_palette(),
-            glass: theme::glass(),
+            glass: theme::glass_chosen(),
+            contrast: theme::contrast_setting(),
             grays: theme::grays(),
             type_scale: crate::ui::type_scale(),
             rail_usage: [
@@ -1716,8 +1732,9 @@ impl Shell {
         window.focus(&self.composer_focus, cx);
         self.ensure_terminal(window, cx);
         self.sync_poll(window, cx);
-        // A project is what the setup was for, however it was added.
-        self.finish_onboarding(window, cx);
+        // The setup goes on to its next step, or ends when the project
+        // came some other way.
+        self.onboarding_project_added(window, cx);
         cx.notify();
     }
 
@@ -2614,6 +2631,10 @@ impl Shell {
                     this.save(cx);
                     cx.notify();
                 }
+                SettingsEvent::ReduceMotion(r) => {
+                    crate::ui::motion::set_choice(*r, cx);
+                    this.save(cx);
+                }
                 #[cfg(target_os = "linux")]
                 SettingsEvent::Background(on) => {
                     crate::background::set_enabled(*on);
@@ -2819,19 +2840,20 @@ impl Shell {
                             this.save(cx);
                             cx.refresh_windows();
                         }
+                        CustomizeEvent::Contrast(c) => {
+                            theme::set_contrast(*c);
+                            // `apply` can't update this window while the
+                            // callback holds it, so set it here.
+                            window.set_background_appearance(theme::window_background());
+                            this.save(cx);
+                            crate::ui::contrast::apply(cx);
+                        }
                         CustomizeEvent::SidebarStyle(style) => {
                             let style = *style;
                             this.change_sidebar(cx, |s| s.style = style);
                         }
                         CustomizeEvent::SidebarPreset(p) => {
-                            // A preset lays out the pieces; the look stays as chosen.
-                            let p = *p;
-                            this.change_sidebar(cx, |s| {
-                                let style = s.style;
-                                *s = p.layout();
-                                s.style = style;
-                            });
-                            this.clear_builder_selection();
+                            this.apply_sidebar_preset(*p, cx);
                         }
                         CustomizeEvent::RailWidth(w) => {
                             this.rail_w = *w;
@@ -3899,6 +3921,7 @@ impl Render for Shell {
             Modal::Automations(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),
             Modal::Session(v) => (v.clone().into_any_element(), v.entity_id().as_u64()),
             Modal::Telemetry(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),
+            Modal::Pilot(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),
             Modal::New(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),
         });
         let viewport_h = window.viewport_size().height.as_f32();

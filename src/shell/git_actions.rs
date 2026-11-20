@@ -337,8 +337,9 @@ impl Shell {
         let branch = env.branch.clone();
         let files = env.changes.len();
         let staged = env.changes.iter().filter(|c| c.staged).count();
+        let agent = env.agent;
         let at = self.git_at(&path);
-        let dialog = cx.new(|cx| CommitDialog::new(at, branch, files, staged, window, cx));
+        let dialog = cx.new(|cx| CommitDialog::new(at, branch, files, staged, agent, window, cx));
         let sub = cx.subscribe_in(
             &dialog,
             window,

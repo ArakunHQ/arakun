@@ -14,12 +14,12 @@ use std::time::{Duration, Instant};
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    Anchor, AnyElement, App, AppContext as _, ClipboardItem, Context, Entity, EventEmitter,
-    FocusHandle, Focusable, FollowMode, FontWeight, Hsla, InteractiveElement as _, IntoElement,
-    KeyDownEvent, ListAlignment, ListState, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, ParentElement as _, Pixels, Point, Render, ScrollHandle, ScrollWheelEvent,
-    SharedString, StatefulInteractiveElement as _, Styled as _, StyledImage as _, StyledText,
-    Subscription, Task, TextRun, Transformation, Window, anchored, deferred, div, font,
+    Anchor, AnyElement, App, AppContext as _, ClipboardItem, Context, Div, ElementId, Entity,
+    EventEmitter, FocusHandle, Focusable, FollowMode, FontWeight, Hsla, InteractiveElement as _,
+    IntoElement, KeyDownEvent, ListAlignment, ListState, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Point, Render, ScrollHandle,
+    ScrollWheelEvent, SharedString, StatefulInteractiveElement as _, Styled as _, StyledImage as _,
+    StyledText, Subscription, Task, TextRun, Transformation, Window, anchored, deferred, div, font,
     linear_color_stop, linear_gradient, list, point, px, radians,
 };
 
@@ -39,6 +39,7 @@ use crate::mascot::{Mascot, Mood};
 use crate::theme;
 use crate::ui::{hover_icon, icon};
 
+mod anim;
 mod cards;
 mod diffs;
 mod find_bar;
@@ -47,6 +48,7 @@ mod note_box;
 mod tool_rows;
 
 // Free helpers the split-out parts of the transcript share.
+use anim::*;
 use cards::*;
 use diffs::*;
 use tool_rows::*;
@@ -96,73 +98,6 @@ fn rel_path(path: &Path, cwd: &Path) -> String {
         .unwrap_or(path)
         .display()
         .to_string()
-}
-
-/// Phase ticks in one turn of the spinner and one wave of the working dots:
-/// about a second at the 83 ms tick.
-const SPIN_TICKS: u32 = 12;
-
-/// A faint ring with an arc going round it. The arc moves a twelfth of a turn
-/// per tick, so the tick's steps read as even motion.
-fn spinner(phase: u32, size: f32, color: Hsla) -> AnyElement {
-    let angle = (phase % SPIN_TICKS) as f32 / SPIN_TICKS as f32 * std::f32::consts::TAU;
-    div()
-        .relative()
-        .flex_none()
-        .size(px(size))
-        .child(
-            icon("circle", size)
-                .absolute()
-                .top_0()
-                .left_0()
-                .text_color(color)
-                .opacity(0.25),
-        )
-        .child(
-            icon("spinner-arc", size)
-                .absolute()
-                .top_0()
-                .left_0()
-                .text_color(color)
-                .with_transformation(Transformation::rotate(radians(angle))),
-        )
-        .into_any_element()
-}
-
-/// Three dots in a wave in front of the live header: the agent is working.
-/// Still while it waits for the user, since nothing is working then, and when
-/// the window is in the background, so nothing ticks there.
-fn working_dots(phase: u32, animate: bool, color: Hsla) -> AnyElement {
-    const DOT: f32 = 5.;
-    const LIFT: f32 = 2.;
-    let mut row = div()
-        .flex()
-        .flex_none()
-        .items_center()
-        .gap(crate::ui::sp(3.))
-        .h(px(DOT + LIFT * 2.));
-    for i in 0..3u32 {
-        let k = if animate { dot_wave(phase, i) } else { 0.5 };
-        row = row.child(
-            div()
-                .relative()
-                .top(px(LIFT * (1. - 2. * k)))
-                .size(px(DOT))
-                .rounded_full()
-                .bg(color)
-                .opacity(0.3 + 0.7 * k),
-        );
-    }
-    row.into_any_element()
-}
-
-/// How far up dot `i` is in the wave, 0 to 1. Each dot trails the one before
-/// by a sixth of the wave.
-fn dot_wave(phase: u32, i: u32) -> f32 {
-    let t = (phase % SPIN_TICKS + SPIN_TICKS - i * 2) % SPIN_TICKS;
-    let x = t as f32 / SPIN_TICKS as f32 * std::f32::consts::TAU;
-    let k = 0.5 - 0.5 * x.cos();
-    k * k
 }
 
 fn turns_of(entries: &[Entry]) -> Vec<Range<usize>> {
@@ -302,7 +237,12 @@ pub struct ThreadView {
     focus: FocusHandle,
     restore_focus: Option<FocusHandle>,
     following: bool,
-    phase: u32,
+    /// The window is in front. Loops hold still behind other windows, so
+    /// they draw no frames there.
+    active: bool,
+    /// Entries and folds still on their way in.
+    entrances: Arrivals,
+    /// Redraws the live turn's elapsed time while the agent works.
     tick: Option<Task<()>>,
     /// The raccoon, shown by the shell perched on the composer under this session.
     mascot: Entity<Mascot>,
@@ -312,6 +252,7 @@ pub struct ThreadView {
 impl ThreadView {
     pub fn new(thread: Entity<Thread>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let turns = turns_of(thread.read(cx).entries());
+        let seen = thread.read(cx).entries().len();
         let list = ListState::new(turns.len() + 1, ListAlignment::Top, px(800.));
         list.set_follow_mode(FollowMode::Tail);
         let weak = cx.weak_entity();
@@ -326,7 +267,11 @@ impl ThreadView {
         });
         let subs = vec![
             cx.subscribe_in(&thread, window, Self::thread_event),
-            cx.observe_window_activation(window, |this, window, cx| this.sync_tick(window, cx)),
+            cx.observe_window_activation(window, |this, window, cx| {
+                this.active = window.is_window_active();
+                this.sync_tick(window, cx);
+                cx.notify();
+            }),
         ];
         let mut this = ThreadView {
             thread,
@@ -354,7 +299,8 @@ impl ThreadView {
             focus: cx.focus_handle(),
             restore_focus: None,
             following: true,
-            phase: 0,
+            active: window.is_window_active(),
+            entrances: Arrivals::new(seen),
             tick: None,
             mascot: cx.new(|cx| Mascot::new(MASCOT_W, cx).dancer().shy()),
             _subs: subs,
@@ -441,7 +387,12 @@ impl ThreadView {
             s.stale = true;
         }
         match ev {
-            ThreadEvent::EntriesChanged { from } => self.sync_turns(*from, cx),
+            ThreadEvent::EntriesChanged { from } => {
+                let t = self.thread.read(cx);
+                let (len, at_work) = (t.entries().len(), t.is_busy());
+                self.entrances.entries_now(len, at_work, Instant::now());
+                self.sync_turns(*from, cx)
+            }
             ThreadEvent::Reset => {
                 self.markdown.clear();
                 self.arrivals.clear();
@@ -453,6 +404,7 @@ impl ThreadView {
                 self.open.clear();
                 self.folds.clear();
                 self.changes_open.clear();
+                self.entrances.reset(self.thread.read(cx).entries().len());
                 self.turns = turns_of(self.thread.read(cx).entries());
                 self.list.reset(self.turns.len() + 1);
                 self.list.set_follow_mode(FollowMode::Tail);
@@ -548,15 +500,9 @@ impl ThreadView {
         self.tick = Some(cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor()
-                    .timer(Duration::from_millis(83))
+                    .timer(Duration::from_millis(250))
                     .await;
-                if this
-                    .update(cx, |this, cx| {
-                        this.phase = this.phase.wrapping_add(1);
-                        cx.notify();
-                    })
-                    .is_err()
-                {
+                if this.update(cx, |_, cx| cx.notify()).is_err() {
                     break;
                 }
             }
@@ -829,17 +775,21 @@ impl ThreadView {
     }
 
     fn toggle_open(&mut self, entry: usize, cx: &mut Context<Self>) {
-        if !self.open.remove(&entry) {
+        let open = !self.open.remove(&entry);
+        if open {
             self.open.insert(entry);
         }
+        self.opened(Fold::Row, entry, open);
         self.remeasure_entry(entry);
         cx.notify();
     }
 
     fn toggle_fold(&mut self, turn_start: usize, cx: &mut Context<Self>) {
-        if !self.folds.remove(&turn_start) {
+        let open = !self.folds.remove(&turn_start);
+        if open {
             self.folds.insert(turn_start);
         }
+        self.opened(Fold::Work, turn_start, open);
         self.remeasure_entry(turn_start);
         cx.notify();
     }
@@ -1120,7 +1070,8 @@ impl ThreadView {
         {
             elapsed_ms = *e;
             let rewind = t.can_rewind(range.start) && t.rewind_plan().is_none();
-            col = col.child(self.user_bubble(range.start, text, *at, rewind, cx));
+            let bubble = self.user_bubble(range.start, text, *at, rewind, cx);
+            col = col.child(self.arrive(range.start, bubble, cx));
             if let Some(plan) = t.rewind_plan().filter(|p| p.entry == range.start) {
                 col = col.child(self.rewind_card(plan, &cwd, cx));
             }
@@ -1196,35 +1147,34 @@ impl ThreadView {
                     .px(crate::ui::sp(16.))
                     .py(crate::ui::sp(4.))
                     .cursor_pointer()
-                    .child(div().relative().size(px(14.)).flex_none().map(|d| {
-                        if show_work {
-                            d.child(
-                                icon("arrow-right01", 14.)
-                                    .text_color(theme::text_subtle())
-                                    .with_transformation(Transformation::rotate(radians(
-                                        std::f32::consts::FRAC_PI_2,
-                                    ))),
-                            )
-                        } else {
-                            d.child(
-                                div()
-                                    .absolute()
-                                    .size_full()
-                                    .group_hover(group.clone(), |s| s.opacity(0.))
-                                    .child(kind.icon(14.)),
-                            )
+                    .child(
+                        div()
+                            .relative()
+                            .size(px(14.))
+                            .flex_none()
+                            .when(!show_work, |d| {
+                                d.child(
+                                    div()
+                                        .absolute()
+                                        .size_full()
+                                        .group_hover(group.clone(), |s| s.opacity(0.))
+                                        .child(kind.icon(14.)),
+                                )
+                            })
                             .child(
                                 div()
                                     .absolute()
                                     .size_full()
-                                    .opacity(0.)
-                                    .group_hover(group.clone(), |s| s.opacity(1.))
-                                    .child(
+                                    .when(!show_work, |d| {
+                                        d.opacity(0.).group_hover(group.clone(), |s| s.opacity(1.))
+                                    })
+                                    .child(chevron(
+                                        ("fold-chevron", turn_start),
+                                        show_work,
                                         icon("arrow-right01", 14.).text_color(theme::text_subtle()),
-                                    ),
-                            )
-                        }
-                    }))
+                                    )),
+                            ),
+                    )
                     .child(
                         div()
                             .flex_1()
@@ -1239,7 +1189,8 @@ impl ThreadView {
                     .on_click(cx.listener(move |this, _, _, cx| this.toggle_fold(turn_start, cx))),
             );
             if changes_shown {
-                col = col.child(self.turn_changes(&edits, turn_start, base, &cwd, cx));
+                let changes = self.turn_changes(&edits, turn_start, base, &cwd, cx);
+                col = col.child(self.unfold(Fold::Changes, turn_start, changes, cx));
             }
         }
 
@@ -1249,7 +1200,13 @@ impl ThreadView {
                     .px(crate::ui::sp(16.))
                     .py(crate::ui::sp(4.))
                     .text_size(px(crate::ui::TEXT_LG))
-                    .child(shimmer("Thinking…", self.phase, 0.35, 0.8)),
+                    .child(shimmer(
+                        ("thinking", ix),
+                        self.active,
+                        "Thinking…",
+                        0.35,
+                        0.8,
+                    )),
             );
         }
 
@@ -1267,7 +1224,12 @@ impl ThreadView {
                     .bg(theme::fill_raised())
                     .text_size(px(crate::ui::TEXT_MD))
                     .text_color(theme::text_muted())
-                    .child(spinner(self.phase, 12., theme::text_subtle()))
+                    .child(spinner(
+                        ("retry-spin", ix),
+                        self.active,
+                        12.,
+                        theme::text_subtle(),
+                    ))
                     .child(div().min_w_0().truncate().child(retry.to_string())),
             );
         }
@@ -1294,6 +1256,7 @@ impl ThreadView {
                     cx,
                 ));
             }
+            let trail = self.unfold(Fold::Work, range.start, trail.into_any_element(), cx);
             col = col.child(trail);
         }
 
@@ -1311,14 +1274,14 @@ impl ThreadView {
         for (k, e) in content[reply.clone()].iter().enumerate() {
             let entry_ix = base + reply.start + k;
             if let Entry::Agent { text } = e {
-                col = col.child(
-                    div()
-                        .min_w_0()
-                        .px(crate::ui::sp(16.))
-                        .pt(crate::ui::sp(12.))
-                        .pb(crate::ui::sp(4.))
-                        .child(self.surface(entry_ix, text, MdStyle::reply(), cx)),
-                );
+                let reply = div()
+                    .min_w_0()
+                    .px(crate::ui::sp(16.))
+                    .pt(crate::ui::sp(12.))
+                    .pb(crate::ui::sp(4.))
+                    .child(self.surface(entry_ix, text, MdStyle::reply(), cx))
+                    .into_any_element();
+                col = col.child(self.arrive(entry_ix, reply, cx));
             }
         }
 
@@ -1652,26 +1615,31 @@ impl ThreadView {
                 _ => "Working…".to_string(),
             }
         };
-        let animate = window.is_window_active() && *status == ThreadStatus::Working;
+        let waiting = *status == ThreadStatus::NeedsInput;
+        // Nothing beats in a background window, so nothing draws there.
+        let state = if cancelling || !window.is_window_active() {
+            Beacon::Still
+        } else if waiting {
+            Beacon::Waiting
+        } else {
+            Beacon::Working
+        };
+        let color = if waiting {
+            amber()
+        } else if cancelling {
+            theme::text_faint()
+        } else {
+            theme::working()
+        };
         div()
             .flex()
             .items_center()
-            .gap(crate::ui::sp(6.))
+            .gap(crate::ui::sp(8.))
             .px(crate::ui::sp(16.))
             .py(crate::ui::sp(4.))
             .text_size(px(crate::ui::TEXT_LG))
             .text_color(theme::text_subtle())
-            .child(working_dots(
-                self.phase,
-                animate && !cancelling,
-                if *status == ThreadStatus::NeedsInput {
-                    amber()
-                } else if cancelling {
-                    theme::text_faint()
-                } else {
-                    theme::working()
-                },
-            ))
+            .child(beacon("live-beacon", state, color))
             .child(div().flex_none().child(kind.label()))
             .child(div().text_color(theme::text_faint()).child("·"))
             .child(
@@ -1679,22 +1647,15 @@ impl ThreadView {
                     .flex_1()
                     .min_w_0()
                     .truncate()
-                    .when(*status == ThreadStatus::NeedsInput, |d| {
-                        d.text_color(amber())
-                    })
-                    .map(|d| {
-                        if animate {
-                            d.child(shimmer(&label, self.phase, 0.5, 0.92))
-                        } else {
-                            d.child(label)
-                        }
-                    }),
+                    .when(waiting, |d| d.text_color(amber()))
+                    .child(label),
             )
             .into_any_element()
     }
 
     fn toggle_phase(&mut self, key: usize, open: bool, cx: &mut Context<Self>) {
         self.phase_open.insert(key, !open);
+        self.opened(Fold::Phase, key, !open);
         self.remeasure_entry(key);
         cx.notify();
     }
@@ -1718,13 +1679,13 @@ impl ThreadView {
         if let Some(h) = phase.head
             && let Entry::Agent { text } = &content[h]
         {
-            col = col.child(
-                div()
-                    .min_w_0()
-                    .pt(crate::ui::sp(8.))
-                    .pb(crate::ui::sp(4.))
-                    .child(self.surface(base + h, text, MdStyle::reply(), cx)),
-            );
+            let head = div()
+                .min_w_0()
+                .pt(crate::ui::sp(8.))
+                .pb(crate::ui::sp(4.))
+                .child(self.surface(base + h, text, MdStyle::reply(), cx))
+                .into_any_element();
+            col = col.child(self.arrive(base + h, head, cx));
         }
         if phase.steps.is_empty() {
             return col.into_any_element();
@@ -1777,16 +1738,13 @@ impl ThreadView {
                         .group_hover(group.clone(), |s| s.text_color(theme::text_muted()))
                         .child(summary),
                 )
-                .child(
+                .child(chevron(
+                    ("phase-chevron", key),
+                    open,
                     icon("arrow-right01", 12.)
                         .text_color(theme::text_faint())
-                        .group_hover(group, |s| s.text_color(theme::text_muted()))
-                        .when(open, |s| {
-                            s.with_transformation(Transformation::rotate(radians(
-                                std::f32::consts::FRAC_PI_2,
-                            )))
-                        }),
-                )
+                        .group_hover(group, |s| s.text_color(theme::text_muted())),
+                ))
                 .on_click(cx.listener(move |this, _, _, cx| this.toggle_phase(key, open, cx))),
         );
         if !open {
@@ -1798,6 +1756,7 @@ impl ThreadView {
             let row = self.step(i, content, base, cwd, live, permission, window, cx);
             rail = rail.child(rail_step(k + 1 == n, row));
         }
+        let rail = self.unfold(Fold::Phase, key, rail.into_any_element(), cx);
         // A long live phase scrolls inside a window that follows its newest
         // step until scrolled up, and again once back at the bottom.
         if active && !asking && n >= LIVE_WINDOW_STEPS {
@@ -1892,6 +1851,7 @@ impl ThreadView {
             let child = self.activity_row(base + c, &content[c], cwd, live, permission, window, cx);
             rail = rail.child(rail_step(k + 1 == n, child));
         }
+        let rail = self.unfold(Fold::Row, base + i, rail.into_any_element(), cx);
         div()
             .flex()
             .flex_col()
@@ -2108,39 +2068,6 @@ fn phase_summary(steps: &[&Entry]) -> (&'static str, String) {
 /// A step under a phase: a spine down the left that curves into the row.
 fn rail_step(last: bool, row: AnyElement) -> AnyElement {
     crate::ui::tree_item(last, 15., 0., row)
-}
-
-/// Text with a bright band sweeping across it about every two seconds.
-fn shimmer(text: &str, phase: u32, base: f32, peak: f32) -> StyledText {
-    const PERIOD: u32 = 24;
-    const WIDTH: f32 = 4.;
-    let n = text.chars().count() as f32;
-    let t = (phase % PERIOD) as f32 / PERIOD as f32;
-    let center = -WIDTH + t * (n + WIDTH * 2.);
-    let f = font(theme::FONT_SANS);
-    let runs = text
-        .char_indices()
-        .enumerate()
-        .map(|(i, (_, c))| {
-            let k = (1. - (i as f32 - center).abs() / WIDTH).max(0.);
-            let k = k * k * (3. - 2. * k);
-            TextRun {
-                len: c.len_utf8(),
-                font: f.clone(),
-                color: theme::mix(base + (peak - base) * k),
-                background_color: None,
-                underline: None,
-                strikethrough: None,
-            }
-        })
-        .collect();
-    StyledText::new(SharedString::from(text.to_string())).with_runs(runs)
-}
-
-/// The thinking pulse: opacity between 0.35 and 0.9 every 1.8s, in phase ticks.
-fn pulse(phase: u32) -> f32 {
-    let t = phase as f32 * 0.083 / 1.8 * std::f32::consts::TAU;
-    0.625 + 0.275 * t.cos()
 }
 
 /// Under a settled reply: copy it, and when it was sent and what it used.
@@ -2362,17 +2289,6 @@ impl Render for ThreadView {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_working_dots_rise_one_after_another() {
-        // Each dot peaks two ticks after the one before, and the wave repeats.
-        let peak = |i| (0..SPIN_TICKS).find(|&p| dot_wave(p, i) == 1.).unwrap();
-        assert_eq!([peak(0), peak(1), peak(2)], [6, 8, 10]);
-        assert_eq!(dot_wave(3, 1), dot_wave(3 + SPIN_TICKS, 1));
-        assert!((0..SPIN_TICKS).all(|p| (0. ..=1.).contains(&dot_wave(p, 2))));
-        // The tick counter wraps without a jump or an overflow.
-        assert!(dot_wave(u32::MAX, 2).is_finite());
-    }
 
     fn agent(text: &str) -> Entry {
         Entry::Agent { text: text.into() }

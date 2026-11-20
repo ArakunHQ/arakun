@@ -23,6 +23,16 @@ pub fn ease_out(t: f32) -> f32 {
     1. - (1. - t).powi(4)
 }
 
+/// Slow at both ends. For something that crosses and leaves again, like a
+/// shimmer's band.
+pub fn ease_in_out(t: f32) -> f32 {
+    if t < 0.5 {
+        4. * t * t * t
+    } else {
+        1. - (-2. * t + 2.).powi(3) / 2.
+    }
+}
+
 /// Like `ease_out`, but goes a hair past the end and settles back, so a
 /// surface lands with a little give instead of stopping dead.
 pub fn ease_out_back(t: f32) -> f32 {
@@ -141,7 +151,7 @@ mod tests {
 
     #[test]
     fn easings_start_at_zero_and_end_at_one() {
-        for f in [ease_out, ease_out_back] {
+        for f in [ease_out, ease_in_out, ease_out_back] {
             assert!(f(0.).abs() < 1e-5);
             assert!((f(1.) - 1.).abs() < 1e-5);
         }

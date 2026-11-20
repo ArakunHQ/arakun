@@ -205,12 +205,20 @@ def scenario_scroll(dev):
 
 def scenario_terminal(dev):
     # About 4 MB of output, then wait for the last line. `arakun run` joins its
-    # arguments into one shell line, so the command goes as one string.
-    dev.run("run", "--", "seq 1 600000; echo bench-done")
+    # arguments into one shell line, so the command goes as one string. No `--`
+    # before it: v0.1.0 does not know it and hands it to the shell, which stops.
+    reply = dev.run("run", "seq 1 600000; echo bench-done")
+    # Ask for that terminal by number: with no number and more than one
+    # terminal open, `logs` lists them, and the list shows the command itself.
+    m = re.search(r"terminal (\d+)", reply)
+    which = [m.group(1)] if m else []
     deadline = time.monotonic() + 60
-    while "bench-done" not in dev.run("logs", "-n", "10", check=False):
-        if time.monotonic() > deadline:
-            raise RuntimeError("the terminal scenario's output never finished")
+    while True:
+        out = dev.run("logs", "-n", "10", *which, check=False)
+        if "bench-done" in out:
+            return
+        if re.search(r"^\[exit \d+\]", out, re.M) or time.monotonic() > deadline:
+            raise RuntimeError(f"the terminal scenario's output never finished; the terminal shows:\n{out}")
         time.sleep(0.2)
 
 

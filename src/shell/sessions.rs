@@ -72,10 +72,6 @@ pub fn status_of(t: &Thread) -> Status {
     }
 }
 
-/// How much of the conversation an agent taking it over gets inline; the rest
-/// it reads from the linked transcript.
-const HANDOFF_BUDGET: usize = 16 * 1024;
-
 /// The saved transcript at `path`, ready to show; `None` when the session has none yet.
 fn read_restored(path: &Path) -> anyhow::Result<Option<Restored>> {
     if !path.exists() {
@@ -1263,8 +1259,13 @@ impl Shell {
         else {
             return;
         };
-        // A server's session goes on with the agent it has there.
-        if from == agent || crate::headless::shown(&old_id) || self.env().remote.is_some() {
+        if from == agent || crate::headless::shown(&old_id) {
+            return;
+        }
+        // The agent and its history are on the server: it hands the session
+        // over there, and its answer moves the tab to the new one.
+        if self.env().remote.is_some() {
+            self.servers_continue_with(&env_path, &old_id, agent, cx);
             return;
         }
         let entries = self.session_entries(&env_path, &old_id, cx);
@@ -1314,7 +1315,7 @@ impl Shell {
                 &old.title,
                 &entries,
                 &linked.to_string_lossy(),
-                HANDOFF_BUDGET,
+                crate::agent::notes::HANDOFF_BUDGET,
             );
             Thread::continued(
                 agent.kind(),
@@ -2566,7 +2567,7 @@ fn value_changed(
 /// The model and reasoning picked here for `env`'s next `agent` session, as
 /// a server's `start` takes them, the model first. Only picks: with none, the
 /// server starts the session on what it remembers.
-fn server_picks(env: &model::Environment, agent: model::Agent) -> Vec<(String, String)> {
+pub(super) fn server_picks(env: &model::Environment, agent: model::Agent) -> Vec<(String, String)> {
     let mut picks: Vec<(Setting, String)> = agent_draft(env, agent)
         .iter()
         .filter(|(s, _)| matches!(s, Setting::Model | Setting::Effort))

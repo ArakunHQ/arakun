@@ -159,6 +159,17 @@ pub enum ClientMsg {
     Fork {
         session: String,
     },
+    /// Hands the session to another agent there: a session of `agent` takes
+    /// its place, shown the conversation so far and told about it with the
+    /// next prompt, and the old one is gone. `settings` are the model and the
+    /// reasoning picked for `agent`, as with `start`. Answered with
+    /// `continued` once the new one is in the inbox.
+    ContinueWith {
+        session: String,
+        agent: String,
+        #[serde(default)]
+        settings: Vec<(String, String)>,
+    },
     /// Summarizes the session's conversation so far, to free context. What it
     /// did shows in the session.
     Compact {
@@ -1640,6 +1651,14 @@ mod tests {
             read(r#"{"type":"stage","session":"s1"}"#),
             ClientMsg::Stage {
                 session: "s1".into()
+            }
+        );
+        assert_eq!(
+            read(r#"{"type":"continue_with","session":"s1","agent":"codex"}"#),
+            ClientMsg::ContinueWith {
+                session: "s1".into(),
+                agent: "codex".into(),
+                settings: Vec::new(),
             }
         );
     }

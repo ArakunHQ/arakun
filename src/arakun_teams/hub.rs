@@ -1179,6 +1179,7 @@ impl Hub {
             return;
         };
         let team_epoch = t.detail.epoch;
+        let keyed_epoch = t.detail.keyed_epoch.unwrap_or(team_epoch);
         let Some(p) = t
             .pending
             .iter()
@@ -1210,15 +1211,31 @@ impl Hub {
         self.error = None;
         self.info = None;
         let team_id = team_id.to_string();
+        let login = p.login.clone();
         self.run(
             cx,
             {
                 let team_id = team_id.clone();
                 move |net| {
-                    let envelopes = seal_all(net, &team_id, &keys, &trusted)?;
+                    // A request holds at most MAX_ENVELOPES: approve with the
+                    // newest keys, then give the older ones newest first, so
+                    // what arrived stays one run back from the newest key.
+                    let parts = grant_parts(&keys, trusted.len());
+                    let (newest, older) = parts.split_first().expect("keys is not empty");
+                    let mut given = seal_all(net, &team_id, newest, &trusted)?;
                     net.call()
-                        .approve(&team_id, github_id, &p.request_id, &envelopes)?;
-                    Ok(envelopes)
+                        .approve(&team_id, github_id, &p.request_id, &given)?;
+                    for part in older {
+                        let batch = seal_all(net, &team_id, part, &trusted)?;
+                        if let Err(e) =
+                            net.call()
+                                .put_envelopes(&team_id, keyed_epoch, team_epoch, &batch)
+                        {
+                            return Ok((given, Some(e)));
+                        }
+                        given.extend(batch);
+                    }
+                    Ok((given, None))
                 }
             },
             move |hub, result, cx| {
@@ -1232,10 +1249,15 @@ impl Hub {
                     return;
                 }
                 match result {
-                    Ok(batch) => {
+                    Ok((batch, older)) => {
                         hub.kept.admitted(&team_id, github_id, team_epoch, &batch);
                         hub.save(cx);
                         hub.load_team(&team_id, cx);
+                        if let Some(e) = older {
+                            hub.error = Some(format!(
+                                "Approved @{login}, but their oldest team keys could not be given: {e}"
+                            ));
+                        }
                     }
                     Err(e) => hub.error = Some(format!("Could not approve: {e}")),
                 }
@@ -1853,6 +1875,13 @@ fn pin_directory(kept: &mut Kept, gid: u64, trusted: &[DeviceRow]) -> bool {
     kept.roots.entry(gid).or_insert_with(|| root.clone()) == &root
 }
 
+/// An approval's keys in requests of at most [`MAX_ENVELOPES`] for `devices`
+/// devices: the newest first, each part ascending.
+fn grant_parts(keys: &[(u64, TeamKey)], devices: usize) -> Vec<Vec<(u64, TeamKey)>> {
+    let per = (MAX_ENVELOPES / devices.max(1)).max(1);
+    keys.rchunks(per).map(<[_]>::to_vec).collect()
+}
+
 /// The channels whose name is sealed with an epoch older than `epoch`, with
 /// the name this device read. One it could not open is left out.
 fn stale_names(detail: &TeamDetail, read: &[ChannelInfo], epoch: u64) -> Vec<(String, String)> {
@@ -2173,6 +2202,19 @@ mod tests {
         assert_eq!(contiguous_tail(&[k(1), k(2), k(3)]), vec![k(1), k(2), k(3)]);
         assert_eq!(contiguous_tail(&[k(1), k(2), k(4), k(5)]), vec![k(4), k(5)]);
         assert!(contiguous_tail(&[]).is_empty());
+    }
+
+    #[test]
+    fn an_approval_too_big_for_one_request_goes_newest_first() {
+        let keys: Vec<(u64, TeamKey)> = (1..=26).map(|e| (e, [e as u8; 32])).collect();
+        let parts = grant_parts(&keys, 20);
+        let epochs: Vec<Vec<u64>> = parts
+            .iter()
+            .map(|p| p.iter().map(|(e, _)| *e).collect())
+            .collect();
+        assert_eq!(epochs, vec![(2..=26).collect::<Vec<_>>(), vec![1]]);
+        assert!(parts.iter().all(|p| p.len() * 20 <= MAX_ENVELOPES));
+        assert_eq!(grant_parts(&keys[..3], 2), vec![keys[..3].to_vec()]);
     }
 
     #[test]

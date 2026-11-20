@@ -2279,7 +2279,7 @@ impl Shell {
     /// Opens (or focuses) the Teams tab.
     pub(super) fn open_teams_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.has_projects() {
-            self.open_picker(window, cx);
+            self.pick_project_for("The Teams tab", Self::open_teams_tab, window, cx);
             return;
         }
         self.show_view_tab("Teams", TabKind::Teams, |k| matches!(k, TabKind::Teams));

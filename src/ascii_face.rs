@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use gpui::{
     Bounds, Context, DispatchPhase, FontId, GlyphId, Hsla, IntoElement, MouseMoveEvent,
@@ -562,33 +562,28 @@ pub struct AsciiFace {
     scale: f32,
 
     _tick: Task<()>,
+    wake: crate::frame_timer::Waker,
     _keys: Subscription,
 }
 
 impl AsciiFace {
     pub fn new(cx: &mut Context<Self>) -> Self {
         // Only asks for a frame once the last one was painted: a face that is
-        // not on screen never paints, so it is known hidden and costs nothing.
-        let tick = cx.spawn(async move |this, cx| {
-            loop {
-                cx.background_executor()
-                    .timer(Duration::from_millis(33))
-                    .await;
-                let alive = this.update(cx, |f, cx| {
-                    let now = f.now();
-                    if !f.rendered {
-                        if now - f.asked > 0.3 {
-                            f.hidden = true;
-                        }
-                    } else if f.wants_frame() {
-                        f.rendered = false;
-                        f.asked = now;
-                        cx.notify();
-                    }
-                });
-                if alive.is_err() {
-                    break;
+        // not on screen never paints, so it is known hidden and its timer stops.
+        let (tick, wake) = crate::frame_timer::start(cx, |f: &mut Self, cx| {
+            let now = f.now();
+            if !f.rendered {
+                if now - f.asked > 0.3 {
+                    f.hidden = true;
                 }
+                !f.hidden
+            } else if f.wants_frame() {
+                f.rendered = false;
+                f.asked = now;
+                cx.notify();
+                true
+            } else {
+                false
             }
         });
         let keys = cx.observe_keystrokes(|f, _, _, _| f.typed());
@@ -620,6 +615,7 @@ impl AsciiFace {
             glyphs: None,
             scale: 1.,
             _tick: tick,
+            wake,
             _keys: keys,
         };
         face.blink.next = face.rnd(1., 3.);
@@ -861,6 +857,7 @@ impl Render for AsciiFace {
             self.last = None;
         }
         self.rendered = true;
+        self.wake.wake();
         self.active = window.is_window_active();
         let (weak, moves) = (cx.weak_entity(), cx.weak_entity());
         // It gives up height first when the window is short (see `Pose::still`),

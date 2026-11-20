@@ -51,6 +51,8 @@ mod memory {
 mod assets;
 #[path = "../src/caret.rs"]
 mod caret;
+#[path = "../src/frame_timer.rs"]
+mod frame_timer;
 #[allow(dead_code)]
 #[path = "../src/highlight.rs"]
 mod highlight;

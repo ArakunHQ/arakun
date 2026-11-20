@@ -71,13 +71,19 @@ impl Shell {
                             .collect::<Vec<_>>()
                     }))
                     .await;
-                if this
-                    .update_in(cx, |this, window, cx| this.sync_headless(found, window, cx))
-                    .is_err()
-                {
+                let Ok(active) = this.update_in(cx, |this, window, cx| {
+                    this.sync_headless(found, window, cx);
+                    window.is_window_active()
+                }) else {
                     break;
-                }
-                cx.background_executor().timer(Duration::from_secs(1)).await;
+                };
+                // Every meta file is read and parsed on each scan. In the
+                // background, slower is enough to keep the sidebar and the
+                // phone's statuses close.
+                let wait = if active { 1 } else { 5 };
+                cx.background_executor()
+                    .timer(Duration::from_secs(wait))
+                    .await;
             }
         })
         .detach();

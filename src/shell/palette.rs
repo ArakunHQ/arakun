@@ -1236,9 +1236,9 @@ impl Shell {
             add(
                 "toggle-subagents",
                 "bot",
-                "Toggle subagents panel",
+                "Toggle session panel",
                 &["Ctrl", "Alt", "S"],
-                "What the agent's helpers are doing.",
+                "The session's pull request and subagents.",
                 Target::ToggleSubagents,
             );
         }
@@ -1407,9 +1407,9 @@ impl Shell {
             ),
             (
                 Setting::Subagents,
-                "Subagents panel",
+                "Session panel",
                 "Layout",
-                "What the agent's helpers are doing.",
+                "The session's pull request and subagents.",
                 self.subagents_open,
             ),
         ];

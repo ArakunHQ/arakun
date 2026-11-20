@@ -582,13 +582,19 @@ impl Shell {
                     .sessions_on_screen()
                     .iter()
                     .any(|(p, sid)| p.as_path() == env_path && sid.as_ref() == id.as_ref());
+                let mut linked = false;
                 if let Some(s) = self.session_mut(env_path, id) {
+                    linked = meta.pr.is_some()
+                        && s.meta.as_ref().and_then(|m| m.pr.as_ref()) != meta.pr.as_ref();
                     s.unread = away && status == Status::Idle;
                     s.status = status;
                     s.added = added;
                     s.removed = removed;
                     s.meta = Some(meta);
                     s.updated = model::unix_now();
+                }
+                if linked {
+                    self.session_connected(id, cx);
                 }
                 let path = state::transcript_path(id);
                 let key = id.to_string();

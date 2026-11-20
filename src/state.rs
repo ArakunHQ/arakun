@@ -29,7 +29,7 @@ pub struct State {
     pub rail_w: f32,
     #[serde(default = "panel_w")]
     pub panel_w: f32,
-    /// The Subagents panel, beside the chat.
+    /// The Session panel (pull request and subagents), beside the chat.
     #[serde(default)]
     pub subagents_open: bool,
     #[serde(default = "subagents_w")]

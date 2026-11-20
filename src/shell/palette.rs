@@ -1341,7 +1341,9 @@ impl Shell {
         );
         // The settings pilot read last (every minute, off this thread's
         // drawing): the palette never waits on the disk.
-        items.extend(cloud_command(self.pilot.read(cx).config()));
+        let pilot = self.pilot.read(cx).config();
+        items.push(pilot_command(pilot.is_some()));
+        items.extend(cloud_command(pilot));
     }
 
     fn palette_settings(&self, items: &mut Vec<Item>) {
@@ -1524,6 +1526,7 @@ impl Shell {
                     p.clone().update(cx, |p, cx| p.start_cloud(cx));
                 }
             }
+            Target::PilotConnect => self.open_pilot_connect(window, cx),
             Target::Merge(_) | Target::Nothing => {}
         }
     }
@@ -2106,13 +2109,42 @@ impl Shell {
     }
 }
 
+/// "Connect arakun-pilot…", or its settings once it is connected.
+fn pilot_command(connected: bool) -> Item {
+    let (label, blurb) = if connected {
+        (
+            "arakun-pilot settings…",
+            "Change the address or tokens of arakun-pilot, your pull request agent, or disconnect it.",
+        )
+    } else {
+        (
+            "Connect arakun-pilot…",
+            "Type the address and token of arakun-pilot, your pull request agent on Cloudflare. Arakun checks them, then the GitHub tab shows its board.",
+        )
+    };
+    Item::new(
+        "command:pilot-connect",
+        Kind::Command,
+        label,
+        Target::PilotConnect,
+    )
+    .icon("link01", Tint::Violet)
+    .section("Commands")
+    .boost(-5)
+    .preview(Preview::Command {
+        blurb: blurb.to_string(),
+        keys: Vec::new(),
+        cli: Some("arakun github pilot connect <url> --token -".into()),
+    })
+}
+
 /// "Send to the cloud agent…", offered only when arakun-pilot is set up.
 fn cloud_command(config: Option<&pilot::Config>) -> Option<Item> {
     let config = config?;
     let blurb = if config.admin_token.is_some() {
         "Hands a task to arakun-pilot: it works on your open pull request or on a new branch, and the result comes back as a card. Also: “cloud: <task>”."
     } else {
-        "Hands a task to arakun-pilot. It needs \"admin_token\" in its client.json."
+        "Hands a task to arakun-pilot. It needs the admin token: add it with “arakun-pilot settings…”."
     };
     Some(
         Item::new(
@@ -2143,15 +2175,23 @@ mod tests {
         let item = cloud_command(Some(&cfg)).unwrap();
         assert_eq!(item.target, Target::CloudTask);
         assert!(
-            matches!(&item.preview, Preview::Command { blurb, .. } if blurb.contains("admin_token"))
+            matches!(&item.preview, Preview::Command { blurb, .. } if blurb.contains("admin token"))
         );
         let admin =
             pilot::parse_config(br#"{"url": "https://p.dev", "token": "t", "admin_token": "a"}"#)
                 .unwrap();
         assert!(matches!(
             &cloud_command(Some(&admin)).unwrap().preview,
-            Preview::Command { blurb, .. } if !blurb.contains("admin_token")
+            Preview::Command { blurb, .. } if !blurb.contains("admin token")
         ));
+    }
+
+    #[test]
+    fn the_pilot_command_connects_or_changes_the_settings() {
+        let off = pilot_command(false);
+        assert_eq!(off.target, Target::PilotConnect);
+        assert!(off.title.starts_with("Connect"));
+        assert!(pilot_command(true).title.contains("settings"));
     }
 
     #[test]

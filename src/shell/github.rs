@@ -211,6 +211,7 @@ impl Shell {
                 }
                 cx.notify();
             }
+            GitHubViewEvent::ConnectPilot => self.open_pilot_connect(window, cx),
             GitHubViewEvent::Ask { title, prompt } => {
                 // An agent works in a project: without one, add one first.
                 if !self.has_projects() {
@@ -220,6 +221,27 @@ impl Shell {
                 self.ask_agent(title.clone().into(), prompt.clone(), window, cx);
             }
         }
+    }
+
+    /// The form that connects arakun-pilot, or changes its settings. A save
+    /// or a disconnect has pilot read its settings again at once, not at its
+    /// next minute.
+    pub(super) fn open_pilot_connect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::github_view::connect::{PilotDialog, PilotDialogEvent};
+        self.menu = None;
+        let dialog = cx.new(|cx| PilotDialog::new(window, cx));
+        let sub = cx.subscribe_in(
+            &dialog,
+            window,
+            |this, _, ev: &PilotDialogEvent, window, cx| {
+                if let PilotDialogEvent::Changed = ev {
+                    this.pilot.update(cx, |p, cx| p.refresh(cx));
+                }
+                this.close_modal(window, cx);
+            },
+        );
+        self.modal = Some((Modal::Pilot(dialog), sub));
+        cx.notify();
     }
 
     /// A notice for each new notification that asks for the user by name or

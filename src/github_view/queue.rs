@@ -68,6 +68,18 @@ impl GitHubView {
                     }))
                 }),
             )
+            .child({
+                let label = if self.pilot.read(cx).config().is_some() {
+                    "arakun-pilot settings…"
+                } else {
+                    "Connect arakun-pilot…"
+                };
+                ui::menu_item("gh-pilot", "link01", label, false, true).on_click(cx.listener(|this, _, _, cx| {
+                    this.menu_at = None;
+                    cx.emit(super::GitHubViewEvent::ConnectPilot);
+                    cx.notify();
+                }))
+            })
             .child(ui::menu_divider())
             .child(ui::menu_heading("Notices"))
             .child(

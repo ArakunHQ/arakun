@@ -197,6 +197,8 @@ enum Modal {
     Telemetry(Entity<crate::telemetry_dialog::TelemetryDialog>),
     /// A session or a project, from the + on the rail's Projects heading.
     New(Entity<new_dialog::NewDialog>),
+    /// Connecting arakun-pilot, or changing its settings.
+    Pilot(Entity<crate::github_view::connect::PilotDialog>),
 }
 
 #[derive(Clone, Copy)]
@@ -3910,6 +3912,7 @@ impl Render for Shell {
             Modal::Automations(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),
             Modal::Session(v) => (v.clone().into_any_element(), v.entity_id().as_u64()),
             Modal::Telemetry(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),
+            Modal::Pilot(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),
             Modal::New(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),
         });
         let viewport_h = window.viewport_size().height.as_f32();

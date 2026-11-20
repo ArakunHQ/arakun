@@ -11,6 +11,7 @@
 //! the user posts it. The island opens the same sheet over any window.
 
 mod bandeja;
+pub mod connect;
 mod diff;
 mod item;
 mod pilot;
@@ -76,6 +77,8 @@ pub enum GitHubViewEvent {
     Ask { title: String, prompt: String },
     /// The sheet shown over another window closed.
     Closed,
+    /// Open the form that connects arakun-pilot or changes its settings.
+    ConnectPilot,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

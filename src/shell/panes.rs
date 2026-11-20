@@ -154,8 +154,6 @@ impl Shell {
             TabKind::Servers => self.servers_view.update(cx, |v, cx| v.focus(window, cx)),
             TabKind::Usage => self.usage_view.update(cx, |v, cx| v.focus(window, cx)),
             TabKind::Gallery => self.gallery_view.update(cx, |v, cx| v.focus(window, cx)),
-            // The builder takes keys through the window; nothing in it needs focus first.
-            TabKind::SidebarBuilder => {}
             TabKind::Isometric => self.iso_view.update(cx, |v, cx| v.focus(window, cx)),
             #[cfg(feature = "coderlabs")]
             TabKind::Canvas => self.canvas_view.update(cx, |v, cx| v.focus(window, cx)),
@@ -550,7 +548,6 @@ impl Shell {
             TabKind::PostHog => self.open_posthog_tab(window, cx),
             TabKind::Usage => self.open_usage_tab(window, cx),
             TabKind::Gallery => self.open_gallery_tab(window, cx),
-            TabKind::SidebarBuilder => self.open_sidebar_builder(window, cx),
             TabKind::Isometric => self.open_iso_tab(window, cx),
             TabKind::Extensions => self.open_extensions_tab(window, cx),
             _ => return false,

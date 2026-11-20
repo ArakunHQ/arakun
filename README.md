@@ -74,8 +74,8 @@ copy of it, rename it back, and start a version that can read it.
 - **Active.** The top of the sidebar lists the sessions of every project that need
   you (waiting for an answer, or failed), then the ones running. A click opens the
   session in its project. It stays the same whichever project is open. The open
-  project's list below holds the rest, so nothing shows twice. Move or remove it in
-  the sidebar builder.
+  project's list below holds the rest, so nothing shows twice. Move or remove it from
+  Customize › Sidebar.
 - **One session, one worktree.** **New session** at the top of the sidebar's list, or
   `Ctrl+T`, gives a session its own worktree on a random branch, and the first prompt
   names the branch. An open worktree is used only while it has no session yet; `Alt`+click
@@ -384,7 +384,7 @@ after a week).
   and permission rules the agents load now. Under Arakun › Extensions you turn on the
   tabs the sidebar shows besides Inbox, Runs, Branches and Marketplace: GitHub, Notes,
   Memory, Usage, Cloudflare, PostHog, Isometric, Phone, Servers and Automations. The
-  palette and the sidebar builder list only the tabs that are on. A new install starts
+  palette and Customize › Sidebar list only the tabs that are on. A new install starts
   with none on, except what you set up in the first-run setup: GitHub once the GitHub
   CLI is signed in, and Phone if you chose to pair one. An update keeps the ones your
   sidebar already had. The choice is kept in `extensions.json` next to the state.
@@ -392,7 +392,7 @@ after a week).
   folded next time. Folded, it says how many pieces it holds, with a dot when one of
   them wants you (red for a failure or something waiting), so the projects get the
   room. Right-click a title for Ungroup, which removes the segment and keeps its
-  pieces in the one above. In the sidebar builder, a segment can be set to start
+  pieces in the one above. In Customize › Sidebar, a segment can be set to start
   folded or not to say what is inside; a new one is born titled and collapsible.
 - **Automations.** Scheduled shell commands or agent prompts per project.
 
@@ -429,9 +429,12 @@ only sums up what is chosen. It opens without a project too.
   its outline and title, and a click on a piece or a title selects it instead of
   opening it. The tab then shows its options (name, emoji, folding, Fixed or Scroll,
   Ungroup, remove) and chips to add a group, a link, a command, a title, a separator,
-  a spacer or what the sidebar does not hold yet, into the selected segment. Done
-  closes the panel. Move pieces opens the editor to drag them into another order, and
-  "Customize sidebar…" in the sidebar's right-click menu opens this tab. Reset sidebar
+  a spacer or what the sidebar does not hold yet, into the selected segment, or dragged
+  onto the sidebar where they should go. Pieces and segment titles drag into another
+  order on the sidebar itself. The panel's header has undo and redo for these changes,
+  and its footer copies the layout (Export) or uses one from the clipboard (Import).
+  Done closes the panel, and "Customize sidebar…" in the sidebar's right-click menu
+  opens this tab. Reset sidebar
   goes back to the default layout and width. The layout is kept in `sidebar.json`.
 - **Design system.** The card at the foot of the panel opens the Design system tab:
   every color, type style and component, live, so a change can be judged on all of

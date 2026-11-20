@@ -21,10 +21,6 @@ pub(super) struct Badge {
 }
 
 impl Badge {
-    pub(super) fn count(self) -> usize {
-        self.count
-    }
-
     fn color(self) -> Hsla {
         self.color.unwrap_or_else(theme::text_faint)
     }
@@ -568,6 +564,9 @@ impl Shell {
                 t.into_any_element()
             }
         });
+        if arranging && !folded {
+            body = body.child(self.arrange_end(si, section.items.len(), cx));
+        }
         let selected = arranging && self.builder.sel == Some(BuilderSel::Section(si));
         div()
             .flex()

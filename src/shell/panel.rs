@@ -12,7 +12,9 @@ impl Shell {
             preset: crate::sidebar::Preset::ALL
                 .into_iter()
                 .find(|p| p.layout().sections == self.sidebar.sections),
-            can_arrange: self.has_projects(),
+            can_undo: !self.builder.undo.is_empty(),
+            can_redo: !self.builder.redo.is_empty(),
+            note: self.builder.flash.clone(),
         }
     }
 

@@ -2540,7 +2540,31 @@ impl Shell {
                             this.rail_w = crate::state::RAIL_W;
                             this.save(cx);
                         }
-                        CustomizeEvent::ArrangeSidebar => this.open_sidebar_builder(window, cx),
+                        CustomizeEvent::UndoSidebar(redo) => this.undo_sidebar(*redo, cx),
+                        CustomizeEvent::ExportSidebar => {
+                            cx.write_to_clipboard(gpui::ClipboardItem::new_string(
+                                this.sidebar.to_json(),
+                            ));
+                            this.builder.flash = Some("Layout copied to the clipboard".into());
+                            cx.notify();
+                        }
+                        CustomizeEvent::ImportSidebar => {
+                            let text = cx
+                                .read_from_clipboard()
+                                .and_then(|c| c.text())
+                                .unwrap_or_default();
+                            match crate::sidebar::Sidebar::parse(text.as_bytes()) {
+                                Some(s) => {
+                                    this.change_sidebar(cx, |cur| *cur = s);
+                                    this.builder.flash = Some("Layout imported".into());
+                                }
+                                None => {
+                                    this.builder.flash =
+                                        Some("The clipboard has no sidebar layout".into())
+                                }
+                            }
+                            cx.notify();
+                        }
                     },
                 );
             let shell = cx.entity().downgrade();
@@ -2561,6 +2585,10 @@ impl Shell {
     /// Closes the Customize panel; its last edit is saved as it goes.
     fn close_customize(&mut self, cx: &mut Context<Self>) {
         self.customize = None;
+        // The views the Add chips marked new have been seen.
+        if self.sidebar.mark_known() {
+            self.sidebar.save();
+        }
         cx.notify();
     }
 
@@ -3263,7 +3291,6 @@ impl Shell {
             Some(TabKind::Phone) => self.phone_view.clone().into_any_element(),
             Some(TabKind::Servers) => self.servers_view.clone().into_any_element(),
             Some(TabKind::Gallery) => self.gallery_view.clone().into_any_element(),
-            Some(TabKind::SidebarBuilder) => self.render_sidebar_builder(window, cx),
             Some(TabKind::Isometric) => {
                 // Follows the visible environment, also for a tab restored at
                 // launch that was never opened from the rail.

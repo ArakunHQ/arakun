@@ -3,9 +3,10 @@
 //! opening it, and the panel shows what can be added and the options of what
 //! is selected. The editing itself is the sidebar builder's.
 
-use super::sidebar_builder::{BuilderSel, PinAsk};
+use super::sidebar_builder::{BuilderSel, DraggedPiece, DraggedSection, PinAsk};
 use super::*;
-use crate::sidebar::{Mode, Piece};
+use crate::sidebar::{Item, Mode, Piece};
+use gpui::Point;
 
 impl Shell {
     /// Customize is open on its Sidebar tab: the rail is being arranged.
@@ -28,31 +29,123 @@ impl Shell {
             BuilderSel::Item((s, i)) => ("arrange-item", s * 1000 + i).into(),
             BuilderSel::Section(s) => ("arrange-section", s).into(),
         };
+        let lifted = cx.has_active_drag() && self.builder.lifted == Some(sel);
+        let target = div()
+            .id(id)
+            .absolute()
+            .inset_0()
+            .rounded(crate::ui::rad(8.))
+            .border_1()
+            .border_color(if selected {
+                theme::active()
+            } else {
+                gpui::transparent_black()
+            })
+            .when(!selected, |d| {
+                d.hover(|s| s.border_color(theme::border_strong()))
+            })
+            .cursor_pointer()
+            .occlude()
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.select_builder(sel, window, cx);
+                cx.notify();
+            }));
+        let shell = cx.entity().downgrade();
+        let target = match sel {
+            BuilderSel::Item(path) => {
+                let Some(item) = self.sidebar.get(path).cloned() else {
+                    return el;
+                };
+                let dragged = DraggedPiece {
+                    from: Some(path),
+                    title: item.piece.label().into(),
+                    item,
+                    offset: Point::default(),
+                };
+                target
+                    .on_drag(dragged, move |d, offset, _, cx| {
+                        let _ = shell.update(cx, |this, _| {
+                            this.builder.lifted = d.from.map(BuilderSel::Item)
+                        });
+                        cx.new(|_| DraggedPiece {
+                            offset,
+                            ..d.clone()
+                        })
+                    })
+                    // The line above says where a dropped piece lands.
+                    .drag_over::<DraggedPiece>(|s, _, _, _| {
+                        s.border_t_2().border_color(theme::active())
+                    })
+                    .on_drop(cx.listener(move |this, d: &DraggedPiece, _, cx| {
+                        this.drop_piece(d, path, cx)
+                    }))
+            }
+            BuilderSel::Section(si) => {
+                let title = self
+                    .sidebar
+                    .sections
+                    .get(si)
+                    .map(|s| s.title.clone())
+                    .unwrap_or_default();
+                let dragged = DraggedSection {
+                    from: si,
+                    title: title.into(),
+                    offset: Point::default(),
+                };
+                target
+                    .on_drag(dragged, move |d, offset, _, cx| {
+                        let _ = shell.update(cx, |this, _| {
+                            this.builder.lifted = Some(BuilderSel::Section(d.from))
+                        });
+                        cx.new(|_| DraggedSection {
+                            offset,
+                            ..d.clone()
+                        })
+                    })
+                    // A segment dropped on another lands above it; a piece,
+                    // at its start.
+                    .drag_over::<DraggedSection>(|s, _, _, _| {
+                        s.border_t_2().border_color(theme::active())
+                    })
+                    .drag_over::<DraggedPiece>(|s, _, _, _| s.bg(theme::active().opacity(0.12)))
+                    .on_drop(cx.listener(move |this, d: &DraggedSection, _, cx| {
+                        this.builder.lifted = None;
+                        this.change_sidebar(cx, |s| {
+                            s.move_section(d.from, si);
+                        })
+                    }))
+                    .on_drop(cx.listener(move |this, d: &DraggedPiece, _, cx| {
+                        this.drop_piece(d, (si, 0), cx)
+                    }))
+            }
+        };
         div()
             .relative()
+            .when(lifted, |d| d.opacity(0.4))
             .child(el)
-            .child(
-                div()
-                    .id(id)
-                    .absolute()
-                    .inset_0()
-                    .rounded(crate::ui::rad(8.))
-                    .border_1()
-                    .border_color(if selected {
-                        theme::active()
-                    } else {
-                        gpui::transparent_black()
-                    })
-                    .when(!selected, |d| {
-                        d.hover(|s| s.border_color(theme::border_strong()))
-                    })
-                    .cursor_pointer()
-                    .occlude()
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.select_builder(sel, window, cx);
-                        cx.notify();
-                    })),
+            .child(target)
+            .into_any_element()
+    }
+
+    /// The end of a segment while arranging: a piece dropped here lands
+    /// last in it, and a segment dropped here goes after it.
+    pub(super) fn arrange_end(&self, si: usize, len: usize, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .id(("arrange-end", si))
+            .h(px(10.))
+            .mx(crate::ui::sp(8.))
+            .rounded(crate::ui::rad(4.))
+            .drag_over::<DraggedPiece>(|s, _, _, _| s.bg(theme::active().opacity(0.25)))
+            .drag_over::<DraggedSection>(|s, _, _, _| s.bg(theme::active().opacity(0.25)))
+            .on_drop(
+                cx.listener(move |this, d: &DraggedPiece, _, cx| this.drop_piece(d, (si, len), cx)),
             )
+            .on_drop(cx.listener(move |this, d: &DraggedSection, _, cx| {
+                this.builder.lifted = None;
+                this.change_sidebar(cx, |s| {
+                    s.move_section(d.from, si + 1);
+                })
+            }))
             .into_any_element()
     }
 
@@ -177,11 +270,37 @@ impl Shell {
         }
         for (i, piece) in pieces.into_iter().enumerate() {
             let label: SharedString = piece.label().into();
+            // A view this version just added, until Customize closes.
+            let new = matches!(piece, Piece::View { view } if self.sidebar.is_new(view));
+            let dragged = DraggedPiece {
+                from: None,
+                item: Item::new(piece.clone()),
+                title: label.clone(),
+                offset: Point::default(),
+            };
             chips = chips.child(
                 chip(format!("arr-piece-{i}").into(), piece.icon(), label)
-                    .on_click(cx.listener(move |this, _, _, cx| this.add_piece(piece.clone(), cx))),
+                    .when(new, |d| {
+                        d.child(div().size(px(6.)).rounded_full().bg(theme::active()))
+                    })
+                    .on_click(cx.listener(move |this, _, _, cx| this.add_piece(piece.clone(), cx)))
+                    .on_drag(dragged, |d, offset, _, cx| {
+                        cx.new(|_| DraggedPiece {
+                            offset,
+                            ..d.clone()
+                        })
+                    }),
             );
         }
+        chips = chips.child(
+            chip("arr-more".into(), "store01", "More in Marketplace…".into()).on_click(
+                cx.listener(|this, _, window, cx| {
+                    this.open_extensions_tab(window, cx);
+                    this.extensions_view
+                        .update(cx, |v, cx| v.show_extensions(cx));
+                }),
+            ),
+        );
         let target = match self.builder.sel {
             Some(BuilderSel::Section(s)) | Some(BuilderSel::Item((s, _))) => {
                 self.sidebar.sections.get(s).map(|sec| sec.title.clone())
@@ -198,7 +317,7 @@ impl Shell {
             .flex_col()
             .gap(crate::ui::sp(8.))
             .child(arrange_heading(
-                "Add",
+                "Add · click or drag",
                 target
                     .filter(|t| !t.is_empty())
                     .map(|t| format!("to {t}"))
@@ -228,7 +347,7 @@ impl Shell {
                         .text_size(px(ui::TEXT_SM))
                         .text_color(theme::text_subtle())
                         .child(
-                            "Click a piece or a group's title in the sidebar to see its options.",
+                            "Click a piece or a group's title in the sidebar to see its options. Drag them to move them; drag a chip above onto the sidebar to place it.",
                         ),
                 )
                 .into_any_element(),

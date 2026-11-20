@@ -3395,11 +3395,15 @@ impl Thread {
                 path.display()
             ));
         }
+        let content = params["content"].as_str().unwrap_or("");
+        // Written from inside: checked paths can still be swapped for links.
+        if let Some(s) = &self.sandbox {
+            return s.write(&path, content.as_bytes());
+        }
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        std::fs::write(&path, params["content"].as_str().unwrap_or(""))
-            .with_context(|| format!("writing {}", path.display()))
+        std::fs::write(&path, content).with_context(|| format!("writing {}", path.display()))
     }
 
     // ---- session/update --------------------------------------------------
@@ -3840,22 +3844,44 @@ fn read_file(
     }
     let line = params["line"].as_u64().map(|l| l.max(1) as usize);
     let limit = params["limit"].as_u64().map(|l| l as usize);
-    read_text(&path, line, limit)
+    match sandbox {
+        // Read from inside: checked paths can still be swapped for links.
+        Some(s) => {
+            let bytes = s.read(&path, SANDBOX_READ_MAX)?;
+            let len = bytes.len() as u64;
+            read_lines(std::io::Cursor::new(bytes), len, &path, line, limit)
+        }
+        None => read_text(&path, line, limit),
+    }
 }
 
+/// Most of a file read through a sandbox, which can't stream it.
+const SANDBOX_READ_MAX: usize = 8 * READ_MAX;
+
 fn read_text(path: &Path, line: Option<usize>, limit: Option<usize>) -> Result<String> {
-    use std::io::BufRead as _;
     let meta = std::fs::metadata(path).with_context(|| format!("reading {}", path.display()))?;
     // Reading a FIFO or a device could wait or go on for good.
     if !meta.is_file() {
         return Err(anyhow!("{} is not a regular file", path.display()));
     }
+    let file = std::fs::File::open(path).with_context(|| format!("reading {}", path.display()))?;
+    read_lines(std::io::BufReader::new(file), meta.len(), path, line, limit)
+}
+
+/// `limit` lines from `line` of `r`, whose size is `len`.
+fn read_lines(
+    mut r: impl std::io::BufRead,
+    len: u64,
+    path: &Path,
+    line: Option<usize>,
+    limit: Option<usize>,
+) -> Result<String> {
     let mb = |n: u64| n.div_ceil(1 << 20);
     let too_big = || match (line, limit) {
         (None, None) => anyhow!(
             "{} is {} MB, more than the {} MB arakun reads at once. Read it in parts with `line` and `limit`.",
             path.display(),
-            mb(meta.len()),
+            mb(len),
             mb(READ_MAX as u64)
         ),
         _ => anyhow!(
@@ -3864,11 +3890,9 @@ fn read_text(path: &Path, line: Option<usize>, limit: Option<usize>) -> Result<S
             mb(READ_MAX as u64)
         ),
     };
-    if line.is_none() && limit.is_none() && meta.len() > READ_MAX as u64 {
+    if line.is_none() && limit.is_none() && len > READ_MAX as u64 {
         return Err(too_big());
     }
-    let file = std::fs::File::open(path).with_context(|| format!("reading {}", path.display()))?;
-    let mut r = std::io::BufReader::new(file);
     let read = |e| anyhow::Error::new(e).context(format!("reading {}", path.display()));
     // Lines before `line` are skipped without keeping them.
     let mut skipped = 0;

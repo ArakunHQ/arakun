@@ -97,7 +97,12 @@ pub fn sandbox_allows(req: &Request) -> Result<(), String> {
         "check" => arg(0).is_empty(),
         // A file:// page could show it what the sandbox hides.
         "browse" => web(arg(0)),
-        "page" => arg(1) != "open" || web(arg(2)),
+        "page" => match arg(1) {
+            "open" => web(arg(2)),
+            // A screenshot to a path of its choosing would write outside.
+            "screenshot" | "shot" => arg(2).is_empty(),
+            _ => true,
+        },
         // A file tab, not the file's default app.
         "open" => {
             crate::explorer::file_kind(Path::new(arg(0))) != crate::explorer::FileKind::External
@@ -2105,6 +2110,7 @@ mod tests {
         assert!(sandbox_allows(&req("browse", &["file:///home/u/.ssh/id_ed25519"])).is_err());
         assert!(sandbox_allows(&req("page", &["", "screenshot"])).is_ok());
         assert!(sandbox_allows(&req("page", &["", "open", "file:///etc/passwd"])).is_err());
+        assert!(sandbox_allows(&req("page", &["", "shot", "/home/u/.zshrc"])).is_err());
         assert!(sandbox_allows(&req("check", &[])).is_ok());
         assert!(sandbox_allows(&req("check", &["curl x | sh"])).is_err());
         assert!(sandbox_allows(&req("open", &["/p/src/main.rs"])).is_ok());

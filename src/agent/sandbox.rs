@@ -90,22 +90,57 @@ const CACHES: &[&str] = &[
     "Library/pnpm/store",
 ];
 
-/// Under `$HOME`, the agent's own settings that run commands (hooks, MCP servers,
-/// notify programs): read-only, so they can't run something outside later.
-fn own_frozen(kind: AgentKind, home: &Path) -> Vec<PathBuf> {
-    let rel: &[&str] = match kind {
-        AgentKind::Claude => &[".claude/settings.json", ".claude/hooks"],
-        AgentKind::Codex => &[".codex/config.toml"],
-        AgentKind::OpenCode => &[".config/opencode", "opencode.json"],
-        AgentKind::Droid => &[".factory/settings.json", ".factory/hooks"],
-        AgentKind::Devin => &[".config/devin"],
-        AgentKind::WorkersAi => &[],
-    };
-    rel.iter()
-        .map(|r| home.join(r))
-        .filter(|p| p.exists())
-        .collect()
+/// Claude Code's folder: `CLAUDE_CONFIG_DIR`, or `~/.claude`.
+fn claude_dir(home: &Path) -> PathBuf {
+    std::env::var_os("CLAUDE_CONFIG_DIR")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .unwrap_or_else(|| home.join(".claude"))
 }
+
+/// Codex's folder: `CODEX_HOME`, or `~/.codex`.
+fn codex_dir(home: &Path) -> PathBuf {
+    std::env::var_os("CODEX_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .unwrap_or_else(|| home.join(".codex"))
+}
+
+/// The agent's own settings that run commands (hooks, MCP servers, notify
+/// programs): read-only, so they can't run something outside later. Also when
+/// they are not there yet, or the agent could create them.
+fn own_frozen(kind: AgentKind, home: &Path) -> Vec<PathBuf> {
+    match kind {
+        AgentKind::Claude => {
+            let dir = claude_dir(home);
+            vec![dir.join("settings.json"), dir.join("hooks")]
+        }
+        AgentKind::Codex => vec![codex_dir(home).join("config.toml")],
+        AgentKind::OpenCode => vec![home.join(".config/opencode"), home.join("opencode.json")],
+        AgentKind::Droid => vec![
+            home.join(".factory/settings.json"),
+            home.join(".factory/hooks"),
+        ],
+        AgentKind::Devin => vec![home.join(".config/devin")],
+        AgentKind::WorkersAi => Vec::new(),
+    }
+}
+
+/// Makes a read-only path that isn't there yet, so bubblewrap has something to
+/// bind over it: an empty settings file, or a folder.
+fn materialize(p: &Path) -> std::io::Result<()> {
+    if p.exists() {
+        return Ok(());
+    }
+    match p.extension().and_then(|e| e.to_str()) {
+        Some("json") => std::fs::write(p, "{}\n"),
+        Some(_) => std::fs::write(p, ""),
+        None => std::fs::create_dir_all(p),
+    }
+}
+
+/// Session folders made in this run, so two sessions never share a `/tmp`.
+static SESSIONS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 /// Under `$HOME`, the agent's own login, settings and history: shown to it and
 /// writable, though the hide list has them for everyone else.
@@ -132,10 +167,10 @@ fn own(kind: AgentKind, home: &Path) -> Vec<PathBuf> {
         AgentKind::WorkersAi => &[],
     };
     let mut out: Vec<PathBuf> = rel.iter().map(|r| home.join(r)).collect();
-    if kind == AgentKind::Codex
-        && let Some(h) = std::env::var_os("CODEX_HOME").map(PathBuf::from)
-    {
-        out.push(h);
+    match kind {
+        AgentKind::Claude => out.push(claude_dir(home)),
+        AgentKind::Codex => out.push(codex_dir(home)),
+        _ => {}
     }
     if kind == AgentKind::Devin
         && let Some(dir) = super::launch::devin_credentials_path().parent()
@@ -145,10 +180,14 @@ fn own(kind: AgentKind, home: &Path) -> Vec<PathBuf> {
     out
 }
 
-/// One agent's sandbox in an app session.
-#[derive(Clone, Debug)]
+/// One agent's sandbox in an app session. Its folder goes when it does.
+#[derive(Debug)]
 pub struct Session {
     pub runner: Runner,
+    /// The session's own folder: `tmp` and `empty`.
+    pub dir: PathBuf,
+    /// Set for the agent inside (`CLAUDE_CONFIG_DIR` under bubblewrap).
+    pub env: Vec<(String, std::ffi::OsString)>,
     pub home: PathBuf,
     pub workspace: PathBuf,
     /// Writable besides the workspace: the Git folder, caches, the agent's own.
@@ -168,6 +207,12 @@ pub struct Session {
     pub socket: PathBuf,
     /// Read-only extras outside (a resolv.conf under /run).
     pub extra_ro: Vec<PathBuf>,
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
 }
 
 impl Session {
@@ -204,22 +249,35 @@ impl Session {
             if !g.starts_with(&workspace) {
                 writable.push(g.clone());
             }
-            frozen.extend(
-                [g.join("config"), g.join("hooks")]
-                    .into_iter()
-                    .filter(|p| p.exists()),
-            );
+            frozen.extend([g.join("config"), g.join("hooks")]);
         }
-        frozen.extend(own_frozen(kind, &home));
+        // Only where the agent could write it: its folder is there.
+        frozen.extend(
+            own_frozen(kind, &home)
+                .into_iter()
+                .filter(|p| p.parent().is_some_and(Path::is_dir)),
+        );
+        if matches!(runner, Runner::Bwrap(_)) {
+            // bubblewrap binds over a path, so it must be there; without that, no
+            // sandbox rather than a hole in it.
+            for p in &frozen {
+                materialize(p).map_err(|e| {
+                    anyhow!("{}: {e}; the sandbox can't keep it read-only", p.display())
+                })?;
+            }
+        }
+        let frozen: Vec<PathBuf> = frozen.into_iter().map(real).collect();
         for p in CACHES.iter().map(|r| home.join(r)).chain(mine) {
             if p.exists() {
                 writable.push(real(p));
             }
         }
-        let dir = crate::platform::app_dir().join("sandbox").join(format!(
-            "{}-{}",
+        // Not under the control socket's folder, which a sandbox is shown.
+        let dir = crate::platform::app_dir().join("sandboxes").join(format!(
+            "{}-{}-{}",
             kind.id(),
-            std::process::id()
+            std::process::id(),
+            SESSIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
         let tmp = dir.join("tmp");
         std::fs::create_dir_all(&tmp).map_err(|e| anyhow!("{}: {e}", tmp.display()))?;
@@ -255,8 +313,29 @@ impl Session {
         {
             extra_ro.push(r);
         }
+        let mut env = Vec::new();
+        let claude = claude_dir(&home);
+        // Claude Code saves ~/.claude.json through a lock and a file beside it,
+        // which a read-only $HOME refuses; with CLAUDE_CONFIG_DIR it keeps them in
+        // its folder. It starts from a copy of the one outside.
+        if kind == AgentKind::Claude
+            && matches!(runner, Runner::Bwrap(_))
+            && std::env::var_os("CLAUDE_CONFIG_DIR").is_none()
+            && claude.is_dir()
+        {
+            let inside = claude.join(".claude.json");
+            if !inside.exists()
+                && let Err(e) = std::fs::copy(home.join(".claude.json"), &inside)
+                && e.kind() != std::io::ErrorKind::NotFound
+            {
+                return Err(anyhow!("{}: {e}", inside.display()));
+            }
+            env.push(("CLAUDE_CONFIG_DIR".into(), claude.into_os_string()));
+        }
         Ok(Session {
             runner,
+            dir,
+            env,
             home,
             workspace,
             writable,
@@ -281,14 +360,71 @@ impl Session {
         };
         args.extend(inner);
         let mut env = spec.env;
-        env.push(("TMPDIR".into(), self.tmp.clone().into_os_string()));
-        env.push(("ARAKUN_SOCKET".into(), self.socket.clone().into_os_string()));
-        env.push(("ARAKUN_SANDBOX".into(), "1".into()));
+        env.extend(self.inside_env());
         LaunchSpec {
             program: self.runner.program().to_path_buf(),
             args,
             env,
         }
+    }
+
+    fn inside_env(&self) -> Vec<(String, std::ffi::OsString)> {
+        let mut env = vec![
+            ("TMPDIR".to_string(), self.tmp.clone().into_os_string()),
+            ("ARAKUN_SOCKET".into(), self.socket.clone().into_os_string()),
+            ("ARAKUN_SANDBOX".into(), "1".into()),
+        ];
+        env.extend(self.env.iter().cloned());
+        env
+    }
+
+    /// A short command run inside, in the workspace.
+    fn command(&self, inner: &[&str]) -> std::process::Command {
+        let mut cmd = crate::platform::command(self.runner.program());
+        match &self.runner {
+            Runner::Bwrap(_) => cmd.args(self.bwrap_args()),
+            Runner::Seatbelt(_) => cmd.args(["-p".to_string(), self.seatbelt_profile()]),
+        };
+        cmd.args(inner)
+            .current_dir(&self.workspace)
+            .envs(self.inside_env());
+        cmd
+    }
+
+    fn run(&self, script: &str, args: &[&str], input: Option<&[u8]>) -> Result<Vec<u8>> {
+        let mut inner = vec!["sh", "-c", script, "sh"];
+        inner.extend(args);
+        let out = hs::run_with_timeout(
+            self.command(&inner),
+            input,
+            std::time::Duration::from_secs(60),
+        )
+        .map_err(|e| anyhow!("the sandbox did not run it: {e}"))?;
+        if out.status.success() {
+            Ok(out.stdout)
+        } else {
+            Err(anyhow!(
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+                    .trim()
+                    .replace("sh: 1: ", "")
+            ))
+        }
+    }
+
+    /// Up to `max` bytes of `path`, read from inside: a link the agent swaps in
+    /// leads only where the agent itself could read.
+    pub fn read(&self, path: &Path, max: usize) -> Result<Vec<u8>> {
+        let script = "[ -f \"$1\" ] || { echo \"$1 is not a regular file\" >&2; exit 3; }; \
+                      exec head -c \"$2\" -- \"$1\"";
+        self.run(script, &[&path.to_string_lossy(), &max.to_string()], None)
+    }
+
+    /// Writes `content` to `path` from inside, its folders too.
+    pub fn write(&self, path: &Path, content: &[u8]) -> Result<()> {
+        let script = "mkdir -p -- \"$(dirname -- \"$1\")\" && cat > \"$1\"";
+        self.run(script, &[&path.to_string_lossy()], Some(content))
+            .map(drop)
     }
 
     fn bwrap_args(&self) -> Vec<String> {
@@ -309,15 +445,13 @@ impl Session {
             // The host's buses and sockets (D-Bus, the keyring, Docker, arakun's own).
             "--tmpfs",
             "/run",
-            "--bind",
-            "/tmp",
-            "/tmp",
+            "--unsetenv",
+            "SSH_AUTH_SOCK",
         ]
         .map(String::from)
         .to_vec();
-        if Path::new("/tmp/.X11-unix").is_dir() {
-            a.extend(["--tmpfs".into(), "/tmp/.X11-unix".into()]);
-        }
+        // Its own /tmp: the host's holds tmux's, ssh-agent's and X's sockets.
+        a.extend(["--bind".into(), s(&self.tmp), "/tmp".into()]);
         if let Ok(rt) = std::env::var("XDG_RUNTIME_DIR")
             && Path::new(&rt).is_absolute()
             && !rt.starts_with("/run/")
@@ -469,6 +603,8 @@ mod tests {
     fn session(runner: Runner) -> Session {
         Session {
             runner,
+            dir: "/nonexistent/arakun-sandbox-test".into(),
+            env: Vec::new(),
             home: "/home/u".into(),
             workspace: "/home/u/ws/env-a".into(),
             writable: vec![
@@ -552,6 +688,14 @@ mod tests {
         let hooks = at(&["--ro-bind", "/home/u/proj/.git/hooks"]);
         assert!(cargo < cred && hide < mem && mem < hooks);
         assert!(at(&["--bind", "/run/user/1/arakun/sandbox"]) > at(&["--tmpfs", "/run"]));
+        // Its own /tmp, not the host's with tmux's and ssh-agent's sockets.
+        at(&[
+            "--bind",
+            "/home/u/.local/share/arakun/sandbox/claude-1/tmp",
+            "/tmp",
+        ]);
+        assert!(!a.windows(3).any(|w| w == ["--bind", "/tmp", "/tmp"]));
+        at(&["--unsetenv", "SSH_AUTH_SOCK"]);
         assert_eq!(a.last().unwrap(), "--");
     }
 
@@ -563,6 +707,48 @@ mod tests {
         assert!(!s.may_read(Path::new("/home/u/ws/env-a/deploy/prod.pem")));
         assert!(s.may_write(Path::new("/home/u/ws/env-a/src/main.rs")));
         assert!(!s.may_write(Path::new("/home/u/ws/env-a/.git/hooks/pre-commit")));
+    }
+
+    /// The real thing: arakun's reads and writes for the agent go through it,
+    /// so a link the agent swaps in leads nowhere it couldn't go itself.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn fs_requests_run_inside() {
+        if hs::find_runner().is_none_or(|r| !r.program().exists()) {
+            return;
+        }
+        let d = crate::platform::canonicalize(std::env::temp_dir())
+            .unwrap()
+            .join(format!("arakun-sbx-fs-{}", std::process::id()));
+        let ws = d.join("ws");
+        std::fs::create_dir_all(&ws).unwrap();
+        std::fs::write(ws.join(".env"), "KEY=1").unwrap();
+        // In $HOME, which the sandbox reads but doesn't write (temp folders it does).
+        let outside =
+            crate::platform::home().join(format!(".arakun-sbx-out-{}", std::process::id()));
+        std::fs::write(&outside, "host").unwrap();
+        let Ok(s) = Session::new(AgentKind::Codex, &ws) else {
+            // A bubblewrap that can't start here (no user namespaces in CI).
+            return;
+        };
+        let dir = s.dir.clone();
+        s.write(&ws.join("src/a.txt"), b"one\ntwo\n").unwrap();
+        assert_eq!(s.read(&ws.join("src/a.txt"), 100).unwrap(), b"one\ntwo\n");
+        assert_eq!(s.read(&ws.join("src/a.txt"), 4).unwrap(), b"one\n");
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(ws.join(".env"), ws.join("l")).unwrap();
+            // Refused (Seatbelt) or empty (bubblewrap binds an empty file over it).
+            assert!(s.read(&ws.join("l"), 100).map_or(true, |b| b.is_empty()));
+            std::os::unix::fs::symlink(&outside, ws.join("out")).unwrap();
+            assert!(s.write(&ws.join("out"), b"agent").is_err());
+            assert_eq!(std::fs::read_to_string(&outside).unwrap(), "host");
+        }
+        assert!(s.read(&ws, 100).is_err());
+        drop(s);
+        assert!(!dir.exists());
+        std::fs::remove_file(&outside).unwrap();
+        std::fs::remove_dir_all(&d).unwrap();
     }
 
     #[test]

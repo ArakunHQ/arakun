@@ -231,7 +231,10 @@ terminal-only. The status line and keybindings from your settings don't apply in
   browser profiles and files that look like secrets (`.env`, keys) stay hidden. They
   keep the network and their own login (on macOS the keychain), and reach Arakun
   through a socket of their own that refuses `arakun run`, `arakun agent` and anything
-  else that would act outside. Workers AI sessions can't be sandboxed yet. A sandboxed
+  else that would act outside. On Linux, sandboxed Claude Code keeps its settings in
+  `~/.claude/.claude.json` (a copy of `~/.claude.json` at first), because bubblewrap
+  can't let it write beside the file in `$HOME`. Workers AI sessions and Windows can't
+  be sandboxed yet. A sandboxed
   agent can still change what you later run outside it: the project's files, and its
   own settings such as `~/.claude.json`.
 - **Server.** `arakun server serve` is Arakun without a window, for a machine nobody

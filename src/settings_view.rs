@@ -1804,6 +1804,15 @@ impl SettingsDialog {
                     field(self.base_input.clone(), 420.).into_any_element(),
                 )
                 .into_any_element(),
+                // Windows has no sandbox to put them in.
+                if cfg!(windows) {
+                    row(
+                        "Sandbox agents",
+                        "Windows has no agent sandbox yet. On macOS and Linux this runs the agents of a project in a sandbox.",
+                        div().into_any_element(),
+                    )
+                    .into_any_element()
+                } else {
                 row(
                     "Sandbox agents",
                     if cfg!(target_os = "macos") {
@@ -1826,7 +1835,8 @@ impl SettingsDialog {
                     });
                     cx.notify();
                 }))
-                .into_any_element(),
+                .into_any_element()
+                },
             ],
         )])
     }

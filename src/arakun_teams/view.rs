@@ -350,6 +350,9 @@ impl TeamsView {
         if let Pane::Channel(t, c) = &self.pane {
             let was = hub::channel_key(t, c);
             if was == key {
+                // A refused channel has no link left: picking it again retries.
+                self.hub
+                    .update(cx, |h, cx| h.open_channel(&team, &channel, cx));
                 return;
             }
             let typed = self.composer.read(cx).text().to_string();
@@ -485,7 +488,14 @@ impl TeamsView {
             return;
         };
         let text = self.composer.read(cx).text().trim().to_string();
-        if text.is_empty() {
+        // A refused socket does not retry, so a queued message would never go.
+        let refused = self
+            .hub
+            .read(cx)
+            .channels
+            .get(&hub::channel_key(&team, &channel))
+            .is_some_and(|c| matches!(c.status, socket::Status::Refused(_)));
+        if text.is_empty() || refused {
             return;
         }
         let reply_to = self.reply_to.take();
@@ -2095,6 +2105,7 @@ impl TeamsView {
     fn render_composer(
         &self,
         can_send: bool,
+        keyless: bool,
         connected: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -2240,10 +2251,12 @@ impl TeamsView {
                     ui::text(
                         Type::Caption,
                         theme::text_faint(),
-                        if can_send {
+                        if keyless {
+                            "You can write here once this device holds the team key."
+                        } else if can_send {
                             "Not connected right now. What you send goes out once it is back."
                         } else {
-                            "You can write here once this device holds the team key."
+                            "The channel turned this device away. Open it again to retry."
                         },
                     )
                     .pt(ui::sp(6.))
@@ -2453,7 +2466,9 @@ impl TeamsView {
             .track_scroll(&self.scroll)
             .children(rows);
 
-        let can_send = !keyless;
+        // A refused socket does not retry, so nothing queued would go out.
+        let refused = matches!(status, socket::Status::Refused(_));
+        let can_send = !keyless && !refused;
         let connected = status == socket::Status::Connected;
         let status_line = match &status {
             socket::Status::Connected => None,
@@ -2468,7 +2483,7 @@ impl TeamsView {
             .min_w_0()
             .min_h_0()
             .when_some(
-                status_line.filter(|_| !messages.is_empty()),
+                status_line.filter(|_| refused || !messages.is_empty()),
                 |d, (w, tone)| {
                     d.child(
                         div()
@@ -2481,7 +2496,7 @@ impl TeamsView {
                 },
             )
             .child(list)
-            .child(self.render_composer(can_send, connected, cx));
+            .child(self.render_composer(can_send, keyless, connected, cx));
 
         let column = self.render_column(team_id, channel_id, faces, cx);
         let side = self

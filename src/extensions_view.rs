@@ -265,18 +265,10 @@ impl ExtensionsView {
             }
             _ => {}
         });
-        let poll = cx.spawn(async move |this, cx| {
-            loop {
-                cx.background_executor().timer(WATCH_EVERY).await;
-                let alive = this.update(cx, |this, cx| {
-                    let watching = this.watch_until.is_some_and(|t| Instant::now() < t);
-                    if watching && !this.claude_loading && this.op.is_none() {
-                        this.load_claude(cx);
-                    }
-                });
-                if alive.is_err() {
-                    break;
-                }
+        let poll = crate::poll::poll_every(cx, WATCH_EVERY, WATCH_EVERY, |this, cx| {
+            let watching = this.watch_until.is_some_and(|t| Instant::now() < t);
+            if watching && !this.claude_loading && this.op.is_none() {
+                this.load_claude(cx);
             }
         });
         Self {

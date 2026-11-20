@@ -70,6 +70,7 @@ mod phone_page;
 mod phone_view;
 mod picker;
 mod platform;
+mod poll;
 mod posthog;
 mod posthog_view;
 mod pr_writer;

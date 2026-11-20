@@ -1502,14 +1502,7 @@ impl Host {
             })
             .detach();
         }
-        host._tick = Some(cx.spawn(async move |this, cx| {
-            loop {
-                cx.background_executor().timer(TICK).await;
-                if this.update(cx, |this, cx| this.tick(cx)).is_err() {
-                    break;
-                }
-            }
-        }));
+        host._tick = Some(crate::poll::poll_every(cx, TICK, TICK, Self::tick));
         host
     }
 

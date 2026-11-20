@@ -347,21 +347,11 @@ impl Shell {
                 }
             }
         });
-        let tick = cx.spawn(async move |this, cx| {
-            loop {
-                cx.background_executor().timer(INBOX_EVERY).await;
-                if this
-                    .update(cx, |this, cx| {
-                        if let Some(link) = &this.phone {
-                            link.last_read.trim();
-                        }
-                        this.phone_sync_inbox(cx)
-                    })
-                    .is_err()
-                {
-                    break;
-                }
+        let tick = crate::poll::poll_every(cx, INBOX_EVERY, INBOX_EVERY, |this, cx| {
+            if let Some(link) = &this.phone {
+                link.last_read.trim();
             }
+            this.phone_sync_inbox(cx)
         });
         let remote = match &server {
             Transport::Relay(client) => relay_address(relay::Status::Connecting, client.page_url()),

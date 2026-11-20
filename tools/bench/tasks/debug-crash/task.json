@@ -1,0 +1,5 @@
+{
+  "prompt": "`python3 report.py data/` crashes. Find out why and fix it so it prints a report for every CSV file in the folder. Rows that can't be read should be skipped and counted, not crash the run.",
+  "check": "python3 -m unittest discover -s bench_hidden -t . -q",
+  "timeout": 600
+}

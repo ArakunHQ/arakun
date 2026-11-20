@@ -183,6 +183,26 @@ Skip the hooks for one command with `LEFTHOOK=0 git commit ...`, or one job with
 `LEFTHOOK_EXCLUDE=cargo-test git push`. Put your own changes in `lefthook-local.yml`,
 which git ignores. Turn the hooks off with `lefthook uninstall`.
 
+### Benchmarks
+
+[`tools/bench/bench.py`](tools/bench/bench.py) measures Arakun. CI doesn't run it.
+Run it when a change could make the app slower, and put the `compare` table in the
+pull request.
+
+```sh
+cargo build --release --locked --no-default-features
+tools/bench/bench.py perf --out target/bench/after.json     # frame times, CPU, memory
+tools/bench/bench.py compare target/bench/before.json target/bench/after.json --markdown
+tools/bench/bench.py agent --tasks fix-bug --model haiku    # Claude Code on a task, in Arakun
+```
+
+`perf` plays scenarios (palette, sidebar, zoom, scrolling, a terminal flood) in a test
+Arakun (`arakun dev`, Linux and macOS) and reads the time GPUI took for each frame.
+`agent` gives Claude Code the coding tasks in `tools/bench/tasks/`, in Arakun and, with
+`--runner arakun,claude`, as bare `claude -p`, and scores each run with tests the
+agent never saw. It uses your Claude account or API key, so it costs money. The
+[`bench` skill](.claude/skills/bench/SKILL.md) has the details.
+
 ## Writing code
 
 - **Tests** go in a `#[cfg(test)] mod tests` at the bottom of the file they test. Add a

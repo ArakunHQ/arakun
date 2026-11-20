@@ -871,6 +871,11 @@ impl Shell {
             .is_some_and(|(current, _)| current == "on");
         let permissions = self.permissions_label(cx);
         let usage_line = thread.as_ref().and_then(|t| t.read(cx).usage().summary());
+        // The Claude seat the session runs on, while it runs (`agent::seats`).
+        let seat = thread
+            .as_ref()
+            .and_then(|t| t.read(cx).seat().map(crate::agent::seats::label))
+            .map(|s| crate::redact::value(&s));
         let focused = self.composer_focus.is_focused(window);
         let entity = cx.entity();
         let focus = self.composer_focus.clone();
@@ -1385,6 +1390,24 @@ impl Shell {
                                     },
                                 )),
                             )
+                            .when_some(seat, |d, seat| {
+                                d.child(
+                                    div()
+                                        .id("composer-seat")
+                                        .flex_none()
+                                        .flex()
+                                        .items_center()
+                                        .gap(crate::ui::sp(4.))
+                                        .px(crate::ui::sp(6.))
+                                        .text_size(px(ui::TEXT_XS))
+                                        .text_color(theme::text_subtle())
+                                        .child(icon("user", 11.).text_color(theme::text_faint()))
+                                        .child(seat)
+                                        .tooltip(ui::tip(
+                                            "The Claude seat this session runs on, for its whole life",
+                                        )),
+                                )
+                            })
                             .when_some(permissions, |d, (label, risky)| {
                                 d.child(
                                     chip(

@@ -471,6 +471,8 @@ pub struct Shell {
     servers_view: Entity<crate::servers_view::ServersView>,
     _servers_view: Subscription,
     usage_view: Entity<UsageView>,
+    /// Set while a frame is built when it shows the Usage view.
+    usage_shown: std::cell::Cell<bool>,
     gallery_view: Entity<GalleryView>,
     iso_view: Entity<crate::iso_view::IsoView>,
     #[cfg(feature = "coderlabs")]
@@ -1008,6 +1010,7 @@ impl Shell {
             _servers_view: servers_sub,
             _usage_view: usage_sub,
             usage_view,
+            usage_shown: std::cell::Cell::new(false),
             gallery_view,
             customize: None,
             customize_tab: CustomizeTab::Colors,
@@ -3602,6 +3605,7 @@ impl Shell {
             #[cfg(feature = "coderlabs")]
             Some(TabKind::Canvas) => self.canvas_view.clone().into_any_element(),
             Some(TabKind::Usage) => {
+                self.usage_shown.set(true);
                 self.sync_usage_view(cx);
                 self.usage_view.clone().into_any_element()
             }
@@ -3796,6 +3800,9 @@ impl Render for Shell {
         } else {
             self.render_welcome(window, cx).into_any_element()
         };
+        self.usage_view
+            .read(cx)
+            .set_on_screen(self.usage_shown.take());
 
         let update_dialog = self.update_dialog.as_ref().map(|(d, _)| d.clone());
         let palette_open = matches!(self.modal, Some((Modal::Palette(_), _)));

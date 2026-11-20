@@ -22,6 +22,7 @@ use super::launch;
 use super::ledger;
 use super::loops::{self, Stuck};
 use super::rpc::{Connection, Dialect, Incoming, RpcError, unix_now, uuid_v4};
+use super::seats;
 use super::shell_diff::{self, ShellChange, Snapshot};
 
 // Children of this module so they can reach the private state of `Thread`.
@@ -119,6 +120,10 @@ pub struct SessionMeta {
     /// The GitHub pull request the session opened or last pushed to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pr: Option<String>,
+    /// Claude Code: the seat (`seats`) the session runs on, kept for its
+    /// whole life so a resumed session goes on with the same account.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seat: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -633,6 +638,8 @@ pub struct Thread {
     replaced: HashMap<(String, PathBuf), Option<String>>,
     last_message_id: Option<String>,
     conn: Option<Rc<Connection>>,
+    /// The seat the running agent process is on, counted as live there.
+    lease: Option<seats::Lease>,
     session_id: Option<String>,
     agent_title: Option<String>,
     caps: Caps,
@@ -1100,6 +1107,7 @@ impl Thread {
             created: now,
             updated: now,
             pr: None,
+            seat: None,
         });
         let backend = if kind == AgentKind::Droid && launch::droid_native() {
             Backend::Native
@@ -1122,6 +1130,7 @@ impl Thread {
             replaced: HashMap::new(),
             last_message_id: None,
             conn: None,
+            lease: None,
             agent_title: None,
             caps: Caps::default(),
             auth_hint: None,
@@ -1483,6 +1492,7 @@ impl Thread {
         self._pump = None;
         self._connect = None;
         self.conn = None;
+        self.lease = None;
     }
 
     // ---- persistence -----------------------------------------------------
@@ -1635,6 +1645,7 @@ impl Thread {
 
     fn connect(&mut self, cx: &mut Context<Self>) {
         self.conn = None;
+        self.lease = None;
         self._pump = None;
         self._setup = None;
         self._prompt = None;
@@ -1649,15 +1660,27 @@ impl Thread {
         let native = self.backend == Backend::Native;
         let cwd = self.cwd.clone();
         let install = self.take_install_approval();
+        let pinned = self.meta.seat.clone();
         self._connect = Some(cx.spawn(async move |this, cx| {
             let (progress_tx, mut progress_rx) = fmpsc::unbounded::<String>();
             let resolve = cx.background_executor().spawn(async move {
                 if native {
-                    return launch::resolve_droid_native(Some(&cwd));
+                    return launch::resolve_droid_native(Some(&cwd)).map(|s| (s, None));
                 }
-                launch::resolve(kind, Some(&cwd), install, &|line| {
+                let mut spec = launch::resolve(kind, Some(&cwd), install, &|line| {
                     let _ = progress_tx.unbounded_send(line);
-                })
+                })?;
+                // Each Claude Code session on a seat of its own, in its own
+                // environment only; see `seats`.
+                let seat = (kind == AgentKind::Claude)
+                    .then(|| seats::assign(pinned.as_deref()))
+                    .flatten();
+                if let Some(seat) = &seat {
+                    let (set, unset) = seat.env();
+                    spec.env.extend(set);
+                    spec.unset.extend(unset);
+                }
+                Ok((spec, seat))
             });
             let progress = {
                 let this = this.clone();
@@ -1673,13 +1696,38 @@ impl Thread {
             let spec = resolve.await;
             progress.await;
             let _ = this.update(cx, |t, cx| match spec {
-                Ok(spec) => t.launch(spec, cx),
+                Ok((spec, seat)) => {
+                    if let Some(seat) = seat {
+                        t.take_seat(seat, cx);
+                    }
+                    t.launch(spec, cx)
+                }
                 Err(e) => {
                     t.needs_install = e.downcast_ref::<launch::AdapterInstall>().cloned();
                     t.fail(FailedAt::Resolve, format!("{e:#}"), cx)
                 }
             });
         }));
+    }
+
+    /// The session runs on `seat` from now on: saved with it (once a seat is
+    /// saved, it stays) and counted as live there.
+    fn take_seat(&mut self, seat: seats::Assignment, cx: &mut Context<Self>) {
+        // `assign` counted it live when it picked; a pin it kept, here.
+        let lease = seat.lease.unwrap_or_else(|| seats::lease(&seat.seat));
+        self.lease = Some(lease);
+        if self.meta.seat.as_deref() != Some(seat.seat.as_str()) {
+            self.meta.seat = Some(seat.seat);
+            self.meta_changed(cx);
+        }
+        if let Some(text) = seat.notice {
+            self.notice(text, false, cx);
+        }
+    }
+
+    /// The seat the agent process runs on, while it runs.
+    pub fn seat(&self) -> Option<&str> {
+        self.lease.as_ref().map(seats::Lease::seat)
     }
 
     /// Spawns on the main thread on purpose: PR_SET_PDEATHSIG fires when the
@@ -1696,7 +1744,10 @@ impl Thread {
         };
         let (conn, mut rx) = match spawned {
             Ok(c) => c,
-            Err(e) => return self.fail(FailedAt::Spawn, format!("{e:#}"), cx),
+            Err(e) => {
+                self.lease = None;
+                return self.fail(FailedAt::Spawn, format!("{e:#}"), cx);
+            }
         };
         let conn = Rc::new(conn);
         self.conn = Some(conn.clone());
@@ -3187,6 +3238,7 @@ impl Thread {
                 stderr_tail,
             } => {
                 self.conn = None;
+                self.lease = None;
                 self.permissions.clear();
                 self.native.questions.clear();
                 self._prompt = None;
@@ -4191,6 +4243,29 @@ mod tests {
         t.push_terminal_output(&format!("{}\n", "x".repeat(3 * super::TERMINAL_KEEP)));
         assert!(t.terminal_output.len() >= super::TERMINAL_KEEP);
         assert!(t.terminal_output.ends_with("x\n"));
+    }
+
+    #[test]
+    fn a_sessions_seat_is_saved_with_it_and_kept_on_resume() {
+        let mut t = Thread::new(AgentKind::Claude, "/p".into(), None);
+        assert_eq!(t.meta().seat, None);
+        t.meta.seat = Some("work".into());
+        // Saved in the session list and the transcript, and read back.
+        let json = serde_json::to_string(&t.meta()).unwrap();
+        let meta: SessionMeta = serde_json::from_str(&json).unwrap();
+        assert_eq!(meta.seat.as_deref(), Some("work"));
+        // A resumed or restarted session starts from that meta, so `connect`
+        // asks `seats::assign` for the same seat.
+        let resumed = Thread::new(AgentKind::Claude, "/p".into(), Some(meta));
+        assert_eq!(resumed.meta.seat.as_deref(), Some("work"));
+        // Not live until its process runs.
+        assert_eq!(resumed.seat(), None);
+        // Sessions saved before seats existed have none.
+        let old =
+            r#"{"agent":"claude","session_id":"s","title":"t","cwd":"/p","created":1,"updated":2}"#;
+        let old: SessionMeta = serde_json::from_str(old).unwrap();
+        assert_eq!(old.seat, None);
+        assert!(!serde_json::to_string(&old).unwrap().contains("seat"));
     }
 
     #[test]

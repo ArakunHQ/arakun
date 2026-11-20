@@ -12,6 +12,7 @@ use std::collections::BTreeMap;
 use std::process::Command;
 
 use serde_json::Value;
+use ureq::http::Uri;
 
 const API_KEY: &str = "ANTHROPIC_API_KEY";
 const AUTH_TOKEN: &str = "ANTHROPIC_AUTH_TOKEN";
@@ -155,16 +156,26 @@ fn access_from(
 
 /// The host of a base URL that is not Anthropic's own API.
 fn custom_host(url: &str) -> Option<String> {
-    let rest = url.split_once("://").map_or(url, |(_, r)| r);
-    let host = rest.split(['/', '?', '#']).next()?.trim();
-    // Credentials in the URL stay out of the label.
-    let host = host
-        .rsplit_once('@')
-        .map_or(host, |(_, h)| h)
-        .to_lowercase();
-    let name = host.strip_suffix(":443").unwrap_or(&host);
-    let anthropic = name.trim_end_matches('.') == "api.anthropic.com";
-    (!host.is_empty() && !anthropic).then_some(host)
+    if url.is_empty() {
+        return None;
+    }
+    let uri = url.parse::<Uri>().ok();
+    let Some(authority) = uri.as_ref().and_then(Uri::authority) else {
+        // An unrecognized destination is not permission to use a saved seat.
+        return Some("unrecognized endpoint".into());
+    };
+    let raw = authority.as_str();
+    let name = raw.strip_suffix(":443").unwrap_or(raw);
+    if uri.as_ref().and_then(Uri::scheme_str) == Some("https")
+        && name
+            .strip_suffix('.')
+            .unwrap_or(name)
+            .eq_ignore_ascii_case("api.anthropic.com")
+    {
+        return None;
+    }
+    // The authority can contain credentials. Never put them in the label.
+    Some(raw.rsplit('@').next().unwrap_or(raw).to_ascii_lowercase())
 }
 
 /// Sets up `cmd`, a `claude -p --setting-sources ""` run, to reach the model
@@ -258,6 +269,26 @@ mod tests {
         let s =
             parse_settings(&json!({"env": {"ANTHROPIC_BASE_URL": "https://api.anthropic.com"}}));
         assert_eq!(access_from(&s, none), None);
+    }
+
+    #[test]
+    fn a_saved_seat_requires_the_official_https_origin() {
+        for url in [
+            "http://api.anthropic.com",
+            "http://api.anthropic.com:443/v1",
+            "api.anthropic.com",
+            "https://api.anthropic.com:8443",
+            "https://api.anthropic.com.example.test",
+            "https://user@api.anthropic.com",
+            "https:///v1",
+        ] {
+            let settings = parse_settings(&json!({"env": {BASE_URL: url}}));
+            assert!(
+                matches!(access_from(&settings, none), Some(Access::Endpoint(_))),
+                "{url}"
+            );
+            assert!(!drops_process_key(&settings, true, none), "{url}");
+        }
     }
 
     #[test]

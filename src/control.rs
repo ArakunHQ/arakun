@@ -262,6 +262,12 @@ Usage:
                              collapsed, JSON's outline); the whole output goes
                              to a file it names. Needs no running Arakun
   arakun notices [--unseen]    the notifications Arakun has shown, newest first
+  arakun seat add <name>       save a Claude seat: a token from `claude setup-token`,
+                             read from stdin and checked with one small call;
+                             each new Claude Code session then runs on the seat
+                             with the most room in its 5-hour window, for life
+  arakun seat ls               the seats and their 5-hour and weekly usage
+  arakun seat rm <name>        forget a seat
   arakun ls                    list projects, environments and their sessions
   arakun island [state]        show the Dynamic Island in a state, to try it:
                              sleeping, idle, working, speaking, listening;
@@ -536,6 +542,9 @@ fn cli(args: Vec<String>) -> Cli {
     }
     if first == "notices" {
         return Cli::Exit(crate::notices::cli(&args[1..]));
+    }
+    if first == "seat" {
+        return Cli::Exit(crate::agent::seats::cli(&args[1..]));
     }
     if first == "iso" {
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));

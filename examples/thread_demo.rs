@@ -163,6 +163,7 @@ impl Demo {
                     created: 0,
                     updated: 0,
                     pr: None,
+                    seat: None,
                 });
                 Thread::start(args.kind, args.cwd.clone(), resume, cx)
             }

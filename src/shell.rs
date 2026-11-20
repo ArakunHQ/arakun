@@ -21,6 +21,7 @@ use gpui::{
 
 mod active;
 pub(crate) mod agent_cli;
+mod arrange;
 mod automations;
 mod branches;
 mod browsers;
@@ -270,6 +271,9 @@ pub struct Shell {
     /// A line for the next prompt to an environment's sessions after arakun renamed
     /// its branch: they started on the old name.
     rename_notes: std::collections::HashMap<std::path::PathBuf, String>,
+    /// Where a server's first prompt put back in an environment's composer was
+    /// written: what it mentions is still looked for there when it is sent again.
+    mention_sources: std::collections::HashMap<std::path::PathBuf, std::path::PathBuf>,
     /// Sessions whose transcript is being read off the main thread, to show them.
     restoring: std::collections::HashSet<SharedString>,
     /// Reads in `restoring` an `ensure_live` beat: when one ends, its older
@@ -464,6 +468,8 @@ pub struct Shell {
     canvas_view: Entity<crate::canvas_view::CanvasView>,
     /// The Customize panel, while it is open in the workspace panel's place.
     customize: Option<(Entity<CustomizeView>, Subscription)>,
+    /// The tab Customize shows: on Sidebar, the rail is being arranged.
+    customize_tab: CustomizeTab,
     _usage_view: Subscription,
     /// (project root, branch) → the fix session whose push CI is judging.
     fix_loops: std::collections::HashMap<(std::path::PathBuf, String), runs::FixLoop>,
@@ -854,6 +860,7 @@ impl Shell {
             env_followed: false,
             refresh_gen: Default::default(),
             rename_notes: Default::default(),
+            mention_sources: Default::default(),
             restoring: Default::default(),
             restoring_stale: Default::default(),
             active_project,
@@ -981,6 +988,7 @@ impl Shell {
             usage_view,
             gallery_view,
             customize: None,
+            customize_tab: CustomizeTab::Colors,
             iso_view,
             #[cfg(feature = "coderlabs")]
             canvas_view,
@@ -1724,7 +1732,7 @@ impl Shell {
                     let (branch, auto_name) = (branch.clone(), *auto_name);
                     // The dialog stays until the server answers.
                     let asked = Some(dialog.entity_id());
-                    this.servers_new_env_on(&server, &from, branch, auto_name, asked, cx);
+                    this.servers_new_env_on(&server, &from, branch, auto_name, asked, None, cx);
                 }
                 _ => this.close_modal(window, cx),
             },
@@ -1762,8 +1770,24 @@ impl Shell {
             .is_some_and(|e| e.remote.is_some())
             || project.is_remote();
         if on_server {
-            let from = server_source(project, |p| self.server_env_retired(p));
+            // A queued prompt goes only to the server it was written on,
+            // never to another that has this project too.
+            let written_on = prompt.as_ref().map(|p| {
+                self.find_env(p.from())
+                    .and_then(|e| e.remote.as_ref())
+                    .map(|r| r.server.clone())
+            });
+            let from = server_source(project, |p| self.server_env_retired(p)).filter(|&i| {
+                written_on.as_ref().is_none_or(|server| {
+                    server.is_some()
+                        && project.environments[i].remote.as_ref().map(|r| &r.server)
+                            == server.as_ref()
+                })
+            });
             let Some(from) = from else {
+                if let Some(prompt) = prompt {
+                    self.unqueue(prompt, cx);
+                }
                 self.notify(
                     crate::island::AlertKind::Warning,
                     "Could not make the environment",
@@ -1773,7 +1797,7 @@ impl Shell {
                 );
                 return;
             };
-            self.servers_new_env(pi, from, cx);
+            self.servers_new_env(pi, from, prompt, cx);
             return;
         }
         let (repo, project_name) = (project.path.clone(), project.name.clone());
@@ -2374,10 +2398,13 @@ impl Shell {
                 remote: p.is_remote(),
             }
         });
-        let look = crate::customize_view::Summary::of(&match &self.customize {
-            Some((view, _)) => view.read(cx).saved().clone(),
-            None => crate::palettes::load(),
-        });
+        let look = crate::customize_view::Summary::of(
+            &match &self.customize {
+                Some((view, _)) => view.read(cx).saved().clone(),
+                None => crate::palettes::load(),
+            },
+            &self.sidebar,
+        );
         let dialog = cx.new(|cx| {
             SettingsDialog::new(
                 arcade,
@@ -2525,7 +2552,7 @@ impl Shell {
         // Customize holds the panel's place: the toggle brings the workspace
         // panel back there rather than hiding it unseen.
         if self.customize.is_some() {
-            self.customize = None;
+            self.close_customize(cx);
             if !self.panel_open {
                 self.panel_open = true;
                 self.save(cx);
@@ -2563,6 +2590,7 @@ impl Shell {
         self.menu = None;
         if let Some((view, _)) = &self.customize {
             view.update(cx, |v, cx| v.set_tab(tab, cx));
+            self.customize_tab = tab;
         } else {
             let view = cx.new(|cx| CustomizeView::new(tab, window, cx));
             let sub =
@@ -2571,6 +2599,10 @@ impl Shell {
                     window,
                     |this, _, ev: &CustomizeEvent, window, cx| match ev {
                         CustomizeEvent::Close => this.close_customize(cx),
+                    CustomizeEvent::Tab(tab) => {
+                        this.customize_tab = *tab;
+                        cx.notify();
+                    }
                         CustomizeEvent::OpenGallery => this.open_gallery_tab(window, cx),
                         CustomizeEvent::Grays(g) => {
                             theme::set_grays(*g);
@@ -2593,8 +2625,74 @@ impl Shell {
                             this.save(cx);
                             cx.refresh_windows();
                         }
+                        CustomizeEvent::SidebarStyle(style) => {
+                            let style = *style;
+                            this.change_sidebar(cx, |s| s.style = style);
+                        }
+                        CustomizeEvent::SidebarPreset(p) => {
+                            // A preset lays out the pieces; the look stays as chosen.
+                            let p = *p;
+                            this.change_sidebar(cx, |s| {
+                                let style = s.style;
+                                *s = p.layout();
+                                s.style = style;
+                            });
+                            this.clear_builder_selection();
+                        }
+                        CustomizeEvent::RailWidth(w) => {
+                            this.rail_w = *w;
+                            this.save(cx);
+                            cx.notify();
+                        }
+                        CustomizeEvent::ResetSidebar => {
+                            this.change_sidebar(cx, |s| *s = crate::sidebar::Sidebar::default());
+                            this.clear_builder_selection();
+                            this.rail_w = crate::state::RAIL_W;
+                            this.save(cx);
+                        }
+                        CustomizeEvent::UndoSidebar(redo) => this.undo_sidebar(*redo, cx),
+                        CustomizeEvent::CopyLook { look, sidebar } => {
+                            let mut look = look.clone();
+                            if *sidebar {
+                                look.sidebar = serde_json::to_value(&this.sidebar).ok();
+                            }
+                            cx.write_to_clipboard(gpui::ClipboardItem::new_string(look.encode()));
+                        }
+                        CustomizeEvent::ImportLayout(layout) => {
+                            match crate::sidebar::Sidebar::parse(layout.to_string().as_bytes()) {
+                                Some(mut s) => {
+                                    // A command pin runs on a click and shows only its
+                                    // title, so one from a pasted layout is left out.
+                                    let dropped = s.drop_commands();
+                                    this.change_sidebar(cx, |cur| *cur = s);
+                                    this.clear_builder_selection();
+                                    this.builder.flash = Some(if dropped == 0 {
+                                        "Sidebar layout imported".into()
+                                    } else {
+                                        format!(
+                                            "Sidebar layout imported without its {dropped} command{}; add commands with Command…",
+                                            if dropped == 1 { "" } else { "s" }
+                                        )
+                                        .into()
+                                    });
+                                }
+                                None => {
+                                    this.builder.flash = Some("That sidebar layout could not be read".into())
+                                }
+                            }
+                            cx.notify();
+                        }
                     },
                 );
+            let shell = cx.entity().downgrade();
+            view.update(cx, |v, _| {
+                v.set_arrange(std::rc::Rc::new(move |window, cx| {
+                    shell
+                        .upgrade()
+                        .map(|s| s.update(cx, |s, cx| s.render_arrange_panel(window, cx)))
+                }))
+            });
+            self.customize_tab = tab;
             self.customize = Some((view, sub));
         }
         // It takes the workspace panel's place, so that place must be shown.
@@ -2605,6 +2703,10 @@ impl Shell {
     /// Closes the Customize panel; its last edit is saved as it goes.
     fn close_customize(&mut self, cx: &mut Context<Self>) {
         self.customize = None;
+        // The views the Add chips marked new have been seen.
+        if self.sidebar.mark_known() {
+            self.sidebar.save();
+        }
         cx.notify();
     }
 
@@ -2637,6 +2739,7 @@ impl Shell {
     fn rail_shown(&self) -> bool {
         use crate::sidebar::Collapse;
         self.rail_open
+            || self.arranging()
             || !self.has_projects()
             || matches!(
                 self.sidebar.style.collapse,
@@ -3340,7 +3443,6 @@ impl Shell {
             Some(TabKind::Phone) => self.phone_view.clone().into_any_element(),
             Some(TabKind::Servers) => self.servers_view.clone().into_any_element(),
             Some(TabKind::Gallery) => self.gallery_view.clone().into_any_element(),
-            Some(TabKind::SidebarBuilder) => self.render_sidebar_builder(window, cx),
             Some(TabKind::Isometric) => {
                 // Follows the visible environment, also for a tab restored at
                 // launch that was never opened from the rail.
@@ -3598,7 +3700,7 @@ impl Render for Shell {
             })
             .on_action(cx.listener(|this, _: &ToggleDock, window, cx| this.toggle_dock(window, cx)))
             .on_action(cx.listener(|this, _: &CustomizeSidebar, window, cx| {
-                this.open_sidebar_builder(window, cx)
+                this.open_customize(CustomizeTab::Sidebar, window, cx)
             }))
             .on_action(cx.listener(|this, _: &OpenCustomize, window, cx| {
                 this.open_customize(CustomizeTab::Colors, window, cx)

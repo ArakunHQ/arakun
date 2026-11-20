@@ -74,24 +74,25 @@ copy of it, rename it back, and start a version that can read it.
 - **Active.** The top of the sidebar lists the sessions of every project that need
   you (waiting for an answer, or failed), then the ones running. A click opens the
   session in its project. It stays the same whichever project is open. The open
-  project's list below holds the rest, so nothing shows twice. Move or remove it in
-  the sidebar builder.
+  project's list below holds the rest, so nothing shows twice. Move or remove it from
+  Customize › Sidebar.
 - **One session, one worktree.** **New session** at the top of the sidebar's list, or
   `Ctrl+T`, opens a composer at once and gives the session its own worktree on a random
   branch when you send the first prompt, which names the branch. An open worktree is used only while it has no session yet; `Alt`+click
   on New session asks for the branch. A prompt written in the main checkout, such as on
-  a project's start screen, starts its session in a new worktree too (on a server, it
-  starts where it was written). The sidebar lists each worktree by its session's title.
+  a project's start screen, starts its session in a new worktree too, on a server as here (a server that runs
+  an older Arakun, or a folder there that is no repository, starts it where it was
+  written). The sidebar lists each worktree by its session's title.
   The main checkout is listed only while it holds older sessions; open it from the
   project's right-click menu (Open main checkout, one per machine). Before a
   repository's first commit there is nothing to branch from, so sessions start in
   the main checkout.
 - **Several at once.** `Ctrl`+click (`Cmd`+click on macOS) rows of the sidebar's list
   to pick them, and `Shift`+click to pick a run of them. In the Active list, either
-  picks the session's worktree. A bar under them archives them, closes their
-  sessions (their tabs close and idle agents stop; the worktrees stay), or
-  deletes the worktrees after one question. Branches stay. The main checkout and
-  worktrees on a server are deleted one at a time. `Esc` clears the pick.
+  picks the session's worktree. A bar under them settles their
+  sessions, closes them (their tabs close and idle agents stop; the worktrees stay), or
+  deletes the worktrees after one question, those on a server too: each server
+  deletes its own. Branches stay, and so does the main checkout. `Esc` clears the pick.
 - **Projects and worktrees.** A rail of projects, each with its environments (the main
   checkout plus git worktrees). The default sidebar shows the open project, with the
   others in its dropdown, and its sessions as a flat list: a status dot, the title,
@@ -404,7 +405,7 @@ after a week).
   and permission rules the agents load now. Under Arakun › Extensions (or Settings ›
   General › Sidebar) you turn on the tabs the sidebar shows besides Inbox, Runs, Branches and Marketplace: GitHub, Notes,
   Memory, Usage, Cloudflare, PostHog, Isometric, Phone, Servers and Automations. The
-  palette and the sidebar builder list only the tabs that are on. A new install starts
+  palette and Customize › Sidebar list only the tabs that are on. A new install starts
   with none on, except what you set up in the first-run setup: GitHub once the GitHub
   CLI is signed in, and Phone if you chose to pair one. An update keeps the ones your
   sidebar already had. The choice is kept in `extensions.json` next to the state.
@@ -412,7 +413,7 @@ after a week).
   folded next time. Folded, it says how many pieces it holds, with a dot when one of
   them wants you (red for a failure or something waiting), so the projects get the
   room. Right-click a title for Ungroup, which removes the segment and keeps its
-  pieces in the one above. In the sidebar builder, a segment can be set to start
+  pieces in the one above. In Customize › Sidebar, a segment can be set to start
   folded or not to say what is inside; a new one is born titled and collapsible.
 - **Automations.** Scheduled shell commands or agent prompts per project.
 
@@ -429,9 +430,8 @@ only sums up what is chosen. It opens without a project too.
   sidebar, the workspace panel and the status line sit on the window itself, and the
   accent is kept for what needs you. Duplicate one to change its tint, background and
   accent; Arakun warns when text or the accent gets hard to read. Grays sets how bright
-  secondary text and borders are, and Diff colors how added and removed lines look. A
-  palette fits in one line (`arakun:palette/v1:…`): Export copies it and Import pastes
-  one. Reset colors goes back to Arakun Black, dark, and keeps your palettes. The mode,
+  secondary text and borders are, and Diff colors how added and removed lines look.
+  Reset colors goes back to Arakun Black, dark, and keeps your palettes. The mode,
   the choice and your palettes are kept in `palettes.json` next to the state.
 
   <img src="docs/screenshots/palettes.png" alt="The built-in palettes" width="520">
@@ -442,6 +442,27 @@ only sums up what is chosen. It opens without a project too.
   None, Default, Wide). The defaults (100%, 100%, 8 px) look as before and are kept in
   `palettes.json` too. Text size and Glass are here as well. Reset shape goes back to
   the defaults.
+- **Sidebar.** Start from a preset (Switcher, Focused, Developer, Notion, Icons,
+  Everything); it lays out the pieces and keeps the style you chose. Style (Card, Flush,
+  Floating), Rows, Width, Side, what Ctrl+B does, Counters and Shortcuts change the whole
+  sidebar. While this tab is open the sidebar is being arranged: it shows in full,
+  every segment opens as a list with its outline and title, and a click on a piece or a title selects it instead of
+  opening it. The tab then shows its options (name, emoji, folding, Fixed or Scroll,
+  Ungroup, remove) and chips to add a group, a link, a command, a title, a separator,
+  a spacer or what the sidebar does not hold yet, into the selected segment with a
+  click. The pieces among them (not Group, Link, Command or Title, which ask for more
+  first) can also be dragged onto the sidebar where they should go. Pieces and segment
+  titles drag into another order on the sidebar itself. The panel's header has undo
+  and redo for these changes. Done closes the panel, and "Customize sidebar…" in the
+  sidebar's right-click menu opens this tab. Reset sidebar goes back to the default
+  layout and width. The layout is kept in `sidebar.json`.
+- **Share a look.** Export… at the foot of the panel, on any tab, copies the colors,
+  the shape or the sidebar, the ones you tick, as one line (`arakun:look/v1:…`).
+  Import reads a look line and asks again which parts to use; the sidebar is off until
+  ticked, since it replaces the whole layout. A sidebar layout comes without its
+  commands, which run on a click: add those with Command…, where their text can be
+  read. Import also takes a palette line (`arakun:palette/v1:…`) or a sidebar layout
+  copied before looks existed.
 - **Design system.** The card at the foot of the panel opens the Design system tab:
   every color, type style and component, live, so a change can be judged on all of
   them at once.
@@ -946,7 +967,10 @@ The link is good for two minutes and pairs one device. There are two ways to use
   go idle, and their agents stop; a running turn is left alone) or to delete it: the
   server removes the worktree, everything in it and its sessions, and the branch too if
   you ask. A repository's main folder is never deleted. A phone paired with this app sees and works in the
-  servers' sessions too. Git, terminals and the file tree stay with this machine's folders.
+  servers' sessions too. A terminal in a server's environment is a shell in that folder
+  on the server, and the project commands from Settings run there too. It keeps running
+  while the connection is down and picks up where it was once it is back; one no app
+  follows for an hour is hung up. Git and the file tree stay with this machine's folders.
   Fork, compact, rewind and `/stage` in a server's session run on the server, with its
   agent and its git: a fork or a rewind opens as a new session there. "Continue with"
   is not available for a server's session yet. In the Marketplace, "Install on" picks a paired server: Discover then lists

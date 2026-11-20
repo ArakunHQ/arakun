@@ -304,6 +304,7 @@ dependencies = [
  "libc",
  "lyon_tessellation",
  "minisign-verify",
+ "polling",
  "pulldown-cmark",
  "qrcode",
  "raw-window-handle",
@@ -334,6 +335,7 @@ name = "arakun-server"
 version = "0.7.0"
 dependencies = [
  "aes-gcm",
+ "alacritty_terminal",
  "anyhow",
  "base64 0.23.1",
  "dunce",
@@ -344,6 +346,7 @@ dependencies = [
  "imagesize 0.15.0",
  "libc",
  "lyon_tessellation",
+ "polling",
  "pulldown-cmark",
  "qrcode",
  "ring",

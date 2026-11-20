@@ -117,6 +117,10 @@ pub enum ClientMsg {
         /// the model first. The environment remembers them, as the desktop does.
         #[serde(default)]
         settings: Vec<(String, String)>,
+        /// The folder the prompt was written in, when that is another: a
+        /// relative mention of a file there but not in `env` points there.
+        #[serde(default)]
+        mentions_from: Option<String>,
     },
     /// The model and reasoning a new session of `agent` in `env` would start with,
     /// and their choices.
@@ -259,6 +263,42 @@ pub enum ClientMsg {
     /// keeps its socket, so without this it would pass for someone watching.
     Visible {
         visible: bool,
+    },
+    /// A terminal in place `place`, under the id `term` the app picked: the
+    /// login shell there, running `run` first when it says one. Its output
+    /// follows as `term_output`, then `term_exit` once it ends.
+    TermOpen {
+        term: String,
+        place: String,
+        #[serde(default)]
+        run: Option<String>,
+        cols: u16,
+        rows: u16,
+    },
+    /// Follows terminal `term` again, from offset `from` of its output: what
+    /// the app missed while the connection was down.
+    TermAttach {
+        term: String,
+        from: u64,
+    },
+    /// Bytes typed into a terminal, base64.
+    TermInput {
+        term: String,
+        data: String,
+    },
+    TermResize {
+        term: String,
+        cols: u16,
+        rows: u16,
+    },
+    /// The app drew a terminal's output up to offset `at`: more may come.
+    TermSeen {
+        term: String,
+        at: u64,
+    },
+    /// Hangs a terminal up.
+    TermClose {
+        term: String,
     },
     Ping,
 }
@@ -1657,7 +1697,8 @@ mod tests {
                 env: "/w/app".into(),
                 agent: Some("claude".into()),
                 text: "hi".into(),
-                settings: vec![]
+                settings: vec![],
+                mentions_from: None,
             }
         );
         let without: ClientMsg = serde_json::from_str(
@@ -1670,9 +1711,18 @@ mod tests {
                 env: "/w/app".into(),
                 agent: None,
                 text: "hi".into(),
-                settings: vec![("modelId".into(), "m".into())]
+                settings: vec![("modelId".into(), "m".into())],
+                mentions_from: None,
             }
         );
+        let moved: ClientMsg = serde_json::from_str(
+            r#"{"type":"start","env":"/w/new","text":"hi","mentions_from":"/w/app"}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            moved,
+            ClientMsg::Start { mentions_from: Some(f), .. } if f == "/w/app"
+        ));
     }
 
     #[test]

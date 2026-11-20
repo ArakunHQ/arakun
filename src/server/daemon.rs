@@ -21,6 +21,7 @@ use gpui::{App, AppContext as _, Context, Entity, Global, Subscription, Task};
 use serde_json::json;
 
 use super::local::{self, Reply, Request};
+use super::pty::{self, Pty};
 use super::store::{self, Place, Record, Store};
 use crate::account::Account;
 use crate::agent::log::render_log;
@@ -48,6 +49,14 @@ const TAILSCALE_RETRY: Duration = Duration::from_secs(3);
 const TAILSCALE_RETRY_LATER: Duration = Duration::from_secs(15);
 const TAILSCALE_QUICK_TRIES: u32 = 20;
 const TAILSCALE_RECHECK: Duration = Duration::from_secs(60);
+/// How much of a terminal's output may be on its way to a device before it
+/// says it drew some: `yes` must not bury the connection.
+const TERM_WINDOW: u64 = 128 * 1024;
+/// The most one `term_output` carries.
+const TERM_CHUNK: usize = 32 * 1024;
+/// How long a terminal no device follows keeps running: through a laptop's
+/// sleep, but not forever once the app that opened it is gone.
+const TERM_ALONE: Duration = Duration::from_secs(60 * 60);
 
 /// The settings a device can pick: the model, then the reasoning (its choices
 /// depend on the model).
@@ -93,6 +102,26 @@ struct Live {
     dirty: bool,
     saved: Instant,
     _events: Subscription,
+}
+
+/// A terminal a device opened (`pty`), and the devices that follow it.
+struct Term {
+    pty: Pty,
+    place: PathBuf,
+    following: HashMap<ClientId, Follower>,
+    /// Since when no device follows it.
+    alone_since: Option<Instant>,
+}
+
+/// How far a device has a terminal's output.
+#[derive(Clone, Copy, Default)]
+struct Follower {
+    /// The offset sent up to.
+    sent: u64,
+    /// The offset it said it drew up to.
+    seen: u64,
+    /// It was told the terminal ended.
+    told_exit: bool,
 }
 
 struct Keep(#[allow(dead_code)] Entity<Daemon>);
@@ -158,6 +187,10 @@ pub struct Daemon {
     stopping: bool,
     /// The local socket, until the server stops.
     listening: Option<local::Listening>,
+    /// Terminals devices opened, by the id the device gave each.
+    terms: HashMap<String, Term>,
+    /// Hears a terminal's id when it printed or ended.
+    term_wake: mpsc::UnboundedSender<String>,
     _tasks: Vec<Task<()>>,
     _account: Subscription,
 }
@@ -680,6 +713,25 @@ impl Daemon {
                 }
             }
         }));
+        let (term_wake, mut term_woken) = mpsc::unbounded::<String>();
+        tasks.push(cx.spawn(async move |this, cx| {
+            while let Some(first) = term_woken.next().await {
+                let mut ids = vec![first];
+                while let Ok(id) = term_woken.try_recv() {
+                    if !ids.contains(&id) {
+                        ids.push(id);
+                    }
+                }
+                let sent = this.update(cx, |this, _| {
+                    for id in ids {
+                        this.term_flush(&id);
+                    }
+                });
+                if sent.is_err() {
+                    break;
+                }
+            }
+        }));
         tasks.push(cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(TICK).await;
@@ -751,6 +803,8 @@ impl Daemon {
             code: parts.code,
             stopping: false,
             listening: Some(parts.listening),
+            terms: HashMap::new(),
+            term_wake,
             _tasks: tasks,
             _account: account_events,
         }
@@ -1263,6 +1317,11 @@ impl Daemon {
             return;
         }
         self.last_read.trim();
+        // Dropping one hangs it up.
+        self.terms.retain(|_, t| {
+            t.alone_since
+                .is_none_or(|since| since.elapsed() < TERM_ALONE)
+        });
         self.read_meta(cx);
         self.sync_inbox(cx);
         let due: Vec<String> = self
@@ -1284,6 +1343,7 @@ impl Daemon {
         }
         self.stopping = true;
         eprintln!("arakun server: stopping");
+        self.terms.clear();
         let ids: Vec<String> = self.live.keys().cloned().collect();
         for id in ids {
             self.retire(&id, cx);
@@ -1311,6 +1371,94 @@ impl Daemon {
         }
         self.code.set(0);
         cx.quit();
+    }
+
+    // ---- terminals ----------------------------------------------------------------
+
+    /// Opens a terminal in `place` for `client`, which follows it from its start.
+    fn term_open(
+        &mut self,
+        client: ClientId,
+        term: String,
+        place: PathBuf,
+        run: Option<String>,
+        size: (u16, u16),
+    ) {
+        if self.terms.contains_key(&term) {
+            // Sent again after a drop: it is open already.
+            return;
+        }
+        let opened = self
+            .admit(&place)
+            .and_then(|()| match self.store.place(&place) {
+                Some(_) => Ok(()),
+                None => Err("that folder is not one of this server's".to_string()),
+            })
+            .and_then(|()| {
+                let command = run.as_deref().map(crate::platform::run_then_shell);
+                Pty::spawn(
+                    term.clone(),
+                    place.clone(),
+                    command,
+                    size,
+                    self.term_wake.clone(),
+                )
+                .map_err(|e| format!("could not start a shell in {}: {e}", place.display()))
+            });
+        match opened {
+            Ok(pty) => {
+                let following = HashMap::from([(client, Follower::default())]);
+                self.terms.insert(
+                    term,
+                    Term {
+                        pty,
+                        place,
+                        following,
+                        alone_since: None,
+                    },
+                );
+            }
+            Err(e) => {
+                eprintln!("arakun server: {e}");
+                self.transport.send(client, error_about("term_open", &e));
+                self.transport.send(client, term_exit(&term, None));
+            }
+        }
+    }
+
+    /// Hangs up the terminals in `place` or a folder in it, and tells their devices.
+    fn hang_up_terms_in(&mut self, place: &Path) {
+        let ids: Vec<String> = self
+            .terms
+            .iter()
+            .filter(|(_, t)| t.place.starts_with(place))
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in ids {
+            if let Some(t) = self.terms.remove(&id) {
+                for client in t.following.keys() {
+                    self.transport.send(*client, term_exit(&id, None));
+                }
+            }
+        }
+    }
+
+    /// Sends each device following terminal `id` what it has not had yet, as
+    /// far as its window goes, and that it ended once all of it went.
+    fn term_flush(&mut self, id: &str) {
+        let Some(t) = self.terms.get_mut(id) else {
+            return;
+        };
+        let out = t.pty.output();
+        for (client, f) in &mut t.following {
+            let (chunks, ended) = term_due(&out, f);
+            for (at, bytes) in chunks {
+                self.transport.send(*client, term_output(id, at, &bytes));
+            }
+            if let Some(code) = ended {
+                self.transport.send(*client, term_exit(id, code));
+            }
+        }
     }
 
     // ---- devices ----------------------------------------------------------------
@@ -1593,6 +1741,12 @@ impl Daemon {
                 self.hidden.remove(&id);
                 self.asked.retain(|_, c| *c != id);
                 self.rewinds.retain(|_, r| r.client != id);
+                // Its terminals keep running, for when it comes back.
+                for term in self.terms.values_mut() {
+                    if term.following.remove(&id).is_some() && term.following.is_empty() {
+                        term.alone_since = Some(Instant::now());
+                    }
+                }
             }
             // The device's sockets close on their own; `Disconnected` tidies the rest.
             Incoming::Paired | Incoming::Subscribed | Incoming::Unpaired => self.save_devices(),
@@ -1721,12 +1875,26 @@ impl Daemon {
                 agent,
                 text,
                 settings,
+                mentions_from,
             } => {
                 let path = PathBuf::from(env);
                 if let Err(e) = self.admit(&path) {
                     self.transport.send(client, error_about("start", &e));
                     return;
                 }
+                // A first prompt written in the main folder and started in a
+                // new worktree: a file it names that git did not check out
+                // there (untracked, ignored) is still found where it was
+                // written, as the app does with its own worktrees. Only from
+                // one of this server's folders.
+                let text = match mentions_from.map(PathBuf::from) {
+                    Some(from)
+                        if self.admit(&from).is_ok() && self.store.place(&from).is_some() =>
+                    {
+                        agent::attach::move_mentions(&text, &from, &path)
+                    }
+                    _ => text,
+                };
                 let Some(place) = self.store.place_mut(&path) else {
                     // Said to be about the start: the app waits for its answer.
                     self.transport
@@ -1928,6 +2096,55 @@ impl Daemon {
                     self.transport.send(client, frame);
                 }
             }
+            ClientMsg::TermOpen {
+                term,
+                place,
+                run,
+                cols,
+                rows,
+            } => self.term_open(client, term, PathBuf::from(place), run, (cols, rows)),
+            ClientMsg::TermAttach { term, from } => {
+                let Some(t) = self.terms.get_mut(&term) else {
+                    // The server started again since, or it was hung up.
+                    self.transport.send(client, term_exit(&term, None));
+                    return;
+                };
+                t.alone_since = None;
+                t.following.insert(
+                    client,
+                    Follower {
+                        sent: from,
+                        seen: from,
+                        told_exit: false,
+                    },
+                );
+                self.term_flush(&term);
+            }
+            ClientMsg::TermInput { term, data } => {
+                use base64::Engine as _;
+                let bytes = base64::engine::general_purpose::STANDARD.decode(data);
+                if let (Some(t), Ok(bytes)) = (self.terms.get(&term), bytes) {
+                    t.pty.write(bytes);
+                }
+            }
+            ClientMsg::TermResize { term, cols, rows } => {
+                if let Some(t) = self.terms.get(&term) {
+                    t.pty.resize(cols, rows);
+                }
+            }
+            ClientMsg::TermSeen { term, at } => {
+                if let Some(f) = self
+                    .terms
+                    .get_mut(&term)
+                    .and_then(|t| t.following.get_mut(&client))
+                {
+                    f.seen = f.seen.max(at).min(f.sent);
+                }
+                self.term_flush(&term);
+            }
+            ClientMsg::TermClose { term } => {
+                self.terms.remove(&term);
+            }
             ClientMsg::Usage => {
                 // Fresh numbers follow through `usage_changed` once the reads land.
                 // Claude's are read here, off the main thread: there is no Usage
@@ -2060,14 +2277,22 @@ impl Daemon {
                     let made = cx
                         .background_executor()
                         .spawn(async move {
-                            let path = add_worktree(&from, &branch)?;
-                            let meta = PlaceMeta::read(&path);
-                            Ok((path, meta))
+                            // Git makes no worktree of a repository with no
+                            // commits yet. None says so.
+                            if !has_commits(&from) {
+                                return None;
+                            }
+                            Some(add_worktree(&from, &branch).map(|path| {
+                                let meta = PlaceMeta::read(&path);
+                                (path, meta)
+                            }))
                         })
                         .await;
                     // The new folder starts with the agent of the one it came from.
-                    let _ = this.update(cx, |this, cx| {
-                        this.place_added_with(client, made, agent, true, cx)
+                    let _ = this.update(cx, |this, cx| match made {
+                        Some(made) => this.place_added_with(client, made, agent, true, cx),
+                        // The app starts its first prompt in that folder then.
+                        None => this.transport.send(client, no_commits()),
                     });
                 })
                 .detach();
@@ -2136,15 +2361,32 @@ impl Daemon {
                 cx.spawn(async move |this, cx| {
                     let p = path.clone();
                     // Git's files are read to the side, as every place's are.
-                    let done = cx
+                    let checked = cx
                         .background_executor()
                         .spawn(async move {
                             removable(&p)?;
                             let branch = delete_branch.then(|| store::branch(&p)).flatten();
                             branch_agreed(branch.as_deref(), confirmed.as_deref())?;
-                            remove_worktree(&p, branch.as_deref())
+                            Ok::<_, String>(branch)
                         })
                         .await;
+                    let done = match checked {
+                        Ok(branch) => {
+                            // A shell there would hold the folder open. Only
+                            // now: a refused deletion keeps its terminals.
+                            let hung_up = this.update(cx, |this, _| {
+                                this.hang_up_terms_in(&path);
+                            });
+                            if hung_up.is_err() {
+                                return;
+                            }
+                            let p = path.clone();
+                            cx.background_executor()
+                                .spawn(async move { remove_worktree(&p, branch.as_deref()) })
+                                .await
+                        }
+                        Err(e) => Err(e),
+                    };
                     let _ = this.update(cx, |this, cx| {
                         this.deleting.remove(&path);
                         // The folder is gone even when its branch stayed.
@@ -2318,6 +2560,7 @@ impl Daemon {
     /// which have no folder to go on in, and so do places inside it. Says
     /// whether the list was saved: if not, a restart brings the place back.
     fn forget_place(&mut self, place: &Path, cx: &mut Context<Self>) -> std::io::Result<()> {
+        self.hang_up_terms_in(place);
         let ids: Vec<String> = self
             .store
             .sessions
@@ -3192,6 +3435,17 @@ fn place_failed(message: &str) -> String {
     json!({ "type": "place_failed", "message": message }).to_string()
 }
 
+/// A new environment refused because its repository has no commits yet.
+/// `no_commits` lets the app start a first prompt in the folder instead.
+fn no_commits() -> String {
+    json!({
+        "type": "place_failed",
+        "message": "That repository has no commits yet, so no worktree can be made of it.",
+        "no_commits": true,
+    })
+    .to_string()
+}
+
 /// Makes `path` a place in `store`, saved. A place that is there already is
 /// saved too: an earlier save may have failed, and it would be gone at the
 /// next start. On a failed save, a place this added goes again. A new place
@@ -3419,6 +3673,14 @@ fn git(dir: &Path) -> std::process::Command {
     git
 }
 
+/// Whether `dir`'s HEAD names a commit. When git cannot tell, true: making
+/// the worktree then says what is wrong.
+fn has_commits(dir: &Path) -> bool {
+    // `--verify --quiet` exits 1, silently, only when HEAD names no commit.
+    local_output(git(dir).args(["rev-parse", "--verify", "--quiet", "HEAD"]))
+        .map_or(true, |out| out.status.code() != Some(1))
+}
+
 /// Runs git on the repository's files only; its last words when it fails.
 fn run_git(cmd: &mut std::process::Command) -> Result<(), String> {
     let out = local_output(cmd).map_err(|e| format!("could not run git: {e}"))?;
@@ -3443,6 +3705,50 @@ fn local_output(cmd: &mut std::process::Command) -> std::io::Result<std::process
 /// What `run_bounded` says when git ran out of `limit`.
 fn took_too_long(limit: Duration) -> String {
     format!("git took longer than {} seconds", limit.as_secs())
+}
+
+/// Output from an offset, and how a terminal ended (its code when it had one).
+type Due = (Vec<(u64, Vec<u8>)>, Option<Option<i32>>);
+
+/// What a device following a terminal is due now: output from where it is,
+/// as far as its window goes, and the exit once all of it went. `f` moves on
+/// past what is returned.
+fn term_due(out: &pty::Output, f: &mut Follower) -> Due {
+    let mut chunks = Vec::new();
+    loop {
+        let room = TERM_WINDOW.saturating_sub(f.sent - f.seen);
+        if room == 0 {
+            break;
+        }
+        let (at, bytes) = out.since(f.sent, TERM_CHUNK.min(room as usize));
+        if bytes.is_empty() {
+            break;
+        }
+        // What fell out of the kept output never comes: it counts as seen.
+        f.seen += at - f.sent;
+        f.sent = at + bytes.len() as u64;
+        chunks.push((at, bytes));
+    }
+    let ended = match out.exit {
+        Some(code) if f.sent >= out.end() && !f.told_exit => {
+            f.told_exit = true;
+            Some(code)
+        }
+        _ => None,
+    };
+    (chunks, ended)
+}
+
+/// A piece of a terminal's output, from offset `at`.
+fn term_output(term: &str, at: u64, bytes: &[u8]) -> String {
+    use base64::Engine as _;
+    let data = base64::engine::general_purpose::STANDARD.encode(bytes);
+    json!({ "type": "term_output", "term": term, "at": at, "data": data }).to_string()
+}
+
+/// A terminal ended: `code` is its shell's, when it had one.
+fn term_exit(term: &str, code: Option<i32>) -> String {
+    json!({ "type": "term_exit", "term": term, "code": code }).to_string()
 }
 
 /// An error that says which request it answers, for a client that waits on
@@ -4129,6 +4435,20 @@ mod tests {
             "first",
         ]))
         .unwrap();
+    }
+
+    #[test]
+    fn a_repository_with_no_commits_is_told_apart() {
+        let tmp = scratch("empty");
+        let app = tmp.join("app");
+        std::fs::create_dir(&app).unwrap();
+        run_git(git(&app).args(["init", "-q"])).unwrap();
+        assert!(!has_commits(&app));
+        let made = tmp.join("made");
+        std::fs::create_dir(&made).unwrap();
+        repo_at(&made, &[]);
+        assert!(has_commits(&made));
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
@@ -5020,5 +5340,49 @@ hB4c5Ctl3gH87t2sYgahkwsrsgaPmTiVB9bYTD52y70dAtxVNNOhFsNf\n\
         assert!(!b.exists());
         writer.finish();
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_terminal_s_output_waits_for_the_device_to_draw_it() {
+        let mut out = pty::Output::default();
+        out.push(&vec![b'y'; TERM_WINDOW as usize * 2]);
+        let mut f = Follower::default();
+
+        // One window goes out, in chunks, and then nothing until it is drawn.
+        let (chunks, ended) = term_due(&out, &mut f);
+        assert_eq!(chunks.len(), TERM_WINDOW as usize / TERM_CHUNK);
+        assert_eq!(chunks[1].0, TERM_CHUNK as u64);
+        assert_eq!(f.sent, TERM_WINDOW);
+        assert_eq!(ended, None);
+        assert!(term_due(&out, &mut f).0.is_empty());
+
+        // Drawn up to half: half a window more.
+        f.seen = TERM_WINDOW / 2;
+        let (chunks, _) = term_due(&out, &mut f);
+        assert_eq!(
+            chunks.iter().map(|(_, b)| b.len() as u64).sum::<u64>(),
+            TERM_WINDOW / 2
+        );
+
+        // An exit waits for the output still held back.
+        out.exit = Some(Some(0));
+        assert_eq!(term_due(&out, &mut f), (Vec::new(), None));
+        f.seen = f.sent;
+        let (chunks, ended) = term_due(&out, &mut f);
+        assert_eq!(f.sent, out.end());
+        assert!(!chunks.is_empty());
+        assert_eq!(ended, Some(Some(0)));
+        // Told once.
+        assert_eq!(term_due(&out, &mut f).1, None);
+    }
+
+    #[test]
+    fn a_device_that_fell_behind_skips_what_was_let_go() {
+        let mut out = pty::Output::default();
+        out.push(&vec![b'x'; pty::KEPT + 100]);
+        let mut f = Follower::default();
+        let (chunks, _) = term_due(&out, &mut f);
+        assert_eq!(chunks[0].0, 100);
+        assert_eq!(f.sent - f.seen, TERM_WINDOW);
     }
 }

@@ -147,8 +147,6 @@ pub enum TabKind {
     Usage,
     /// The design system's tokens and components (`gallery_view`).
     Gallery,
-    /// Where the sidebar is arranged (`shell::sidebar_builder`).
-    SidebarBuilder,
     /// Isometric illustrations playing live (`iso_view`).
     Isometric,
     /// A design canvas's HTML frames rendered natively (`canvas_view`).

@@ -637,6 +637,7 @@ impl Shell {
                 agent,
                 text,
                 settings,
+                ..
             } => {
                 let path = PathBuf::from(env);
                 let Some(found) = self.find_env(&path) else {
@@ -656,7 +657,8 @@ impl Shell {
                 // and says its id when it has one.
                 if found.remote.is_some() {
                     let by = super::servers::Asker::Phone(client);
-                    let Some(reference) = self.servers_start(&path, agent, &text, &settings, by)
+                    let Some(reference) =
+                        self.servers_start(&path, agent, &text, &settings, by, None)
                     else {
                         self.phone_send(client, wire::error("that server is not connected"));
                         return;
@@ -668,6 +670,7 @@ impl Shell {
                         text,
                         agent: agent.kind(),
                         note: None,
+                        mentions_from: None,
                         desktop: false,
                     };
                     self.servers_first_prompt(reference, first);
@@ -877,6 +880,15 @@ impl Shell {
                     "fork, compact, rewind or stage this computer's sessions in Arakun itself",
                 ),
             ),
+            // What the app asks of a server for its terminals.
+            ClientMsg::TermOpen { .. }
+            | ClientMsg::TermAttach { .. }
+            | ClientMsg::TermInput { .. }
+            | ClientMsg::TermResize { .. }
+            | ClientMsg::TermSeen { .. }
+            | ClientMsg::TermClose { .. } => {
+                self.phone_send(client, wire::error("terminals open on servers only"));
+            }
             ClientMsg::SettleEnv { .. } | ClientMsg::DeleteEnv { .. } => self.phone_send(
                 client,
                 wire::error("settle or delete this computer's environments in Arakun itself"),

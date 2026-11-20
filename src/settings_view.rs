@@ -189,7 +189,7 @@ impl Section {
         match self {
             Section::General => "How Arakun behaves when nothing is going on.",
             Section::Appearance => {
-                "Zoom here. Colors and shape are edited beside the app, not in this dialog."
+                "Zoom here. Colors, shape and the sidebar are edited beside the app, not in this dialog."
             }
             Section::Project => "The open project's commands, on this computer.",
             Section::Branches => {
@@ -1711,6 +1711,7 @@ impl SettingsDialog {
             group(vec![
                 row("Colors", "", value(self.look.colors.clone())).into_any_element(),
                 row("Shape", "", value(self.look.shape.clone())).into_any_element(),
+                row("Sidebar", "", value(self.look.sidebar.clone())).into_any_element(),
             ]),
             open,
             titled("Window", vec![zoom]),

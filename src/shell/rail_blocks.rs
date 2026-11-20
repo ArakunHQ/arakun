@@ -5,6 +5,7 @@ use std::sync::OnceLock;
 
 use gpui::Point;
 
+use super::sidebar_builder::BuilderSel;
 use super::*;
 use crate::sidebar::{BadgeMode, Collapse, Item, Mode, Piece, Pin, Section, TitleAction, View};
 
@@ -20,10 +21,6 @@ pub(super) struct Badge {
 }
 
 impl Badge {
-    pub(super) fn count(self) -> usize {
-        self.count
-    }
-
     fn color(self) -> Hsla {
         self.color.unwrap_or_else(theme::text_faint)
     }
@@ -150,7 +147,10 @@ pub(super) fn avatar(name: &str, size: f32) -> gpui::Div {
 impl Shell {
     /// Narrowed to icons: the rail's collapse is Icons and it is closed.
     pub(super) fn rail_narrow(&self) -> bool {
-        self.sidebar.style.collapse == Collapse::Icons && !self.rail_open && self.has_projects()
+        self.sidebar.style.collapse == Collapse::Icons
+            && !self.rail_open
+            && self.has_projects()
+            && !self.arranging()
     }
 
     pub(super) fn view_badge(&self, view: View, cx: &mut Context<Self>) -> Option<Badge> {
@@ -362,7 +362,10 @@ impl Shell {
             );
         };
         for (si, section) in self.sidebar.sections.iter().enumerate() {
-            if (narrow && section.hide_in_icons) || self.rail_section_hidden(section, cx) {
+            // Arranging, no segment hides: its title is how it is reached.
+            if (narrow && section.hide_in_icons)
+                || (!self.arranging() && self.rail_section_hidden(section, cx))
+            {
                 continue;
             }
             let el = self.render_section(si, section, cx);
@@ -424,9 +427,11 @@ impl Shell {
 
     fn render_section(&self, si: usize, section: &Section, cx: &mut Context<Self>) -> AnyElement {
         let narrow = self.rail_narrow();
-        let folded = section.collapsible && section.collapsed && !narrow;
+        let arranging = self.arranging();
+        let folded = section.collapsible && section.collapsed && !narrow && !arranging;
         // Narrowed, the rail is a column of icons already.
-        let in_row = section.row && !narrow;
+        // Arranging, a row of icons is a list too: every piece can be reached.
+        let in_row = section.row && !narrow && !arranging;
         let mut body = div()
             .flex()
             .when(in_row, |d| d.flex_row().flex_wrap().items_center())
@@ -435,7 +440,7 @@ impl Shell {
             .px(crate::ui::sp(8.));
         if !folded {
             // Narrowed or in a row, every piece is one icon, so Inbox keeps its own.
-            let pair = if narrow || in_row {
+            let pair = if narrow || in_row || arranging {
                 None
             } else {
                 section.inbox_by_search()
@@ -455,15 +460,26 @@ impl Shell {
                     }
                     _ => self.render_item((si, ii), item, in_row, cx),
                 };
+                // Arranging, a piece that draws nothing now (empty, quiet)
+                // still gets a row, so it can be selected and moved.
+                let el = el.or_else(|| {
+                    (arranging && self.rail_shows(&item.piece, cx))
+                        .then(|| self.arrange_placeholder(item))
+                });
                 if let Some(el) = el {
-                    body = body.child(el);
+                    body = body.child(if arranging {
+                        self.arrange_target(BuilderSel::Item((si, ii)), el, cx)
+                    } else {
+                        el
+                    });
                 }
             }
         }
         // Folded, the segment still says what it holds and whether something
         // inside wants the user.
         let peek = folded.then(|| self.folded_peek(section, cx)).flatten();
-        let title = (section.show_title && !narrow).then(|| {
+        // Arranging, every segment shows its title so it can be selected.
+        let title = ((section.show_title || arranging) && !narrow).then(|| {
             let collapsible = section.collapsible;
             div()
                 .id(("rail-section", si))
@@ -551,14 +567,37 @@ impl Shell {
                     }),
                 )
         });
+        let title = title.map(|t| {
+            if arranging {
+                self.arrange_target(BuilderSel::Section(si), t.into_any_element(), cx)
+            } else {
+                t.into_any_element()
+            }
+        });
+        let end = (arranging && !folded).then(|| self.arrange_end(si, section.items.len(), cx));
+        let selected = arranging && self.builder.sel == Some(BuilderSel::Section(si));
         div()
             .flex()
             .flex_col()
             .py(crate::ui::sp(4.))
             // Space, not a line, between sections.
             .when(section.line_above, |d| d.mt(crate::ui::sp(10.)))
+            // Arranging, each segment shows where it starts and ends.
+            .when(arranging, |d| {
+                d.mx(crate::ui::sp(4.))
+                    .my(crate::ui::sp(2.))
+                    .rounded(crate::ui::rad(10.))
+                    .border_1()
+                    .border_dashed()
+                    .border_color(if selected {
+                        theme::active()
+                    } else {
+                        theme::border()
+                    })
+            })
             .children(title)
             .child(body)
+            .children(end)
             .into_any_element()
     }
 
@@ -579,7 +618,12 @@ impl Shell {
             Piece::View { view } if style.badges => self.view_badge(*view, cx),
             _ => None,
         };
-        if item.only_when_busy && badge.is_none() && matches!(item.piece, Piece::View { .. }) {
+        // Arranging, a quiet piece still shows, so it can be selected and moved.
+        if item.only_when_busy
+            && badge.is_none()
+            && matches!(item.piece, Piece::View { .. })
+            && !self.arranging()
+        {
             return None;
         }
         let name = item.name();
@@ -865,7 +909,7 @@ impl Shell {
         } else {
             None
         };
-        if item.only_when_busy && badge.is_none() {
+        if item.only_when_busy && badge.is_none() && !self.arranging() {
             return None;
         }
         let open = matches!(
@@ -1057,7 +1101,7 @@ impl Shell {
                 )
                 .on_click(cx.listener(|this, _, window, cx| {
                     this.menu = None;
-                    this.open_sidebar_builder(window, cx)
+                    this.open_customize(CustomizeTab::Sidebar, window, cx)
                 })),
             )
             .into_any_element()
@@ -1126,7 +1170,7 @@ impl Shell {
                 )
                 .on_click(cx.listener(|this, _, window, cx| {
                     this.menu = None;
-                    this.open_sidebar_builder(window, cx)
+                    this.open_customize(CustomizeTab::Sidebar, window, cx)
                 })),
             )
             .into_any_element()

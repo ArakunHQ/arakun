@@ -4,8 +4,47 @@
 use super::*;
 
 impl Shell {
+    /// The sidebar as Customize's Sidebar tab shows it.
+    fn rail_look(&self) -> crate::customize_view::RailLook {
+        crate::customize_view::RailLook {
+            style: self.sidebar.style,
+            width: self.rail_w,
+            preset: crate::sidebar::Preset::ALL
+                .into_iter()
+                .find(|p| p.layout().sections == self.sidebar.sections),
+            can_undo: !self.builder.undo.is_empty(),
+            can_redo: !self.builder.redo.is_empty(),
+            note: self.builder.flash.clone(),
+            summary: {
+                let pieces = self
+                    .sidebar
+                    .sections
+                    .iter()
+                    .flat_map(|s| &s.items)
+                    .filter(|i| !i.piece.is_decoration())
+                    .count();
+                let style = match self.sidebar.style.variant {
+                    crate::sidebar::Variant::Card => "Card",
+                    crate::sidebar::Variant::Flush => "Flush",
+                    crate::sidebar::Variant::Floating => "Floating",
+                };
+                let side = match self.sidebar.style.side {
+                    crate::sidebar::Side::Left => "left",
+                    crate::sidebar::Side::Right => "right",
+                };
+                format!(
+                    "{pieces} pieces in {} segments, {style}, on the {side}",
+                    self.sidebar.sections.len()
+                )
+                .into()
+            },
+        }
+    }
+
     pub(super) fn render_panel(&self, cx: &mut Context<Self>) -> AnyElement {
         if let Some((view, _)) = &self.customize {
+            let look = self.rail_look();
+            view.update(cx, |v, cx| v.sync_rail(look, cx));
             return self
                 .side_card()
                 .id("customize-card")

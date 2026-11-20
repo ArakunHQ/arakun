@@ -321,8 +321,9 @@ sees the project's skills.
   change in the open project, and leaves git and GitHub to you), "Close issue" and, on
   a closed one, "Reopen issue"; both ask a second time. In the box, `/work`, `/close`
   and `/reopen` do the same.
-- **Alerts and filters.** Review requests, mentions and assignments raise an alert; so
-  does anything new in the organizations and repositories on your watch list. Click the
+- **Alerts and filters.** A pending review request alerts once per pull request.
+  New activity in the thread does not ask for the same review again. Mentions,
+  assignments and other activity from watched repositories still alert as before. Click the
   repository line above the verdict to show only some organizations or repositories; the rest
   doesn't show, count or alert. "Mark all read" marks only what that choice shows.
 - **Pull request agent.** With a pull request agent on a server of your own

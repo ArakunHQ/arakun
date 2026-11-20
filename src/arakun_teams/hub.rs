@@ -9,6 +9,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use futures::StreamExt as _;
@@ -245,6 +246,9 @@ pub struct Hub {
     /// The team the last "Start a team" made, once the server named it, even
     /// when setting it up failed after: the Team tab opens that one.
     pub created: Option<String>,
+    /// Bumped by every "They don't". A key upload planned before it stops
+    /// before its next request, so a failed check reaches work in flight.
+    doubts: Arc<AtomicU64>,
     events: socket::Events,
     /// Bumped when the account changes, so late answers for the last one are dropped.
     generation: u64,
@@ -313,6 +317,7 @@ impl Hub {
             inviters: HashMap::new(),
             joined: HashSet::new(),
             created: None,
+            doubts: Arc::default(),
         };
         hub.account_changed(cx);
         hub
@@ -343,6 +348,9 @@ impl Hub {
 
     /// Marks a device checked ("They match"), or not ("They don't").
     pub fn set_verified(&mut self, device_id: &str, yes: bool, cx: &mut Context<Self>) {
+        if !yes {
+            self.doubts.fetch_add(1, Ordering::SeqCst);
+        }
         if self.kept.set_verified(device_id, yes) {
             self.save(cx);
         }
@@ -890,12 +898,20 @@ impl Hub {
         self.created = None;
         let me = self.github_id();
         let pinned = self.kept.roots.get(&me).cloned();
+        let doubted: HashSet<String> = self.kept.mismatched_ids().cloned().collect();
         self.run(
             cx,
             move |net| {
                 let call = net.call();
                 let rows = call.devices(me)?;
                 let mine = trusted_devices(me, &rows);
+                if mine.iter().any(|d| doubted.contains(&d.device_id)) {
+                    return Err(ApiError::Status(
+                        0,
+                        "One of your devices is marked as not matching. Compare it again first."
+                            .into(),
+                    ));
+                }
                 if mine.len() != rows.len()
                     || !mine.iter().any(|d| {
                         d.device_id == net.local.device.id()
@@ -933,12 +949,24 @@ impl Hub {
         let roster = self.roster_version;
         self.applied_roster = roster;
         let key = crypto::new_team_key();
+        if mine.iter().any(|d| self.kept.mismatched(&d.device_id)) {
+            // The team exists; it gets no key until the check is cleared.
+            self.busy.remove("create-team");
+            self.error = Some(
+                "One of your devices is marked as not matching, so the team got no key.".into(),
+            );
+            self.refresh(cx);
+            return;
+        }
+        let doubts = self.doubts.clone();
+        let planned = doubts.load(Ordering::SeqCst);
         self.run(
             cx,
             {
                 let team = team.clone();
                 move |net| {
                     let batch = seal_all(net, &team, &[(1, key)], &mine)?;
+                    still_trusted(&doubts, planned)?;
                     net.call().put_envelopes(&team, 0, 1, &batch)?;
                     Ok(batch)
                 }
@@ -1051,12 +1079,15 @@ impl Hub {
         let batch: Vec<_> = recipients(t)
             .map(|(m, d)| KeyDelivery::new(m, d, epoch, key))
             .collect();
+        let doubts = self.doubts.clone();
+        let planned = doubts.load(Ordering::SeqCst);
         self.run(
             cx,
             {
                 let team_id = team_id.clone();
                 move |net| {
                     upload_batch(net, &team_id, batch, |envelopes| {
+                        still_trusted(&doubts, planned)?;
                         net.call()
                             .put_envelopes(&team_id, keyed_epoch, epoch, envelopes)
                     })
@@ -1111,12 +1142,15 @@ impl Hub {
             return;
         }
         let team_id = team_id.to_string();
+        let doubts = self.doubts.clone();
+        let planned = doubts.load(Ordering::SeqCst);
         self.run(
             cx,
             {
                 let team_id = team_id.clone();
                 move |net| {
                     upload_batch(net, &team_id, batch, |envelopes| {
+                        still_trusted(&doubts, planned)?;
                         net.call()
                             .put_envelopes(&team_id, keyed_epoch, keyed_epoch, envelopes)
                     })
@@ -1263,6 +1297,8 @@ impl Hub {
         self.info = None;
         let team_id = team_id.to_string();
         let login = p.login.clone();
+        let doubts = self.doubts.clone();
+        let planned = doubts.load(Ordering::SeqCst);
         self.run(
             cx,
             {
@@ -1274,14 +1310,15 @@ impl Hub {
                     let parts = grant_parts(&keys, trusted.len());
                     let (newest, older) = parts.split_first().expect("keys is not empty");
                     let mut given = seal_all(net, &team_id, newest, &trusted)?;
+                    still_trusted(&doubts, planned)?;
                     net.call()
                         .approve(&team_id, github_id, &p.request_id, &given)?;
                     for part in older {
                         let batch = seal_all(net, &team_id, part, &trusted)?;
-                        if let Err(e) =
+                        if let Err(e) = still_trusted(&doubts, planned).and_then(|()| {
                             net.call()
                                 .put_envelopes(&team_id, keyed_epoch, team_epoch, &batch)
-                        {
+                        }) {
                             return Ok((given, Some(e)));
                         }
                         given.extend(batch);
@@ -2028,6 +2065,19 @@ fn next_backfill(kept: &Kept, t: &TeamState, mine: &str) -> Vec<KeyDelivery> {
     batch
 }
 
+/// Fails when the user said "They don't" to a device after the upload was
+/// planned. A request already sent is not undone; the next one doesn't go.
+fn still_trusted(doubts: &AtomicU64, planned: u64) -> Result<(), ApiError> {
+    if doubts.load(Ordering::SeqCst) == planned {
+        Ok(())
+    } else {
+        Err(ApiError::Status(
+            0,
+            "A device check failed meanwhile, so key delivery stopped.".into(),
+        ))
+    }
+}
+
 fn upload_batch(
     net: &Net,
     team_id: &str,
@@ -2311,6 +2361,16 @@ mod tests {
             vec![("A".to_string(), "general".to_string())]
         );
         assert!(stale_names(&t.detail, &read, 1).is_empty());
+    }
+
+    #[test]
+    fn a_failed_check_stops_uploads_planned_before_it() {
+        let doubts = AtomicU64::new(0);
+        let planned = doubts.load(Ordering::SeqCst);
+        assert!(still_trusted(&doubts, planned).is_ok());
+        doubts.fetch_add(1, Ordering::SeqCst);
+        assert!(still_trusted(&doubts, planned).is_err());
+        assert!(still_trusted(&doubts, doubts.load(Ordering::SeqCst)).is_ok());
     }
 
     fn delivery_team(devices: Vec<DeviceRow>, epoch: u64) -> TeamState {

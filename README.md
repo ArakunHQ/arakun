@@ -517,7 +517,8 @@ after a week).
   click the people at the top right for the team's page, which invites people by
   GitHub login and removes members. "N waiting" at the top opens the people who
   accepted an invite, each device with its code: approving hands the team key to their
-  verified devices from yours. The server still supplies the membership and roles; it
+  devices whose endorsement chain checks out, from yours. It doesn't wait for
+  **Compare**, but a device marked as not matching is refused. The server still supplies the membership and roles; it
   is not an independent proof of who belongs to the team. Removing someone rotates
   the key for the remaining members, not messages already seen. Hover a message and
   press the reply arrow to answer it: the quote shows above your message, and clicking
@@ -530,10 +531,12 @@ after a week).
   it happened, with **Compare**: both devices show six groups of five digits (and a
   QR code of them), made from the two devices' signing keys. Read them to each other;
   **They match** marks the device checked on this device only (kept in the keys file below).
+  **They don't** is kept too: that person gets no team key from this device until a
+  later comparison matches.
 
   A second device of yours shows "Approve this device from your other device" and a
   code: on a device that already has Teams, click the team's name › **Your devices**
-  and paste it. The team keys and trusted device roots are kept in
+  (or **Your devices** at the top, on a device not in a team yet) and paste it. The team keys and trusted device roots are kept in
   `teams-<account>-<scope>.keys` next to the state, sealed with a key from the keyring. The scope identifies
   the server and profile. A lost cache can recover only the key envelopes the server
   still has for this device, not its local trust records. Signing out discards

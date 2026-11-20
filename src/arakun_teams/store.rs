@@ -606,6 +606,10 @@ impl Kept {
         self.mismatched.contains(device_id)
     }
 
+    pub fn mismatched_ids(&self) -> impl Iterator<Item = &String> {
+        self.mismatched.iter()
+    }
+
     /// Marks a device as matching ("They match") or not ("They don't");
     /// whether that changed anything.
     pub fn set_verified(&mut self, device_id: &str, yes: bool) -> bool {

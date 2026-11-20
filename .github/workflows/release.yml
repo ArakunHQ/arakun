@@ -133,7 +133,8 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
   # Cargo.toml keeps line tables in release builds (debug = 1); the published
-  # binaries leave them out, which keeps the archives small and skips the .pdb.
+  # binaries leave them out, which keeps the archives small. Windows still
+  # ships a .pdb with function names only (see its cargo build step).
   CARGO_PROFILE_RELEASE_DEBUG: 0
   # Lets the binaries update themselves (src/update.rs). A build from source
   # never does, since a release would take its browser away.
@@ -576,9 +577,13 @@ jobs:
       # gpui compiles its HLSL shaders with fxc.exe from the Windows SDK in
       # release builds; the runner image ships the SDK (GPUI_FXC_PATH overrides).
       # build.rs copies the CEF runtime from CEF_PATH next to arakun.exe.
+      # Without debug info Cargo strips by default, and the linker then writes no
+      # .pdb. Kept, the .pdb holds the function names that crash reports read
+      # (src/telemetry.rs); a binary alone has only those of Windows' own DLLs.
       - name: cargo build
         env:
           CEF_PATH: ${{ runner.temp }}/cef
+          CARGO_PROFILE_RELEASE_STRIP: none
         run: cargo build --release --locked --target x86_64-pc-windows-msvc
 
       - name: Package
@@ -597,6 +602,8 @@ jobs:
           New-Item -ItemType Directory -Force -Path "$out/locales" | Out-Null
           # arakun-helper.exe starts CEF's child processes without a console each.
           Copy-Item "$release/arakun.exe", "$release/arakun-helper.exe" $out
+          # Crash reports find it next to arakun.exe; the updater carries it along.
+          Copy-Item "$release/arakun.pdb" $out
           # The CEF runtime build.rs copied: DLLs, .pak, .bin, .dat and the
           # SwiftShader manifest, not the import libraries. The two locales
           # src/browser/runtime.rs picks from, as on Linux.
@@ -616,7 +623,7 @@ jobs:
           & $exe --version
           if ($LASTEXITCODE -ne 0) { throw "arakun.exe --version exited with $LASTEXITCODE" }
           $dir = Split-Path $exe
-          foreach ($f in 'arakun-helper.exe', 'libcef.dll', 'icudtl.dat', 'resources.pak', 'locales/en-US.pak') {
+          foreach ($f in 'arakun-helper.exe', 'arakun.pdb', 'libcef.dll', 'icudtl.dat', 'resources.pak', 'locales/en-US.pak') {
             if (-not (Test-Path (Join-Path $dir $f))) { throw "the archive has no $f" }
           }
 

@@ -35,6 +35,8 @@ mod git;
 mod git_call;
 #[path = "../../src/guard.rs"]
 mod guard;
+#[path = "../../src/poll.rs"]
+mod poll;
 #[path = "../../src/rotate.rs"]
 mod rotate;
 #[allow(dead_code)]

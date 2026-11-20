@@ -235,9 +235,6 @@ impl Shell {
                 TabKind::Gallery => icon("paint-board", 14.)
                     .text_color(theme::content())
                     .into_any_element(),
-                TabKind::SidebarBuilder => icon("layout-align-left", 14.)
-                    .text_color(theme::content())
-                    .into_any_element(),
                 TabKind::Isometric => icon("cube", 14.)
                     .text_color(theme::content())
                     .into_any_element(),

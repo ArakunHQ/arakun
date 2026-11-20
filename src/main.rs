@@ -54,6 +54,7 @@ mod iso_view;
 #[cfg(feature = "coderlabs")]
 mod lab;
 mod logos;
+mod look;
 mod mascot;
 mod memory;
 mod memory_view;

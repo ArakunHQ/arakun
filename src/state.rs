@@ -408,6 +408,9 @@ pub struct SessionState {
     pub continues: Vec<crate::model::Earlier>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub settled: bool,
+    /// It finished a turn the user has not looked at yet.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub unread: bool,
 }
 
 fn is_session(t: &Tab) -> bool {
@@ -590,6 +593,19 @@ pub fn resume_path() -> PathBuf {
 /// has its own first launch too.
 pub fn onboarding_path() -> PathBuf {
     file().with_extension("onboarding.json")
+}
+
+/// Held by the one Arakun that loads and saves this state; next to it, so a
+/// second Arakun with its own state (`ARAKUN_STATE`) runs beside it.
+pub fn lock_path() -> PathBuf {
+    lock_for(&file())
+}
+
+/// `state.json.lock`: the whole name, so `a.json` and `a.alt` get two locks.
+fn lock_for(state: &Path) -> PathBuf {
+    let mut name = state.as_os_str().to_owned();
+    name.push(".lock");
+    PathBuf::from(name)
 }
 
 /// Whether Arakun saved its state here before: not a first launch.
@@ -801,6 +817,7 @@ pub fn snapshot_with(
                                 auto_allow: s.auto_allow,
                                 continues: s.continues.clone(),
                                 settled: s.settled,
+                                unread: s.unread,
                             })
                             .collect(),
                         open: tabs_of(strip, e)
@@ -944,6 +961,7 @@ pub fn restore(state: State) -> (Vec<Project>, usize, Layout, TabStrip) {
                             session.auto_allow = s.auto_allow;
                             session.continues = s.continues;
                             session.settled = s.settled;
+                            session.unread = s.unread;
                             session.status = Status::Idle;
                             session
                         })
@@ -1770,6 +1788,18 @@ mod tests {
             uuid(),
         );
         assert_eq!(back.to_bounds(), gpui::WindowBounds::Windowed(plain));
+    }
+
+    #[test]
+    fn each_state_file_has_its_own_lock() {
+        assert_eq!(
+            lock_for(Path::new("/w/state.json")),
+            PathBuf::from("/w/state.json.lock")
+        );
+        assert_ne!(
+            lock_for(Path::new("/w/state.json")),
+            lock_for(Path::new("/w/state.alt"))
+        );
     }
 
     #[test]

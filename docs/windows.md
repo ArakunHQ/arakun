@@ -126,9 +126,10 @@ start `arakun-server serve` from Task Scheduler, with the trigger "At log on".
 | Sessions the startup clean-up has seen listed | `%LOCALAPPDATA%\arakun\state.json.seen`; with `ARAKUN_STATE` set, `<state file>.seen` next to it |
 | Branch naming agent and model (Settings › Branches) | `%LOCALAPPDATA%\arakun\branch-namer.json` |
 | Where links open (Settings › General) | `%LOCALAPPDATA%\arakun\open-links` |
-| Settle threads after merge (Settings › Branches), and the merges settled | `%LOCALAPPDATA%\arakun\settle-after-merge`; by default `%LOCALAPPDATA%\arakun\settled.json`, with `ARAKUN_STATE` set `settled.json` next to that state file |
+| Archive after merge (Settings › Branches), and the merges archived | `%LOCALAPPDATA%\arakun\settle-after-merge`; by default `%LOCALAPPDATA%\arakun\settled.json`, with `ARAKUN_STATE` set `settled.json` next to that state file |
 | Remove old environments (Settings › Branches) | `%LOCALAPPDATA%\arakun\env-cleanup` |
 | Control socket | `%LOCALAPPDATA%\arakun\control.sock` |
+| Lock held by the running Arakun (a second `arakun` hands off to it and exits) | `%LOCALAPPDATA%\arakun\state.json.lock`; with `ARAKUN_STATE` set, `<that file>.lock` next to it |
 | `arakun server`: its settings, sessions and socket | `%LOCALAPPDATA%\arakun\server\` |
 | Servers the app is paired with (Servers tab) | `%LOCALAPPDATA%\arakun\servers.json` |
 | What each paired server listed last | `%LOCALAPPDATA%\arakun\servers-inbox.json` |
@@ -158,6 +159,11 @@ Manager (Windows Credentials, Generic Credentials).
   `npm run typecheck && npm test` work the same; anything that is `sh` syntax does not.
 - **`arakun run` and project scripts** open their terminal in PowerShell, at
   *BelowNormal* priority, and print `[exit N]` when done, as on Linux.
+- **Time limits on `git` and `gh`:** the same as on Linux. Calls that only read the
+  repository may run for 60 s, calls to a remote for 2 min, and work you start that runs
+  hooks (commit, push, pull, merge, clone, adding a worktree) for 30 min. On Linux and
+  macOS a call past its limit gets 2 s to clean up before it is killed. Windows has no
+  such request, so there it is killed at once, and git may leave a lock file behind.
 - **Title bar:** Windows handles dragging and the minimize, maximize and close buttons as
   native system areas, not through Arakun's mouse events. The buttons look different too:
   on Windows each is 40 px wide, as tall as the title bar and square, after a thin line
@@ -291,7 +297,12 @@ Manager (Windows Credentials, Generic Credentials).
   `cargo build --release --no-default-features`.
 - **`LNK` errors about missing libraries:** the *Desktop development with C++* workload or
   the Windows SDK is not installed.
+- **A git command fails with `Unable to create '...\.git\index.lock': File exists`:**
+  a git call that ran past its time limit was killed before it could remove its lock
+  file. If no other git is running in that repository, delete the file the error names
+  (usually `.git\index.lock`, or a `.lock` file under `.git\refs\`) and try again.
 - **"Access denied (os error 5)" when opening a file:** Windows does not allow opening a
-  file that another process has locked. Arakun does not lock its own files; if it
-  happens, note which file it was and open an issue, since this is exactly the kind of
-  failure that only shows up on Windows.
+  file that another process has locked. The running Arakun locks only
+  `state.json.lock`, which nothing needs to read. If it happens with another file,
+  note which file it was and open an issue, since this is exactly the kind of failure
+  that only shows up on Windows.

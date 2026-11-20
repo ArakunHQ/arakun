@@ -77,8 +77,8 @@ copy of it, rename it back, and start a version that can read it.
   project's list below holds the rest, so nothing shows twice. Move or remove it from
   Customize › Sidebar.
 - **One session, one worktree.** **New session** at the top of the sidebar's list, or
-  `Ctrl+T`, gives a session its own worktree on a random branch, and the first prompt
-  names the branch. An open worktree is used only while it has no session yet; `Alt`+click
+  `Ctrl+T`, opens a composer at once and gives the session its own worktree on a random
+  branch when you send the first prompt, which names the branch. An open worktree is used only while it has no session yet; `Alt`+click
   on New session asks for the branch. A prompt written in the main checkout, such as on
   a project's start screen, starts its session in a new worktree too (on a server, it
   starts where it was written). The sidebar lists each worktree by its session's title.
@@ -88,16 +88,21 @@ copy of it, rename it back, and start a version that can read it.
   the main checkout.
 - **Several at once.** `Ctrl`+click (`Cmd`+click on macOS) rows of the sidebar's list
   to pick them, and `Shift`+click to pick a run of them. In the Active list, either
-  picks the session's worktree. A bar under them settles their
-  sessions, closes them (their tabs close and idle agents stop; the worktrees stay), or
+  picks the session's worktree. A bar under them archives them, closes their
+  sessions (their tabs close and idle agents stop; the worktrees stay), or
   deletes the worktrees after one question. Branches stay. The main checkout and
   worktrees on a server are deleted one at a time. `Esc` clears the pick.
 - **Projects and worktrees.** A rail of projects, each with its environments (the main
   checkout plus git worktrees). The default sidebar shows the open project, with the
   others in its dropdown, and its sessions as a flat list: a status dot, the title,
-  and one signal (Needs you, CI failed, or the diff). If you take the Active list
-  out, **Other projects** under them lists the environments elsewhere that run or need
-  you. The dropdown says the same per project. `Ctrl+Shift+N` always makes a new
+  and one signal (Needs you, CI failed, Changes requested, Conflicts, or the diff).
+  An environment needs you when a session asks something, when a session finished a
+  turn you haven't opened yet, when CI on its branch fails, or when its pull request
+  has changes requested or conflicts; CI that is still going shows it as running. If
+  you take the Active list out, **Other projects** under them lists the environments
+  elsewhere that run or need you. The dropdown says the same per project. The **+** on
+  the Projects heading opens **New**: a session in the open project or another one, or
+  a project to add (`Ctrl+T` and `Ctrl+O` pick them). `Ctrl+Shift+N` always makes a new
   worktree at once on a random branch from the current branch as it is on `origin`,
   fetched first (or the local commit when origin has none; on a server, from that
   server's checkout, with no fetch). File › New Environment with Options… asks for
@@ -125,16 +130,23 @@ copy of it, rename it back, and start a version that can read it.
   Settings › Branches can pick Claude Code or Droid for every environment, or turn naming
   off; it saves that in `~/.local/share/arakun/branch-namer.json`
   (`%LOCALAPPDATA%\arakun\branch-namer.json` on Windows).
-- **Settled after merge.** Once an environment's pull request is merged (Arakun asks
-  `gh` every few minutes), its open review threads are resolved on GitHub, its
-  notifications are marked read, and the environment's sessions from before the merge
-  stop asking for you and leave the Sessions list (a "settled sessions" row at its end
-  shows them, a search finds them, and a new prompt brings one back); agents that are
-  idle and not open in a tab stop. The GitHub tab
+- **Archive.** Right-click an environment in the sidebar and pick Archive (or pick
+  several rows and use the bar's archive button): its sessions that aren't working stop
+  asking for you and leave the lists, the open review threads of its branch's pull
+  request are resolved on GitHub, and that pull request's notifications are marked read.
+  A session's own right-click menu archives just that session, without touching
+  GitHub. An "N archived" row at the end of the sidebar's list (and "N archived
+  sessions" under the Sessions list) shows them again, a search finds them, and Restore
+  on the right-click menu or a new prompt brings one back. Agents that are idle and not
+  open in a tab stop.
+- **Archived after merge.** Once an environment's pull request is merged (Arakun asks
+  `gh` every few minutes), it is archived the same way: its open review threads are
+  resolved, its notifications are marked read, and the environment's sessions from
+  before the merge are archived. The GitHub tab
   also marks read the notifications of every merged pull request it reads. Each merge is
-  settled once, within a week of it; threads that fail to resolve are tried again at the
-  next few checks. Settled merges are noted in `~/.local/share/arakun/settled.json`.
-  On by default; turn off Settings › Branches › Settle threads after merge (saved in
+  archived once, within a week of it; threads that fail to resolve are tried again at the
+  next few checks. Archived merges are noted in `~/.local/share/arakun/settled.json`.
+  On by default; turn off Settings › Branches › Archive after merge (saved in
   `~/.local/share/arakun/settle-after-merge`, `%LOCALAPPDATA%\arakun\` on Windows).
 - **Old environments removed.** Settings › Branches › Remove old environments (Off, 7, 14
   or 30 days; also asked during the setup) removes an environment's worktree once its
@@ -190,7 +202,8 @@ terminal-only. The status line and keybindings from your settings don't apply in
   turn that edits files; on failure the tail of the output goes back to the agent, up to
   three times in a row. Checks run one at a time across all sessions, at low priority and
   with half the cores for builds (`CARGO_BUILD_JOBS`), so several agents finishing
-  together don't stall the computer. Arakun also notices when an agent loops (the same
+  together don't stall the computer. Set it, and the setup script new environments run,
+  in Settings › Project or the project's menu. Arakun also notices when an agent loops (the same
   failing command or the same edit over and over) and offers to stop and rethink.
 - **Memory.** Agents save what they learn (`arakun mem`), and every new session starts
   with an index of it in the system prompt. Plain JSON files, one per repository plus a
@@ -221,10 +234,11 @@ terminal-only. The status line and keybindings from your settings don't apply in
   pull request template, else the commit messages). It opens as a draft unless you turn
   that off, pushes the branch first when it has commits GitHub doesn't, and then shows
   the new pull request in the GitHub tab. "Open GitHub's form" opens the page in your
-  browser instead, to write the description there. "Write with AI" has Claude Code
+  browser instead, to write the description there. "Write with Claude Code" has Claude Code
   write the title and the description from the branch's commits, its diff (up to 60,000
   characters) and the template, when it is the environment's agent or the one picked for
-  naming branches. It answers once with its tools off, so it reads nothing else, and
+  naming branches; the button names the agent, so you see where the diff goes before
+  you click. It answers once with its tools off, so it reads nothing else, and
   nothing goes to GitHub until you create the pull request. Other agents don't write it:
   they can read files while they answer.
 - **Queue.** The GitHub tab opens on one line that says how many things need you,
@@ -381,8 +395,8 @@ after a week).
   saved in `~/.local/share/arakun/cliproxy-management-key`, and the last limits read
   in `cliproxy-plan.json` next to it.
 - **Marketplace.** Plugins and MCP servers to add, and the MCP servers, plugins, skills
-  and permission rules the agents load now. Under Arakun › Extensions you turn on the
-  tabs the sidebar shows besides Inbox, Runs, Branches and Marketplace: GitHub, Notes,
+  and permission rules the agents load now. Under Arakun › Extensions (or Settings ›
+  General › Sidebar) you turn on the tabs the sidebar shows besides Inbox, Runs, Branches and Marketplace: GitHub, Notes,
   Memory, Usage, Cloudflare, PostHog, Isometric, Phone, Servers and Automations. The
   palette and Customize › Sidebar list only the tabs that are on. A new install starts
   with none on, except what you set up in the first-run setup: GitHub once the GitHub
@@ -867,6 +881,12 @@ directory, over a local control socket (`$XDG_RUNTIME_DIR/arakun/control.sock`, 
 get `ARAKUN_SOCKET` and `arakun` on their `PATH`, and the agents get a note in their
 system prompt about it (`ARAKUN_AGENT_HINT=off` removes it).
 
+One Arakun runs per state. `arakun` started again brings the running window up and
+exits (`arakun <dir>` adds the project there), since two windows on one state would
+save over each other and run the same automations twice. The running one holds
+`state.json.lock` next to `state.json`; an Arakun with its own `ARAKUN_STATE`, such as
+`arakun dev`, has its own lock and runs beside it.
+
 ```sh
 arakun .                          # add this project (or switch to it); starts Arakun if needed
 arakun browse -s localhost:3000   # open a page in the side pane
@@ -936,7 +956,7 @@ The link is good for two minutes and pairs one device. There are two ways to use
   the open environment's machine. It goes in
   `~/arakun-workspaces/<project>/<branch>` there. Unless naming is off in Settings ›
   Branches, Arakun names its branch after the first prompt, as here. Right-click a
-  server's environment to settle its threads there (the sessions that ask for attention
+  server's environment to archive it there (the sessions that ask for attention
   go idle, and their agents stop; a running turn is left alone) or to delete it: the
   server removes the worktree, everything in it and its sessions, and the branch too if
   you ask. A repository's main folder is never deleted. A phone paired with this app sees and works in the
@@ -1063,7 +1083,7 @@ On macOS, `Cmd` takes the place of `Ctrl` in the shortcuts below, except for
 forward through tabs, `Ctrl+Cmd+F` toggles full screen, and `Cmd+H`, `Cmd+M` and
 `Cmd+Q` hide, minimize and quit.
 
-- `Ctrl+T` new session (in a new worktree unless the open one is a worktree without one), `Ctrl+J` toggle the terminal dock, `Ctrl+B` toggle the sidebar
+- `Ctrl+T` new session (in a new worktree, made when you send the first prompt, unless the open one is a worktree without one), `Ctrl+J` toggle the terminal dock, `Ctrl+B` toggle the sidebar
 - `Ctrl+Alt+B` toggle the workspace panel, `Ctrl+Alt+S` toggle the subagents panel
 - `Ctrl+D` / `Ctrl+Shift+D` split right / down, `Ctrl+Alt+arrows` move between panes
 - `Ctrl+Tab`, `Ctrl+1...9` switch tabs, across environments; `Alt+Up` / `Alt+Down`
@@ -1102,7 +1122,8 @@ forward through tabs, `Ctrl+Cmd+F` toggles full screen, and `Cmd+H`, `Cmd+M` and
   `Enter` ticking one off. Pins are kept in `pins.json`, rules (reminders too) in
   `rules.json`, to-dos in `todos.json` and what you open in `palette-frecency.json`,
   next to the state file.
-- `Ctrl+=` / `Ctrl+-` / `Ctrl+0` zoom the whole interface (in a browser tab, the page)
+- `Ctrl+=` / `Ctrl+-` / `Ctrl+0` zoom the whole interface (in a browser tab, the page);
+  Settings › Appearance › Zoom does it too
 - `Ctrl+Shift+H` turns [redacted mode](#redacted-mode) on or off
 - In the composer: `Enter` sends, `Shift+Enter` new line, `Up` on an empty composer
   recalls earlier prompts; paste or drop images to attach them. While the agent works,

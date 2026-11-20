@@ -416,7 +416,8 @@ pub fn rail_card(
     on_options: impl Fn(gpui::Point<gpui::Pixels>, &mut Window, &mut App) + 'static,
 ) -> Option<AnyElement> {
     let plan = seats.and_then(Seats::active);
-    if !account.ready() && plan.is_none() && go.is_none() && devin.is_none() && seats.is_none() {
+    if !account.connected() && plan.is_none() && go.is_none() && devin.is_none() && seats.is_none()
+    {
         return None;
     }
     let now = account::unix_now();
@@ -434,7 +435,8 @@ pub fn rail_card(
             right_click(ev.position, window, cx);
         });
     let show_claude = rail_shows(AgentKind::Claude);
-    let show_droid = rail_shows(AgentKind::Droid);
+    // Without a Factory key there is nothing of Droid's to show.
+    let show_droid = rail_shows(AgentKind::Droid) && account.connected();
     let show_go = rail_shows(AgentKind::OpenCode);
     let show_devin = rail_shows(AgentKind::Devin);
     #[cfg(feature = "coderlabs")]
@@ -631,37 +633,33 @@ pub fn rail_card(
         }
     }
     if show_droid {
-        if account.connected() {
-            let mode = account.limits().map(|l| l.mode(now));
-            let name = match mode {
-                Some(UsageMode::DroidCore) => "Droid · Core",
-                Some(UsageMode::ExtraUsage) => "Droid · Extra",
-                Some(UsageMode::Blocked) => "Droid · limit reached",
-                _ => "Droid",
-            };
-            if !compact || matches!(mode, Some(UsageMode::ExtraUsage | UsageMode::Blocked)) {
-                card = card.child(provider(AgentKind::Droid, name.into()));
+        let mode = account.limits().map(|l| l.mode(now));
+        let name = match mode {
+            Some(UsageMode::DroidCore) => "Droid · Core",
+            Some(UsageMode::ExtraUsage) => "Droid · Extra",
+            Some(UsageMode::Blocked) => "Droid · limit reached",
+            _ => "Droid",
+        };
+        if !compact || matches!(mode, Some(UsageMode::ExtraUsage | UsageMode::Blocked)) {
+            card = card.child(provider(AgentKind::Droid, name.into()));
+        }
+        let pool = account.limits().and_then(|l| match l.mode(now) {
+            UsageMode::DroidCore => l.core.or(l.standard),
+            _ => l.standard,
+        });
+        if let Some(pool) = pool {
+            for (i, (label, b)) in pool.buckets().into_iter().enumerate() {
+                card = card.child(row(
+                    AgentKind::Droid,
+                    i,
+                    label.to_string(),
+                    b.current(now),
+                    false,
+                    b.window_end.filter(|_| b.active(now)),
+                ));
             }
-            let pool = account.limits().and_then(|l| match l.mode(now) {
-                UsageMode::DroidCore => l.core.or(l.standard),
-                _ => l.standard,
-            });
-            if let Some(pool) = pool {
-                for (i, (label, b)) in pool.buckets().into_iter().enumerate() {
-                    card = card.child(row(
-                        AgentKind::Droid,
-                        i,
-                        label.to_string(),
-                        b.current(now),
-                        false,
-                        b.window_end.filter(|_| b.active(now)),
-                    ));
-                }
-            } else if let Some(e) = account.error() {
-                card = card.child(note(AgentKind::Droid, e.to_string()));
-            }
-        } else {
-            card = card.child(note(AgentKind::Droid, "Droid — connect API key".into()));
+        } else if let Some(e) = account.error() {
+            card = card.child(note(AgentKind::Droid, e.to_string()));
         }
     }
     if show_go && let Some(go) = go {

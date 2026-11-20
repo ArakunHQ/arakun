@@ -19,12 +19,13 @@ impl Shell {
         for (pi, p) in self.projects.iter().enumerate() {
             for (ei, e) in p.environments.iter().enumerate() {
                 for sess in &e.sessions {
-                    if sess.status != Status::Idle {
+                    let status = sess.shown_status();
+                    if status != Status::Idle {
                         items.push(InboxItem {
                             project: pi,
                             env: ei,
                             id: sess.id.clone(),
-                            status: sess.status,
+                            status,
                             title: sess.title.clone(),
                             place: format!("{}/{}", p.name, e.name).into(),
                             updated: sess.updated,

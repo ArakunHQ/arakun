@@ -545,32 +545,24 @@ pub fn parse_repo_pulls(json: &[u8]) -> Result<Vec<RepoPull>, Problem> {
 /// How long a repository's open pull requests are reused before reading them again.
 const REPO_PULLS_FRESH: Duration = Duration::from_secs(60);
 
+/// [`gh_out_within`] with [`GIT_REMOTE`](crate::platform::GIT_REMOTE): these calls run
+/// on the background threads, and the inbox holds `busy` until one ends.
 fn gh_out(args: &[&str]) -> Result<Vec<u8>, Problem> {
-    // These calls name no repository, so gh runs away from any checkout: a
-    // folder's remotes must not change which host it talks to.
-    let out = git::gh(&std::env::temp_dir())
-        .args(args)
-        .output()
-        .map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                Problem::NoGh
-            } else {
-                Problem::Other(format!("could not run gh: {e}"))
-            }
-        })?;
-    if !out.status.success() {
-        return Err(problem(&String::from_utf8_lossy(&out.stderr)));
-    }
-    Ok(out.stdout)
+    gh_out_within(args, crate::platform::GIT_REMOTE)
 }
 
-/// [`gh_out`], killing `gh` after `timeout`: for background work that must
-/// not wait on a hung call.
+/// Runs `gh` with `args`, stopped (with what it started) after `timeout`.
 fn gh_out_within(args: &[&str], timeout: Duration) -> Result<Vec<u8>, Problem> {
+    // These calls name no repository, so gh runs away from any checkout: a
+    // folder's remotes must not change which host it talks to.
     let mut cmd = git::gh(&std::env::temp_dir());
     cmd.args(args);
-    let out = crate::headless::sandbox::run_with_timeout(cmd, None, timeout)
-        .map_err(|e| Problem::Other(format!("could not run gh: {e}")))?;
+    let out =
+        crate::platform::output_within(&mut cmd, None, timeout).map_err(|e| match e.kind() {
+            std::io::ErrorKind::NotFound => Problem::NoGh,
+            std::io::ErrorKind::TimedOut => Problem::Other(e.to_string()),
+            _ => Problem::Other(format!("could not run gh: {e}")),
+        })?;
     if !out.status.success() {
         return Err(problem(&String::from_utf8_lossy(&out.stderr)));
     }
@@ -1627,6 +1619,13 @@ impl GitHub {
                 self.merged.pop_front();
             }
         }
+        let ids = notifications_of(&self.unread, key);
+        self.mark_all_read(ids, cx);
+    }
+
+    /// Marks read the unread notifications of the pull request `key` once,
+    /// for one archived by hand: later ones still come in.
+    pub fn mark_read_of(&mut self, key: &str, cx: &mut Context<Self>) {
         let ids = notifications_of(&self.unread, key);
         self.mark_all_read(ids, cx);
     }

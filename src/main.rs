@@ -36,6 +36,7 @@ mod env_name;
 mod explorer;
 mod extensions_view;
 mod fetch;
+mod frame_timer;
 mod gallery_view;
 mod git;
 mod git_dialogs;
@@ -344,7 +345,12 @@ fn main() {
                     });
                 });
             }
-            cx.activate(true);
+            // The test arakun of `arakun dev` shares the user's desktop on macOS:
+            // taking the focus would send their typing into it. Its input comes
+            // through the control socket instead.
+            if !(cfg!(target_os = "macos") && dev::size().is_some()) {
+                cx.activate(true);
+            }
             if std::env::var_os("ARAKUN_TIMING").is_some() {
                 eprintln!("arakun: window opened in {:?}", started.elapsed());
             }

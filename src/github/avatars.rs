@@ -112,9 +112,15 @@ pub fn cached(dir: &Path, login: &str) -> Option<(PathBuf, bool)> {
 /// Falls back on the plain address, which works for people but not for bots.
 fn address(login: &str) -> String {
     for name in candidates(login) {
-        let out = crate::git::gh(&std::env::temp_dir())
-            .args(["api", &format!("users/{name}"), "--jq", ".avatar_url"])
-            .output();
+        let out = crate::git::output(
+            crate::git::gh(&std::env::temp_dir()).args([
+                "api",
+                &format!("users/{name}"),
+                "--jq",
+                ".avatar_url",
+            ]),
+            crate::platform::GIT_REMOTE,
+        );
         if let Ok(out) = out
             && out.status.success()
         {

@@ -225,6 +225,9 @@ pub enum Document {
     /// A spreadsheet, drawn as a grid.
     Sheet(Arc<crate::sheet::Workbook>),
     Failed(SharedString),
+    /// A diff too large to load unless asked: building it on every change of
+    /// a growing file would stall the app.
+    TooLarge(SharedString),
 }
 
 /// A load that panicked shows as one that failed.
@@ -270,6 +273,8 @@ pub struct Tab {
     pub markdown: Option<std::rc::Rc<Vec<crate::agent::markdown::Block>>>,
     /// The sheet shown by a spreadsheet tab.
     pub sheet: usize,
+    /// A diff tab loads its diff even past the size limit ("Show anyway").
+    pub large: bool,
 }
 
 impl Tab {
@@ -291,6 +296,7 @@ impl Tab {
             preview: false,
             markdown: None,
             sheet: 0,
+            large: false,
         }
     }
 
@@ -342,9 +348,12 @@ pub struct Session {
     /// The sessions it took over from other agents ("Continue with"), oldest
     /// first; their history is already in this one's transcript.
     pub continues: Vec<Earlier>,
-    /// Its pull request merged (`crate::settle`): the sessions list leaves it
-    /// out until it is used again.
+    /// Archived, by hand or once its pull request merged (`crate::settle`):
+    /// the sessions list leaves it out until it is used again or restored.
     pub settled: bool,
+    /// It finished a turn while the user looked elsewhere. Until they open
+    /// it, it waits on them like a question would.
+    pub unread: bool,
     pub live: Option<LiveSession>,
 }
 
@@ -382,7 +391,18 @@ impl Session {
             auto_allow: false,
             continues: Vec::new(),
             settled: false,
+            unread: false,
             live: None,
+        }
+    }
+
+    /// Its state as the sidebar and the Inbox show it: a finished turn not
+    /// yet read needs the user.
+    pub fn shown_status(&self) -> Status {
+        if self.unread && self.status == Status::Idle {
+            Status::NeedsInput
+        } else {
+            self.status
         }
     }
 }
@@ -920,9 +940,15 @@ impl Environment {
         self.sessions.iter().position(|s| s.id.as_ref() == id)
     }
 
+    /// Every session here is archived (`Session::settled`), so the sidebar
+    /// leaves it out. A worktree with no session yet is not.
+    pub fn archived(&self) -> bool {
+        !self.sessions.is_empty() && self.sessions.iter().all(|s| s.settled)
+    }
+
     /// The most urgent state of any session, for the sidebar dot.
     pub fn aggregate_status(&self) -> Status {
-        let any = |st: Status| self.sessions.iter().any(|s| s.status == st);
+        let any = |st: Status| self.sessions.iter().any(|s| s.shown_status() == st);
         if any(Status::NeedsInput) {
             Status::NeedsInput
         } else if any(Status::Working) {
@@ -1122,6 +1148,21 @@ mod tests {
         // `git branch -m` in a terminal, to a name that also looks random, then a refresh.
         env.set_branch(Some("env/bright-fox".into()));
         assert!(!env.awaits_name());
+    }
+
+    #[test]
+    fn an_environment_is_archived_once_every_session_is() {
+        let mut env = Environment::new("/tmp/arakun-archive-test".into(), None, false);
+        // A worktree waiting for its first session stays in the list.
+        assert!(!env.archived());
+        env.sessions
+            .push(Session::new("a".into(), "A".into(), Agent::Claude));
+        env.sessions
+            .push(Session::new("b".into(), "B".into(), Agent::Claude));
+        env.sessions[0].settled = true;
+        assert!(!env.archived());
+        env.sessions[1].settled = true;
+        assert!(env.archived());
     }
 
     const HERE: &str = "/tmp/arakun-test";

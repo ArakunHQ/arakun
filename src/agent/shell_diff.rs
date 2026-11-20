@@ -3,9 +3,7 @@
 //! working files are snapshotted as a git tree when a turn starts and when it
 //! ends, and the text files that differ become the turn's shell changes.
 
-use std::io::Write as _;
 use std::path::{Component, Path, PathBuf};
-use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
@@ -51,30 +49,11 @@ fn git_with_input(
     input: Option<&[u8]>,
 ) -> Option<Vec<u8>> {
     let mut cmd = crate::platform::command("git");
-    cmd.args(args)
-        .current_dir(dir)
-        .stdin(if input.is_some() {
-            Stdio::piped()
-        } else {
-            Stdio::null()
-        })
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
+    cmd.args(args).current_dir(dir);
     if let Some(index) = index {
         cmd.env("GIT_INDEX_FILE", index);
     }
-    let mut child = cmd.spawn().ok()?;
-    if let (Some(input), Some(mut stdin)) = (input, child.stdin.take())
-        && stdin.write_all(input).is_err()
-    {
-        // Git quit before it read everything; reap it rather than leave a zombie.
-        drop(stdin);
-        let _ = child.kill();
-        let _ = child.wait();
-        return None;
-    }
-    child
-        .wait_with_output()
+    crate::platform::output_within(&mut cmd, input, crate::platform::GIT_LOCAL)
         .ok()
         .filter(|o| o.status.success())
         .map(|o| o.stdout)

@@ -277,7 +277,7 @@ pub struct PullRequestDialog {
     needs_push: bool,
     plan: git::PrPlan,
     desc: Description,
-    /// The agent "Write with AI" asks; None when none can answer here.
+    /// The agent the "Write with" button asks; None when none can answer here.
     writer: Option<AgentKind>,
     /// The agent is writing.
     writing: bool,
@@ -562,7 +562,7 @@ fn written_for(asked: &str, now: &str) -> bool {
 }
 
 impl PullRequestDialog {
-    /// "Write with AI": the agent reads the branch's commits and diff and
+    /// "Write with <agent>": the agent reads the branch's commits and diff and
     /// writes the title and the description. Nothing goes to GitHub; the
     /// user reads both before creating.
     fn write_with_ai(&mut self, cx: &mut Context<Self>) {
@@ -628,14 +628,18 @@ impl PullRequestDialog {
     /// The button beside the description's label.
     fn write_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let can = self.writer.is_some() && !self.writing && self.busy.is_none();
-        let label = match (self.writing, self.desc.written_by) {
-            (true, _) => "Writing…",
-            (false, Some(_)) => "Write again",
-            (false, None) => "Write with AI",
+        // The writer can be the agent picked for naming branches, not this
+        // environment's: its name on the button says where the diff goes
+        // before the click sends it.
+        let label: SharedString = match (self.writing, self.desc.written_by, self.writer) {
+            (true, _, _) => "Writing…".into(),
+            (false, Some(_), _) => "Write again".into(),
+            (false, None, Some(agent)) => format!("Write with {}", agent.label()).into(),
+            (false, None, None) => "Write with AI".into(),
         };
         let tip = match self.writer {
             Some(agent) => format!(
-                "{} reads the branch's commits and diff, and writes the title and description",
+                "Sends the branch's commits and diff to {}, which writes the title and description",
                 agent.label()
             ),
             None => "Needs Claude Code: as this environment's agent, or picked for naming branches"

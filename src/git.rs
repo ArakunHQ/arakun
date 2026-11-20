@@ -1,11 +1,17 @@
 //! Thin wrappers over the git CLI. Everything here blocks; callers run it on the
 //! background executor. `GIT_OPTIONAL_LOCKS=0` keeps our polling `status` from taking
 //! the index lock while an agent or terminal is committing in the same worktree.
+//!
+//! Every call has a time limit ([`GIT_LOCAL`], [`GIT_REMOTE`] or [`GIT_LONG`]): the
+//! background executor has a few threads, and a call that hangs would hold one for good.
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitStatus, Output, Stdio};
+use std::process::{Command, ExitStatus, Output};
+use std::time::Duration;
 
 use anyhow::{Context as _, Result, anyhow, bail};
+
+use crate::platform::{GIT_LOCAL, GIT_LONG, GIT_REMOTE};
 
 /// Git's well-known empty tree, the diff base for repositories without commits.
 const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
@@ -34,8 +40,38 @@ pub(crate) fn unpinned(cmd: &mut Command) -> &mut Command {
     cmd
 }
 
-fn run(cmd: &mut Command) -> Result<Output> {
-    let out = cmd.output().context("could not run git")?;
+/// [`Command::output`] for git and gh, stopped after `limit`. A call that took too long
+/// fails with an error that names it.
+pub(crate) fn output(cmd: &mut Command, limit: Duration) -> Result<Output> {
+    crate::platform::output_within(cmd, None, limit).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::TimedOut {
+            // Kept whole, so `timed_out` can tell it apart.
+            anyhow::Error::new(e)
+        } else {
+            let program = Path::new(cmd.get_program())
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned();
+            anyhow!("could not run {program}: {e}")
+        }
+    })
+}
+
+/// Whether `err` is a git or gh call that ran past its limit and was stopped.
+pub fn timed_out(err: &anyhow::Error) -> bool {
+    err.chain()
+        .filter_map(|e| e.downcast_ref::<std::io::Error>())
+        .any(|e| e.kind() == std::io::ErrorKind::TimedOut)
+}
+
+/// Whether `cmd` ran and succeeded within `limit`.
+fn succeeds(cmd: &mut Command, limit: Duration) -> bool {
+    output(cmd, limit).is_ok_and(|o| o.status.success())
+}
+
+fn run(cmd: &mut Command, limit: Duration) -> Result<Output> {
+    let out = output(cmd, limit)?;
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr);
         let err = err
@@ -48,7 +84,7 @@ fn run(cmd: &mut Command) -> Result<Output> {
 }
 
 fn stdout(cmd: &mut Command) -> Result<String> {
-    Ok(String::from_utf8_lossy(&run(cmd)?.stdout).into_owned())
+    Ok(String::from_utf8_lossy(&run(cmd, GIT_LOCAL)?.stdout).into_owned())
 }
 
 /// Root of the main working tree for any folder inside a repository or one of its
@@ -74,7 +110,7 @@ pub fn top_level(dir: &Path) -> Result<PathBuf> {
 }
 
 pub fn init(dir: &Path) -> Result<()> {
-    run(git(dir).args(["init", "-q"]))?;
+    run(git(dir).args(["init", "-q"]), GIT_LOCAL)?;
     Ok(())
 }
 
@@ -101,14 +137,18 @@ pub fn clone(url: &str, on_github: bool, dest: &Path) -> Result<()> {
                 .args(["repo", "clone", url])
                 .arg(dest)
                 .args(["--", "--quiet"]),
+            GIT_LONG,
         );
         if done.is_ok() {
             return Ok(());
         }
         clean();
     }
-    run_loud(git(parent).args(["clone", "--quiet", "--", url]).arg(dest))
-        .inspect_err(|_| clean())?;
+    run_loud(
+        git(parent).args(["clone", "--quiet", "--", url]).arg(dest),
+        GIT_LONG,
+    )
+    .inspect_err(|_| clean())?;
     Ok(())
 }
 
@@ -223,15 +263,15 @@ pub fn add_worktree(
             .with_context(|| format!("could not create {}", parent.display()))?;
     }
     let exists = !only_new
-        && git(repo)
-            .args([
+        && succeeds(
+            git(repo).args([
                 "show-ref",
                 "--verify",
                 "--quiet",
                 &format!("refs/heads/{branch}"),
-            ])
-            .status()
-            .is_ok_and(|s| s.success());
+            ]),
+            GIT_LOCAL,
+        );
     let mut cmd = git(repo);
     cmd.args(["worktree", "add"]);
     if exists {
@@ -244,15 +284,16 @@ pub fn add_worktree(
             cmd.arg(base);
         }
     }
-    run(&mut cmd)?;
+    // Checks out every file of the branch, which takes a while in a big repository.
+    run(&mut cmd, GIT_LONG)?;
     Ok(())
 }
 
 /// Removes the worktree at `path` only while it has nothing uncommitted: git
 /// refuses otherwise. For a removal nobody confirmed.
 pub fn remove_clean_worktree(repo: &Path, path: &Path) -> Result<()> {
-    run(git(repo).args(["worktree", "remove"]).arg(path))?;
-    let _ = run(git(repo).args(["worktree", "prune"]));
+    run(git(repo).args(["worktree", "remove"]).arg(path), GIT_LOCAL)?;
+    let _ = run(git(repo).args(["worktree", "prune"]), GIT_LOCAL);
     Ok(())
 }
 
@@ -288,58 +329,42 @@ pub fn origin_base(repo: &Path) -> Option<String> {
     }
     // The full name: a local branch called origin/<branch> would make the short one
     // ambiguous.
-    git(repo)
-        .args(["show-ref", "--verify", "--quiet", &remote])
-        .status()
-        .is_ok_and(|s| s.success())
-        .then_some(remote)
+    succeeds(
+        git(repo).args(["show-ref", "--verify", "--quiet", &remote]),
+        GIT_LOCAL,
+    )
+    .then_some(remote)
 }
 
 /// How long each call to origin may take while an environment is made. A new
 /// environment waits on it, so a stalled origin must not hold it up for long.
-const ORIGIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+const ORIGIN_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Runs `cmd` without its output and returns how it exited, or None when it could
-/// not start or ran past `limit`. Then the whole tree is ended: a stalled git fetch
-/// would otherwise leave its ssh running.
-fn status_within(cmd: &mut Command, limit: std::time::Duration) -> Option<ExitStatus> {
-    cmd.stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    crate::platform::ProcessTree::prepare(cmd);
-    let mut child = cmd.spawn().ok()?;
-    let tree = crate::platform::ProcessTree::adopt(&child);
-    let until = std::time::Instant::now() + limit;
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => return Some(status),
-            Ok(None) if std::time::Instant::now() < until => {
-                std::thread::sleep(std::time::Duration::from_millis(50));
-            }
-            _ => {
-                tree.kill();
-                let _ = child.kill();
-                let _ = child.wait();
-                return None;
-            }
-        }
-    }
+/// Runs `cmd` and returns how it exited, or None when it could not start or ran
+/// past `limit`. Then the whole tree is ended: a stalled git fetch would otherwise
+/// leave its ssh running.
+fn status_within(cmd: &mut Command, limit: Duration) -> Option<ExitStatus> {
+    output(cmd, limit).ok().map(|o| o.status)
 }
 
 pub fn remove_worktree(repo: &Path, path: &Path, delete_branch: Option<&str>) -> Result<()> {
-    run(git(repo).args(["worktree", "remove", "--force"]).arg(path))?;
-    let _ = run(git(repo).args(["worktree", "prune"]));
+    // Deletes the whole folder, untracked builds and dependencies too.
+    run(
+        git(repo).args(["worktree", "remove", "--force"]).arg(path),
+        GIT_LONG,
+    )?;
+    let _ = run(git(repo).args(["worktree", "prune"]), GIT_LOCAL);
     if let Some(branch) = delete_branch {
-        run(git(repo).args(["branch", "-D", branch]))?;
+        run(git(repo).args(["branch", "-D", branch]), GIT_LOCAL)?;
     }
     Ok(())
 }
 
 pub fn branch_name_ok(repo: &Path, name: &str) -> bool {
-    git(repo)
-        .args(["check-ref-format", "--branch", name])
-        .output()
-        .is_ok_and(|o| o.status.success())
+    succeeds(
+        git(repo).args(["check-ref-format", "--branch", name]),
+        GIT_LOCAL,
+    )
 }
 
 /// Renames the branch checked out in `dir` from `old` to `new`. Refuses when the
@@ -364,16 +389,26 @@ pub fn rename_branch(dir: &Path, old: &str, new: &str, next_free: bool) -> Resul
         return Ok(new.to_string());
     }
     // A push without --set-upstream leaves no upstream, only the remote-tracking ref.
-    let upstream = git(dir)
-        .args(["config", "--get", &format!("branch.{old}.merge")])
-        .output()
-        .is_ok_and(|o| o.status.success());
+    // A check that failed or timed out says nothing, and must not let the rename go on.
+    let unsure = || format!("could not check whether {old} was pushed");
+    let upstream = output(
+        git(dir).args(["config", "--get", &format!("branch.{old}.merge")]),
+        GIT_LOCAL,
+    )
+    .with_context(unsure)?;
+    // `config --get` exits 1 only when the key is not set.
+    let upstream = match upstream.status.code() {
+        Some(0) => true,
+        Some(1) => false,
+        _ => bail!("{}", unsure()),
+    };
     let tracked = stdout(git(dir).args([
         "for-each-ref",
         "--format=%(refname)",
         &format!("refs/remotes/*/{old}"),
     ]))
-    .is_ok_and(|refs| !refs.trim().is_empty());
+    .with_context(unsure)?;
+    let tracked = !tracked.trim().is_empty();
     if upstream || tracked {
         bail!("{old} was already pushed; rename it on the remote too, or keep the name");
     }
@@ -381,15 +416,15 @@ pub fn rename_branch(dir: &Path, old: &str, new: &str, next_free: bool) -> Resul
         bail!("\"{new}\" is not a valid branch name");
     }
     let exists = |name: &str| {
-        git(dir)
-            .args([
+        succeeds(
+            git(dir).args([
                 "show-ref",
                 "--verify",
                 "--quiet",
                 &format!("refs/heads/{name}"),
-            ])
-            .status()
-            .is_ok_and(|s| s.success())
+            ]),
+            GIT_LOCAL,
+        )
     };
     let name = if !exists(new) {
         new.to_string()
@@ -401,7 +436,7 @@ pub fn rename_branch(dir: &Path, old: &str, new: &str, next_free: bool) -> Resul
     } else {
         bail!("a branch named {new} already exists");
     };
-    run(git(dir).args(["branch", "-m", old, &name]))?;
+    run(git(dir).args(["branch", "-m", old, &name]), GIT_LOCAL)?;
     Ok(name)
 }
 
@@ -428,7 +463,7 @@ pub fn local_only(dir: &Path) -> Option<u32> {
 /// `git fetch` of every remote, quiet and never interactive; keeps the ahead/behind
 /// counts fresh without a pull.
 pub fn fetch(dir: &Path) -> Result<()> {
-    run(git(dir).args(["fetch", "--all", "--quiet"]))?;
+    run(git(dir).args(["fetch", "--all", "--quiet"]), GIT_REMOTE)?;
     Ok(())
 }
 
@@ -461,12 +496,13 @@ impl Change {
 
 /// Whether HEAD points at a commit: not in a repository before its first one.
 /// An error when git could not tell, such as for a repository it refuses to
-/// read (not a repository, untrusted owner): that is no sign of a new one.
+/// read (not a repository, untrusted owner) or a probe that ran past
+/// `GIT_LOCAL`: that is no sign of a new one.
 pub fn has_commits(dir: &Path) -> Result<bool> {
-    let out = git(dir)
-        .args(["rev-parse", "--verify", "--quiet", "HEAD"])
-        .output()
-        .context("could not run git")?;
+    let out = output(
+        git(dir).args(["rev-parse", "--verify", "--quiet", "HEAD"]),
+        GIT_LOCAL,
+    )?;
     // `--verify --quiet` exits 1, silently, only when HEAD names no commit.
     match out.status.code() {
         Some(0) => Ok(true),
@@ -479,12 +515,15 @@ pub fn has_commits(dir: &Path) -> Result<bool> {
     }
 }
 
-fn diff_base(dir: &Path) -> &'static str {
-    if has_commits(dir).unwrap_or(false) {
+/// The ref uncommitted changes diff against. `EMPTY_TREE` only when git says
+/// HEAD is absent: otherwise `discard` would take the unborn-repository path
+/// and delete work.
+fn diff_base(dir: &Path) -> Result<&'static str> {
+    Ok(if has_commits(dir)? {
         "HEAD"
     } else {
         EMPTY_TREE
-    }
+    })
 }
 
 /// Uncommitted changes against HEAD (staged and unstaged together, as the Changes
@@ -530,7 +569,7 @@ pub fn status(dir: &Path) -> Result<Vec<Change>> {
     }
 
     let numstat =
-        stdout(git(dir).args(["diff", diff_base(dir), "--numstat", "-z", "--no-renames"]))
+        stdout(git(dir).args(["diff", diff_base(dir)?, "--numstat", "-z", "--no-renames"]))
             .unwrap_or_default();
     let mut counts = std::collections::HashMap::new();
     for rec in numstat.split('\0').filter(|s| !s.is_empty()) {
@@ -584,14 +623,14 @@ pub fn ls_files(dir: &Path) -> Result<Vec<String>> {
 /// Unified diff of one file against HEAD; untracked files diff against /dev/null.
 pub fn diff(dir: &Path, path: &str, untracked: bool) -> Result<String> {
     if untracked {
-        let out = git(dir)
-            .args(["diff", "--no-color", "--no-index", "--", "/dev/null", path])
-            .output()
-            .context("could not run git")?;
+        let out = output(
+            git(dir).args(["diff", "--no-color", "--no-index", "--", "/dev/null", path]),
+            GIT_LOCAL,
+        )?;
         // --no-index exits 1 when the files differ, which is the expected case.
         return Ok(String::from_utf8_lossy(&out.stdout).into_owned());
     }
-    stdout(git(dir).args(["diff", "--no-color", diff_base(dir), "--", path]))
+    stdout(git(dir).args(["diff", "--no-color", diff_base(dir)?, "--", path]))
 }
 
 // ---------------------------------------------------------------------------
@@ -599,8 +638,8 @@ pub fn diff(dir: &Path, path: &str, untracked: bool) -> Result<String> {
 
 /// Like `run`, but a failure carries everything the command printed: commit hooks,
 /// pushes and merges often explain themselves on stdout.
-fn run_loud(cmd: &mut Command) -> Result<String> {
-    let out = cmd.output().context("could not run git")?;
+fn run_loud(cmd: &mut Command, limit: Duration) -> Result<String> {
+    let out = output(cmd, limit)?;
     let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
     if out.status.success() {
         return Ok(stdout);
@@ -660,8 +699,8 @@ fn git_paths(dir: &Path) -> Command {
     cmd
 }
 
-fn has_head(dir: &Path) -> bool {
-    diff_base(dir) == "HEAD"
+fn has_head(dir: &Path) -> Result<bool> {
+    Ok(diff_base(dir)? == "HEAD")
 }
 
 /// Where the checked-out branch stands against its remote.
@@ -686,10 +725,10 @@ pub struct Sync {
 pub fn sync(dir: &Path) -> Result<Sync> {
     let mut s = Sync::default();
     // Exits 1 when there are no remotes at all.
-    let urls = git(dir)
-        .args(["config", "--get-regexp", r"^remote\..*\.url$"])
-        .output()
-        .context("could not run git")?;
+    let urls = output(
+        git(dir).args(["config", "--get-regexp", r"^remote\..*\.url$"]),
+        GIT_LOCAL,
+    )?;
     let mut remotes: Vec<(String, String)> = Vec::new();
     for line in String::from_utf8_lossy(&urls.stdout).lines() {
         let Some((key, url)) = line.split_once(' ') else {
@@ -702,9 +741,10 @@ pub fn sync(dir: &Path) -> Result<Sync> {
             remotes.push((name.to_string(), url.trim().to_string()));
         }
     }
-    let head = git(dir)
-        .args(["symbolic-ref", "-q", "--short", "HEAD"])
-        .output();
+    let head = output(
+        git(dir).args(["symbolic-ref", "-q", "--short", "HEAD"]),
+        GIT_LOCAL,
+    );
     s.branch = head
         .ok()
         .filter(|o| o.status.success())
@@ -765,22 +805,16 @@ pub fn sync(dir: &Path) -> Result<Sync> {
 
 pub fn gh_available() -> bool {
     static GH: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *GH.get_or_init(|| {
-        crate::platform::command("gh")
-            .arg("--version")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .is_ok_and(|s| s.success())
-    })
+    *GH.get_or_init(|| succeeds(crate::platform::command("gh").arg("--version"), GIT_LOCAL))
 }
 
 /// `git add -A` first when `all`, then commits with the given message.
 pub fn commit(dir: &Path, message: &str, all: bool) -> Result<()> {
     if all {
-        run_loud(git(dir).args(["add", "-A"]))?;
+        run_loud(git(dir).args(["add", "-A"]), GIT_LONG)?;
     }
-    if let Err(e) = run_loud(git(dir).args(["commit", "-q", "-m", message])) {
+    // Commit hooks may run checks that take minutes.
+    if let Err(e) = run_loud(git(dir).args(["commit", "-q", "-m", message]), GIT_LONG) {
         let text = e.to_string();
         // Git's own wording here is a page of `git status` advice.
         if text.contains("nothing to commit") || text.contains("no changes added to commit") {
@@ -799,17 +833,17 @@ pub fn commit(dir: &Path, message: &str, all: bool) -> Result<()> {
 }
 
 pub fn push(dir: &Path, remote: &str, branch: &str) -> Result<()> {
-    run_loud(git(dir).args(["push", "-u", remote, branch]))?;
+    run_loud(git(dir).args(["push", "-u", remote, branch]), GIT_LONG)?;
     Ok(())
 }
 
 pub fn pull(dir: &Path) -> Result<()> {
-    run_loud(git(dir).args(["pull", "--ff-only"]))?;
+    run_loud(git(dir).args(["pull", "--ff-only"]), GIT_LONG)?;
     Ok(())
 }
 
 pub fn stage(dir: &Path, path: &str) -> Result<()> {
-    run_loud(git_paths(dir).args(["add", "--"]).arg(path))?;
+    run_loud(git_paths(dir).args(["add", "--"]).arg(path), GIT_LOCAL)?;
     Ok(())
 }
 
@@ -824,19 +858,26 @@ pub fn stage_only(dir: &Path, files: &[String]) -> Result<Vec<String>> {
         .cloned()
         .collect();
     if !picked.is_empty() {
-        run_loud(git_paths(dir).args(["add", "-A", "--"]).args(&picked))?;
+        run_loud(
+            git_paths(dir).args(["add", "-A", "--"]).args(&picked),
+            GIT_LOCAL,
+        )?;
     }
     Ok(picked)
 }
 
 pub fn unstage(dir: &Path, path: &str) -> Result<()> {
-    if has_head(dir) {
-        run_loud(git_paths(dir).args(["restore", "--staged", "--"]).arg(path))?;
+    if has_head(dir)? {
+        run_loud(
+            git_paths(dir).args(["restore", "--staged", "--"]).arg(path),
+            GIT_LOCAL,
+        )?;
     } else {
         run_loud(
             git_paths(dir)
                 .args(["rm", "-q", "--cached", "--"])
                 .arg(path),
+            GIT_LOCAL,
         )?;
     }
     Ok(())
@@ -853,17 +894,19 @@ pub fn discard(dir: &Path, change: &Change) -> Result<()> {
         std::fs::remove_file(&file).with_context(|| format!("could not delete {}", change.path))?;
         return Ok(());
     }
-    if has_head(dir) {
+    if has_head(dir)? {
         run_loud(
             git_paths(dir)
                 .args(["restore", "--source=HEAD", "--staged", "--worktree", "--"])
                 .arg(&change.path),
+            GIT_LOCAL,
         )?;
     } else {
         run_loud(
             git_paths(dir)
                 .args(["rm", "-q", "-f", "--cached", "--"])
                 .arg(&change.path),
+            GIT_LOCAL,
         )?;
         if file.exists() {
             std::fs::remove_file(&file)
@@ -910,9 +953,10 @@ fn dirty_tracked(dir: &Path) -> Result<usize> {
 }
 
 pub fn merge_plan(main: &Path, branch: &str) -> Result<MergePlan> {
-    let head = git(main)
-        .args(["symbolic-ref", "-q", "--short", "HEAD"])
-        .output()?;
+    let head = output(
+        git(main).args(["symbolic-ref", "-q", "--short", "HEAD"]),
+        GIT_LOCAL,
+    )?;
     let base = head
         .status
         .success()
@@ -942,8 +986,12 @@ pub fn merge_into_main(main: &Path, branch: &str) -> Result<()> {
     if let Some(why) = merge_plan(main, branch)?.blocker(branch) {
         bail!("{why}");
     }
-    if let Err(e) = run_loud(git(main).args(["merge", "--no-ff", "--no-edit", branch])) {
-        let _ = git(main).args(["merge", "--abort"]).output();
+    if let Err(e) = run_loud(
+        git(main).args(["merge", "--no-ff", "--no-edit", branch]),
+        GIT_LONG,
+    ) {
+        // Long too: an abort stopped halfway would leave the checkout worse off.
+        abort(main, "merge").map_err(|abort| anyhow!("{e}\n{abort}"))?;
         bail!("{e}\nThe merge was aborted; nothing changed.");
     }
     Ok(())
@@ -966,20 +1014,31 @@ pub(crate) fn read(dir: &Path, args: &[&str]) -> Result<String> {
 
 /// `git revert --no-edit <sha>` in a checkout; a revert that conflicts is aborted.
 pub fn revert(dir: &Path, sha: &str) -> Result<()> {
-    if let Err(e) = run_loud(git(dir).args(["revert", "--no-edit", sha])) {
-        let _ = git(dir).args(["revert", "--abort"]).output();
+    if let Err(e) = run_loud(git(dir).args(["revert", "--no-edit", sha]), GIT_LONG) {
+        abort(dir, "revert").map_err(|abort| anyhow!("{e}\n{abort}"))?;
         bail!("{e}\nThe revert was aborted; nothing changed.");
     }
     Ok(())
 }
 
+/// `git <op> --abort` after `op` stopped halfway. An error that says the checkout is
+/// left mid-way when the abort failed or timed out: "nothing changed" would be wrong.
+fn abort(dir: &Path, op: &str) -> Result<()> {
+    let why = match output(git(dir).args([op, "--abort"]), GIT_LONG) {
+        Ok(out) if out.status.success() => return Ok(()),
+        Ok(out) => String::from_utf8_lossy(&out.stderr).trim().to_string(),
+        Err(e) => e.to_string(),
+    };
+    bail!(
+        "The {op} stopped halfway and could not be aborted ({why}). \
+         Run `git {op} --abort` in {} before you go on.",
+        dir.display()
+    )
+}
+
 /// A file as it was at `rev`; None when the commit isn't in the local clone.
 pub fn show_file(dir: &Path, rev: &str, path: &str) -> Option<String> {
-    let out = git(dir)
-        .arg("show")
-        .arg(format!("{rev}:{path}"))
-        .output()
-        .ok()?;
+    let out = output(git(dir).arg("show").arg(format!("{rev}:{path}")), GIT_LOCAL).ok()?;
     out.status
         .success()
         .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
@@ -992,10 +1051,14 @@ pub fn add_branch_worktree(repo: &Path, path: &Path, branch: &str) -> Result<()>
         std::fs::create_dir_all(parent)
             .with_context(|| format!("could not create {}", parent.display()))?;
     }
-    let _ = git(repo)
-        .args(["fetch", "--quiet", "origin", branch])
-        .output();
-    run_loud(git(repo).args(["worktree", "add"]).arg(path).arg(branch))?;
+    let _ = output(
+        git(repo).args(["fetch", "--quiet", "origin", branch]),
+        GIT_REMOTE,
+    );
+    run_loud(
+        git(repo).args(["worktree", "add"]).arg(path).arg(branch),
+        GIT_LONG,
+    )?;
     Ok(())
 }
 
@@ -1011,10 +1074,11 @@ pub(crate) fn gh(dir: &Path) -> Command {
 /// The pull request for the checked-out branch; None when there is none or `gh`
 /// can't tell (not logged in, offline).
 pub fn pr_view(dir: &Path) -> Option<PullRequest> {
-    let out = gh(dir)
-        .args(["pr", "view", "--json", "url,state,number,isDraft"])
-        .output()
-        .ok()?;
+    let out = output(
+        gh(dir).args(["pr", "view", "--json", "url,state,number,isDraft"]),
+        GIT_REMOTE,
+    )
+    .ok()?;
     if !out.status.success() {
         return None;
     }
@@ -1028,10 +1092,10 @@ pub fn pr_view(dir: &Path) -> Option<PullRequest> {
 /// A `title` or `base` picked in the dialog goes along; empty leaves it to
 /// GitHub.
 pub fn pr_create_web(dir: &Path, branch: &str, base: &str, title: &str) -> Result<()> {
-    let out = gh(dir)
-        .args(pr_web_args(branch, base.trim(), title.trim())?)
-        .output()
-        .context("could not run gh")?;
+    let out = output(
+        gh(dir).args(pr_web_args(branch, base.trim(), title.trim())?),
+        GIT_REMOTE,
+    )?;
     if !out.status.success() {
         let err = strip_ansi(&String::from_utf8_lossy(&out.stderr));
         bail!(
@@ -1081,13 +1145,14 @@ fn remote_owner(url: &str) -> Option<String> {
 /// name is then looked up in the base repository. Slow: asks `gh`.
 pub fn pr_head(dir: &Path, remote: &str, branch: &str) -> String {
     let pushed_to = push_owner(dir, remote);
-    let base_owner = gh(dir)
-        .args(["repo", "view", "--json", "owner", "--jq", ".owner.login"])
-        .output()
-        .ok()
-        .filter(|out| out.status.success())
-        .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
-        .filter(|owner| !owner.is_empty());
+    let base_owner = output(
+        gh(dir).args(["repo", "view", "--json", "owner", "--jq", ".owner.login"]),
+        GIT_REMOTE,
+    )
+    .ok()
+    .filter(|out| out.status.success())
+    .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
+    .filter(|owner| !owner.is_empty());
     qualified_head(pushed_to.as_deref(), base_owner.as_deref(), branch)
 }
 
@@ -1342,7 +1407,6 @@ pub fn pr_create(
     body: &str,
     draft: bool,
 ) -> Result<String> {
-    use std::io::Write as _;
     let (title, base) = (title.trim(), base.trim());
     if crate::github::read_only() {
         bail!("{}", crate::github::pr::READ_ONLY);
@@ -1354,18 +1418,20 @@ pub fn pr_create(
     if base.is_empty() || base.starts_with('-') || branch.starts_with('-') {
         bail!("Name the branch to merge into.");
     }
-    let mut child = gh(dir)
-        .args(pr_create_args(branch, base, title, draft))
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .context("could not run gh")?;
-    if let Some(mut pipe) = child.stdin.take() {
-        // gh may give up before it reads everything; what it wrote says why.
-        let _ = pipe.write_all(body.as_bytes());
-    }
-    let out = child.wait_with_output().context("could not run gh")?;
+    // The body goes on stdin: gh may give up before it reads it all, and what it
+    // wrote then says why.
+    let out = crate::platform::output_within(
+        gh(dir).args(pr_create_args(branch, base, title, draft)),
+        Some(body.as_bytes()),
+        GIT_REMOTE,
+    )
+    .map_err(|e| {
+        if e.kind() == std::io::ErrorKind::TimedOut {
+            anyhow!("{e}")
+        } else {
+            anyhow!("could not run gh: {e}")
+        }
+    })?;
     if !out.status.success() {
         let err = strip_ansi(&String::from_utf8_lossy(&out.stderr));
         bail!(
@@ -1960,5 +2026,19 @@ test: cover the resize\u{1f}\u{1e}\n";
         let out = super::stdout(super::git(&dir).args(["-c", alias.as_str(), "ni"])).unwrap();
         let ours = unsafe { libc::getpriority(libc::PRIO_PROCESS, 0) };
         assert_eq!(out.trim().parse::<i32>().unwrap(), (ours + 10).min(19));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_hung_git_call_ends_with_an_error_that_names_it() {
+        let dir = std::env::temp_dir();
+        let started = std::time::Instant::now();
+        let err = super::run(
+            super::git(&dir).args(["-c", "alias.hang=!sleep 30", "hang"]),
+            std::time::Duration::from_millis(500),
+        )
+        .unwrap_err();
+        assert!(err.to_string().starts_with("git hang took longer"), "{err}");
+        assert!(started.elapsed() < std::time::Duration::from_secs(10));
     }
 }

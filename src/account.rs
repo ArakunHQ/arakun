@@ -247,10 +247,6 @@ impl Account {
         }
     }
 
-    pub fn ready(&self) -> bool {
-        self.key_loaded
-    }
-
     pub fn connected(&self) -> bool {
         self.key.is_some()
     }

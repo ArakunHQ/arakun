@@ -14,6 +14,8 @@
 //! space goes to the next, p pauses.
 
 // Where it can't run, island.rs allows dead code itself; a second allow trips clippy.
+#[path = "../src/frame_timer.rs"]
+mod frame_timer;
 #[cfg_attr(any(target_os = "linux", target_os = "macos"), allow(dead_code))]
 #[path = "../src/island.rs"]
 mod island;

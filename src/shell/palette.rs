@@ -32,12 +32,14 @@ pub(super) fn repo_slug(dir: &Path) -> Option<String> {
     if let Some(r) = crate::branches::github_repo(dir) {
         return Some(r);
     }
-    let out = crate::platform::command("git")
-        .args(["remote", "get-url", "origin"])
-        .current_dir(dir)
-        .stderr(std::process::Stdio::null())
-        .output()
-        .ok()?;
+    let out = crate::platform::output_within(
+        crate::platform::command("git")
+            .args(["remote", "get-url", "origin"])
+            .current_dir(dir),
+        None,
+        crate::platform::GIT_LOCAL,
+    )
+    .ok()?;
     let url = String::from_utf8_lossy(&out.stdout).trim().to_string();
     let rest = url
         .strip_prefix("git@github.com:")

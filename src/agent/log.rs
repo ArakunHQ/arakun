@@ -133,6 +133,7 @@ mod tests {
             added: 0,
             removed: 0,
             terminal_output: output.into(),
+            terminal_dropped_lines: 0,
             exit_code,
             parent: None,
             tool_name: None,

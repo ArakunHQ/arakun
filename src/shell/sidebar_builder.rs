@@ -607,7 +607,7 @@ impl Shell {
         for (i, a) in actions.into_iter().enumerate() {
             let label = match a {
                 None => "None",
-                Some(TitleAction::AddProject) => "Project",
+                Some(TitleAction::New) => "New",
                 Some(TitleAction::NewSession) => "Session",
                 Some(TitleAction::NewTerminal) => "Terminal",
             };

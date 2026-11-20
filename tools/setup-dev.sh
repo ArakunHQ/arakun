@@ -7,7 +7,8 @@
 #   --yes      do not ask before installing (implied when stdin is not a terminal)
 #   --check    only report what is missing; exit 1 if anything is
 #   --relay    also Node 24+ and the npm packages of relay/
-#   --display  also Xvfb and tesseract, for `arakun dev` (Linux only)
+#   --display  also what `arakun dev` needs: Xvfb and tesseract (macOS: tesseract,
+#              through Homebrew)
 #   --browser  also the CEF SDK a build with the browser needs, linked at .cef-sdk (macOS only)
 #   --hooks    turn on the Git hooks in lefthook.yml (lefthook install)
 #   --build    build the tests once, so the first clippy or test run is quick
@@ -35,7 +36,7 @@ while [ $# -gt 0 ]; do
     --browser) browser=1 ;;
     --hooks) hooks=1 ;;
     --build) build=1 ;;
-    -h|--help) sed -n '2,18p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,19p' "$0"; exit 0 ;;
     *) echo "setup-dev: unknown option $1" >&2; exit 2 ;;
   esac
   shift
@@ -230,10 +231,25 @@ fi
 
 # --- display tools ---
 if [ $display = 1 ]; then
-  say "arakun dev (Xvfb, tesseract)"
-  if [ "$os" != Linux ]; then
-    say "arakun dev only runs on Linux; skipped"
+  if [ "$os" = Darwin ]; then
+    # No Xvfb: the test Arakun runs in a window of its own. Only reading the
+    # screen (`arakun dev text`, clicking by text) needs tesseract.
+    say "arakun dev (tesseract)"
+    if command -v tesseract >/dev/null; then
+      ok tesseract
+    elif [ $check = 1 ]; then
+      lack "tesseract (brew install tesseract)"
+    elif ! command -v brew >/dev/null; then
+      lack "tesseract: install Homebrew (https://brew.sh), then brew install tesseract"
+    elif ask "install tesseract with Homebrew?" && brew install tesseract; then
+      ok tesseract
+    else
+      lack "tesseract (brew install tesseract)"
+    fi
+  elif [ "$os" != Linux ]; then
+    say "arakun dev only runs on Linux and macOS; skipped"
   else
+    say "arakun dev (Xvfb, tesseract)"
     for t in Xvfb tesseract; do
       if command -v $t >/dev/null; then ok $t; else lack $t; fi
     done

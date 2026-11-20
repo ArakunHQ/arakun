@@ -463,21 +463,24 @@ impl Item {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TitleAction {
-    AddProject,
+    /// The New dialog: a session, or a project. Saved layouts from before it
+    /// had "Add project" here, which the dialog also does.
+    #[serde(alias = "add_project")]
+    New,
     NewSession,
     NewTerminal,
 }
 
 impl TitleAction {
     pub const ALL: [TitleAction; 3] = [
-        TitleAction::AddProject,
+        TitleAction::New,
         TitleAction::NewSession,
         TitleAction::NewTerminal,
     ];
 
     pub fn label(self) -> &'static str {
         match self {
-            TitleAction::AddProject => "Add project",
+            TitleAction::New => "New session or project",
             TitleAction::NewSession => "New session",
             TitleAction::NewTerminal => "New terminal",
         }
@@ -652,7 +655,7 @@ impl Preset {
         ];
         let projects = Section::new("Projects", Mode::Scroll, vec![Piece::projects()])
             .titled()
-            .with_action(TitleAction::AddProject);
+            .with_action(TitleAction::New);
         let account = |pieces| Section::new("Account", Mode::Fixed, pieces);
         let active = || Section::new("Active", Mode::Scroll, vec![Piece::active()]);
         let mut style = Style::default();
@@ -832,6 +835,8 @@ impl Preset {
             sections,
             known: View::ALL.to_vec(),
             offered_active: true,
+            switcher_offered: true,
+            trial_of: None,
         }
     }
 }
@@ -849,6 +854,15 @@ pub struct Sidebar {
     /// it on load; one where the user took it out keeps it out.
     #[serde(default)]
     pub offered_active: bool,
+    /// The Switcher was offered to this layout and answered. A layout saved
+    /// before the Switcher was the default lacks it, so the rail offers it once.
+    #[serde(default)]
+    pub switcher_offered: bool,
+    /// The layout from before "Try it" on the Switcher offer, until the user
+    /// keeps the Switcher or goes back. Saved with the Switcher so a restart
+    /// in between still offers the way back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trial_of: Option<Box<Sidebar>>,
 }
 
 impl Default for Sidebar {
@@ -884,7 +898,17 @@ impl Sidebar {
     /// Reads a layout, skipping pieces this version does not know (from a
     /// newer Arakun, or edited by hand) instead of dropping it all.
     pub fn parse(bytes: &[u8]) -> Option<Self> {
-        let mut v: serde_json::Value = serde_json::from_slice(bytes).ok()?;
+        Self::parse_value(serde_json::from_slice(bytes).ok()?)
+    }
+
+    fn parse_value(mut v: serde_json::Value) -> Option<Self> {
+        // The layout from before the trial is read the same forgiving way; one
+        // that still fails only loses "Go back", not the layout in use.
+        let trial_of = v
+            .as_object_mut()?
+            .remove("trial_of")
+            .and_then(Self::parse_value)
+            .map(Box::new);
         let sections = v.get_mut("sections")?.as_array_mut()?;
         for s in sections.iter_mut() {
             if let Some(items) = s.get_mut("items").and_then(|i| i.as_array_mut()) {
@@ -895,9 +919,50 @@ impl Sidebar {
             known.retain(|k| serde_json::from_value::<View>(k.clone()).is_ok());
         }
         let mut s: Sidebar = serde_json::from_value(v).ok()?;
+        s.trial_of = trial_of;
         s.tidy();
         s.offer_active();
         Some(s)
+    }
+
+    /// Whether the rail offers the Switcher: to a layout arranged before it
+    /// was the default, not answered yet, and not one already.
+    pub fn offers_switcher(&self) -> bool {
+        !self.switcher_offered
+            && !self.sections.iter().flat_map(|s| &s.items).any(|i| {
+                matches!(
+                    i.piece,
+                    Piece::Projects {
+                        only_open: true,
+                        ..
+                    }
+                )
+            })
+    }
+
+    /// The Switcher on trial, keeping this layout's style and pins: they are
+    /// the person's own, and the Switcher has nowhere else for pins. The
+    /// layout itself rides along in `trial_of` for "Go back".
+    pub fn as_switcher(&self) -> Sidebar {
+        let mut s = Preset::Switcher.layout();
+        s.style = self.style;
+        let mut old = self.clone();
+        old.switcher_offered = true;
+        old.trial_of = None;
+        s.trial_of = Some(Box::new(old));
+        let pins: Vec<Item> = self
+            .sections
+            .iter()
+            .flat_map(|x| &x.items)
+            .filter(|i| matches!(i.piece, Piece::Pin { .. }))
+            .cloned()
+            .collect();
+        if !pins.is_empty() {
+            let mut pinned = Section::new("Pinned", Mode::Fixed, vec![]).titled();
+            pinned.items = pins;
+            s.sections.insert(1, pinned);
+        }
+        s
     }
 
     #[cfg(test)]
@@ -1264,6 +1329,8 @@ mod tests {
             ],
             known: View::ALL.to_vec(),
             offered_active: true,
+            switcher_offered: false,
+            trial_of: None,
         }
     }
 
@@ -1543,6 +1610,8 @@ mod tests {
             ],
             known: View::ALL.to_vec(),
             offered_active: true,
+            switcher_offered: false,
+            trial_of: None,
         };
         assert!(bare.place(View::Notes));
         assert_eq!(names(&bare), ["A[Search]", "B[Projects,Notes]"]);
@@ -1551,6 +1620,8 @@ mod tests {
             sections: vec![],
             known: vec![],
             offered_active: true,
+            switcher_offered: false,
+            trial_of: None,
         };
         assert!(!none.place(View::Notes));
     }
@@ -1600,5 +1671,71 @@ mod tests {
         assert_eq!(Extensions::load_from(&path, &Sidebar::default(), true), e);
         assert_eq!(crate::stored::tests::kept(&path).as_deref(), Some("{}"));
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_saved_add_project_button_opens_the_new_dialog() {
+        let a: TitleAction = serde_json::from_str("\"add_project\"").unwrap();
+        assert_eq!(a, TitleAction::New);
+        assert_eq!(serde_json::to_string(&a).unwrap(), "\"new\"");
+    }
+
+    #[test]
+    fn only_a_layout_from_before_the_switcher_is_offered_it() {
+        // A file saved before the flag existed.
+        let old = Sidebar::parse(br#"{"sections":[{"items":[{"type":"projects"}]}]}"#).unwrap();
+        assert!(old.offers_switcher());
+        // A fresh install starts on the Switcher; a template was a choice.
+        assert!(!Sidebar::default().offers_switcher());
+        assert!(!Preset::Everything.layout().offers_switcher());
+        // Saved on the Switcher before the flag existed.
+        let mut on = Preset::Switcher.layout();
+        on.switcher_offered = false;
+        assert!(!on.offers_switcher());
+        let mut answered = small();
+        answered.switcher_offered = true;
+        assert!(!answered.offers_switcher());
+    }
+
+    #[test]
+    fn the_switcher_keeps_the_style_and_pins() {
+        let mut old = small();
+        old.style.side = Side::Right;
+        let pin = Piece::Pin {
+            pin: Pin::Url {
+                title: "Docs".into(),
+                url: "https://example.com".into(),
+            },
+        };
+        old.insert(Item::new(pin.clone()), (2, 0));
+        let s = old.as_switcher();
+        assert_eq!(s.style.side, Side::Right);
+        assert_eq!(s.sections[1].title, "Pinned");
+        assert!(s.has(&pin));
+        assert!(!s.offers_switcher());
+        // The way back survives a save and load, and is answered.
+        let s = Sidebar::parse(s.to_json().as_bytes()).unwrap();
+        let back = s.trial_of.as_deref().unwrap();
+        assert_eq!(back.sections, old.sections);
+        assert!(!back.offers_switcher());
+        // A piece this version does not know, in either layout, is skipped
+        // without losing the layout or the way back.
+        let mut v: serde_json::Value = serde_json::from_str(&s.to_json()).unwrap();
+        let unknown = serde_json::json!({"type": "from-a-newer-arakun"});
+        for path in ["/sections/0/items", "/trial_of/sections/0/items"] {
+            v.pointer_mut(path)
+                .unwrap()
+                .as_array_mut()
+                .unwrap()
+                .push(unknown.clone());
+        }
+        let s = Sidebar::parse(v.to_string().as_bytes()).unwrap();
+        assert!(s.has(&pin));
+        assert!(s.trial_of.as_deref().unwrap().has(&pin));
+        // Without pins it is the template as it is.
+        assert_eq!(
+            small().as_switcher().sections,
+            Preset::Switcher.layout().sections
+        );
     }
 }

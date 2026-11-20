@@ -43,6 +43,7 @@ mod island;
 mod limits;
 mod menus;
 mod naming;
+mod new_dialog;
 mod notes;
 mod onboarding;
 pub(crate) mod pages;
@@ -189,6 +190,8 @@ enum Modal {
     Session(gpui::AnyView),
     /// The first-launch question about crash reports and usage counts.
     Telemetry(Entity<crate::telemetry_dialog::TelemetryDialog>),
+    /// A session or a project, from the + on the rail's Projects heading.
+    New(Entity<new_dialog::NewDialog>),
 }
 
 #[derive(Clone, Copy)]
@@ -327,8 +330,12 @@ pub struct Shell {
     rail_pick_anchor: Option<std::path::PathBuf>,
     /// Polls `git status` of the visible environment while the window is active.
     poll: Option<Task<()>>,
-    /// The last background `git fetch`, so the network is asked rarely.
+    /// When the last background `git fetch` ended, so the network is asked rarely.
     last_fetch: Option<Instant>,
+    /// A background `git fetch` is running; one at a time.
+    fetching: bool,
+    /// The polled git reads running now, so a slow one is not started again.
+    git_reads: git_actions::GitReads,
     /// Diff tabs whose file lost its changes; closed from `render` (needs a window).
     stale_diffs: Vec<(std::path::PathBuf, String)>,
     /// Open `@`/`/` completion of the composer.
@@ -884,6 +891,8 @@ impl Shell {
             rail_pick_anchor: None,
             poll: None,
             last_fetch: None,
+            fetching: false,
+            git_reads: Default::default(),
             stale_diffs: Vec::new(),
             completion: None,
             file_index: None,
@@ -1375,6 +1384,9 @@ impl Shell {
         if crate::model::Remote::is_path(env_path) {
             return;
         }
+        if !self.git_reads.start(env_path, git_actions::GitRead::Status) {
+            return;
+        }
         let path = env_path.to_path_buf();
         cx.spawn(async move |this, cx| {
             let p = path.clone();
@@ -1384,6 +1396,27 @@ impl Shell {
                 }))
                 .await;
             let _ = this.update(cx, |this, cx| {
+                let timed_out = changes.as_ref().err().or(sync.as_ref().err());
+                let timed_out = timed_out.filter(|e| git::timed_out(e));
+                let recovered = this.git_reads.status_ended(&path, timed_out.is_some());
+                if let Some(env) = this.find_env_mut(&path) {
+                    if let Some(e) = timed_out {
+                        env.git_error = Some(
+                            format!(
+                                "{e}. Arakun looks again in {} minutes.",
+                                git_actions::STATUS_PAUSE.as_secs() / 60
+                            )
+                            .into(),
+                        );
+                        cx.notify();
+                    } else if recovered && env.git_error.is_some() {
+                        env.git_error = None;
+                        cx.notify();
+                    }
+                }
+                if this.git_reads.end(&path, git_actions::GitRead::Status) {
+                    this.refresh_status(&path, cx);
+                }
                 if let Ok(sync) = sync
                     && let Some(env) = this.find_env_mut(&path)
                     && env.sync != sync
@@ -1497,19 +1530,24 @@ impl Shell {
         if !self.has_projects() || self.env().sync.remote.is_none() {
             return;
         }
-        if self.last_fetch.is_some_and(|t| t.elapsed() < FETCH_EVERY) {
+        if self.fetching || self.last_fetch.is_some_and(|t| t.elapsed() < FETCH_EVERY) {
             return;
         }
-        self.last_fetch = Some(Instant::now());
+        self.fetching = true;
         let path = self.env().path.clone();
         cx.spawn(async move |this, cx| {
             let p = path.clone();
             let fetched = cx
                 .background_spawn(crate::guard::task(async move { git::fetch(&p) }))
                 .await;
-            if fetched.is_ok() {
-                let _ = this.update(cx, |this, cx| this.refresh_status(&path, cx));
-            }
+            let _ = this.update(cx, |this, cx| {
+                this.fetching = false;
+                // Counted from the end, so a slow fetch is not followed by another at once.
+                this.last_fetch = Some(Instant::now());
+                if fetched.is_ok() {
+                    this.refresh_status(&path, cx);
+                }
+            });
         })
         .detach();
     }
@@ -2323,6 +2361,23 @@ impl Shell {
                 }
             })
         };
+        let views_on = {
+            let ext = self.extensions_view.read(cx);
+            crate::sidebar::View::EXTENSIONS
+                .iter()
+                .copied()
+                .filter(|v| ext.shows(*v))
+                .collect()
+        };
+        let project = self.has_projects().then(|| self.project()).map(|p| {
+            crate::settings_view::ProjectSettings {
+                path: p.path.clone(),
+                name: p.name.clone(),
+                setup: p.setup.clone(),
+                check: p.check.clone(),
+                remote: p.is_remote(),
+            }
+        });
         let look = crate::customize_view::Summary::of(
             &match &self.customize {
                 Some((view, _)) => view.read(cx).saved().clone(),
@@ -2337,6 +2392,8 @@ impl Shell {
                 look,
                 #[cfg(feature = "coderlabs")]
                 coderspace,
+                views_on,
+                project,
                 window,
                 cx,
             )
@@ -2365,6 +2422,29 @@ impl Shell {
                     crate::island::set_enabled(*on);
                     this.sync_island(window, cx);
                     this.save(cx);
+                }
+                SettingsEvent::Zoom(pct) => this.zoom_to(*pct, window, cx),
+                SettingsEvent::SidebarView(view, on) => {
+                    this.extensions_view
+                        .update(cx, |v, cx| v.set_view(*view, *on, cx));
+                }
+                SettingsEvent::ProjectCommand {
+                    project,
+                    check,
+                    command,
+                } => {
+                    if let Some(p) = this.projects.iter_mut().find(|p| p.path == *project) {
+                        if *check {
+                            p.check = command.clone();
+                            // A check set by hand is one the user wants.
+                            if command.is_some() {
+                                p.check_declined = false;
+                            }
+                        } else {
+                            p.setup = command.clone();
+                        }
+                        this.save(cx);
+                    }
                 }
                 SettingsEvent::RestartToUpdate => {
                     this.restarting = true;
@@ -2929,6 +3009,7 @@ impl Shell {
         self.follow_tab(cx);
         self.bring_split(prev);
         self.strip.settle_split(prev);
+        self.mark_on_screen_read(cx);
         self.unfloat_github(cx);
         self.ensure_active_live(window, cx);
         self.save(cx);
@@ -2946,6 +3027,8 @@ impl Shell {
         self.bring_split(self.strip.tab_back.last().copied());
         let strip = &mut self.strip;
         strip.settle_split(strip.tab_back.last().copied());
+        self.mark_on_screen_read(cx);
+        let strip = &mut self.strip;
         let Some(id) = strip.active().map(|t| t.id) else {
             return;
         };
@@ -3093,10 +3176,40 @@ impl Shell {
             return;
         }
         if !self.env().sessions.is_empty() || self.env().is_checkout {
-            self.quick_create_env(self.active_project, window, cx);
+            self.draft_new_session(self.active_project, window, cx);
             return;
         }
         self.show_new_session_tab(window, cx);
+    }
+
+    /// A new session in project `pi`: the New session tab of its main
+    /// checkout, ready to type in at once. The first prompt sent there makes
+    /// the worktree, so nobody waits on git before writing. On a server the
+    /// worktree is made first, as a prompt queued for it would be lost.
+    pub(super) fn draft_new_session(
+        &mut self,
+        pi: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.menu = None;
+        self.env_menu_open = false;
+        let Some(project) = self.projects.get(pi) else {
+            return;
+        };
+        let on_server = project
+            .environments
+            .get(project.active_env)
+            .is_some_and(|e| e.remote.is_some())
+            || project.is_remote();
+        let checkout = project.environments.iter().position(|e| e.is_checkout);
+        match checkout {
+            Some(ei) if !on_server => {
+                self.select_env(pi, ei, window, cx);
+                self.show_new_session_tab(window, cx);
+            }
+            _ => self.quick_create_env(pi, window, cx),
+        }
     }
 
     /// The open environment's New session tab, made when it has none.
@@ -3459,6 +3572,7 @@ impl Render for Shell {
             Modal::Automations(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),
             Modal::Session(v) => (v.clone().into_any_element(), v.entity_id().as_u64()),
             Modal::Telemetry(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),
+            Modal::New(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),
         });
         let viewport_h = window.viewport_size().height.as_f32();
         let floating_sheet = self.render_floating_sheet(cx);

@@ -140,7 +140,15 @@ pub fn cli(args: &[String]) -> i32 {
         return 0;
     }
     let result = match args.first().map(String::as_str) {
-        Some("connect") => connect_cli(&args[1..]),
+        // A usage mistake exits 2, like an unknown command; a Worker or disk
+        // failure exits 1.
+        Some("connect") => match parse_connect(&args[1..]) {
+            Ok(a) => connect_cli(a),
+            Err(e) => {
+                eprintln!("arakun github pilot connect: {e}");
+                return 2;
+            }
+        },
         Some("status") if args.len() == 1 => status_cli(),
         Some("disconnect") if args.len() == 1 => disconnect_cli(),
         Some("help") | None => {
@@ -177,19 +185,31 @@ fn parse_connect(args: &[String]) -> Result<ConnectArgs, String> {
     let mut out = ConnectArgs::default();
     let mut it = args.iter();
     while let Some(a) = it.next() {
-        let mut value = |name: &str| {
-            it.next()
-                .cloned()
-                .ok_or_else(|| format!("{name} needs a value"))
+        // `--token=t` works too. Only the flag's name goes into an error,
+        // since its value may be a token.
+        let (flag, inline) = match a.split_once('=') {
+            Some((f, v)) if f.starts_with('-') => (f, Some(v.to_string())),
+            _ => (a.as_str(), None),
         };
-        match a.as_str() {
+        let mut value = |name: &str| match inline.clone() {
+            Some(v) => Ok(v),
+            None => it
+                .next()
+                .cloned()
+                .ok_or_else(|| format!("{name} needs a value")),
+        };
+        match flag {
             "--token" => out.token = Some(value("--token")?),
             "--admin-token" => out.admin_token = Some(value("--admin-token")?),
+            "--no-admin-token" | "--no-check" if inline.is_some() => {
+                return Err(format!("{flag} takes no value"));
+            }
             "--no-admin-token" => out.no_admin = true,
             "--no-check" => out.no_check = true,
             flag if flag.starts_with('-') => return Err(format!("unknown flag {flag}")),
             url if out.url.is_empty() => out.url = url.to_string(),
-            extra => return Err(format!("one address only, not also {extra}")),
+            // Not echoed: a token typed without --token lands here.
+            _ => return Err("one address only; a token goes after --token".into()),
         }
     }
     if out.url.is_empty() {
@@ -221,8 +241,7 @@ fn token_from(flag: Option<String>, env: &str) -> Result<Option<String>, String>
     }
 }
 
-fn connect_cli(args: &[String]) -> Result<String, String> {
-    let a = parse_connect(args)?;
+fn connect_cli(a: ConnectArgs) -> Result<String, String> {
     let token = token_from(a.token, "ARAKUN_PILOT_TOKEN")?;
     let admin = if a.no_admin {
         Some(String::new())
@@ -364,6 +383,19 @@ mod tests {
         assert!(parse_connect(&both).is_err());
         assert!(parse_connect(&["--token".to_string()]).is_err());
         assert!(parse_connect(&["--bogus".to_string()]).is_err());
+    }
+
+    #[test]
+    fn flag_values_can_follow_an_equals_sign_and_stay_out_of_errors() {
+        let args = ["https://p.dev", "--token=t", "--admin-token=a"].map(String::from);
+        let a = parse_connect(&args).unwrap();
+        assert_eq!(a.token.as_deref(), Some("t"));
+        assert_eq!(a.admin_token.as_deref(), Some("a"));
+        let typo = ["https://p.dev", "--tokn=secret"].map(String::from);
+        let err = parse_connect(&typo).unwrap_err();
+        assert!(err.contains("--tokn") && !err.contains("secret"), "{err}");
+        let valued = ["https://p.dev", "--no-check=secret"].map(String::from);
+        assert!(!parse_connect(&valued).unwrap_err().contains("secret"));
     }
 
     #[test]

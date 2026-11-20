@@ -229,9 +229,10 @@ terminal-only. The status line and keybindings from your settings don't apply in
   (needs `bwrap`). They can write the environment, the repository's Git folder (not
   its config or hooks), package caches and temporary folders; other tools' logins and
   tokens (`GH_TOKEN`, cloud keys), browser profiles and files that look like secrets
-  (`.env`, keys) stay hidden. On Linux only the secret files there at the start are
-  hidden; macOS also hides ones made later. A worktree whose `.git` file leads to a
-  folder its repository doesn't list won't start sandboxed. They
+  (`.env`, keys) stay hidden. On Linux only the secret files a scan finds at the
+  start are hidden (up to 8 folders deep, 50,000 entries, skipping `node_modules`,
+  `target` and the like); macOS also hides ones made later, by name. An environment
+  whose `.git` file leads to a folder its repository doesn't list won't start. They
   keep the network and their own login (on macOS the keychain), and reach Arakun
   through a socket of their own that refuses `arakun run`, `arakun agent` and anything
   else that would act outside. On Linux, sandboxed Claude Code keeps its settings in

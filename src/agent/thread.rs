@@ -1664,7 +1664,9 @@ impl Thread {
                         let _ = progress_tx.unbounded_send(line);
                     })
                 }?;
-                if !super::sandbox::wanted(&cwd) {
+                if !super::sandbox::wanted(&cwd).map_err(|e| {
+                    anyhow!("{e}. The sandbox won't start an agent in a Git folder it can't trust.")
+                })? {
                     return Ok((spec, None));
                 }
                 // Its tools would run in arakun itself, outside any sandbox.

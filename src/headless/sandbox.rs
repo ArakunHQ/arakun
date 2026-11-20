@@ -971,11 +971,23 @@ pub fn sbpl_regex_escape(s: &str) -> String {
 /// [`secret_file`]; the scan still finds the rest of what is there at launch.
 pub fn sbpl_secret_names(root: &Path) -> String {
     let r = sbpl_regex_escape(&root.to_string_lossy());
+    // As `secret_file` says them; a stem has no dot, so `password_reset.rs` and
+    // `service.env.example` stay readable. Seatbelt reads the dot in `[^/.]` as
+    // any character, so the stem is a class of what it may hold instead.
+    const STEM: &str = "[-_A-Za-z0-9]";
+    const DATA: &str = r"(\.(json|txt|toml|yaml|yml|ini|conf|cfg))?";
+    let words = format!(
+        r"{STEM}*(secret|password|passwd|wallet|keypair|apikey|api_key|api-key){STEM}*{DATA}"
+    );
+    let token = format!(r"({STEM}*[-_])?tokens?([-_]{STEM}*)?{DATA}");
     let names = [
-        r"[^/]*\.env(\.[^/]*)?",
+        r"\.env(\.[^/]*)?",
+        r"[^/]*\.env",
         r"[^/]*\.(pem|key|p12|pfx|keystore|jks|gpg|asc)",
         r"id_(rsa|ed25519|ecdsa|dsa)[^/]*",
         r"(\.netrc|\.npmrc|\.pypirc|\.git-credentials|auth\.json|credentials(\.json|\.toml)?|\.modal\.toml)",
+        &words,
+        &token,
     ];
     let rules: Vec<String> = names
         .iter()
@@ -1368,7 +1380,8 @@ mod tests {
             "(deny file-write* (subpath \"/home/u/proj/.git/config\") (subpath \"/home/u/proj/.git/hooks\"))"
         ));
         // Secrets made later, by name.
-        assert!(p.contains("(regex #\"^/home/u/proj/(.*/)?[^/]*\\.env(\\.[^/]*)?$\")"));
+        assert!(p.contains("(regex #\"^/home/u/proj/(.*/)?\\.env(\\.[^/]*)?$\")"));
+        assert!(p.contains("(regex #\"^/home/u/proj/(.*/)?[^/]*\\.env$\")"));
         assert!(p.contains("(global-name \"com.apple.SecurityServer\")"));
         assert!(p.contains("(deny network-outbound (remote ip))"));
         // Their folders can't be renamed away from the rules, nor ttys written.
@@ -1636,6 +1649,20 @@ mod tests {
         // A secret made after the scan stays hidden too.
         std::fs::write(ws.join("sub/later.env"), "KEY=2").unwrap();
         assert!(!run("cat sub/later.env").0);
+        // By name as `secret_file` says it, and not what only looks alike.
+        for (name, hidden) in [
+            (".env.local", true),
+            ("service.env", true),
+            ("password.json", true),
+            ("gh-token.txt", true),
+            ("api_key", true),
+            ("service.env.example", false),
+            ("password_reset.rs", false),
+            ("tokenizer.json", false),
+        ] {
+            std::fs::write(ws.join("sub").join(name), "x").unwrap();
+            assert_eq!(!run(&format!("cat sub/{name}")).0, hidden, "{name}");
+        }
         assert!(!run("mv sub sub2").0);
         assert!(!run(&format!("mv {} \"$TMPDIR/ws\"", ws.display())).0);
         assert!(run("touch sub/a && rm sub/a").0);

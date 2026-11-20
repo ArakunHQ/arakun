@@ -30,7 +30,7 @@ pub fn set_projects(paths: impl IntoIterator<Item = PathBuf>) {
         .into_iter()
         .map(|p| {
             let p = crate::platform::canonicalize(&p).unwrap_or(p);
-            let git = git_common_dir(&p).ok().flatten();
+            let git = git_dirs(&p).ok().flatten().map(|(common, _)| common);
             (p, git)
         })
         .collect();
@@ -38,40 +38,45 @@ pub fn set_projects(paths: impl IntoIterator<Item = PathBuf>) {
 }
 
 /// The session in `cwd` belongs to a project with the sandbox on: `cwd` is in
-/// it, or in another worktree of its repository.
-pub fn wanted(cwd: &Path) -> bool {
+/// it or one of its environments (the shell lists both), or in another
+/// worktree of its repository. An error, so nothing starts, when `cwd`'s Git
+/// metadata can't be trusted: unsandboxed would be the quiet way out of it.
+pub fn wanted(cwd: &Path) -> Result<bool, String> {
     let projects = PROJECTS.read().unwrap();
     if projects.is_empty() {
-        return false;
+        return Ok(false);
     }
     let cwd = crate::platform::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
     if projects.iter().any(|(p, _)| cwd.starts_with(p)) {
-        return true;
+        return Ok(true);
     }
-    let Ok(Some(git)) = git_common_dir(&cwd) else {
-        return false;
-    };
-    projects.iter().any(|(_, g)| g.as_ref() == Some(&git))
+    let git = git_dirs(&cwd)?.map(|(common, _)| common);
+    Ok(git.is_some_and(|git| projects.iter().any(|(_, g)| g.as_ref() == Some(&git))))
 }
 
-/// The repository's shared Git folder: `.git` itself, or for a worktree the one
-/// its `.git` file leads to. None without one; an error when the `.git` file
-/// leads somewhere the repository doesn't list as this worktree's.
+/// The repository's shared Git folder and this checkout's own: `.git` itself
+/// for both, or for a worktree the folders its `.git` file leads to. None
+/// without one; an error when `.git` leads somewhere the repository doesn't
+/// list as this worktree's, or a `.git` folder is a link out of `ws`.
 ///
 /// The agent can rewrite a `.git` file in its workspace, and the sandbox makes
 /// what it leads to writable. So it counts only when Git registered it both
 /// ways: the folder sits under `<common>/worktrees`, and its `gitdir` file
 /// leads back here. The agent can't write those outside a repository it has.
-fn git_common_dir(ws: &Path) -> Result<Option<PathBuf>, String> {
+fn git_dirs(ws: &Path) -> Result<Option<(PathBuf, PathBuf)>, String> {
     let real = |p: &Path| crate::platform::canonicalize(p).ok();
     let dot = ws.join(".git");
     let Ok(meta) = std::fs::metadata(&dot) else {
         return Ok(None);
     };
-    if meta.is_dir() {
-        return Ok(real(&dot));
-    }
     let bad = |why: &str| Err(format!("{}: {why}", dot.display()));
+    if meta.is_dir() {
+        // A link to a folder elsewhere would make that folder writable.
+        return match real(&dot) {
+            Some(d) if real(ws).is_some_and(|w| d.starts_with(w)) => Ok(Some((d.clone(), d))),
+            _ => bad("a link to a Git folder outside it"),
+        };
+    }
     let Some(text) = small_file(&dot) else {
         return bad("not a folder nor a short file");
     };
@@ -82,13 +87,14 @@ fn git_common_dir(ws: &Path) -> Result<Option<PathBuf>, String> {
         return bad("it leads to a folder that is not there");
     };
     let common = small_file(&gitdir.join("commondir")).and_then(|c| real(&gitdir.join(c.trim())));
-    let back = small_file(&gitdir.join("gitdir")).and_then(|b| real(Path::new(b.trim())));
+    // Git writes it absolute; a relative one is relative to `gitdir`, not to us.
+    let back = small_file(&gitdir.join("gitdir")).and_then(|b| real(&gitdir.join(b.trim())));
     match common {
         Some(common)
             if gitdir.parent() == Some(common.join("worktrees").as_path())
                 && back.is_some_and(|b| Some(b) == real(&dot)) =>
         {
-            Ok(Some(common))
+            Ok(Some((common, gitdir)))
         }
         _ => bad("its repository does not list this folder (git worktree repair fixes that)"),
     }
@@ -200,6 +206,17 @@ fn seed(from: &Path, to: &Path) -> std::io::Result<()> {
         Ok(mut f) => f.write_all(&bytes),
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
         Err(e) => Err(e),
+    }
+}
+
+/// Removes a folder when dropped, unless it was taken back (`.0 = None`).
+struct RemoveOnDrop(Option<PathBuf>);
+
+impl Drop for RemoveOnDrop {
+    fn drop(&mut self) {
+        if let Some(d) = &self.0 {
+            let _ = std::fs::remove_dir_all(d);
+        }
     }
 }
 
@@ -350,15 +367,20 @@ impl Session {
                 .map(|path| Hidden { path, dir: false }),
         );
         let mut writable = vec![workspace.clone()];
-        let git = git_common_dir(&workspace).map_err(|e| {
+        let git = git_dirs(&workspace).map_err(|e| {
             anyhow!("{e}. The sandbox won't open a Git folder it can't trust; turn off Sandbox agents in Settings › Project to run this agent without it.")
         })?;
         let mut frozen = Vec::new();
-        if let Some(g) = &git {
+        if let Some((g, own_git)) = &git {
             if !g.starts_with(&workspace) {
                 writable.push(g.clone());
             }
-            frozen.extend([g.join("config"), g.join("hooks")]);
+            // With extensions.worktreeConfig, a checkout's own config counts too.
+            frozen.extend([
+                g.join("config"),
+                g.join("hooks"),
+                own_git.join("config.worktree"),
+            ]);
         }
         // Only where the agent could write it: its folder is there.
         frozen.extend(
@@ -388,6 +410,8 @@ impl Session {
             std::process::id(),
             SESSIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
+        // Until the Session holds it, a failure on the way removes the folder.
+        let mut made = RemoveOnDrop(Some(dir.clone()));
         let tmp = dir.join("tmp");
         std::fs::create_dir_all(&tmp).map_err(|e| anyhow!("{}: {e}", tmp.display()))?;
         let tmp = real(tmp);
@@ -437,6 +461,7 @@ impl Session {
                 .map_err(|e| anyhow!("{}: {e}", inside.display()))?;
             env.push(("CLAUDE_CONFIG_DIR".into(), claude.into_os_string()));
         }
+        made.0 = None;
         Ok(Session {
             runner,
             kind,
@@ -549,6 +574,9 @@ impl Session {
         let mut a: Vec<String> = [
             "--die-with-parent",
             "--new-session",
+            // Its own processes only: /proc of the host's would show their
+            // environments, tokens and all.
+            "--unshare-pid",
             "--unshare-ipc",
             "--unshare-uts",
             "--unshare-cgroup-try",
@@ -771,7 +799,8 @@ mod tests {
         assert!(write < hide && hide < show && show < freeze);
         // The workspace's own, before `git init` makes them, and later secrets.
         assert!(p.contains("(subpath \"/home/u/ws/env-a/.git/hooks\")"));
-        assert!(p.contains("(regex #\"^/home/u/ws/env-a/(.*/)?[^/]*\\.env(\\.[^/]*)?$\")"));
+        assert!(p.contains("(regex #\"^/home/u/ws/env-a/(.*/)?\\.env(\\.[^/]*)?$\")"));
+        assert!(p.contains("(regex #\"^/home/u/ws/env-a/(.*/)?[^/]*\\.env$\")"));
         assert!(p.contains("(subpath \"/home/u/.cargo/credentials.toml\")"));
         assert!(p.contains("(path-literal \"/run/user/1/arakun/sandbox/control.sock\")"));
         assert!(p.contains("(regex #\"^/home/u/\\.claude\\.json\")"));
@@ -864,6 +893,7 @@ mod tests {
         let d = crate::platform::canonicalize(std::env::temp_dir())
             .unwrap()
             .join(format!("arakun-sbx-fs-{}", std::process::id()));
+        let _rm = RemoveOnDrop(Some(d.clone()));
         let ws = d.join("ws");
         std::fs::create_dir_all(&ws).unwrap();
         std::fs::write(ws.join(".env"), "KEY=1").unwrap();
@@ -879,9 +909,12 @@ mod tests {
             std::fs::write(&outside, "host").unwrap();
         }
         let Ok(s) = Session::new(AgentKind::Codex, &ws) else {
-            // A bubblewrap that can't start here (no user namespaces in CI).
             return;
         };
+        // A runner that can't start here (bubblewrap without user namespaces in CI).
+        if s.run("true", &[], None).is_err() {
+            return;
+        }
         let dir = s.dir.clone();
         s.write(&ws.join("src/a.txt"), b"one\ntwo\n").unwrap();
         assert_eq!(s.read(&ws.join("src/a.txt"), 100).unwrap(), b"one\ntwo\n");
@@ -900,7 +933,6 @@ mod tests {
         assert!(s.read(&ws, 100).is_err());
         drop(s);
         assert!(!dir.exists());
-        std::fs::remove_dir_all(&d).unwrap();
     }
 
     #[cfg(unix)]
@@ -928,6 +960,10 @@ mod tests {
         seed(&d.join("none"), &d.join("x.json")).unwrap();
         assert!(!d.join("x.json").exists());
         std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    fn git_common_dir(ws: &Path) -> Result<Option<PathBuf>, String> {
+        git_dirs(ws).map(|o| o.map(|(common, _)| common))
     }
 
     #[test]
@@ -986,14 +1022,40 @@ mod tests {
             assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
             assert!(git_common_dir(&piped).is_err());
         }
+        // A `.git` folder that is a link out of the checkout.
+        #[cfg(unix)]
+        {
+            let linked = d.join("linked");
+            std::fs::create_dir_all(&linked).unwrap();
+            std::os::unix::fs::symlink(main.join(".git"), linked.join(".git")).unwrap();
+            assert!(git_common_dir(&linked).is_err());
+        }
+        // Git writes the backlink absolute, but a relative one is read from its folder.
+        std::fs::write(
+            main.join(".git/worktrees/env-a/gitdir"),
+            "../../../../env-a/.git\n",
+        )
+        .unwrap();
+        assert_eq!(git_common_dir(&wt), Ok(Some(main_real.join(".git"))));
+        // This checkout's own folder comes back too, for its config.worktree.
+        assert_eq!(
+            git_dirs(&wt).unwrap().map(|(_, own)| own),
+            Some(main_real.join(".git/worktrees/env-a"))
+        );
         set_projects([main.clone()]);
-        assert!(wanted(&wt) && wanted(&main.join("src")));
+        assert!(wanted(&wt).unwrap() && wanted(&main.join("src")).unwrap());
+        // Metadata it can't trust stops the launch rather than skipping the sandbox,
+        // unless the shell listed the folder as one of the project's environments.
+        assert!(wanted(&forged).is_err());
+        set_projects([main.clone(), forged.clone()]);
+        assert!(wanted(&forged).unwrap());
+        set_projects([main.clone()]);
         // A project opened at a worktree covers the main checkout too.
         set_projects([wt.clone()]);
-        assert!(wanted(&main));
-        assert!(!wanted(&d));
+        assert!(wanted(&main).unwrap());
+        assert!(!wanted(&d).unwrap());
         set_projects([]);
-        assert!(!wanted(&wt));
+        assert!(!wanted(&wt).unwrap());
         std::fs::remove_dir_all(&d).unwrap();
     }
 }

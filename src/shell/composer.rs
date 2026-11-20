@@ -768,7 +768,7 @@ impl Shell {
 
     /// The chat the composer writes to; its raccoon sits on the composer.
     pub(super) fn composer_chat(&self) -> Option<Entity<crate::agent::ThreadView>> {
-        let env = self.env();
+        let env = self.try_env()?;
         let Some(TabKind::Session { id, .. }) =
             self.strip.tabs.get(self.composer_tab()).map(|t| &t.kind)
         else {

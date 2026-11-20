@@ -114,11 +114,7 @@ impl Shell {
     pub(super) fn focus_active_content(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // Render queues this for the next frame; the last project can be
         // removed before it runs, and `env()` would then index nothing.
-        let Some(env) = self
-            .projects
-            .get(self.active_project)
-            .and_then(|p| p.environments.get(p.active_env))
-        else {
+        let Some(env) = self.try_env() else {
             return;
         };
         if env

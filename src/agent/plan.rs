@@ -373,11 +373,19 @@ pub fn seats() -> Seats {
 /// [`BORROWED_STALE`]: for the Usage tab while it is on screen, and for a
 /// session about to pick a seat.
 pub fn seats_probing(probe: &[String]) -> Seats {
+    seats_probing_if(probe, || true)
+}
+
+/// [`seats_probing`] while `still()` holds, asked once this call has its
+/// turn: waiting for another refresh can take long enough that the reason
+/// to read the named seats (the Usage tab on screen) is gone.
+pub fn seats_probing_if(probe: &[String], still: impl FnOnce() -> bool) -> Seats {
     // One refresh at a time: two sessions starting together would otherwise
     // both find a seat due and both send it a message. The second one waits,
     // then finds the first one's read in the cache.
     static ONE: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _one = ONE.lock().unwrap_or_else(|e| e.into_inner());
+    let probe = if still() { probe } else { &[] };
     let at = now();
     let mut out = cached_seats().unwrap_or_default();
     let token = borrowed_token();

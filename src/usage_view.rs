@@ -8,6 +8,7 @@ use crate::ui::Typography as _;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime};
 
 use gpui::prelude::FluentBuilder as _;
@@ -291,16 +292,34 @@ pub struct UsageView {
     projects: Vec<(PathBuf, String)>,
     focus: FocusHandle,
     scroll: ScrollHandle,
-    /// When the view was last drawn. Its own poll redraws it every [`POLL`]
-    /// while it is on screen, so an older time means it is not.
-    drawn: Option<Instant>,
-    /// Whether the shell's last frame showed this view. A window that is
-    /// not drawn keeps the last value, so [`Self::drawn`] still counts.
-    on_screen: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Whether the view is on screen, for the poll's background task.
+    shown: std::sync::Arc<Shown>,
     _poll: [Task<()>; 3],
 }
 
 impl EventEmitter<UsageEvent> for UsageView {}
+
+/// Whether the Usage view is on screen, readable off the UI thread.
+#[derive(Default)]
+struct Shown {
+    /// Whether the shell's last frame showed the view. A window that is not
+    /// drawn keeps the last value, so `drawn` counts too.
+    on_screen: AtomicBool,
+    /// When the view was last drawn. Its own poll redraws it every [`POLL`]
+    /// while it is on screen, so an older time means it is not.
+    drawn: std::sync::Mutex<Option<Instant>>,
+}
+
+impl Shown {
+    fn now(&self) -> bool {
+        self.on_screen.load(Ordering::Relaxed)
+            && self
+                .drawn
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .is_some_and(|at| at.elapsed() < 2 * POLL)
+    }
+}
 
 /// What the seats block shows (see `agent::seats`).
 #[derive(Clone, Default, PartialEq)]
@@ -331,8 +350,8 @@ impl SeatsInfo {
 
 impl UsageView {
     pub fn new(cx: &mut Context<Self>) -> Self {
-        let on_screen = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let probe_ok = on_screen.clone();
+        let shown = std::sync::Arc::new(Shown::default());
+        let probe_ok = shown.clone();
         let poll = cx.spawn(async move |this, cx| {
             loop {
                 if this.update(cx, |v, cx| v.rescan(cx)).is_err() {
@@ -345,21 +364,14 @@ impl UsageView {
             loop {
                 // Reading a named seat sends it a message, which can start its
                 // 5-hour window: only while someone looks at them.
-                let Ok(drawn) =
-                    this.update(cx, |v, _| v.drawn.is_some_and(|at| at.elapsed() < 2 * POLL))
-                else {
-                    break;
-                };
                 let probe_ok = probe_ok.clone();
                 let (info, go, devin, access) = cx
                     .background_spawn(crate::guard::task_or_default(async move {
-                        // Asked again here: the tab may have closed since.
-                        let shown = drawn && probe_ok.load(std::sync::atomic::Ordering::Relaxed);
-                        let all = if shown {
-                            plan::seats_probing(&seats::Store::open().names())
-                        } else {
-                            plan::seats()
-                        };
+                        // Asked once the refresh has its turn: the tab may
+                        // have closed while another refresh ran.
+                        let all = plan::seats_probing_if(&seats::Store::open().names(), || {
+                            probe_ok.now()
+                        });
                         (
                             SeatsInfo::read(all),
                             opencode_plan::refresh(),
@@ -460,8 +472,7 @@ impl UsageView {
             titles: HashMap::new(),
             projects: Vec::new(),
             focus: cx.focus_handle(),
-            drawn: None,
-            on_screen,
+            shown,
             scroll: ScrollHandle::new(),
             _poll: [poll, plan_poll, proxy_poll],
         }
@@ -506,8 +517,7 @@ impl UsageView {
     /// Tells the view whether the shell's frame shows it. Named seats are
     /// read only while it does: a read sends the seat a message.
     pub fn set_on_screen(&self, shown: bool) {
-        self.on_screen
-            .store(shown, std::sync::atomic::Ordering::Relaxed);
+        self.shown.on_screen.store(shown, Ordering::Relaxed);
     }
 
     pub fn focus(&self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1563,7 +1573,7 @@ impl gpui::Focusable for UsageView {
 
 impl Render for UsageView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.drawn = Some(Instant::now());
+        *self.shown.drawn.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
         let all: &[Record] = self.records.as_deref().unwrap_or_default();
         let filtered: Vec<Record>;
         let records = match self.agent_filter {

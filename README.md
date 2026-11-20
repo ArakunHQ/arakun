@@ -35,7 +35,7 @@ Written in Rust with [GPUI](https://github.com/zed-industries/zed/tree/main/crat
 
 ## Why Arakun
 
-- **Many agents, one place.** Claude Code, Droid, OpenCode, Codex, Devin and Workers AI
+- **Many agents, one place.** Claude Code, Droid, OpenCode, Codex, Devin, Cursor and Workers AI
   sessions side by side. Give each task its own git worktree so the agents don't step on each
   other.
 - **The agents can use the app.** The `arakun` command line lets an agent open pages,
@@ -186,6 +186,7 @@ copy of it, rename it back, and start a version that can read it.
 | OpenCode | The `opencode` CLI |
 | Codex | Through the ACP adapter `@agentclientprotocol/codex-acp`, which brings its own `codex` |
 | Devin | The `devin` CLI (`devin acp`) |
+| Cursor | The Cursor CLI (`cursor-agent acp`) |
 | Cloudflare Workers AI | A tool loop Arakun runs itself against the Workers AI API |
 
 The Claude Code adapter runs the Claude Code binary bundled with it (the `claude` on
@@ -440,6 +441,26 @@ after a week).
   key is only sent to the proxy it was added for, over https or to this machine. It is
   saved in `~/.local/share/arakun/cliproxy-management-key`, and the last limits read
   in `cliproxy-plan.json` next to it.
+- **Claude seats.** With several Claude subscriptions, give each Claude Code session a
+  seat of its own so parallel sessions don't drain one. Save each subscription's
+  long-lived token (from `claude setup-token`) with `arakun seat add <name>`: it is read
+  from stdin, checked with one small call (about 35 tokens of that seat) and kept in
+  `~/.local/share/arakun/seats/<name>`, readable only by you. From then on each new
+  Claude Code session starts on the seat with the most room in its 5-hour window that
+  is not near its 5-hour or weekly limit (your own sign-in and a
+  `CLAUDE_CODE_OAUTH_TOKEN` Arakun was started with count as seats too), and keeps
+  that seat for its whole life, also when it is resumed or restarted. The token goes
+  only into that session's environment; there is no proxy. If every seat is near its
+  limit, the session starts on the one with the most room and says so. The composer
+  shows the seat of the session, and the Usage tab every seat's windows and live
+  sessions. Reading a token's windows sends that seat a one-token message, so Arakun
+  does it only while the Usage tab is on screen, for `arakun seat ls`, and when a new
+  session picks its seat (waiting at most 4 seconds), and at most every 15 minutes per
+  token. A seat whose token is refused is skipped, and a session saved on it moves to
+  another seat and says so. Seats can't work
+  while `~/.claude/settings.json` sets `CLAUDE_CODE_OAUTH_TOKEN` in its `env` block,
+  because Claude Code applies that over each session's environment; the Usage tab says
+  so, and sessions start as before. Without a saved seat nothing changes.
 - **Marketplace.** Plugins and MCP servers to add, and the MCP servers, plugins, skills
   and permission rules the agents load now. Under Arakun › Extensions (or Settings ›
   General › Sidebar) you turn on the tabs the sidebar shows besides Inbox, Runs, Branches and Marketplace: GitHub, Notes,
@@ -697,7 +718,7 @@ one updater runs), `no-auto-update` (there while **Update automatically** is off
 follows nightlies and a release follows releases), `update-channel.lock` (held while the
 channel changes or an update is installed) and `update-download/` (the download, removed when it is done). The new version waits next to
 the installed one as `.arakun.update` (`.Arakun.app.update` on macOS, `.arakun.exe.update`
-on Windows), unpacked first as `.arakun.incoming`.
+on Windows, with its `.pdb` as `.arakun.exe.update.pdb`), unpacked first as `.arakun.incoming`.
 
 Arakun updates itself where it runs from, so that folder and the binary must be yours
 (the install scripts' folders are). A binary that belongs to another user, such as one a
@@ -769,7 +790,8 @@ window. On Ubuntu 23.10 and later, browser tabs also need the AppArmor profile i
 [Browser tabs on Ubuntu](#browser-tabs-on-ubuntu).
 
 **Windows:** extract `arakun-<version>-windows-x86_64.zip` and run `arakun.exe`. Keep the
-files next to it together: `arakun-helper.exe` and the CEF runtime are for browser tabs.
+files next to it together: `arakun-helper.exe` and the CEF runtime are for browser tabs,
+and `arakun.pdb` gives crash reports Arakun's function names.
 
 **macOS:** open `arakun-<version>-macos-arm64.dmg` and drag `Arakun.app` into
 `Applications`. The app and the disk image are signed with a Developer ID and notarized by
@@ -793,6 +815,11 @@ Arakun does not bundle the agents. Install the ones you want to use:
   with `devin auth login` (Settings › Devin runs it for you) or `WINDSURF_API_KEY` in
   the environment. Arakun starts `devin acp`; `ARAKUN_DEVIN_BIN` picks another `devin`
   and `ARAKUN_DEVIN_ACP` runs another command instead.
+- Cursor: the [Cursor CLI](https://cursor.com/docs/cli/installation), signed in with
+  `cursor-agent login` (Settings › Cursor runs it for you) or `CURSOR_API_KEY` in the
+  environment. Arakun starts `cursor-agent acp`; `ARAKUN_CURSOR_BIN` picks another
+  `cursor-agent` and `ARAKUN_CURSOR_ACP` runs another command instead. Cursor sessions
+  use the MCP servers in `~/.cursor/mcp.json` and the project's `.cursor/mcp.json`.
 - Workers AI: a Cloudflare API token with Workers AI access, either stored through
   `opencode auth login` or set as `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`.
 
@@ -974,6 +1001,9 @@ arakun notify "done"              # desktop notification
 arakun shrink -- cargo test       # run it and print a summary: failures, collapsed logs,
                                   # JSON outline; the whole output goes to a file it names
 arakun notices --unseen           # notices you haven't read yet
+arakun seat add work < token.txt  # save a Claude seat (a `claude setup-token` token)
+arakun seat ls                    # the seats and their 5-hour and weekly usage
+arakun seat rm work               # forget a seat
 arakun ls                         # projects, environments and sessions
 arakun show                       # bring the window up (running `arakun` again does too)
 arakun quit                       # quit Arakun, also when its window is hidden
@@ -1091,7 +1121,7 @@ arakun-server service install   # keep it running; see Keep it running
 
 `arakun-server help` lists them all.
 
-- **Agents.** Claude Code, Droid, OpenCode, Codex, Devin and Workers AI, as in the app. Sign in to
+- **Agents.** Claude Code, Droid, OpenCode, Codex, Devin, Cursor and Workers AI, as in the app. Sign in to
   each one on that machine first: the server uses its logins and its permission
   settings. An agent set to allow everything there asks for nothing here either.
   Claude Code and Codex also need their ACP adapter. The server installs a missing one

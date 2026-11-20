@@ -2231,6 +2231,7 @@ mod tests {
                 created: 1,
                 updated: 2,
                 pr: None,
+                seat: None,
             },
             entries: vec![
                 Entry::User {

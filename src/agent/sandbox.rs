@@ -195,6 +195,12 @@ fn own_frozen(kind: AgentKind, home: &Path) -> Vec<PathBuf> {
             home.join(".factory/hooks"),
         ],
         AgentKind::Devin => vec![home.join(".config/devin")],
+        // MCP servers and hooks, which run commands.
+        AgentKind::Cursor => vec![
+            home.join(".cursor/mcp.json"),
+            home.join(".cursor/hooks.json"),
+            home.join(".cursor/hooks"),
+        ],
         AgentKind::WorkersAi => Vec::new(),
     }
 }
@@ -274,6 +280,8 @@ fn own(kind: AgentKind, home: &Path) -> Vec<PathBuf> {
         ],
         AgentKind::Droid => &[".factory"],
         AgentKind::Devin => &[".devin", ".config/devin", ".local/share/devin"],
+        // Its sign-in is in ~/.cursor on macOS, ~/.config/cursor elsewhere.
+        AgentKind::Cursor => &[".cursor", ".config/cursor", ".local/share/cursor-agent"],
         AgentKind::WorkersAi => &[],
     };
     let mut out: Vec<PathBuf> = rel.iter().map(|r| home.join(r)).collect();
@@ -536,6 +544,7 @@ impl Session {
             program: self.runner.program().to_path_buf(),
             args,
             env,
+            unset: spec.unset,
         }
     }
 
@@ -545,6 +554,7 @@ impl Session {
             program: "/bin/sh".into(),
             args: vec!["-c".into(), script.into()],
             env: Vec::new(),
+            unset: Vec::new(),
         });
         let mut cmd = crate::platform::command(&spec.program);
         cmd.args(spec.args).envs(spec.env);
@@ -907,6 +917,7 @@ mod tests {
             program: "/bin/agent".into(),
             args: vec!["--acp".into()],
             env: Vec::new(),
+            unset: Vec::new(),
         });
         let at = spec.args.iter().position(|a| a == "/usr/bin/env").unwrap();
         assert_eq!(spec.args[spec.args.len() - 2..], ["/bin/agent", "--acp"]);

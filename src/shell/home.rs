@@ -147,7 +147,10 @@ impl Shell {
         let view = match alone {
             Alone::GitHub => self.github_view.clone().into_any_element(),
             Alone::Servers => self.servers_view.clone().into_any_element(),
-            Alone::Usage => self.usage_view.clone().into_any_element(),
+            Alone::Usage => {
+                self.usage_shown.set(true);
+                self.usage_view.clone().into_any_element()
+            }
         };
         self.render_alone("view-alone", back, view, window)
     }

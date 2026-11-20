@@ -24,7 +24,8 @@ feature: `arakun browse` opened a page, and `arakun page text` and `arakun page
 screenshot` read and showed it. Typing, clicking, downloads and DevTools were not tested.
 
 Release builds for Windows (from GitHub Releases) include the browser: `arakun.exe`,
-`arakun-helper.exe` and the CEF runtime next to them. Links you click open in a browser
+`arakun-helper.exe`, `arakun.pdb` (function names for crash reports) and the CEF
+runtime next to them. Links you click open in a browser
 tab; Settings › General › Open links in Arakun sends them to your own browser instead.
 To install the latest release, run this in PowerShell; it puts them in
 `%LOCALAPPDATA%\Programs\Arakun` and adds that folder to your user `PATH`:
@@ -48,7 +49,8 @@ always checks the signature.
   `GPUI_FXC_PATH` at `C:\Program Files (x86)\Windows Kits\10\bin\<version>\x64\fxc.exe`.
 - **Git for Windows**: the Changes panel, worktrees and the CI graph use `git`.
 - For the agents: **Node.js** (with `npm`) for the Claude Code and Codex adapters, Factory's
-  `droid` CLI for Droid, and the Devin CLI for Devin. `gh` if you want the CI panel.
+  `droid` CLI for Droid, the Devin CLI for Devin, and the Cursor CLI (`cursor-agent`) for
+  Cursor. `gh` if you want the CI panel.
 - For browser tabs: **CMake** and **Ninja**. They come with the *C++ CMake tools for
   Windows* component of Visual Studio Build Tools (selected by default in *Desktop
   development with C++*) and are on the `PATH` of the Developer PowerShell.
@@ -140,10 +142,11 @@ start `arakun-server serve` from Task Scheduler, with the trigger "At log on".
 | arakun-pilot's Worker address and token | By default `%USERPROFILE%\.config\arakun-pilot\client.json` (`%XDG_CONFIG_HOME%\arakun-pilot\client.json` when set to an absolute path); with `ARAKUN_STATE` set, `arakun-pilot\client.json` in the folder of that state file |
 | Notice history, saved palettes, `Ctrl+K` rules | `notices.json`, `palettes.json`, `rules.json` in `%LOCALAPPDATA%\arakun\` |
 | CLIProxyAPI management key and its accounts' last limits (Usage tab) | `cliproxy-management-key`, `cliproxy-plan.json` in `%LOCALAPPDATA%\arakun\` |
+| Claude seats' tokens (`arakun seat add`), one file per seat | `%LOCALAPPDATA%\arakun\seats\<name>` |
 | Crash reports and usage counts: the random install id, and your answer (Settings › Privacy) | `telemetry-id`, `telemetry.json` in `%LOCALAPPDATA%\arakun\` |
 | Redacted mode, while it is on (Settings › Privacy) | `redacted` in `%LOCALAPPDATA%\arakun\` |
 | Updates: the version waiting, the lock, the switch while it is off, the download (Settings › General) | `update.json`, `update.lock`, `no-auto-update`, `update-channel`, `update-channel.lock`, `update-download\` in `%LOCALAPPDATA%\arakun\` |
-| A downloaded update, until Arakun quits | `.arakun.exe.update` next to `arakun.exe` |
+| A downloaded update, until Arakun quits | `.arakun.exe.update` and `.arakun.exe.update.pdb` next to `arakun.exe` |
 
 On Linux those sessions live in the keyring (`secret-tool`); on Windows, in the Credential
 Manager (Windows Credentials, Generic Credentials).
@@ -171,9 +174,11 @@ Manager (Windows Credentials, Generic Credentials).
   rounded corners (8 px at the default roundness). This comes from the code
   (`src/shell/titlebar.rs`) and has not been checked on real Windows.
 - **Private files:** on Linux and macOS, `notices.json` (it can hold agent replies),
-  `cliproxy-management-key` and `cliproxy-plan.json` are written owner-only (mode 0600,
-  and 0700 for a folder it creates). Windows has no such modes, so there they get the
-  default access rules of `%LOCALAPPDATA%\arakun\`.
+  `cliproxy-management-key`, `cliproxy-plan.json` and the Claude seats' tokens in
+  `seats\` are written owner-only (mode 0600, and 0700 for a folder it creates).
+  Windows has no such modes, so there they get the default access rules of
+  `%LOCALAPPDATA%\arakun\`. A seat's token signs in to that Claude subscription, so
+  check those rules before you add one.
   `github.json`, `github\drafts\` and `palettes.json` are not written owner-only on any
   platform. By default `%LOCALAPPDATA%` is in your profile, and only your account,
   `SYSTEM` and the Administrators can read it. To check who can read the folder and the
@@ -221,12 +226,15 @@ Manager (Windows Credentials, Generic Credentials).
   it renames `arakun.exe` to `.arakun.exe.old` and puts the new one in its place. Then
   it restarts the Dynamic Island with the new version. A later start deletes the old
   file once nothing runs it; an old file still in use is moved aside, with a number
-  after its name, and deleted the same way. Settings has no **Restart now** button on
-  Windows: quit Arakun and open it again. The dialog the `update-policy` feature flag
-  opens (see "Updates" in the README) says **Quit and update** instead of **Restart
-  now**: it quits Arakun, which installs the release, and you open it again. A forced
-  one can't be closed: it offers that, **Quit Arakun**, and **Try again** after a
-  failed download. Not tested on real Windows yet.
+  after its name, and deleted the same way. The release's `arakun.pdb` waits as
+  `.arakun.exe.update.pdb` and replaces `arakun.pdb` right after the new `.exe` is in
+  place. If that move fails, the update still goes through, and crash reports lack
+  function names until the next one. A release without a `.pdb` updates the same way.
+  Settings has no **Restart now** button on Windows: quit Arakun and open it again. The
+  dialog the `update-policy` feature flag opens (see "Updates" in the README) says
+  **Quit and update** instead of **Restart now**: it quits Arakun, which installs the
+  release, and you open it again. A forced one can't be closed: it offers that, **Quit
+  Arakun**, and **Try again** after a failed download. Not tested on real Windows yet.
 - **Dynamic Island:** an always-on-top window at the top center of the main display's
   work area, where Linux uses a layer-shell surface. Clicks around its shape reach the
   windows below, and clicking it never takes the focus from the window you type in.

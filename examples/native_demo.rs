@@ -390,6 +390,7 @@ fn main() {
                     created: 0,
                     updated: 0,
                     pr: None,
+                    seat: None,
                 });
                 Thread::start(AgentKind::Droid, args.cwd.clone(), resume, cx)
             }

@@ -1307,6 +1307,7 @@ impl Thread {
                             created: now,
                             updated: now,
                             pr: None,
+                            seat: None,
                         }));
                     }
                 }
@@ -1488,6 +1489,7 @@ impl Thread {
                         created: now,
                         updated: now,
                         pr: None,
+                        seat: None,
                     },
                     prompt: plan.map(|p| p.text).unwrap_or_default(),
                 });

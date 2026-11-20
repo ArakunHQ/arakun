@@ -1349,6 +1349,14 @@ impl Shell {
             "Opens a terminal with Devin's login.",
             Target::SignIn(crate::agent::AgentKind::Devin),
         );
+        add(
+            "signin-cursor",
+            "square-lock02",
+            "Sign in to Cursor",
+            &[],
+            "Opens a terminal with Cursor's login.",
+            Target::SignIn(crate::agent::AgentKind::Cursor),
+        );
         // The settings pilot read last (every minute, off this thread's
         // drawing): the palette never waits on the disk.
         items.extend(cloud_command(self.pilot.read(cx).config()));

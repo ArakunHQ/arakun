@@ -128,6 +128,9 @@ pub(super) struct ServersLink {
     inboxes: HashMap<String, Value>,
     /// The last write of `inboxes` failed: the next inbox writes them again.
     inboxes_unsaved: bool,
+    /// Waits for the newest write of `inboxes` to set `inboxes_unsaved`. A
+    /// newer write drops it: only how the last one went counts.
+    inboxes_saving: Option<Task<()>>,
     /// What each local project's repository is known by (`repo_key`), read once.
     origins: HashMap<PathBuf, Option<String>>,
     /// Sessions asked of servers, until each says its session's id.
@@ -636,6 +639,7 @@ fn transcript_of(f: &Following) -> Transcript {
             created: unix_now(),
             updated: unix_now(),
             pr: None,
+            seat: None,
         },
         entries: f.entries.clone(),
         usage: Usage::default(),
@@ -740,6 +744,21 @@ fn merge(entries: &mut Vec<Entry>, page: Page, asked: usize) -> Next {
     }
 }
 
+/// Writes the kept lists off the UI thread, and sets `inboxes_unsaved` once
+/// the disk says how it went.
+fn save_inboxes(link: &mut ServersLink, cx: &mut Context<Shell>) {
+    let saved = servers::save_inboxes(&link.inboxes);
+    link.inboxes_saving = Some(cx.spawn(async move |this, cx| {
+        // The writer gone without a word is a write that did not happen.
+        let saved = saved.await.unwrap_or(false);
+        let _ = this.update(cx, |this, _| {
+            if let Some(link) = &mut this.servers {
+                link.inboxes_unsaved = !saved;
+            }
+        });
+    }));
+}
+
 impl Shell {
     /// Opens (or focuses) the Servers tab, and connects to the paired servers
     /// the first time.
@@ -833,6 +852,7 @@ impl Shell {
             following: Vec::new(),
             inboxes,
             inboxes_unsaved: false,
+            inboxes_saving: None,
             origins: HashMap::new(),
             starts: Starts::default(),
             starting_id: None,
@@ -1001,7 +1021,7 @@ impl Shell {
                     balance::save(&link.balance);
                 }
                 if link.inboxes.remove(id).is_some() || link.inboxes_unsaved {
-                    link.inboxes_unsaved = !servers::save_inboxes(&link.inboxes);
+                    save_inboxes(link, cx);
                 }
                 link.following.retain(|f| f.server != *id);
                 // What it was asked is not coming: the others' requests stay.
@@ -2561,7 +2581,7 @@ impl Shell {
                         .is_none_or(|old| !servers::same_kept(old, &kept));
                     if link.saved.iter().any(|s| s.id == id) && (changed || link.inboxes_unsaved) {
                         link.inboxes.insert(id.to_string(), kept);
-                        link.inboxes_unsaved = !servers::save_inboxes(&link.inboxes);
+                        save_inboxes(link, cx);
                     }
                     self.servers_inbox(id, &msg);
                     self.sync_remote_projects(window, cx);
@@ -3118,6 +3138,7 @@ fn empty_transcript(agent: AgentKind, title: &str) -> Transcript {
             created: unix_now(),
             updated: unix_now(),
             pr: None,
+            seat: None,
         },
         entries: Vec::new(),
         usage: Usage::default(),

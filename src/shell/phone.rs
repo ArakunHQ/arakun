@@ -694,6 +694,9 @@ impl Shell {
             ClientMsg::Options { env, agent } => {
                 let path = PathBuf::from(&env);
                 let agent = crate::model::Agent::from_key(&agent);
+                // A server's folder: what that server offers, as last said.
+                // It is asked again, for the next time.
+                self.servers_ask_settings(&path, None);
                 let list = PHONE_SETTINGS
                     .into_iter()
                     .filter_map(|s| Some((s, self.draft_choices(&path, agent, s)?)))

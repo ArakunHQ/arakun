@@ -158,6 +158,19 @@ impl Shell {
         self.menu_agent = None;
         self.menu_scroll.scroll_to_item(0);
         self.menu_cursor = None;
+        // A server's environment: its models come from the server, which is
+        // asked again each time, and the menu fills in as it answers.
+        if matches!(target, MenuTarget::ModelMenu)
+            && self.has_projects()
+            && self.env().remote.is_some()
+        {
+            let session = match self.strip.tabs.get(self.composer_tab()).map(|t| &t.kind) {
+                Some(TabKind::Session { id, .. }) => Some(id.to_string()),
+                _ => None,
+            };
+            let path = self.env().path.clone();
+            self.servers_ask_settings(&path, session.as_deref());
+        }
         self.menu = Some(ContextMenu { target, at });
         cx.notify();
     }

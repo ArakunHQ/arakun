@@ -1078,8 +1078,14 @@ impl Daemon {
             None if t.is_busy() => Some("it is working; rewind once the turn is done"),
             None if !t.can_rewind(r.entry) => Some("its agent there cannot rewind to that prompt"),
             None => {
-                self.rewinds
-                    .insert(id.to_string(), Rewinding { driving: true, ..r });
+                // A confirm whose plan is gone (another took its place) only
+                // asks for a new one: the device reviews it before it runs.
+                let r = Rewinding {
+                    driving: true,
+                    confirm: false,
+                    ..r
+                };
+                self.rewinds.insert(id.to_string(), r);
                 thread.update(cx, |t, cx| t.begin_rewind(r.entry, cx));
                 return;
             }
@@ -1147,13 +1153,26 @@ impl Daemon {
             self.transport.send(client, staged_message(&id, Err(e)));
             return;
         }
-        let files: Vec<String> = self
-            .with_entries(&id, cx, agent::edited_files)
-            .into_iter()
-            .filter_map(|p| Some(p.strip_prefix(&place).ok()?.to_string_lossy().into_owned()))
-            .filter(|p| !p.is_empty())
-            .collect();
+        // What the last turn's shell commands changed may still be worked out.
+        let pending = self
+            .live
+            .get(&id)
+            .and_then(|l| l.thread.read(cx).shell_pending());
         cx.spawn(async move |this, cx| {
+            if let Some(pending) = pending {
+                pending.await;
+            }
+            let Ok(files) = this.update(cx, |this, cx| {
+                this.with_entries(&id, cx, agent::edited_files)
+                    .into_iter()
+                    .filter_map(|p| {
+                        Some(p.strip_prefix(&place).ok()?.to_string_lossy().into_owned())
+                    })
+                    .filter(|p| !p.is_empty())
+                    .collect::<Vec<String>>()
+            }) else {
+                return;
+            };
             // Git is run to the side: a repository that hangs holds up nothing else.
             let staged = cx
                 .background_spawn(crate::guard::task(async move {
@@ -1847,7 +1866,11 @@ impl Daemon {
                 confirm,
             } => match self.thread_to_change(&session, cx) {
                 Ok(thread) => {
-                    self.asked.insert(session.clone(), client);
+                    // Only a rewind that runs makes a session to reply with; a
+                    // preview must not take a pending fork's reply.
+                    if confirm {
+                        self.asked.insert(session.clone(), client);
+                    }
                     let r = Rewinding {
                         client,
                         entry,

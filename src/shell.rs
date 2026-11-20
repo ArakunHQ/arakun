@@ -267,6 +267,9 @@ pub struct Shell {
     /// A line for the next prompt to an environment's sessions after arakun renamed
     /// its branch: they started on the old name.
     rename_notes: std::collections::HashMap<std::path::PathBuf, String>,
+    /// Where a server's first prompt put back in an environment's composer was
+    /// written: what it mentions is still looked for there when it is sent again.
+    mention_sources: std::collections::HashMap<std::path::PathBuf, std::path::PathBuf>,
     /// Sessions whose transcript is being read off the main thread, to show them.
     restoring: std::collections::HashSet<SharedString>,
     /// Reads in `restoring` an `ensure_live` beat: when one ends, its older
@@ -851,6 +854,7 @@ impl Shell {
             env_followed: false,
             refresh_gen: Default::default(),
             rename_notes: Default::default(),
+            mention_sources: Default::default(),
             restoring: Default::default(),
             restoring_stale: Default::default(),
             active_project,

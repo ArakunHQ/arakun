@@ -653,7 +653,13 @@ impl Shell {
             draft_settings: env.draft_settings.clone(),
             claude_settings: env.claude_settings.clone(),
             // What it uses now: one it inherits could change while it waits.
-            opencode_settings: opencode_draft(env),
+            // Not on a server: what this machine's OpenCode last used means
+            // nothing there.
+            opencode_settings: if env.remote.is_some() {
+                env.opencode_settings.clone()
+            } else {
+                opencode_draft(env)
+            },
             codex_settings: env.codex_settings.clone(),
             devin_settings: env.devin_settings.clone(),
             workers_ai_settings: env.workers_ai_settings.clone(),
@@ -776,10 +782,23 @@ impl Shell {
                     reachable && thread.is_some()
                 }
                 None => {
-                    if self.servers_start_first(&path, agent, &text, note.clone(), None, cx) {
+                    let picks = server_picks(self.env(), agent);
+                    let from = self.mention_sources.remove(&path);
+                    let first = super::servers::FirstPrompt {
+                        env: path.clone(),
+                        text: text.clone(),
+                        agent: agent.kind(),
+                        note: note.clone(),
+                        mentions_from: from.clone(),
+                        desktop: true,
+                    };
+                    if self.servers_start_first(first, agent, &picks, cx) {
                         self.composer_changed(cx);
                         cx.notify();
                         return;
+                    }
+                    if let Some(from) = from {
+                        self.mention_sources.insert(path.clone(), from);
                     }
                     false
                 }
@@ -884,42 +903,33 @@ impl Shell {
         self.start_session_in(&env_path, agent, summary(&text), text, true, window, cx);
     }
 
-    /// Asks the server of the environment at `path` to start a session there
-    /// with `text`, and `note` for the agent only. What `text` mentions is
-    /// also looked for in `mentions_from`, where it was written. The server's
-    /// answer opens it and names the branch; the island says why when it
-    /// could not be asked.
+    /// Asks the server of `first`'s environment to start an `agent` session
+    /// there with its text, its note for the agent only, and `settings`. What the text
+    /// mentions is also looked for where it was written. The server's answer
+    /// opens it and names the branch; the island says why when it could not
+    /// be asked.
     pub(super) fn servers_start_first(
         &mut self,
-        path: &Path,
+        first: super::servers::FirstPrompt,
         agent: model::Agent,
-        text: &str,
-        note: Option<String>,
-        mentions_from: Option<&Path>,
+        settings: &[(String, String)],
         cx: &mut Context<Self>,
     ) -> bool {
-        let prompt = match &note {
-            Some(note) => format!("{text}{}", crate::agent::chart::hint(note)),
-            None => text.to_string(),
+        let prompt = match &first.note {
+            Some(note) => format!("{}{}", first.text, crate::agent::chart::hint(note)),
+            None => first.text.clone(),
         };
         let sent = self.servers_start(
-            path,
+            &first.env,
             agent,
             &prompt,
-            &[],
+            settings,
             super::servers::Asker::Desktop,
-            mentions_from,
+            first.mentions_from.as_deref(),
         );
         // Until the server answers: it names the branch once the session
         // started, and the prompt comes back if it did not.
         if let Some(reference) = sent {
-            let first = super::servers::FirstPrompt {
-                env: path.to_path_buf(),
-                text: text.to_string(),
-                agent: agent.kind(),
-                note,
-                desktop: true,
-            };
             self.servers_first_prompt(reference, first);
             return true;
         }
@@ -948,16 +958,33 @@ impl Shell {
         let Some(env) = self.find_env_mut(env_path) else {
             return;
         };
+        // Its model and reasoning go with it, as in `start_queued`; with none
+        // picked, the server starts it on its own.
         env.agent = p.agent;
+        env.draft_settings = p.draft_settings;
+        env.claude_settings = p.claude_settings;
+        env.opencode_settings = p.opencode_settings;
+        env.codex_settings = p.codex_settings;
+        env.devin_settings = p.devin_settings;
+        env.workers_ai_settings = p.workers_ai_settings;
+        let picks = server_picks(env, p.agent);
         let note = self.rename_notes.remove(env_path);
-        let from = p.from.clone();
-        if !self.servers_start_first(env_path, p.agent, &p.text, note.clone(), Some(&from), cx) {
+        let first = super::servers::FirstPrompt {
+            env: env_path.to_path_buf(),
+            text: p.text.clone(),
+            agent: p.agent.kind(),
+            note: note.clone(),
+            mentions_from: Some(p.from.clone()),
+            desktop: true,
+        };
+        if !self.servers_start_first(first, p.agent, &picks, cx) {
             if let Some(env) = self.find_env_mut(env_path) {
                 env.draft.set(&p.text);
             }
             if let Some(note) = note {
                 self.rename_notes.insert(env_path.to_path_buf(), note);
             }
+            self.mention_sources.insert(env_path.to_path_buf(), p.from);
         }
         self.composer_changed(cx);
         cx.notify();
@@ -2500,6 +2527,30 @@ fn value_changed(
     }
 }
 
+/// The model and reasoning picked here for `env`'s next `agent` session, as
+/// a server's `start` takes them, the model first. Only picks: with none, the
+/// server starts the session on what it remembers.
+fn server_picks(env: &model::Environment, agent: model::Agent) -> Vec<(String, String)> {
+    let picked = match agent {
+        model::Agent::Droid => &env.draft_settings,
+        model::Agent::Claude => &env.claude_settings,
+        model::Agent::OpenCode => &env.opencode_settings,
+        model::Agent::Codex => &env.codex_settings,
+        model::Agent::Devin => &env.devin_settings,
+        model::Agent::WorkersAi => &env.workers_ai_settings,
+    };
+    let mut picks: Vec<(Setting, String)> = picked
+        .iter()
+        .filter(|(s, _)| matches!(s, Setting::Model | Setting::Effort))
+        .cloned()
+        .collect();
+    picks.sort_by_key(|(s, _)| *s != Setting::Model);
+    picks
+        .into_iter()
+        .map(|(s, v)| (s.key().to_string(), v))
+        .collect()
+}
+
 /// The OpenCode settings an environment's next session starts with: its own
 /// picks, and where it has no model of its own, the model last picked anywhere.
 /// The model goes first: the reasoning levels on offer depend on it.
@@ -2523,6 +2574,26 @@ pub(super) fn opencode_draft(env: &model::Environment) -> Vec<(Setting, String)>
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_server_gets_only_the_model_and_reasoning_picked() {
+        use super::{Setting, model, server_picks};
+        let mut env = model::Environment::new("/w/app".into(), None, false);
+        assert!(server_picks(&env, model::Agent::Claude).is_empty());
+        env.claude_settings = vec![
+            (Setting::Effort, "high".into()),
+            (Setting::Mode, "plan".into()),
+            (Setting::Model, "opus".into()),
+        ];
+        assert_eq!(
+            server_picks(&env, model::Agent::Claude),
+            vec![
+                ("modelId".to_string(), "opus".to_string()),
+                ("reasoningEffort".to_string(), "high".to_string()),
+            ]
+        );
+        assert!(server_picks(&env, model::Agent::Codex).is_empty());
+    }
+
     #[test]
     fn agent_version_keeps_only_the_version() {
         use super::agent_version;

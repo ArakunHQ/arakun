@@ -228,6 +228,8 @@ pub(super) struct FirstPrompt {
     pub agent: crate::agent::AgentKind,
     /// The rename note that went with it, kept for the next prompt if it did not go.
     pub note: Option<String>,
+    /// The folder it was written in, when another: kept with it if it did not go.
+    pub mentions_from: Option<PathBuf>,
     /// Typed here: it goes back in the composer if the server did not start it.
     pub desktop: bool,
 }
@@ -1382,13 +1384,15 @@ impl Shell {
     }
 
     /// A first prompt that did not start its session goes back in the
-    /// composer, with its note for the agent, unless something new was typed
-    /// there since. `why` says what happened; the island tells it.
+    /// composer, with its note for the agent and the folder it was written
+    /// in, unless something new was typed there since. `why` says what
+    /// happened; the island tells it.
     fn servers_put_back(
         &mut self,
         env_path: &Path,
         prompt: String,
         note: Option<String>,
+        mentions_from: Option<PathBuf>,
         why: &str,
         cx: &mut Context<Self>,
     ) {
@@ -1408,6 +1412,9 @@ impl Shell {
                 self.rename_notes
                     .entry(env_path.to_path_buf())
                     .or_insert(note);
+            }
+            if let Some(from) = mentions_from {
+                self.mention_sources.insert(env_path.to_path_buf(), from);
             }
         }
         if back && active {
@@ -1452,13 +1459,27 @@ impl Shell {
                     // a prompt typed here comes back.
                     None => {
                         if let Some(first) = first.filter(|f| f.desktop) {
-                            self.servers_put_back(&first.env, first.text, first.note, why, cx);
+                            self.servers_put_back(
+                                &first.env,
+                                first.text,
+                                first.note,
+                                first.mentions_from,
+                                why,
+                                cx,
+                            );
                         }
                         return;
                     }
                     Some(Asker::Desktop) => match first {
                         Some(first) => {
-                            self.servers_put_back(&first.env, first.text, first.note, why, cx);
+                            self.servers_put_back(
+                                &first.env,
+                                first.text,
+                                first.note,
+                                first.mentions_from,
+                                why,
+                                cx,
+                            );
                             return;
                         }
                         None => Remote::env_path(server, &text(msg, "env")),
@@ -1535,7 +1556,7 @@ impl Shell {
             _ => return,
         };
         let why = "The connection dropped first.";
-        self.servers_put_back(&env_path, text(msg, "text"), None, why, cx);
+        self.servers_put_back(&env_path, text(msg, "text"), None, None, why, cx);
     }
 
     /// The environment `server`'s session `session` is in.
@@ -2292,7 +2313,14 @@ impl Shell {
                     Some(Asker::Desktop) | None => {
                         if let Some(first) = first.filter(|f| f.desktop) {
                             let why = format!("The server said: {message}.");
-                            self.servers_put_back(&first.env, first.text, first.note, &why, cx);
+                            self.servers_put_back(
+                                &first.env,
+                                first.text,
+                                first.note,
+                                first.mentions_from,
+                                &why,
+                                cx,
+                            );
                         }
                         false
                     }
@@ -2995,6 +3023,7 @@ mod tests {
                 text: "fix it".into(),
                 agent: AgentKind::Claude,
                 note: None,
+                mentions_from: None,
                 desktop: true,
             };
             (server.to_string(), prompt)

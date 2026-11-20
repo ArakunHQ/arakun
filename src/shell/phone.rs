@@ -670,6 +670,7 @@ impl Shell {
                         text,
                         agent: agent.kind(),
                         note: None,
+                        mentions_from: None,
                         desktop: false,
                     };
                     self.servers_first_prompt(reference, first);

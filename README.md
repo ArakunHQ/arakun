@@ -446,10 +446,14 @@ after a week).
   a gateway set in `ANTHROPIC_BASE_URL`. Droid can also use a Factory API key you
   connect in Arakun (kept in the system keyring) or `FACTORY_API_KEY`, which goes only
   to api.factory.ai. When Claude Code runs on CLIProxyAPI, add the proxy's management key in the
-  tab to see the 5-hour and weekly limits of every claude.ai account behind it. The
-  key is only sent to the proxy it was added for, over https or to this machine. It is
-  saved in `~/.local/share/arakun/cliproxy-management-key`, and the last limits read
-  in `cliproxy-plan.json` next to it.
+  tab to see the 5-hour and weekly limits of every Claude and Codex account behind it,
+  how many still have room, and which ones the proxy holds back (cooling down, or
+  signed out). For a proxy Claude Code does not run on, use Add CLIProxyAPI (or Change
+  address) and type its address. Refresh reads the accounts now; Change key and
+  Forget key replace or remove the key. The key is only sent to the proxy it was added
+  for, over https or to this machine. It is saved in
+  `~/.local/share/arakun/cliproxy-management-key`, a typed address in
+  `cliproxy-address`, and the last limits read in `cliproxy-plan.json` next to it.
 - **Claude seats.** With several Claude subscriptions, give each Claude Code session a
   seat of its own so parallel sessions don't drain one. Save each subscription's
   long-lived token (from `claude setup-token`) with `arakun seat add <name>`: it is read

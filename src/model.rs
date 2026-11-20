@@ -989,6 +989,8 @@ pub struct Project {
     pub check: Option<String>,
     /// The user doesn't want arakun to suggest a check here.
     pub check_declined: bool,
+    /// The branch new environments start from; None for origin's default branch.
+    pub base: Option<String>,
     /// Scratch notes, shown by the Notes tab.
     pub notes: Vec<String>,
     /// Canned prompts. Nothing shows them for now; they stay in the saved

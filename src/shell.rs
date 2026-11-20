@@ -1713,9 +1713,9 @@ impl Shell {
             .position(|m| m.server.as_ref().map(|(s, _)| s) == open.as_ref())
             .unwrap_or(0);
         let (repo, name) = (project.path.clone(), project.name.clone());
-        let setup = project.setup.clone();
+        let (setup, start) = (project.setup.clone(), project.base.clone());
         let dialog = cx.new(|cx| {
-            CreateEnvDialog::new(repo, name, setup, window, cx).with_machines(machines, pick)
+            CreateEnvDialog::new(repo, name, setup, start, window, cx).with_machines(machines, pick)
         });
         let sub = cx.subscribe_in(
             &dialog,
@@ -1809,6 +1809,7 @@ impl Shell {
             return;
         }
         let (repo, project_name) = (project.path.clone(), project.name.clone());
+        let start = project.base.clone();
         let pending: Vec<String> = self
             .pending_envs
             .iter()
@@ -1845,7 +1846,7 @@ impl Shell {
                     if !git::has_commits(&repo)? {
                         return Ok(None);
                     }
-                    let base = git::origin_base(&repo);
+                    let base = git::new_env_base(&repo, start.as_deref());
                     let mut result = Err(anyhow::anyhow!("not tried"));
                     for _ in 0..2 {
                         let path = crate::model::worktree_path(&project_name, &name);
@@ -2403,6 +2404,7 @@ impl Shell {
                 name: p.name.clone(),
                 setup: p.setup.clone(),
                 check: p.check.clone(),
+                base: p.base.clone(),
                 remote: p.is_remote(),
             }
         });
@@ -2471,6 +2473,12 @@ impl Shell {
                         } else {
                             p.setup = command.clone();
                         }
+                        this.save(cx);
+                    }
+                }
+                SettingsEvent::ProjectBase { project, base } => {
+                    if let Some(p) = this.projects.iter_mut().find(|p| p.path == *project) {
+                        p.base = base.clone();
                         this.save(cx);
                     }
                 }

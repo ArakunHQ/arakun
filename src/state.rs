@@ -284,6 +284,9 @@ pub struct ProjectState {
     pub check: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub check_declined: bool,
+    /// The branch new environments start from; None for origin's default branch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<String>,
     #[serde(default)]
     pub notes: Vec<String>,
     #[serde(default)]
@@ -746,6 +749,7 @@ pub fn snapshot_with(
                 setup: p.setup.clone(),
                 check: p.check.clone(),
                 check_declined: p.check_declined,
+                base: p.base.clone(),
                 notes: p.notes.clone(),
                 monos: p.monos.clone(),
                 automations: p.automations.clone(),
@@ -1038,6 +1042,7 @@ pub fn restore(state: State) -> (Vec<Project>, usize, Layout, TabStrip) {
                 setup: p.setup,
                 check: p.check,
                 check_declined: p.check_declined,
+                base: p.base,
                 notes: p.notes,
                 monos: p.monos,
                 automations: p.automations,
@@ -1116,6 +1121,7 @@ pub fn new_project(path: &Path) -> Project {
         setup: None,
         check: None,
         check_declined: false,
+        base: None,
         notes: Vec::new(),
         monos: Vec::new(),
         automations: Vec::new(),

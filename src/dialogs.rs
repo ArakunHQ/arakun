@@ -71,9 +71,11 @@ pub struct CreateEnvDialog {
     /// The local branches are read. Until then a random name could match one, which
     /// would be checked out and later renamed.
     branches_loaded: bool,
-    /// None = the current branch on origin, fetched, or HEAD when origin has none.
+    /// None = the project's base branch on origin, fetched (`git::new_env_base`).
     /// Some("HEAD") = the local current commit.
     base: Option<String>,
+    /// The project's base branch; None for origin's default branch.
+    start: Option<String>,
     base_open: bool,
     busy: bool,
     error: Option<SharedString>,
@@ -90,6 +92,7 @@ impl CreateEnvDialog {
         repo: PathBuf,
         project: SharedString,
         setup: Option<String>,
+        start: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -165,6 +168,7 @@ impl CreateEnvDialog {
             branches: git::Branches::default(),
             branches_loaded: false,
             base: None,
+            start,
             base_open: false,
             busy: false,
             error: None,
@@ -250,6 +254,7 @@ impl CreateEnvDialog {
         let repo = self.repo.clone();
         let path = worktree_path(&self.project, &name);
         let base = self.base.clone();
+        let start = self.start.clone();
         // An existing branch is the user's, whatever it is called.
         let auto_name = name == self.suggested && !self.branches.local.contains(&name);
         cx.spawn(async move |this, cx| {
@@ -258,7 +263,7 @@ impl CreateEnvDialog {
             // The branch list can be stale or empty (a failed read): git decides.
             let result = cx
                 .background_spawn(crate::guard::task(async move {
-                    let base = base.or_else(|| git::origin_base(&repo));
+                    let base = base.or_else(|| git::new_env_base(&repo, start.as_deref()));
                     git::add_worktree(&repo, &target, &name, base.as_deref(), auto_name)
                 }))
                 .await;
@@ -304,20 +309,17 @@ impl CreateEnvDialog {
         }
     }
 
-    /// The current branch on origin, when the branch list knows one.
-    fn origin_branch(&self) -> Option<String> {
-        let remote = format!("origin/{}", self.branches.current.as_ref()?);
-        self.branches.remote.contains(&remote).then_some(remote)
-    }
-
-    /// What the default starts from. The branch list holds only what was fetched, so
-    /// without origin/<branch> in it, origin is asked when the environment is made.
+    /// What the default starts from: the project's base branch, else origin's
+    /// default branch, which the branch list has as origin/HEAD once it was fetched.
     fn default_base_label(&self) -> SharedString {
-        match (self.origin_branch(), &self.branches.current) {
-            (Some(r), _) => format!("Latest {r}").into(),
-            (None, Some(c)) => format!("Latest origin/{c}, or current commit").into(),
-            (None, None) => self.base_label_for_head(),
-        }
+        let branch = match self.start.as_deref().map(git::base_branch_name) {
+            Some(b) if !b.is_empty() => b.to_string(),
+            _ => match &self.branches.origin_head {
+                Some(b) => b.clone(),
+                None => return "Latest origin default branch".into(),
+            },
+        };
+        format!("Latest origin/{branch}").into()
     }
 }
 

@@ -77,6 +77,8 @@ pub struct FolderPicker {
     cloning: Option<SharedString>,
     /// Shown as a card inside a page (the setup's last step), not as a dialog.
     inline: bool,
+    /// Why the picker opened, in place of its usual line under the title.
+    why: Option<SharedString>,
     _input_events: Subscription,
 }
 
@@ -102,6 +104,7 @@ impl FolderPicker {
             error: None,
             cloning: None,
             inline: false,
+            why: None,
             _input_events: sub,
         };
         this.refilter(cx);
@@ -124,6 +127,12 @@ impl FolderPicker {
     /// and a shorter list, since the page around it has both and its own length.
     pub fn inline(mut self) -> Self {
         self.inline = true;
+        self
+    }
+
+    /// Says why the picker opened: what the user asked for needs a project.
+    pub fn because(mut self, why: impl Into<SharedString>) -> Self {
+        self.why = Some(why.into());
         self
     }
 
@@ -722,10 +731,10 @@ impl Render for FolderPicker {
         } else {
             ui::modal_panel("folder-picker", 600.).child(ui::modal_header(
                 "Add project",
-                Some(
+                Some(self.why.clone().unwrap_or_else(|| {
                     "Pick a git repository. Each branch you work on becomes its own environment."
-                        .into(),
-                ),
+                        .into()
+                })),
                 ui::close_button("picker-close")
                     .on_click(cx.listener(|_, _, _, cx| cx.emit(PickerEvent::Dismissed))),
             ))

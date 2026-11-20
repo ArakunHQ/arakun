@@ -186,6 +186,10 @@ pub fn transcript_markdown(title: &str, agent: &str, entries: &[super::Entry]) -
     s
 }
 
+/// How much of the conversation an agent taking it over gets inline, in
+/// bytes; the rest it reads from the linked transcript.
+pub const HANDOFF_BUDGET: usize = 16 * 1024;
+
 /// What an agent taking over `from`'s conversation is told with its first
 /// prompt: the newest messages that fit in `budget` bytes, and where the whole
 /// transcript is.

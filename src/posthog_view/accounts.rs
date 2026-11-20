@@ -4,7 +4,7 @@
 use super::*;
 
 /// What a personal API key needs to show the tab.
-const KEY_SCOPES: &str = "user:read, organization:read, project:read, query:read, feature_flag:read, error_tracking:read";
+const KEY_SCOPES: &str = "user:read, organization:read, project:read, query:read, feature_flag:read, error_tracking:read, person:read, event_definition:read, property_definition:read";
 
 impl PostHogView {
     /// After a sign-in was saved: the new session's projects, and back to the project.
@@ -66,6 +66,7 @@ impl PostHogView {
             self.current = None;
             self.overview = None;
             self.resolve(cx);
+            self.sync_tabs(cx);
         }
         cx.notify();
     }

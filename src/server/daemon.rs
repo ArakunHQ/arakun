@@ -162,6 +162,8 @@ pub struct Daemon {
     asked: HashMap<String, ClientId>,
     /// Rewinds a device asked for, until their plan is sent or they ran.
     rewinds: HashMap<String, Rewinding>,
+    /// Sessions being handed to another agent, until the new one is saved.
+    handing_over: HashSet<String>,
     /// Sessions whose entries changed since the last flush, with the lowest index that did.
     dirty: HashMap<String, usize>,
     /// Sessions whose status, permission or usage changed since the last flush.
@@ -787,6 +789,7 @@ impl Daemon {
             installed_for: HashSet::new(),
             asked: HashMap::new(),
             rewinds: HashMap::new(),
+            handing_over: HashSet::new(),
             dirty: HashMap::new(),
             state_dirty: Vec::new(),
             inbox_dirty: false,
@@ -1194,6 +1197,223 @@ impl Daemon {
             };
             self.transport.send(client, msg.to_string());
         }
+    }
+
+    /// Hands session `id` to `agent`, in the same place, as "Continue with"
+    /// does in the app: a session of `agent` takes its place, showing the
+    /// conversation so far and told about it with the next prompt, and the
+    /// old one is gone. `settings` are picked for `agent` there first.
+    /// `client` is told the new session, or why there is none.
+    fn continue_with(
+        &mut self,
+        client: ClientId,
+        id: String,
+        agent: &str,
+        settings: &[(String, String)],
+        cx: &mut Context<Self>,
+    ) {
+        let (old, agent, entries) = match self.can_continue(&id, agent, cx) {
+            Ok(ready) => ready,
+            Err(e) => return self.transport.send(client, session_error(&id, &e)),
+        };
+        let settings: Vec<(Setting, String)> = settings
+            .iter()
+            .filter_map(|(key, value)| Some((device_setting(key)?, value.clone())))
+            .collect();
+        // The folder keeps them only once the handover went through.
+        let picked = self
+            .store
+            .place(&old.place)
+            .map(|p| {
+                let mut p = p.clone();
+                for (s, value) in &settings {
+                    p.pick(agent, *s, value);
+                }
+                p.picked(agent)
+            })
+            .unwrap_or_default();
+        let talked = entries.iter().any(|e| matches!(e, Entry::User { .. }));
+        let before = conversation(&entries);
+        let linked = self.store.linked_path(&id);
+        let markdown = talked
+            .then(|| agent::notes::transcript_markdown(&old.title, old.agent.label(), &entries));
+        let thread = if talked {
+            let handoff = agent::notes::handoff(
+                old.agent.label(),
+                &old.title,
+                &entries,
+                &linked.to_string_lossy(),
+                agent::notes::HANDOFF_BUDGET,
+            );
+            Thread::continued(
+                agent,
+                old.place.clone(),
+                old.title.clone(),
+                entries,
+                handoff,
+                cx,
+            )
+        } else {
+            // Nothing was said yet: a fresh session of `agent`, nothing to keep.
+            Thread::start(agent, old.place.clone(), None, cx)
+        };
+        thread.update(cx, |t, cx| {
+            // Queued until the agent's session exists.
+            for (s, value) in &picked {
+                t.set_setting(*s, value, cx);
+            }
+        });
+        let new = store::new_id();
+        let path = self.store.transcript_path(&new);
+        let transcript = thread.read(cx).transcript(cx);
+        self.handing_over.insert(id.clone());
+        // The old session goes only once the new one is on disk; the files
+        // are written to the side, so a slow disk holds up nothing else.
+        cx.spawn(async move |this, cx| {
+            let (p, l) = (path.clone(), linked.clone());
+            let written = cx
+                .background_spawn(crate::guard::task(async move {
+                    if let Some(markdown) = markdown {
+                        l.parent()
+                            .map_or(Ok(()), std::fs::create_dir_all)
+                            .and_then(|_| std::fs::write(&l, markdown))
+                            .map_err(|e| format!("could not write {}: {e}", l.display()))?;
+                    }
+                    write_transcript(&p, &transcript)
+                        .map_err(|e| format!("could not write {}: {e}", p.display()))
+                }))
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.handing_over.remove(&id);
+                let fail = |this: &mut Self, e: String, cx: &mut Context<Self>| {
+                    thread.update(cx, |t, _| t.shutdown());
+                    let _ = std::fs::remove_file(&path);
+                    if talked {
+                        let _ = std::fs::remove_file(&linked);
+                    }
+                    this.transport.send(client, session_error(&id, &e));
+                };
+                // Something may have reached the old one meanwhile.
+                let checked = written.and_then(|()| {
+                    let (old, _, entries) = this.can_continue(&id, agent.id(), cx)?;
+                    if conversation(&entries) != before {
+                        return Err("it changed while it was being handed over; try again".into());
+                    }
+                    Ok(old)
+                });
+                let old = match checked {
+                    Ok(old) => old,
+                    Err(e) => return fail(this, e, cx),
+                };
+                let Some(at) = this.store.sessions.iter().position(|s| s.id == id) else {
+                    return fail(this, "that session is gone".into(), cx);
+                };
+                let now = unix_now();
+                // The new one takes its place in the saved list while both
+                // transcripts are still on disk: a failed save keeps the old one.
+                this.store.sessions[at] = Record {
+                    id: new.clone(),
+                    title: old.title.clone(),
+                    agent,
+                    place: old.place.clone(),
+                    created: now,
+                    updated: now,
+                    added: old.added,
+                    removed: old.removed,
+                    meta: None,
+                    failed: false,
+                    status: Status::Idle,
+                };
+                if let Err(e) = this.store.save() {
+                    this.store.sessions[at] = old;
+                    return fail(this, format!("its state could not be saved ({e})"), cx);
+                }
+                if let Some(place) = this.store.place_mut(&old.place) {
+                    for (s, value) in &settings {
+                        place.pick(agent, *s, value);
+                    }
+                }
+                this.drop_session(&id, cx);
+                this.attach(&new, thread.clone(), cx);
+                // Its adapter may have gone missing before anything listened.
+                this.install_missing_adapter(&new, &thread, cx);
+                this.save_store();
+                // The inbox goes first: the device opens the session it holds.
+                this.sync_inbox(cx);
+                eprintln!("arakun server: {new} continues {id} with {}", agent.label());
+                let msg = json!({ "type": "continued", "id": id, "session": new });
+                this.transport.send(client, msg.to_string());
+            });
+        })
+        .detach();
+    }
+
+    /// Whether session `id` can be handed to `agent` now: its record, the
+    /// agent, and the entries it has so far.
+    fn can_continue(
+        &self,
+        id: &str,
+        agent: &str,
+        cx: &App,
+    ) -> Result<(Record, AgentKind, Vec<Entry>), String> {
+        let agent = AgentKind::parse(agent).ok_or_else(|| unknown_agent(agent))?;
+        let old = self
+            .store
+            .session(id)
+            .ok_or("that session is gone")?
+            .clone();
+        self.admit(&old.place)?;
+        if old.agent == agent {
+            return Err(format!("it already runs {}", agent.label()));
+        }
+        if self.rewinds.contains_key(id) {
+            return Err("it is being rewound".into());
+        }
+        let entries = match self.thread(id) {
+            Some(thread) => {
+                let t = thread.read(cx);
+                if matches!(status_of(t), Status::Working | Status::NeedsInput) || t.in_background()
+                {
+                    return Err(
+                        "it is working; continue with another agent once the turn is done".into(),
+                    );
+                }
+                // The last turn's shell changes are not in its entries yet.
+                if t.shell_pending().is_some_and(|p| p.peek().is_none()) {
+                    return Err(
+                        "it is still recording its shell changes; try again in a moment".into(),
+                    );
+                }
+                if !t.queued().is_empty() {
+                    return Err(waiting_follow_ups());
+                }
+                t.entries().to_vec()
+            }
+            None => self.saved_entries(id)?,
+        };
+        Ok((old, agent, entries))
+    }
+
+    /// The entries saved for session `id`, whose agent is not running: none
+    /// when it has no transcript yet, and an error when the one it has
+    /// cannot be read, its last save is not written, or follow-ups wait in it.
+    fn saved_entries(&self, id: &str) -> Result<Vec<Entry>, String> {
+        let path = self.store.transcript_path(id);
+        if self.writer.behind(&path) {
+            return Err(format!(
+                "the last turn of {id} could not be saved to {} (is the disk full?)",
+                path.display()
+            ));
+        }
+        if !there(&path).map_err(|e| format!("its transcript could not be looked for ({e})"))? {
+            return Ok(Vec::new());
+        }
+        let saved = Thread::read_transcript(&path)
+            .map_err(|e| format!("its transcript could not be read ({e:#})"))?;
+        if !saved.queue.is_empty() {
+            return Err(waiting_follow_ups());
+        }
+        Ok(saved.entries)
     }
 
     /// Stages with git the files session `id` changed, and tells `client`.
@@ -2052,6 +2272,18 @@ impl Daemon {
                     .transport
                     .send(client, rewind_gone(&session, entry, Some(&e))),
             },
+            ClientMsg::ContinueWith {
+                session,
+                agent,
+                settings,
+            } => {
+                if self.handing_over.contains(&session) {
+                    let e = "it is being handed to another agent already";
+                    self.transport.send(client, session_error(&session, e));
+                } else {
+                    self.continue_with(client, session, &agent, &settings, cx);
+                }
+            }
             ClientMsg::Stage { session } => self.stage(client, session, cx),
             ClientMsg::Changes { session } => {
                 if self.store.session(&session).is_none() {
@@ -2623,7 +2855,7 @@ impl Daemon {
             self.offer_place(&p, agent).map_err(|e| {
                 if made {
                     format!(
-                        "{e}. The worktree is at {0}: once the server can save again, `arakun-server add {0}` lists it.",
+                        "{e}. The environment is at {0}: once the server can save again, `arakun-server add {0}` lists it.",
                         p.display()
                     )
                 } else {
@@ -2678,6 +2910,10 @@ impl Daemon {
     ) -> Result<(), String> {
         if let Some(s) = self.store.session(id) {
             self.admit(&s.place)?;
+        }
+        // Its conversation is being copied: a turn now would not be in it.
+        if self.handing_over.contains(id) {
+            return Err("it is being handed to another agent".into());
         }
         let thread = self.ensure_live(id, cx)?;
         thread.update(cx, |t, cx| {
@@ -3245,6 +3481,14 @@ impl Daemon {
                 ));
             }
         }
+        self.drop_session(id, cx);
+        self.save_store();
+        self.inbox_changed(cx);
+        Ok(format!("removed {id}"))
+    }
+
+    /// Session `id` and its transcript are gone, its agent stopped.
+    fn drop_session(&mut self, id: &str, cx: &mut Context<Self>) {
         if let Some(live) = self.live.remove(id) {
             live.thread.update(cx, |t, _| t.shutdown());
         }
@@ -3252,13 +3496,12 @@ impl Daemon {
             watched.retain(|w| w != id);
         }
         self.notified.remove(id);
+        self.asked.remove(id);
+        self.rewinds.remove(id);
         // A save still on its way, or one kept because it failed, would bring
         // the file back after it is deleted.
         self.writer.forget(self.store.transcript_path(id));
         self.store.remove_session(id);
-        self.save_store();
-        self.inbox_changed(cx);
-        Ok(format!("removed {id}"))
     }
 }
 
@@ -3364,6 +3607,18 @@ fn answer_question(
 }
 
 /// The setting `key` names, when it is one a device may pick.
+/// Why a session with follow-ups still to run is not handed over: the new
+/// agent would not get them.
+fn waiting_follow_ups() -> String {
+    "follow-ups are waiting in it; send or remove them first".into()
+}
+
+/// What a handover compares to see whether a session changed while its
+/// conversation was being written for the new agent.
+fn conversation(entries: &[Entry]) -> serde_json::Value {
+    serde_json::to_value(entries).unwrap_or_default()
+}
+
 fn device_setting(key: &str) -> Option<Setting> {
     Setting::from_key(key).filter(|s| DEVICE_SETTINGS.contains(s))
 }
@@ -3440,7 +3695,7 @@ fn place_failed(message: &str) -> String {
 fn no_commits() -> String {
     json!({
         "type": "place_failed",
-        "message": "That repository has no commits yet, so no worktree can be made of it.",
+        "message": "That repository has no commits yet, so no environment can be made of it.",
         "no_commits": true,
     })
     .to_string()
@@ -3819,7 +4074,7 @@ fn worktree_within(
         // A hook that failed after the checkout: the worktree is there, and
         // asking again would only say so.
         Err(e) if dest.exists() => Err(format!(
-            "{e}. The worktree is at {} anyway: `arakun-server add` it, or remove it.",
+            "{e}. The environment is at {} anyway: `arakun-server add` it, or remove it.",
             dest.display()
         )),
         Err(e) => Err(e),
@@ -4184,6 +4439,33 @@ fn checkout_origin(dir: &Path) -> Option<clone_source::CloneSource> {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn a_turn_during_a_handover_shows_in_the_conversation() {
+        let user = |text: &str| Entry::User {
+            text: text.into(),
+            at: 1,
+            elapsed_ms: None,
+            message_id: None,
+            tokens: None,
+            shell_changes: Vec::new(),
+        };
+        let agent = |text: &str| Entry::Agent { text: text.into() };
+        let before = vec![user("fix it"), agent("fixed")];
+        let snapshot = conversation(&before);
+        assert_eq!(conversation(&before.clone()), snapshot);
+
+        let mut after = before.clone();
+        after.extend([user("and the tests"), agent("done")]);
+        assert_ne!(conversation(&after), snapshot);
+
+        // A settled turn changes an entry in place, not only the count.
+        let mut settled = before.clone();
+        if let Entry::User { elapsed_ms, .. } = &mut settled[0] {
+            *elapsed_ms = Some(5);
+        }
+        assert_ne!(conversation(&settled), snapshot);
+    }
+
+    #[test]
     fn a_rewind_plan_goes_out_as_the_app_reads_it() {
         let plan = agent::RewindPlan {
             entry: 3,
@@ -4485,7 +4767,7 @@ mod tests {
         let err = worktree_in(&base, &app, "hooked").unwrap_err();
         let made = base.join("app/hooked");
         assert!(
-            err.contains(&format!("The worktree is at {} anyway", made.display())),
+            err.contains(&format!("The environment is at {} anyway", made.display())),
             "{err}"
         );
         assert_eq!(store::branch(&made).as_deref(), Some("hooked"), "it stays");

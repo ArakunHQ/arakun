@@ -65,7 +65,8 @@ const CLAIM_TIMEOUT_MS = 30_000;
 /// The longest a pairing code may stay open, whatever the computer asks.
 const PAIR_TTL_MAX_S = 300;
 
-/// How long the plan read from KV is trusted before asking again.
+/// How long the plan read from KV is trusted before asking again. A stale
+/// plan still answers while the new one is read, so no frame waits for KV.
 const PLAN_CACHE_MS = 60_000;
 
 /// The day's count is written to storage this often; a hibernation in between
@@ -91,6 +92,8 @@ interface Today {
 
 export class Relay extends DurableObject<Env> {
   private plan: { value: Plan; at: number } | null = null;
+  /// The KV read under way, so a burst of frames asks only once.
+  private planRead: Promise<Plan> | null = null;
   private burst = { second: 0, n: 0 };
   private today: Today | null = null;
   /// Claims that started writing storage, so a purge can tell one came in while it waited.
@@ -322,11 +325,21 @@ export class Relay extends DurableObject<Env> {
 
   // ---- limits --------------------------------------------------------------
 
-  /// The plan this label is on, asked of KV once a minute.
+  /// The plan this label is on, asked of KV once a minute. Only the first
+  /// frame after a wake waits for the answer; later reads happen behind the
+  /// frames, which go by the plan read before.
   private async planNow(): Promise<Plan> {
-    const now = Date.now();
-    if (!this.plan || now - this.plan.at > PLAN_CACHE_MS) this.plan = { value: await planFor(this.env.CONFIG), at: now };
-    return this.plan.value;
+    if (this.plan && Date.now() - this.plan.at <= PLAN_CACHE_MS) return this.plan.value;
+    this.planRead ??= planFor(this.env.CONFIG).then((value) => {
+      this.plan = { value, at: Date.now() };
+      this.planRead = null;
+      return value;
+    });
+    if (this.plan) {
+      this.ctx.waitUntil(this.planRead);
+      return this.plan.value;
+    }
+    return this.planRead;
   }
 
   /// Which limit a frame of `size` bytes would cross, or null while it is
@@ -344,7 +357,9 @@ export class Relay extends DurableObject<Env> {
     if (today.n >= plan.daily) return "daily";
     this.burst.n++;
     today.n++;
-    if (today.n % COUNT_FLUSH_EVERY === 0) await this.ctx.storage.put("today", today);
+    // The count may lose a few frames, so the frame need not wait for the
+    // write to be confirmed before it goes out.
+    if (today.n % COUNT_FLUSH_EVERY === 0) await this.ctx.storage.put("today", today, { allowUnconfirmed: true });
     return null;
   }
 

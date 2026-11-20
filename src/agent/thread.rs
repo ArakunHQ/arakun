@@ -556,6 +556,8 @@ pub enum RemoteAction {
     RewindPlan(usize),
     /// Rewind to before the prompt at this entry, as the plan shown said.
     Rewind(usize),
+    /// Change the model or reasoning the session is on.
+    Setting(Setting, String),
 }
 
 /// What the user made of the offer to set up a check (see [`Thread::offer_check`]).
@@ -1814,7 +1816,7 @@ impl Thread {
                 if session.is_none() {
                     let _ = this.update(cx, |t, cx| {
                         t.notice(
-                            "The agent could not reopen this session, so it starts fresh with no memory of the conversation above.",
+                            "The agent could not reopen this session, so it starts fresh with no memory of the messages above.",
                             false,
                             cx,
                         )

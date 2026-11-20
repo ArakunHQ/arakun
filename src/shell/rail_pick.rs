@@ -305,7 +305,7 @@ impl Shell {
             details.push((muted, title.clone()));
         }
         let mut body = format!(
-            "This removes the folder{s} of {n} worktree{s}. Their branches and commits stay.",
+            "This removes the folder{s} of {n} environment{s}. Their branches and commits stay.",
             s = plural(n)
         );
         if !remote.is_empty() {
@@ -322,7 +322,7 @@ impl Shell {
             .collect();
         let dialog = cx.new(|cx| {
             let mut d = ConfirmDialog::new(
-                format!("Delete {n} worktree{}?", plural(n)),
+                format!("Delete {n} environment{}?", plural(n)),
                 body,
                 "Delete",
                 true,
@@ -445,7 +445,7 @@ impl Shell {
                     action(
                         "pick-close",
                         "cancel-circle",
-                        "Close their sessions; the worktrees stay",
+                        "Close their sessions; the environments stay",
                         can_close,
                     )
                     .when(can_close, |d| {
@@ -456,7 +456,7 @@ impl Shell {
                     action(
                         "pick-delete",
                         "delete02",
-                        "Delete the worktrees…",
+                        "Delete the environments…",
                         can_delete,
                     )
                     .when(can_delete, |d| {

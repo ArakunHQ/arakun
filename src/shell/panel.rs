@@ -60,6 +60,8 @@ impl Shell {
         let env = self.env();
         let title: SharedString = if env.is_checkout {
             "Workspace".into()
+        } else if env.branch.is_empty() {
+            env.name.clone()
         } else {
             env.branch.clone()
         };
@@ -560,12 +562,11 @@ pub(super) fn session_card(
                 .text_size(px(ui::TEXT_XS))
                 .text_color(theme::text_subtle())
                 .child(icon("git-branch", 12.).text_color(theme::text_subtle()))
-                .child(
-                    div()
-                        .flex_1()
-                        .truncate()
-                        .child(format!("{project}/{branch}")),
-                )
+                .child(div().flex_1().truncate().child(if branch.is_empty() {
+                    project.to_string()
+                } else {
+                    format!("{project}/{branch}")
+                }))
                 .when_some(s.meta.as_ref().and_then(|m| m.pr.clone()), |d, url| {
                     let number = url.rsplit('/').next().unwrap_or_default().to_string();
                     d.child(
@@ -580,9 +581,11 @@ pub(super) fn session_card(
                             .hover(|s| s.bg(theme::fill_selected()).text_color(theme::content()))
                             .child(icon("git-pull-request", 11.).text_color(theme::text_faint()))
                             .child(format!("#{number}"))
-                            .on_click(move |_, _, cx| {
+                            // Through the shell, as a chat link: the GitHub tab
+                            // when `gh` can read it, else the page.
+                            .on_click(move |_, window, cx| {
                                 cx.stop_propagation();
-                                cx.open_url(&url);
+                                crate::agent::markdown::open_link(&url, window, cx);
                             }),
                     )
                 })

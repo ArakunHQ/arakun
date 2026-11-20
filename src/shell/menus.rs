@@ -82,13 +82,13 @@ impl Shell {
                             )
                             .text_color(theme::text_subtle()),
                         )
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .truncate()
-                                .child(env.branch.clone()),
-                        )
+                        .child(div().flex_1().min_w_0().truncate().child(
+                            if env.branch.is_empty() {
+                                env.name.clone()
+                            } else {
+                                env.branch.clone()
+                            },
+                        ))
                         .child(
                             div()
                                 .text_size(px(ui::TEXT_XS))
@@ -126,7 +126,7 @@ impl Shell {
                         .text_color(theme::text_subtle())
                         .hover(|s| s.bg(theme::selection_hover()).text_color(theme::content()))
                         .child(icon("add01", 14.).text_color(theme::text_subtle()))
-                        .child("New environment (worktree)…")
+                        .child("New environment…")
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.open_create_env(pi, window, cx)
                         })),
@@ -158,6 +158,19 @@ impl Shell {
         self.menu_agent = None;
         self.menu_scroll.scroll_to_item(0);
         self.menu_cursor = None;
+        // A server's environment: its models come from the server, which is
+        // asked again each time, and the menu fills in as it answers.
+        if matches!(target, MenuTarget::ModelMenu)
+            && self.has_projects()
+            && self.env().remote.is_some()
+        {
+            let session = match self.strip.tabs.get(self.composer_tab()).map(|t| &t.kind) {
+                Some(TabKind::Session { id, .. }) => Some(id.to_string()),
+                _ => None,
+            };
+            let path = self.env().path.clone();
+            self.servers_ask_settings(&path, session.as_deref());
+        }
         self.menu = Some(ContextMenu { target, at });
         cx.notify();
     }

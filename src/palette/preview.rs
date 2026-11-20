@@ -670,7 +670,7 @@ impl Palette {
             Card::Todo(text) => vec![
                 kit::preview_eyebrow("check-list", "to-do · draft").into_any_element(),
                 kit::preview_title(text.clone()).into_any_element(),
-                kit::preview_text("Kept in your to-dos. Type “to-do” or “pendiente” here to see them.").into_any_element(),
+                kit::preview_text("Kept in your to-dos. Type “to-do” here to see them.").into_any_element(),
             ],
             Card::Cloud(task) => {
                 let pilot = self.seed.pilot.clone().unwrap_or_default();

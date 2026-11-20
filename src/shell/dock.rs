@@ -62,7 +62,9 @@ impl Shell {
     }
 
     /// A terminal in the visible environment, optionally running `command`
-    /// instead of an interactive shell.
+    /// instead of an interactive shell. With no project, `command` runs in a
+    /// terminal of the home folder in the welcome's place: a sign-in needs
+    /// no project.
     pub(super) fn spawn_terminal_command(
         &mut self,
         command: Option<Vec<String>>,
@@ -71,6 +73,9 @@ impl Shell {
         cx: &mut Context<Self>,
     ) {
         if !self.has_projects() {
+            if let Some(command) = command {
+                self.spawn_terminal_alone(command, window, cx);
+            }
             return;
         }
         let cwd = self.env().path.clone();
@@ -84,9 +89,9 @@ impl Shell {
         self.spawn_terminal_in(&cwd, command, focus, window, cx);
     }
 
-    /// Opens `kind`'s sign-in in a terminal. Codex's CLI comes with its adapter,
-    /// so before any session ran it is installed first, off the main thread. A
-    /// notice says why when nothing can open: terminals need a project.
+    /// Opens `kind`'s sign-in in a terminal. Claude Code's and Codex's CLIs
+    /// come with their adapters, so before any session ran the adapter is
+    /// installed first, off the main thread.
     pub(super) fn sign_in(
         &mut self,
         kind: crate::agent::AgentKind,
@@ -96,11 +101,12 @@ impl Shell {
         use crate::island::AlertKind;
         let title = format!("Sign in to {}", kind.label());
         let cmd = crate::agent::login_command(kind);
-        if cmd.is_some() || kind != crate::agent::AgentKind::Codex {
-            self.run_account_command(&title, "sign-in", kind, cmd, window, cx);
-            return;
-        }
-        if !self.terminal_possible(&title, "sign-in", cx) {
+        let installs = matches!(
+            kind,
+            crate::agent::AgentKind::Claude | crate::agent::AgentKind::Codex
+        );
+        if cmd.is_some() || !installs {
+            self.run_account_command(&title, kind, cmd, window, cx);
             return;
         }
         let what = match crate::agent::adapter_install(kind) {
@@ -109,30 +115,32 @@ impl Shell {
                 plan.package,
                 plan.dir.display()
             ),
-            None => "Installing Codex first; the sign-in opens when it is done.".to_string(),
+            None => format!(
+                "Installing {} first; the sign-in opens when it is done.",
+                kind.label()
+            ),
         };
         self.notify(AlertKind::Info, &title, &what, None, cx);
         cx.spawn_in(window, async move |this, cx| {
             let installed = cx
-                .background_spawn(crate::guard::task(
-                    async move { crate::agent::install_codex() },
-                ))
+                .background_spawn(crate::guard::task(async move {
+                    crate::agent::install_adapter(kind)
+                }))
                 .await;
             let _ = this.update_in(cx, |this, window, cx| {
-                // The last project may have closed during the install.
-                if installed.is_ok() && !this.terminal_possible(&title, "sign-in", cx) {
-                    return;
-                }
-                let cmd = installed.and_then(|()| {
-                    crate::agent::login_command(kind)
-                        .ok_or_else(|| anyhow::anyhow!("the codex CLI is still missing"))
-                });
-                match cmd {
-                    Ok(cmd) => this.spawn_terminal_command(Some(cmd), true, window, cx),
+                match installed.map(|()| crate::agent::login_command(kind)) {
+                    Ok(Some(cmd)) => this.spawn_terminal_command(Some(cmd), true, window, cx),
+                    Ok(None) => this.notify(
+                        AlertKind::Failure,
+                        &title,
+                        &kind.missing(),
+                        Some(super::island::Open::Install(kind)),
+                        cx,
+                    ),
                     Err(e) => this.notify(
                         AlertKind::Failure,
                         &title,
-                        &format!("Installing Codex failed: {e:#}"),
+                        &format!("Installing {} failed: {e:#}", kind.label()),
                         None,
                         cx,
                     ),
@@ -151,7 +159,7 @@ impl Shell {
     ) {
         let title = format!("Sign out of {}", kind.label());
         let cmd = crate::agent::logout_command(kind);
-        self.run_account_command(&title, "sign-out", kind, cmd, window, cx);
+        self.run_account_command(&title, kind, cmd, window, cx);
     }
 
     /// Runs one of `kind`'s account commands in a terminal. `cmd` is `None`
@@ -160,37 +168,86 @@ impl Shell {
     pub(super) fn run_account_command(
         &mut self,
         title: &str,
-        what: &str,
         kind: crate::agent::AgentKind,
         cmd: Option<Vec<String>>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !self.terminal_possible(title, what, cx) {
-            return;
-        }
         match cmd {
             Some(cmd) => self.spawn_terminal_command(Some(cmd), true, window, cx),
-            None => {
-                let body = match kind {
-                    // Arakun does not install Devin, so say where it comes from.
-                    crate::agent::AgentKind::Devin => "The devin CLI was not found. Install the Devin CLI first (https://docs.devin.ai/work-with-devin/devin-cli).".to_string(),
-                    _ => format!("{} was not found. Install it first.", kind.label()),
-                };
-                self.notify(crate::island::AlertKind::Failure, title, &body, None, cx);
-            }
+            // "View" on the notice opens the page that says how to install it.
+            None => self.notify(
+                crate::island::AlertKind::Failure,
+                title,
+                &kind.missing(),
+                Some(super::island::Open::Install(kind)),
+                cx,
+            ),
         }
     }
 
-    /// Whether a terminal can open: they need a project. If not, a notice
-    /// titled `title` says so; `what` names what would have run.
-    fn terminal_possible(&mut self, title: &str, what: &str, cx: &mut Context<Self>) -> bool {
-        if self.has_projects() {
-            return true;
+    /// Runs `command` in a terminal of the home folder, shown in the
+    /// welcome's place, replacing one already there. When it exits, the
+    /// welcome comes back; when a project is added first, it moves to that
+    /// project's dock (`adopt_terminal_alone`).
+    fn spawn_terminal_alone(
+        &mut self,
+        command: Vec<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let home = crate::platform::home();
+        let terminal = match Terminal::spawn(home.clone(), Some(command), cx) {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!(
+                    "arakun: could not start a shell in {}: {e:#}",
+                    home.display()
+                );
+                return;
+            }
+        };
+        let view = cx.new(|cx| TerminalView::new(terminal.clone(), window, cx));
+        let events = cx.subscribe_in(
+            &terminal,
+            window,
+            |this, terminal, ev: &TerminalEvent, _, cx| {
+                let ours = this
+                    .terminal_alone
+                    .as_ref()
+                    .is_some_and(|a| a.terminal == *terminal);
+                match ev {
+                    TerminalEvent::Exited if ours => {
+                        this.terminal_alone = None;
+                        cx.notify();
+                    }
+                    TerminalEvent::TitleChanged => cx.notify(),
+                    _ => {}
+                }
+            },
+        );
+        window.focus(&view.focus_handle(cx), cx);
+        self.terminal_alone = Some(TerminalAlone {
+            terminal,
+            view,
+            _events: events,
+        });
+        cx.notify();
+    }
+
+    /// A project was added while a terminal showed in the welcome's place:
+    /// it goes on in that project's dock, so a sign-in isn't cut short.
+    pub(super) fn adopt_terminal_alone(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.has_projects() {
+            return;
         }
-        let body = format!("Open a project first: the {what} runs in one of its terminals.");
-        self.notify(crate::island::AlertKind::Warning, title, &body, None, cx);
-        false
+        let Some(alone) = self.terminal_alone.take() else {
+            return;
+        };
+        let path = self.env().path.clone();
+        if !crate::model::Remote::is_path(&path) {
+            self.add_terminal(&path, alone.terminal, true, window, cx);
+        }
     }
 
     /// Runs `command` in a new terminal of `env_path`; it prints `[exit N]`
@@ -538,33 +595,36 @@ impl Shell {
             .gap(crate::ui::sp(6.))
             .text_size(px(ui::TEXT_XS))
             .text_color(theme::text_subtle())
-            .child(
-                div()
-                    .id("status-branch")
-                    .flex()
-                    .items_center()
-                    .gap(crate::ui::sp(6.))
-                    .h(px(ui::DOCK_TAB_H))
-                    .px(crate::ui::sp(6.))
-                    .rounded(ui::nested(ui::RADIUS_XL, ui::DOCK_INSET))
-                    .cursor_pointer()
-                    .hover(|s| s.bg(theme::fill_selected()).text_color(theme::content()))
-                    .child(icon("git-branch", 12.).text_color(theme::text_subtle()))
-                    .child(env.branch.clone())
-                    .when(added + removed > 0, |d| {
-                        d.child(
-                            div()
-                                .text_color(theme::diff_add())
-                                .child(format!("+{added}")),
-                        )
-                        .child(
-                            div()
-                                .text_color(theme::diff_del())
-                                .child(format!("-{removed}")),
-                        )
-                    })
-                    .on_click(cx.listener(|this, _, _, cx| this.show_changes(cx))),
-            )
+            // A folder outside a repository has no branch and nothing to show changed.
+            .when(!env.branch.is_empty(), |d| {
+                d.child(
+                    div()
+                        .id("status-branch")
+                        .flex()
+                        .items_center()
+                        .gap(crate::ui::sp(6.))
+                        .h(px(ui::DOCK_TAB_H))
+                        .px(crate::ui::sp(6.))
+                        .rounded(ui::nested(ui::RADIUS_XL, ui::DOCK_INSET))
+                        .cursor_pointer()
+                        .hover(|s| s.bg(theme::fill_selected()).text_color(theme::content()))
+                        .child(icon("git-branch", 12.).text_color(theme::text_subtle()))
+                        .child(env.branch.clone())
+                        .when(added + removed > 0, |d| {
+                            d.child(
+                                div()
+                                    .text_color(theme::diff_add())
+                                    .child(format!("+{added}")),
+                            )
+                            .child(
+                                div()
+                                    .text_color(theme::diff_del())
+                                    .child(format!("-{removed}")),
+                            )
+                        })
+                        .on_click(cx.listener(|this, _, _, cx| this.show_changes(cx))),
+                )
+            })
             .when(
                 env.sync.ahead + env.sync.behind > 0 || env.pr.is_some(),
                 |d| {
@@ -632,7 +692,7 @@ impl Shell {
                 d.when_some(branch_ci, |d, (state, run)| {
                     let id = run.id;
                     let color: Hsla = match state {
-                        ci::State::Failed => theme::error().into(),
+                        ci::State::Failed => theme::failed().into(),
                         ci::State::Running | ci::State::Queued => theme::attention().into(),
                         _ => theme::mix(0.55),
                     };
@@ -647,7 +707,7 @@ impl Shell {
                             .rounded(ui::nested(ui::RADIUS_XL, ui::DOCK_INSET))
                             .cursor_pointer()
                             .text_color(color)
-                            .when(state == ci::State::Failed, |d| d.bg(gpui::rgba(0xe5484d1f)))
+                            .when(state == ci::State::Failed, |d| d.bg(color.opacity(0.12)))
                             .hover(|s| s.bg(theme::fill_selected()))
                             .child(ci_mark(state))
                             .child(runs::ci_chip_label(state, &run))
@@ -797,5 +857,18 @@ impl Shell {
             })
             .child(header)
             .when(dock_open, |d| d.child(body).child(handle))
+    }
+}
+
+/// A terminal shown in the welcome's place, for a sign-in with no project.
+pub(super) struct TerminalAlone {
+    pub(super) terminal: Entity<Terminal>,
+    view: Entity<TerminalView>,
+    _events: Subscription,
+}
+
+impl TerminalAlone {
+    pub(super) fn view(&self) -> &Entity<TerminalView> {
+        &self.view
     }
 }

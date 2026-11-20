@@ -36,6 +36,7 @@ mod drag;
 mod extensions;
 mod git_actions;
 mod github;
+pub use github::open_terminal_link;
 mod headless;
 mod home;
 mod inbox;
@@ -257,6 +258,9 @@ enum MenuKey {
     Rail(crate::agent::AgentKind),
     OpenUsage,
 }
+
+/// Opens a view, once what it needs is there (`Shell::pick_project_for`).
+type OpenView = fn(&mut Shell, &mut Window, &mut Context<Shell>);
 
 pub struct Shell {
     projects: Vec<Project>,
@@ -510,11 +514,11 @@ pub struct Shell {
     notices: RefCell<crate::notices::History>,
     /// The Inbox was open at the last frame: when it closes, what it showed counts as seen.
     inbox_open: bool,
-    /// The GitHub tab shown with no project added: the queue reads GitHub,
-    /// not a project, so it doesn't need one. It takes the welcome's place.
-    github_alone: bool,
-    /// The Servers tab shows in the welcome's place: no project was added.
-    servers_alone: bool,
+    /// The view shown in the welcome's place: one that needs no project,
+    /// opened before any was added.
+    alone: Option<home::Alone>,
+    /// A sign-in's terminal, in the welcome's place: no project was added.
+    terminal_alone: Option<dock::TerminalAlone>,
     /// `History::arrived` when the Inbox last drew: what it showed.
     inbox_shown: Cell<u64>,
     /// "Clear" was clicked once; the second click empties the history.
@@ -703,7 +707,7 @@ impl Shell {
             this.check_limit_alerts(cx);
             this.phone_usage_changed(cx);
         });
-        let session_query = cx.new(|cx| TextInput::new("Search conversations...", cx));
+        let session_query = cx.new(|cx| TextInput::new("Search sessions...", cx));
         let session_query_sub =
             cx.subscribe(&session_query, |_, input, ev: &InputEvent, cx| match ev {
                 InputEvent::Changed => cx.notify(),
@@ -1014,9 +1018,9 @@ impl Shell {
             team: None,
             notices: RefCell::new(crate::notices::load()),
             inbox_open: false,
-            github_alone: false,
             onboarding: None,
-            servers_alone: false,
+            alone: None,
+            terminal_alone: None,
             inbox_shown: Cell::new(0),
             clear_armed: false,
             restarting: false,
@@ -1575,18 +1579,52 @@ impl Shell {
     // Projects, environments and dialogs
 
     fn open_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_picker_then(None, window, cx);
+    }
+
+    /// The Add-project picker, opened because `what` (a view's name) needs a
+    /// project: it says so, and `then` opens `what` once one is added.
+    pub(super) fn pick_project_for(
+        &mut self,
+        what: &str,
+        then: OpenView,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let why = format!("{what} works in a project. Pick a git repository to open it in.");
+        self.open_picker_then(Some((why, then)), window, cx);
+    }
+
+    fn open_picker_then(
+        &mut self,
+        why: Option<(String, OpenView)>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.menu = None;
         self.env_menu_open = false;
         let existing = self.projects.iter().map(|p| p.path.clone()).collect();
-        let picker = cx.new(|cx| FolderPicker::new(existing, window, cx));
+        let (why, then) = why.unzip();
+        let picker = cx.new(|cx| {
+            let picker = FolderPicker::new(existing, window, cx);
+            match why {
+                Some(why) => picker.because(why),
+                None => picker,
+            }
+        });
         let sub = cx.subscribe_in(
             &picker,
             window,
-            |this, _, ev: &PickerEvent, window, cx| match ev {
+            move |this, _, ev: &PickerEvent, window, cx| match ev {
                 PickerEvent::Picked(path) => {
                     let path = path.clone();
                     this.close_modal(window, cx);
                     this.add_project(path, window, cx);
+                    if let Some(then) = then
+                        && this.has_projects()
+                    {
+                        then(this, window, cx);
+                    }
                 }
                 PickerEvent::Dismissed => this.close_modal(window, cx),
             },
@@ -1713,9 +1751,9 @@ impl Shell {
             .position(|m| m.server.as_ref().map(|(s, _)| s) == open.as_ref())
             .unwrap_or(0);
         let (repo, name) = (project.path.clone(), project.name.clone());
-        let setup = project.setup.clone();
+        let (setup, start) = (project.setup.clone(), project.base.clone());
         let dialog = cx.new(|cx| {
-            CreateEnvDialog::new(repo, name, setup, window, cx).with_machines(machines, pick)
+            CreateEnvDialog::new(repo, name, setup, start, window, cx).with_machines(machines, pick)
         });
         let sub = cx.subscribe_in(
             &dialog,
@@ -1809,6 +1847,7 @@ impl Shell {
             return;
         }
         let (repo, project_name) = (project.path.clone(), project.name.clone());
+        let start = project.base.clone();
         let pending: Vec<String> = self
             .pending_envs
             .iter()
@@ -1845,7 +1884,7 @@ impl Shell {
                     if !git::has_commits(&repo)? {
                         return Ok(None);
                     }
-                    let base = git::origin_base(&repo);
+                    let base = git::new_env_base(&repo, start.as_deref());
                     let mut result = Err(anyhow::anyhow!("not tried"));
                     for _ in 0..2 {
                         let path = crate::model::worktree_path(&project_name, &name);
@@ -2055,7 +2094,7 @@ impl Shell {
     /// Opens (or focuses) the Notes tab of the visible environment.
     fn open_notes_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.has_projects() {
-            self.open_picker(window, cx);
+            self.pick_project_for("The Notes tab", Self::open_notes_tab, window, cx);
             return;
         }
         self.show_view_tab("Notes", TabKind::Notes, |k| matches!(k, TabKind::Notes));
@@ -2068,7 +2107,7 @@ impl Shell {
     /// Opens (or focuses) the Memory tab of the visible environment.
     fn open_memory_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.has_projects() {
-            self.open_picker(window, cx);
+            self.pick_project_for("The Memory tab", Self::open_memory_tab, window, cx);
             return;
         }
         self.show_view_tab("Memory", TabKind::Memory, |k| matches!(k, TabKind::Memory));
@@ -2081,14 +2120,15 @@ impl Shell {
         cx.notify();
     }
 
-    /// Opens (or focuses) the Usage tab of the visible environment.
+    /// Opens (or focuses) the Usage tab of the visible environment. Plans
+    /// belong to no project: with none, it shows in the welcome's place.
     fn open_usage_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.has_projects() {
-            self.open_picker(window, cx);
-            return;
+        if self.has_projects() {
+            self.show_view_tab("Usage", TabKind::Usage, |k| matches!(k, TabKind::Usage));
+            self.note_active_tab(cx);
+        } else {
+            self.show_alone(Some(home::Alone::Usage), cx);
         }
-        self.show_view_tab("Usage", TabKind::Usage, |k| matches!(k, TabKind::Usage));
-        self.note_active_tab(cx);
         self.sync_usage_view(cx);
         self.usage_view.update(cx, |v, cx| v.focus(window, cx));
         cx.notify();
@@ -2110,7 +2150,7 @@ impl Shell {
     /// Opens (or focuses) the Design system tab of the visible environment.
     fn open_gallery_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.has_projects() {
-            self.open_picker(window, cx);
+            self.pick_project_for("The Design system tab", Self::open_gallery_tab, window, cx);
             return;
         }
         self.show_view_tab("Design system", TabKind::Gallery, |k| {
@@ -2124,7 +2164,7 @@ impl Shell {
     /// Opens (or focuses) the Isometric tab of the visible environment.
     fn open_iso_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.has_projects() {
-            self.open_picker(window, cx);
+            self.pick_project_for("The Isometric tab", Self::open_iso_tab, window, cx);
             return;
         }
         self.show_view_tab("Isometric", TabKind::Isometric, |k| {
@@ -2217,7 +2257,7 @@ impl Shell {
         }
         let repo = project.path.clone();
         let path = env.path.clone();
-        let branch = (env.branch.as_ref() != "detached HEAD").then(|| env.branch.to_string());
+        let branch = env.checked_out().map(str::to_string);
         let dirty = env.changes.len();
         // Taken now: a refresh that sees the worktree gone can drop the
         // environment, sessions and all, before `Deleted` arrives.
@@ -2323,9 +2363,20 @@ impl Shell {
         cx.notify();
     }
 
+    /// A pull request or issue in the GitHub tab when `gh` can read it, else
+    /// the page as `open_page` opens it.
+    fn open_url(&mut self, url: String, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(item) = self.github_item(&url, cx) {
+            self.open_github_tab(window, cx);
+            self.github_view.update(cx, |v, cx| v.reveal(&item, cx));
+        } else {
+            self.open_page(url, window, cx);
+        }
+    }
+
     /// In a arakun browser tab when there is an environment to hold it and the user
     /// keeps links in Arakun, else the desktop browser.
-    fn open_url(&mut self, url: String, window: &mut Window, cx: &mut Context<Self>) {
+    fn open_page(&mut self, url: String, window: &mut Window, cx: &mut Context<Self>) {
         if self.has_projects() && crate::browser::links_in_arakun() {
             self.open_browser_tab(url, window, cx);
         } else {
@@ -2403,6 +2454,7 @@ impl Shell {
                 name: p.name.clone(),
                 setup: p.setup.clone(),
                 check: p.check.clone(),
+                base: p.base.clone(),
                 remote: p.is_remote(),
             }
         });
@@ -2474,6 +2526,12 @@ impl Shell {
                         this.save(cx);
                     }
                 }
+                SettingsEvent::ProjectBase { project, base } => {
+                    if let Some(p) = this.projects.iter_mut().find(|p| p.path == *project) {
+                        p.base = base.clone();
+                        this.save(cx);
+                    }
+                }
                 SettingsEvent::RestartToUpdate => {
                     this.restarting = true;
                     cx.quit();
@@ -2531,14 +2589,7 @@ impl Shell {
                     this.close_modal(window, cx);
                     let cmd = crate::agent::opencode_go_login_command();
                     let kind = crate::agent::AgentKind::OpenCode;
-                    this.run_account_command(
-                        "Sign in to OpenCode Go",
-                        "sign-in",
-                        kind,
-                        cmd,
-                        window,
-                        cx,
-                    );
+                    this.run_account_command("Sign in to OpenCode Go", kind, cmd, window, cx);
                 }
                 SettingsEvent::OpenCodeSignOut => {
                     this.close_modal(window, cx);
@@ -3485,6 +3536,67 @@ impl Shell {
                 .into_any_element(),
         }
     }
+
+    /// Tab and Shift+Tab move between controls. This listens last, so a view
+    /// that uses Tab itself (a field completing, the new-session dialog)
+    /// already took it. Terminals, pages and the composer type it instead:
+    /// not all of them stop the key, so they are left out by name.
+    fn tab_key(&mut self, ev: &gpui::KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let k = &ev.keystroke;
+        let m = k.modifiers;
+        if k.key != "tab" || m.control || m.alt || m.platform || m.function {
+            return;
+        }
+        if self.composer_focus.is_focused(window) || types_tab(&window.context_stack()) {
+            return;
+        }
+        let step = |window: &mut Window, cx: &mut Context<Self>| {
+            if m.shift {
+                window.focus_prev(cx);
+            } else {
+                window.focus_next(cx);
+            }
+        };
+        step(window, cx);
+        // gpui's tab order spans the window, so an open dialog would let Tab
+        // reach the controls behind it. Step on to the next stop inside one;
+        // back at the first stop means no dialog is open.
+        let first = window.focused(cx);
+        for _ in 0..MAX_TAB_STOPS {
+            if in_modal(&window.context_stack()) {
+                break;
+            }
+            step(window, cx);
+            let now = window.focused(cx);
+            if now.is_none() || now == first {
+                break;
+            }
+        }
+        if !in_modal(&window.context_stack())
+            && let Some(first) = first
+        {
+            window.focus(&first, cx);
+        }
+        cx.stop_propagation();
+    }
+}
+
+/// How many tab stops Tab passes at most looking for one inside a dialog.
+const MAX_TAB_STOPS: usize = 1024;
+
+/// Whether focus is inside a dialog (`ui::modal_panel`).
+fn in_modal(contexts: &[gpui::KeyContext]) -> bool {
+    contexts.iter().any(|c| c.contains(ui::MODAL_CONTEXT))
+}
+
+/// Whether focus is in something that types a Tab or moves with it: a
+/// terminal, a web page or the palette.
+fn types_tab(contexts: &[gpui::KeyContext]) -> bool {
+    contexts.iter().any(|c| {
+        ["Terminal", "Browser", "Palette"]
+            .iter()
+            .any(|name| c.contains(name))
+    })
 }
 
 impl Render for Shell {
@@ -3513,14 +3625,18 @@ impl Render for Shell {
         let has_projects = self.has_projects();
         self.fit_side_cards(window);
         if has_projects {
-            // With a project the GitHub tab is a tab again; without one later,
-            // the welcome comes back first. The Servers tab too.
-            self.github_alone = false;
-            // The Servers tab in the welcome's place goes with the welcome, and
-            // the server is told nobody is looking. After this frame: telling
-            // it updates the view, which cannot happen while this one draws.
-            if std::mem::take(&mut self.servers_alone) {
+            // With a project a view in the welcome's place is a tab again;
+            // without one later, the welcome comes back first. The server is
+            // told nobody looks at its tab now. After this frame: telling it
+            // updates the view, which cannot happen while this one draws.
+            if self.alone.take() == Some(home::Alone::Servers) {
                 cx.defer_in(window, |this, _, cx| this.servers_tab_closed(cx));
+            }
+            // A sign-in started before the first project goes on in its dock.
+            if self.terminal_alone.is_some() {
+                cx.defer_in(window, |this, window, cx| {
+                    this.adopt_terminal_alone(window, cx)
+                });
             }
         }
         let rail_right = self.sidebar.style.side == crate::sidebar::Side::Right;
@@ -3576,15 +3692,25 @@ impl Render for Shell {
                         .when_some(self.render_image_drop_zone(cx), |d, zone| d.child(zone)),
                 )
                 .into_any_element()
-        } else if self.servers_alone {
-            self.render_servers_alone(window, cx).into_any_element()
-        } else if self.github_alone {
-            self.render_github_alone(window, cx).into_any_element()
+        } else if let Some(alone) = &self.terminal_alone {
+            self.render_terminal_alone(alone, window, cx)
+                .into_any_element()
+        } else if let Some(alone) = self.alone {
+            self.render_view_alone(alone, window, cx).into_any_element()
         } else {
             self.render_welcome(window, cx).into_any_element()
         };
 
         let palette_open = matches!(self.modal, Some((Modal::Palette(_), _)));
+        // Dialogs sit in the middle, like the system's own. Lists that filter
+        // as you type stay near the top, so they don't jump as their height changes.
+        let center_modal = !matches!(
+            self.modal,
+            Some((
+                Modal::Palette(_) | Modal::Picker(_) | Modal::Attach(_) | Modal::New(_),
+                _
+            ))
+        );
         let modal: Option<(AnyElement, u64)> = self.modal.as_ref().map(|(m, _)| match m {
             Modal::Picker(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),
             Modal::Attach(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),
@@ -3812,6 +3938,7 @@ impl Render for Shell {
                 }),
             )
             .map(|d| self.pane_handlers(d, cx))
+            .on_key_down(cx.listener(Self::tab_key))
             .capture_key_down(|ev: &gpui::KeyDownEvent, window, cx| {
                 if ev.keystroke.key == "escape" && crate::agent::markdown::close_preview(window) {
                     cx.stop_propagation();
@@ -3925,7 +4052,13 @@ impl Render for Shell {
                         .flex()
                         .flex_col()
                         .items_center()
-                        .pt(relative(0.10))
+                        .map(|d| {
+                            if center_modal {
+                                d.pt(crate::ui::sp(12.))
+                            } else {
+                                d.pt(relative(0.10))
+                            }
+                        })
                         .pb(crate::ui::sp(12.))
                         .px(crate::ui::sp(12.))
                         .occlude()
@@ -3947,6 +4080,7 @@ impl Render for Shell {
                                 .flex()
                                 .flex_col()
                                 .items_center()
+                                .when(center_modal, |d| d.justify_center())
                                 .flex_1()
                                 .min_h_0()
                                 .w_full()
@@ -4408,5 +4542,17 @@ mod tests {
         // The open project stays open at its new index.
         assert_eq!(active, 1);
         assert_eq!(projects[active].path, other);
+    }
+
+    #[test]
+    fn tab_stays_in_what_types_it() {
+        let ctx = |s: &str| gpui::KeyContext::parse(s).unwrap();
+        assert!(!types_tab(&[ctx("Shell")]));
+        assert!(!types_tab(&[ctx("Shell"), ctx("ThreadView")]));
+        assert!(types_tab(&[ctx("Shell"), ctx("Terminal")]));
+        assert!(types_tab(&[ctx("Shell"), ctx("Browser")]));
+        assert!(types_tab(&[ctx("Shell"), ctx("Palette"), ctx("TextInput")]));
+        assert!(in_modal(&[ctx("Shell"), ctx(ui::MODAL_CONTEXT)]));
+        assert!(!in_modal(&[ctx("Shell"), ctx("ThreadView")]));
     }
 }

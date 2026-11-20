@@ -199,6 +199,17 @@ impl TextInput {
         cx.notify();
     }
 
+    /// Empties the input without a Changed event, for callers resetting it
+    /// rather than answering what the user typed.
+    pub fn clear(&mut self, cx: &mut Context<Self>) {
+        self.content = "".into();
+        self.selected_range = 0..0;
+        self.selection_reversed = false;
+        self.marked_range = None;
+        self.motion.hold();
+        cx.notify();
+    }
+
     /// Replaces the content and puts the caret at the end.
     pub fn set_text(&mut self, text: impl Into<SharedString>, cx: &mut Context<Self>) {
         self.content = text.into();

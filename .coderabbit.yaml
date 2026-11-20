@@ -13,9 +13,9 @@ tone_instructions: >-
   why, then the fix. No praise, no filler, no emoji.
 
 reviews:
-  # Only the most important feedback. Every comment has to be answered
-  # (AGENTS.md), so a minor one costs as much as a real bug.
-  profile: quiet
+  # Balanced feedback, CodeRabbit's default. `quiet` gives only the most
+  # important comments. Every comment still has to be answered (AGENTS.md).
+  profile: chill
 
   # Requests changes on blocking findings (major and critical only). Approves
   # pull requests it rates moderate risk or less, once those findings are
@@ -26,9 +26,9 @@ reviews:
   # overrides already cover the sensitive paths.
   # The Reviewers workflow dismisses an approval of a pull request from
   # outside the team, because overrides can only match members of a team. It
-  # also dismisses one when the author resolved CodeRabbit's threads in the
-  # GitHub UI, which no setting here can stop, or when CodeRabbit approves
-  # with threads still open, and asks a person.
+  # also dismisses one when CodeRabbit approves with threads still open, and
+  # asks a person. Authors may resolve CodeRabbit's threads they fixed in the
+  # GitHub UI (CONTRIBUTING.md), so an approval can follow that.
   auto_approvals:
     enabled: true
     max_merge_risk: moderate
@@ -230,6 +230,7 @@ reviews:
     - path: "src/**/*.rs"
       instructions: |
         UI code (views, dialogs, the sidebar, anything that builds GPUI elements) must use the design system: colors, grays, text sizes, radii, heights and fonts from `theme` and `ui` (`theme::text_muted()`, `theme::border()`, `ui::TEXT_SM`, `ui::RADIUS_*`, `ui::BUTTON_H`, `theme::FONT_MONO`). Flag hand-written values where the system has a name. `src/design_lint.rs` catches colors, text sizes and fonts, but not corner radii or spacing, so check those by eye.
+        Text the user reads uses the glossary under "Words in the interface" in CONTRIBUTING.md (environment, session, palette, color scheme, Workspace panel, notice). `src/words_lint.rs` catches the retired words it knows; flag a new name for something the glossary already names.
     - path: "src/ui/**"
       instructions: |
         This is the design system itself. A change here affects every view. Check that a new token or component is used consistently and shows up in the gallery (`src/gallery_view.rs`).

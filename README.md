@@ -104,10 +104,11 @@ copy of it, rename it back, and start a version that can read it.
   elsewhere that run or need you. The dropdown says the same per project. The **+** on
   the Projects heading opens **New**: a session in the open project or another one, or
   a project to add (`Ctrl+T` and `Ctrl+O` pick them). `Ctrl+Shift+N` always makes a new
-  worktree at once on a random branch from the current branch as it is on `origin`,
-  fetched first (or the local commit when origin has none; on a server, from that
-  server's checkout, with no fetch). File › New Environment with Options… asks for
-  the branch and where to start from, the local commit among them. Every environment
+  worktree at once on a random branch from origin's default branch (usually `main`),
+  fetched first, or from the project's **Base branch** set in Settings › Project. When
+  origin has no such branch it starts from the local one, else the local commit; on a
+  server, from that server's checkout, with no fetch. File › New Environment with
+  Options… asks for the branch and where to start from, the local commit among them. Every environment
   has its own sessions, terminals and draft prompt. The window has one row of tabs for
   all of them: a session, file, diff or browser tab belongs to its environment, and
   going to the tab shows that environment. Going to an environment shows the tab it
@@ -163,11 +164,14 @@ copy of it, rename it back, and start a version that can read it.
   the optional `browser` cargo feature. Agents can drive pages on localhost through
   `arakun page` (screenshot, console, click, type, eval). Links you click open in a
   browser tab; turn off Settings › General › Open links in Arakun to open them in your
-  own browser instead. That covers links from chats, the GitHub view and pins; a link
+  own browser instead. That covers links from sessions, the GitHub view and pins; a link
   clicked inside a browser tab always stays in Arakun. Builds without the browser open
   links in your own browser from the start. The choice is
   saved in `~/.local/share/arakun/open-links` (`%LOCALAPPDATA%\arakun\open-links` on
-  Windows).
+  Windows). A link to a pull request or issue on the host `gh` is signed in to opens in
+  the GitHub tab instead, from a chat, a terminal (⌘-click, Ctrl-click elsewhere), the
+  palette, the pull request button or a session card's pull request chip; its "Open on
+  GitHub" opens the page.
 
 ### Agents
 
@@ -352,7 +356,7 @@ after a week).
   or open it from the app launcher) to bring it back, and `arakun quit` to quit.
   A desktop other than Hyprland and Sway may not raise a minimized window when asked
   (GNOME and KDE on Wayland can refuse); click Arakun in the dock or task bar then.
-- **Notification history.** Every notice Arakun shows (on the island or as a desktop
+- **Notice history.** Every notice Arakun shows (on the island or as a desktop
   notification) also lands in the sidebar's Inbox, under the sessions waiting on you,
   grouped by day. Click one to open what it is about. The Inbox is the button at the end
   of the search box when it sits next to Search in the sidebar (as in every preset), and
@@ -377,7 +381,17 @@ after a week).
 ### More tabs
 
 - **Service tabs.** A PostHog tab (personal API keys; matches projects by their `phc_`
-  keys) and a Cloudflare tab (uses the `cf` CLI's sign-in).
+  keys) and a Cloudflare tab (uses the `cf` CLI's sign-in). The PostHog tab has
+  Overview, Events (filter by event, `key = value` properties, a person and a range;
+  a row opens its properties, its person and its replay), People (search by email or
+  distinct_id; a profile with properties, cohorts, flags, sessions and a timeline),
+  Flags and Errors. Experiments and Ask come next. The key needs `user:read`,
+  `organization:read`, `project:read`, `query:read`, `feature_flag:read` and
+  `error_tracking:read`; People also needs `person:read`, and the event picker
+  `event_definition:read` and `property_definition:read`. A tab whose scope is
+  missing says which one and the others keep working. PostHog counts queries per
+  hour: the tab shows how many are left, keeps answers on disk and reads again only
+  when they are 15 minutes old or you refresh.
 - **Usage.** Token use and estimated API cost from Claude Code's and Droid's own logs,
   and Devin's local SQLite session history, including sessions run outside Arakun.
   Devin's history is read only from `$XDG_DATA_HOME/devin/cli/sessions.db` (by default
@@ -424,17 +438,18 @@ the workspace panel is, so the work stays in view while you change it. Open it f
 palette (`Customize`), View › Customize… or Settings › Appearance › Open Customize, which
 only sums up what is chosen. It opens without a project too.
 
-- **Colors.** Mode draws the palette on black or on a white background with dark text.
-  There are built-in palettes (Arakun Black, the default, then Calma, Arakun Night,
+- **Colors.** Mode draws the color scheme on black or on a white background with dark text.
+  There are built-in color schemes (Arakun Black, the default, then Calma, Arakun Night,
   Graphite, Midnight, Forest, Rosé). Only the center of the window is a sheet; the
   sidebar, the workspace panel and the status line sit on the window itself, and the
   accent is kept for what needs you. Duplicate one to change its tint, background and
   accent; Arakun warns when text or the accent gets hard to read. Grays sets how bright
-  secondary text and borders are, and Diff colors how added and removed lines look.
-  Reset colors goes back to Arakun Black, dark, and keeps your palettes. The mode,
-  the choice and your palettes are kept in `palettes.json` next to the state.
+  secondary text and borders are, and Diff colors how added and removed lines look, with a
+  few lines of a diff under it to see the choice.
+  Reset colors goes back to Arakun Black, dark, and keeps your color schemes. The mode,
+  the choice and your color schemes are kept in `palettes.json` next to the state.
 
-  <img src="docs/screenshots/palettes.png" alt="The built-in palettes" width="520">
+  <img src="docs/screenshots/palettes.png" alt="The built-in color schemes" width="520">
 - **Shape.** Corners makes cards, buttons and fields sharper or rounder (0 to 200%;
   presets Sharp, Default, Round). Spacing makes the room inside and between things
   tighter or roomier (60 to 160%; Compact, Default, Roomy). Window gap is the space
@@ -461,7 +476,7 @@ only sums up what is chosen. It opens without a project too.
   Import reads a look line and asks again which parts to use; the sidebar is off until
   ticked, since it replaces the whole layout. A sidebar layout comes without its
   commands, which run on a click: add those with Command…, where their text can be
-  read. Import also takes a palette line (`arakun:palette/v1:…`) or a sidebar layout
+  read. Import also takes a color scheme line (`arakun:palette/v1:…`) or a sidebar layout
   copied before looks existed.
 - **Design system.** The card at the foot of the panel opens the Design system tab:
   every color, type style and component, live, so a change can be judged on all of
@@ -904,7 +919,7 @@ arakun check                      # run the project check here
 arakun rename fix/tab-name         # rename this environment's branch (before it is pushed)
 arakun page screenshot            # PNG of the environment's browser tab
 arakun notify "done"              # desktop notification
-arakun notices --unseen           # notifications you haven't read yet
+arakun notices --unseen           # notices you haven't read yet
 arakun ls                         # projects, environments and sessions
 arakun show                       # bring the window up (running `arakun` again does too)
 arakun quit                       # quit Arakun, also when its window is hidden
@@ -973,7 +988,11 @@ The link is good for two minutes and pairs one device. There are two ways to use
   follows for an hour is hung up. Git and the file tree stay with this machine's folders.
   Fork, compact, rewind and `/stage` in a server's session run on the server, with its
   agent and its git: a fork or a rewind opens as a new session there. "Continue with"
-  is not available for a server's session yet. In the Marketplace, "Install on" picks a paired server: Discover then lists
+  hands a server's session to another of the agents on that server, in the same tab.
+  In a server's environment, the model menu lists the models and reasoning levels that
+  server offers. A new session starts with what you pick there, and picking in a running
+  session changes it on the server. The permission mode and fast mode are the server's
+  own. In the Marketplace, "Install on" picks a paired server: Discover then lists
   the plugins its marketplaces offer, and Install adds a plugin or MCP server for
   Claude Code there, for every project. An MCP server that wants a sign-in is signed
   in to on that machine (`claude mcp login <name>`), since that opens a browser.
@@ -1032,7 +1051,8 @@ arakun-server service install   # keep it running; see Keep it running
 - **What it keeps.** `~/.local/share/arakun/server/`, which only your user can read:
   `phone.json` (how it is reached, its relay identity, the paired devices),
   `state.json` (folders and sessions), `sessions/` (transcripts, saved as the agents
-  work) and `uploads/` (photos sent with prompts). `ARAKUN_SERVER_DIR` names another
+  work), `linked/` (the conversation of a session handed to another agent, as
+  markdown that the new agent reads) and `uploads/` (photos sent with prompts). `ARAKUN_SERVER_DIR` names another
   folder, for a second server on the machine. The app's own files are not touched: the
   app and a server can run side by side.
 - **The local socket.** The commands above reach the server over `server.sock` in
@@ -1108,7 +1128,10 @@ forward through tabs, `Ctrl+Cmd+F` toggles full screen, and `Cmd+H`, `Cmd+M` and
   closed tab in the File menu or a tab's right-click menu
 - `Ctrl+Shift+N` new session in a new worktree, at once on a random branch;
   `Ctrl+Alt+N` asks for the branch and options first
-- `Ctrl+F` search the conversation
+- `Ctrl+F` search the session
+- `Tab` / `Shift+Tab` move between buttons, switches and menu rows, and `Enter` or
+  `Space` presses the one with the ring. Terminals, web pages, fields and the composer
+  keep `Tab` for themselves
 - `Ctrl+K` (or `Ctrl+P`) the palette: sessions of every project, GitHub, runs, files and
   symbols, views, commands, settings and memory in one search. Start with `>` for
   commands, `/` for files, `:` for settings, `@` for people or `#` for pull requests.
@@ -1126,10 +1149,10 @@ forward through tabs, `Ctrl+Cmd+F` toggles full screen, and `Cmd+H`, `Cmd+M` and
   before. A sentence such as "merge #64 when the checks pass and tell me" becomes an
   automation once you confirm it; one Arakun cannot read itself offers to have Claude
   read it, again only on `Enter`.
-  "recuérdame en 20 min revisar el PR", "remind me at 5pm to stretch" or
+  "remind me in 20 min to review the PR", "remind me at 5pm to stretch" or
   "timer 10 min" sets a reminder that rings on the island. One that comes due while
   Arakun is closed rings, marked as missed, the next time it opens. "to-do: …" (or a
-  reminder with no time) adds a to-do, and typing "to-do" or "pendiente" lists them,
+  reminder with no time) adds a to-do, and typing "to-do" lists them,
   `Enter` ticking one off. Pins are kept in `pins.json`, rules (reminders too) in
   `rules.json`, to-dos in `todos.json` and what you open in `palette-frecency.json`,
   next to the state file.

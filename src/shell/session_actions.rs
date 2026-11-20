@@ -173,11 +173,11 @@ impl Render for RemoveDialog {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let kept = match self.agent {
             Agent::Droid => "Droid keeps its own copy, so it can be imported again later.",
-            Agent::Claude => "Claude Code keeps its own copy of the conversation.",
-            Agent::OpenCode => "OpenCode keeps its own copy of the conversation.",
-            Agent::Codex => "Codex keeps its own copy of the conversation.",
-            Agent::Devin => "Devin keeps its own copy of the conversation.",
-            Agent::WorkersAi => "arakun keeps the conversation the model saw until then.",
+            Agent::Claude => "Claude Code keeps its own copy of the session.",
+            Agent::OpenCode => "OpenCode keeps its own copy of the session.",
+            Agent::Codex => "Codex keeps its own copy of the session.",
+            Agent::Devin => "Devin keeps its own copy of the session.",
+            Agent::WorkersAi => "arakun keeps the messages the model saw until then.",
         };
         ui::modal_panel("remove-session", 420.)
             .track_focus(&self.focus)

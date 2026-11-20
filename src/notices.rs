@@ -466,9 +466,9 @@ pub fn cli(args: &[String]) -> i32 {
         println!(
             "{}",
             if unseen_only {
-                "No unseen notifications."
+                "No unseen notices."
             } else {
-                "No notifications yet."
+                "No notices yet."
             }
         );
     }

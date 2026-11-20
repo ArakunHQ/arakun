@@ -23,11 +23,7 @@ impl Shell {
             self.note_active_tab(cx);
         } else {
             // The queue doesn't need a project: it shows in the welcome's place.
-            self.github_alone = true;
-            // The Servers tab was in that place: nobody is looking at it now.
-            if std::mem::take(&mut self.servers_alone) {
-                self.servers_tab_closed(cx);
-            }
+            self.show_alone(Some(super::home::Alone::GitHub), cx);
         }
         self.github.update(cx, |g, cx| g.opened(cx));
         self.github_view.update(cx, |v, cx| {
@@ -71,12 +67,26 @@ impl Shell {
         window.is_window_active() && self.github_in_front()
     }
 
+    /// The pull request or issue at `url`, when it is on the host `gh` reads
+    /// and `gh` is there to read it. A link someone typed on another host
+    /// stays a web page.
+    pub(super) fn github_item(&self, url: &str, cx: &App) -> Option<github::pr::ItemRef> {
+        let item = github::pr::ItemRef::from_url_on(url, &github::pr::gh_host())?;
+        // The inbox's problem is only known once the tab has polled; before
+        // that, `gh_ready` looks for `gh` and a sign-in itself.
+        let cant_read = matches!(
+            self.github.read(cx).problem(),
+            Some(github::Problem::NoGh | github::Problem::SignedOut)
+        );
+        (!cant_read && github::pr::gh_ready()).then_some(item)
+    }
+
     /// Whether the window shows the GitHub tab, looked at or not.
     fn github_in_front(&self) -> bool {
         if self.has_projects() {
             matches!(self.strip.active().map(|t| &t.kind), Some(TabKind::GitHub))
         } else {
-            self.github_alone
+            self.alone == Some(super::home::Alone::GitHub)
         }
     }
 
@@ -189,7 +199,8 @@ impl Shell {
         cx: &mut Context<Self>,
     ) {
         match ev {
-            GitHubViewEvent::Open(url) => self.open_url(url.clone(), window, cx),
+            // "Open on GitHub" asks for the page, not the tab it came from.
+            GitHubViewEvent::Open(url) => self.open_page(url.clone(), window, cx),
             // The sheet over this window closed: the window takes the keys back.
             GitHubViewEvent::Closed => {
                 // The composer of a session, or what the tab in front takes.
@@ -288,9 +299,26 @@ impl Shell {
                 self.open_github_tab(window, cx);
                 self.github_view.update(cx, |v, cx| v.reveal(&item, cx));
             }
-            None => self.open_url(n.web_url(), window, cx),
+            None => self.open_page(n.web_url(), window, cx),
         }
     }
+}
+
+/// A link clicked in a terminal: a pull request or issue `gh` can read goes
+/// to the shell, which shows it in the GitHub tab. The rest is left to the
+/// terminal, which opens it in the desktop browser as before.
+pub fn open_terminal_link(url: &str, window: &mut Window, cx: &mut App) -> bool {
+    let item = github::pr::ItemRef::from_url_on(url, &github::pr::gh_host())
+        .filter(|_| github::pr::gh_ready());
+    if item.is_some() {
+        window.dispatch_action(
+            Box::new(crate::agent::markdown::OpenLink {
+                url: url.to_string(),
+            }),
+            cx,
+        );
+    }
+    item.is_some()
 }
 
 /// The repositories of `list`, each once: "ArakunHQ/arakun, k/app".

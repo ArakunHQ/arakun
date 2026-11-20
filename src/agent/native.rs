@@ -397,6 +397,9 @@ pub(super) struct State {
     /// [`AskUserRequest::remote_key`]: the server cannot tell two of them
     /// apart, so a second Submit could answer the next one.
     pub remote_answered: Option<String>,
+    /// A server's session: its model and reasoning and their choices, as the
+    /// server last said. Empty until it is asked.
+    pub remote_settings: Vec<(Setting, (String, Vec<SettingOption>))>,
     /// Settings asked for before the session existed.
     pub want: Vec<(Setting, String)>,
     /// Droid's working state: idle, thinking, executing_tool, compacting_conversation, ...
@@ -884,6 +887,9 @@ impl Thread {
 
     /// The current value of a native setting and what it can be changed to.
     pub fn setting(&self, s: Setting) -> Option<(String, Vec<SettingOption>)> {
+        if self.remote {
+            return self.remote_setting(s);
+        }
         if self.backend != Backend::Native {
             return self.acp_setting(s);
         }
@@ -896,6 +902,11 @@ impl Thread {
 
     /// The label a chip shows for a setting's current value.
     pub fn setting_label(&self, s: Setting) -> Option<String> {
+        if self.remote {
+            return self
+                .remote_setting(s)
+                .map(|(current, options)| super::acp_label(s, &current, &options));
+        }
         if self.backend != Backend::Native {
             return self.acp_setting_label(s);
         }
@@ -907,6 +918,9 @@ impl Thread {
     }
 
     pub fn set_setting(&mut self, s: Setting, value: &str, cx: &mut Context<Self>) {
+        if self.remote {
+            return self.remote_set_setting(s, value, cx);
+        }
         if self.backend != Backend::Native {
             return self.acp_set_setting(s, value, cx);
         }
@@ -957,6 +971,48 @@ impl Thread {
             }
         })
         .detach();
+    }
+
+    /// A server's session setting, as the server last said.
+    fn remote_setting(&self, s: Setting) -> Option<(String, Vec<SettingOption>)> {
+        self.native
+            .remote_settings
+            .iter()
+            .find(|(d, _)| *d == s)
+            .map(|(_, v)| v.clone())
+            .filter(|(_, o)| !o.is_empty())
+    }
+
+    /// A pick in a server's session goes to the server, which answers with
+    /// what the session is on then: that is what shows, so a pick the server
+    /// turns down or never gets does not. Only a choice it offers goes.
+    fn remote_set_setting(&mut self, s: Setting, value: &str, cx: &mut Context<Self>) {
+        let Some((current, options)) = self.remote_setting(s) else {
+            return;
+        };
+        if current == value
+            || !options
+                .iter()
+                .any(|o| o.id == value && o.disabled.is_none())
+        {
+            return;
+        }
+        cx.emit(ThreadEvent::Remote(super::RemoteAction::Setting(
+            s,
+            value.to_string(),
+        )));
+    }
+
+    /// What a server says its session's settings are now.
+    pub fn set_remote_settings(
+        &mut self,
+        settings: Vec<(Setting, (String, Vec<SettingOption>))>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.native.remote_settings != settings {
+            self.native.remote_settings = settings;
+            cx.notify();
+        }
     }
 
     pub fn pending_question(&self) -> Option<&AskUserRequest> {
@@ -1178,7 +1234,7 @@ impl Thread {
             _ => json!({}),
         };
         self.set_status(ThreadStatus::Working, cx);
-        self.status_detail = Some("Compacting the conversation…".into());
+        self.status_detail = Some("Compacting the session…".into());
         self.native.compacting = true;
         let before = self.usage.context_percent();
         let request = conn.request("droid.compact_session", params);
@@ -1543,7 +1599,7 @@ impl Thread {
                         super::log_note(&format!("droid.load_session failed: {e}"));
                         let _ = this.update(cx, |t, cx| {
                             t.notice(
-                                "Droid could not reopen this session, so it starts fresh with no memory of the conversation above.",
+                                "Droid could not reopen this session, so it starts fresh with no memory of the messages above.",
                                 false,
                                 cx,
                             )

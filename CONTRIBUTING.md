@@ -210,8 +210,8 @@ which git ignores. Turn the hooks off with `lefthook uninstall`.
   token and component live.
 - **See your change.** `arakun dev start` runs a second, fresh Arakun from your build,
   with data of its own. On Linux it runs on a virtual display (it needs `Xvfb`). On
-  macOS it opens a window that never takes the focus, and `dev shot` captures that
-  window alone; the app you run it from needs Screen Recording permission. Both need
+  macOS it opens a window that never takes the focus, and `dev shot` has it render
+  that window itself, so it needs no Screen Recording permission. Both need
   `tesseract` for `dev text` and clicking by text. Input goes into the test Arakun
   directly, so it never touches your pointer, your keyboard or your own Arakun:
 
@@ -241,6 +241,26 @@ which git ignores. Turn the hooks off with `lefthook uninstall`.
   <file>...` uploads it there instead and prints the Markdown to paste; agents do
   this, since GitHub has no API to upload images. That repository is public: no
   real accounts, tokens, email addresses or home-directory paths in the picture.
+
+### Words in the interface
+
+One thing has one name in everything a person reads: labels, tooltips, messages,
+the README. Use these:
+
+| Say | For | Not |
+|---|---|---|
+| **environment** | a checkout to work in: the main one or a git worktree, on a branch, with its own sessions, terminals and browser tabs | worktree. Say "git worktree" only to explain what an environment is on disk. |
+| **session** | one talk with an agent, and what is in it | chat, conversation (GitHub's own Conversation tab keeps its name) |
+| **palette** | what `Ctrl+K` opens | Go to, Find anything. The sidebar's Search button opens it. |
+| **color scheme** | a set of colors in Customize | palette, which is the above |
+| **Workspace panel** | the panel on the right of a session | workspace on its own |
+| **notice** | something Arakun tells you, on the island and in the Inbox | notification, alert. A notice can also show as a desktop notification, and GitHub's notifications keep their name. |
+| **check** | the project's check command, run after a turn that edits files | |
+| **checks** | GitHub's checks on a pull request | CI, when you mean the checks |
+
+Stored names stay as they are (`palettes.json`, `arakun notices`, `~/arakun-workspaces`).
+A test in `src/words_lint.rs` fails on a retired word in a string of prose; a phrase
+that keeps one on purpose goes on its allow-list.
 
 ## Pull requests
 
@@ -290,10 +310,11 @@ which git ignores. Turn the hooks off with `lefthook uninstall`.
   status waits for a person.
 - **Answer every CodeRabbit comment.** Fix it and push, or reply with the reason you
   won't. CodeRabbit reviews each push and resolves the comments it sees fixed. It
-  approves only once its blocking comments are resolved. Don't resolve its comments
-  yourself: if you do, a workflow dismisses its approval and asks a person. It does
-  the same when CodeRabbit approves with comments still open: the reviewer resolves
-  them and approves. `@coderabbitai resolve` and
+  approves only once its blocking comments are resolved. When a commit you pushed
+  fixes a comment it left open, resolve that thread yourself, right after the push.
+  Only resolve what you fixed: leave a comment you declined open for the reviewer. If
+  CodeRabbit approves with comments still open, a workflow dismisses its approval and
+  asks a person, who resolves them and approves. `@coderabbitai resolve` and
   `@coderabbitai approve` don't work on your own pull request. Its review rules are in
   [.coderabbit.yaml](.coderabbit.yaml). If you change a rule in this guide, check the
   instructions there too.

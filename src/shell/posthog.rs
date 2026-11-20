@@ -10,7 +10,7 @@ impl Shell {
     pub(super) fn open_posthog_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.menu = None;
         if !self.has_projects() {
-            self.open_picker(window, cx);
+            self.pick_project_for("The PostHog tab", Self::open_posthog_tab, window, cx);
             return;
         }
         self.show_view_tab("PostHog", TabKind::PostHog, |k| {

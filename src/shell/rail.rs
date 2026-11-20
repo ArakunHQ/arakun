@@ -7,8 +7,9 @@ use crate::servers_view::Reach;
 const ENV_ROW_H: f32 = 28.;
 const ENV_GAP: f32 = 2.;
 
-const NEW_SESSION_TIP: &str = "A session in its own worktree. Alt+click to pick the branch";
-const NEW_ENV_TIP: &str = "New session in its own worktree (Ctrl+Shift+N). Alt+click for options";
+const NEW_SESSION_TIP: &str = "A session in its own environment. Alt+click to pick the branch";
+const NEW_ENV_TIP: &str =
+    "New session in its own environment (Ctrl+Shift+N). Alt+click for options";
 
 /// The one thing an environment row says at its end, the most urgent first.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -31,6 +32,29 @@ pub(super) struct GitHubState {
     pub ci_running: bool,
     /// The pull request needs changes: what it says, and its address.
     pub review: Option<(&'static str, String)>,
+    /// The branch's open pull request.
+    pub pr: Option<PrLink>,
+}
+
+/// An open pull request as a row links to it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct PrLink {
+    pub number: u64,
+    pub title: String,
+    pub url: String,
+    pub draft: bool,
+}
+
+impl PrLink {
+    /// The chip's tooltip: what the pull request is, and that a click opens it.
+    fn tip(&self) -> String {
+        let draft = if self.draft {
+            "Draft pull request"
+        } else {
+            "Pull request"
+        };
+        format!("{draft} #{}: {}", self.number, self.title)
+    }
 }
 
 impl GitHubState {
@@ -54,6 +78,12 @@ impl GitHubState {
             failed_run: failed_run.filter(|_| ci == Some(ci::State::Failed)),
             ci_running: ci.is_some_and(|s| !s.done()),
             review,
+            pr: pr.map(|pr| PrLink {
+                number: pr.number,
+                title: pr.title.clone(),
+                url: pr.url.clone(),
+                draft: pr.is_draft,
+            }),
         }
     }
 }
@@ -165,7 +195,7 @@ fn pending_env_row(id: usize, name: String) -> gpui::Stateful<gpui::Div> {
                 .flex_none()
                 .text_size(px(ui::TEXT_XS))
                 .text_color(theme::text_faint())
-                .child("Making worktree"),
+                .child("Making environment"),
         )
 }
 
@@ -263,34 +293,88 @@ fn short_env_name(project: &str, env: &str) -> String {
         .to_string()
 }
 
+/// The shape of a status mark. Each state has its own, so it reads without
+/// its color (WCAG 1.4.1): someone who can't tell red from green still sees
+/// a check or a cross.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Shape {
+    /// Nothing going on.
+    Dot,
+    /// Under way.
+    Ring,
+    Check,
+    Cross,
+    /// Waits on you.
+    Alert,
+}
+
+impl Shape {
+    fn of_status(status: Status) -> Self {
+        match status {
+            Status::Idle => Self::Dot,
+            Status::Working => Self::Ring,
+            Status::NeedsInput => Self::Alert,
+            Status::Error => Self::Cross,
+        }
+    }
+
+    fn of_ci(state: ci::State) -> Self {
+        match state {
+            ci::State::Passed => Self::Check,
+            ci::State::Failed => Self::Cross,
+            ci::State::Running | ci::State::Queued => Self::Ring,
+            ci::State::Cancelled | ci::State::Skipped => Self::Dot,
+        }
+    }
+}
+
+/// A status mark in a 10 px box, so marks of every shape line up.
+fn mark(shape: Shape, color: Hsla) -> gpui::Div {
+    let glyph = |name| ui::icon(name, 10.).text_color(color);
+    let inner = match shape {
+        Shape::Dot => div()
+            .size(px(6.))
+            .rounded_full()
+            .bg(color)
+            .into_any_element(),
+        Shape::Ring => div()
+            .size(px(7.))
+            .rounded_full()
+            .border_1()
+            .border_color(color)
+            .into_any_element(),
+        Shape::Check => glyph("mark-check").into_any_element(),
+        Shape::Cross => glyph("mark-cross").into_any_element(),
+        Shape::Alert => glyph("mark-alert").into_any_element(),
+    };
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .justify_center()
+        .size(px(10.))
+        .child(inner)
+}
+
 pub(super) fn status_dot(status: Status) -> impl IntoElement {
     let color = match status {
         Status::Idle => theme::mix(0.25),
         Status::Working => theme::working(),
         Status::NeedsInput => theme::needs_you(),
-        Status::Error => theme::diff_del().into(),
+        Status::Error => theme::failed().into(),
     };
-    div().size(px(6.)).rounded_full().bg(color).flex_none()
+    mark(Shape::of_status(status), color)
 }
 
-/// A run state as a small dot; work in progress pulses as a ring.
+/// A run state: a check, a cross, or a ring while it runs.
 pub(super) fn ci_mark(state: ci::State) -> gpui::Div {
     let color: Hsla = match state {
-        ci::State::Passed => theme::success().into(),
-        ci::State::Failed => theme::error().into(),
+        ci::State::Passed => theme::passed().into(),
+        ci::State::Failed => theme::failed().into(),
         ci::State::Running | ci::State::Queued => theme::attention().into(),
         _ => theme::mix(0.3),
     };
-    if state.done() {
-        div().size(px(6.)).rounded_full().bg(color).flex_none()
-    } else {
-        div()
-            .size(px(7.))
-            .rounded_full()
-            .border_1()
-            .border_color(color)
-            .flex_none()
-    }
+    mark(Shape::of_ci(state), color)
 }
 
 impl Shell {
@@ -307,10 +391,7 @@ impl Shell {
             return GitHubState::default();
         };
         let ci = repo.branch_state(&env.branch);
-        let pr = repo
-            .prs
-            .iter()
-            .find(|pr| pr.head_ref_name == env.branch.as_ref());
+        let pr = repo.pr_of(&env.branch);
         GitHubState::of(ci.map(|(s, _)| s), ci.map(|(_, r)| r.id), pr)
     }
 
@@ -1240,6 +1321,25 @@ impl Shell {
             ),
             EnvSignal::Nothing => None,
         };
+        // The branch's pull request by number, so a row says which one it is.
+        let pr = github.pr.clone().map(|pr| {
+            let url = pr.url.clone();
+            div()
+                .id(("env-pr", pi * 1000 + ei))
+                .flex_none()
+                .px(crate::ui::sp(4.))
+                .rounded(crate::ui::rad(4.))
+                .text_size(px(ui::TEXT_XS))
+                .text_color(theme::text_faint())
+                .hover(|s| s.bg(theme::fill_selected()).text_color(theme::content()))
+                .tooltip(ui::tip_text(pr.tip()))
+                .child(format!("#{}", pr.number))
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    cx.stop_propagation();
+                    this.select_env(pi, ei, window, cx);
+                    this.open_url(url.clone(), window, cx);
+                }))
+        });
         div()
             .id(("env", pi * 1000 + ei))
             .on_mouse_down(
@@ -1277,7 +1377,11 @@ impl Shell {
             })
             .child(lead)
             .when_some(label.clone(), |d, (title, more, _)| {
-                d.tooltip(ui::tip_text(format!("{} · {}", title, env.branch)))
+                let tip = match env.branch.as_ref() {
+                    "" => title.to_string(),
+                    branch => format!("{title} · {branch}"),
+                };
+                d.tooltip(ui::tip_text(tip))
                     .child(div().flex_1().min_w_0().truncate().child(title))
                     .when(more > 0, |d| {
                         d.child(
@@ -1301,6 +1405,7 @@ impl Shell {
                     d.child(div().flex_1().min_w_0().truncate().child(env.name.clone()))
                 })
             })
+            .children(pr)
             .children(self.render_machine(env, pi * 1000 + ei))
             .children(end.map(|e| div().flex_none().child(e)))
             .on_click(cx.listener(move |this, ev: &gpui::ClickEvent, window, cx| {
@@ -1459,5 +1564,48 @@ mod tests {
         assert_eq!(passed.failed_run, None);
         assert!(!passed.ci_running);
         assert!(GitHubState::of(Some(ci::State::Running), Some(3), None).ci_running);
+    }
+
+    #[test]
+    fn a_row_knows_its_pull_request() {
+        let pr: crate::ci::Pr = serde_json::from_value(serde_json::json!({
+            "number": 513,
+            "title": "Reach buttons with Tab",
+            "headRefName": "pr/focus",
+            "url": "https://github.com/o/r/pull/513",
+            "isDraft": true,
+        }))
+        .unwrap();
+        let link = GitHubState::of(None, None, Some(&pr)).pr.unwrap();
+        assert_eq!(link.number, 513);
+        assert_eq!(link.url, "https://github.com/o/r/pull/513");
+        assert_eq!(
+            link.tip(),
+            "Draft pull request #513: Reach buttons with Tab"
+        );
+        // A pull request alone needs nothing from the user.
+        assert!(!GitHubState::of(None, None, Some(&pr)).needs_you());
+        assert_eq!(GitHubState::of(None, None, None).pr, None);
+    }
+
+    #[test]
+    fn every_state_has_its_own_shape() {
+        // Color alone must not tell these apart.
+        let session = [
+            Status::Idle,
+            Status::Working,
+            Status::NeedsInput,
+            Status::Error,
+        ]
+        .map(Shape::of_status);
+        for (i, a) in session.iter().enumerate() {
+            assert!(!session[i + 1..].contains(a), "{a:?} is used twice");
+        }
+        let (passed, failed, running) = (
+            Shape::of_ci(ci::State::Passed),
+            Shape::of_ci(ci::State::Failed),
+            Shape::of_ci(ci::State::Running),
+        );
+        assert!(passed != failed && failed != running && passed != running);
     }
 }

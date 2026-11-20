@@ -62,9 +62,10 @@ Every commit message and pull request title follows
   ready and CodeRabbit has finished, the reviewers are asked unless CodeRabbit approved
   and every review thread is resolved.
 - Answer every CodeRabbit comment: fix it and push, or reply with the reason you
-  won't. Don't resolve its threads or post `@coderabbitai resolve` or `approve`
-  yourself; the reviewer resolves what is left and approves. A workflow dismisses
-  CodeRabbit's approval when the author resolved one of its threads or one is open. If you change a rule here or in
+  won't. Resolve a thread on GitHub once the pushed commit fixes it; leave the ones
+  you declined open for the reviewer. Don't post `@coderabbitai resolve` or `approve`.
+  A workflow dismisses CodeRabbit's approval when a thread is still open, so resolve
+  the fixed ones right after you push. If you change a rule here or in
   CONTRIBUTING.md, check the instructions in `.coderabbit.yaml` too.
 
 ### Stacked pull requests
@@ -130,6 +131,9 @@ request that also fixes the new lints.
 - Tests go in a `#[cfg(test)] mod tests` at the bottom of the file they test.
 - UI code uses the design system: colors, grays, text sizes and fonts from `theme` and
   `ui`, never hand-written values. `src/design_lint.rs` fails the tests otherwise.
+- Interface text uses one word per thing: environment, session, palette, color scheme,
+  Workspace panel, notice (the glossary under "Words in the interface" in
+  CONTRIBUTING.md). `src/words_lint.rs` fails the tests on a retired word.
 - Code for one platform goes behind `cfg(...)`, and the other platforms must still build.
 - Do not add or change code behind the private `team` or `coderlabs` features.
 - Comments say why, not what. Docs and comments use plain, short sentences.

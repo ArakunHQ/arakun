@@ -93,12 +93,12 @@ impl Shell {
             }
             list = list.child(ui::menu_divider().my(px(6.)));
         }
-        list = list.child(section("Notifications", history.notices.len()));
+        list = list.child(section("Notices", history.notices.len()));
         if history.notices.is_empty() {
             list = list.child(
                 ui::empty_state(
                     "inbox",
-                    "No notifications yet",
+                    "No notices yet",
                     "What the island tells you stays here, for when you were away.",
                     None,
                 )

@@ -202,7 +202,8 @@ impl Shell {
     fn git_pull_request(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let env = self.env();
         if let Some(pr) = env.pr.as_ref() {
-            cx.open_url(&pr.url);
+            let url = pr.url.clone();
+            self.open_url(url, window, cx);
             return;
         }
         let s = env.sync.clone();

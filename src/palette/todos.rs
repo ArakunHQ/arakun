@@ -1,5 +1,5 @@
 //! The person's to-dos, added from the palette ("to-do: call Dani",
-//! "agrega a mis pendientes revisar el PR") and ticked off there with Enter.
+//! "add buy milk to my todos") and ticked off there with Enter.
 //! Kept in `todos.json` next to the state. A to-do with a time is a reminder
 //! instead (see `rules`).
 
@@ -96,7 +96,7 @@ fn file() -> PathBuf {
 }
 
 /// What to add when a sentence asks for a to-do: "to-do: call Dani",
-/// "agrega a mis pendientes revisar el PR", "add buy milk to my todos".
+/// "add a todo review the PR", "add buy milk to my todos".
 pub fn parse(text: &str) -> Option<String> {
     let trimmed = text.trim();
     // Offsets below come from the lower case, where some letters change
@@ -105,25 +105,6 @@ pub fn parse(text: &str) -> Option<String> {
     let low = super::rank::Lowered::new(trimmed);
     let lower = low.text.as_str();
     const HEADS: &[&str] = &[
-        "agrega a mis pendientes",
-        "agregar a mis pendientes",
-        "añade a mis pendientes",
-        "anade a mis pendientes",
-        "agrega a pendientes",
-        "añade a pendientes",
-        "agrega a mi lista",
-        "añade a mi lista",
-        "crea un to-do de",
-        "crea un to-do para",
-        "crea un to-do",
-        "créame un to-do de",
-        "creame un to-do de",
-        "créame un to-do",
-        "creame un to-do",
-        "crea un pendiente de",
-        "crea un pendiente",
-        "nuevo pendiente",
-        "pendiente:",
         "to-do:",
         "todo:",
         "to do:",
@@ -144,35 +125,21 @@ pub fn parse(text: &str) -> Option<String> {
             return (!what.is_empty()).then(|| what.to_string());
         }
     }
-    // "add buy milk to my todos" / "agrega comprar leche a mis pendientes"
-    for (head, tails) in [
-        (
-            "add ",
-            &[
-                "to my todos",
-                "to my to-dos",
-                "to my todo list",
-                "to my list",
-            ][..],
-        ),
-        (
-            "agrega ",
-            &["a mis pendientes", "a mi lista", "a pendientes"][..],
-        ),
-        (
-            "añade ",
-            &["a mis pendientes", "a mi lista", "a pendientes"][..],
-        ),
-    ] {
-        if lower.starts_with(head) {
-            for tail in tails {
-                if let Some(mid) = lower.strip_suffix(tail)
-                    && mid.ends_with(char::is_whitespace)
-                {
-                    let what = trimmed[low.back(head.len()..mid.len())].trim();
-                    if !what.is_empty() {
-                        return Some(what.to_string());
-                    }
+    // "add buy milk to my todos"
+    let head = "add ";
+    if lower.starts_with(head) {
+        for tail in [
+            "to my todos",
+            "to my to-dos",
+            "to my todo list",
+            "to my list",
+        ] {
+            if let Some(mid) = lower.strip_suffix(tail)
+                && mid.ends_with(char::is_whitespace)
+            {
+                let what = trimmed[low.back(head.len()..mid.len())].trim();
+                if !what.is_empty() {
+                    return Some(what.to_string());
                 }
             }
         }
@@ -186,29 +153,22 @@ mod tests {
 
     #[test]
     fn to_dos_are_read_from_sentences() {
+        assert_eq!(parse("to-do: call Dani").as_deref(), Some("call Dani"));
         assert_eq!(
-            parse("to-do: llamar a Dani").as_deref(),
-            Some("llamar a Dani")
-        );
-        assert_eq!(
-            parse("Agrega a mis pendientes revisar el PR de Rik").as_deref(),
-            Some("revisar el PR de Rik")
-        );
-        assert_eq!(
-            parse("créame un to-do de pagar la luz").as_deref(),
-            Some("pagar la luz")
+            parse("New to-do: review Rik's PR").as_deref(),
+            Some("review Rik's PR")
         );
         assert_eq!(
             parse("add buy milk to my todos").as_deref(),
             Some("buy milk")
         );
         assert_eq!(
-            parse("agrega comprar café a mis pendientes").as_deref(),
-            Some("comprar café")
+            parse("Add pay the power bill to my list").as_deref(),
+            Some("pay the power bill")
         );
         assert_eq!(parse("todo:"), None);
         assert_eq!(parse("add a todos endpoint to the API"), None);
-        assert_eq!(parse("nuevo pendientes.rs en el repo"), None);
+        assert_eq!(parse("new todos.rs in the repo"), None);
         assert_eq!(
             parse("add a todo fix the build").as_deref(),
             Some("fix the build")
@@ -231,13 +191,10 @@ mod tests {
             parse("add \u{212A}é to my todos").as_deref(),
             Some("\u{212A}é")
         );
-        assert_eq!(parse("añade İİ a mis pendientes").as_deref(), Some("İİ"));
+        assert_eq!(parse("add İİ to my todos").as_deref(), Some("İİ"));
         assert_eq!(parse("İİ todo: x"), None);
         // Letters that keep their length keep their case.
-        assert_eq!(
-            parse("TODO: Llamar a José 🦀").as_deref(),
-            Some("Llamar a José 🦀")
-        );
+        assert_eq!(parse("TODO: Call José 🦀").as_deref(), Some("Call José 🦀"));
     }
 
     #[test]

@@ -50,6 +50,17 @@ impl DiffPalette {
             .unwrap_or(DiffPalette::Default)
     }
 
+    /// What the choice is for, said under it in Customize.
+    pub fn note(self) -> &'static str {
+        match self {
+            DiffPalette::Default => "Green and red.",
+            DiffPalette::Colorblind => {
+                "Blue and orange, which red-green colorblindness keeps apart."
+            }
+            DiffPalette::HighContrast => "Brighter text and stronger line backgrounds.",
+        }
+    }
+
     /// Text, line bar and line background alpha for (added, removed). Light
     /// mode takes GitHub's light colors, since the dark ones are too pale to
     /// read on white.
@@ -863,6 +874,13 @@ pub fn active() -> Hsla {
     content()
 }
 
+/// The ring around a control reached with Tab. The accent reads at 7:1 on
+/// the background, past the 3:1 a focus ring needs (WCAG 2.4.11), and it
+/// stays apart from a primary button, which is filled with `content`.
+pub fn focus_ring() -> Hsla {
+    accent()
+}
+
 /// Selected text: a light night blue, so amber stays for the accent,
 /// search hits and notes.
 pub fn text_selection() -> Hsla {
@@ -921,6 +939,23 @@ pub fn attention() -> Rgba {
 }
 pub fn link() -> Rgba {
     by_mode(LINK, LINK_LIGHT)
+}
+
+/// A run that passed. GitHub's green, or the colorblind diff palette's blue
+/// when the user picked it, so passed and failed don't hang on red and green.
+pub fn passed() -> Rgba {
+    match diff_palette() {
+        DiffPalette::Colorblind => diff_add(),
+        _ => success(),
+    }
+}
+/// A run that failed, or a session that stopped on an error: GitHub's red,
+/// or the colorblind palette's orange.
+pub fn failed() -> Rgba {
+    match diff_palette() {
+        DiffPalette::Colorblind => diff_del(),
+        _ => error(),
+    }
 }
 
 pub fn pr_open() -> Rgba {

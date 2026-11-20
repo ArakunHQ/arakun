@@ -24,7 +24,12 @@ impl Shell {
     ) {
         self.menu = None;
         if !self.has_projects() {
-            self.open_picker(window, cx);
+            self.pick_project_for(
+                "The Runs tab",
+                |this, window, cx| this.open_runs_tab(None, window, cx),
+                window,
+                cx,
+            );
             return;
         }
         self.show_view_tab("Runs", TabKind::Runs, |k| matches!(k, TabKind::Runs));

@@ -20,3 +20,6 @@ mod view;
 pub use model::{RemoteOut, RemoteSink};
 pub use model::{Terminal, TerminalEvent};
 pub use view::TerminalView;
+// The demo example opens links itself.
+#[allow(unused_imports)]
+pub use view::on_link;

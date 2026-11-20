@@ -629,7 +629,11 @@ impl Shell {
                     ))
                     .boost(boost + if visible { 15 } else { 0 })
                     .preview(Preview::Session {
-                        place: format!("{} · {} · {}", p.name, e.branch, s.agent.label()),
+                        place: [p.name.as_ref(), e.branch.as_ref(), s.agent.label()]
+                            .into_iter()
+                            .filter(|part| !part.is_empty())
+                            .collect::<Vec<_>>()
+                            .join(" · "),
                         agent: s.agent.label().to_string(),
                         status: s.status,
                         age: crate::model::age(s.updated).to_string(),
@@ -1015,11 +1019,13 @@ impl Shell {
                     .boost(-15)
                     .preview(Preview::Branch {
                         name: format!("{} / {}", p.name, e.name),
-                        detail: format!(
-                            "Environment on {} with {} sessions.",
-                            e.branch,
-                            e.sessions.len()
-                        ),
+                        detail: match e.branch.as_ref() {
+                            "" => format!("Environment with {} sessions.", e.sessions.len()),
+                            branch => format!(
+                                "Environment on {branch} with {} sessions.",
+                                e.sessions.len()
+                            ),
+                        },
                     }),
                 );
             }
@@ -1184,7 +1190,7 @@ impl Shell {
                 "git-branch",
                 "New environment",
                 &["Ctrl", "⇧", "N"],
-                "A worktree on a new branch, with its own sessions and terminals.",
+                "Its own branch and folder, with its own sessions and terminals.",
                 Target::NewEnvironment,
             );
             add(
@@ -1274,7 +1280,7 @@ impl Shell {
             "paint-board",
             "Customize",
             &[],
-            "Colors, palettes, corners, spacing and text size, beside the app.",
+            "Colors, color schemes, corners, spacing and text size, beside the app.",
             Target::Customize,
         );
         add(

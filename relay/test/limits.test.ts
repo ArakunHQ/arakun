@@ -151,6 +151,31 @@ describe("the plan's limits", () => {
     expect(((await pc.inbox.next()) as { payload: Uint8Array }).payload[0]).toBe(7);
   });
 
+  it("go by the old plan while the new one is read, then by the new one", async () => {
+    await plans({ frame: 10 });
+    const { me, pc } = await connectedComputer();
+    await issueTickets(pc, me.label, "t");
+    const phone = await openPhone(me.label, "d=dev-1&t=t");
+    await phone.inbox.control();
+    await pc.inbox.control();
+    // The plan is a minute old and KV now allows only one byte.
+    await plans({ frame: 1 });
+    const stub = env.RELAY.get(env.RELAY.idFromName(me.label));
+    await runInDurableObject(stub, (instance) => {
+      (instance as unknown as { plan: { at: number } }).plan.at -= 61_000;
+    });
+    phone.ws.send(phoneFrame(DATA, new Uint8Array([1, 2])));
+    expect(((await pc.inbox.next()) as { payload: Uint8Array }).payload).toEqual(new Uint8Array([1, 2]));
+    // The read runs behind the frame; wait for it to land.
+    for (let i = 0; i < 100; i++) {
+      const fresh = await runInDurableObject(stub, (instance) => (instance as unknown as { plan: { value: { frame: number } } }).plan.value.frame === 1);
+      if (fresh) break;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    phone.ws.send(phoneFrame(DATA, new Uint8Array([3, 4])));
+    expect(await phone.inbox.control()).toEqual({ type: "limit", which: "frame" });
+  });
+
   it("bound the frame by the plan, either way", async () => {
     await plans({ frame: 10 });
     const { me, pc } = await connectedComputer();

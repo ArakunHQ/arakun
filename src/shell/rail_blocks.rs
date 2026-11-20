@@ -468,7 +468,7 @@ impl Shell {
                 });
                 if let Some(el) = el {
                     body = body.child(if arranging {
-                        self.arrange_target(BuilderSel::Item((si, ii)), el, cx)
+                        self.arrange_target(BuilderSel::Item((si, ii)), el, narrow || in_row, cx)
                     } else {
                         el
                     });
@@ -569,7 +569,7 @@ impl Shell {
         });
         let title = title.map(|t| {
             if arranging {
-                self.arrange_target(BuilderSel::Section(si), t.into_any_element(), cx)
+                self.arrange_target(BuilderSel::Section(si), t.into_any_element(), false, cx)
             } else {
                 t.into_any_element()
             }
@@ -587,17 +587,24 @@ impl Shell {
                 d.mx(crate::ui::sp(4.))
                     .my(crate::ui::sp(2.))
                     .rounded(crate::ui::rad(10.))
+                    // Clear, so the drawn outline keeps the same room.
                     .border_1()
-                    .border_dashed()
-                    .border_color(if selected {
-                        theme::active()
-                    } else {
-                        theme::border()
-                    })
+                    .border_color(gpui::transparent_black())
+                    .relative()
             })
             .children(title)
             .child(body)
             .children(end)
+            .when(arranging, |d| {
+                d.child(super::arrange::dashed_outline(
+                    if selected {
+                        theme::active()
+                    } else {
+                        theme::text_faint()
+                    },
+                    crate::ui::rad(10.),
+                ))
+            })
             .into_any_element()
     }
 
@@ -738,7 +745,7 @@ impl Shell {
                     row(shortcut(&item.piece))
                         .bg(theme::fill_hover())
                         .my(px(2.))
-                        .tooltip(ui::tip("Search everywhere (Ctrl+K)"))
+                        .tooltip(ui::tip("Search in the palette (Ctrl+K)"))
                         .on_click(cx.listener(|this, _, window, cx| this.open_switcher(window, cx)))
                         .into_any_element()
                 }

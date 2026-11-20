@@ -507,7 +507,7 @@ impl GitHubView {
                             .into_any_element()
                     } else {
                         ui::icon_button("gh-menu", "more-horizontal", 15.)
-                            .tooltip(ui::tip("Refresh, mark read, alerts"))
+                            .tooltip(ui::tip("Refresh, mark read, notices"))
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(|this, ev: &gpui::MouseDownEvent, _, cx| {
@@ -591,15 +591,9 @@ impl GitHubView {
         }
         let g = self.github.read(cx);
         match g.problem().or(g.search_problem()) {
-            Some(Problem::NoGh) => out.push(line(
-                "gh-problem",
-                "GitHub CLI not found. Install it (cli.github.com), then run `gh auth login`."
-                    .into(),
-            )),
-            Some(Problem::SignedOut) => out.push(line(
-                "gh-problem",
-                "Not signed in to GitHub. Run `gh auth login` in a terminal, then refresh.".into(),
-            )),
+            Some(p @ (Problem::NoGh | Problem::SignedOut)) => {
+                out.push(line("gh-problem", p.text()))
+            }
             Some(Problem::Other(e)) => {
                 out.push(line("gh-problem", format!("Couldn't read GitHub: {e}")))
             }

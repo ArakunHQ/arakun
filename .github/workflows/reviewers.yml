@@ -4,11 +4,11 @@ name: Reviewers
 # has not approved it. A CodeRabbit approval is enough to merge a routine
 # change from the team, so nobody is asked then, unless a review thread is
 # still open: the main ruleset requires every thread resolved, and authors
-# leave CodeRabbit's threads to a person (CONTRIBUTING.md), so someone has to
+# resolve only the threads they fixed (CONTRIBUTING.md), so someone has to
 # be asked or the pull request sits blocked. CodeRabbit's approval is
-# dismissed then, and when the author resolved one of its threads, so an
-# author can't clear its findings to get approved. Nothing runs this again
-# when a thread is resolved, which is why an open thread dismisses it too.
+# dismissed then: nothing runs this again when a thread is resolved, so the
+# author could resolve the rest afterwards and merge on it. An author who
+# resolves CodeRabbit's threads before it approves keeps the approval.
 # It replaces CODEOWNERS, so
 # the main ruleset no longer has to require a code owner's approval: any
 # approval from someone with write access counts.
@@ -20,8 +20,7 @@ name: Reviewers
 #
 # The dismissal comes after the approval, so it can't stop a merge in
 # between. For an outside pull request the "Human approval" commit status
-# does; human-approval.yml sets it. For a team pull request whose author
-# resolved CodeRabbit's threads, nothing covers those minutes.
+# does; human-approval.yml sets it.
 #
 # Each pull request goes to the person who can check it on their own machine:
 # Karlo for Linux and for changes that are not platform specific (Rik if Karlo
@@ -135,8 +134,6 @@ jobs:
             github.event.workflow_run.pull_requests[0].number ||
             github.event.pull_request.number }}
           CODERABBIT: coderabbitai[bot]
-          # GraphQL names the author of CodeRabbit's threads without "[bot]".
-          CODERABBIT_AUTHOR: coderabbitai
           # How long to wait, after CodeRabbit's check run completes, for its
           # approval of a team pull request. It can come about a minute later.
           APPROVAL_WAIT: 120
@@ -196,23 +193,19 @@ jobs:
               grep -xE 'APPROVED|CHANGES_REQUESTED' | tail -n 1 || true
           }
 
-          # One line per review thread that matters here: "open" for an
-          # unresolved one, "self" for one of CodeRabbit's the author resolved.
-          thread_states() {
+          # How many review threads are not resolved.
+          open_threads() {
             # The $ names are GraphQL variables, not the shell's.
             # shellcheck disable=SC2016
-            AUTHOR=$2 gh api graphql --paginate \
+            gh api graphql --paginate \
               -F owner="${GH_REPO%/*}" -F name="${GH_REPO#*/}" -F pr="$1" \
               -f query='query($owner: String!, $name: String!, $pr: Int!, $endCursor: String) {
                 repository(owner: $owner, name: $name) { pullRequest(number: $pr) {
                   reviewThreads(first: 100, after: $endCursor) {
-                    nodes { isResolved resolvedBy { login } comments(first: 1) { nodes { author { login } } } }
+                    nodes { isResolved }
                     pageInfo { hasNextPage endCursor } } } } }' \
-              --jq '.data.repository.pullRequest.reviewThreads.nodes[] |
-                if .isResolved | not then "open"
-                elif (.comments.nodes[0].author.login // "") == env.CODERABBIT_AUTHOR and
-                  .resolvedBy.login == env.AUTHOR then "self"
-                else empty end'
+              --jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved | not)] | length' |
+              awk '{ open += $1 } END { print open + 0 }'
           }
 
           # Every CodeRabbit approval, older commits' too: one of those can
@@ -296,18 +289,13 @@ jobs:
               [ -z "$listed" ] || mapfile -t approvals <<<"$listed"
             fi
             if [ ${#approvals[@]} -gt 0 ]; then
-              local threads open self
-              threads=$(thread_states "$pr" "$author")
-              open=$(grep -cx open <<<"$threads" || true)
-              self=$(grep -cx self <<<"$threads" || true)
-              # Open threads dismiss it too: nothing runs this again when a
-              # thread is resolved, so the author could resolve them
-              # afterwards and merge on CodeRabbit's approval.
-              if [ "$self" -gt 0 ]; then
-                dismiss_approvals "$pr" \
-                  "The author resolved CodeRabbit's threads, so a person has to approve. CodeRabbit's comments still apply." \
-                  "${approvals[@]}"
-              elif [ "$open" -gt 0 ]; then
+              local open
+              # A failed lookup fails the step (see dismiss_approvals).
+              open=$(open_threads "$pr")
+              # Nothing runs this again when a thread is resolved, so the
+              # author could resolve them afterwards and merge on
+              # CodeRabbit's approval.
+              if [ "$open" -gt 0 ]; then
                 echo "$open review threads are open."
                 dismiss_approvals "$pr" \
                   "Review threads are still open; a person resolves them and approves. CodeRabbit's comments still apply." \

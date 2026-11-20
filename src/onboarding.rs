@@ -46,14 +46,14 @@ impl Step {
                 "Arakun runs the agents you already have. New environments start with the one you pick, and you can switch for any session."
             }
             Step::Look => {
-                "Pick a mode and when old environments go. Palettes, corners, spacing and the rest are in Settings."
+                "Pick a mode and when old environments go. Color schemes, corners, spacing and the rest are in Settings."
             }
             Step::Connections => "Both are optional, and both can wait.",
             Step::Reports => {
                 "They tell us what breaks and what gets used. Nothing is sent unless you say yes."
             }
             Step::Project => {
-                "Pick a git repository. Every branch you work on gets its own environment: a worktree with its own agents, terminals and browser."
+                "Pick a git repository. Every branch you work on gets its own environment: a git worktree with its own agents, terminals and browser."
             }
         }
     }
@@ -169,12 +169,9 @@ pub fn find_agents() -> Vec<AgentRow> {
 pub fn install_link(agent: Agent) -> (&'static str, &'static str) {
     match agent {
         Agent::Claude | Agent::Codex => ("Needs Node.js for npm", "https://nodejs.org"),
-        Agent::OpenCode => ("Get OpenCode", "https://opencode.ai"),
-        Agent::Droid => ("Get Droid", "https://factory.ai"),
-        Agent::Devin => (
-            "Get the Devin CLI",
-            "https://docs.devin.ai/work-with-devin/devin-cli",
-        ),
+        Agent::OpenCode => ("Get OpenCode", AgentKind::OpenCode.install_url()),
+        Agent::Droid => ("Get Droid", AgentKind::Droid.install_url()),
+        Agent::Devin => ("Get the Devin CLI", AgentKind::Devin.install_url()),
         Agent::WorkersAi => ("", ""),
     }
 }

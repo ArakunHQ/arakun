@@ -186,7 +186,7 @@ struct Revealed {
     row: Option<usize>,
 }
 
-/// The note box opened by "Add to chat" on a selection.
+/// The note box opened by "Add to message" on a selection.
 struct NoteBox {
     surface: usize,
     range: Range<usize>,
@@ -1204,8 +1204,8 @@ impl ThreadView {
                         ("thinking", ix),
                         self.active,
                         "Thinking…",
-                        0.35,
-                        0.8,
+                        theme::text_faint(),
+                        theme::text_muted(),
                     )),
             );
         }
@@ -2118,7 +2118,7 @@ fn legacy_compaction(text: &str) -> Option<u64> {
 /// A rule across the transcript where the conversation was summarized: what
 /// is above it is no longer in the agent's context word for word.
 fn compaction_divider(removed: u64, before: Option<u64>, after: Option<u64>) -> AnyElement {
-    let mut label = "Conversation compacted".to_string();
+    let mut label = "Session compacted".to_string();
     if removed > 0 {
         label.push_str(&format!(" · {removed} messages summarized"));
     }

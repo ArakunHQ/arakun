@@ -261,7 +261,7 @@ impl PhoneView {
                 "Phones on the same Wi-Fi reach this computer directly, in the clear. Nothing leaves your network; use it on networks you trust."
             }
             Reach::Tailscale => {
-                "Phones in your tailnet reach this computer from anywhere over HTTPS, at its Tailscale name. Needs Tailscale on both, and HTTPS certificates turned on in the tailnet. This is what notifications need."
+                "Phones in your tailnet reach this computer from anywhere over HTTPS, at its Tailscale name. Needs Tailscale on both, and HTTPS certificates turned on in the tailnet. Push notifications need this."
             }
             Reach::Relay => {
                 "Phones reach this computer from anywhere through Arakun's relay, with nothing to install or set up. The relay only passes bytes along: everything is encrypted end to end between the phone and this computer, with a key the relay never sees."

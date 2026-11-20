@@ -255,7 +255,7 @@ mod tests {
             level: Level::Always,
             why: "git push publica commits en el remoto".into(),
             summary: "Hacer git push de main a origin".into(),
-            phrase: "confirmo: git push".into(),
+            phrase: "confirm: git push".into(),
             created: NOW,
             expires: NOW + 60,
             answer: None,

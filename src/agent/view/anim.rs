@@ -121,14 +121,15 @@ pub(super) fn spinner(
         .into_any_element()
 }
 
-/// Text with a bright band sweeping across it, then a pause. Plain, at
+/// Text with a bright band sweeping across it, then a pause: `base` lit
+/// up to `peak`, two text roles so the Grays setting holds. Plain, at
 /// `base`, while `moving` is off.
 pub(super) fn shimmer(
     id: impl Into<ElementId>,
     moving: bool,
     text: &str,
-    base: f32,
-    peak: f32,
+    base: Hsla,
+    peak: Hsla,
 ) -> AnyElement {
     let owned = text.to_string();
     let styled = StyledText::new(SharedString::from(text.to_string()))
@@ -153,7 +154,7 @@ pub(super) fn shimmer_at(i: usize, n: usize, t: f32) -> f32 {
     k * k * (3. - 2. * k)
 }
 
-fn shimmer_runs(text: &str, t: f32, base: f32, peak: f32) -> Vec<TextRun> {
+fn shimmer_runs(text: &str, t: f32, base: Hsla, peak: Hsla) -> Vec<TextRun> {
     let n = text.chars().count();
     let f = font(theme::FONT_SANS);
     text.chars()
@@ -161,7 +162,11 @@ fn shimmer_runs(text: &str, t: f32, base: f32, peak: f32) -> Vec<TextRun> {
         .map(|(i, c)| TextRun {
             len: c.len_utf8(),
             font: f.clone(),
-            color: theme::mix(base + (peak - base) * shimmer_at(i, n, t)),
+            // Both roles are the content color at an alpha; the band lifts the alpha.
+            color: Hsla {
+                a: base.a + (peak.a - base.a) * shimmer_at(i, n, t),
+                ..base
+            },
             background_color: None,
             underline: None,
             strikethrough: None,

@@ -131,6 +131,116 @@ pub(super) fn tool_label(t: &ToolCall, cwd: &Path, running: bool, asking: bool) 
     }
 }
 
+/// How long a command may run: a plain `sleep` waits exactly that long,
+/// and Claude's Bash takes a `timeout` in milliseconds.
+pub(super) fn wait_limit(t: &ToolCall) -> Option<Wait> {
+    if t.kind != "execute" {
+        return None;
+    }
+    let input = t.raw_input.as_ref()?;
+    if let Some(secs) = input
+        .get("command")
+        .and_then(|c| c.as_str())
+        .and_then(sleep_secs)
+    {
+        return Some(Wait::Sleep(Duration::from_secs_f64(secs)));
+    }
+    let ms = input.get("timeout").and_then(|v| v.as_u64())?;
+    (ms > 0).then(|| Wait::Timeout(Duration::from_millis(ms)))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum Wait {
+    /// The command only waits: it ends when the time is up.
+    Sleep(Duration),
+    /// The command is stopped if it runs this long.
+    Timeout(Duration),
+}
+
+/// The seconds `sleep 30`, `sleep 1.5` or `sleep 2m` waits; None for anything
+/// that does more than sleep.
+fn sleep_secs(cmd: &str) -> Option<f64> {
+    let mut words = cmd.split_whitespace();
+    if words.next()? != "sleep" {
+        return None;
+    }
+    let mut total = 0.;
+    let mut any = false;
+    for w in words {
+        let (num, unit) = match w.char_indices().last()? {
+            (i, c @ ('s' | 'm' | 'h' | 'd')) => (&w[..i], c),
+            _ => (w, 's'),
+        };
+        let n: f64 = num
+            .parse()
+            .ok()
+            .filter(|n: &f64| n.is_finite() && *n >= 0.)?;
+        total += n * match unit {
+            'm' => 60.,
+            'h' => 3600.,
+            'd' => 86400.,
+            _ => 1.,
+        };
+        any = true;
+    }
+    (any && total > 0.).then_some(total)
+}
+
+/// The timer at the end of a running call: the time so far, the time left of
+/// a sleep, or the time against the command's timeout with a bar that fills.
+fn run_timer(ix: usize, elapsed: Duration, wait: Option<Wait>) -> AnyElement {
+    let ms = elapsed.as_millis() as u64;
+    let (text, fraction) = match wait {
+        Some(Wait::Sleep(total)) => {
+            let left = total.saturating_sub(elapsed);
+            let text = if left.is_zero() {
+                "Done waiting".to_string()
+            } else {
+                format!("{} left", fmt_elapsed(left.as_millis() as u64))
+            };
+            (text, Some(elapsed.as_secs_f32() / total.as_secs_f32()))
+        }
+        Some(Wait::Timeout(limit)) => (
+            format!(
+                "{} of {}",
+                fmt_elapsed(ms),
+                fmt_elapsed(limit.as_millis() as u64)
+            ),
+            Some(elapsed.as_secs_f32() / limit.as_secs_f32()),
+        ),
+        None => (fmt_elapsed(ms), None),
+    };
+    // Close to the timeout reads as a warning: the command may be cut off.
+    let late = matches!(wait, Some(Wait::Timeout(_))) && fraction.is_some_and(|f| f >= 0.8);
+    let fill = if late { amber() } else { theme::working() };
+    div()
+        .id(("tool-timer", ix))
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(crate::ui::sp(6.))
+        .text_size(px(crate::ui::TEXT_SM))
+        .text_color(if late { amber() } else { theme::text_faint() })
+        .when_some(fraction, |d, f| {
+            d.child(
+                div()
+                    .w(px(36.))
+                    .h(px(3.))
+                    .rounded(crate::ui::rad(2.))
+                    .bg(theme::fill_hover())
+                    .child(
+                        div()
+                            .h_full()
+                            .rounded(crate::ui::rad(2.))
+                            .bg(fill)
+                            .w(px(36. * f.clamp(0., 1.))),
+                    ),
+            )
+        })
+        .child(text)
+        .into_any_element()
+}
+
 impl ThreadView {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn activity_row(
@@ -268,6 +378,18 @@ impl ThreadView {
         let background = subagent.as_ref().is_some_and(|(_, s)| s.is_running());
         let live = live || background;
         let running = live && matches!(tool.status, ToolStatus::Pending | ToolStatus::InProgress);
+        // A subagent keeps its own clock; it outlives the turn's.
+        let timer = if !running || asking {
+            None
+        } else if background {
+            tool.subagent_id()
+                .and_then(|id| self.thread.read(cx).subagent(id))
+                .map(|s| Duration::from_secs(s.elapsed_secs()))
+        } else {
+            self.thread.read(cx).tool_elapsed(&tool.id)
+        }
+        .filter(|d| d.as_secs() >= 1)
+        .map(|d| run_timer(ix, d, wait_limit(tool)));
         let failed = tool.status == ToolStatus::Failed;
         let label = tool_label(tool, cwd, running, asking);
         let has_output = tool.content.iter().any(|c| match c {
@@ -398,6 +520,7 @@ impl ThreadView {
                 )
             })
             .child(div().flex_1())
+            .when_some(timer, |d, timer| d.child(timer))
             .when_some(subagent, |d, (id, _)| {
                 d.child(
                     div()
@@ -688,5 +811,45 @@ mod tests {
         let (hidden, shown) = output_tail(&output, 40);
         assert_eq!(hidden as usize + shown.lines().count(), 40);
         assert!(hidden >= 24);
+    }
+
+    fn command(cmd: &str, timeout: Option<u64>) -> ToolCall {
+        let mut input = serde_json::json!({ "command": cmd });
+        if let Some(ms) = timeout {
+            input["timeout"] = ms.into();
+        }
+        serde_json::from_value(serde_json::json!({
+            "id": "t", "title": cmd, "kind": "execute", "status": "in_progress",
+            "raw_input": input,
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn sleep_reads_its_seconds() {
+        assert_eq!(sleep_secs("sleep 30"), Some(30.));
+        assert_eq!(sleep_secs("sleep 1.5"), Some(1.5));
+        assert_eq!(sleep_secs("sleep 2m 10"), Some(130.));
+        assert_eq!(sleep_secs("sleep 1h"), Some(3600.));
+        assert_eq!(sleep_secs("sleep"), None);
+        assert_eq!(sleep_secs("sleep 0"), None);
+        assert_eq!(sleep_secs("sleep 5 && cargo test"), None);
+        assert_eq!(sleep_secs("sleepy 5"), None);
+    }
+
+    #[test]
+    fn a_command_waits_for_its_sleep_or_its_timeout() {
+        assert_eq!(
+            wait_limit(&command("sleep 30", Some(60_000))),
+            Some(Wait::Sleep(Duration::from_secs(30)))
+        );
+        assert_eq!(
+            wait_limit(&command("cargo test", Some(600_000))),
+            Some(Wait::Timeout(Duration::from_secs(600)))
+        );
+        assert_eq!(wait_limit(&command("cargo test", None)), None);
+        let mut read = command("sleep 30", None);
+        read.kind = "read".into();
+        assert_eq!(wait_limit(&read), None);
     }
 }

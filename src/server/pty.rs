@@ -35,7 +35,8 @@ pub const KEPT: usize = 256 * 1024;
 
 /// The most one read takes before the thread looks at hang-ups and typing
 /// again. A terminal that prints without pause would hold it otherwise. The
-/// poller is level-triggered, so what is left wakes it straight away.
+/// thread reads the rest on its next turn without waiting: Windows' reader
+/// wakes the poller only once a read finds nothing left.
 const READ_BATCH: usize = 64 * 1024;
 
 /// What a terminal printed, as far back as [`KEPT`] goes, and how it ended.
@@ -250,9 +251,12 @@ impl Run {
         }
         let mut events = Events::with_capacity(NonZeroUsize::new(64).unwrap());
         let mut buf = vec![0u8; 64 * 1024];
+        // The last read stopped at READ_BATCH: more may be waiting.
+        let mut more = false;
         let code = 'run: loop {
             events.clear();
-            if let Err(e) = self.poller.wait(&mut events, None)
+            let timeout = more.then_some(std::time::Duration::ZERO);
+            if let Err(e) = self.poller.wait(&mut events, timeout)
                 && e.kind() != ErrorKind::Interrupted
             {
                 break None;
@@ -268,6 +272,7 @@ impl Run {
                     In::Resize(cols, rows) => self.pty.on_resize(window_size(cols, rows)),
                 }
             }
+            let mut readable = more;
             for event in events.iter() {
                 match event.key {
                     CHILD_EVENT => {
@@ -280,24 +285,23 @@ impl Run {
                         if event.is_interrupt() {
                             continue;
                         }
-                        if event.readable
-                            && let Err(e) = self.read(&mut buf)
-                        {
-                            // Linux says EIO once the last process let go of
-                            // the terminal; the child's exit follows.
-                            #[cfg(target_os = "linux")]
-                            if e.raw_os_error() == Some(libc::EIO) {
-                                continue;
-                            }
-                            let _ = e;
-                            break 'run None;
-                        }
+                        readable |= event.readable;
                         if event.writable && self.write().is_err() {
                             break 'run None;
                         }
                     }
                     _ => {}
                 }
+            }
+            if readable {
+                more = match self.read(&mut buf) {
+                    Ok(more) => more,
+                    // Linux says EIO once the last process let go of the
+                    // terminal; the child's exit follows.
+                    #[cfg(target_os = "linux")]
+                    Err(e) if e.raw_os_error() == Some(libc::EIO) => false,
+                    Err(_) => break None,
+                };
             }
             // Asked to write, the PTY wakes the poller as soon as it can take more.
             let wants = !self.pending.is_empty();

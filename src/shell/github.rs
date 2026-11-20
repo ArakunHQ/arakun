@@ -277,7 +277,7 @@ impl Shell {
                 .background_spawn(crate::guard::task(async move { pull_env(&roots, &target) }))
                 .await;
             let _ = this.update_in(cx, |this, window, cx| match found {
-                Ok(Some((root, path))) => {
+                Ok(Some((root, path, created))) => {
                     let Some(pi) = this.projects.iter().position(|p| p.path == root) else {
                         return;
                     };
@@ -291,6 +291,13 @@ impl Shell {
                     this.refresh_project(pi, cx);
                     if let Some(ei) = this.projects[pi].env_index(&path) {
                         this.select_env(pi, ei, window, cx);
+                    }
+                    // A new worktree gets the project's setup, as one made from
+                    // the sidebar does; one already there has had it.
+                    if created {
+                        if let Some(script) = this.projects[pi].setup.clone() {
+                            this.run_in_terminal(&path, &script, true, window, cx);
+                        }
                     }
                     let agent = this.env().agent;
                     this.start_session_in(&path, agent, title.into(), prompt, true, window, cx);
@@ -420,12 +427,13 @@ pub fn open_terminal_link(url: &str, window: &mut Window, cx: &mut App) -> bool 
 }
 
 /// The project of `on`'s repository among `roots` (folder and name, the
-/// first one wins) and the worktree on its branch, made when there is none.
+/// first one wins) and the worktree on its branch, made when there is none
+/// (then true).
 /// None when no project has a remote pointing at the repository.
 fn pull_env(
     roots: &[(PathBuf, String)],
     on: &github::pr::PullTarget,
-) -> anyhow::Result<Option<(PathBuf, PathBuf)>> {
+) -> anyhow::Result<Option<(PathBuf, PathBuf, bool)>> {
     for (root, name) in roots {
         let Some(remote) = git::remote_for(root, &on.repo) else {
             continue;
@@ -435,11 +443,11 @@ fn pull_env(
             .into_iter()
             .find(|t| t.branch.as_deref() == Some(on.branch.as_str()))
         {
-            return Ok(Some((root.clone(), tree.path)));
+            return Ok(Some((root.clone(), tree.path, false)));
         }
         let path = model::worktree_path(name, &on.branch);
         git::add_pull_worktree(root, &path, &remote, on.number, &on.branch, on.track)?;
-        return Ok(Some((root.clone(), path)));
+        return Ok(Some((root.clone(), path, true)));
     }
     Ok(None)
 }

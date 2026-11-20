@@ -17,7 +17,8 @@ use anyhow::{Result, anyhow};
 use super::AgentKind;
 use super::launch::LaunchSpec;
 use crate::headless::sandbox::{
-    self as hs, Hidden, READ, Runner, sbpl_list, sbpl_pin, sbpl_str, sbpl_subpath,
+    self as hs, Hidden, READ, Runner, sbpl_list, sbpl_pin, sbpl_regex_escape, sbpl_secret_names,
+    sbpl_str, sbpl_subpath,
 };
 
 /// Projects whose agents run sandboxed, as the shell last saved them, each with
@@ -29,7 +30,7 @@ pub fn set_projects(paths: impl IntoIterator<Item = PathBuf>) {
         .into_iter()
         .map(|p| {
             let p = crate::platform::canonicalize(&p).unwrap_or(p);
-            let git = git_common_dir(&p);
+            let git = git_common_dir(&p).ok().flatten();
             (p, git)
         })
         .collect();
@@ -47,26 +48,68 @@ pub fn wanted(cwd: &Path) -> bool {
     if projects.iter().any(|(p, _)| cwd.starts_with(p)) {
         return true;
     }
-    let Some(git) = git_common_dir(&cwd) else {
+    let Ok(Some(git)) = git_common_dir(&cwd) else {
         return false;
     };
     projects.iter().any(|(_, g)| g.as_ref() == Some(&git))
 }
 
 /// The repository's shared Git folder: `.git` itself, or for a worktree the one
-/// its `.git` file leads to.
-fn git_common_dir(ws: &Path) -> Option<PathBuf> {
+/// its `.git` file leads to. None without one; an error when the `.git` file
+/// leads somewhere the repository doesn't list as this worktree's.
+///
+/// The agent can rewrite a `.git` file in its workspace, and the sandbox makes
+/// what it leads to writable. So it counts only when Git registered it both
+/// ways: the folder sits under `<common>/worktrees`, and its `gitdir` file
+/// leads back here. The agent can't write those outside a repository it has.
+fn git_common_dir(ws: &Path) -> Result<Option<PathBuf>, String> {
+    let real = |p: &Path| crate::platform::canonicalize(p).ok();
     let dot = ws.join(".git");
-    if dot.is_dir() {
-        return crate::platform::canonicalize(&dot).ok();
-    }
-    let text = std::fs::read_to_string(&dot).ok()?;
-    let gitdir = ws.join(text.trim().strip_prefix("gitdir:")?.trim());
-    let common = match std::fs::read_to_string(gitdir.join("commondir")) {
-        Ok(c) => gitdir.join(c.trim()),
-        Err(_) => gitdir,
+    let Ok(meta) = std::fs::metadata(&dot) else {
+        return Ok(None);
     };
-    crate::platform::canonicalize(common).ok()
+    if meta.is_dir() {
+        return Ok(real(&dot));
+    }
+    let bad = |why: &str| Err(format!("{}: {why}", dot.display()));
+    let Some(text) = small_file(&dot) else {
+        return bad("not a folder nor a short file");
+    };
+    let Some(to) = text.trim().strip_prefix("gitdir:") else {
+        return bad("no gitdir line");
+    };
+    let Some(gitdir) = real(&ws.join(to.trim())) else {
+        return bad("it leads to a folder that is not there");
+    };
+    let common = small_file(&gitdir.join("commondir")).and_then(|c| real(&gitdir.join(c.trim())));
+    let back = small_file(&gitdir.join("gitdir")).and_then(|b| real(Path::new(b.trim())));
+    match common {
+        Some(common)
+            if gitdir.parent() == Some(common.join("worktrees").as_path())
+                && back.is_some_and(|b| Some(b) == real(&dot)) =>
+        {
+            Ok(Some(common))
+        }
+        _ => bad("its repository does not list it as a worktree (git worktree repair fixes that)"),
+    }
+}
+
+/// A Git metadata file, read only when it is a regular file and short: a pipe
+/// in its place would block the window, which calls this on save.
+fn small_file(p: &Path) -> Option<String> {
+    use std::io::Read;
+    let mut opts = std::fs::OpenOptions::new();
+    opts.read(true);
+    // Opening a pipe for reading waits for a writer; this doesn't.
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::custom_flags(&mut opts, libc::O_NONBLOCK);
+    let f = opts.open(p).ok()?;
+    if !f.metadata().ok()?.is_file() {
+        return None;
+    }
+    let mut text = String::new();
+    f.take(4096).read_to_string(&mut text).ok()?;
+    Some(text)
 }
 
 /// Under `$HOME`, writable: package and build caches. Not the folders that hold
@@ -180,10 +223,52 @@ fn own(kind: AgentKind, home: &Path) -> Vec<PathBuf> {
     out
 }
 
+/// Inherited variables that look like secrets but which agents need: model
+/// providers' keys and settings, and arakun's own.
+const AGENT_VARS: &[&str] = &[
+    "ANTHROPIC_",
+    "CLAUDE_",
+    "OPENAI_",
+    "AZURE_OPENAI_",
+    "CODEX_",
+    "OPENCODE_",
+    "OPENROUTER_",
+    "GEMINI_",
+    "GOOGLE_",
+    "VERTEX",
+    "CLOUD_ML_",
+    "FACTORY_",
+    "DEVIN_",
+    "WINDSURF_",
+    "GROQ_",
+    "MISTRAL_",
+    "DEEPSEEK_",
+    "XAI_",
+    "ARAKUN_",
+];
+
+/// An inherited variable the agent doesn't get: a token or key of another tool,
+/// or the address of a host socket. AWS keys stay for Bedrock, which Claude Code
+/// and OpenCode can use.
+fn foreign_secret(name: &str, kind: AgentKind) -> bool {
+    let n = name.to_uppercase();
+    if AGENT_VARS.iter().any(|p| n.starts_with(p)) {
+        return false;
+    }
+    if n.starts_with("AWS_")
+        && (kind == AgentKind::OpenCode
+            || kind == AgentKind::Claude && std::env::var_os("CLAUDE_CODE_USE_BEDROCK").is_some())
+    {
+        return false;
+    }
+    hs::secret_var(name, &[])
+}
+
 /// One agent's sandbox in an app session. Its folder goes when it does.
 #[derive(Debug)]
 pub struct Session {
     pub runner: Runner,
+    pub kind: AgentKind,
     /// The session's own folder: `tmp` and `empty`.
     pub dir: PathBuf,
     /// Set for the agent inside (`CLAUDE_CONFIG_DIR` under bubblewrap).
@@ -226,8 +311,9 @@ impl Session {
                 "bubblewrap (bwrap) is not installed. Install it (pacman -S bubblewrap / apt install bubblewrap), or turn off Sandbox agents in Settings › Project."
             })
         })?;
-        let home = crate::platform::home();
         let real = |p: PathBuf| crate::platform::canonicalize(&p).unwrap_or(p);
+        // Seatbelt matches real paths: a deny on a linked $HOME would match nothing.
+        let home = real(crate::platform::home());
         let workspace =
             crate::platform::canonicalize(cwd).map_err(|e| anyhow!("{}: {e}", cwd.display()))?;
         let mine = own(kind, &home);
@@ -243,7 +329,9 @@ impl Session {
                 .map(|path| Hidden { path, dir: false }),
         );
         let mut writable = vec![workspace.clone()];
-        let git = git_common_dir(&workspace);
+        let git = git_common_dir(&workspace).map_err(|e| {
+            anyhow!("{e}. The sandbox won't open a Git folder it can't trust; turn off Sandbox agents in Settings › Project to run this agent without it.")
+        })?;
         let mut frozen = Vec::new();
         if let Some(g) = &git {
             if !g.starts_with(&workspace) {
@@ -334,6 +422,7 @@ impl Session {
         }
         Ok(Session {
             runner,
+            kind,
             dir,
             env,
             home,
@@ -352,7 +441,18 @@ impl Session {
 
     /// `spec`, run inside: the runner first, then the agent's own command.
     pub fn wrap(&self, spec: LaunchSpec) -> LaunchSpec {
-        let mut inner = vec![spec.program.to_string_lossy().into_owned()];
+        // The agent inherits arakun's environment; `env` drops other tools'
+        // credentials from it first (GH_TOKEN, a cloud key), inside.
+        let mut inner = vec!["/usr/bin/env".to_string()];
+        let mut gone: Vec<String> = std::env::vars_os()
+            .filter_map(|(k, _)| k.into_string().ok())
+            .filter(|k| !spec.env.iter().any(|(s, _)| s == k) && foreign_secret(k, self.kind))
+            .collect();
+        gone.sort();
+        for k in gone {
+            inner.extend(["-u".to_string(), k]);
+        }
+        inner.push(spec.program.to_string_lossy().into_owned());
         inner.extend(spec.args);
         let mut args = match &self.runner {
             Runner::Bwrap(_) => self.bwrap_args(),
@@ -512,7 +612,7 @@ impl Session {
             let prefix = self.home.join(".claude.json");
             out.push_str(&format!(
                 "(allow file-write* (regex #\"^{}\"))\n",
-                regex_escape(&prefix.to_string_lossy())
+                sbpl_regex_escape(&prefix.to_string_lossy())
             ));
         }
         let hidden: Vec<&Path> = self.hidden.iter().map(|h| h.path.as_path()).collect();
@@ -533,12 +633,16 @@ impl Session {
                 sbpl_list(&paths(&self.shown_rw))
             ));
         }
-        if !self.frozen.is_empty() {
-            out.push_str(&format!(
-                "(deny file-write* {})\n",
-                sbpl_list(&paths(&self.frozen))
-            ));
-        }
+        out.push_str(&sbpl_secret_names(&self.workspace));
+        // The workspace's Git config and hooks also when they are not there yet:
+        // a deny names a path, so `git init` can't plant what the user's git runs.
+        let git = self.workspace.join(".git");
+        let git_own = [git.join("config"), git.join("hooks")];
+        let mut frozen = paths(&self.frozen);
+        frozen.extend(git_own.iter().map(PathBuf::as_path));
+        frozen.sort();
+        frozen.dedup();
+        out.push_str(&format!("(deny file-write* {})\n", sbpl_list(&frozen)));
         // Folders above a hidden or read-only path can't be renamed out from under
         // its rule (`mv ~/.claude ~/.cache/c` to edit its settings).
         let roots: Vec<&Path> = writable
@@ -546,7 +650,7 @@ impl Session {
             .copied()
             .chain(paths(&self.shown_rw))
             .collect();
-        let pinned: Vec<&Path> = hidden.iter().copied().chain(paths(&self.frozen)).collect();
+        let pinned: Vec<&Path> = hidden.iter().copied().chain(frozen).collect();
         out.push_str(&sbpl_pin(&roots, &pinned));
         // Unix sockets: its own, and arakun's socket for sandboxed agents. Not the
         // host's (ssh-agent, Docker, tmux, arakun's main socket).
@@ -585,17 +689,6 @@ fn paths(ps: &[PathBuf]) -> Vec<&Path> {
     ps.iter().map(PathBuf::as_path).collect()
 }
 
-fn regex_escape(s: &str) -> String {
-    let mut out = String::new();
-    for c in s.chars() {
-        if "\\.+*?()|[]{}^$\"".contains(c) {
-            out.push('\\');
-        }
-        out.push(c);
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -603,6 +696,7 @@ mod tests {
     fn session(runner: Runner) -> Session {
         Session {
             runner,
+            kind: AgentKind::Claude,
             dir: "/nonexistent/arakun-sandbox-test".into(),
             env: Vec::new(),
             home: "/home/u".into(),
@@ -658,6 +752,9 @@ mod tests {
         );
         let freeze = at("(deny file-write* (subpath \"/home/u/proj/.git/config\")");
         assert!(write < hide && hide < show && show < freeze);
+        // The workspace's own, before `git init` makes them, and later secrets.
+        assert!(p.contains("(subpath \"/home/u/ws/env-a/.git/hooks\")"));
+        assert!(p.contains("(regex #\"^/home/u/ws/env-a/(.*/)?[^/]*\\.env(\\.[^/]*)?$\")"));
         assert!(p.contains("(subpath \"/home/u/.cargo/credentials.toml\")"));
         assert!(p.contains("(path-literal \"/run/user/1/arakun/sandbox/control.sock\")"));
         assert!(p.contains("(regex #\"^/home/u/\\.claude\\.json\")"));
@@ -697,6 +794,36 @@ mod tests {
         assert!(!a.windows(3).any(|w| w == ["--bind", "/tmp", "/tmp"]));
         at(&["--unsetenv", "SSH_AUTH_SOCK"]);
         assert_eq!(a.last().unwrap(), "--");
+    }
+
+    #[test]
+    fn other_tools_credentials_stay_out() {
+        assert!(foreign_secret("GH_TOKEN", AgentKind::Claude));
+        assert!(foreign_secret("GITHUB_TOKEN", AgentKind::Codex));
+        assert!(foreign_secret("STRIPE_SECRET_KEY", AgentKind::OpenCode));
+        assert!(foreign_secret("SSH_AUTH_SOCK", AgentKind::Claude));
+        assert!(foreign_secret("AWS_SECRET_ACCESS_KEY", AgentKind::Codex));
+        assert!(!foreign_secret(
+            "AWS_SECRET_ACCESS_KEY",
+            AgentKind::OpenCode
+        ));
+        assert!(!foreign_secret("ANTHROPIC_API_KEY", AgentKind::Claude));
+        assert!(!foreign_secret(
+            "CLAUDE_CODE_OAUTH_TOKEN",
+            AgentKind::Claude
+        ));
+        assert!(!foreign_secret("OPENAI_API_KEY", AgentKind::Codex));
+        assert!(!foreign_secret("PATH", AgentKind::Claude));
+        assert!(!foreign_secret("HOME", AgentKind::Claude));
+        let s = session(Runner::Seatbelt("/usr/bin/sandbox-exec".into()));
+        let spec = s.wrap(LaunchSpec {
+            program: "/bin/agent".into(),
+            args: vec!["--acp".into()],
+            env: Vec::new(),
+        });
+        let at = spec.args.iter().position(|a| a == "/usr/bin/env").unwrap();
+        assert_eq!(spec.args[spec.args.len() - 2..], ["/bin/agent", "--acp"]);
+        assert!(spec.args[at..].iter().all(|a| a != "PATH"));
     }
 
     #[test]
@@ -765,8 +892,48 @@ mod tests {
         )
         .unwrap();
         std::fs::write(main.join(".git/worktrees/env-a/commondir"), "../..\n").unwrap();
+        std::fs::write(
+            main.join(".git/worktrees/env-a/gitdir"),
+            format!("{}\n", wt.join(".git").display()),
+        )
+        .unwrap();
         let main_real = crate::platform::canonicalize(&main).unwrap();
-        assert_eq!(git_common_dir(&wt), Some(main_real.join(".git")));
+        assert_eq!(git_common_dir(&wt), Ok(Some(main_real.join(".git"))));
+        assert_eq!(git_common_dir(&d), Ok(None));
+        // A `.git` file the agent rewrote to lead elsewhere opens nothing.
+        let other = d.join("other");
+        std::fs::create_dir_all(other.join("x")).unwrap();
+        std::fs::write(other.join("x/commondir"), "..\n").unwrap();
+        std::fs::write(
+            other.join("x/gitdir"),
+            format!("{}\n", wt.join(".git").display()),
+        )
+        .unwrap();
+        let forged = d.join("forged");
+        std::fs::create_dir_all(&forged).unwrap();
+        std::fs::write(
+            forged.join(".git"),
+            format!("gitdir: {}\n", other.join("x").display()),
+        )
+        .unwrap();
+        assert!(git_common_dir(&forged).is_err());
+        // One that leads to a real worktree, but not this one's.
+        std::fs::write(
+            forged.join(".git"),
+            format!("gitdir: {}\n", main.join(".git/worktrees/env-a").display()),
+        )
+        .unwrap();
+        assert!(git_common_dir(&forged).is_err());
+        // A pipe in place of `.git` is not read, so it can't block the window.
+        #[cfg(unix)]
+        {
+            let piped = d.join("piped");
+            std::fs::create_dir_all(&piped).unwrap();
+            let c =
+                std::ffi::CString::new(piped.join(".git").to_string_lossy().as_bytes()).unwrap();
+            assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+            assert!(git_common_dir(&piped).is_err());
+        }
         set_projects([main.clone()]);
         assert!(wanted(&wt) && wanted(&main.join("src")));
         // A project opened at a worktree covers the main checkout too.

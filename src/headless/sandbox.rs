@@ -664,10 +664,15 @@ impl Sandbox {
             "(allow file-write* {ws} {tmp} (literal \"/dev/null\") (literal \"/dev/zero\") \
              (literal \"/dev/dtracehelper\") (literal \"/dev/tty\") (regex #\"^/dev/fd/\"))\n"
         ));
-        let frozen: Vec<&Path> = self.frozen.iter().map(PathBuf::as_path).collect();
-        if !frozen.is_empty() {
-            out.push_str(&format!("(deny file-write* {})\n", list(&frozen)));
-        }
+        // Also when they are not there yet: a deny names a path, not a file, so
+        // `git init` can't plant a hook or an fsmonitor the user's git runs outside.
+        let git = self.workspace.join(".git");
+        let git_own = [git.join("config"), git.join("hooks")];
+        let mut frozen: Vec<&Path> = self.frozen.iter().map(PathBuf::as_path).collect();
+        frozen.extend(git_own.iter().map(PathBuf::as_path));
+        frozen.sort();
+        frozen.dedup();
+        out.push_str(&format!("(deny file-write* {})\n", list(&frozen)));
         // $HOME and the shared temporary folders read as empty, but for what is
         // shown again; names and sizes stay visible, as Seatbelt has no tmpfs.
         let mut dark = vec![self.home.as_path()];
@@ -697,6 +702,7 @@ impl Sandbox {
             out.push_str(&format!("(deny {READ} {})\n", list(&hidden)));
             out.push_str(&format!("(deny file-write* {})\n", list(&hidden)));
         }
+        out.push_str(&sbpl_secret_names(&self.workspace));
         let pinned: Vec<&Path> = frozen.iter().chain(&hidden).copied().collect();
         out.push_str(&sbpl_pin(&[self.workspace.as_path()], &pinned));
         // The sandbox's own /tmp, last: it may sit under a hidden folder.
@@ -948,6 +954,36 @@ pub fn sbpl_pin(roots: &[&Path], pinned: &[&Path]) -> String {
     format!("(deny file-write-unlink {})\n", lits.join(" "))
 }
 
+/// `s` with what a Seatbelt regex treats as special escaped.
+pub fn sbpl_regex_escape(s: &str) -> String {
+    let mut out = String::new();
+    for c in s.chars() {
+        if "\\.+*?()|[]{}^$\"".contains(c) {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// Hides files under `root` named like secrets, also those made after the scan
+/// at launch: a new `.env`, a key the agent fetched. The commonest names of
+/// [`secret_file`]; the scan still finds the rest of what is there at launch.
+pub fn sbpl_secret_names(root: &Path) -> String {
+    let r = sbpl_regex_escape(&root.to_string_lossy());
+    let names = [
+        r"[^/]*\.env(\.[^/]*)?",
+        r"[^/]*\.(pem|key|p12|pfx|keystore|jks|gpg|asc)",
+        r"id_(rsa|ed25519|ecdsa|dsa)[^/]*",
+        r"(\.netrc|\.npmrc|\.pypirc|\.git-credentials|auth\.json|credentials(\.json|\.toml)?|\.modal\.toml)",
+    ];
+    let rules: Vec<String> = names
+        .iter()
+        .map(|n| format!("(regex #\"^{r}/(.*/)?{n}$\")"))
+        .collect();
+    format!("(deny {READ} {})\n", rules.join(" "))
+}
+
 pub fn sbpl_list(ps: &[&Path]) -> String {
     ps.iter()
         .map(|p| sbpl_subpath(p))
@@ -1015,7 +1051,9 @@ impl Sandbox {
         let tmp = crate::platform::canonicalize(&tmp).unwrap_or(tmp);
         let empty = session_dir.join("empty");
         std::fs::write(&empty, b"").map_err(|e| format!("{}: {e}", empty.display()))?;
+        // Seatbelt matches real paths: a deny on a linked $HOME would match nothing.
         let home = crate::platform::home();
+        let home = crate::platform::canonicalize(&home).unwrap_or(home);
         let git = workspace.join(".git");
         let frozen = [git.join("config"), git.join("hooks")]
             .into_iter()
@@ -1325,7 +1363,12 @@ mod tests {
         let tmp = at("(allow file-read-data file-read-xattr (subpath \"/d/h1/tmp\"))");
         assert!(dark < shown && shown < hidden && hidden < tmp);
         assert!(p.contains("(subpath \"/home/u/proj/.env\")"));
-        assert!(p.contains("(deny file-write* (subpath \"/home/u/proj/.git/hooks\"))"));
+        // The Git config and hooks, there or not yet.
+        assert!(p.contains(
+            "(deny file-write* (subpath \"/home/u/proj/.git/config\") (subpath \"/home/u/proj/.git/hooks\"))"
+        ));
+        // Secrets made later, by name.
+        assert!(p.contains("(regex #\"^/home/u/proj/(.*/)?[^/]*\\.env(\\.[^/]*)?$\")"));
         assert!(p.contains("(global-name \"com.apple.SecurityServer\")"));
         assert!(p.contains("(deny network-outbound (remote ip))"));
         // Their folders can't be renamed away from the rules, nor ttys written.
@@ -1518,9 +1561,11 @@ mod tests {
         std::fs::remove_dir_all(&d).unwrap();
     }
 
-    /// The real thing on macOS, where sandbox-exec always is.
+    /// The real thing on macOS. It reads the real `$HOME` and tries the network:
+    /// `cargo test --no-default-features inside_seatbelt -- --ignored`.
     #[cfg(target_os = "macos")]
     #[test]
+    #[ignore]
     fn inside_seatbelt() {
         let Some(runner) = find_runner() else { return };
         let d = crate::platform::canonicalize(std::env::temp_dir())
@@ -1585,12 +1630,31 @@ mod tests {
             )
         };
         assert!(!run("cat sub/.env").0);
+        // Nor a new name: a hard link or a symlink to it reads nothing.
+        assert!(!run("ln sub/.env copy && cat copy").0);
+        assert!(!run("ln -s sub/.env l && cat l").0);
+        // A secret made after the scan stays hidden too.
+        std::fs::write(ws.join("sub/later.env"), "KEY=2").unwrap();
+        assert!(!run("cat sub/later.env").0);
         assert!(!run("mv sub sub2").0);
         assert!(!run(&format!("mv {} \"$TMPDIR/ws\"", ws.display())).0);
         assert!(run("touch sub/a && rm sub/a").0);
         // Tools still work: git (through xcrun) and a C compiler.
         if Path::new("/Library/Developer/CommandLineTools").is_dir() {
-            assert!(run("git init -q . && git status --short > /dev/null").0);
+            // Not `git init` inside: .git/config and hooks are read-only before
+            // they exist.
+            assert!(!run("git init -q .").0);
+            assert!(!ws.join(".git/config").exists());
+            let _ = std::fs::remove_dir_all(ws.join(".git"));
+            let init = std::process::Command::new("git")
+                .args(["init", "-q"])
+                .current_dir(&ws)
+                .status()
+                .unwrap();
+            assert!(init.success());
+            assert!(run("git status --short > /dev/null").0);
+            assert!(!run("echo x >> .git/config").0);
+            assert!(!run("touch .git/hooks/pre-commit").0);
             assert!(run("printf 'int main(void){return 0;}' > m.c && cc m.c -o m && ./m").0);
         }
         if home.join(".cargo/bin/cargo").exists() {

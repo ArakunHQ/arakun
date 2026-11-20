@@ -227,8 +227,11 @@ terminal-only. The status line and keybindings from your settings don't apply in
 - **Sandboxed agents.** Turn on Sandbox agents in Settings › Project and the agents
   of that project's sessions run in a sandbox: Seatbelt on macOS, bubblewrap on Linux
   (needs `bwrap`). They can write the environment, the repository's Git folder (not
-  its config or hooks), package caches and temporary folders; other tools' logins,
-  browser profiles and files that look like secrets (`.env`, keys) stay hidden. They
+  its config or hooks), package caches and temporary folders; other tools' logins and
+  tokens (`GH_TOKEN`, cloud keys), browser profiles and files that look like secrets
+  (`.env`, keys) stay hidden. On Linux only the secret files there at the start are
+  hidden; macOS also hides ones made later. A worktree whose `.git` file leads to a
+  folder its repository doesn't list won't start sandboxed. They
   keep the network and their own login (on macOS the keychain), and reach Arakun
   through a socket of their own that refuses `arakun run`, `arakun agent` and anything
   else that would act outside. On Linux, sandboxed Claude Code keeps its settings in

@@ -281,6 +281,9 @@ pub struct Tab {
     pub sheet: usize,
     /// A diff tab loads its diff even past the size limit ("Show anyway").
     pub large: bool,
+    /// Counts the loads of a file or diff tab: only the latest one shows,
+    /// whichever finishes last.
+    pub loads: u64,
 }
 
 impl Tab {
@@ -303,6 +306,7 @@ impl Tab {
             markdown: None,
             sheet: 0,
             large: false,
+            loads: 0,
         }
     }
 
@@ -520,6 +524,9 @@ pub struct Environment {
     /// A push, pull or PR running from the Changes panel.
     pub git_busy: Option<GitOp>,
     pub git_error: Option<SharedString>,
+    /// Why a server's changes could not be read the last time it was asked:
+    /// the panel then shows what it had, or nothing, and says so.
+    pub status_error: Option<SharedString>,
     /// Unix seconds it was last on screen, for the cleanup of old environments.
     pub used: u64,
     /// A folder on a paired server, not here. Its sessions run there; nothing
@@ -917,6 +924,7 @@ impl Environment {
             pr_checked: None,
             git_busy: None,
             git_error: None,
+            status_error: None,
             used: unix_now(),
             remote: None,
         };

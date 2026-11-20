@@ -39,6 +39,7 @@ mod search;
 pub mod seats;
 mod selection;
 mod shell_diff;
+pub mod skills_sh;
 mod thread;
 mod view;
 mod web;

@@ -198,6 +198,14 @@ sense in the terminal app: `/clear`, `/cost`, `/keybindings-help`, `/login`, `/l
 `/output-style:new`, `/release-notes`, `/todos` and others Claude Code marks as
 terminal-only. The status line and keybindings from your settings don't apply in Arakun.
 
+Workers AI reads the project's `AGENTS.md` (or `CLAUDE.md`) and can use skills: a
+folder with a `SKILL.md` in `~/.claude/skills`, `~/.agents/skills`, the project's
+`.claude/skills` or `.agents/skills`, or a Claude Code plugin you turned on. Its system
+prompt lists each skill's name and description, and the agent loads a skill's
+instructions when a task matches it or when you type `/<name>`. A skill in your home
+folder wins over a project skill with the same name. A headless session's sandbox only
+sees the project's skills.
+
 - **Agent sessions.** Transcripts render markdown, diffs, tool calls and images;
   sessions can be resumed, and per-turn diffs show what each turn changed, including
   changes made by shell commands (files over 1 MB are left out). Each transcript is kept
@@ -461,8 +469,12 @@ after a week).
   while `~/.claude/settings.json` sets `CLAUDE_CODE_OAUTH_TOKEN` in its `env` block,
   because Claude Code applies that over each session's environment; the Usage tab says
   so, and sessions start as before. Without a saved seat nothing changes.
-- **Marketplace.** Plugins and MCP servers to add, and the MCP servers, plugins, skills
-  and permission rules the agents load now. Under Arakun › Extensions (or Settings ›
+- **Marketplace.** Plugins, MCP servers and skills to add, and the MCP servers, plugins,
+  skills and permission rules the agents load now. Discover › Skills searches
+  [skills.sh](https://skills.sh); Install copies the skill's folder from its GitHub
+  repository into `~/.claude/skills`, where Claude Code and Workers AI find it. It uses
+  your `gh` sign-in (or `GH_TOKEN`) when there is one, since GitHub answers few
+  requests without one. Skills install on this computer only, not on a paired server. Under Arakun › Extensions (or Settings ›
   General › Sidebar) you turn on the tabs the sidebar shows besides Inbox, Runs, Branches and Marketplace: GitHub, Notes,
   Memory, Usage, Cloudflare, PostHog, Isometric, Phone, Servers and Automations. The
   palette and Customize › Sidebar list only the tabs that are on. A new install starts
@@ -1076,8 +1088,13 @@ The link is good for two minutes and pairs one device. There are two ways to use
   servers' sessions too. A terminal in a server's environment is a shell in that folder
   on the server, and the project commands from Settings run there too. It keeps running
   while the connection is down and picks up where it was once it is back; one no app
-  follows for an hour is hung up. Git and the file tree stay with this machine's folders.
-  Fork, compact, rewind and `/stage` in a server's session run on the server, with its
+  follows for an hour is hung up. The Changes panel of a server's environment shows
+  that folder's changes and diffs, and stage, discard, commit, pull, push and the pull
+  request button run there, with the server's `git` and `gh` logins
+  (`ARAKUN_GITHUB=readonly` on the server keeps it from pushing or opening pull requests;
+  set it before `service install`).
+  Merging into the main checkout and GitHub's form stay with this machine's folders, and
+  so does the file tree. Fork, compact, rewind and `/stage` in a server's session run on the server, with its
   agent and its git: a fork or a rewind opens as a new session there. "Continue with"
   hands a server's session to another of the agents on that server, in the same tab.
   In a server's environment, the model menu lists the models and reasoning levels that
@@ -1178,6 +1195,7 @@ arakun-server service uninstall   # stop it and remove the service; the data sta
   restarts the server.
 - **Agents.** The service gets the `PATH` of the shell you install it from, so it finds
   the same agents. If you install an agent somewhere else later, run `install` again.
+  It also keeps `ARAKUN_GITHUB=readonly` when that is set in that shell.
   It also keeps `XDG_DATA_HOME` and `ARAKUN_SERVER_DIR` when they are set, so it uses
   the folder the other commands look in.
 - **Logged out (Linux).** As a normal user it turns on lingering

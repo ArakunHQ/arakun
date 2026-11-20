@@ -172,6 +172,8 @@ pub(super) struct ServersLink {
     terms: terms::Terms,
     /// Whether new environments are spread across machines, and each one's preference.
     balance: Balance,
+    /// Git asked of servers for their environments' Changes panels.
+    git_asks: servers::git::Asks,
     _listen: Task<()>,
 }
 
@@ -870,6 +872,7 @@ impl Shell {
             error: None,
             terms: terms::Terms::new(window, cx),
             balance: balance::load(),
+            git_asks: Default::default(),
             _listen: listen,
         });
         for (id, inbox) in &seeded {
@@ -1014,6 +1017,8 @@ impl Shell {
                 if let Some(conn) = link.conns.remove(id) {
                     conn.client.unpair();
                 }
+                link.git_asks
+                    .fail(id, "The server was forgotten before it answered.");
                 link.saved.retain(|s| s.id != *id);
                 servers::save(&link.saved);
                 if link.balance.servers.contains_key(id) {
@@ -1240,6 +1245,8 @@ impl Shell {
         }
         self.servers_open_started(window, cx);
         self.servers_open_added(window, cx);
+        // A window that had no projects polls none: the server's ones need it.
+        self.sync_poll(window, cx);
         // Phones list the servers' sessions too.
         self.phone_inbox_changed(cx);
         cx.notify();
@@ -1693,6 +1700,24 @@ impl Shell {
         let key = (remote.server.clone(), remote.place.clone(), agent.kind());
         let offered = self.servers.as_ref()?.options.get(&key)?;
         draft_on_server(offered, super::sessions::agent_draft(env, agent), s)
+    }
+
+    /// Where git runs for the environment at `env_path`: in its folder here,
+    /// or on the server that has it.
+    pub(super) fn git_at(&self, env_path: &Path) -> servers::git::GitAt {
+        use servers::git::{GitAt, ServerGit};
+        let Some(remote) = self.find_env(env_path).and_then(|e| e.remote.as_ref()) else {
+            return GitAt::Here(env_path.to_path_buf());
+        };
+        let link = self.servers.as_ref();
+        GitAt::Server(ServerGit {
+            server: remote.server.clone(),
+            place: remote.place.clone(),
+            link: link
+                .and_then(|l| l.conns.get(&remote.server))
+                .map(|c| c.client.sender()),
+            asks: link.map(|l| l.git_asks.clone()).unwrap_or_default(),
+        })
     }
 
     /// Keeps the first prompt of the start `reference` until its server answers.
@@ -2435,6 +2460,10 @@ impl Shell {
             return;
         };
         match event {
+            Event::Undelivered(msg) if msg["type"] == "git" => {
+                link.git_asks.undelivered(id, &msg);
+                return;
+            }
             Event::Undelivered(msg) => {
                 self.servers_undelivered(id, &msg, cx);
                 return;
@@ -2482,6 +2511,15 @@ impl Shell {
                     LinkStatus::Refused(why) => Reach::Refused(why),
                 };
                 let back = reach == Reach::Connected;
+                // Git's answers would have come on the connection that dropped.
+                if back {
+                    link.git_asks.back(id);
+                } else {
+                    link.git_asks.fail(
+                        id,
+                        "The connection to the server dropped before it answered.",
+                    );
+                }
                 // The answer would have come on the connection that dropped,
                 // but the server may still finish: the form says to look first.
                 let lost_env = if back { None } else { link.new_env.remove(id) };
@@ -2551,6 +2589,16 @@ impl Shell {
             }
             Event::Message(msg) => {
                 let kind = msg["type"].as_str().unwrap_or("");
+                if kind == "git" {
+                    link.git_asks.answered(id, &msg);
+                    return;
+                }
+                // The refusal names `git` first: it is about the Changes
+                // panel, and none of what else was asked.
+                if kind == "error" && older_server_refused(&text(&msg, "message"), &["git"]) {
+                    link.git_asks.older(id);
+                    return;
+                }
                 if self.server_term_message(id, &msg, cx) {
                     return;
                 }

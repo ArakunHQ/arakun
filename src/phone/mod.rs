@@ -337,6 +337,15 @@ pub enum ClientMsg {
     TermClose {
         term: String,
     },
+    /// Git in place `place`, for the app's Changes panel: status, diffs,
+    /// staging, commits, pushes and pull requests, with this machine's `git`
+    /// and `gh` logins. Answered with `git`, which carries the same `ref`.
+    Git {
+        #[serde(rename = "ref")]
+        reference: u64,
+        place: String,
+        call: crate::git_call::Call,
+    },
     Ping,
 }
 
@@ -1704,6 +1713,25 @@ mod tests {
             read(r#"{"type":"settle_env","place":"/w/fix"}"#),
             ClientMsg::SettleEnv {
                 place: "/w/fix".into()
+            }
+        );
+    }
+
+    #[test]
+    fn git_reads_as_the_app_sends_it() {
+        use crate::git_call::Call;
+        let call = Call::Push {
+            remote: "origin".into(),
+            branch: "fix".into(),
+        };
+        // As `servers::git::ServerGit` writes it.
+        let sent = serde_json::json!({ "type": "git", "ref": 7, "place": "/w/fix", "call": call });
+        assert_eq!(
+            serde_json::from_value::<ClientMsg>(sent).unwrap(),
+            ClientMsg::Git {
+                reference: 7,
+                place: "/w/fix".into(),
+                call,
             }
         );
     }

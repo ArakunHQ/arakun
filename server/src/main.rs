@@ -25,6 +25,10 @@ mod fetch;
 #[allow(dead_code)]
 #[path = "../../src/git.rs"]
 mod git;
+// The app asks for a folder's changes, commits and pull requests (`ClientMsg::Git`).
+#[allow(dead_code)]
+#[path = "../../src/git_call.rs"]
+mod git_call;
 #[path = "../../src/guard.rs"]
 mod guard;
 #[path = "../../src/rotate.rs"]
@@ -41,12 +45,14 @@ mod headless {
     }
 }
 mod github {
-    // The server opens no pull requests: `git.rs`'s `pr_create` is the app's.
+    // The app pushes and opens pull requests through the server
+    // (`git_call`), as read-only as the app's own: `src/github/mod.rs`.
     pub fn read_only() -> bool {
-        true
+        std::env::var("ARAKUN_GITHUB").is_ok_and(|v| v == "readonly")
     }
     pub mod pr {
-        pub const READ_ONLY: &str = "The server opens no pull requests.";
+        pub const READ_ONLY: &str =
+            "GitHub is read-only on this server (ARAKUN_GITHUB=readonly): nothing was sent.";
     }
 }
 mod memory {

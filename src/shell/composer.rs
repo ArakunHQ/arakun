@@ -431,6 +431,49 @@ impl Shell {
         None
     }
 
+    /// The skills of the visible environment for `/` completion, read in the
+    /// background on the first ask (or once stale). Claude Code and Workers AI
+    /// read them, so they show before a session has said what it offers.
+    fn skill_index(&mut self, cx: &mut Context<Self>) -> Option<Arc<Vec<crate::agent::Choice>>> {
+        let env_path = self.env().path.clone();
+        if let Some((path, at, skills)) = &self.skill_index
+            && *path == env_path
+            && at.elapsed() < FILE_INDEX_TTL
+        {
+            return Some(skills.clone());
+        }
+        if !self.skill_index_loading {
+            self.skill_index_loading = true;
+            let for_path = env_path.clone();
+            cx.spawn(async move |this, cx| {
+                let p = for_path.clone();
+                let skills = cx
+                    .background_spawn(crate::guard::task(async move {
+                        crate::agent::claude_ext::agent_skills(&p, true)
+                            .into_iter()
+                            .map(|s| crate::agent::Choice {
+                                id: s.name.clone(),
+                                name: s.name,
+                                description: (!s.description.is_empty()).then_some(s.description),
+                            })
+                            .collect::<Vec<_>>()
+                    }))
+                    .await;
+                let _ = this.update(cx, |this, cx| {
+                    this.skill_index_loading = false;
+                    this.skill_index = Some((for_path, Instant::now(), Arc::new(skills)));
+                    this.update_completion(cx);
+                });
+            })
+            .detach();
+        }
+        // While they are read again, the last ones read for this environment.
+        self.skill_index
+            .as_ref()
+            .filter(|(p, ..)| *p == env_path)
+            .map(|(_, _, s)| s.clone())
+    }
+
     pub(super) fn update_completion(&mut self, cx: &mut Context<Self>) {
         let was_open = self.completion.is_some();
         self.completion = self.compute_completion(cx);
@@ -505,18 +548,36 @@ impl Shell {
             if name.contains(char::is_whitespace) {
                 return None;
             }
-            let thread = self.active_thread(cx)?;
-            let thread = thread.read(cx);
+            // This computer's skills; a server's session says what it has there.
+            let skills = (self.env().remote.is_none()
+                && matches!(
+                    self.composer_agent(),
+                    model::Agent::Claude | model::Agent::WorkersAi
+                ))
+            .then(|| self.skill_index(cx))
+            .flatten();
+            let thread = self.active_thread(cx);
+            let reported: &[crate::agent::Choice] = match &thread {
+                Some(t) => t.read(cx).commands(),
+                None => &[],
+            };
             let name = name.to_lowercase();
-            let own = [crate::agent::Choice {
-                id: "stage".into(),
-                name: "stage".into(),
-                description: Some("Stage only the files this session changed".into()),
-            }];
-            let items: Vec<CompletionItem> = own
+            // `/stage` needs a session to know its files; an agent's own `stage` wins.
+            let stage =
+                (thread.is_some() && !reported.iter().any(|c| c.name == "stage")).then(|| {
+                    crate::agent::Choice {
+                        id: "stage".into(),
+                        name: "stage".into(),
+                        description: Some("Stage only the files this session changed".into()),
+                    }
+                });
+            // A skill the session reported already shows once.
+            let mut seen = std::collections::HashSet::new();
+            let items: Vec<CompletionItem> = stage
                 .iter()
-                .filter(|o| !thread.commands().iter().any(|c| c.name == o.name))
-                .chain(thread.commands())
+                .chain(reported)
+                .chain(skills.iter().flat_map(|s| s.iter()))
+                .filter(|c| seen.insert(c.name.to_lowercase()))
                 .filter(|c| name.is_empty() || c.name.to_lowercase().starts_with(&name))
                 .take(COMPLETION_ROWS)
                 .map(|c| CompletionItem {

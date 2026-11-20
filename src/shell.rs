@@ -2926,6 +2926,7 @@ impl Shell {
         self.follow_tab(cx);
         self.bring_split(prev);
         self.strip.settle_split(prev);
+        self.mark_on_screen_read(cx);
         self.unfloat_github(cx);
         self.ensure_active_live(window, cx);
         self.save(cx);

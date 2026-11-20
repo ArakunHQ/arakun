@@ -128,7 +128,7 @@ impl Shell {
     }
 
     /// The sessions in the panes on screen: the active tab and the split's other one.
-    fn sessions_on_screen(&self) -> Vec<(PathBuf, SharedString)> {
+    pub(super) fn sessions_on_screen(&self) -> Vec<(PathBuf, SharedString)> {
         let other = self
             .strip
             .split

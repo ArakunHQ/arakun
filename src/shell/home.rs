@@ -166,6 +166,28 @@ impl Shell {
         )
     }
 
+    /// A sign-in's terminal with no project added. Going back closes it,
+    /// which stops what runs in it.
+    pub(super) fn render_terminal_alone(
+        &self,
+        alone: &super::dock::TerminalAlone,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let back = icon_button("terminal-alone-back", "arrow-left01", 14.)
+            .tooltip(ui::tip("Close the terminal and go back"))
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.terminal_alone = None;
+                cx.notify();
+            }));
+        self.render_alone(
+            "terminal-alone",
+            back,
+            alone.view().clone().into_any_element(),
+            window,
+        )
+    }
+
     /// A view in the welcome's place: the window's bar with `back`, over it.
     fn render_alone(
         &self,

@@ -515,6 +515,8 @@ pub struct Shell {
     github_alone: bool,
     /// The Servers tab shows in the welcome's place: no project was added.
     servers_alone: bool,
+    /// A sign-in's terminal, in the welcome's place: no project was added.
+    terminal_alone: Option<dock::TerminalAlone>,
     /// `History::arrived` when the Inbox last drew: what it showed.
     inbox_shown: Cell<u64>,
     /// "Clear" was clicked once; the second click empties the history.
@@ -1017,6 +1019,7 @@ impl Shell {
             github_alone: false,
             onboarding: None,
             servers_alone: false,
+            terminal_alone: None,
             inbox_shown: Cell::new(0),
             clear_armed: false,
             restarting: false,
@@ -2531,14 +2534,7 @@ impl Shell {
                     this.close_modal(window, cx);
                     let cmd = crate::agent::opencode_go_login_command();
                     let kind = crate::agent::AgentKind::OpenCode;
-                    this.run_account_command(
-                        "Sign in to OpenCode Go",
-                        "sign-in",
-                        kind,
-                        cmd,
-                        window,
-                        cx,
-                    );
+                    this.run_account_command("Sign in to OpenCode Go", kind, cmd, window, cx);
                 }
                 SettingsEvent::OpenCodeSignOut => {
                     this.close_modal(window, cx);
@@ -3522,6 +3518,12 @@ impl Render for Shell {
             if std::mem::take(&mut self.servers_alone) {
                 cx.defer_in(window, |this, _, cx| this.servers_tab_closed(cx));
             }
+            // A sign-in started before the first project goes on in its dock.
+            if self.terminal_alone.is_some() {
+                cx.defer_in(window, |this, window, cx| {
+                    this.adopt_terminal_alone(window, cx)
+                });
+            }
         }
         let rail_right = self.sidebar.style.side == crate::sidebar::Side::Right;
         if has_projects && std::mem::take(&mut self.env_followed) {
@@ -3575,6 +3577,9 @@ impl Render for Shell {
                         .when_some(self.render_tab_drop_zones(cx), |d, zones| d.child(zones))
                         .when_some(self.render_image_drop_zone(cx), |d, zone| d.child(zone)),
                 )
+                .into_any_element()
+        } else if let Some(alone) = &self.terminal_alone {
+            self.render_terminal_alone(alone, window, cx)
                 .into_any_element()
         } else if self.servers_alone {
             self.render_servers_alone(window, cx).into_any_element()

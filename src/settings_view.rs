@@ -42,6 +42,7 @@ pub enum SettingsEvent {
     Island(bool),
     /// The whole UI's zoom, in percent.
     Zoom(u32),
+    ReduceMotion(crate::ui::motion::Reduce),
     /// An extension view turned on or off in the sidebar.
     SidebarView(crate::sidebar::View, bool),
     /// A project's setup script (`check` false) or check command; `None` clears it.
@@ -252,7 +253,7 @@ impl Section {
                 "raccoon mascot animation motion new session dynamic island notch top bar agents alerts background close hide tray sidebar usage card plans browser web page drive click type scripts"
             }
             Section::Appearance => {
-                "theme palette color scheme colors accent tint corners radius rounded round sharp spacing gap padding compact roomy density window custom share night graphite midnight forest rose diff colors colorblind high contrast glass blur transparent translucent grays gray text size font scale design system mode dark light zoom bigger smaller"
+                "theme palette color scheme colors accent tint corners radius rounded round sharp spacing gap padding compact roomy density window custom share night graphite midnight forest rose diff colors colorblind high contrast glass blur transparent translucent grays gray text size font scale design system mode dark light zoom bigger smaller reduce motion animation accessibility still"
             }
             Section::Project => {
                 "setup script install new environment worktree check command test lint build verify \
@@ -1802,6 +1803,31 @@ impl SettingsDialog {
             )
             .into_any_element()
         };
+        let motion = {
+            use crate::ui::motion::{self, Reduce};
+            let chosen = motion::choice();
+            let mut seg = ui::segmented();
+            for r in Reduce::ALL {
+                seg = seg.child(
+                    ui::segment(
+                        ("set-reduce-motion", r as usize),
+                        None,
+                        r.label(),
+                        r == chosen,
+                    )
+                    .on_click(cx.listener(move |_, _, _, cx| {
+                        cx.emit(SettingsEvent::ReduceMotion(r));
+                        cx.notify();
+                    })),
+                );
+            }
+            row(
+                "Reduce motion",
+                "Holds the mascot, spinners and the island's working dots still, and shows menus and dialogs without sliding them in. System follows your computer's setting.",
+                seg.into_any_element(),
+            )
+            .into_any_element()
+        };
         stack(vec![
             group(vec![
                 row("Colors", "", value(self.look.colors.clone())).into_any_element(),
@@ -1809,7 +1835,7 @@ impl SettingsDialog {
                 row("Sidebar", "", value(self.look.sidebar.clone())).into_any_element(),
             ]),
             open,
-            titled("Window", vec![zoom]),
+            titled("Window", vec![zoom, motion]),
         ])
     }
 

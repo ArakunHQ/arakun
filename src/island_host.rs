@@ -233,6 +233,7 @@ mod host {
     #[cfg(feature = "coderlabs")]
     use crate::island::Levels;
     use crate::island::{self, Alert, AlertKind, Feed, Island, IslandEvent, Phase};
+    use crate::ui::motion;
 
     /// How often the headless folders are read.
     const WATCH_EVERY: Duration = Duration::from_secs(1);
@@ -347,6 +348,7 @@ mod host {
             .run(move |cx: &mut App| {
                 crate::assets::load_fonts(cx);
                 crate::signals::quit_on_signals(cx);
+                crate::ui::motion::follow_system(cx);
                 island::hide_from_dock();
                 if !island::supported(cx) {
                     eprintln!("arakun: {}", super::NEEDS);
@@ -839,6 +841,20 @@ mod host {
 
         fn push(&mut self, cx: &mut Context<Self>) {
             let feed = watch::merge(self.app.as_ref().map(|a| &a.feed), &self.headless);
+            // The app's choice wins while it is connected; then the system's.
+            let choice = match feed.reduce_motion {
+                Some(true) => motion::Reduce::On,
+                Some(false) => motion::Reduce::Off,
+                None => motion::Reduce::System,
+            };
+            if choice != motion::choice() {
+                motion::set_choice(choice, cx);
+                // The system's setting was read at start; it may have changed
+                // while the app's choice ruled.
+                if choice == motion::Reduce::System {
+                    motion::follow_system(cx);
+                }
+            }
             #[cfg(windows)]
             let feed = super::external::merge(feed, &mut self.external);
             self.island

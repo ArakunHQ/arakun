@@ -693,7 +693,9 @@ impl Shell {
             let active = window.is_window_active();
             if active {
                 this.refresh_visible(cx);
+                // The system's settings may have changed while Arakun was behind.
                 crate::ui::contrast::follow_system(cx);
+                crate::ui::motion::follow_system(cx);
             }
             #[cfg(feature = "coderlabs")]
             this.coderspace
@@ -894,6 +896,7 @@ impl Shell {
             window.focus(&composer_focus, cx);
         }
         crate::mascot::set_animated(layout.arcade);
+        crate::ui::motion::apply(cx);
         let home_face = cx.new(crate::ascii_face::AsciiFace::new);
         let ui_alpha = Cell::new(1.);
         let home_face_sub = cx.observe(&home_face, move |_, face, cx| {
@@ -2627,6 +2630,10 @@ impl Shell {
                     account_view::set_rail_shows(*agent, *on);
                     this.save(cx);
                     cx.notify();
+                }
+                SettingsEvent::ReduceMotion(r) => {
+                    crate::ui::motion::set_choice(*r, cx);
+                    this.save(cx);
                 }
                 #[cfg(target_os = "linux")]
                 SettingsEvent::Background(on) => {

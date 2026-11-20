@@ -522,6 +522,13 @@ the workspace panel is, so the work stays in view while you change it. Open it f
 palette (`Customize`), View › Customize… or Settings › Appearance › Open Customize, which
 only sums up what is chosen. It opens without a project too.
 
+Settings › Appearance › Reduce motion holds the mascot, spinners and the island still (its
+working dots, its change of shape and its alert cards), and shows menus and dialogs
+without sliding them in. System (the default)
+follows macOS's Reduce motion, GNOME's Animations switch or Windows' Animation effects,
+and picks up a change when Arakun's window comes to the front; On and Off ignore the
+system. The choice is kept in `state.json` as `reduce_motion`.
+
 - **Colors.** Mode draws the color scheme on black or on a white background with dark text.
   There are built-in color schemes (Arakun Black, the default, then Calma, Arakun Night,
   Graphite, Midnight, Forest, Rosé). Only the center of the window is a sheet; the

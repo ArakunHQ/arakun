@@ -72,8 +72,12 @@ fn layout(w: f32) -> Layout {
 pub enum GitHubViewEvent {
     /// Show a GitHub page.
     Open(String),
-    /// Start an agent session.
-    Ask { title: String, prompt: String },
+    /// Start an agent session; about a pull request, on its branch.
+    Ask {
+        title: String,
+        prompt: String,
+        pull: Option<pr::PullTarget>,
+    },
     /// The sheet shown over another window closed.
     Closed,
 }
@@ -956,8 +960,27 @@ impl GitHubView {
     // -----------------------------------------------------------------------
     // Agents
 
-    fn ask(&mut self, title: String, prompt: String, cx: &mut Context<Self>) {
-        cx.emit(GitHubViewEvent::Ask { title, prompt });
+    fn ask(
+        &mut self,
+        title: String,
+        prompt: String,
+        pull: Option<pr::PullTarget>,
+        cx: &mut Context<Self>,
+    ) {
+        cx.emit(GitHubViewEvent::Ask {
+            title,
+            prompt,
+            pull,
+        });
+    }
+
+    /// Where an agent works on `item`: the environment on its branch, once
+    /// the pull request is read.
+    fn target(&self, item: &ItemRef, cx: &App) -> Option<pr::PullTarget> {
+        match self.github.read(cx).details(item) {
+            Some(Details::Pull(p)) => Some(pr::PullTarget::of(item, p)),
+            _ => None,
+        }
     }
 
     fn review_with_agent(&mut self, cx: &mut Context<Self>) {
@@ -965,9 +988,11 @@ impl GitHubView {
             return;
         };
         let title = self.title(cx);
+        let on = self.target(&item, cx);
         self.ask(
             format!("Review: {title}"),
             pr::review_prompt(&item, &title),
+            on,
             cx,
         );
     }
@@ -981,6 +1006,7 @@ impl GitHubView {
         self.ask(
             format!("Issue: {title}"),
             pr::issue_prompt(&item, &title),
+            None,
             cx,
         );
     }
@@ -998,7 +1024,8 @@ impl GitHubView {
             }
             _ => return,
         };
-        self.ask(format!("Conflicts: {title}"), prompt, cx);
+        let on = self.target(&item, cx);
+        self.ask(format!("Conflicts: {title}"), prompt, on, cx);
     }
 
     /// "Address comments with agent": the open review threads, fixed or
@@ -1018,7 +1045,8 @@ impl GitHubView {
             }
             _ => return,
         };
-        self.ask(format!("Comments: {title}"), prompt, cx);
+        let on = self.target(&item, cx);
+        self.ask(format!("Comments: {title}"), prompt, on, cx);
     }
 
     fn catch_up(&mut self, cx: &mut Context<Self>) {
@@ -1041,7 +1069,7 @@ impl GitHubView {
             // An issue has no reviews: what it says so far is the catch-up.
             _ => pr::summarize_prompt(&item, &title),
         };
-        self.ask(format!("Catch up: {title}"), prompt, cx);
+        self.ask(format!("Catch up: {title}"), prompt, None, cx);
     }
 
     fn summarize(&mut self, cx: &mut Context<Self>) {
@@ -1050,6 +1078,7 @@ impl GitHubView {
         self.ask(
             format!("Summary: {title}"),
             pr::summarize_prompt(&item, &title),
+            None,
             cx,
         );
     }

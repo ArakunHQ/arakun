@@ -1,7 +1,9 @@
 //! The GitHub tab (the notifications inbox): opening it, its rail badge, what
 //! its rows do, and the notices for new notifications that deserve one.
 
-use gpui::{App, Context, SharedString, Window};
+use std::path::PathBuf;
+
+use gpui::{App, Context, Window};
 
 use super::island::Open;
 use super::*;
@@ -211,24 +213,99 @@ impl Shell {
                 }
                 cx.notify();
             }
-            GitHubViewEvent::Ask { title, prompt } => {
+            GitHubViewEvent::Ask {
+                title,
+                prompt,
+                pull,
+            } => {
                 // An agent works in a project: without one, add one first.
                 if !self.has_projects() {
                     self.open_picker(window, cx);
                     return;
                 }
-                let (path, agent) = (self.env().path.clone(), self.env().agent);
-                self.start_session_in(
-                    &path,
-                    agent,
-                    SharedString::from(title.clone()),
-                    prompt.clone(),
-                    true,
-                    window,
-                    cx,
-                );
+                match pull {
+                    Some(on) => {
+                        self.ask_on_pull(on.clone(), title.clone(), prompt.clone(), window, cx)
+                    }
+                    None => self.ask_here(title.clone(), prompt.clone(), window, cx),
+                }
             }
         }
+    }
+
+    /// A session in the environment in front.
+    fn ask_here(
+        &mut self,
+        title: String,
+        prompt: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.has_projects() {
+            return;
+        }
+        let (path, agent) = (self.env().path.clone(), self.env().agent);
+        self.start_session_in(&path, agent, title.into(), prompt, true, window, cx);
+    }
+
+    /// A session on a pull request, in the environment on its branch: the one
+    /// there is, or a new one. Switching the environment in front instead
+    /// would take its branch from the sessions working there, and git refuses
+    /// a branch another worktree has. With no project of that repository
+    /// here, the environment in front, whose agent then says so.
+    fn ask_on_pull(
+        &mut self,
+        on: github::pr::PullTarget,
+        title: String,
+        prompt: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // The project in front first: it is most likely the one.
+        let mut roots: Vec<(PathBuf, String)> = Vec::new();
+        let order = std::iter::once(self.active_project)
+            .chain((0..self.projects.len()).filter(|&i| i != self.active_project));
+        for pi in order {
+            let p = &self.projects[pi];
+            if !p.is_remote() {
+                roots.push((p.path.clone(), p.name.to_string()));
+            }
+        }
+        cx.spawn_in(window, async move |this, cx| {
+            let target = on.clone();
+            let found = cx
+                .background_spawn(crate::guard::task(async move { pull_env(&roots, &target) }))
+                .await;
+            let _ = this.update_in(cx, |this, window, cx| match found {
+                Ok(Some((root, path))) => {
+                    let Some(pi) = this.projects.iter().position(|p| p.path == root) else {
+                        return;
+                    };
+                    if this.projects[pi].env_index(&path).is_none() {
+                        this.projects[pi].environments.push(Environment::new(
+                            path.clone(),
+                            Some(on.branch.clone()),
+                            false,
+                        ));
+                    }
+                    this.refresh_project(pi, cx);
+                    if let Some(ei) = this.projects[pi].env_index(&path) {
+                        this.select_env(pi, ei, window, cx);
+                    }
+                    let agent = this.env().agent;
+                    this.start_session_in(&path, agent, title.into(), prompt, true, window, cx);
+                }
+                Ok(None) => this.ask_here(title, prompt, window, cx),
+                Err(e) => this.notify(
+                    AlertKind::Failure,
+                    &format!("Couldn't check out {}", on.branch),
+                    &format!("{e}"),
+                    None,
+                    cx,
+                ),
+            });
+        })
+        .detach();
     }
 
     /// A notice for each new notification that asks for the user by name or
@@ -319,6 +396,31 @@ pub fn open_terminal_link(url: &str, window: &mut Window, cx: &mut App) -> bool 
         );
     }
     item.is_some()
+}
+
+/// The project of `on`'s repository among `roots` (folder and name, the
+/// first one wins) and the worktree on its branch, made when there is none.
+/// None when no project has a remote pointing at the repository.
+fn pull_env(
+    roots: &[(PathBuf, String)],
+    on: &github::pr::PullTarget,
+) -> anyhow::Result<Option<(PathBuf, PathBuf)>> {
+    for (root, name) in roots {
+        let Some(remote) = git::remote_for(root, &on.repo) else {
+            continue;
+        };
+        let trees = git::worktrees(root)?;
+        if let Some(tree) = trees
+            .into_iter()
+            .find(|t| t.branch.as_deref() == Some(on.branch.as_str()))
+        {
+            return Ok(Some((root.clone(), tree.path)));
+        }
+        let path = model::worktree_path(name, &on.branch);
+        git::add_pull_worktree(root, &path, &remote, on.number, &on.branch, on.track)?;
+        return Ok(Some((root.clone(), path)));
+    }
+    Ok(None)
 }
 
 /// The repositories of `list`, each once: "ArakunHQ/arakun, k/app".

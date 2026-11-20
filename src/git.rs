@@ -1133,6 +1133,91 @@ pub fn add_branch_worktree(repo: &Path, path: &Path, branch: &str) -> Result<()>
     Ok(())
 }
 
+/// `owner/name` in a remote's address (`git@host:owner/name.git`,
+/// `https://host/owner/name`, `ssh://git@host/owner/name.git`).
+fn remote_slug(url: &str) -> Option<String> {
+    let url = url.trim().trim_end_matches('/');
+    let path = match url.split_once("://") {
+        Some((_, rest)) => rest.split_once('/')?.1,
+        None => url.split_once(':')?.1,
+    };
+    let path = path.trim_end_matches(".git");
+    let mut parts = path.rsplitn(3, '/');
+    let (name, owner) = (parts.next()?, parts.next()?);
+    (!name.is_empty() && !owner.is_empty()).then(|| format!("{owner}/{name}"))
+}
+
+/// The remote of the repository at `dir` that points at `slug` (`owner/name`
+/// on GitHub): `origin` in a clone, often `upstream` in a fork's.
+pub fn remote_for(dir: &Path, slug: &str) -> Option<String> {
+    let text = read(dir, &["remote", "-v"]).ok()?;
+    text.lines().find_map(|line| {
+        let mut cols = line.split_whitespace();
+        let (name, url) = (cols.next()?, cols.next()?);
+        remote_slug(url)
+            .filter(|s| s.eq_ignore_ascii_case(slug))
+            .map(|_| name.to_string())
+    })
+}
+
+/// A worktree at `path` on a pull request's `branch`. A local branch of that
+/// name is checked out as it is; otherwise the branch is made from the pull
+/// request's head on `remote` (`refs/pull/<number>/head`, which holds a
+/// fork's branch too). `track` sets it to follow `<remote>/<branch>`, for a
+/// branch that lives in that repository.
+pub fn add_pull_worktree(
+    repo: &Path,
+    path: &Path,
+    remote: &str,
+    number: u64,
+    branch: &str,
+    track: bool,
+) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("could not create {}", parent.display()))?;
+    }
+    let local = format!("refs/heads/{branch}");
+    if succeeds(
+        git(repo).args(["show-ref", "--verify", "--quiet", &local]),
+        GIT_LOCAL,
+    ) {
+        run_loud(
+            git(repo).args(["worktree", "add"]).arg(path).arg(branch),
+            GIT_LONG,
+        )?;
+        return Ok(());
+    }
+    run_loud(
+        git(repo).args([
+            "fetch",
+            "--quiet",
+            remote,
+            &format!("refs/pull/{number}/head"),
+        ]),
+        GIT_REMOTE,
+    )?;
+    run_loud(
+        git(repo)
+            .args(["worktree", "add", "--no-track", "-b", branch])
+            .arg(path)
+            .arg("FETCH_HEAD"),
+        GIT_LONG,
+    )?;
+    if track {
+        // Without it `git push` has nowhere to go; the worktree works either way.
+        let _ = output(
+            git(repo).args(["fetch", "--quiet", remote, branch]),
+            GIT_REMOTE,
+        );
+        let _ = output(
+            git(path).args(["branch", "--set-upstream-to", &format!("{remote}/{branch}")]),
+            GIT_LOCAL,
+        );
+    }
+    Ok(())
+}
+
 pub(crate) fn gh(dir: &Path) -> Command {
     let mut cmd = crate::platform::command("gh");
     cmd.current_dir(dir)
@@ -1965,6 +2050,79 @@ test: cover the resize\u{1f}\u{1e}\n";
                 .unwrap()
                 .success();
             assert!(!alive, "the grandchild still runs");
+        }
+    }
+
+    #[test]
+    fn a_remote_names_its_repository() {
+        for url in [
+            "git@github.com:ArakunHQ/arakun.git",
+            "https://github.com/ArakunHQ/arakun",
+            "https://github.com/ArakunHQ/arakun.git/",
+            "ssh://git@github.com/ArakunHQ/arakun.git",
+        ] {
+            assert_eq!(
+                super::remote_slug(url).as_deref(),
+                Some("ArakunHQ/arakun"),
+                "{url}"
+            );
+        }
+        assert_eq!(super::remote_slug("/tmp/repo"), None);
+    }
+
+    #[test]
+    fn a_pull_request_gets_a_worktree_on_its_branch() {
+        let dir = repo();
+        let remote = dir.with_extension("remote");
+        let git = |args: &[&str]| {
+            super::unpinned(&mut Command::new("git"))
+                .args(args)
+                .status()
+                .unwrap()
+                .success()
+        };
+        let (d, r) = (dir.to_str().unwrap(), remote.to_str().unwrap());
+        assert!(git(&["init", "-q", "--bare", "-b", "main", r]));
+        assert!(git(&["-C", d, "remote", "add", "origin", r]));
+        // GitHub keeps each pull request's head under refs/pull, a fork's too.
+        assert!(git(&[
+            "-C",
+            d,
+            "push",
+            "-q",
+            "origin",
+            "HEAD:refs/heads/feature",
+            "HEAD:refs/pull/7/head",
+        ]));
+        let rev = |dir: &std::path::Path, r: &str| {
+            super::stdout(super::git(dir).args(["rev-parse", r])).unwrap()
+        };
+        // No local branch: made from the pull request's head, following origin.
+        let tree = dir.with_extension("feature");
+        super::add_pull_worktree(&dir, &tree, "origin", 7, "feature", true).unwrap();
+        assert_eq!(rev(&tree, "HEAD"), rev(&dir, "HEAD"));
+        assert_eq!(
+            super::read(&tree, &["branch", "--show-current"])
+                .unwrap()
+                .trim(),
+            "feature"
+        );
+        assert_eq!(rev(&tree, "@{u}"), rev(&dir, "refs/remotes/origin/feature"));
+        // A fork's branch under its own name: nothing to follow.
+        let fork = dir.with_extension("fork");
+        super::add_pull_worktree(&dir, &fork, "origin", 7, "pr-7", false).unwrap();
+        assert!(
+            super::git(&fork)
+                .args(["rev-parse", "@{u}"])
+                .output()
+                .is_ok_and(|o| !o.status.success())
+        );
+        // A local branch is checked out as it is.
+        let taken = dir.with_extension("taken");
+        super::add_pull_worktree(&dir, &taken, "origin", 8, "taken", true).unwrap();
+        assert_eq!(rev(&taken, "HEAD"), rev(&dir, "refs/heads/taken"));
+        for p in [&dir, &remote, &tree, &fork, &taken] {
+            let _ = std::fs::remove_dir_all(p);
         }
     }
 

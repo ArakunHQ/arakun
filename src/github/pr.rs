@@ -350,6 +350,8 @@ pub struct Pull {
     pub base_ref_name: String,
     pub head_ref_name: String,
     pub head_ref_oid: String,
+    /// The branch lives in a fork, not in the pull request's repository.
+    pub is_cross_repository: bool,
     /// `MERGEABLE`, `CONFLICTING` or `UNKNOWN` (GitHub is still working it out).
     pub mergeable: String,
     /// `CLEAN`, `BLOCKED`, `BEHIND`, `DIRTY`, `DRAFT`, `UNSTABLE`, `HAS_HOOKS` or `UNKNOWN`.
@@ -383,6 +385,16 @@ pub struct Pull {
 }
 
 impl Pull {
+    /// The branch an agent works on locally. A fork's branch gets a name of
+    /// its own: it is often `main`, which would be the clone's own main.
+    pub fn local_branch(&self) -> String {
+        if self.is_cross_repository {
+            format!("pr-{}", self.number)
+        } else {
+            self.head_ref_name.clone()
+        }
+    }
+
     pub fn open(&self) -> bool {
         self.state == "OPEN"
     }
@@ -437,8 +449,8 @@ fn same_login(a: &str, b: &str) -> bool {
 // ---------------------------------------------------------------------------
 // Reading
 
-const PULL_FIELDS: &str = "number,title,body,state,isDraft,author,baseRefName,headRefName,headRefOid,mergeable,\
-mergeStateStatus,reviewDecision,additions,deletions,changedFiles,createdAt,updatedAt,closedAt,mergedAt,url,labels,assignees,\
+const PULL_FIELDS: &str = "number,title,body,state,isDraft,author,baseRefName,headRefName,headRefOid,isCrossRepository,\
+mergeable,mergeStateStatus,reviewDecision,additions,deletions,changedFiles,createdAt,updatedAt,closedAt,mergedAt,url,labels,assignees,\
 reviewRequests,latestReviews,reviews,comments,commits,statusCheckRollup,files";
 const ISSUE_FIELDS: &str =
     "number,title,body,state,author,labels,assignees,comments,createdAt,updatedAt,closedAt,url";
@@ -1305,14 +1317,38 @@ the job id ends each check's address).\n\n{checkout}\n\n\
 Find the cause and fix it in this checkout. Run the same command locally to confirm it passes, then summarize \
 what changed. Don't push.",
         repo = item.repo,
-        checkout = checkout_step(item, &pull.head_ref_name),
+        checkout = checkout_step(item, &pull.local_branch()),
     ));
     p
 }
 
-/// How an agent gets onto a pull request's branch before working on it. The
-/// project open is often on another branch (main, most of the time), so the
-/// agent switches when it safely can instead of giving up.
+/// The pull request an agent works on, for the shell to start it in the
+/// environment on its branch.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PullTarget {
+    pub repo: String,
+    pub number: u64,
+    /// The local branch: [`Pull::local_branch`].
+    pub branch: String,
+    /// The branch is in `repo` itself, so the local one can follow it.
+    pub track: bool,
+}
+
+impl PullTarget {
+    pub fn of(item: &ItemRef, pull: &Pull) -> Self {
+        Self {
+            repo: item.repo.clone(),
+            number: item.number,
+            branch: pull.local_branch(),
+            track: !pull.is_cross_repository,
+        }
+    }
+}
+
+/// How an agent gets onto a pull request's branch before working on it. Arakun
+/// starts it in the environment on `branch`, so this mostly brings in the
+/// latest commits. When it couldn't (no project of that repository), the
+/// agent switches only when that leaves every other worktree alone.
 fn checkout_step(item: &ItemRef, branch: &str) -> String {
     format!(
         "This checkout may be another repository or another branch: check with `git remote -v` and \
@@ -1320,9 +1356,10 @@ fn checkout_step(item: &ItemRef, branch: &str) -> String {
 {repo} (in a fork checkout that is often `upstream`, not `origin`) wherever `<remote>` appears below. Fetch the \
 pull request's current head with `git fetch <remote> refs/pull/{number}/head` (it works for branches in forks \
 too); if that fails, say so and stop. If it isn't on `{branch}`, switch to it when the working tree is clean (`git switch -c {branch} FETCH_HEAD` \
-if it doesn't exist here), else say so and stop. Then run `git merge --ff-only FETCH_HEAD` so the branch has the \
-pull request's latest commits; if that fails, the local branch has diverged from the pull request: say so and \
-stop.",
+if it doesn't exist here), else say so and stop. If git says `{branch}` is checked out in another worktree, \
+don't touch that worktree or use `--ignore-other-worktrees`: say where it is and stop. Then run \
+`git merge --ff-only FETCH_HEAD` so the branch has the pull request's latest commits; if that fails, the local \
+branch has diverged from the pull request: say so and stop.",
         repo = item.repo,
         number = item.number,
     )
@@ -1337,7 +1374,7 @@ pub fn has_conflicts(pull: &Pull) -> bool {
 /// into the pull request's branch and settle the conflicts, without pushing.
 pub fn conflicts_prompt(item: &ItemRef, title: &str, pull: &Pull) -> String {
     let url = item.url();
-    let (base, branch) = (&pull.base_ref_name, &pull.head_ref_name);
+    let (base, branch) = (&pull.base_ref_name, &pull.local_branch());
     format!(
         "The pull request \"{title}\" ({label}) conflicts with its base branch `{base}`.\nURL: {url}\n\n\
 {checkout}\n\n\
@@ -1430,7 +1467,7 @@ For each thread, check the comment against the code. Fix it in this checkout whe
 or not worth it, don't change the code and give the reason. Build and run the tests that cover what you changed.\n\n\
 Then list every thread by its number with what you did, or the reason you didn't, in a sentence I can post as \
 the reply. Don't commit, push, reply to or resolve anything on GitHub: I do that myself.",
-        checkout = checkout_step(item, branch),
+        checkout = checkout_step(item, &pull.local_branch()),
     ));
     p
 }
@@ -2904,7 +2941,8 @@ pub fn review_prompt(item: &ItemRef, title: &str) -> String {
 First note the commit you are reviewing: `gh pr view {url} --json headRefOid --jq .headRefOid`. \
 Then read it with `gh`: the description, the full diff, the existing reviews and comments, and the checks \
 (`gh pr view {url} --comments`, `gh pr diff {url}`, `gh api repos/{repo}/pulls/{n}/comments`, `gh pr checks {url}`). \
-Use the URL: this checkout may be another repository.\n\n\
+Use the URL: this checkout may be another repository. Don't switch this checkout to another branch \
+(no `git switch` or `gh pr checkout`): other sessions may be working in it.\n\n\
 Verify what it claims against the code where you can: read the files around the change, and build or run the tests \
 if this checkout is that repository. Say what you checked and what you could not check.\n\n\
 Then save the review as a draft, its text on stdin:\n\n\
@@ -5667,6 +5705,30 @@ mod tests {
         assert!(prompt.ends_with("Don't push."), "{prompt}");
         p.state = "CLOSED".into();
         assert!(!has_conflicts(&p));
+    }
+
+    #[test]
+    fn a_forks_branch_gets_a_local_name_of_its_own() {
+        let mut p = pull();
+        let it = item(ItemKind::Pull);
+        let on = PullTarget::of(&it, &p);
+        assert_eq!((on.branch.as_str(), on.track), ("fix/tab-name", true));
+        // A fork's `main` must not land on the clone's own main.
+        p.is_cross_repository = true;
+        p.head_ref_name = "main".into();
+        let on = PullTarget::of(&it, &p);
+        assert_eq!((on.branch.as_str(), on.track), ("pr-41", false));
+        let prompt = comments_prompt(&it, "Keep the tab name", &p, &open_threads(&p));
+        assert!(prompt.contains("branch `main` at"), "{prompt}");
+        assert!(
+            prompt.contains("`git switch -c pr-41 FETCH_HEAD`"),
+            "{prompt}"
+        );
+        // Another environment's branch stays where it is.
+        assert!(
+            prompt.contains("checked out in another worktree"),
+            "{prompt}"
+        );
     }
 
     #[test]

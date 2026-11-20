@@ -637,7 +637,15 @@ impl Link {
             if last_heard.elapsed() > SILENCE_MAX {
                 return Ended::Retry("The relay went quiet".into());
             }
-            match read(ws) {
+            let got = read(ws);
+            // Judged again: the computer can sleep while `read` waits, and
+            // what it returns on waking may have sat in a buffer all along.
+            if matches!(got, Ok(Read::Frame(..) | Read::Alive))
+                && last_heard.elapsed() > SILENCE_MAX
+            {
+                return Ended::Retry("The relay went quiet".into());
+            }
+            match got {
                 Ok(Read::Frame(kind, channel, payload)) => {
                     last_heard = Quiet::now();
                     if let Err(ended) = self.heard(ws, kind, channel, payload) {

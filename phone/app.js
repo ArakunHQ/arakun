@@ -239,10 +239,13 @@ async function connect() {
   attemptAbort = null;
   if (!ok) return lost();
   link = openLocal();
-  link.ws.onopen = linked;
-  link.ws.onmessage = (ev) => handle(JSON.parse(ev.data));
-  link.ws.onclose = lost;
-  link.ws.onerror = () => link.ws.close();
+  const ws = link.ws;
+  ws.onopen = linked;
+  ws.onmessage = (ev) => handle(JSON.parse(ev.data));
+  ws.onclose = lost;
+  // Its own socket: one closed by Retry can still report an error after
+  // `link` has moved on to the next.
+  ws.onerror = () => ws.close();
 }
 
 // The computer is there and knows us: pick up where the screen was.

@@ -1347,6 +1347,11 @@ fn talk(
         }
         let read = ws.read();
         if read.is_ok() {
+            // Judged again: the computer can sleep while `read` waits, and
+            // what it returns on waking may have sat in a buffer all along.
+            if last_heard.elapsed() > PHONE_SILENCE_MAX {
+                return;
+            }
             last_heard = Quiet::now();
         }
         match read {

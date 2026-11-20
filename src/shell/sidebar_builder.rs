@@ -157,13 +157,10 @@ impl Shell {
         cx.notify();
     }
 
-    /// A preset lays out the pieces; the look (card, side) stays as chosen.
+    /// A preset lays out the pieces and sets collapse and density; the look
+    /// (card, side) stays as chosen.
     pub(super) fn apply_sidebar_preset(&mut self, preset: Preset, cx: &mut Context<Self>) {
-        self.change_sidebar(cx, |s| {
-            let style = s.style;
-            *s = preset.layout();
-            s.style = style;
-        });
+        self.change_sidebar(cx, |s| *s = preset.apply(&s.style));
         self.clear_builder_selection();
     }
 

@@ -51,9 +51,13 @@ pub enum CustomizeEvent {
     Tab(CustomizeTab),
     /// Undo the last sidebar change, or redo it with `true`.
     UndoSidebar(bool),
-    /// Copy the sidebar's layout, or use one from the clipboard.
-    ExportSidebar,
-    ImportSidebar,
+    /// Copy `look` as a line, with the window's sidebar when `sidebar`.
+    CopyLook {
+        look: crate::look::Look,
+        sidebar: bool,
+    },
+    /// Use a sidebar layout that came in a look or was pasted.
+    ImportLayout(serde_json::Value),
 }
 
 /// What the Sidebar tab shows of the window's sidebar, handed over by the
@@ -68,6 +72,8 @@ pub struct RailLook {
     pub can_redo: bool,
     /// What the last import or export did.
     pub note: Option<SharedString>,
+    /// "17 pieces in 6 segments, Flush, on the left".
+    pub summary: SharedString,
 }
 
 /// Draws the Sidebar tab's Add and Selected parts: the sidebar and its
@@ -108,6 +114,21 @@ impl CustomizeTab {
     }
 }
 
+/// What travels in a look line, chosen part by part.
+#[derive(Clone, Copy, PartialEq)]
+struct Parts {
+    colors: bool,
+    shape: bool,
+    sidebar: bool,
+}
+
+enum Sheet {
+    /// What to put in the line.
+    Export(Parts),
+    /// A pasted line, once read, and what of it to use.
+    Import(Option<(Box<crate::look::Look>, Parts)>),
+}
+
 pub struct CustomizeView {
     tab: CustomizeTab,
     /// The palette in use, the user's own, and the shape.
@@ -120,8 +141,8 @@ pub struct CustomizeView {
     confirm_delete: bool,
     /// The name of the user's palette in use.
     name_input: Entity<TextInput>,
-    /// Whether the field to paste a shared palette is open.
-    show_import: bool,
+    /// Export or Import, open above the tab's settings.
+    sheet: Option<Sheet>,
     /// The save of a palette edit that waits for the slider to stop.
     palette_save: Option<Task<()>>,
     /// A palette edit is shown but not saved yet.
@@ -142,15 +163,15 @@ impl EventEmitter<CustomizeEvent> for CustomizeView {}
 impl CustomizeView {
     pub fn new(tab: CustomizeTab, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let share_input =
-            cx.new(|cx| TextInput::new("Paste a palette: arakun:palette/v1:…", cx).mono());
+            cx.new(|cx| TextInput::new("Paste a look, a palette or a sidebar layout", cx).mono());
         let share_sub =
             cx.subscribe_in(
                 &share_input,
                 window,
                 |this: &mut Self, _, ev, _, cx| match ev {
-                    InputEvent::Submit => this.import_palette(cx),
+                    InputEvent::Submit => this.read_import(cx),
                     InputEvent::Cancel => {
-                        this.show_import = false;
+                        this.sheet = None;
                         cx.notify();
                     }
                     _ => {}
@@ -177,7 +198,7 @@ impl CustomizeView {
             palette_note: None,
             confirm_delete: false,
             name_input,
-            show_import: false,
+            sheet: None,
             palette_save: None,
             palette_dirty: false,
             palette_writing: None,
@@ -318,26 +339,368 @@ impl CustomizeView {
         self.apply_palette(cx);
     }
 
-    fn import_palette(&mut self, cx: &mut Context<Self>) {
-        let code = self.share_input.read(cx).text().to_string();
-        match theme::Palette::from_share_code(&code) {
-            Some(p) => {
-                self.palettes.add(&p);
-                self.share_input.update(cx, |i, cx| i.set_text("", cx));
-                self.show_import = false;
-                // A Delete armed for the old palette must not delete the new one.
-                self.confirm_delete = false;
-                self.palette_note = Some(("Added and in use.".into(), false));
-                self.apply_palette(cx);
-            }
-            None => {
-                self.palette_note = Some((
-                    "That isn't a palette line. It starts with arakun:palette/v1:".into(),
-                    true,
-                ));
-                cx.notify();
-            }
+    /// Reads what was pasted: a look shows what it holds to choose from, a
+    /// palette is added and used, a sidebar layout waits to be applied.
+    fn read_import(&mut self, cx: &mut Context<Self>) {
+        let text = self.share_input.read(cx).text().to_string();
+        if let Some(look) = crate::look::Look::decode(&text) {
+            // The sidebar replaces the whole layout, so it is opt-in.
+            let parts = Parts {
+                colors: look.colors.is_some(),
+                shape: look.shape.is_some(),
+                sidebar: false,
+            };
+            self.sheet = Some(Sheet::Import(Some((Box::new(look), parts))));
+            self.palette_note = None;
+        } else if let Some(p) = theme::Palette::from_share_code(&text) {
+            crate::look::adopt_palette(&mut self.palettes, &p);
+            self.share_input.update(cx, |i, cx| i.set_text("", cx));
+            self.sheet = None;
+            // A Delete armed for the old palette must not delete the new one.
+            self.confirm_delete = false;
+            self.palette_note = Some(("Palette added and in use.".into(), false));
+            self.apply_palette(cx);
+        } else if let Ok(layout) = serde_json::from_str::<serde_json::Value>(text.trim())
+            && layout.get("sections").is_some()
+        {
+            let look = crate::look::Look {
+                sidebar: Some(layout),
+                ..Default::default()
+            };
+            let parts = Parts {
+                colors: false,
+                shape: false,
+                sidebar: true,
+            };
+            self.sheet = Some(Sheet::Import(Some((Box::new(look), parts))));
+            self.palette_note = None;
+        } else {
+            self.palette_note = Some((
+                "That isn't a look (arakun:look/v1:…), a palette (arakun:palette/v1:…) or a sidebar layout."
+                    .into(),
+                true,
+            ));
         }
+        cx.notify();
+    }
+
+    /// Uses the parts of a pasted look that were chosen.
+    fn apply_import(&mut self, cx: &mut Context<Self>) {
+        let Some(Sheet::Import(Some((look, parts)))) = self.sheet.take() else {
+            return;
+        };
+        let mut used = Vec::new();
+        if parts.colors
+            && let Some(c) = &look.colors
+        {
+            crate::look::adopt_palette(&mut self.palettes, &c.palette);
+            self.palettes.light = c.light;
+            self.confirm_delete = false;
+            cx.emit(CustomizeEvent::Grays(c.grays()));
+            cx.emit(CustomizeEvent::DiffPalette(c.diff()));
+            used.push("colors");
+        }
+        if parts.shape
+            && let Some(s) = &look.shape
+        {
+            self.palettes.radius = s.radius;
+            self.palettes.space = s.space;
+            self.palettes.window_gap = s.window_gap;
+            cx.emit(CustomizeEvent::TypeScale(s.text()));
+            cx.emit(CustomizeEvent::Glass(s.glass));
+            used.push("shape");
+        }
+        if parts.colors || parts.shape {
+            self.apply_palette(cx);
+        }
+        if parts.sidebar
+            && let Some(layout) = look.sidebar
+        {
+            cx.emit(CustomizeEvent::ImportLayout(layout));
+            used.push("sidebar");
+        }
+        self.share_input.update(cx, |i, cx| i.set_text("", cx));
+        self.palette_note = Some((
+            if used.is_empty() {
+                "Nothing was chosen, so nothing changed.".into()
+            } else {
+                format!("Applied: {}.", used.join(", ")).into()
+            },
+            false,
+        ));
+        cx.notify();
+    }
+
+    /// Puts the chosen parts of how the app looks now in a line to share.
+    fn copy_look(&mut self, parts: Parts, cx: &mut Context<Self>) {
+        let colors = parts.colors.then(|| crate::look::Colors {
+            palette: self.palettes.active(),
+            light: self.palettes.light,
+            grays: theme::grays().id().into(),
+            diff: theme::diff_palette().id().into(),
+        });
+        let shape = parts.shape.then(|| crate::look::Shape {
+            radius: self.palettes.radius,
+            space: self.palettes.space,
+            window_gap: self.palettes.window_gap,
+            text: ui::type_scale().id().into(),
+            glass: theme::glass(),
+        });
+        cx.emit(CustomizeEvent::CopyLook {
+            look: crate::look::Look {
+                colors,
+                shape,
+                sidebar: None,
+            },
+            sidebar: parts.sidebar,
+        });
+        self.sheet = None;
+        self.palette_note = Some((
+            "Look copied. Anyone can paste it with Import and choose what to use.".into(),
+            false,
+        ));
+        cx.notify();
+    }
+
+    /// The Export or Import card, above the tab's settings.
+    fn render_sheet(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let sheet = self.sheet.as_ref()?;
+        let rail = self.rail.as_ref();
+        let colors_note = format!(
+            "{}, {} grays, {} diff colors{}",
+            self.palettes.active().name,
+            theme::grays().label().to_lowercase(),
+            theme::diff_palette().label().to_lowercase(),
+            if self.palettes.light { ", light" } else { "" }
+        );
+        let shape_note = Summary::shape_of(&self.palettes);
+        let sidebar_note: SharedString = rail
+            .map(|r| r.summary.clone())
+            .unwrap_or_else(|| "The layout and its style".into());
+        let row = |id: &'static str,
+                   on: bool,
+                   enabled: bool,
+                   title: &'static str,
+                   note: String,
+                   warn: Option<&'static str>,
+                   flip: fn(&mut Parts),
+                   cx: &mut Context<Self>| {
+            div()
+                .id(id)
+                .flex()
+                .items_start()
+                .gap(crate::ui::sp(10.))
+                .py(crate::ui::sp(6.))
+                .when(enabled, |d| d.cursor_pointer())
+                .when(!enabled, |d| d.opacity(0.45))
+                .child(div().pt(crate::ui::sp(1.)).child(ui::check_box(on && enabled)))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .flex_1()
+                        .min_w_0()
+                        .gap(crate::ui::sp(2.))
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .gap(crate::ui::sp(8.))
+                                .child(name_label(title))
+                                .when_some(warn.filter(|_| on && enabled), |d, w| {
+                                    d.child(ui::tag(w, theme::attention()))
+                                }),
+                        )
+                        .child(hint_label(note)),
+                )
+                .when(enabled, |d| {
+                    d.on_click(cx.listener(move |this, _, _, cx| {
+                        match &mut this.sheet {
+                            Some(Sheet::Export(p)) => flip(p),
+                            Some(Sheet::Import(Some((_, p)))) => flip(p),
+                            _ => {}
+                        }
+                        cx.notify();
+                    }))
+                })
+                .into_any_element()
+        };
+        let card = |title: &'static str, hint: &'static str| {
+            div()
+                .flex()
+                .flex_col()
+                .gap(crate::ui::sp(8.))
+                .p(crate::ui::sp(12.))
+                .rounded(crate::ui::rad(ui::RADIUS_LG))
+                .border_1()
+                .border_color(theme::border())
+                .bg(theme::fill_raised())
+                .child(heading(title, None))
+                .child(hint_label(hint))
+        };
+        let cancel = ui::button("look-cancel", "Cancel", ButtonKind::Ghost, true).on_click(
+            cx.listener(|this, _, _, cx| {
+                this.sheet = None;
+                cx.notify();
+            }),
+        );
+        let el = match sheet {
+            Sheet::Export(p) => {
+                let p = *p;
+                card(
+                    "Export look",
+                    "Choose what travels. Whoever imports it chooses again.",
+                )
+                .child(row(
+                    "look-colors",
+                    p.colors,
+                    true,
+                    "Colors",
+                    colors_note,
+                    None,
+                    |p| p.colors = !p.colors,
+                    cx,
+                ))
+                .child(row(
+                    "look-shape",
+                    p.shape,
+                    true,
+                    "Shape",
+                    shape_note,
+                    None,
+                    |p| p.shape = !p.shape,
+                    cx,
+                ))
+                .child(row(
+                    "look-sidebar",
+                    p.sidebar,
+                    true,
+                    "Sidebar",
+                    sidebar_note.to_string(),
+                    Some("Replaces theirs"),
+                    |p| p.sidebar = !p.sidebar,
+                    cx,
+                ))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(crate::ui::sp(6.))
+                        .pt(crate::ui::sp(4.))
+                        .child(value_label("arakun:look/v1:…".into()))
+                        .child(div().flex_1())
+                        .child(cancel)
+                        .child(
+                            ui::button_with(
+                                "look-copy",
+                                Some("copy01"),
+                                "Copy",
+                                ButtonKind::Primary,
+                                p.colors || p.shape || p.sidebar,
+                            )
+                            .on_click(cx.listener(
+                                move |this, _, _, cx| {
+                                    if p.colors || p.shape || p.sidebar {
+                                        this.copy_look(p, cx)
+                                    }
+                                },
+                            )),
+                        ),
+                )
+                .into_any_element()
+            }
+            Sheet::Import(None) => card(
+                "Import",
+                "Paste a look, a palette line or a sidebar layout, then Read.",
+            )
+            .child(field(self.share_input.clone()))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(crate::ui::sp(6.))
+                    .child(div().flex_1())
+                    .child(cancel)
+                    .child(
+                        ui::button("look-read", "Read", ButtonKind::Primary, true)
+                            .on_click(cx.listener(|this, _, _, cx| this.read_import(cx))),
+                    ),
+            )
+            .into_any_element(),
+            Sheet::Import(Some((look, p))) => {
+                let p = *p;
+                let has = (
+                    look.colors.is_some(),
+                    look.shape.is_some(),
+                    look.sidebar.is_some(),
+                );
+                let from_look_colors = look.colors.as_ref().map(|c| {
+                    format!(
+                        "{}, {} grays",
+                        c.palette.name,
+                        c.grays().label().to_lowercase()
+                    )
+                });
+                card(
+                    "Import look",
+                    "Choose what to use. The rest of yours stays.",
+                )
+                .child(row(
+                    "look-in-colors",
+                    p.colors,
+                    has.0,
+                    "Colors",
+                    from_look_colors.unwrap_or_else(|| "Not in this line".into()),
+                    None,
+                    |p| p.colors = !p.colors,
+                    cx,
+                ))
+                .child(row(
+                    "look-in-shape",
+                    p.shape,
+                    has.1,
+                    "Shape",
+                    if has.1 {
+                        "Corners, spacing, window gap, text size and glass".into()
+                    } else {
+                        "Not in this line".into()
+                    },
+                    None,
+                    |p| p.shape = !p.shape,
+                    cx,
+                ))
+                .child(row(
+                    "look-in-sidebar",
+                    p.sidebar,
+                    has.2,
+                    "Sidebar",
+                    if has.2 {
+                        "Its layout, without commands, which run on a click".into()
+                    } else {
+                        "Not in this line".into()
+                    },
+                    Some("Replaces yours"),
+                    |p| p.sidebar = !p.sidebar,
+                    cx,
+                ))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(crate::ui::sp(6.))
+                        .pt(crate::ui::sp(4.))
+                        .child(div().flex_1())
+                        .child(cancel)
+                        .child(
+                            ui::button("look-apply", "Apply", ButtonKind::Primary, true)
+                                .on_click(cx.listener(|this, _, _, cx| this.apply_import(cx))),
+                        ),
+                )
+                .into_any_element()
+            }
+        };
+        Some(el)
     }
 
     /// Changes how round, roomy or spread out the app is, or its mode,
@@ -836,41 +1199,7 @@ impl CustomizeView {
             }
             stacked("Diff colors", None, seg.into_any_element())
         };
-        let import = div()
-            .flex()
-            .flex_col()
-            .gap(crate::ui::sp(8.))
-            .when(self.show_import, |d| {
-                d.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(crate::ui::sp(8.))
-                        .child(field(self.share_input.clone()).flex_1())
-                        .child(
-                            ui::button("palette-import", "Add", ButtonKind::Outline, true)
-                                .on_click(cx.listener(|this, _, _, cx| this.import_palette(cx))),
-                        ),
-                )
-            })
-            .when_some(self.palette_note.clone(), |d, (note, bad)| {
-                d.child(
-                    div()
-                        .text_size(px(ui::TEXT_XS))
-                        .text_color(if bad {
-                            theme::error().into()
-                        } else {
-                            theme::text_subtle()
-                        })
-                        .child(note),
-                )
-            })
-            .into_any_element();
-        let mut parts = vec![mode, self.render_palettes(cx), grays, diffs];
-        if self.show_import || self.palette_note.is_some() {
-            parts.push(import);
-        }
-        parts
+        vec![mode, self.render_palettes(cx), grays, diffs]
     }
 
     fn render_shape(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
@@ -1244,9 +1573,7 @@ impl CustomizeView {
     }
 
     fn render_footer(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let colors = self.tab == CustomizeTab::Colors;
         let tab = self.tab;
-        let code = self.palettes.active().share_code();
         div()
             .flex()
             .flex_none()
@@ -1275,55 +1602,31 @@ impl CustomizeView {
                 })),
             )
             .child(div().flex_1())
-            .when(tab == CustomizeTab::Sidebar, |d| {
-                d.child(
-                    ui::button(
-                        "customize-sidebar-import",
-                        "Import",
-                        ButtonKind::Ghost,
-                        true,
-                    )
-                    .tooltip(ui::tip("Use a sidebar layout copied from Arakun"))
-                    .on_click(cx.listener(|_, _, _, cx| cx.emit(CustomizeEvent::ImportSidebar))),
-                )
-                .child(
-                    ui::button(
-                        "customize-sidebar-export",
-                        "Export",
-                        ButtonKind::Outline,
-                        true,
-                    )
-                    .tooltip(ui::tip("Copy the sidebar's layout to share or keep"))
-                    .on_click(cx.listener(|_, _, _, cx| cx.emit(CustomizeEvent::ExportSidebar))),
-                )
-            })
-            .when(colors, |d| {
-                d.child(
-                    ui::button("customize-import", "Import", ButtonKind::Ghost, true).on_click(
-                        cx.listener(|this, _, window, cx| {
-                            this.show_import = !this.show_import;
-                            this.palette_note = None;
-                            if this.show_import {
-                                window.focus(&this.share_input.focus_handle(cx), cx);
-                            }
-                            cx.notify();
-                        }),
-                    ),
-                )
-                .child(
-                    ui::button("customize-export", "Export", ButtonKind::Outline, true)
-                        .tooltip(ui::tip("Copy the palette in use as one line to share"))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            cx.write_to_clipboard(gpui::ClipboardItem::new_string(code.clone()));
-                            this.palette_note = Some((
-                                "Copied. Anyone can paste it with Import to get this palette."
-                                    .into(),
-                                false,
-                            ));
-                            cx.notify();
-                        })),
-                )
-            })
+            .child(
+                ui::button("customize-import", "Import", ButtonKind::Ghost, true).on_click(
+                    cx.listener(|this, _, window, cx| {
+                        this.sheet = Some(Sheet::Import(None));
+                        this.palette_note = None;
+                        window.focus(&this.share_input.focus_handle(cx), cx);
+                        cx.notify();
+                    }),
+                ),
+            )
+            .child(
+                ui::button("customize-export", "Export…", ButtonKind::Outline, true)
+                    .tooltip(ui::tip(
+                        "Copy the colors, shape or sidebar as one line to share",
+                    ))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.sheet = Some(Sheet::Export(Parts {
+                            colors: true,
+                            shape: true,
+                            sidebar: tab == CustomizeTab::Sidebar,
+                        }));
+                        this.palette_note = None;
+                        cx.notify();
+                    })),
+            )
     }
 }
 
@@ -1334,8 +1637,25 @@ impl Render for CustomizeView {
             CustomizeTab::Shape => self.render_shape(cx),
             CustomizeTab::Sidebar => self.render_sidebar(window, cx),
         };
+        let note = self.palette_note.clone().map(|(note, bad)| {
+            div()
+                .text_size(px(ui::TEXT_SM))
+                .text_color(if bad {
+                    theme::error().into()
+                } else {
+                    theme::text_subtle()
+                })
+                .child(note)
+                .into_any_element()
+        });
+        let parts: Vec<AnyElement> = note
+            .into_iter()
+            .chain(self.render_sheet(cx))
+            .chain(parts)
+            .collect();
         // The sidebar is beside the panel already; the card shows colors.
-        let preview = self.tab != CustomizeTab::Sidebar;
+        // Export and Import need the room more than it does.
+        let preview = self.tab != CustomizeTab::Sidebar && self.sheet.is_none();
         div()
             .flex()
             .flex_col()
@@ -1475,13 +1795,8 @@ pub struct Summary {
 }
 
 impl Summary {
-    pub fn of(saved: &crate::palettes::Saved, sidebar: &crate::sidebar::Sidebar) -> Summary {
-        let mode = if saved.light { "Light" } else { "Dark" };
-        let colors = format!(
-            "{mode} · {} · {} grays",
-            saved.active().name,
-            theme::grays().label()
-        );
+    /// "Round corners · Default spacing · 8 px gap".
+    pub fn shape_of(saved: &crate::palettes::Saved) -> String {
         let corners = preset_name(
             saved.radius,
             &[("Sharp", 0.5), ("Default", 1.), ("Round", 1.5)],
@@ -1494,7 +1809,17 @@ impl Summary {
         )
         .map(|n| format!("{n} spacing"))
         .unwrap_or_else(|| format!("{:.0}% spacing", saved.space * 100.));
-        let shape = format!("{corners} · {spacing} · {:.0} px gap", saved.window_gap);
+        format!("{corners} · {spacing} · {:.0} px gap", saved.window_gap)
+    }
+
+    pub fn of(saved: &crate::palettes::Saved, sidebar: &crate::sidebar::Sidebar) -> Summary {
+        let mode = if saved.light { "Light" } else { "Dark" };
+        let colors = format!(
+            "{mode} · {} · {} grays",
+            saved.active().name,
+            theme::grays().label()
+        );
+        let shape = Summary::shape_of(saved);
         let style = match sidebar.style.variant {
             Variant::Card => "Card",
             Variant::Flush => "Flush",

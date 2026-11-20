@@ -15,6 +15,29 @@ impl Shell {
             can_undo: !self.builder.undo.is_empty(),
             can_redo: !self.builder.redo.is_empty(),
             note: self.builder.flash.clone(),
+            summary: {
+                let pieces = self
+                    .sidebar
+                    .sections
+                    .iter()
+                    .flat_map(|s| &s.items)
+                    .filter(|i| !i.piece.is_decoration())
+                    .count();
+                let style = match self.sidebar.style.variant {
+                    crate::sidebar::Variant::Card => "Card",
+                    crate::sidebar::Variant::Flush => "Flush",
+                    crate::sidebar::Variant::Floating => "Floating",
+                };
+                let side = match self.sidebar.style.side {
+                    crate::sidebar::Side::Left => "left",
+                    crate::sidebar::Side::Right => "right",
+                };
+                format!(
+                    "{pieces} pieces in {} segments, {style}, on the {side}",
+                    self.sidebar.sections.len()
+                )
+                .into()
+            },
         }
     }
 

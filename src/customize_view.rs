@@ -493,7 +493,11 @@ impl CustomizeView {
                 .py(crate::ui::sp(6.))
                 .when(enabled, |d| d.cursor_pointer())
                 .when(!enabled, |d| d.opacity(0.45))
-                .child(div().pt(crate::ui::sp(1.)).child(ui::check_box(on && enabled)))
+                .child(
+                    div()
+                        .pt(crate::ui::sp(1.))
+                        .child(ui::check_box(on && enabled)),
+                )
                 .child(
                     div()
                         .flex()

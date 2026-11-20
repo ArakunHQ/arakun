@@ -246,17 +246,14 @@ impl Render for GalleryView {
                 Type::Body,
                 theme::text_subtle(),
                 format!(
-                    "Subtle — labels, units, column headers ({:.0}%)",
+                    "Subtle — labels, units, placeholders, axis ticks ({:.0}%)",
                     r.text_subtle * 100.
                 ),
             ))
             .child(ui::text(
                 Type::Body,
                 theme::text_faint(),
-                format!(
-                    "Faint — placeholders, axis ticks, disabled ({:.0}%)",
-                    r.text_faint * 100.
-                ),
+                format!("Faint — disabled text, icons ({:.0}%)", r.text_faint * 100.),
             ));
         let surfaces = row()
             .items_start()

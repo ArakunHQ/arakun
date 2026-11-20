@@ -335,6 +335,12 @@ fn problems(line: &str) -> Vec<String> {
     if named {
         found.push("font by name: use theme::FONT_SANS / FONT_MONO".into());
     }
+    // A placeholder is text someone has to read, so it needs WCAG's 4.5:1;
+    // faint (3:1) is for disabled text and icons.
+    let faint = code.contains("theme::text_faint()") || code.contains("theme::mix(");
+    if faint && code.contains("placeholder") {
+        found.push("placeholder in a faint gray: use theme::text_subtle".into());
+    }
     // The brand stops at SemiBold (600); nothing heavier is bundled.
     for weight in ["BOLD", "EXTRA_BOLD", "BLACK"] {
         let name = format!("FontWeight::{weight}");
@@ -413,6 +419,15 @@ fn the_lint_catches_what_it_should() {
         problems(".font_family(theme::FONT_SANS).child(div().font_family( \"X\"))").len(),
         1
     );
+    assert_eq!(
+        problems("(input.placeholder.clone(), theme::mix(0.35))").len(),
+        1
+    );
+    assert_eq!(
+        problems("(field.placeholder.clone(), theme::text_faint())").len(),
+        1
+    );
+    assert!(problems("(input.placeholder.clone(), theme::text_subtle())").is_empty());
     assert!(problems(".font_weight(FontWeight::SEMIBOLD)").is_empty());
     assert!(problems(".bg(theme::mix(0.8))").is_empty());
     assert!(problems(".text_size(px(ui::TEXT_SM))").is_empty());

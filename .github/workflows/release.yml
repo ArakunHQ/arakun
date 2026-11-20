@@ -302,8 +302,9 @@ jobs:
   # A tag or a nightly is on a commit that main's CI already checked. If
   # that run passed with every Rust job run (none skipped because the commit
   # changed no Rust), the ci job skips its jobs instead of running them
-  # again. The relay job may have skipped: the archives hold no relay code,
-  # and relay changes pass it before they merge. A run still going is waited
+  # again. The relay and teams jobs may have skipped: the archives hold no
+  # relay or teams code, and changes there pass those jobs before they merge.
+  # A run still going is waited
   # for: starting another would queue a second macOS job behind it. A
   # cancelled or failed run, or none (a tag pushed by hand on another
   # branch), runs CI here as before. This is its own job, not a step of
@@ -346,7 +347,7 @@ jobs:
             # filter=latest: a job re-run after it failed counts by its last attempt.
             other=$(gh api --paginate "repos/$GH_REPO/actions/runs/$id/jobs?filter=latest" \
               --jq '.jobs[] | select(.conclusion != "success")
-                | select(.conclusion != "skipped" or .name != "Relay (types and tests)")
+                | select(.conclusion != "skipped" or (.name != "Relay (types and tests)" and .name != "Teams (types and tests)"))
                 | "\(.name): \(.conclusion)"') || continue
             if [ -z "$other" ]; then
               echo "::notice::main's CI passed on $SHA ($GITHUB_SERVER_URL/$GH_REPO/actions/runs/$id); not running it again"

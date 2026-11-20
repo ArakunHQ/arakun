@@ -382,6 +382,9 @@ after a week).
   you write and fill the box. `{number}` in a shortcut is a blank you type each time,
   on the number keyboard. Hold a message you sent to keep it, or tap **+** in the row.
   Shortcuts stay in that phone's browser.
+  Charts and diagrams in a reply (` ```chart ` and ` ```mermaid ` blocks) are drawn
+  on the phone as they are in the app. **Code** shows the block's text, and **Open**
+  shows the drawing full screen.
 
 ### More tabs
 

@@ -249,7 +249,7 @@ server_tools() {
       say "gh is not installed; the server shows no pull requests without it (https://cli.github.com)"
     fi
   fi
-  # Where the service finds it: $bindir comes first on its PATH.
+  # The one $bindir gives, else the one PATH gives: a new one goes in $bindir.
   have_node=$(PATH="$bindir:$PATH" node_version)
   if [ -z "$have_node" ] || [ "$have_node" -lt "$node_major" ] ||
     ! PATH="$bindir:$PATH" command -v npm >/dev/null; then
@@ -258,10 +258,23 @@ server_tools() {
     fi
     install_node
   fi
-  # One from an earlier run too.
-  if [ -d "$node_dir" ]; then
-    uninstall="$uninstall ~/.local/bin/node ~/.local/bin/npm ~/.local/bin/npx \"$node_dir\""
+  # The service keeps the PATH it is installed with, and the server looks in
+  # $bindir only after it: an older node ahead of $bindir is the one it runs.
+  path_node=$(node_version)
+  if [ -n "$path_node" ] && [ "$path_node" -lt "$node_major" ]; then
+    say "warning: 'node' on your PATH is $(command -v node), Node.js $path_node; the server needs $node_major or newer."
+    say "put $bindir first on your PATH, then run 'arakun-server service install' again if it runs as a service:"
+    # shellcheck disable=SC2016 # printed for the user to paste, not expanded here
+    printf '\n  export PATH="$HOME/.local/bin:$PATH"\n\n'
   fi
+  # Only the links that are Arakun's, from this run or an earlier one: a
+  # node of the user's own was left in place and must stay.
+  for b in node npm npx; do
+    if [ -L "$bindir/$b" ] && [ "$(readlink "$bindir/$b")" = "$node_dir/bin/$b" ]; then
+      uninstall="$uninstall ~/.local/bin/$b"
+    fi
+  done
+  if [ -d "$node_dir" ]; then uninstall="$uninstall \"$node_dir\""; fi
 }
 
 main() {

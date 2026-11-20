@@ -985,6 +985,42 @@ impl GitHubView {
         );
     }
 
+    /// "Resolve conflicts with agent": merge the base in and settle the
+    /// conflicts in the checkout.
+    fn resolve_conflicts(&mut self, cx: &mut Context<Self>) {
+        let Some(item) = self.item().filter(|i| i.kind == ItemKind::Pull) else {
+            return;
+        };
+        let title = self.title(cx);
+        let prompt = match self.github.read(cx).details(&item) {
+            Some(Details::Pull(p)) if pr::has_conflicts(p) => {
+                pr::conflicts_prompt(&item, &title, p)
+            }
+            _ => return,
+        };
+        self.ask(format!("Conflicts: {title}"), prompt, cx);
+    }
+
+    /// "Address comments with agent": the open review threads, fixed or
+    /// answered with a reason.
+    fn address_comments(&mut self, cx: &mut Context<Self>) {
+        let Some(item) = self.item().filter(|i| i.kind == ItemKind::Pull) else {
+            return;
+        };
+        let title = self.title(cx);
+        let prompt = match self.github.read(cx).details(&item) {
+            Some(Details::Pull(p)) => {
+                let open = pr::open_threads(p);
+                if !p.open() || open.is_empty() {
+                    return;
+                }
+                pr::comments_prompt(&item, &title, p, &open)
+            }
+            _ => return,
+        };
+        self.ask(format!("Comments: {title}"), prompt, cx);
+    }
+
     fn catch_up(&mut self, cx: &mut Context<Self>) {
         let Some(item) = self.item() else { return };
         let title = self.title(cx);
@@ -1190,12 +1226,14 @@ impl GitHubView {
             "reopen" if !pull => self.ask_confirm(Confirm::Reopen, cx),
             "work" if !pull => self.work_on_issue(cx),
             "review" if pull => self.review_with_agent(cx),
+            "conflicts" if pull => self.resolve_conflicts(cx),
+            "comments" if pull => self.address_comments(cx),
             "catchup" | "catch-up" => self.catch_up(cx),
             "summarize" | "summary" => self.summarize(cx),
             "open" => self.open_on_github(cx),
             _ => {
                 let list = if pull {
-                    "/approve, /request-changes, /merge, /review, /catchup, /summarize, /open"
+                    "/approve, /request-changes, /merge, /review, /conflicts, /comments, /catchup, /summarize, /open"
                 } else {
                     "/work, /close, /reopen, /catchup, /summarize, /open"
                 };

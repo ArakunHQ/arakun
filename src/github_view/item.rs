@@ -754,12 +754,54 @@ impl GitHubView {
             true,
         )
         .on_click(cx.listener(|this, _, _, cx| this.review_with_agent(cx)));
+        // The fixes an agent can take on show only when there is one to make.
+        let conflicts = pr::has_conflicts(p).then(|| {
+            ui::key_pill(
+                "gh-conflicts-agent",
+                Some(("sparkles", Some(theme::text_subtle()))),
+                "Fix conflicts",
+                None,
+                PillKind::Normal,
+                true,
+            )
+            .tooltip(ui::tip(
+                "Start an agent that merges the base branch in and settles the conflicts",
+            ))
+            .on_click(cx.listener(|this, _, _, cx| this.resolve_conflicts(cx)))
+        });
+        let open_threads = if p.open() {
+            pr::open_threads(p).len()
+        } else {
+            0
+        };
+        let comments = (open_threads > 0).then(|| {
+            let label = if open_threads == 1 {
+                "Address 1 comment".to_string()
+            } else {
+                format!("Address {open_threads} comments")
+            };
+            ui::key_pill(
+                "gh-comments-agent",
+                Some(("sparkles", Some(theme::text_subtle()))),
+                label,
+                None,
+                PillKind::Normal,
+                true,
+            )
+            .tooltip(ui::tip(
+                "Start an agent on the open review threads: it fixes them or says why not",
+            ))
+            .on_click(cx.listener(|this, _, _, cx| this.address_comments(cx)))
+        });
         div()
             .flex()
             .flex_none()
+            .flex_wrap()
             .items_center()
             .gap(crate::ui::sp(8.))
             .child(agent)
+            .children(conflicts)
+            .children(comments)
             .when(p.open(), |d| d.child(merge_btn))
     }
 

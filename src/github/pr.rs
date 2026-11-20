@@ -1311,6 +1311,127 @@ what changed. Don't push.",
     p
 }
 
+/// Whether "Resolve conflicts with agent" has something to do.
+pub fn has_conflicts(pull: &Pull) -> bool {
+    pull.open() && conflicting(pull)
+}
+
+/// The prompt behind "Resolve conflicts with agent": bring the base branch
+/// into the pull request's branch and settle the conflicts, without pushing.
+pub fn conflicts_prompt(item: &ItemRef, title: &str, pull: &Pull) -> String {
+    let (url, repo) = (item.url(), &item.repo);
+    let (base, branch) = (&pull.base_ref_name, &pull.head_ref_name);
+    format!(
+        "The pull request \"{title}\" ({label}) conflicts with its base branch `{base}`.\nURL: {url}\n\n\
+This checkout may be another repository or another branch: check with `git remote -v` and \
+`git branch --show-current`. If it isn't {repo}, say so and stop. If it isn't on `{branch}`, switch to it when the \
+working tree is clean (`git fetch origin {branch}` first if it is missing), else say so and stop.\n\n\
+Fetch the base (`git fetch origin {base}`) and merge `origin/{base}` into `{branch}`; don't rebase, so nobody has \
+to force-push. Settle each conflict by keeping what both sides meant: read the pull request \
+(`gh pr view {url}`) and the commits on `{base}` that touched the same lines to understand each side. When the \
+two can't both hold, keep the base's behavior, and tell me what of the pull request you dropped.\n\n\
+Build and run the tests that cover the files that conflicted, then commit the merge. Tell me which files \
+conflicted and how you settled each. Don't push.",
+        label = item.label(),
+    )
+}
+
+/// The open review threads an agent should address: not marked resolved
+/// (a thread GitHub said nothing about counts as open, as in
+/// `unanswered_threads`).
+pub fn open_threads(pull: &Pull) -> Vec<Thread> {
+    threads(&pull.inline)
+        .into_iter()
+        .filter(|t| t.resolved != Some(true))
+        .collect()
+}
+
+/// How much of one comment goes in the prompt. Bots write pages; the agent
+/// reads the rest with `gh`.
+const COMMENT_IN_PROMPT: usize = 1500;
+/// How much of all the threads goes in the prompt.
+const THREADS_IN_PROMPT: usize = 30_000;
+
+/// The prompt behind "Address comments with agent": the open review threads,
+/// each fixed in the checkout or answered with a reason. The agent neither
+/// replies nor resolves on GitHub: the user does that after reading its
+/// report.
+pub fn comments_prompt(item: &ItemRef, title: &str, pull: &Pull, open: &[Thread]) -> String {
+    let (url, repo, n) = (item.url(), &item.repo, item.number);
+    let branch = &pull.head_ref_name;
+    let mut p = format!(
+        "Address the open review comments on the pull request \"{title}\" ({label}), branch `{branch}` at {sha}.\n\
+URL: {url}\n\nOpen threads ({count}):\n",
+        label = item.label(),
+        sha = short_sha(&pull.head_ref_oid),
+        count = open.len(),
+    );
+    let mut room = THREADS_IN_PROMPT;
+    let mut left_out = 0;
+    for (i, t) in open.iter().enumerate() {
+        let mut block = format!("\n{}. `{}`", i + 1, t.path);
+        if let Some(line) = t.line {
+            block.push_str(&format!(" line {line}"));
+        }
+        if t.outdated == Some(true) {
+            block.push_str(" (outdated: the code under it changed since)");
+        }
+        if let Some(first) = t.comments.first().filter(|c| !c.html_url.is_empty()) {
+            block.push_str(&format!(", {}", first.html_url));
+        }
+        block.push('\n');
+        for c in &t.comments {
+            let who = if c.user.login.is_empty() {
+                "someone"
+            } else {
+                &c.user.login
+            };
+            let body = clip_comment(c.body.trim());
+            block.push_str(&format!("   {who}: {}\n", body.replace('\n', "\n   ")));
+        }
+        if block.len() > room {
+            left_out = open.len() - i;
+            break;
+        }
+        room -= block.len();
+        p.push_str(&block);
+    }
+    if left_out > 0 {
+        p.push_str(&format!(
+            "\n{left_out} more not shown here: read them with `gh api repos/{repo}/pulls/{n}/comments`.\n"
+        ));
+    }
+    let asked: Vec<String> = requested_changes(pull);
+    if !asked.is_empty() {
+        p.push_str(&format!(
+            "\n{} requested changes; read their review too (`gh pr view {url} --comments`).\n",
+            asked.join(", ")
+        ));
+    }
+    p.push_str(&format!(
+        "\nRead any comment cut short above in full with `gh api repos/{repo}/pulls/{n}/comments`. This checkout may \
+be another repository or another branch: check with `git remote -v` and `git branch --show-current`, and if it \
+isn't `{branch}` of {repo}, say so and stop.\n\n\
+For each thread, check the comment against the code. Fix it in this checkout when it is right; when it is wrong \
+or not worth it, don't change the code and give the reason. Build and run the tests that cover what you changed.\n\n\
+Then list every thread by its number with what you did, or the reason you didn't, in a sentence I can post as \
+the reply. Don't commit, push, reply to or resolve anything on GitHub: I do that myself."
+    ));
+    p
+}
+
+/// The start of a comment, cut at a character boundary.
+fn clip_comment(body: &str) -> String {
+    if body.len() <= COMMENT_IN_PROMPT {
+        return body.to_string();
+    }
+    let mut end = COMMENT_IN_PROMPT;
+    while !body.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{} […cut]", &body[..end])
+}
+
 // ---------------------------------------------------------------------------
 // What blocks the merge, and who it waits on
 
@@ -5480,5 +5601,65 @@ mod tests {
                 e.body.lines().next().unwrap_or_default()
             );
         }
+    }
+
+    #[test]
+    fn conflicts_go_to_an_agent_only_when_there_are_some() {
+        let mut p = pull();
+        assert!(!has_conflicts(&p));
+        p.mergeable = "CONFLICTING".into();
+        assert!(has_conflicts(&p));
+        let prompt = conflicts_prompt(&item(ItemKind::Pull), "Keep the tab name", &p);
+        assert!(prompt.contains("base branch `main`"), "{prompt}");
+        assert!(
+            prompt.contains("merge `origin/main` into `fix/tab-name`"),
+            "{prompt}"
+        );
+        assert!(prompt.ends_with("Don't push."), "{prompt}");
+        p.state = "CLOSED".into();
+        assert!(!has_conflicts(&p));
+    }
+
+    #[test]
+    fn open_threads_go_to_an_agent_with_their_comments() {
+        let mut p = pull();
+        let open = open_threads(&p);
+        // The resolved-false thread and the one GitHub said nothing about.
+        assert_eq!(open.len(), 2);
+        let prompt = comments_prompt(&item(ItemKind::Pull), "Keep the tab name", &p, &open);
+        assert!(prompt.contains("Open threads (2):"), "{prompt}");
+        assert!(
+            prompt.contains(
+                "1. `src/terminal.rs` line 42, https://github.com/ArakunHQ/arakun/pull/41#discussion_r101\n   Karlo: This reads the name too early.\n   rik: Moved it after the resize."
+            ),
+            "{prompt}"
+        );
+        assert!(
+            prompt.contains("2. `src/terminal/tests.rs` line 7\n   someone: Name the test"),
+            "{prompt}"
+        );
+        assert!(prompt.contains("Karlo requested changes"), "{prompt}");
+        assert!(prompt.contains("I do that myself."), "{prompt}");
+
+        // A resolved thread is not the agent's to address.
+        for c in &mut p.inline[..2] {
+            c.resolved = Some(true);
+        }
+        assert_eq!(open_threads(&p).len(), 1);
+    }
+
+    #[test]
+    fn long_comments_and_many_threads_are_cut() {
+        let mut p = pull();
+        p.inline.truncate(1);
+        p.inline[0].body = "é".repeat(COMMENT_IN_PROMPT);
+        let open = open_threads(&p);
+        let prompt = comments_prompt(&item(ItemKind::Pull), "t", &p, &open);
+        assert!(prompt.contains("[…cut]"), "{prompt}");
+
+        let many: Vec<Thread> = (0..100).map(|_| open[0].clone()).collect();
+        let prompt = comments_prompt(&item(ItemKind::Pull), "t", &p, &many);
+        assert!(prompt.len() < THREADS_IN_PROMPT + 3000, "{}", prompt.len());
+        assert!(prompt.contains("more not shown here"), "{prompt}");
     }
 }

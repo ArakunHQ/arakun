@@ -632,6 +632,11 @@ impl Link {
             if self.stop.load(Ordering::Relaxed) {
                 return Ended::Stopped;
             }
+            // Judged before reading: a pong buffered before the computer
+            // slept would otherwise pass for a relay that is still there.
+            if last_heard.elapsed() > SILENCE_MAX {
+                return Ended::Retry("The relay went quiet".into());
+            }
             match read(ws) {
                 Ok(Read::Frame(kind, channel, payload)) => {
                     last_heard = Quiet::now();
@@ -642,9 +647,6 @@ impl Link {
                 Ok(Read::Alive) => last_heard = Quiet::now(),
                 Ok(Read::Nothing) => {}
                 Err(ended) => return ended,
-            }
-            if last_heard.elapsed() > SILENCE_MAX {
-                return Ended::Retry("The relay went quiet".into());
             }
             if last_ping.elapsed() > PING_EVERY {
                 last_ping = Quiet::now();

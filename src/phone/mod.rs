@@ -876,6 +876,16 @@ type Outgoing = std_mpsc::SyncSender<String>;
 struct Client {
     device: String,
     out: Outgoing,
+    /// Set when the client is dropped from the map. Its loop would otherwise
+    /// write out every message still queued before it noticed, which for a
+    /// phone dropped for a full queue can take as long as it is slow.
+    gone: Arc<AtomicBool>,
+}
+
+impl Drop for Client {
+    fn drop(&mut self) {
+        self.gone.store(true, Ordering::Relaxed);
+    }
 }
 
 type Clients = Arc<Mutex<HashMap<ClientId, Client>>>;
@@ -974,7 +984,7 @@ impl Server {
 
     /// Closes every socket of a device, as unpairing it must.
     pub fn disconnect_device(&self, device: &str) {
-        // Dropping a client's sender ends its loop, which closes the socket.
+        // Dropping a client ends its loop, which closes the socket.
         self.clients
             .lock()
             .unwrap()
@@ -983,7 +993,7 @@ impl Server {
 }
 
 /// Queues a message for a phone; false when its queue is full. Dropping its
-/// sender then ends its loop and closes the socket, and the shell hears it left.
+/// client then ends its loop and closes the socket, and the shell hears it left.
 fn queue(out: &Outgoing, text: String) -> bool {
     !matches!(out.try_send(text), Err(std_mpsc::TrySendError::Full(_)))
 }
@@ -991,7 +1001,7 @@ fn queue(out: &Outgoing, text: String) -> bool {
 impl Drop for Server {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
-        // Dropping the senders ends every client loop; a connection wakes the acceptor.
+        // Dropping the clients ends every client loop; a connection wakes the acceptor.
         self.clients.lock().unwrap().clear();
         let _ = TcpStream::connect_timeout(
             &SocketAddr::from((Ipv4Addr::LOCALHOST, self.port)),
@@ -1036,14 +1046,17 @@ fn answer(
             return;
         };
         let (out_tx, out_rx) = std_mpsc::sync_channel(PHONE_QUEUE);
+        let gone = Arc::new(AtomicBool::new(false));
         clients.lock().unwrap().insert(
             id,
             Client {
                 device: device.id.clone(),
                 out: out_tx,
+                gone: gone.clone(),
             },
         );
-        talk(stream, id, device.id, out_rx, &tx, &stop);
+        let ended = || stop.load(Ordering::Relaxed) || gone.load(Ordering::Relaxed);
+        talk(stream, id, device.id, out_rx, &tx, ended);
         clients.lock().unwrap().remove(&id);
         let _ = tx.unbounded_send(Incoming::Disconnected(id));
         return;
@@ -1293,7 +1306,7 @@ fn talk(
     device: String,
     out: std_mpsc::Receiver<String>,
     tx: &mpsc::UnboundedSender<Incoming>,
-    stop: &AtomicBool,
+    ended: impl Fn() -> bool,
 ) {
     let _ = stream.set_read_timeout(Some(Duration::from_millis(20)));
     let _ = stream.set_write_timeout(Some(PHONE_WRITE_TIMEOUT));
@@ -1321,9 +1334,15 @@ fn talk(
     let mut last_heard = Quiet::now();
     let mut last_ping = Quiet::now();
     loop {
-        if stop.load(Ordering::Relaxed) {
+        if ended() {
             let _ = ws.close(None);
             let _ = ws.flush();
+            return;
+        }
+        // Judged before reading: input buffered while the computer slept
+        // would otherwise pass for a phone that is still there.
+        // Browsers answer pings themselves, even for a page in the background.
+        if last_heard.elapsed() > PHONE_SILENCE_MAX {
             return;
         }
         let read = ws.read();
@@ -1370,10 +1389,6 @@ fn talk(
                 ) => {}
             Err(_) => return,
         }
-        // Browsers answer pings themselves, even for a page in the background.
-        if last_heard.elapsed() > PHONE_SILENCE_MAX {
-            return;
-        }
         if last_ping.elapsed() > PHONE_PING_EVERY {
             last_ping = Quiet::now();
             if ws.send(Message::Ping(Vec::new().into())).is_err() {
@@ -1381,6 +1396,9 @@ fn talk(
             }
         }
         loop {
+            if ended() {
+                break;
+            }
             match out.try_recv() {
                 Ok(text) => {
                     if ws.send(Message::text(text)).is_err() {
@@ -2267,29 +2285,37 @@ mod tests {
             clients: Arc::default(),
             stop: Arc::default(),
         };
+        let gone = Arc::new(AtomicBool::new(false));
         server.clients.lock().unwrap().insert(
             1,
             Client {
                 device: "d".into(),
                 out: tx,
+                gone: gone.clone(),
             },
         );
         server.send(1, "first".into());
         assert_eq!(server.client_count(), 1, "room for one");
+        assert!(!gone.load(Ordering::Relaxed));
         server.send(1, "second".into());
         assert_eq!(server.client_count(), 0, "a full queue drops it");
+        // Its loop stops now, without writing out what is still queued.
+        assert!(gone.load(Ordering::Relaxed), "its loop is told");
 
         let (tx, _rx) = std_mpsc::sync_channel(1);
+        let gone = Arc::new(AtomicBool::new(false));
         server.clients.lock().unwrap().insert(
             2,
             Client {
                 device: "d".into(),
                 out: tx,
+                gone: gone.clone(),
             },
         );
         server.broadcast("one");
         server.broadcast("two");
         assert_eq!(server.client_count(), 0, "and so does a broadcast");
+        assert!(gone.load(Ordering::Relaxed), "its loop is told");
     }
 
     #[test]

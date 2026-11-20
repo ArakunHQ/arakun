@@ -73,6 +73,10 @@ let relay = null; // { label } when this host is a relay
 let link = null;
 let retry = 500;
 let retryTimer = 0; // the next attempt while the computer is not there
+// The newest local attempt. One that Retry overtook while it waited on `/me`
+// must not open a second socket or call the current one lost.
+let attempt = 0;
+let attemptAbort = null;
 
 // A socket of the computer's own is pinged this often and given up on after
 // this long without a word, or when it does not open in time. A dead network
@@ -203,10 +207,16 @@ async function connect() {
     render();
     return;
   }
+  const mine = ++attempt;
+  if (attemptAbort) attemptAbort.abort();
+  const abort = new AbortController();
+  attemptAbort = abort;
+  // A computer that went away without a word would leave this hanging.
+  const timer = setTimeout(() => abort.abort(), LOCAL_OPEN_MS);
   let ok;
   try {
-    // A computer that went away without a word would leave this hanging.
-    const res = await api("/me", AbortSignal.timeout ? { signal: AbortSignal.timeout(LOCAL_OPEN_MS) } : {});
+    const res = await api("/me", { signal: abort.signal });
+    if (mine !== attempt) return;
     if (res.status === 403) {
       forgetToken();
       state.pairError = "This phone is no longer paired. Pair it again from Arakun.";
@@ -215,10 +225,18 @@ async function connect() {
       return;
     }
     ok = res.ok;
-    if (ok) tookMe(await res.json());
+    if (ok) {
+      const me = await res.json();
+      if (mine !== attempt) return;
+      tookMe(me);
+    }
   } catch (e) {
     ok = false;
+  } finally {
+    clearTimeout(timer);
   }
+  if (mine !== attempt) return;
+  attemptAbort = null;
   if (!ok) return lost();
   link = openLocal();
   link.ws.onopen = linked;

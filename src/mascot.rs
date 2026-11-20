@@ -591,8 +591,6 @@ pub struct Mascot {
     color: Option<Hsla>,
     dance_t0: Option<f64>,
 
-    /// When it last asked for a frame, to tell one that is not on screen.
-    asked: f64,
     _tick: Task<()>,
     wake: crate::frame_timer::Waker,
     _keys: Subscription,
@@ -602,18 +600,15 @@ impl Mascot {
     /// A mascot `width` px wide; its height follows the drawing (about 0.8).
     pub fn new(width: f32, cx: &mut Context<Self>) -> Self {
         // Redraws only while something moves or is due, so a settled raccoon
-        // costs no frames. One that asked for a frame that never painted is
-        // not on screen; it and one in a background window stop the timer.
+        // costs no frames, and its timer sleeps until the pointer, a key or a
+        // render wakes it. An event that comes due waits at most the sleep.
         let (tick, wake) = crate::frame_timer::start(cx, |m: &mut Self, cx| {
-            let now = m.now();
-            if m.wants_frame() {
-                m.rendered = false;
-                m.asked = now;
-                cx.notify();
-                return true;
+            if !m.wants_frame() {
+                return false;
             }
-            let hidden = !m.rendered && now - m.asked > 0.3;
-            m.active && !hidden
+            m.rendered = false;
+            cx.notify();
+            true
         });
         let keys = cx.observe_keystrokes(|m, _, _, _| m.input());
         let seed = std::time::SystemTime::now()
@@ -634,7 +629,6 @@ impl Mascot {
             start: Instant::now(),
             last_frame: None,
             rendered: true,
-            asked: 0.,
             active: true,
             moving: true,
             mood: Mood::Idle,
@@ -859,6 +853,7 @@ impl Mascot {
     fn input(&mut self) {
         let now = self.now();
         self.last_input = now;
+        self.wake.wake();
         if self.auto_sleep && self.state == State::Sleeping {
             self.enter(State::Idle, now);
             self.start_act(Act::Wake, now);

@@ -62,28 +62,35 @@ fn modified(id: &str) -> Option<SystemTime> {
 impl Shell {
     pub(super) fn watch_headless(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         cx.spawn_in(window, async move |this, cx| {
+            // Every meta file is read and parsed on each scan. In the
+            // background one in five seconds keeps the sidebar and the
+            // phone's statuses close; coming to the front scans within one.
+            let mut skipped = 0;
             loop {
-                let found = cx
-                    .background_spawn(crate::guard::task(async {
-                        headless::list()
-                            .into_iter()
-                            .map(|m| (modified(&m.id), m))
-                            .collect::<Vec<_>>()
-                    }))
-                    .await;
-                let Ok(active) = this.update_in(cx, |this, window, cx| {
-                    this.sync_headless(found, window, cx);
-                    window.is_window_active()
-                }) else {
+                let Ok(active) = this.update_in(cx, |_, window, _| window.is_window_active())
+                else {
                     break;
                 };
-                // Every meta file is read and parsed on each scan. In the
-                // background, slower is enough to keep the sidebar and the
-                // phone's statuses close.
-                let wait = if active { 1 } else { 5 };
-                cx.background_executor()
-                    .timer(Duration::from_secs(wait))
-                    .await;
+                if active || skipped >= 4 {
+                    skipped = 0;
+                    let found = cx
+                        .background_spawn(crate::guard::task(async {
+                            headless::list()
+                                .into_iter()
+                                .map(|m| (modified(&m.id), m))
+                                .collect::<Vec<_>>()
+                        }))
+                        .await;
+                    if this
+                        .update_in(cx, |this, window, cx| this.sync_headless(found, window, cx))
+                        .is_err()
+                    {
+                        break;
+                    }
+                } else {
+                    skipped += 1;
+                }
+                cx.background_executor().timer(Duration::from_secs(1)).await;
             }
         })
         .detach();

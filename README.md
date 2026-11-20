@@ -1273,7 +1273,7 @@ forward through tabs, `Ctrl+Cmd+F` toggles full screen, and `Cmd+H`, `Cmd+M` and
 `Cmd+Q` hide, minimize and quit.
 
 - `Ctrl+T` new session (in a new worktree, made when you send the first prompt, unless the open one is a worktree without one), `Ctrl+J` toggle the terminal dock, `Ctrl+B` toggle the sidebar
-- `Ctrl+Alt+B` toggle the workspace panel, `Ctrl+Alt+S` toggle the subagents panel
+- `Ctrl+Alt+B` toggle the workspace panel, `Ctrl+Alt+S` toggle the session panel (its pull request and subagents)
 - `Ctrl+D` / `Ctrl+Shift+D` split right / down, `Ctrl+Alt+arrows` move between panes
 - `Ctrl+Tab`, `Ctrl+1...9` switch tabs, across environments; `Alt+Up` / `Alt+Down`
   switch environments

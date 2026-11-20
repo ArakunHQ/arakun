@@ -418,14 +418,14 @@ pub struct Shell {
     /// Which of the two the user asked for last: on a narrow window it stays
     /// and the other gives way.
     side_prefer: SideCard,
-    /// The Subagents panel, between the chat and the Workspace panel.
+    /// The Session panel, between the chat and the Workspace panel.
     subagents_open: bool,
     subagents_w: f32,
     /// The user closed it, so a new subagent doesn't open it again until restart.
     subagents_dismissed: bool,
-    /// The subagent whose transcript the Subagents panel shows.
+    /// The subagent whose transcript the Session panel shows.
     subagent_view: Option<subagents::SubagentView>,
-    /// Redraws the Subagents panel each second while a subagent in it runs.
+    /// Redraws the Session panel each second while a subagent in it runs.
     subagent_tick: Option<Task<()>>,
     arcade: bool,
     /// What the person pinned from the palette (`pins.json`).

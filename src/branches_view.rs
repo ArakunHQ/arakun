@@ -16,9 +16,10 @@ use gpui::{
     TextAlign, TextRun, Window, canvas, div, point, px, quad, size,
 };
 
+use crate::agent::AgentKind;
 use crate::branches::{self, Branch, Checks, Map, Status, Who};
 use crate::input::{InputEvent, TextInput};
-use crate::model::{Agent, Status as SessionStatus};
+use crate::model::Status as SessionStatus;
 use crate::theme;
 use crate::ui::{self, ButtonKind, icon, icon_button};
 
@@ -53,7 +54,7 @@ pub struct EnvInfo {
 pub struct SessionInfo {
     pub id: SharedString,
     pub title: SharedString,
-    pub agent: Agent,
+    pub agent: AgentKind,
     pub status: SessionStatus,
 }
 
@@ -1582,7 +1583,7 @@ mod tests {
         let session = |id: &str, status| SessionInfo {
             id: id.to_string().into(),
             title: SharedString::default(),
-            agent: Agent::Claude,
+            agent: AgentKind::Claude,
             status,
         };
         let mut env = EnvInfo {

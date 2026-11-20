@@ -584,10 +584,16 @@ impl GitHubView {
                 .into_any_element()
         };
         if let Some(BoardProblem::Failed(e)) = self.pilot.read(cx).board_problem() {
-            out.push(line(
-                "gh-board-problem",
-                format!("Couldn't read pilot's board: {e}"),
-            ));
+            let text = format!("Couldn't read pilot's board: {e}");
+            out.push(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(crate::ui::sp(8.))
+                    .child(line("gh-board-problem", text))
+                    .child(super::pilot::settings_link("gh-board-fix", cx))
+                    .into_any_element(),
+            );
         }
         let g = self.github.read(cx);
         match g.problem().or(g.search_problem()) {
@@ -611,12 +617,32 @@ impl GitHubView {
         if loading {
             return ui::loading("gh-loading", "Reading your queue…").into_any_element();
         }
-        ui::text(
-            Type::Body,
-            theme::text_subtle(),
-            "Nothing going on. What pilot works on and what people ask of you shows up here.",
-        )
-        .into_any_element()
+        let connected = self.pilot.read(cx).config().is_some();
+        div()
+            .flex()
+            .flex_col()
+            .items_start()
+            .gap(crate::ui::sp(10.))
+            .child(ui::text(
+                Type::Body,
+                theme::text_subtle(),
+                "Nothing going on. What pilot works on and what people ask of you shows up here.",
+            ))
+            // Without pilot the queue is GitHub's alone: say how to add it.
+            .when(!connected, |d| {
+                d.child(
+                    ui::button(
+                        "gh-pilot-connect",
+                        "Connect arakun-pilot…",
+                        ui::ButtonKind::Outline,
+                        true,
+                    )
+                    .on_click(
+                        cx.listener(|_, _, _, cx| cx.emit(super::GitHubViewEvent::ConnectPilot)),
+                    ),
+                )
+            })
+            .into_any_element()
     }
 
     fn render_section(

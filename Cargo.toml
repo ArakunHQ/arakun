@@ -1,6 +1,6 @@
 [package]
 name = "arakun"
-version = "0.11.0"
+version = "0.11.1"
 edition = "2024"
 publish = false
 license = "AGPL-3.0-only"
@@ -112,6 +112,9 @@ windows-sys = { version = "0.61", features = [
     "Win32_System_LibraryLoader",
     "Win32_System_Threading",
     "Win32_System_Time",
+    # High contrast (src/ui/contrast.rs)
+    "Win32_UI_Accessibility",
+    "Win32_UI_WindowsAndMessaging",
 ] }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]

@@ -83,6 +83,8 @@ pub enum Target {
     Merge(crate::github::pr::ItemRef),
     /// "Send to the cloud agent…": the palette's own task form.
     CloudTask,
+    /// The form that connects arakun-pilot or changes its settings.
+    PilotConnect,
     /// Rows that only show something.
     Nothing,
 }

@@ -137,10 +137,7 @@ fn file() -> PathBuf {
 }
 
 pub fn load() -> Vec<Saved> {
-    std::fs::read(file())
-        .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_default()
+    crate::durable::load_json(file()).unwrap_or_default()
 }
 
 /// Written on the file writer's thread, after every save before it: the one
@@ -214,10 +211,7 @@ pub fn same_kept(a: &Value, b: &Value) -> bool {
 
 /// The inbox each server sent last, by its id.
 pub fn load_inboxes() -> HashMap<String, Value> {
-    std::fs::read(inbox_file())
-        .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_default()
+    crate::durable::load_json(inbox_file()).unwrap_or_default()
 }
 
 /// Written as `save` is. What comes back says whether they were.

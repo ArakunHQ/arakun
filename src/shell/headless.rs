@@ -11,7 +11,7 @@ use std::time::{Duration, SystemTime};
 use gpui::{AppContext as _, Context, SharedString, Window};
 
 use super::Shell;
-use crate::agent::{self, AgentKind, Thread};
+use crate::agent::{self, Thread};
 use crate::headless::{self, Meta, Status};
 use crate::model::{self, Session};
 use crate::state;
@@ -27,18 +27,6 @@ fn app_status(s: Status) -> model::Status {
         Status::NeedsInput => model::Status::NeedsInput,
         Status::Idle => model::Status::Idle,
         Status::Error => model::Status::Error,
-    }
-}
-
-fn app_agent(kind: AgentKind) -> model::Agent {
-    match kind {
-        AgentKind::Claude => model::Agent::Claude,
-        AgentKind::Droid => model::Agent::Droid,
-        AgentKind::OpenCode => model::Agent::OpenCode,
-        AgentKind::Codex => model::Agent::Codex,
-        AgentKind::Devin => model::Agent::Devin,
-        AgentKind::Cursor => model::Agent::Cursor,
-        AgentKind::WorkersAi => model::Agent::WorkersAi,
     }
 }
 
@@ -142,11 +130,7 @@ impl Shell {
                     let Some(env) = self.find_env_mut(&env_path) else {
                         continue;
                     };
-                    let mut s = Session::new(
-                        m.id.clone().into(),
-                        m.title.clone().into(),
-                        app_agent(m.agent),
-                    );
+                    let mut s = Session::new(m.id.clone().into(), m.title.clone().into(), m.agent);
                     s.status = app_status(status);
                     s.updated = m.updated;
                     s.cli_model = Some(m.model.clone());

@@ -198,7 +198,7 @@ pub fn poll_token(device_code: &str) -> Result<TokenAnswer, ApiError> {
 pub fn sign_in(base: &str, github_token: &str) -> Result<SignedIn, ApiError> {
     let body = serde_json::json!({ "access_token": github_token }).to_string();
     let (status, body) = answer(
-        agent()
+        server(base)
             .post(format!("{base}/auth/github"))
             .header("Content-Type", "application/json")
             .send(body),
@@ -208,7 +208,7 @@ pub fn sign_in(base: &str, github_token: &str) -> Result<SignedIn, ApiError> {
 
 pub fn me(base: &str, session: &str) -> Result<Me, ApiError> {
     let (status, body) = answer(
-        agent()
+        server(base)
             .get(format!("{base}/me"))
             .header("Authorization", format!("Bearer {session}"))
             .call(),
@@ -219,7 +219,7 @@ pub fn me(base: &str, session: &str) -> Result<Me, ApiError> {
 /// Ends the session on the server.
 pub fn logout(base: &str, session: &str) -> Result<(), ApiError> {
     let (status, body) = answer(
-        agent()
+        server(base)
             .post(format!("{base}/auth/logout"))
             .header("Authorization", format!("Bearer {session}"))
             .send_empty(),
@@ -647,14 +647,32 @@ fn approval(
 
 fn agent() -> &'static ureq::Agent {
     static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
-    AGENT.get_or_init(|| {
-        ureq::Agent::config_builder()
-            .timeout_global(Some(Duration::from_secs(20)))
-            .http_status_as_error(false)
-            .user_agent(concat!("arakun/", env!("CARGO_PKG_VERSION")))
-            .build()
-            .into()
-    })
+    AGENT.get_or_init(|| build(false))
+}
+
+/// The agent for the Teams server at `base`. Plain `http://` to this machine
+/// skips the proxy from the environment (`HTTP_PROXY`, `ALL_PROXY`): it would
+/// carry the session off the machine unencrypted. `https://` keeps it.
+fn server(base: &str) -> &'static ureq::Agent {
+    static DIRECT: OnceLock<ureq::Agent> = OnceLock::new();
+    if crate::github::pilot::local_http(base) {
+        DIRECT.get_or_init(|| build(true))
+    } else {
+        agent()
+    }
+}
+
+fn build(direct: bool) -> ureq::Agent {
+    let mut config = ureq::Agent::config_builder();
+    if direct {
+        config = config.proxy(None);
+    }
+    config
+        .timeout_global(Some(Duration::from_secs(20)))
+        .http_status_as_error(false)
+        .user_agent(concat!("arakun/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .into()
 }
 
 #[cfg(test)]
@@ -663,6 +681,14 @@ mod tests {
 
     fn answer(json: &str) -> TokenAnswer {
         serde_json::from_str(json).unwrap()
+    }
+
+    #[test]
+    fn only_a_local_http_server_skips_the_proxy() {
+        let direct = server("http://localhost:8787");
+        assert!(std::ptr::eq(direct, server("http://127.0.0.1:8787")));
+        assert!(!std::ptr::eq(direct, agent()));
+        assert!(std::ptr::eq(server(DEFAULT_URL), agent()));
     }
 
     #[test]

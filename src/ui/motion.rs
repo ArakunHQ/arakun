@@ -124,7 +124,7 @@ fn system_reduces_motion() -> bool {
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-fn read(program: &str, args: &[&str]) -> Option<String> {
+pub(super) fn read(program: &str, args: &[&str]) -> Option<String> {
     let out = std::process::Command::new(program)
         .args(args)
         .stdin(std::process::Stdio::null())

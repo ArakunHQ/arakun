@@ -57,13 +57,11 @@ fn cache_path() -> std::path::PathBuf {
 
 /// The last fetch, however old; `None` when never fetched.
 pub fn cached() -> Option<PlanUsage> {
-    serde_json::from_str(&std::fs::read_to_string(cache_path()).ok()?).ok()
+    crate::durable::load_json(cache_path())
 }
 
 fn store(usage: &PlanUsage) {
-    if let Ok(json) = serde_json::to_vec_pretty(usage) {
-        let _ = crate::durable::write(&cache_path(), &json);
-    }
+    crate::durable::cache_json(&cache_path(), usage);
 }
 
 /// The last usage any view fetched, for surfaces that only render (the rail).

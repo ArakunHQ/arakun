@@ -302,10 +302,11 @@ pub fn fetch(args: &Value) -> Result<String, String> {
 const OUTLINE_MAX: usize = 60;
 /// Matching paragraphs, items or rows shown at most.
 const PARTS_MAX: usize = 40;
-/// A block with more lines than this that is not a list is read line by line
-/// (a table turned to text, a long run of lines), with its first line kept as
-/// the header.
-const BLOCK_LINES: usize = 3;
+/// A paragraph longer than this many lines is read line by line, so a page
+/// of plain lines (a text file, a log) does not come back whole.
+const PARA_LINES: usize = 20;
+/// Query words matched at most; each one is a bit in a mask.
+const TERMS_MAX: usize = 64;
 
 const STOPWORDS: &[&str] = &[
     "a", "an", "and", "are", "as", "at", "be", "by", "can", "do", "does", "for", "from", "how",
@@ -313,12 +314,14 @@ const STOPWORDS: &[&str] = &[
     "which", "who", "why", "with",
 ];
 
-/// The words of a query that are worth matching, lower case.
+/// The words of a query that are worth matching, lower case. Sentence
+/// punctuation goes; the marks that make a name (`C#`, `C++`) stay.
 fn terms(query: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for w in query.split(|c: char| !(c.is_alphanumeric() || "._-/+#".contains(c))) {
         let w = w
-            .trim_matches(|c: char| !c.is_alphanumeric())
+            .trim_start_matches(|c: char| !c.is_alphanumeric())
+            .trim_end_matches(['.', '-', '/', '_'])
             .to_lowercase();
         if !w.is_empty() && !STOPWORDS.contains(&w.as_str()) && !out.contains(&w) {
             out.push(w);
@@ -326,13 +329,49 @@ fn terms(query: &str) -> Vec<String> {
     }
     if out.is_empty() {
         // A query of only small words still means something.
-        out = query
-            .split_whitespace()
-            .map(str::to_lowercase)
-            .filter(|w| !w.is_empty())
-            .collect();
+        for w in query.split_whitespace().map(str::to_lowercase) {
+            if !out.contains(&w) {
+                out.push(w);
+            }
+        }
     }
+    out.truncate(TERMS_MAX);
     out
+}
+
+/// Whether lower-case `text` holds `term` as a word or the start of one:
+/// "version" finds "versions", but "1.14" does not find "1.142" or
+/// "11.14", and "install" does not find "reinstall".
+fn has(text: &str, term: &str) -> bool {
+    let (Some(first), Some(last)) = (term.chars().next(), term.chars().next_back()) else {
+        return false;
+    };
+    let same = |a: char, b: char| {
+        (a.is_ascii_digit() && b.is_ascii_digit()) || (a.is_alphabetic() && b.is_alphabetic())
+    };
+    text.match_indices(term).any(|(i, _)| {
+        let before = text[..i].chars().next_back();
+        let mut after = text[i + term.len()..].chars();
+        let next = after.next();
+        before.is_none_or(|b| !same(b, first))
+            && (!last.is_ascii_digit()
+                || match next {
+                    None => true,
+                    Some(c) if c.is_ascii_digit() => false,
+                    Some('.') => !after.next().is_some_and(|c| c.is_ascii_digit()),
+                    Some(_) => true,
+                })
+    })
+}
+
+/// The bits of the terms that `text` holds.
+fn mask(text: &str, terms: &[String]) -> u64 {
+    let text = text.to_lowercase();
+    terms
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| has(&text, t))
+        .fold(0, |m, (i, _)| m | 1 << i)
 }
 
 fn heading(line: &str) -> Option<(usize, &str)> {
@@ -350,11 +389,36 @@ fn list_item(line: &str) -> bool {
             .is_some_and(|(n, _)| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
 }
 
-/// One piece of a block that can match alone, with the lines shown above it
-/// when it does (a table's header).
+/// A code fence's mark and length: ``` or ~~~, three or more.
+fn fence(line: &str) -> Option<(char, usize)> {
+    let l = line.trim_start();
+    let mark = l.chars().next().filter(|c| *c == '`' || *c == '~')?;
+    let n = l.chars().take_while(|c| *c == mark).count();
+    (n >= 3).then_some((mark, n))
+}
+
+/// A table's delimiter row, with or without the outer pipes: `|---|:--:|`
+/// or `--- | ---`.
+fn delimiter(line: &str) -> bool {
+    let l = line.trim();
+    l.contains('|') && l.contains('-') && l.chars().all(|c| "|-: ".contains(c))
+}
+
+/// A heading, stored once: the parts under it point here, and a path is
+/// only put together for the ones shown.
+struct Section<'a> {
+    level: usize,
+    label: &'a str,
+    parent: Option<usize>,
+    /// The terms in this heading or the ones above it.
+    mask: u64,
+}
+
+/// One piece of a block that can match alone: a paragraph, a list item or a
+/// table row, with its table's header when it has one.
 struct Part {
     section: usize,
-    header: Option<String>,
+    header: Option<usize>,
     text: String,
 }
 
@@ -363,87 +427,93 @@ struct Part {
 /// query's words, in page order under their headings.
 fn focus(page: &str, query: &str) -> String {
     let terms = terms(query);
-    // Each section is the heading path above it; 0 is the text before the first.
-    let mut sections: Vec<(usize, String)> = vec![(0, String::new())];
-    let mut path: Vec<(usize, String)> = Vec::new();
+    // Section 0 is the text before the first heading.
+    let mut sections = vec![Section {
+        level: 0,
+        label: "",
+        parent: None,
+        mask: 0,
+    }];
+    // The open headings, deepest last.
+    let mut path: Vec<usize> = Vec::new();
+    // Table headers with their masks, each stored once for all its rows.
+    let mut headers: Vec<(String, u64)> = Vec::new();
     let mut parts: Vec<Part> = Vec::new();
     let mut block: Vec<&str> = Vec::new();
-    let mut fence = false;
-    let flush = |block: &mut Vec<&str>, parts: &mut Vec<Part>, section: usize| {
+    let mut open: Option<(char, usize)> = None;
+    let mut flush = |block: &mut Vec<&str>, parts: &mut Vec<Part>, section: usize| {
         if block.is_empty() {
             return;
         }
         let lines = std::mem::take(block);
-        let table = lines.iter().all(|l| l.trim_start().starts_with('|'));
-        let fenced = lines[0].trim_start().starts_with("```");
-        if fenced || (!table && lines.len() <= BLOCK_LINES) {
-            parts.push(Part {
-                section,
-                header: None,
-                text: lines.join("\n"),
-            });
-        } else if lines.iter().any(|l| list_item(l)) && !table {
-            // Items, each with the lines indented under it.
-            let mut item: Vec<&str> = Vec::new();
-            for l in lines {
-                if list_item(l) && !item.is_empty() {
-                    parts.push(Part {
-                        section,
-                        header: None,
-                        text: std::mem::take(&mut item).join("\n"),
-                    });
-                }
-                item.push(l);
-            }
-            parts.push(Part {
-                section,
-                header: None,
-                text: item.join("\n"),
-            });
-        } else {
-            let separator =
-                |l: &str| l.trim_start().starts_with('|') && l.chars().all(|c| "|-: ".contains(c));
-            let head = if table && lines.len() > 1 && separator(lines[1]) {
-                2
-            } else {
-                1
-            };
+        let one = |text: String| Part {
+            section,
+            header: None,
+            text,
+        };
+        let piped = lines.iter().all(|l| l.trim_start().starts_with('|'));
+        let delimited = lines.len() > 1 && delimiter(lines[1]);
+        if fence(lines[0]).is_some() {
+            parts.push(one(lines.join("\n")));
+        } else if delimited || (piped && lines.len() > 1) {
+            let head = if delimited { 2 } else { 1 };
             let header = lines[..head].join("\n");
+            let m = mask(&header, &terms);
+            headers.push((header, m));
             for l in &lines[head..] {
                 parts.push(Part {
                     section,
-                    header: Some(header.clone()),
+                    header: Some(headers.len() - 1),
                     text: (*l).to_string(),
                 });
             }
+        } else if lines.iter().any(|l| list_item(l)) {
+            // Items, each with the lines under it; text before the first
+            // item stands alone.
+            let mut item: Vec<&str> = Vec::new();
+            for l in lines {
+                if list_item(l) && !item.is_empty() {
+                    parts.push(one(std::mem::take(&mut item).join("\n")));
+                }
+                item.push(l);
+            }
+            parts.push(one(item.join("\n")));
+        } else if lines.len() <= PARA_LINES {
+            parts.push(one(lines.join("\n")));
+        } else {
+            parts.extend(lines.iter().map(|l| one((*l).to_string())));
         }
     };
     for line in page.lines() {
-        if line.trim_start().starts_with("```") {
-            if !fence {
-                flush(&mut block, &mut parts, sections.len() - 1);
-            }
-            fence = !fence;
+        if let Some((mark, n)) = open {
             block.push(line);
-            if !fence {
+            // Closed only by the same mark, at least as long, and nothing after.
+            if fence(line)
+                .is_some_and(|(m, k)| m == mark && k >= n && line.trim().chars().all(|c| c == mark))
+            {
+                open = None;
                 flush(&mut block, &mut parts, sections.len() - 1);
             }
             continue;
         }
-        if fence {
-            block.push(line);
-            continue;
-        }
-        if let Some((level, text)) = heading(line) {
+        if let Some(f) = fence(line) {
             flush(&mut block, &mut parts, sections.len() - 1);
-            path.retain(|(l, _)| *l < level);
-            path.push((level, text.to_string()));
-            let joined = path
-                .iter()
-                .map(|(_, t)| t.as_str())
-                .collect::<Vec<_>>()
-                .join(" > ");
-            sections.push((level, joined));
+            open = Some(f);
+            block.push(line);
+            continue;
+        }
+        if let Some((level, label)) = heading(line) {
+            flush(&mut block, &mut parts, sections.len() - 1);
+            path.retain(|&i| sections[i].level < level);
+            let parent = path.last().copied();
+            let above = parent.map_or(0, |i| sections[i].mask);
+            sections.push(Section {
+                level,
+                label,
+                parent,
+                mask: above | mask(label, &terms),
+            });
+            path.push(sections.len() - 1);
             continue;
         }
         if line.trim().is_empty() {
@@ -455,14 +525,13 @@ fn focus(page: &str, query: &str) -> String {
     flush(&mut block, &mut parts, sections.len() - 1);
 
     let mut out = String::new();
-    if let Some((_, title)) = sections.get(1) {
-        out.push_str(&format!("Title: {title}\n"));
+    if let Some(first) = sections.get(1) {
+        out.push_str(&format!("Title: {}\n", first.label));
     }
     if sections.len() > 1 {
         out.push_str("\nOutline:\n");
-        for (level, path) in sections.iter().skip(1).take(OUTLINE_MAX) {
-            let name = path.rsplit(" > ").next().unwrap_or(path);
-            out.push_str(&format!("{}- {name}\n", "  ".repeat(level - 1)));
+        for s in sections.iter().skip(1).take(OUTLINE_MAX) {
+            out.push_str(&format!("{}- {}\n", "  ".repeat(s.level - 1), s.label));
         }
         if sections.len() - 1 > OUTLINE_MAX {
             out.push_str(&format!(
@@ -472,37 +541,28 @@ fn focus(page: &str, query: &str) -> String {
         }
     }
 
-    // Each part is matched with its heading path and its table header, so a
-    // section or a column named for the query counts. A word found in few
-    // parts weighs more than one found everywhere: in a table of versions,
-    // "1.142" picks the row and "version" barely counts.
-    let texts: Vec<String> = parts
+    // A part matches with its headings and its table header, so a section
+    // or a column named for the query counts. A word found in few parts
+    // weighs more than one found everywhere: in a table of versions, "1.142"
+    // picks the row and "version" barely counts.
+    let masks: Vec<u64> = parts
         .iter()
         .map(|p| {
-            format!(
-                "{}\n{}\n{}",
-                sections[p.section].1,
-                p.header.as_deref().unwrap_or(""),
-                p.text
-            )
-            .to_lowercase()
+            mask(&p.text, &terms) | sections[p.section].mask | p.header.map_or(0, |h| headers[h].1)
         })
         .collect();
-    let weights: Vec<f64> = terms
-        .iter()
-        .map(|t| {
-            let df = texts.iter().filter(|x| x.contains(t.as_str())).count();
+    let weights: Vec<f64> = (0..terms.len())
+        .map(|i| {
+            let df = masks.iter().filter(|m| *m & 1 << i != 0).count();
             if df == 0 { 0.0 } else { 1.0 / df as f64 }
         })
         .collect();
-    let scores: Vec<f64> = texts
+    let scores: Vec<f64> = masks
         .iter()
-        .map(|x| {
-            terms
-                .iter()
-                .zip(&weights)
-                .filter(|(t, _)| x.contains(t.as_str()))
-                .map(|(_, w)| w)
+        .map(|m| {
+            (0..terms.len())
+                .filter(|i| m & 1 << i != 0)
+                .map(|i| weights[i])
                 .sum()
         })
         .collect();
@@ -530,37 +590,41 @@ fn focus(page: &str, query: &str) -> String {
         parts.len()
     ));
     let mut shown_section = usize::MAX;
-    let mut shown_header: Option<&str> = None;
+    let mut shown_header = None;
+    let mut prev = usize::MAX;
     for &i in &keep {
         let p = &parts[i];
+        // Items next to each other on the page stay a list.
+        let item = prev.wrapping_add(1) == i && list_item(&p.text) && list_item(&parts[prev].text);
+        prev = i;
         // Right under a heading, the part needs no blank line of its own.
         let mut fresh = false;
         if p.section != shown_section {
             shown_section = p.section;
             shown_header = None;
-            let (level, path) = &sections[p.section];
             out.push('\n');
-            if *level > 0 {
-                out.push_str(&format!("{} {path}\n", "#".repeat(*level)));
+            let level = sections[p.section].level;
+            if level > 0 {
+                let mut labels = Vec::new();
+                let mut at = Some(p.section);
+                while let Some(s) = at {
+                    labels.push(sections[s].label);
+                    at = sections[s].parent;
+                }
+                labels.reverse();
+                out.push_str(&format!("{} {}\n", "#".repeat(level), labels.join(" > ")));
                 fresh = true;
             }
         }
-        match &p.header {
-            Some(h) if shown_header == Some(h.as_str()) => {}
-            Some(h) => {
-                if !fresh && !out.ends_with("\n\n") {
-                    out.push('\n');
-                }
-                out.push_str(h);
+        if p.header.is_none() || p.header != shown_header {
+            if !fresh && !item && !out.ends_with("\n\n") {
                 out.push('\n');
-                shown_header = Some(h.as_str());
             }
-            None => {
-                if !fresh && !out.ends_with("\n\n") {
-                    out.push('\n');
-                }
-                shown_header = None;
+            if let Some(h) = p.header {
+                out.push_str(&headers[h].0);
+                out.push('\n');
             }
+            shown_header = p.header;
         }
         out.push_str(&p.text);
         out.push('\n');
@@ -1146,7 +1210,13 @@ mod tests {
         let page = "# Bun docs\n\nIntro text.\n\n## Install\n\nRun the script:\n\n```sh\n# not a heading\ncurl -fsSL https://bun.sh/install | bash\n```\n\n- macOS\n- Linux\n\n## Test runner\n\nbun test runs tests.\n";
         let out = focus(page, "install");
         assert!(out.contains("## Bun docs > Install\nRun the script:\n\n```sh\n# not a heading"));
-        assert!(out.contains("- macOS\n\n- Linux\n") || out.contains("- macOS\n- Linux\n"));
+        assert!(out.contains("bash\n```\n\n- macOS\n- Linux\n"), "{out}");
+        let linux = focus(page, "linux");
+        assert!(
+            linux.contains("## Bun docs > Install\n- Linux\n"),
+            "{linux}"
+        );
+        assert!(!linux.contains("macOS\n"));
         assert!(!out.contains("bun test runs"));
         assert!(!out.contains("Intro text"));
         assert!(!out.contains("  - not a heading"));
@@ -1158,6 +1228,34 @@ mod tests {
             ["bun", "1.4", "release", "date"]
         );
         assert_eq!(terms("the"), ["the"]);
+        assert_eq!(terms("C# vs C++, in .NET."), ["c#", "vs", "c++", "net"]);
+    }
+
+    #[test]
+    fn words_match_whole_versions_and_word_starts() {
+        assert!(has("1.14 is out", "1.14"));
+        assert!(has("see v1.14.", "1.14"));
+        assert!(!has("1.142 is out", "1.14"));
+        assert!(!has("11.14", "1.14"));
+        assert!(!has("1.14.2", "1.14"));
+        assert!(has("all versions", "version"));
+        assert!(!has("reinstall", "install"));
+        assert!(has("use c# here", "c#"));
+        assert!(!has("use c here", "c#"));
+    }
+
+    #[test]
+    fn fences_tables_and_headings_parse_as_markdown_means() {
+        // A four-backtick block holds a three-backtick one and a `#` line.
+        let page = "# Doc\n\n````md\n```\n# inside\n```\n````\n\n## Retry when load > 80%\n\nPlan | Price\n--- | ---\nFree | 0\nPro | 20\n\nThis paragraph wraps\nover four lines and\nends with the part\nthat says pro matters.\n";
+        let out = focus(page, "pro");
+        assert!(!out.contains("- inside"), "{out}");
+        assert!(out.contains("  - Retry when load > 80%\n"), "{out}");
+        assert!(
+            out.contains("## Doc > Retry when load > 80%\nPlan | Price\n--- | ---\nPro | 20\n\nThis paragraph wraps\nover four lines and\nends with the part\nthat says pro matters.\n"),
+            "{out}"
+        );
+        assert!(!out.contains("Free"));
     }
 
     #[test]

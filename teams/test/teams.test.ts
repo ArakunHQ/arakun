@@ -211,8 +211,9 @@ describe("teams", () => {
       name: "Arakun",
       epoch: 1,
       rotation_pending: false,
+      roster_epoch: 1,
       keyed_epoch: 1,
-      members: [{ github_id: 1001, login: "octocat", role: "owner", joined_at: expect.any(Number) }],
+      members: [{ github_id: 1001, login: "octocat", role: "owner", joined_at: expect.any(Number), first_key_epoch: 1 }],
       channels: [],
     });
     await expectJson(api(u, "POST", "/teams", { body: { name: "x".repeat(101) } }), 400);
@@ -833,10 +834,33 @@ describe("envelopes", () => {
     await expectJson(api(t.owner.user, "PUT", path, { device: t.owner.device, body: { envelopes: rotation } }), 200);
     // Approved with the newest epoch only, then given epoch 1 in its own upload.
     const c = await join({ ...t, keys: new Map([[2, key2]]) });
+    const firstKey = async () => {
+      const detail = await expectJson<{ members: { github_id: number; first_key_epoch: number }[] }>(api(t.owner.user, "GET", `/teams/${t.teamId}`), 200);
+      return detail.members.find((member) => member.github_id === c.user.id)?.first_key_epoch;
+    };
+    expect(await firstKey()).toBe(2);
     const older = await envelope(t.teamId, 1, t.keys.get(1)!, c.device, t.owner.device);
-    expect(await expectJson(api(t.owner.user, "PUT", path, { device: t.owner.device, body: { envelopes: [older] } }), 200)).toMatchObject({ stored: 1 });
+    const grant = (roster_epoch: number) => api(t.owner.user, "PUT", path, { device: t.owner.device, body: { roster_epoch, envelopes: [older] } });
+    await expectJson(grant(1), 409);
+    expect(await expectJson(grant(2), 200)).toMatchObject({ stored: 1 });
+    expect(await firstKey()).toBe(1);
     const theirs = await expectJson<{ epoch: number }[]>(api(c.user, "GET", path, { device: c.device }), 200);
     expect(theirs.map((e) => e.epoch)).toEqual([1, 2]);
+  });
+
+  it("does not store a historical grant if the roster changes before the batch commits", async () => {
+    const t = await team();
+    const second = await makeDevice();
+    await expectJson(register(t.owner.user, second, t.owner.device, "desktop"), 201);
+    const path = `/teams/${t.teamId}/envelopes`;
+    const e = await envelope(t.teamId, 1, t.keys.get(1)!, second, t.owner.device);
+    const batch = env.DB.batch.bind(env.DB);
+    vi.spyOn(env.DB, "batch").mockImplementationOnce(async (statements) => {
+      await env.DB.prepare("UPDATE teams SET epoch = epoch + 1 WHERE team_id = ?").bind(t.teamId).run();
+      return batch(statements);
+    });
+    await expectJson(api(t.owner.user, "PUT", path, { device: t.owner.device, body: { roster_epoch: 1, envelopes: [e] } }), 409);
+    expect(await expectJson(api(t.owner.user, "GET", path, { device: second }), 200)).toEqual([]);
   });
 
   it("are asked only for epochs with a key when two removals skipped one", async () => {

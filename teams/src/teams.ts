@@ -266,7 +266,9 @@ async function getTeam(c: Ctx, teamId: string): Promise<Response> {
       .bind(teamId, c.me.githubId),
     db
       .prepare(
-        `SELECT m.github_id, u.login, m.role, m.joined_at FROM members m JOIN users u ON u.github_id = m.github_id
+        `SELECT m.github_id, u.login, m.role, m.joined_at,
+         (SELECT MIN(e.epoch) FROM devices d JOIN envelopes e ON e.device_id = d.device_id AND e.team_id = m.team_id
+          WHERE d.github_id = m.github_id) AS first_key_epoch FROM members m JOIN users u ON u.github_id = m.github_id
          WHERE m.team_id = ? ORDER BY m.joined_at, m.rowid`,
       )
       .bind(teamId),
@@ -278,6 +280,7 @@ async function getTeam(c: Ctx, teamId: string): Promise<Response> {
     team_id: row.team_id,
     name: row.name,
     epoch: row.epoch,
+    roster_epoch: row.epoch,
     keyed_epoch: row.keyed_epoch,
     rotation_pending: row.keyed_epoch < row.epoch,
     members: members!.results,
@@ -682,8 +685,9 @@ async function signedEnvelopes(body: unknown, teamId: string, from: Device): Pro
 /// recipients would refuse). So a device that made a key too late cannot
 /// overwrite the key that is in use. A replaced envelope keeps its first
 /// time, so a rewrap does not move the epoch's `made_at`.
-function storeEnvelope(db: D1Database, e: Envelope, t: number): D1PreparedStatement {
-  return db.prepare(insertEnvelope("")).bind(e.team_id, e.device_id, e.epoch, JSON.stringify(e), t);
+function storeEnvelope(db: D1Database, e: Envelope, t: number, roster: number, session: string): D1PreparedStatement {
+  const guard = `AND (SELECT epoch FROM teams WHERE team_id = ?1) = ?6 AND ${stillAdmin("?1", "?7", "unixepoch()")}`;
+  return db.prepare(insertEnvelope(guard)).bind(e.team_id, e.device_id, e.epoch, JSON.stringify(e), t, roster, session);
 }
 
 function insertEnvelope(extra: string): string {
@@ -744,6 +748,9 @@ async function putEnvelopes(c: Ctx, teamId: string): Promise<Response> {
   // they saw, which is the current one, and go through. Without the field
   // the old behavior stays, which is why clients send it.
   const expectedKeyed = isObject(body) && typeof body["keyed_epoch"] === "number" ? body["keyed_epoch"] : null;
+  const roster = isObject(body) ? body["roster_epoch"] : undefined;
+  if (roster !== undefined && !Number.isSafeInteger(roster)) return error(400, "roster_epoch must be an integer");
+  if (roster !== undefined && roster !== team.epoch) return error(409, "membership changed: fetch the team again");
   if (expectedKeyed !== null && expectedKeyed > team.keyed_epoch) return error(400, `keyed_epoch ${expectedKeyed} is ahead of the team's`);
   if (expectedKeyed !== null && expectedKeyed < team.keyed_epoch && envelopes.some((e) => e.epoch === team.epoch))
     return error(409, `another upload made the key for epoch ${team.epoch}: fetch it`);
@@ -772,17 +779,19 @@ async function putEnvelopes(c: Ctx, teamId: string): Promise<Response> {
       ? [
           db
             .prepare(
-              `UPDATE teams SET keyed_epoch = ?1, key_upload = ?4 WHERE team_id = ?2 AND epoch = ?1 AND keyed_epoch < ?1 AND NOT EXISTS (
+              `UPDATE teams SET keyed_epoch = ?1, key_upload = ?4 WHERE team_id = ?2 AND epoch = ?1 AND keyed_epoch < ?1 AND ${stillAdmin("?2", "?5", "unixepoch()")} AND NOT EXISTS (
                  SELECT 1 FROM devices d JOIN members m ON m.github_id = d.github_id AND m.team_id = ?2
                  WHERE d.device_id NOT IN (SELECT value FROM json_each(?3)))`,
             )
-            .bind(team.epoch, teamId, JSON.stringify([...covered]), upload),
+            .bind(team.epoch, teamId, JSON.stringify([...covered]), upload, c.me.hash),
         ]
       : []),
-    ...envelopes.map((e) => (keying ? storeWithNewKey(db, e, upload, t) : storeEnvelope(db, e, t))),
-    db.prepare("SELECT epoch, keyed_epoch FROM teams WHERE team_id = ?").bind(teamId),
+    ...envelopes.map((e) => (keying ? storeWithNewKey(db, e, upload, t) : storeEnvelope(db, e, t, team.epoch, c.me.hash))),
+    db.prepare(`SELECT epoch, keyed_epoch, ${stillAdmin("?1", "?2", "unixepoch()")} AS admin FROM teams WHERE team_id = ?1`).bind(teamId, c.me.hash),
   ]);
-  const after = done[done.length - 1]!.results[0] as { epoch: number; keyed_epoch: number };
+  const after = done[done.length - 1]!.results[0] as { epoch: number; keyed_epoch: number; admin: number } | undefined;
+  if (!after || !after.admin) return notAdmin();
+  if (!keying && after.epoch !== team.epoch) return error(409, "membership changed: fetch the team again");
   if (keying && done[0]!.meta.changes !== 1) {
     if (after.epoch !== team.epoch) return error(409, `epoch ${team.epoch} was skipped: make a key for epoch ${after.epoch}`);
     if (after.keyed_epoch >= team.epoch) return error(409, `another upload made the key for epoch ${team.epoch}: fetch it`);

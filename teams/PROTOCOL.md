@@ -87,9 +87,12 @@ without it, `403` if it is not one of the caller's devices.
   for each of its user's devices (below).
 - `GET /teams` → the caller's teams: `[{ team_id, name, role, epoch,
   rotation_pending }]`.
-- `GET /teams/<team_id>` → `{ team_id, name, epoch, keyed_epoch,
-  rotation_pending, members: [{ github_id, login, role, joined_at }], channels:
+- `GET /teams/<team_id>` → `{ team_id, name, epoch, keyed_epoch, roster_epoch,
+  rotation_pending, members: [{ github_id, login, role, joined_at, first_key_epoch }], channels:
   [{ channel_id, name_ct, created_at }] }`.
+- `roster_epoch` equals `epoch` on Workers that enforce it at write time.
+  `first_key_epoch` is the oldest envelope held by any device of this member,
+  or `null` when none exists. Removal deletes those envelopes before a rejoin.
 - `rotation_pending` is true while the current epoch has no envelopes yet: from
   creation until the first key, and after every removal (see Rotation).
 - `keyed_epoch` is the newest epoch with envelopes (0 before the first key). A
@@ -190,7 +193,10 @@ An envelope carries one epoch's team key to one device:
   `200 { stored, epoch, rotation_pending }`. The optional `keyed_epoch` is the
   one the client saw when it made the envelopes; an upload carrying the current
   epoch whose `keyed_epoch` is behind is a rotation that lost, answered `409`,
-  not a rewrap that may replace the envelopes in use. At most 500 per request. Each
+  not a rewrap that may replace the envelopes in use. Clients granting historical
+  keys send `roster_epoch` from the membership they reviewed. A removal changes
+  that epoch: a stale grant returns `409` without writing any envelopes. The
+  write also requires a live admin session. At most 500 per request. Each
   envelope's `from` is the calling device and its `sig` must check out; each
   recipient is a device of a member; its epoch already has envelopes or is the
   current one. The first upload for the current epoch must cover every device of

@@ -1331,9 +1331,17 @@ impl Hub {
         (epoch == t.detail.epoch && !t.detail.rotation_pending).then_some((epoch, key))
     }
 
+    /// Why [`Self::sending_key`] gave nothing.
+    fn no_sending_key(&self, team_id: &str) -> String {
+        self.team
+            .get(team_id)
+            .map_or(NO_KEY, |t| no_key_reason(&t.detail))
+            .into()
+    }
+
     pub fn create_channel(&mut self, team_id: &str, name: String, cx: &mut Context<Self>) {
         let Some((epoch, key)) = self.sending_key(team_id) else {
-            self.error = Some("This device does not hold the team's current key yet.".into());
+            self.error = Some(self.no_sending_key(team_id));
             cx.notify();
             return;
         };
@@ -1685,7 +1693,7 @@ impl Hub {
         cx: &mut Context<Self>,
     ) -> bool {
         let Some((epoch, key)) = self.sending_key(team_id) else {
-            self.error = Some("This device does not hold the team's current key yet.".into());
+            self.error = Some(self.no_sending_key(team_id));
             self.load_team(team_id, cx);
             cx.notify();
             return false;
@@ -1755,6 +1763,18 @@ impl Hub {
         {
             c.messages.retain(|m| m.id != id);
         }
+    }
+}
+
+const NO_KEY: &str = "This device does not hold the team's current key yet.";
+
+/// A pending rotation is its own wait: the server would still take the old
+/// key, but a removed member holds it, so nothing new is sealed with it.
+fn no_key_reason(detail: &TeamDetail) -> &'static str {
+    if detail.rotation_pending && detail.keyed_epoch.is_some_and(|k| k > 0) {
+        "Someone left this team, so it needs a new key before anyone can send. An admin's Arakun makes it the next time it opens the team."
+    } else {
+        NO_KEY
     }
 }
 
@@ -2233,6 +2253,18 @@ mod tests {
         assert!(read_device_code("arakun-device.x.y.z").is_none());
         assert!(read_device_code(&code.replace("arakun-device", "other")).is_none());
         assert!(read_device_code(&format!("{code}.more")).is_none());
+    }
+
+    #[test]
+    fn a_pending_rotation_is_not_a_missing_key() {
+        let mut t = delivery_team(vec![], 4).detail;
+        assert_eq!(no_key_reason(&t), NO_KEY);
+        t.epoch = 5;
+        t.rotation_pending = true;
+        assert!(no_key_reason(&t).starts_with("Someone left this team"));
+        // A new team waits for its first key, not for a rotation.
+        t.keyed_epoch = Some(0);
+        assert_eq!(no_key_reason(&t), NO_KEY);
     }
 
     #[test]

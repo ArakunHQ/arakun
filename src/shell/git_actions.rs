@@ -13,6 +13,7 @@ use gpui::{
 };
 
 use super::{ContextMenu, MenuTarget, Modal, PanelTab, Shell, panel_empty, plural};
+use crate::agent::AgentKind;
 use crate::git::{self, ChangeKind};
 use crate::git_dialogs::{
     CommitDialog, ConfirmDialog, GitDialogEvent, PullRequestDialog, PullRequestEvent,
@@ -216,7 +217,7 @@ impl Shell {
         }
         let needs_push = !s.published || s.ahead > 0;
         let path = env.path.clone();
-        let agent = env.agent.kind();
+        let agent = env.agent;
         // Busy while the clone is read, so a second click opens nothing.
         if let Some(env) = self.find_env_mut(&path) {
             env.git_busy = Some(GitOp::PullRequest);
@@ -257,7 +258,7 @@ impl Shell {
         remote: String,
         branch: String,
         needs_push: bool,
-        (plan, writer): (git::PrPlan, Option<crate::agent::AgentKind>),
+        (plan, writer): (git::PrPlan, Option<AgentKind>),
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {

@@ -1315,7 +1315,7 @@ impl Shell {
             "Sign in to Claude Code",
             &[],
             "Opens a terminal with Claude Code's login.",
-            Target::SignIn(crate::agent::AgentKind::Claude),
+            Target::SignIn(AgentKind::Claude),
         );
         add(
             "signin-droid",
@@ -1323,7 +1323,7 @@ impl Shell {
             "Sign in to Droid",
             &[],
             "Opens a terminal with Droid's login.",
-            Target::SignIn(crate::agent::AgentKind::Droid),
+            Target::SignIn(AgentKind::Droid),
         );
         add(
             "signin-opencode",
@@ -1331,7 +1331,7 @@ impl Shell {
             "Sign in to OpenCode",
             &[],
             "Opens a terminal with OpenCode's login.",
-            Target::SignIn(crate::agent::AgentKind::OpenCode),
+            Target::SignIn(AgentKind::OpenCode),
         );
         add(
             "signin-codex",
@@ -1339,7 +1339,7 @@ impl Shell {
             "Sign in to Codex",
             &[],
             "Opens a terminal with Codex's ChatGPT login.",
-            Target::SignIn(crate::agent::AgentKind::Codex),
+            Target::SignIn(AgentKind::Codex),
         );
         add(
             "signin-devin",
@@ -1347,7 +1347,7 @@ impl Shell {
             "Sign in to Devin",
             &[],
             "Opens a terminal with Devin's login.",
-            Target::SignIn(crate::agent::AgentKind::Devin),
+            Target::SignIn(AgentKind::Devin),
         );
         add(
             "signin-cursor",
@@ -1355,7 +1355,7 @@ impl Shell {
             "Sign in to Cursor",
             &[],
             "Opens a terminal with Cursor's login.",
-            Target::SignIn(crate::agent::AgentKind::Cursor),
+            Target::SignIn(AgentKind::Cursor),
         );
         // The settings pilot read last (every minute, off this thread's
         // drawing): the palette never waits on the disk.
@@ -1580,7 +1580,7 @@ impl Shell {
         }
         let mut extra = Vec::new();
         if let Some(m) = model {
-            agent = model::Agent::Claude;
+            agent = AgentKind::Claude;
             extra.push((crate::agent::Setting::Model, m));
         }
         let title: SharedString = head(prompt.lines().next().unwrap_or(""), 60).into();
@@ -2001,7 +2001,7 @@ impl Shell {
                 let agent = self
                     .find_env(d)
                     .map(|e| e.agent)
-                    .unwrap_or(model::Agent::Claude);
+                    .unwrap_or(AgentKind::Claude);
                 self.start_session_in(
                     d,
                     agent,

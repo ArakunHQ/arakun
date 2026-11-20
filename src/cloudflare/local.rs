@@ -8,7 +8,7 @@ use std::process::Stdio;
 use serde_json::Value;
 
 use super::MCP_URL;
-use crate::model::Agent;
+use crate::agent::AgentKind;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Mcp {
@@ -27,8 +27,8 @@ pub enum Mcp {
 
 /// What the agent's config alone says, without asking the agent: quick
 /// enough to show before `mcp_status` answers.
-pub fn mcp_configured(agent: Agent) -> Mcp {
-    if agent == Agent::Codex && crate::agent::codex_cli().is_none() {
+pub fn mcp_configured(agent: AgentKind) -> Mcp {
+    if agent == AgentKind::Codex && crate::agent::codex_cli().is_none() {
         Mcp::NoCli
     } else if mcp_server(agent).is_some() {
         Mcp::Added
@@ -41,13 +41,13 @@ pub fn mcp_configured(agent: Agent) -> Mcp {
 /// `~/.factory/mcp.json`, Claude Code's `~/.claude.json` (user servers),
 /// OpenCode's global `opencode.json`/`opencode.jsonc` (its `mcp` key), Codex's
 /// `~/.codex/config.toml`.
-pub fn mcp_server(agent: Agent) -> Option<String> {
+pub fn mcp_server(agent: AgentKind) -> Option<String> {
     let home = crate::platform::home();
     let file = match agent {
-        Agent::Droid => home.join(".factory").join("mcp.json"),
-        Agent::Claude => home.join(".claude.json"),
-        Agent::OpenCode => return opencode_mcp_server(),
-        Agent::Codex => {
+        AgentKind::Droid => home.join(".factory").join("mcp.json"),
+        AgentKind::Claude => home.join(".claude.json"),
+        AgentKind::OpenCode => return opencode_mcp_server(),
+        AgentKind::Codex => {
             let home = std::env::var_os("CODEX_HOME")
                 .map(PathBuf::from)
                 .filter(|p| p.is_absolute())
@@ -57,7 +57,7 @@ pub fn mcp_server(agent: Agent) -> Option<String> {
         }
         // arakun's own agent has no MCP client. Devin and Cursor have one,
         // but Arakun does not read or change their MCP config yet.
-        Agent::WorkersAi | Agent::Devin | Agent::Cursor => return None,
+        AgentKind::WorkersAi | AgentKind::Devin | AgentKind::Cursor => return None,
     };
     let v: Value = serde_json::from_slice(&std::fs::read(file).ok()?).ok()?;
     v["mcpServers"].as_object()?.iter().find_map(|(name, s)| {
@@ -196,39 +196,41 @@ fn codex_list_status(json: &str, name: &str) -> Mcp {
 }
 
 /// Asks the agent whether the Cloudflare server connects (it tries every server: 1-10 s).
-pub fn mcp_status(agent: Agent) -> Mcp {
-    if agent == Agent::Codex && crate::agent::codex_cli().is_none() {
+pub fn mcp_status(agent: AgentKind) -> Mcp {
+    if agent == AgentKind::Codex && crate::agent::codex_cli().is_none() {
         return Mcp::NoCli;
     }
     let Some(name) = mcp_server(agent) else {
         return Mcp::Missing;
     };
     let bin = match agent {
-        Agent::Droid => "droid",
-        Agent::Claude => "claude",
-        Agent::OpenCode => "opencode",
-        Agent::Codex => "codex",
-        Agent::WorkersAi | Agent::Devin | Agent::Cursor => return Mcp::Missing,
+        AgentKind::Droid => "droid",
+        AgentKind::Claude => "claude",
+        AgentKind::OpenCode => "opencode",
+        AgentKind::Codex => "codex",
+        AgentKind::WorkersAi | AgentKind::Devin | AgentKind::Cursor => return Mcp::Missing,
     };
     let bin = match agent {
-        Agent::Codex => crate::agent::codex_cli(),
+        AgentKind::Codex => crate::agent::codex_cli(),
         _ => crate::agent::which(bin),
     }
     .unwrap_or_else(|| bin.into());
-    let json = (agent == Agent::Codex).then_some("--json");
+    let json = (agent == AgentKind::Codex).then_some("--json");
     let out = crate::platform::command(bin)
         .args(["mcp", "list"])
         .args(json)
         .stdin(Stdio::null())
         .output();
     match (out, agent) {
-        (Ok(o), Agent::Droid) => mcp_line_status(&String::from_utf8_lossy(&o.stdout), &name),
-        (Ok(o), Agent::Claude) => claude_line_status(&String::from_utf8_lossy(&o.stdout), &name),
-        (Ok(o), Agent::OpenCode) => {
+        (Ok(o), AgentKind::Droid) => mcp_line_status(&String::from_utf8_lossy(&o.stdout), &name),
+        (Ok(o), AgentKind::Claude) => {
+            claude_line_status(&String::from_utf8_lossy(&o.stdout), &name)
+        }
+        (Ok(o), AgentKind::OpenCode) => {
             opencode_line_status(&String::from_utf8_lossy(&o.stdout), &name)
         }
-        (Ok(o), Agent::Codex) => codex_list_status(&String::from_utf8_lossy(&o.stdout), &name),
-        (Ok(_), Agent::WorkersAi | Agent::Devin | Agent::Cursor) => Mcp::Missing,
+        (Ok(o), AgentKind::Codex) => codex_list_status(&String::from_utf8_lossy(&o.stdout), &name),
+        (Ok(_), AgentKind::WorkersAi | AgentKind::Devin | AgentKind::Cursor) => Mcp::Missing,
         (Err(_), _) => Mcp::Added,
     }
 }
@@ -318,9 +320,9 @@ fn opencode_line_status(list: &str, name: &str) -> Mcp {
 }
 
 /// What the Connect button runs in a terminal: add the server if needed, then sign in.
-pub fn mcp_connect_command(agent: Agent, state: &Mcp) -> String {
+pub fn mcp_connect_command(agent: AgentKind, state: &Mcp) -> String {
     match agent {
-        Agent::Droid => {
+        AgentKind::Droid => {
             let auth = "droid mcp auth";
             match state {
                 Mcp::Missing => format!("droid mcp add cloudflare {MCP_URL} --type http; {auth}"),
@@ -328,13 +330,13 @@ pub fn mcp_connect_command(agent: Agent, state: &Mcp) -> String {
             }
         }
         // Claude Code signs in to HTTP servers from its /mcp menu.
-        Agent::Claude => match state {
+        AgentKind::Claude => match state {
             Mcp::Missing => format!(
                 "claude mcp add --scope user --transport http cloudflare {MCP_URL} && claude /mcp"
             ),
             _ => "claude /mcp".into(),
         },
-        Agent::OpenCode => match state {
+        AgentKind::OpenCode => match state {
             Mcp::Missing => format!(
                 "opencode mcp add cloudflare --url {MCP_URL} && opencode mcp auth cloudflare"
             ),
@@ -342,12 +344,12 @@ pub fn mcp_connect_command(agent: Agent, state: &Mcp) -> String {
         },
         // `codex mcp add` signs in to an OAuth server right away. The server
         // can have another name than `cloudflare`; sign in to the one found.
-        Agent::Codex => {
-            let name = mcp_server(Agent::Codex);
+        AgentKind::Codex => {
+            let name = mcp_server(AgentKind::Codex);
             codex_connect_command(&codex_program(), state, name.as_deref())
         }
         // Not supported: the shell tells the user instead of running this.
-        Agent::WorkersAi | Agent::Devin | Agent::Cursor => String::new(),
+        AgentKind::WorkersAi | AgentKind::Devin | AgentKind::Cursor => String::new(),
     }
 }
 
@@ -581,7 +583,7 @@ mod tests {
         assert_eq!(mcp_line_status(list, "cf2"), Mcp::Failing("failed".into()));
         assert_eq!(mcp_line_status(list, "other"), Mcp::Added);
         assert_eq!(
-            mcp_connect_command(Agent::Droid, &Mcp::Missing),
+            mcp_connect_command(AgentKind::Droid, &Mcp::Missing),
             "droid mcp add cloudflare https://mcp.cloudflare.com/mcp --type http; droid mcp auth"
         );
         let claude = "Checking MCP server health…\n\ncloudflare: https://mcp.cloudflare.com/mcp (HTTP) - ! Needs authentication\nposthog: https://x (HTTP) - ✔ Connected\nbad: https://y (HTTP) - ✗ Failed to connect\n";

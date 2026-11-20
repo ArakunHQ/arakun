@@ -259,6 +259,12 @@ terminal-only. The status line and keybindings from your settings don't apply in
   or "Comment"), and says why when a comment doesn't go out. Approve, request changes
   and merge ask a second time, and an approval or a merge stops if new commits came
   after you looked.
+- **Agent fixes.** When a pull request conflicts with its base branch, "Fix conflicts"
+  starts a session that merges the base in (no rebase), settles the conflicts, runs the
+  tests and commits the merge. When it has open review threads, "Address N comments"
+  starts a session with those threads (CodeRabbit's too): the agent fixes each one or
+  says why not, and lists a reply per thread for you to post. Neither pushes, replies
+  or resolves anything on GitHub. In the box, `/conflicts` and `/comments` do the same.
 - **Failed checks.** When checks failed, the Checks tab says how many, and a failed
   GitHub Actions job opens the end of its failing step's log under its row (the link at
   the end of the row opens its page). "Re-run failed" starts the failed jobs again

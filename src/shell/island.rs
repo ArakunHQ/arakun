@@ -70,6 +70,8 @@ pub(super) enum Open {
     Task(String),
     Cloudflare,
     Usage,
+    /// The page that says how to install an agent's CLI, in the system browser.
+    Install(crate::agent::AgentKind),
     /// Settings, at Branches.
     BranchSettings,
     /// A link a teammate's find points at, in the system browser.
@@ -97,6 +99,7 @@ impl Open {
             Open::Task(id) => format!("open:task:{id}").into(),
             Open::Cloudflare => "open:cloudflare".into(),
             Open::Usage => "open:usage".into(),
+            Open::Install(kind) => format!("open:install:{}", kind.id()).into(),
             Open::BranchSettings => "open:settings:branches".into(),
             #[cfg(feature = "team")]
             Open::Url(url) => format!("open:url:{url}").into(),
@@ -131,6 +134,7 @@ impl Open {
             ("task", id) if !id.is_empty() => Some(Open::Task(id.to_string())),
             ("cloudflare", "") => Some(Open::Cloudflare),
             ("usage", "") => Some(Open::Usage),
+            ("install", id) => crate::agent::AgentKind::parse(id).map(Open::Install),
             ("settings", "branches") => Some(Open::BranchSettings),
             #[cfg(feature = "team")]
             ("team", "") => Some(Open::Team),
@@ -285,6 +289,7 @@ impl Shell {
             }
             Some(Open::Cloudflare) => self.open_cloudflare_tab(window, cx),
             Some(Open::Usage) => self.open_usage_tab(window, cx),
+            Some(Open::Install(kind)) => cx.open_url(kind.install_url()),
             Some(Open::BranchSettings) => {
                 // An open dialog stays, with what was typed in it.
                 if let Some((super::Modal::Settings(dialog), _)) = &self.modal {
@@ -751,6 +756,8 @@ mod tests {
             Open::Task("tsk_9".into()),
             Open::Cloudflare,
             Open::Usage,
+            Open::Install(crate::agent::AgentKind::Droid),
+            Open::Install(crate::agent::AgentKind::WorkersAi),
             Open::BranchSettings,
             #[cfg(feature = "team")]
             Open::Url("https://example.com/x/y?v=2".into()),

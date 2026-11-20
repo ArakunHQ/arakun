@@ -84,9 +84,10 @@ impl Shell {
         self.spawn_terminal_in(&cwd, command, focus, window, cx);
     }
 
-    /// Opens `kind`'s sign-in in a terminal. Codex's CLI comes with its adapter,
-    /// so before any session ran it is installed first, off the main thread. A
-    /// notice says why when nothing can open: terminals need a project.
+    /// Opens `kind`'s sign-in in a terminal. Claude Code's and Codex's CLIs
+    /// come with their adapters, so before any session ran the adapter is
+    /// installed first, off the main thread. A notice says why when nothing
+    /// can open: terminals need a project.
     pub(super) fn sign_in(
         &mut self,
         kind: crate::agent::AgentKind,
@@ -96,7 +97,11 @@ impl Shell {
         use crate::island::AlertKind;
         let title = format!("Sign in to {}", kind.label());
         let cmd = crate::agent::login_command(kind);
-        if cmd.is_some() || kind != crate::agent::AgentKind::Codex {
+        let installs = matches!(
+            kind,
+            crate::agent::AgentKind::Claude | crate::agent::AgentKind::Codex
+        );
+        if cmd.is_some() || !installs {
             self.run_account_command(&title, "sign-in", kind, cmd, window, cx);
             return;
         }
@@ -109,30 +114,36 @@ impl Shell {
                 plan.package,
                 plan.dir.display()
             ),
-            None => "Installing Codex first; the sign-in opens when it is done.".to_string(),
+            None => format!(
+                "Installing {} first; the sign-in opens when it is done.",
+                kind.label()
+            ),
         };
         self.notify(AlertKind::Info, &title, &what, None, cx);
         cx.spawn_in(window, async move |this, cx| {
             let installed = cx
-                .background_spawn(crate::guard::task(
-                    async move { crate::agent::install_codex() },
-                ))
+                .background_spawn(crate::guard::task(async move {
+                    crate::agent::install_adapter(kind)
+                }))
                 .await;
             let _ = this.update_in(cx, |this, window, cx| {
                 // The last project may have closed during the install.
                 if installed.is_ok() && !this.terminal_possible(&title, "sign-in", cx) {
                     return;
                 }
-                let cmd = installed.and_then(|()| {
-                    crate::agent::login_command(kind)
-                        .ok_or_else(|| anyhow::anyhow!("the codex CLI is still missing"))
-                });
-                match cmd {
-                    Ok(cmd) => this.spawn_terminal_command(Some(cmd), true, window, cx),
+                match installed.map(|()| crate::agent::login_command(kind)) {
+                    Ok(Some(cmd)) => this.spawn_terminal_command(Some(cmd), true, window, cx),
+                    Ok(None) => this.notify(
+                        AlertKind::Failure,
+                        &title,
+                        &kind.missing(),
+                        Some(super::island::Open::Install(kind)),
+                        cx,
+                    ),
                     Err(e) => this.notify(
                         AlertKind::Failure,
                         &title,
-                        &format!("Installing Codex failed: {e:#}"),
+                        &format!("Installing {} failed: {e:#}", kind.label()),
                         None,
                         cx,
                     ),
@@ -171,14 +182,14 @@ impl Shell {
         }
         match cmd {
             Some(cmd) => self.spawn_terminal_command(Some(cmd), true, window, cx),
-            None => {
-                let body = match kind {
-                    // Arakun does not install Devin, so say where it comes from.
-                    crate::agent::AgentKind::Devin => "The devin CLI was not found. Install the Devin CLI first (https://docs.devin.ai/work-with-devin/devin-cli).".to_string(),
-                    _ => format!("{} was not found. Install it first.", kind.label()),
-                };
-                self.notify(crate::island::AlertKind::Failure, title, &body, None, cx);
-            }
+            // "View" on the notice opens the page that says how to install it.
+            None => self.notify(
+                crate::island::AlertKind::Failure,
+                title,
+                &kind.missing(),
+                Some(super::island::Open::Install(kind)),
+                cx,
+            ),
         }
     }
 

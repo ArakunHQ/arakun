@@ -636,7 +636,7 @@ pub fn snippet(source: &str, line: u32, end_line: u32) -> Vec<(u32, String)> {
 fn gh_out(dir: &Path, args: &[&str]) -> Result<std::process::Output> {
     crate::platform::output_within(git::gh(dir).args(args), None, GIT_REMOTE).map_err(|e| {
         match e.kind() {
-            std::io::ErrorKind::NotFound => anyhow!("GitHub CLI (gh) is not installed"),
+            std::io::ErrorKind::NotFound => anyhow!(crate::github::NO_GH),
             std::io::ErrorKind::TimedOut => anyhow!("{e}"),
             _ => anyhow!("could not run gh: {e}"),
         }
@@ -646,15 +646,7 @@ fn gh_out(dir: &Path, args: &[&str]) -> Result<std::process::Output> {
 fn gh_json<T: serde::de::DeserializeOwned>(dir: &Path, args: &[&str]) -> Result<T> {
     let out = gh_out(dir, args)?;
     if !out.status.success() {
-        let err = git::strip_ansi(&String::from_utf8_lossy(&out.stderr));
-        bail!(
-            "{}",
-            if err.trim().is_empty() {
-                "gh failed"
-            } else {
-                err.trim()
-            }
-        );
+        bail!("{}", crate::github::gh_error(&out.stderr, out.status));
     }
     serde_json::from_slice(&out.stdout).context("unexpected answer from gh")
 }
@@ -684,7 +676,7 @@ pub fn list_runs(dir: &Path) -> std::result::Result<Vec<Run>, ListError> {
         {
             ListError::NotGitHub
         } else if lower.contains("gh auth login") {
-            ListError::Other("Sign in to GitHub: run `gh auth login` in a terminal.".into())
+            ListError::Other(crate::github::SIGNED_OUT.into())
         } else {
             ListError::Other(msg)
         }
@@ -850,15 +842,7 @@ pub fn run_detail(
 fn gh_action(dir: &Path, args: &[&str]) -> Result<()> {
     let out = gh_out(dir, args)?;
     if !out.status.success() {
-        let err = git::strip_ansi(&String::from_utf8_lossy(&out.stderr));
-        bail!(
-            "{}",
-            if err.trim().is_empty() {
-                "gh failed"
-            } else {
-                err.trim()
-            }
-        );
+        bail!("{}", crate::github::gh_error(&out.stderr, out.status));
     }
     Ok(())
 }

@@ -3948,7 +3948,9 @@ impl Render for Shell {
             })
             .capture_key_down(cx.listener(|this, ev: &gpui::KeyDownEvent, window, cx| {
                 let k = &ev.keystroke;
+                // The update dialog's Enter and Space press its own buttons.
                 if this.menu.is_some()
+                    && this.update_dialog.is_none()
                     && !k.modifiers.control
                     && !k.modifiers.alt
                     && !k.modifiers.platform

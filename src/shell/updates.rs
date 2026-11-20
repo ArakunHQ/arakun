@@ -146,6 +146,9 @@ impl Shell {
             Push::Force => "force",
         };
         crate::telemetry::capture(crate::telemetry::events::UPDATE_ASKED, &[("push", push)]);
+        // A menu left open behind it would still take Enter and Space.
+        self.menu = None;
+        self.env_menu_open = false;
         let dialog = cx.new(|cx| UpdateDialog::new(policy, window, cx));
         let sub = cx.subscribe_in(
             &dialog,

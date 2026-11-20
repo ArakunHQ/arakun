@@ -606,8 +606,10 @@ feature flag from Arakun's PostHog project. The request carries only the version
 update channel, the operating system and the processor type; the id it sends is your
 install's random id only if you agreed to usage counts, and a new one each start
 otherwise. If the flag says *request*, Arakun downloads the latest release and asks you
-to restart into it, once per start. If it says *force*, a dialog stays over the window
-until you restart into the new version (on Windows: quit and open Arakun again) or quit.
+to restart into it; **Later** or Escape puts it off until the next start. If it says
+*force*, a dialog stays over the window, and Escape and shortcuts do nothing, until you
+restart into the new version (on Windows: quit and open Arakun again) or quit. After a
+failed download, both offer **Try again**.
 Neither happens when no newer release exists. Maintainers set this per version in
 PostHog: one condition set per version range on `$app_version`, with a semver operator,
 and the variant to use.

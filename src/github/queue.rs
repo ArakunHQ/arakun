@@ -45,7 +45,7 @@ impl Why {
 }
 
 /// How many items one search asks for.
-const SEARCH_LIMIT: &str = "50";
+pub(super) const SEARCH_LIMIT: usize = 50;
 const PULL_FIELDS: &str =
     "number,title,repository,author,state,isDraft,createdAt,updatedAt,closedAt,url";
 const ISSUE_FIELDS: &str =
@@ -155,7 +155,7 @@ pub fn search_args(why: Why, today: &str, since: &str) -> Vec<String> {
     all.extend([
         "--archived=false".into(),
         "--limit".into(),
-        SEARCH_LIMIT.into(),
+        SEARCH_LIMIT.to_string(),
         "--json".into(),
         fields.into(),
     ]);

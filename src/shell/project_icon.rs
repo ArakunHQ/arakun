@@ -95,6 +95,10 @@ impl IconEditor {
     }
 
     fn save(&mut self, cx: &mut Context<Self>) {
+        // An empty icon can't be saved; Enter on it keeps the draft open.
+        if self.icon == 0 {
+            return;
+        }
         cx.emit(IconEvent::Save {
             icon: self.icon,
             logo: self.logo,
@@ -174,7 +178,7 @@ impl Render for IconEditor {
                             .gap(ui::sp(8.))
                             .h(px(32.))
                             .px(ui::sp(8.))
-                            .rounded(ui::rad(8.))
+                            .rounded(ui::rad(ui::RADIUS))
                             .bg(theme::selection_strong())
                             .child(ui::project_icon(self.icon, 1.5, color))
                             .child(

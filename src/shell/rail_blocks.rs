@@ -574,6 +574,29 @@ impl Shell {
                 t.into_any_element()
             }
         });
+        // A row of icons holding the open view: its pages go under the row.
+        let pages = if in_row && !folded {
+            self.subnav_view()
+                .filter(|v| {
+                    section
+                        .items
+                        .iter()
+                        .any(|i| i.piece.same(&Piece::View { view: *v }))
+                })
+                .and_then(|v| self.rail_subnav(v, 0., cx))
+                // A fixed segment doesn't scroll: a long list scrolls itself.
+                .map(|p| {
+                    div()
+                        .id(("rail-row-pages", si))
+                        .max_h(px(RAIL_ROW_PAGES_MAX_H))
+                        .overflow_y_scroll()
+                        .px(crate::ui::sp(8.))
+                        .pt(crate::ui::sp(4.))
+                        .child(p)
+                })
+        } else {
+            None
+        };
         let end = (arranging && !folded).then(|| self.arrange_end(si, section.items.len(), cx));
         let selected = arranging && self.builder.sel == Some(BuilderSel::Section(si));
         div()
@@ -594,6 +617,7 @@ impl Shell {
             })
             .children(title)
             .child(body)
+            .children(pages)
             .children(end)
             .when(arranging, |d| {
                 d.child(super::arrange::dashed_outline(
@@ -625,11 +649,18 @@ impl Shell {
             Piece::View { view } if style.badges => self.view_badge(*view, cx),
             _ => None,
         };
-        // Arranging, a quiet piece still shows, so it can be selected and moved.
+        // The view of the focused tab, whose pages go under its row.
+        let open = match item.piece {
+            Piece::View { view } => self.subnav_view() == Some(view),
+            _ => false,
+        };
+        // Arranging, a quiet piece still shows, so it can be selected and
+        // moved; open, it shows too, with its pages.
         if item.only_when_busy
             && badge.is_none()
             && matches!(item.piece, Piece::View { .. })
             && !self.arranging()
+            && !open
         {
             return None;
         }
@@ -707,7 +738,7 @@ impl Shell {
             Piece::View { view } => {
                 let view = *view;
                 let pill = badge.and_then(|b| badge_pill(b, item.badge));
-                row(pill.map(|p| p.into_any_element()))
+                let row = row(pill.map(|p| p.into_any_element()))
                     // Narrowed, a count shows as a dot on the icon.
                     .when(narrow && badge.is_some(), |d| {
                         d.relative().child(
@@ -720,10 +751,25 @@ impl Shell {
                                 .bg(badge.map_or(theme::text_faint(), |b| b.color())),
                         )
                     })
+                    .when(open && (!narrow || in_row), |d| {
+                        d.bg(theme::fill_selected()).text_color(theme::content())
+                    })
                     .on_click(cx.listener(move |this, ev: &gpui::ClickEvent, window, cx| {
                         this.open_view(view, ev.position(), window, cx)
-                    }))
-                    .into_any_element()
+                    }));
+                match self
+                    .rail_subnav(view, super::subnav::RAIL_INSET, cx)
+                    .filter(|_| open && !in_row)
+                {
+                    Some(pages) => div()
+                        .flex()
+                        .flex_col()
+                        .gap(crate::ui::sp(1.))
+                        .child(row)
+                        .child(pages)
+                        .into_any_element(),
+                    None => row.into_any_element(),
+                }
             }
             Piece::Pin { pin } => {
                 let open = pin.clone();
@@ -1183,6 +1229,9 @@ impl Shell {
             .into_any_element()
     }
 }
+
+/// How tall the open view's pages get under a row of icons before they scroll.
+const RAIL_ROW_PAGES_MAX_H: f32 = 360.;
 
 #[cfg(test)]
 mod tests {

@@ -699,6 +699,51 @@ pub fn diff(dir: &Path, path: &str, untracked: bool) -> Result<String> {
     stdout(git(dir).args(["diff", "--no-color", diff_base(dir)?, "--", path]))
 }
 
+/// What a commit would hold, for a model to describe: `git diff --stat` and
+/// the diff (cut at `cap` characters, and whether it was). With `all`, every
+/// uncommitted change, new files too, as "Commit all" takes them; else only
+/// what is staged.
+pub fn commit_diff(dir: &Path, all: bool, cap: usize) -> Result<(String, String, bool)> {
+    let base = diff_base(dir)?;
+    let range: &[&str] = if all { &[base] } else { &["--cached", base] };
+    let args = |extra: &[&'static str]| {
+        let mut a = vec!["diff", "--no-color"];
+        a.extend_from_slice(extra);
+        a.extend_from_slice(range);
+        a.push("--");
+        a
+    };
+    let mut stat = read(dir, &args(&["--stat=200"]))?;
+    let mut diff = read(dir, &args(&[]))?;
+    if all {
+        let new = read(dir, &["ls-files", "--others", "--exclude-standard", "-z"])?;
+        for path in new.split('\0').filter(|p| !p.is_empty()) {
+            stat.push_str(&format!(" {path} (new file)\n"));
+            // The list of files is whole; the diffs stop once past the cap.
+            if diff.len() <= cap {
+                diff.push_str(&self::diff(dir, path, true)?);
+            }
+        }
+    }
+    let (diff, cut) = cut_at_line(diff, cap);
+    Ok((stat, diff, cut))
+}
+
+/// The subjects of the last `n` commits on HEAD, newest first: the style a
+/// new commit message follows. Empty before the first commit.
+pub fn recent_subjects(dir: &Path, n: usize) -> Vec<String> {
+    let count = format!("-{n}");
+    read(dir, &["log", &count, "--format=%s", "--no-merges"])
+        .map(|out| {
+            out.lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .map(String::from)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 // ---------------------------------------------------------------------------
 // Workflow: remotes, commit, push/pull, staging, merge, pull requests.
 
@@ -1708,6 +1753,33 @@ test: cover the resize\u{1f}\u{1e}\n";
             assert!(ok.success());
         }
         dir
+    }
+
+    #[test]
+    fn a_commit_diff_takes_the_staged_or_every_change() {
+        let dir = repo();
+        std::fs::write(dir.join("staged.txt"), "kept\n").unwrap();
+        std::fs::write(dir.join("new.txt"), "fresh\n").unwrap();
+        super::stage(&dir, "staged.txt").unwrap();
+
+        let (stat, diff, cut) = super::commit_diff(&dir, false, 10_000).unwrap();
+        assert!(
+            stat.contains("staged.txt") && !stat.contains("new.txt"),
+            "{stat}"
+        );
+        assert!(diff.contains("+kept") && !diff.contains("+fresh"), "{diff}");
+        assert!(!cut);
+
+        let (stat, diff, _) = super::commit_diff(&dir, true, 10_000).unwrap();
+        assert!(stat.contains("new.txt (new file)"), "{stat}");
+        assert!(diff.contains("+kept") && diff.contains("+fresh"), "{diff}");
+
+        // Past the cap, the files are still all listed.
+        let (stat, _, cut) = super::commit_diff(&dir, true, 10).unwrap();
+        assert!(cut && stat.contains("new.txt"), "{stat}");
+
+        assert_eq!(super::recent_subjects(&dir, 5), vec!["x".to_string()]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

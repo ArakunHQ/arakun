@@ -1314,7 +1314,8 @@ impl Thread {
         &self.usage
     }
 
-    /// Files this session's finished edits touched, absolute, in first-touched order.
+    /// Files this session's finished edits and shell commands touched,
+    /// absolute, in first-touched order.
     pub fn edited_files(&self) -> Vec<PathBuf> {
         edited_files(&self.entries, &self.cwd)
     }
@@ -4092,11 +4093,20 @@ fn take_next(queue: &mut Vec<String>, urgent: &mut usize, paused: bool) -> Optio
     Some(queue.remove(0))
 }
 
-/// Files the finished edits in `entries` touched, absolute (relative ones are
-/// in `cwd`), in first-touched order.
+/// Files the finished edits in `entries` touched, and those their turns'
+/// shell commands changed, absolute (relative ones are in `cwd`), in
+/// first-touched order.
 pub fn edited_files(entries: &[Entry], cwd: &Path) -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = Vec::new();
     for e in entries {
+        if let Entry::User { shell_changes, .. } = e {
+            for c in shell_changes {
+                if !out.contains(&c.path) {
+                    out.push(c.path.clone());
+                }
+            }
+            continue;
+        }
         let Entry::Tool(t) = e else { continue };
         if t.status != ToolStatus::Completed {
             continue;
@@ -4349,10 +4359,29 @@ mod tests {
             write("t1", Path::new("src/a.rs"), None, "x"),
             write("t2", Path::new("/p/src/a.rs"), Some("x"), "y"),
             write("t3", Path::new("/p/b.rs"), None, "z"),
+            // A file only a shell command made counts too.
+            Entry::User {
+                text: "generate it".into(),
+                at: 1,
+                elapsed_ms: None,
+                message_id: None,
+                tokens: None,
+                shell_changes: vec![ShellChange {
+                    path: "/p/gen.rs".into(),
+                    old: None,
+                    new: "fn x() {}".into(),
+                    added: 1,
+                    removed: 0,
+                }],
+            },
         ];
         assert_eq!(
             edited_files(&entries, Path::new("/p")),
-            [PathBuf::from("/p/src/a.rs"), PathBuf::from("/p/b.rs")]
+            [
+                PathBuf::from("/p/src/a.rs"),
+                PathBuf::from("/p/b.rs"),
+                PathBuf::from("/p/gen.rs")
+            ]
         );
     }
 

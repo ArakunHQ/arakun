@@ -928,23 +928,28 @@ impl Shell {
         ) + 'static,
     ) {
         self.ensure_live(env_path, id, window, cx);
-        let files: Vec<String> = self
+        let thread = self
             .session_mut(env_path, id)
-            .and_then(|s| s.live.as_ref().map(|l| l.thread.read(cx).edited_files()))
-            .unwrap_or_default()
-            .into_iter()
-            .filter_map(|p| {
-                Some(
-                    p.strip_prefix(env_path)
-                        .ok()?
-                        .to_string_lossy()
-                        .into_owned(),
-                )
-            })
-            .filter(|p| !p.is_empty())
-            .collect();
+            .and_then(|s| s.live.as_ref().map(|l| l.thread.clone()));
+        // What the last turn's shell commands changed may still be worked out.
+        let pending = thread.as_ref().and_then(|t| t.read(cx).shell_pending());
         let (dir, id) = (env_path.to_path_buf(), SharedString::from(id.to_string()));
         cx.spawn_in(window, async move |this, cx| {
+            if let Some(pending) = pending {
+                pending.await;
+            }
+            let Ok(edited) = cx.update(|_, cx| {
+                thread
+                    .map(|t| t.read(cx).edited_files())
+                    .unwrap_or_default()
+            }) else {
+                return;
+            };
+            let files: Vec<String> = edited
+                .into_iter()
+                .filter_map(|p| Some(p.strip_prefix(&dir).ok()?.to_string_lossy().into_owned()))
+                .filter(|p| !p.is_empty())
+                .collect();
             let d = dir.clone();
             let staged = cx
                 .background_spawn(crate::guard::task(async move {

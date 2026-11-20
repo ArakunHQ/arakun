@@ -1108,10 +1108,10 @@ impl Shell {
                 wire::session_live(&head, t, status, &self.phone_scope(env_path, t.cwd()))
             }
             None => {
-                let (all, cwd) = Thread::read_transcript(&state::transcript_path(id))
-                    .map(|t| (t.entries, t.meta.cwd))
+                let (all, cwd, queue) = Thread::read_transcript(&state::transcript_path(id))
+                    .map(|t| (t.entries, t.meta.cwd, t.queue))
                     .unwrap_or_default();
-                wire::session_saved(&head, &all, &self.phone_scope(env_path, &cwd))
+                wire::session_saved(&head, &all, &queue, &self.phone_scope(env_path, &cwd))
             }
         }
     }

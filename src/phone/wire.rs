@@ -787,9 +787,15 @@ pub fn session_live(head: &SessionHead, t: &Thread, status: Status, scope: &Scop
     msg.to_string()
 }
 
-/// `session`: one that is not running, from its transcript's entries.
-pub fn session_saved(head: &SessionHead, all: &[Entry], scope: &Scope) -> String {
-    session_head(head, all, scope).to_string()
+/// `session`: one that is not running, from its transcript's entries and
+/// the follow-ups that waited in it. Its thread holds those paused once it
+/// is back, so they show paused.
+pub fn session_saved(head: &SessionHead, all: &[Entry], queue: &[String], scope: &Scope) -> String {
+    let mut msg = session_head(head, all, scope);
+    msg["queue"] = json!(queue);
+    msg["queue_paused"] = json!(!queue.is_empty());
+    msg["sending_now"] = json!(0);
+    msg.to_string()
 }
 
 /// What a waiting session asks, for its line in the inbox.

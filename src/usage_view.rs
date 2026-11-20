@@ -294,6 +294,9 @@ pub struct UsageView {
     /// When the view was last drawn. Its own poll redraws it every [`POLL`]
     /// while it is on screen, so an older time means it is not.
     drawn: Option<Instant>,
+    /// Whether the shell's last frame showed this view. A window that is
+    /// not drawn keeps the last value, so [`Self::drawn`] still counts.
+    on_screen: std::sync::Arc<std::sync::atomic::AtomicBool>,
     _poll: [Task<()>; 3],
 }
 
@@ -328,6 +331,8 @@ impl SeatsInfo {
 
 impl UsageView {
     pub fn new(cx: &mut Context<Self>) -> Self {
+        let on_screen = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let probe_ok = on_screen.clone();
         let poll = cx.spawn(async move |this, cx| {
             loop {
                 if this.update(cx, |v, cx| v.rescan(cx)).is_err() {
@@ -340,13 +345,16 @@ impl UsageView {
             loop {
                 // Reading a named seat sends it a message, which can start its
                 // 5-hour window: only while someone looks at them.
-                let Ok(shown) =
+                let Ok(drawn) =
                     this.update(cx, |v, _| v.drawn.is_some_and(|at| at.elapsed() < 2 * POLL))
                 else {
                     break;
                 };
+                let probe_ok = probe_ok.clone();
                 let (info, go, devin, access) = cx
                     .background_spawn(crate::guard::task_or_default(async move {
+                        // Asked again here: the tab may have closed since.
+                        let shown = drawn && probe_ok.load(std::sync::atomic::Ordering::Relaxed);
                         let all = if shown {
                             plan::seats_probing(&seats::Store::open().names())
                         } else {
@@ -453,6 +461,7 @@ impl UsageView {
             projects: Vec::new(),
             focus: cx.focus_handle(),
             drawn: None,
+            on_screen,
             scroll: ScrollHandle::new(),
             _poll: [poll, plan_poll, proxy_poll],
         }
@@ -492,6 +501,13 @@ impl UsageView {
             self.projects = projects;
             cx.notify();
         }
+    }
+
+    /// Tells the view whether the shell's frame shows it. Named seats are
+    /// read only while it does: a read sends the seat a message.
+    pub fn set_on_screen(&self, shown: bool) {
+        self.on_screen
+            .store(shown, std::sync::atomic::Ordering::Relaxed);
     }
 
     pub fn focus(&self, window: &mut Window, cx: &mut Context<Self>) {
@@ -837,7 +853,13 @@ impl UsageView {
                     theme::error(),
                 )),
                 (true, None) => Some(("Not read yet.".to_string(), theme::text_subtle().into())),
-                (false, _) => None,
+                // The windows above are the last good read; say why this one
+                // failed, or a refused seat would look like any other.
+                (false, Some(e)) => Some((
+                    format!("Couldn't refresh it: {}", crate::redact::text(e)),
+                    theme::error(),
+                )),
+                (false, None) => None,
             };
             if let Some((text, color)) = quiet {
                 seat = seat.child(

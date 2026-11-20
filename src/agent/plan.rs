@@ -117,10 +117,13 @@ impl NamedSeat {
     /// The last read was turned away (401 or 403): the token was revoked or
     /// has expired, and no session can run on it until it is added again.
     pub fn refused(&self) -> bool {
-        self.error
-            .as_deref()
-            .is_some_and(|e| e.starts_with("HTTP 401") || e.starts_with("HTTP 403"))
+        self.error.as_deref().is_some_and(is_refusal)
     }
+}
+
+/// Whether a read's error says the token was turned away.
+fn is_refusal(error: &str) -> bool {
+    error.starts_with("HTTP 401") || error.starts_with("HTTP 403")
 }
 
 impl Seats {
@@ -370,6 +373,11 @@ pub fn seats() -> Seats {
 /// [`BORROWED_STALE`]: for the Usage tab while it is on screen, and for a
 /// session about to pick a seat.
 pub fn seats_probing(probe: &[String]) -> Seats {
+    // One refresh at a time: two sessions starting together would otherwise
+    // both find a seat due and both send it a message. The second one waits,
+    // then finds the first one's read in the cache.
+    static ONE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _one = ONE.lock().unwrap_or_else(|e| e.into_inner());
     let at = now();
     let mut out = cached_seats().unwrap_or_default();
     let token = borrowed_token();
@@ -474,7 +482,14 @@ fn refresh_named(
                 seat.usage = Some(usage);
                 seat.error = None;
             }
-            Err(e) => seat.error = Some(format!("{e:#}")),
+            Err(e) => {
+                let e = format!("{e:#}");
+                // A timeout does not say a refused token works again; only
+                // a good read clears the refusal.
+                if !seat.refused() || is_refusal(&e) {
+                    seat.error = Some(e);
+                }
+            }
         }
     }
     named.sort_by(|a, b| a.name.cmp(&b.name));
@@ -1187,6 +1202,40 @@ mod tests {
         };
         let back: Seats = serde_json::from_str(&serde_json::to_string(&seats).unwrap()).unwrap();
         assert_eq!(back.named, named);
+    }
+
+    #[test]
+    fn a_refusal_stays_until_a_good_read() {
+        let good = parse_headers(&serde_json::json!({
+            "anthropic-ratelimit-unified-5h-utilization": ["0.05"]
+        }));
+        let names: Vec<String> = vec!["a".into()];
+        let mut named = vec![NamedSeat {
+            name: "a".into(),
+            at: 1_000,
+            usage: Some(good.clone()),
+            error: Some("HTTP 401: refused".into()),
+        }];
+        let mut at = 1_000;
+        let mut read = |named: &mut Vec<NamedSeat>, got: Result<PlanUsage>| {
+            at += BORROWED_STALE;
+            let got = std::sync::Mutex::new(Some(got));
+            refresh_named(named, &names, &names, at, |_| {
+                got.lock().unwrap().take().unwrap()
+            });
+        };
+        // A timeout says nothing about the token: it stays refused.
+        read(&mut named, Err(anyhow!("timed out")));
+        assert!(named[0].refused());
+        // Another refusal replaces it.
+        read(&mut named, Err(anyhow!("HTTP 403: forbidden")));
+        assert_eq!(named[0].error.as_deref(), Some("HTTP 403: forbidden"));
+        // A good read clears it.
+        read(&mut named, Ok(good));
+        assert!(!named[0].refused());
+        // On a seat that was not refused, a timeout is kept as is.
+        read(&mut named, Err(anyhow!("timed out")));
+        assert_eq!(named[0].error.as_deref(), Some("timed out"));
     }
 
     #[test]

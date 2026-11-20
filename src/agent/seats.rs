@@ -535,6 +535,12 @@ const USAGE: &str = "usage: arakun seat add <name>   (the token from `claude set
 
 /// `arakun seat …`: the exit code.
 pub fn cli(args: &[String]) -> i32 {
+    // `seat` runs before the generic help check, and a seat name never
+    // starts with a dash, so `--help` anywhere asks for the usage.
+    if args.iter().any(|a| matches!(a.as_str(), "-h" | "--help")) {
+        println!("{USAGE}");
+        return 0;
+    }
     let store = Store::open();
     let mut out = std::io::stdout();
     let result = match args {

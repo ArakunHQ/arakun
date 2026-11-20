@@ -15,5 +15,8 @@ mod model;
 mod mouse;
 mod view;
 
+// The demo example has no servers.
+#[allow(unused_imports)]
+pub use model::{RemoteOut, RemoteSink};
 pub use model::{Terminal, TerminalEvent};
 pub use view::TerminalView;

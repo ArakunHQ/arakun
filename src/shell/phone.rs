@@ -868,6 +868,15 @@ impl Shell {
                 client,
                 wire::error("add projects to this computer in Arakun itself"),
             ),
+            // What the app asks of a server for its terminals.
+            ClientMsg::TermOpen { .. }
+            | ClientMsg::TermAttach { .. }
+            | ClientMsg::TermInput { .. }
+            | ClientMsg::TermResize { .. }
+            | ClientMsg::TermSeen { .. }
+            | ClientMsg::TermClose { .. } => {
+                self.phone_send(client, wire::error("terminals open on servers only"));
+            }
             ClientMsg::SettleEnv { .. } | ClientMsg::DeleteEnv { .. } => self.phone_send(
                 client,
                 wire::error("settle or delete this computer's environments in Arakun itself"),

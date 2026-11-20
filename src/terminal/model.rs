@@ -21,7 +21,7 @@ use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::search::{Match, RegexSearch};
 use alacritty_terminal::term::{ClipboardType, Config, Term, TermMode};
 use alacritty_terminal::tty;
-use alacritty_terminal::vte::ansi::{CursorShape, CursorStyle};
+use alacritty_terminal::vte::ansi::{CursorShape, CursorStyle, Processor};
 use futures::StreamExt as _;
 use futures::channel::mpsc;
 use gpui::{
@@ -51,6 +51,28 @@ pub enum TerminalEvent {
     Activity,
 }
 
+/// What a terminal whose shell runs on a server sends there.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RemoteOut {
+    Input(Vec<u8>),
+    Resize {
+        cols: u16,
+        rows: u16,
+    },
+    /// The tab closed: the server hangs the shell up.
+    Close,
+}
+
+/// Where a server's terminal sends what it has to say. Called from any thread.
+pub type RemoteSink = Arc<dyn Fn(RemoteOut) + Send + Sync>;
+
+/// A terminal on a server: no PTY here, its output arrives through [`Terminal::feed`].
+struct Remote {
+    parser: Processor,
+    /// The offset in the server's output just past what was drawn.
+    next: u64,
+}
+
 /// State the I/O thread and the UI share without taking the terminal lock.
 struct Shared {
     /// A wakeup is pending or the latest output has not been painted yet.
@@ -60,6 +82,8 @@ struct Shared {
     title: Mutex<Option<String>>,
     window_size: Mutex<WindowSize>,
     sender: OnceLock<EventLoopSender>,
+    /// Set instead of `sender` for a terminal on a server.
+    remote: OnceLock<RemoteSink>,
 }
 
 impl Shared {
@@ -69,6 +93,8 @@ impl Shared {
         }
         if let Some(sender) = self.sender.get() {
             let _ = sender.send(Msg::Input(bytes));
+        } else if let Some(sink) = self.remote.get() {
+            sink(RemoteOut::Input(bytes.into_owned()));
         }
     }
 }
@@ -152,6 +178,8 @@ pub struct Terminal {
     exit_code: Option<i32>,
     size: WindowSize,
     hung_up: AtomicBool,
+    /// Set for a terminal whose shell runs on a server.
+    remote: Option<Remote>,
     _events: Task<()>,
 }
 
@@ -167,6 +195,55 @@ struct Spawned {
     program: String,
     cwd: PathBuf,
     size: WindowSize,
+}
+
+/// The size a terminal starts at, until its view lays it out.
+const START_SIZE: WindowSize = WindowSize {
+    num_lines: 24,
+    num_cols: 80,
+    cell_width: 8,
+    cell_height: 17,
+};
+
+type Emulator = (
+    Arc<FairMutex<AlacTerm>>,
+    Arc<Shared>,
+    mpsc::UnboundedReceiver<AlacEvent>,
+    Listener,
+);
+
+/// The grid and what its listener tells, without anything feeding it yet.
+fn emulator(size: WindowSize) -> Emulator {
+    let shared = Arc::new(Shared {
+        dirty: AtomicBool::new(false),
+        title_pending: AtomicBool::new(false),
+        bell_pending: AtomicBool::new(false),
+        title: Mutex::new(None),
+        window_size: Mutex::new(size),
+        sender: OnceLock::new(),
+        remote: OnceLock::new(),
+    });
+    let (tx, rx) = mpsc::unbounded();
+    let listener = Listener {
+        shared: shared.clone(),
+        tx,
+    };
+
+    let config = Config {
+        scrolling_history: SCROLLBACK,
+        default_cursor_style: CursorStyle {
+            shape: CursorShape::Beam,
+            blinking: true,
+        },
+        kitty_keyboard: false,
+        ..Config::default()
+    };
+    let grid = GridSize {
+        columns: size.num_cols as usize,
+        lines: size.num_lines as usize,
+    };
+    let term = Arc::new(FairMutex::new(Term::new(config, &grid, listener.clone())));
+    (term, shared, rx, listener)
 }
 
 fn spawn_pty(cwd: PathBuf, shell_command: Option<Vec<String>>) -> anyhow::Result<Spawned> {
@@ -200,12 +277,7 @@ fn spawn_pty(cwd: PathBuf, shell_command: Option<Vec<String>>) -> anyhow::Result
         escape_args: true,
     };
 
-    let size = WindowSize {
-        num_lines: 24,
-        num_cols: 80,
-        cell_width: 8,
-        cell_height: 17,
-    };
+    let size = START_SIZE;
     let pty = tty::new(&options, size, 0)?;
     #[cfg(unix)]
     let (pid, pty_fd) = {
@@ -215,35 +287,7 @@ fn spawn_pty(cwd: PathBuf, shell_command: Option<Vec<String>>) -> anyhow::Result
     #[cfg(windows)]
     let pid = pty.child_watcher().pid().map_or(0, |p| p.get());
 
-    let shared = Arc::new(Shared {
-        dirty: AtomicBool::new(false),
-        title_pending: AtomicBool::new(false),
-        bell_pending: AtomicBool::new(false),
-        title: Mutex::new(None),
-        window_size: Mutex::new(size),
-        sender: OnceLock::new(),
-    });
-    let (tx, rx) = mpsc::unbounded();
-    let listener = Listener {
-        shared: shared.clone(),
-        tx,
-    };
-
-    let config = Config {
-        scrolling_history: SCROLLBACK,
-        default_cursor_style: CursorStyle {
-            shape: CursorShape::Beam,
-            blinking: true,
-        },
-        kitty_keyboard: false,
-        ..Config::default()
-    };
-    let grid = GridSize {
-        columns: size.num_cols as usize,
-        lines: size.num_lines as usize,
-    };
-    let term = Arc::new(FairMutex::new(Term::new(config, &grid, listener.clone())));
-
+    let (term, shared, rx, listener) = emulator(size);
     let event_loop = EventLoop::new(term.clone(), listener, pty, true, false)?;
     let _ = shared.sender.set(event_loop.channel());
     event_loop.spawn();
@@ -281,6 +325,73 @@ impl Terminal {
     ) -> anyhow::Result<Entity<Terminal>> {
         let spawned = spawn_pty(cwd, shell_command)?;
         Ok(cx.new(|cx| Self::from_spawned(spawned, cx)))
+    }
+
+    /// A terminal whose shell runs on a server, in `cwd` there. Its output
+    /// comes in through [`feed`](Self::feed); what is typed, its size and its
+    /// closing go to `sink`.
+    pub fn remote(cwd: PathBuf, sink: RemoteSink, cx: &mut App) -> Entity<Terminal> {
+        let (term, shared, rx, _listener) = emulator(START_SIZE);
+        let _ = shared.remote.set(sink);
+        let spawned = Spawned {
+            term,
+            shared,
+            rx,
+            pid: 0,
+            #[cfg(unix)]
+            pty_fd: -1,
+            program: String::new(),
+            cwd,
+            size: START_SIZE,
+        };
+        cx.new(|cx| {
+            let mut terminal = Self::from_spawned(spawned, cx);
+            terminal.remote = Some(Remote {
+                parser: Processor::new(),
+                next: 0,
+            });
+            terminal
+        })
+    }
+
+    /// Output of a server's terminal, from offset `at` of all it printed.
+    /// What was drawn already is skipped. Returns the offset drawn up to,
+    /// which the server waits to hear before it sends much more.
+    pub fn feed(&mut self, at: u64, bytes: &[u8], cx: &mut Context<Self>) -> u64 {
+        let Some(remote) = &mut self.remote else {
+            return 0;
+        };
+        let end = at + bytes.len() as u64;
+        if end <= remote.next {
+            return remote.next;
+        }
+        let skip = remote.next.saturating_sub(at) as usize;
+        {
+            let mut term = self.term.lock();
+            remote.parser.advance(&mut *term, &bytes[skip..]);
+            // A synchronized update is not held across messages: the rest
+            // of it may be a round trip away.
+            if remote.parser.sync_bytes_count() > 0 {
+                remote.parser.stop_sync(&mut *term);
+            }
+        }
+        remote.next = end;
+        if !self.shared.dirty.swap(true, Ordering::AcqRel) {
+            cx.emit(TerminalEvent::Activity);
+            cx.notify();
+        }
+        end
+    }
+
+    /// For a server's terminal, the offset of its output drawn up to: where
+    /// to follow it from again after the connection dropped.
+    pub fn remote_offset(&self) -> Option<u64> {
+        self.remote.as_ref().map(|r| r.next)
+    }
+
+    /// A server's terminal ended, with its shell's exit code when it had one.
+    pub fn remote_exited(&mut self, code: Option<i32>, cx: &mut Context<Self>) {
+        self.set_exited(code.unwrap_or(-1), cx);
     }
 
     fn from_spawned(spawned: Spawned, cx: &mut Context<Terminal>) -> Terminal {
@@ -326,6 +437,7 @@ impl Terminal {
             exit_code: None,
             size,
             hung_up: AtomicBool::new(false),
+            remote: None,
             _events: events,
         }
     }
@@ -398,6 +510,7 @@ impl Terminal {
     /// most twice a second and only when output arrives.
     fn refresh_process_name(&mut self, cx: &mut Context<Self>) {
         if self.exit_code.is_some()
+            || self.remote.is_some()
             || self
                 .process_checked
                 .is_some_and(|t| t.elapsed() < Duration::from_millis(500))
@@ -478,6 +591,13 @@ impl Terminal {
     /// exited on its own, what it left behind (`cmd & disown`) is left alone,
     /// as other terminals do.
     pub fn kill(&self) {
+        // The server hangs it up, and lets go of it even once it exited.
+        if let Some(sink) = self.shared.remote.get() {
+            if !self.hung_up.swap(true, Ordering::AcqRel) {
+                sink(RemoteOut::Close);
+            }
+            return;
+        }
         if self.exit_code.is_none() && !self.hung_up.swap(true, Ordering::AcqRel) {
             #[cfg(unix)]
             {
@@ -545,6 +665,13 @@ impl Terminal {
         }
         if let Some(sender) = self.shared.sender.get() {
             let _ = sender.send(Msg::Resize(size));
+        } else if let Some(sink) = self.shared.remote.get()
+            && grid_changed
+        {
+            sink(RemoteOut::Resize {
+                cols: size.num_cols,
+                rows: size.num_lines,
+            });
         }
     }
 

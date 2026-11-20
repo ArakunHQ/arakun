@@ -297,6 +297,17 @@ fn numbers_after(line: &str, head: &str) -> Vec<f32> {
     out
 }
 
+/// A placeholder drawn in a faint gray: on this line, or on the next line
+/// with code when rustfmt splits the pair. A placeholder is text someone has
+/// to read, so it needs WCAG's 4.5:1; faint (3:1) is for disabled text and
+/// icons.
+fn faint_placeholder(line: &str, next: &str) -> Option<String> {
+    let line = &code_only(line);
+    let faint = |c: &str| c.contains("theme::text_faint()") || c.contains("theme::mix(");
+    (line.contains("placeholder") && (faint(line) || faint(&code_only(next))))
+        .then(|| "placeholder in a faint gray: use theme::text_subtle".into())
+}
+
 /// What is wrong with a line, if anything.
 fn problems(line: &str) -> Vec<String> {
     let mut found = Vec::new();
@@ -334,12 +345,6 @@ fn problems(line: &str) -> Vec<String> {
         .any(|(i, m)| code[i + m.len()..].trim_start().starts_with('"'));
     if named {
         found.push("font by name: use theme::FONT_SANS / FONT_MONO".into());
-    }
-    // A placeholder is text someone has to read, so it needs WCAG's 4.5:1;
-    // faint (3:1) is for disabled text and icons.
-    let faint = code.contains("theme::text_faint()") || code.contains("theme::mix(");
-    if faint && code.contains("placeholder") {
-        found.push("placeholder in a faint gray: use theme::text_subtle".into());
     }
     // The brand stops at SemiBold (600); nothing heavier is bundled.
     for weight in ["BOLD", "EXTRA_BOLD", "BLACK"] {
@@ -380,6 +385,9 @@ fn views_use_the_design_system() {
             for p in problems(line) {
                 report.push(format!("{rel}:{}: {p}", n + 1));
             }
+            if let Some(p) = faint_placeholder(line, next_code(&lines[n + 1..])) {
+                report.push(format!("{rel}:{}: {p}", n + 1));
+            }
             if scaled {
                 for p in unscaled(line, next_code(&lines[n + 1..])) {
                     report.push(format!("{rel}:{}: {p}", n + 1));
@@ -393,6 +401,25 @@ fn views_use_the_design_system() {
         report.len(),
         report.join("\n")
     );
+}
+
+#[test]
+fn the_lint_catches_a_faint_placeholder() {
+    assert!(faint_placeholder("(input.placeholder.clone(), theme::mix(0.35))", "").is_some());
+    assert!(faint_placeholder("(field.placeholder.clone(), theme::text_faint())", "").is_some());
+    // Split over two lines, as rustfmt does with a long pair.
+    assert!(
+        faint_placeholder("    field.placeholder.clone(),", "    theme::text_faint(),").is_some()
+    );
+    assert!(faint_placeholder("(input.placeholder.clone(), theme::text_subtle())", "").is_none());
+    assert!(
+        faint_placeholder(
+            "    input.placeholder.clone(),",
+            "    theme::text_subtle(),"
+        )
+        .is_none()
+    );
+    assert!(faint_placeholder("// placeholder theme::mix(0.35)", "").is_none());
 }
 
 #[test]
@@ -419,15 +446,6 @@ fn the_lint_catches_what_it_should() {
         problems(".font_family(theme::FONT_SANS).child(div().font_family( \"X\"))").len(),
         1
     );
-    assert_eq!(
-        problems("(input.placeholder.clone(), theme::mix(0.35))").len(),
-        1
-    );
-    assert_eq!(
-        problems("(field.placeholder.clone(), theme::text_faint())").len(),
-        1
-    );
-    assert!(problems("(input.placeholder.clone(), theme::text_subtle())").is_empty());
     assert!(problems(".font_weight(FontWeight::SEMIBOLD)").is_empty());
     assert!(problems(".bg(theme::mix(0.8))").is_empty());
     assert!(problems(".text_size(px(ui::TEXT_SM))").is_empty());

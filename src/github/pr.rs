@@ -1324,8 +1324,10 @@ pub fn conflicts_prompt(item: &ItemRef, title: &str, pull: &Pull) -> String {
     format!(
         "The pull request \"{title}\" ({label}) conflicts with its base branch `{base}`.\nURL: {url}\n\n\
 This checkout may be another repository or another branch: check with `git remote -v` and \
-`git branch --show-current`. If it isn't {repo}, say so and stop. If it isn't on `{branch}`, switch to it when the \
-working tree is clean (`git fetch origin {branch}` first if it is missing), else say so and stop.\n\n\
+`git branch --show-current`. If it isn't {repo}, say so and stop. Run `git fetch origin {branch}`. If it isn't on \
+`{branch}`, switch to it when the working tree is clean, else say so and stop. Then run \
+`git merge --ff-only origin/{branch}` so the branch has the pull request's latest commits; if that fails, the local \
+branch has diverged from the pull request: say so and stop.\n\n\
 Fetch the base (`git fetch origin {base}`) and merge `origin/{base}` into `{branch}`; don't rebase, so nobody has \
 to force-push. Settle each conflict by keeping what both sides meant: read the pull request \
 (`gh pr view {url}`) and the commits on `{base}` that touched the same lines to understand each side. When the \
@@ -5613,6 +5615,11 @@ mod tests {
         assert!(prompt.contains("base branch `main`"), "{prompt}");
         assert!(
             prompt.contains("merge `origin/main` into `fix/tab-name`"),
+            "{prompt}"
+        );
+        // A stale local branch would leave the newest conflicts unmerged.
+        assert!(
+            prompt.contains("`git merge --ff-only origin/fix/tab-name`"),
             "{prompt}"
         );
         assert!(prompt.ends_with("Don't push."), "{prompt}");

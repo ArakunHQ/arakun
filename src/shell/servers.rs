@@ -1494,7 +1494,7 @@ impl Shell {
             Some("settle_env") => {
                 self.notify(
                     crate::island::AlertKind::Warning,
-                    "Could not settle the threads",
+                    "Could not archive the environment",
                     "The connection dropped first. Try again once the server is connected.",
                     None,
                     cx,
@@ -1787,7 +1787,7 @@ impl Shell {
             Some(client) => client.send(&json!({ "type": "settle_env", "place": remote.place })),
             None => self.notify(
                 crate::island::AlertKind::Warning,
-                "Could not settle the threads",
+                "Could not archive the environment",
                 &format!("{} is not connected right now.", remote.machine),
                 None,
                 cx,
@@ -2248,13 +2248,13 @@ impl Shell {
                 }
                 true
             }
-            // Settle threads is asked from the sidebar: said there too. The
+            // Archive is asked from the sidebar: said there too. The
             // refusal names `settle_env` itself, so it is about that.
             _ if older_server_refused(&message, &["settle_env"]) => {
                 self.notify(
                     crate::island::AlertKind::Warning,
-                    "Could not settle the threads",
-                    "This server runs an older Arakun. Update it to settle threads from here.",
+                    "Could not archive the environment",
+                    "This server runs an older Arakun. Update it to archive from here.",
                     None,
                     cx,
                 );

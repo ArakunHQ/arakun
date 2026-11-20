@@ -88,8 +88,8 @@ copy of it, rename it back, and start a version that can read it.
   the main checkout.
 - **Several at once.** `Ctrl`+click (`Cmd`+click on macOS) rows of the sidebar's list
   to pick them, and `Shift`+click to pick a run of them. In the Active list, either
-  picks the session's worktree. A bar under them settles their
-  sessions, closes them (their tabs close and idle agents stop; the worktrees stay), or
+  picks the session's worktree. A bar under them archives them, closes their
+  sessions (their tabs close and idle agents stop; the worktrees stay), or
   deletes the worktrees after one question. Branches stay. The main checkout and
   worktrees on a server are deleted one at a time. `Esc` clears the pick.
 - **Projects and worktrees.** A rail of projects, each with its environments (the main
@@ -130,16 +130,23 @@ copy of it, rename it back, and start a version that can read it.
   Settings › Branches can pick Claude Code or Droid for every environment, or turn naming
   off; it saves that in `~/.local/share/arakun/branch-namer.json`
   (`%LOCALAPPDATA%\arakun\branch-namer.json` on Windows).
-- **Settled after merge.** Once an environment's pull request is merged (Arakun asks
-  `gh` every few minutes), its open review threads are resolved on GitHub, its
-  notifications are marked read, and the environment's sessions from before the merge
-  stop asking for you and leave the Sessions list (a "settled sessions" row at its end
-  shows them, a search finds them, and a new prompt brings one back); agents that are
-  idle and not open in a tab stop. The GitHub tab
+- **Archive.** Right-click an environment in the sidebar and pick Archive (or pick
+  several rows and use the bar's archive button): its sessions that aren't working stop
+  asking for you and leave the lists, the open review threads of its branch's pull
+  request are resolved on GitHub, and that pull request's notifications are marked read.
+  A session's own right-click menu archives just that session, without touching
+  GitHub. An "N archived" row at the end of the sidebar's list (and "N archived
+  sessions" under the Sessions list) shows them again, a search finds them, and Restore
+  on the right-click menu or a new prompt brings one back. Agents that are idle and not
+  open in a tab stop.
+- **Archived after merge.** Once an environment's pull request is merged (Arakun asks
+  `gh` every few minutes), it is archived the same way: its open review threads are
+  resolved, its notifications are marked read, and the environment's sessions from
+  before the merge are archived. The GitHub tab
   also marks read the notifications of every merged pull request it reads. Each merge is
-  settled once, within a week of it; threads that fail to resolve are tried again at the
-  next few checks. Settled merges are noted in `~/.local/share/arakun/settled.json`.
-  On by default; turn off Settings › Branches › Settle threads after merge (saved in
+  archived once, within a week of it; threads that fail to resolve are tried again at the
+  next few checks. Archived merges are noted in `~/.local/share/arakun/settled.json`.
+  On by default; turn off Settings › Branches › Archive after merge (saved in
   `~/.local/share/arakun/settle-after-merge`, `%LOCALAPPDATA%\arakun\` on Windows).
 - **Old environments removed.** Settings › Branches › Remove old environments (Off, 7, 14
   or 30 days; also asked during the setup) removes an environment's worktree once its
@@ -929,7 +936,7 @@ The link is good for two minutes and pairs one device. There are two ways to use
   the open environment's machine. It goes in
   `~/arakun-workspaces/<project>/<branch>` there. Unless naming is off in Settings ›
   Branches, Arakun names its branch after the first prompt, as here. Right-click a
-  server's environment to settle its threads there (the sessions that ask for attention
+  server's environment to archive it there (the sessions that ask for attention
   go idle, and their agents stop; a running turn is left alone) or to delete it: the
   server removes the worktree, everything in it and its sessions, and the branch too if
   you ask. A repository's main folder is never deleted. A phone paired with this app sees and works in the

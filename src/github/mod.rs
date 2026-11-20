@@ -1623,6 +1623,13 @@ impl GitHub {
         self.mark_all_read(ids, cx);
     }
 
+    /// Marks read the unread notifications of the pull request `key` once,
+    /// for one archived by hand: later ones still come in.
+    pub fn mark_read_of(&mut self, key: &str, cx: &mut Context<Self>) {
+        let ids = notifications_of(&self.unread, key);
+        self.mark_all_read(ids, cx);
+    }
+
     /// Marks read the unread notifications of every merged pull request seen.
     fn settle_all_merged(&mut self, cx: &mut Context<Self>) {
         if !crate::settle::on() {

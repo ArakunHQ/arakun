@@ -45,6 +45,24 @@ with `dev.run("key", …)`, `dev.run("type", …)`, `dev.run("scroll", …)` or 
 `arakun dev` command, and add it to `SCENARIOS`. The run frames it from the log
 offsets around it, so keep it self-contained and leave the app as it found it.
 
+## Perf: compare two releases
+
+`tools/bench/releases.sh [BEFORE [AFTER]]` downloads the Linux builds of two releases
+with `gh`, checks them against the signed `SHA256SUMS`, runs `perf` on one after the
+other and writes `<tag>.json` and `comparison.md` to `target/bench/releases/`. Without
+tags it takes the latest release and the one before it; a nightly's tag works too. It
+takes `--runs`, `--only` and `--threshold`, and exits 1 like `compare`.
+
+The **Benchmark releases** workflow runs the same script on a CI runner, on demand:
+
+```sh
+gh workflow run bench-releases.yml -f before=v0.10.0 -f after=v0.11.1
+gh run watch          # the table is the run's summary; the JSON is the bench-releases artifact
+```
+
+A release from before `arakun dev` had the commands a scenario uses fails in that
+scenario; leave it out with `--only` (the workflow's `scenarios` input).
+
 ## Agent: Claude in Arakun
 
 The agent suite calls the Claude account or API key Claude Code is logged in

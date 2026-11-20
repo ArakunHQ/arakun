@@ -305,8 +305,9 @@ fn faint_placeholder(line: &str, next: &str) -> Option<String> {
     let line = &code_only(line);
     let faint = |c: &str| c.contains("theme::text_faint()") || c.contains("theme::mix(");
     // Only an expression still open at the end of the line goes on to the
-    // next one: after `;` or a brace, the next line is code of its own.
-    let open = !line.trim_end().ends_with([';', '{', '}']);
+    // next one: after `;` or a closing brace, the next line is code of its
+    // own. An opening brace (`= if focused {`) carries on into the block.
+    let open = !line.trim_end().ends_with([';', '}']);
     (line.contains("placeholder") && (faint(line) || open && faint(&code_only(next))))
         .then(|| "placeholder in a faint gray: use theme::text_subtle".into())
 }
@@ -423,6 +424,14 @@ fn the_lint_catches_a_faint_placeholder() {
         .is_none()
     );
     assert!(faint_placeholder("// placeholder theme::mix(0.35)", "").is_none());
+    // The color inside a block the placeholder line opens.
+    assert!(
+        faint_placeholder(
+            "let placeholder_color = if focused {",
+            "    theme::text_faint()"
+        )
+        .is_some()
+    );
     // A statement of its own, followed by another one.
     assert!(
         faint_placeholder(

@@ -2231,9 +2231,31 @@ impl Daemon {
                     json!({ "type": "settings", "id": session, "settings": wire::settings(list) });
                 self.transport.send(client, reply.to_string());
             }
-            ClientMsg::Cancel { session } => {
+            ClientMsg::Cancel {
+                session,
+                keep_queue,
+            } => {
                 if let Some(thread) = self.thread(&session) {
-                    stop_turn(&thread, cx);
+                    if keep_queue {
+                        thread.update(cx, |t, cx| t.cancel(cx));
+                    } else {
+                        stop_turn(&thread, cx);
+                    }
+                }
+            }
+            ClientMsg::Unqueue {
+                session,
+                index,
+                text,
+                now,
+            } => {
+                if let Some(thread) = self.thread(&session) {
+                    thread.update(cx, |t, cx| t.unqueue(index, &text, now, cx));
+                }
+            }
+            ClientMsg::ResumeQueue { session } => {
+                if let Some(thread) = self.thread(&session) {
+                    thread.update(cx, |t, cx| t.resume_queue(cx));
                 }
             }
             ClientMsg::Permission { session, option } => {

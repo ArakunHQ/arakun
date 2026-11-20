@@ -493,6 +493,8 @@ impl ThreadView {
                                 })
                                 // A long queue scrolls in place: the transcript above keeps its room.
                                 .child(div().id("queue-list").flex().flex_col().max_h(px(QUEUE_LIST_H)).overflow_y_scroll().children(queue.iter().enumerate().map(|(i, text)| {
+                                    // By its text too: a server's queue may move before the click gets there.
+                                    let (sent, dropped) = (text.clone(), text.clone());
                                     div()
                                         .flex()
                                         .items_center()
@@ -536,7 +538,7 @@ impl ThreadView {
                                                     "queue-now",
                                                 ))
                                                 .on_click(cx.listener(move |this, _, _, cx| {
-                                                    this.thread.update(cx, |t, cx| t.send_now(i, cx))
+                                                    this.thread.update(cx, |t, cx| t.unqueue(i, &sent, true, cx))
                                                 })),
                                         )
                                         })
@@ -559,7 +561,7 @@ impl ThreadView {
                                                     "queue-del",
                                                 ))
                                                 .on_click(cx.listener(move |this, _, _, cx| {
-                                                    this.thread.update(cx, |t, cx| t.remove_queued(i, cx))
+                                                    this.thread.update(cx, |t, cx| t.unqueue(i, &dropped, false, cx))
                                                 })),
                                         )
                                 }))),

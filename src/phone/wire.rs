@@ -707,6 +707,9 @@ pub fn state_message(id: &str, t: &Thread, status: Status) -> String {
         "elapsed_ms": t.turn_elapsed().map(|d| d.as_millis() as u64),
         "title": t.title(),
         "changes": change_totals(t.entries()),
+        "queue": t.queued(),
+        "queue_paused": t.queue_paused(),
+        "sending_now": t.sending_now(),
     })
     .to_string()
 }
@@ -775,6 +778,9 @@ pub fn session_live(head: &SessionHead, t: &Thread, status: Status, scope: &Scop
     msg["usage"] = usage(t.usage());
     msg["elapsed_ms"] = json!(t.turn_elapsed().map(|d| d.as_millis() as u64));
     msg["status"] = json!(self::status(status));
+    msg["queue"] = json!(t.queued());
+    msg["queue_paused"] = json!(t.queue_paused());
+    msg["sending_now"] = json!(t.sending_now());
     if !t.title().is_empty() {
         msg["title"] = json!(t.title());
     }

@@ -551,7 +551,17 @@ pub enum RemoteAction {
         text: String,
         now: bool,
     },
+    /// Stops the running turn; the queue there pauses, as it does here.
     Cancel,
+    /// Takes the queued prompt `text`, seen at `index`, out of the queue:
+    /// `now` sends it once the running turn stopped, otherwise it is dropped.
+    Unqueue {
+        index: usize,
+        text: String,
+        now: bool,
+    },
+    /// Lets the paused queue go again.
+    ResumeQueue,
     /// The option picked for the permission asked.
     Permission(String),
     Answer(Vec<String>),
@@ -2125,6 +2135,24 @@ impl Thread {
         self.remote
     }
 
+    /// The server's queue for its session, as its `state` says it: shown as
+    /// this session's own, while the server keeps and sends it.
+    pub fn set_remote_queue(
+        &mut self,
+        queue: Vec<String>,
+        paused: bool,
+        sending_now: usize,
+        cx: &mut Context<Self>,
+    ) {
+        if self.queue == queue && self.queue_paused == paused && self.urgent == sending_now {
+            return;
+        }
+        self.urgent = sending_now.min(queue.len());
+        self.queue = queue;
+        self.queue_paused = paused && !self.queue.is_empty();
+        self.meta_changed(cx);
+    }
+
     /// What the user did did not reach the server: the questionnaire can be
     /// answered again, and a rewind asked for is off.
     pub fn remote_undelivered(&mut self, cx: &mut Context<Self>) {
@@ -2920,6 +2948,28 @@ impl Thread {
         cx.notify();
     }
 
+    /// Sends the queued prompt `text` now, or drops it. `index` is where it was
+    /// seen: on a server the queue may have moved since, so one moved is looked
+    /// for by its text, and one that went already is left alone.
+    pub fn unqueue(&mut self, index: usize, text: &str, now: bool, cx: &mut Context<Self>) {
+        if self.remote {
+            cx.emit(ThreadEvent::Remote(RemoteAction::Unqueue {
+                index,
+                text: text.to_string(),
+                now,
+            }));
+            return;
+        }
+        let Some(ix) = queued_at(&self.queue, index, text) else {
+            return;
+        };
+        if now {
+            self.send_now(ix, cx);
+        } else {
+            self.remove_queued(ix, cx);
+        }
+    }
+
     pub fn remove_queued(&mut self, ix: usize, cx: &mut Context<Self>) {
         if ix < self.queue.len() {
             self.queue.remove(ix);
@@ -2993,6 +3043,10 @@ impl Thread {
     }
 
     pub fn resume_queue(&mut self, cx: &mut Context<Self>) {
+        if self.remote {
+            cx.emit(ThreadEvent::Remote(RemoteAction::ResumeQueue));
+            return;
+        }
         self.queue_paused = false;
         self.meta_changed(cx);
         self.drain_queue(cx);
@@ -4276,6 +4330,15 @@ fn take_next(queue: &mut Vec<String>, urgent: &mut usize, paused: bool) -> Optio
     Some(queue.remove(0))
 }
 
+/// Where `text` is in `queue`: at `index` while it is still there, else at its
+/// first place. None once it went.
+fn queued_at(queue: &[String], index: usize, text: &str) -> Option<usize> {
+    if queue.get(index).is_some_and(|q| q == text) {
+        return Some(index);
+    }
+    queue.iter().position(|q| q == text)
+}
+
 /// Files the finished edits in `entries` touched, and those their turns'
 /// shell commands changed, absolute (relative ones are in `cwd`), in
 /// first-touched order.
@@ -4863,5 +4926,16 @@ mod tests {
             take_next(&mut queue, &mut urgent, false).as_deref(),
             Some("waiting")
         );
+    }
+
+    #[test]
+    fn a_queued_prompt_is_found_after_the_queue_moved() {
+        let queue = q(&["a", "b", "c"]);
+        assert_eq!(queued_at(&queue, 1, "b"), Some(1));
+        // The one in front went before the click got there.
+        assert_eq!(queued_at(&queue[1..], 1, "b"), Some(0));
+        // Gone already: nothing else is taken in its place.
+        assert_eq!(queued_at(&queue, 1, "d"), None);
+        assert_eq!(queued_at(&[], 0, "a"), None);
     }
 }

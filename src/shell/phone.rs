@@ -756,11 +756,31 @@ impl Shell {
                     json!({ "type": "settings", "id": session, "settings": wire::settings(list) });
                 self.phone_send(client, reply.to_string());
             }
-            ClientMsg::Cancel { session } => {
+            // Esc in this app pauses the queue, for a phone through it too.
+            ClientMsg::Cancel { session, .. } => {
                 if let Some((env_path, sid)) = self.phone_session(&session)
                     && let Some(thread) = self.phone_thread(&env_path, &sid)
                 {
                     thread.update(cx, |t, cx| t.cancel(cx));
+                }
+            }
+            ClientMsg::Unqueue {
+                session,
+                index,
+                text,
+                now,
+            } => {
+                if let Some((env_path, sid)) = self.phone_session(&session)
+                    && let Some(thread) = self.phone_thread(&env_path, &sid)
+                {
+                    thread.update(cx, |t, cx| t.unqueue(index, &text, now, cx));
+                }
+            }
+            ClientMsg::ResumeQueue { session } => {
+                if let Some((env_path, sid)) = self.phone_session(&session)
+                    && let Some(thread) = self.phone_thread(&env_path, &sid)
+                {
+                    thread.update(cx, |t, cx| t.resume_queue(cx));
                 }
             }
             ClientMsg::Permission { session, option } => {

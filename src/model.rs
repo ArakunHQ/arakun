@@ -344,8 +344,8 @@ pub struct Session {
     /// The sessions it took over from other agents ("Continue with"), oldest
     /// first; their history is already in this one's transcript.
     pub continues: Vec<Earlier>,
-    /// Its pull request merged (`crate::settle`): the sessions list leaves it
-    /// out until it is used again.
+    /// Archived, by hand or once its pull request merged (`crate::settle`):
+    /// the sessions list leaves it out until it is used again or restored.
     pub settled: bool,
     pub live: Option<LiveSession>,
 }
@@ -922,6 +922,12 @@ impl Environment {
         self.sessions.iter().position(|s| s.id.as_ref() == id)
     }
 
+    /// Every session here is archived (`Session::settled`), so the sidebar
+    /// leaves it out. A worktree with no session yet is not.
+    pub fn archived(&self) -> bool {
+        !self.sessions.is_empty() && self.sessions.iter().all(|s| s.settled)
+    }
+
     /// The most urgent state of any session, for the sidebar dot.
     pub fn aggregate_status(&self) -> Status {
         let any = |st: Status| self.sessions.iter().any(|s| s.status == st);
@@ -1124,6 +1130,21 @@ mod tests {
         // `git branch -m` in a terminal, to a name that also looks random, then a refresh.
         env.set_branch(Some("env/bright-fox".into()));
         assert!(!env.awaits_name());
+    }
+
+    #[test]
+    fn an_environment_is_archived_once_every_session_is() {
+        let mut env = Environment::new("/tmp/arakun-archive-test".into(), None, false);
+        // A worktree waiting for its first session stays in the list.
+        assert!(!env.archived());
+        env.sessions
+            .push(Session::new("a".into(), "A".into(), Agent::Claude));
+        env.sessions
+            .push(Session::new("b".into(), "B".into(), Agent::Claude));
+        env.sessions[0].settled = true;
+        assert!(!env.archived());
+        env.sessions[1].settled = true;
+        assert!(env.archived());
     }
 
     const HERE: &str = "/tmp/arakun-test";

@@ -15,7 +15,7 @@ use gpui::{
 use super::{ContextMenu, MenuTarget, Modal, Shell};
 use crate::agent::catalog::{self, AgentSession};
 use crate::input::{InputEvent, TextInput};
-use crate::model::{self, Agent};
+use crate::model::{self, Agent, Status};
 use crate::theme;
 use crate::ui::{self, ButtonKind, icon};
 
@@ -511,7 +511,8 @@ impl Shell {
         self.session_menu_items(index, panel, cx).into_any_element()
     }
 
-    /// Rename, fork, compact and remove for the session at `index`, appended to `panel`.
+    /// Rename, fork, compact, archive and remove for the session at `index`,
+    /// appended to `panel`.
     pub(super) fn session_menu_items(
         &self,
         index: usize,
@@ -530,7 +531,11 @@ impl Shell {
             || s.meta.as_ref().is_some_and(|m| m.session_id.is_some());
         let can_compact = known && (s.agent == Agent::Claude || catalog::droid_native());
         let can_fork = can_compact && live.is_none_or(|t| t.supports_fork());
-        let (rename, fork, compact, remove) = (id.clone(), id.clone(), id.clone(), id);
+        let (rename, fork, compact, archive, remove) =
+            (id.clone(), id.clone(), id.clone(), id.clone(), id);
+        let env_path = env.path.clone();
+        let settled = s.settled;
+        let can_archive = !settled && s.status != Status::Working && env.remote.is_none();
         panel = panel
             .child(
                 ui::menu_item("sm-rename", "pencil-edit02", "Rename…", false, true).on_click(
@@ -569,6 +574,24 @@ impl Shell {
                     }))
                 }),
             )
+            .child(if settled {
+                ui::menu_item("sm-restore", "undo", "Restore", false, true).on_click(cx.listener(
+                    move |this, _, _, cx| {
+                        this.menu = None;
+                        this.restore_sessions(&env_path, Some(&archive), cx);
+                    },
+                ))
+            } else {
+                ui::menu_item("sm-archive", "archive02", "Archive", false, can_archive).when(
+                    can_archive,
+                    |d| {
+                        d.on_click(cx.listener(move |this, _, _, cx| {
+                            this.menu = None;
+                            this.archive_sessions(&env_path, &[archive.to_string()], cx);
+                        }))
+                    },
+                )
+            })
             .child(div().my(px(4.)).h(px(1.)).bg(theme::stroke()))
             .child(
                 ui::menu_item("sm-remove", "delete02", "Remove from list…", true, true).on_click(

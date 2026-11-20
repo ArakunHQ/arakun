@@ -592,6 +592,22 @@ impl Shell {
                         cx,
                     ));
                 }
+                let archived = self.archived_count(pi);
+                if archived > 0 {
+                    envs = envs.child(
+                        super::panel::archived_toggle(
+                            ("rail-archived", pi),
+                            archived,
+                            "",
+                            self.show_settled,
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.show_settled = !this.show_settled;
+                            this.drop_pick();
+                            cx.notify();
+                        })),
+                    );
+                }
                 if !self.pick_bar_under_active() {
                     envs = envs.children(self.render_pick_bar(cx));
                 }
@@ -1036,6 +1052,10 @@ impl Shell {
         let lead: AnyElement = if picked {
             icon("tick02", 14.)
                 .text_color(theme::content())
+                .into_any_element()
+        } else if env.archived() && status == Status::Idle {
+            icon("archive02", 14.)
+                .text_color(theme::text_faint())
                 .into_any_element()
         } else if env.is_checkout && status == Status::Idle {
             icon("folder01", 14.)

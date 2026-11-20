@@ -3060,7 +3060,7 @@ fn busy_reason(live: impl IntoIterator<Item = (Status, bool)>) -> Option<&'stati
         }
         asking |= status == Status::NeedsInput;
     }
-    asking.then_some("a session there is waiting for an answer; answer it or settle it first")
+    asking.then_some("a session there is waiting for an answer; answer it or archive it first")
 }
 
 /// Why no work may start in `place` while `deleting` are being deleted.

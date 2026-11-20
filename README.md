@@ -494,9 +494,11 @@ after a week).
   and opens GitHub's device page: enter the code there and approve. Arakun asks GitHub
   for no scopes and hands the token once to the Teams server, which keeps only your
   GitHub user name and ID. Arakun drops the GitHub token and keeps the session the
-  server answers with in the system keyring. An account the server has turned Teams on
+  server answers with in the system keyring: the Keychain on macOS, the Credential
+  Manager on Windows, and the Secret Service through `secret-tool` on Linux (without
+  it, the session lasts until Arakun quits). An account the server has turned Teams on
   for gets a Teams tab in the sidebar; any other account sees "Signed in as @you" in
-  Settings and nothing else. Sign out removes the session from the keyring and asks
+  Settings and nothing else. Sign out removes the session from the keyring, then asks
   the server to end it; if the server can't be reached, the session there stays valid
   until it expires (90 days without renewal, 180 days after sign-in at most).
   `ARAKUN_TEAMS_URL` points Arakun at another Teams server, such as one run with

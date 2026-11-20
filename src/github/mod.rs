@@ -21,6 +21,7 @@ use crate::git;
 pub mod avatars;
 pub mod board;
 pub mod pilot;
+pub mod pilot_setup;
 pub mod pr;
 pub mod pulse;
 pub mod queue;
@@ -445,10 +446,7 @@ fn file() -> PathBuf {
 }
 
 pub fn load() -> Settings {
-    std::fs::read(file())
-        .ok()
-        .and_then(|b| serde_json::from_slice(&b).ok())
-        .unwrap_or_default()
+    crate::durable::load_json(file()).unwrap_or_default()
 }
 
 pub fn store(settings: &Settings) {
@@ -558,20 +556,32 @@ pub fn parse_repo_pulls(json: &[u8]) -> Result<Vec<RepoPull>, Problem> {
 /// How long a repository's open pull requests are reused before reading them again.
 const REPO_PULLS_FRESH: Duration = Duration::from_secs(60);
 
-/// [`gh_out_within`] with [`GIT_REMOTE`](crate::platform::GIT_REMOTE): these calls run
-/// on the background threads, and the inbox holds `busy` until one ends.
+/// Runs `gh` with `args` away from any checkout, stopped after
+/// [`GIT_REMOTE`](crate::platform::GIT_REMOTE): these calls run on the
+/// background threads, and the inbox holds `busy` until one ends. They name no
+/// repository, and a folder's remotes must not change which host gh talks to.
 fn gh_out(args: &[&str]) -> Result<Vec<u8>, Problem> {
-    gh_out_within(args, crate::platform::GIT_REMOTE)
+    gh_run(
+        &std::env::temp_dir(),
+        args,
+        None,
+        crate::platform::GIT_REMOTE,
+    )
 }
 
-/// Runs `gh` with `args`, stopped (with what it started) after `timeout`.
-fn gh_out_within(args: &[&str], timeout: Duration) -> Result<Vec<u8>, Problem> {
-    // These calls name no repository, so gh runs away from any checkout: a
-    // folder's remotes must not change which host it talks to.
-    let mut cmd = git::gh(&std::env::temp_dir());
+/// Runs `gh` with `args` in `dir`, `stdin` written to it, stopped (with what
+/// it started) after `timeout`. What it printed, or why it failed.
+pub(crate) fn gh_run(
+    dir: &std::path::Path,
+    args: &[impl AsRef<std::ffi::OsStr>],
+    stdin: Option<&[u8]>,
+    timeout: Duration,
+) -> Result<Vec<u8>, Problem> {
+    let mut cmd = git::gh(dir);
     cmd.args(args);
+    // gh may give up before it reads all of stdin; what it wrote says why.
     let out =
-        crate::platform::output_within(&mut cmd, None, timeout).map_err(|e| match e.kind() {
+        crate::platform::output_within(&mut cmd, stdin, timeout).map_err(|e| match e.kind() {
             std::io::ErrorKind::NotFound => Problem::NoGh,
             std::io::ErrorKind::TimedOut => Problem::Other(e.to_string()),
             _ => Problem::Other(format!("could not run gh: {e}")),
@@ -580,6 +590,16 @@ fn gh_out_within(args: &[&str], timeout: Duration) -> Result<Vec<u8>, Problem> {
         return Err(problem(&out.stderr, out.status));
     }
     Ok(out.stdout)
+}
+
+/// [`gh_run`] for a JSON answer.
+pub(crate) fn gh_json<T: serde::de::DeserializeOwned>(
+    dir: &std::path::Path,
+    args: &[&str],
+    timeout: Duration,
+) -> Result<T, Problem> {
+    serde_json::from_slice(&gh_run(dir, args, None, timeout)?)
+        .map_err(|e| Problem::Other(format!("unexpected answer from gh: {e}")))
 }
 
 /// The newest notifications: the unread ones, or with `all` the read ones too.
@@ -719,8 +739,8 @@ pub const USAGE: &str = "arakun github draft <owner/repo>#<n> --verdict <approve
     `--body-file -` reads the review from stdin.
     `--head` is the commit you read (`gh pr view <url> --json headRefOid`); an approval needs it.";
 
-/// `arakun github …`. Only `draft`: it writes the draft file and needs no
-/// running Arakun.
+/// `arakun github …`: `draft` writes the draft file and `pilot` the
+/// pilot settings; neither needs a running Arakun.
 pub fn cli(args: &[String]) -> i32 {
     match args.first().map(String::as_str) {
         Some("draft") if args[1..].iter().any(|a| crate::control::is_help(a)) => {
@@ -737,12 +757,16 @@ pub fn cli(args: &[String]) -> i32 {
                 1
             }
         },
+        Some("pilot") => pilot_setup::cli(&args[1..]),
         Some("help" | "-h" | "--help") | None => {
-            println!("{USAGE}");
+            println!("{USAGE}\n{}", pilot_setup::USAGE);
             0
         }
         Some(other) => {
-            eprintln!("arakun github: unknown command `{other}`\n{USAGE}");
+            eprintln!(
+                "arakun github: unknown command `{other}`\n{USAGE}\n{}",
+                pilot_setup::USAGE
+            );
             2
         }
     }
@@ -2440,10 +2464,9 @@ mod tests {
             return;
         };
         let items = pilot::fetch(&cfg).unwrap_or_else(|e| panic!("{e}"));
-        let book: pilot::Book = std::fs::read(crate::state::data_dir().join("pilot.json"))
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or_default();
+        let book: pilot::Book =
+            crate::durable::load_json(crate::state::data_dir().join("pilot.json"))
+                .unwrap_or_default();
         let shown: Vec<&pilot::Item> = items.iter().filter(|i| !book.handled(&i.id)).collect();
         let mut kinds: HashMap<String, usize> = HashMap::new();
         for c in &shown {

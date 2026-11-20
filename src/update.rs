@@ -285,10 +285,7 @@ fn saved_path() -> PathBuf {
 }
 
 fn load() -> Saved {
-    std::fs::read(saved_path())
-        .ok()
-        .and_then(|b| serde_json::from_slice(&b).ok())
-        .unwrap_or_default()
+    crate::durable::load_json(saved_path()).unwrap_or_default()
 }
 
 fn save(s: &Saved) -> std::io::Result<()> {

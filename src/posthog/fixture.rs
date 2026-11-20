@@ -42,7 +42,7 @@ fn loaded() -> Option<&'static Fixture> {
     F.get_or_init(|| {
         crate::dev::size()?;
         let file = std::env::var_os("ARAKUN_POSTHOG_FIXTURE")?;
-        serde_json::from_slice(&std::fs::read(file).ok()?).ok()
+        crate::durable::load_json(file)
     })
     .as_ref()
 }

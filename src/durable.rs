@@ -34,6 +34,30 @@ pub fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
     write_in(path, bytes, true, true)
 }
 
+/// `write` with `v` as JSON.
+#[allow(dead_code)] // the examples that include this file keep no JSON
+pub fn save_json(path: &Path, v: &impl serde::Serialize) -> io::Result<()> {
+    write(path, &serde_json::to_vec(v).map_err(io::Error::other)?)
+}
+
+/// `save_json` for a cache: the next load makes it again, so a failure is
+/// only logged.
+#[allow(dead_code)] // the examples that include this file keep no caches
+pub fn cache_json(path: &Path, v: &impl serde::Serialize) {
+    if let Err(e) = save_json(path, v) {
+        eprintln!("arakun: could not save {}: {e}", path.display());
+    }
+}
+
+/// The JSON in `path`; `None` when there is none, or it doesn't parse (a
+/// cache from another version). For files whose loss costs nothing; state
+/// that must not be lost goes through `stored::load`, which keeps a file it
+/// can't read.
+#[allow(dead_code)] // the examples that include this file read no JSON
+pub fn load_json<T: serde::de::DeserializeOwned>(path: impl AsRef<Path>) -> Option<T> {
+    serde_json::from_slice(&std::fs::read(path).ok()?).ok()
+}
+
 fn write_in(path: &Path, bytes: &[u8], make_dir: bool, private: bool) -> io::Result<()> {
     let dir = path
         .parent()
@@ -410,6 +434,18 @@ mod tests {
             let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
             assert_eq!(mode, 0o600);
         }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn json_round_trips_and_a_bad_file_reads_as_none() {
+        let dir = scratch("json");
+        let path = dir.join("cache").join("seats.json");
+        assert_eq!(super::load_json::<Vec<u32>>(&path), None);
+        super::save_json(&path, &vec![3, 1]).unwrap();
+        assert_eq!(super::load_json(&path), Some(vec![3, 1]));
+        std::fs::write(&path, b"{torn").unwrap();
+        assert_eq!(super::load_json::<Vec<u32>>(&path), None);
         let _ = std::fs::remove_dir_all(dir);
     }
 

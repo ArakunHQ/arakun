@@ -45,7 +45,7 @@ fn file(p: &Project) -> PathBuf {
 }
 
 pub fn cached(p: &Project) -> Option<Defs> {
-    serde_json::from_slice(&std::fs::read(file(p)).ok()?).ok()
+    crate::durable::load_json(file(p))
 }
 
 /// `results` of `/event_definitions/`.
@@ -162,7 +162,7 @@ pub fn load(s: &Session, p: &Project) -> Result<Defs, ApiError> {
         fetched_at: crate::model::unix_now(),
         missing,
     };
-    super::write_json(&file(p), &d);
+    crate::durable::cache_json(&file(p), &d);
     Ok(d)
 }
 

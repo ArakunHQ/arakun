@@ -218,7 +218,7 @@ fn dir() -> PathBuf {
 }
 
 fn read_cached(key: &str) -> Option<Answer> {
-    serde_json::from_slice(&std::fs::read(dir().join(format!("{key}.json"))).ok()?).ok()
+    crate::durable::load_json(dir().join(format!("{key}.json")))
 }
 
 /// Deletes answers no one has asked for in a week, once per run.
@@ -260,7 +260,7 @@ pub fn run(s: &Session, project: u64, q: &Hogql, fresh: u64) -> Result<Answer, A
         fetched_at: now,
         spent: 1,
     };
-    super::write_json(&dir().join(format!("{key}.json")), &a);
+    crate::durable::cache_json(&dir().join(format!("{key}.json")), &a);
     prune(now);
     Ok(a)
 }

@@ -1184,7 +1184,7 @@ impl Shell {
                 "git-branch",
                 "New environment",
                 &["Ctrl", "⇧", "N"],
-                "A worktree on a new branch, with its own sessions and terminals.",
+                "Its own branch and folder, with its own sessions and terminals.",
                 Target::NewEnvironment,
             );
             add(
@@ -1274,7 +1274,7 @@ impl Shell {
             "paint-board",
             "Customize",
             &[],
-            "Colors, palettes, corners, spacing and text size, beside the app.",
+            "Colors, color schemes, corners, spacing and text size, beside the app.",
             Target::Customize,
         );
         add(

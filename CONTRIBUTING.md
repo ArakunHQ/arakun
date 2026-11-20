@@ -242,6 +242,26 @@ which git ignores. Turn the hooks off with `lefthook uninstall`.
   this, since GitHub has no API to upload images. That repository is public: no
   real accounts, tokens, email addresses or home-directory paths in the picture.
 
+### Words in the interface
+
+One thing has one name in everything a person reads: labels, tooltips, messages,
+the README. Use these:
+
+| Say | For | Not |
+|---|---|---|
+| **environment** | a checkout to work in: the main one or a git worktree, on a branch, with its own sessions, terminals and browser tabs | worktree. Say "git worktree" only to explain what an environment is on disk. |
+| **session** | one talk with an agent, and what is in it | chat, conversation (GitHub's own Conversation tab keeps its name) |
+| **palette** | what `Ctrl+K` opens | Go to, Find anything. The sidebar's Search button opens it. |
+| **color scheme** | a set of colors in Customize | palette, which is the above |
+| **Workspace panel** | the panel on the right of a session | workspace on its own |
+| **notice** | something Arakun tells you, on the island and in the Inbox | notification, alert. A notice can also show as a desktop notification, and GitHub's notifications keep their name. |
+| **check** | the project's check command, run after a turn that edits files | |
+| **checks** | GitHub's checks on a pull request | CI, when you mean the checks |
+
+Stored names stay as they are (`palettes.json`, `arakun notices`, `~/arakun-workspaces`).
+A test in `src/words_lint.rs` fails on a retired word in a string of prose; a phrase
+that keeps one on purpose goes on its allow-list.
+
 ## Pull requests
 
 - **One fix or feature per pull request.** Split unrelated cleanups into their own.

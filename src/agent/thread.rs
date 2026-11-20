@@ -1814,7 +1814,7 @@ impl Thread {
                 if session.is_none() {
                     let _ = this.update(cx, |t, cx| {
                         t.notice(
-                            "The agent could not reopen this session, so it starts fresh with no memory of the conversation above.",
+                            "The agent could not reopen this session, so it starts fresh with no memory of the messages above.",
                             false,
                             cx,
                         )

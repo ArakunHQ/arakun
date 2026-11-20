@@ -41,7 +41,7 @@ impl GitHubView {
             chips = chips.child(
                 ui::chip(("gh-watch", i), entry, false)
                     .child(icon("cancel01", 10.).text_color(theme::text_subtle()))
-                    .tooltip(ui::tip("Stop alerting for this"))
+                    .tooltip(ui::tip("Stop notices for this"))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.github.update(cx, |g, cx| g.remove_watch(&name, cx));
                     })),
@@ -69,14 +69,14 @@ impl GitHubView {
                 }),
             )
             .child(ui::menu_divider())
-            .child(ui::menu_heading("Alerts"))
+            .child(ui::menu_heading("Notices"))
             .child(
                 div()
                     .px(crate::ui::sp(8.))
                     .pb(crate::ui::sp(6.))
                     .ty(Type::Caption)
                     .text_color(theme::text_subtle())
-                    .child("Review requests, mentions and assignments always alert you. Add an organization or a repository to be alerted for everything there."),
+                    .child("Review requests, mentions and assignments always send you a notice. Add an organization or a repository to get notices for everything there."),
             )
             .child(chips)
             .child(
@@ -209,7 +209,7 @@ impl GitHubView {
                     .pb(crate::ui::sp(4.))
                     .ty(Type::Caption)
                     .text_color(theme::text_subtle())
-                    .child("What is left out doesn't show, count or alert you."),
+                    .child("What is left out doesn't show, count or send a notice."),
             )
             .into_any_element()
     }

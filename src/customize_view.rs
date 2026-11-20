@@ -162,8 +162,9 @@ impl EventEmitter<CustomizeEvent> for CustomizeView {}
 
 impl CustomizeView {
     pub fn new(tab: CustomizeTab, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let share_input =
-            cx.new(|cx| TextInput::new("Paste a look, a palette or a sidebar layout", cx).mono());
+        let share_input = cx.new(|cx| {
+            TextInput::new("Paste a look, a color scheme or a sidebar layout", cx).mono()
+        });
         let share_sub =
             cx.subscribe_in(
                 &share_input,
@@ -179,7 +180,7 @@ impl CustomizeView {
             );
         let palettes = crate::palettes::load();
         let name_input = cx.new(|cx| {
-            let mut i = TextInput::new("Name this palette", cx);
+            let mut i = TextInput::new("Name this color scheme", cx);
             i.set_text(palettes.active().name, cx);
             i
         });
@@ -358,7 +359,7 @@ impl CustomizeView {
             self.sheet = None;
             // A Delete armed for the old palette must not delete the new one.
             self.confirm_delete = false;
-            self.palette_note = Some(("Palette added and in use.".into(), false));
+            self.palette_note = Some(("Color scheme added and in use.".into(), false));
             self.apply_palette(cx);
         } else if let Ok(layout) = serde_json::from_str::<serde_json::Value>(text.trim())
             && layout.get("sections").is_some()
@@ -376,7 +377,7 @@ impl CustomizeView {
             self.palette_note = None;
         } else {
             self.palette_note = Some((
-                "That isn't a look (arakun:look/v1:…), a palette (arakun:palette/v1:…) or a sidebar layout."
+                "That isn't a look (arakun:look/v1:…), a color scheme (arakun:palette/v1:…) or a sidebar layout."
                     .into(),
                 true,
             ));
@@ -616,7 +617,7 @@ impl CustomizeView {
             }
             Sheet::Import(None) => card(
                 "Import",
-                "Paste a look, a palette line or a sidebar layout, then Read.",
+                "Paste a look, a color scheme line or a sidebar layout, then Read.",
             )
             .child(field(self.share_input.clone()))
             .child(
@@ -982,7 +983,7 @@ impl CustomizeView {
             .flex_col()
             .gap(crate::ui::sp(10.))
             .child(heading(
-                "Palette",
+                "Color scheme",
                 Some(if custom {
                     "Yours: edit it below"
                 } else {

@@ -703,7 +703,7 @@ impl Shell {
             this.check_limit_alerts(cx);
             this.phone_usage_changed(cx);
         });
-        let session_query = cx.new(|cx| TextInput::new("Search conversations...", cx));
+        let session_query = cx.new(|cx| TextInput::new("Search sessions...", cx));
         let session_query_sub =
             cx.subscribe(&session_query, |_, input, ev: &InputEvent, cx| match ev {
                 InputEvent::Changed => cx.notify(),

@@ -495,7 +495,7 @@ impl Render for CreateEnvDialog {
                             .line_height(px(18.))
                             .text_color(theme::text_subtle())
                             .child(format!(
-                                "An independent worktree of {} with its own sessions, terminals and browser tabs. Uncommitted changes stay where they are.",
+                                "An environment of {}: a git worktree with its own sessions, terminals and browser tabs. Uncommitted changes stay where they are.",
                                 self.project
                             )),
                     )
@@ -650,7 +650,7 @@ impl CommandDialog {
     pub fn setup(current: Option<&str>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         Self::new(
             "Setup script",
-            "Runs in a terminal of every new environment of this project on this computer, right after its worktree is created. Not on servers. Empty disables it.",
+            "Runs in a terminal of every new environment of this project on this computer, right after it is created. Not on servers. Empty disables it.",
             "npm install && cp .env.example .env",
             current,
             window,
@@ -1042,9 +1042,9 @@ impl Render for DeleteEnvDialog {
                     .child(div().text_color(theme::text_muted()).child(
                         match &self.machine {
                             Some(m) => format!(
-                                "This permanently deletes the worktree folder on {m}, everything inside it, and its sessions there."
+                                "This permanently deletes the environment's folder on {m}, everything inside it, and its sessions there."
                             ),
-                            None => "This permanently deletes the worktree folder and everything inside it.".into(),
+                            None => "This permanently deletes the environment's folder and everything inside it.".into(),
                         },
                     ))
                     .child(

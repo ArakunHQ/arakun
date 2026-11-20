@@ -108,6 +108,8 @@ mod usage_history;
 mod usage_view;
 mod voice;
 mod window_error;
+#[cfg(test)]
+mod words_lint;
 #[cfg(feature = "coderlabs")]
 mod xlog;
 mod zoom;

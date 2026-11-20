@@ -628,12 +628,9 @@ impl Shell {
             );
         }
         const KEYS: [(&[&str], &str); 5] = [
-            (&["Ctrl", "K"], "Find anything: sessions, files, commands"),
+            (&["Ctrl", "K"], "The palette: sessions, files, commands"),
             (&["Ctrl", "T"], "New agent session"),
-            (
-                &["Ctrl", "⇧", "N"],
-                "New environment: a worktree on a new branch",
-            ),
+            (&["Ctrl", "⇧", "N"], "New environment on a new branch"),
             (&["Ctrl", "J"], "Show or hide the terminal"),
             (&["Ctrl", ","], "Settings"),
         ];
@@ -665,7 +662,7 @@ impl Shell {
                         .pr(ui::sp(12.))
                         .child(titled(
                             "Mode",
-                            "Dark draws the palette on black, Light on white. It changes as you click.",
+                            "Dark draws the color scheme on black, Light on white. It changes as you click.",
                         ))
                         .child(
                             ui::segmented()

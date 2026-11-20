@@ -90,7 +90,7 @@ pub fn install(cx: &mut App) {
         Menu {
             name: "View".into(),
             items: vec![
-                MenuItem::action("Go to…", shell::QuickSwitch),
+                MenuItem::action("Show Palette", shell::QuickSwitch),
                 MenuItem::separator(),
                 MenuItem::action("Toggle Sidebar", shell::ToggleSidebar),
                 MenuItem::action("Customize…", shell::OpenCustomize),

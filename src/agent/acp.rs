@@ -17,7 +17,7 @@ use super::{
     ToolStatus, str_of, unix_now,
 };
 
-const COMPACTING: &str = "Compacting the conversation…";
+const COMPACTING: &str = "Compacting the session…";
 
 impl Thread {
     /// ACP, connected and with a session.

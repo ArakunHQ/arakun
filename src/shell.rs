@@ -68,6 +68,7 @@ mod sidebar_builder;
 mod site;
 mod subagents;
 mod subnav;
+mod switching;
 #[cfg(feature = "coderlabs")]
 mod tasks;
 #[cfg(feature = "team")]
@@ -285,6 +286,10 @@ pub struct Shell {
     /// Reads in `restoring` an `ensure_live` beat: when one ends, its older
     /// transcript is dropped instead of put back over the newer session.
     restoring_stale: std::collections::HashSet<SharedString>,
+    /// Transcripts read while the pointer rests on their row (`switching`).
+    ahead: std::collections::HashMap<SharedString, switching::Ahead>,
+    /// The thread the pane drew last, to fade in the next (`switching`).
+    shown: RefCell<switching::Shown>,
     active_project: usize,
     panel_tab: PanelTab,
     dock_open: bool,
@@ -896,6 +901,8 @@ impl Shell {
             mention_sources: Default::default(),
             restoring: Default::default(),
             restoring_stale: Default::default(),
+            ahead: Default::default(),
+            shown: Default::default(),
             active_project,
             panel_tab: PanelTab::Sessions,
             dock_open: layout.dock_open,
@@ -3547,13 +3554,26 @@ impl Shell {
                     Some(live) => gpui::AnyView::from(live.view.clone())
                         .cached(gpui::StyleRefinement::default().size_full())
                         .into_any_element(),
-                    None => panel_empty("Connecting…").into_any_element(),
+                    None => switching::render_waiting(&id),
                 };
+                // One pane only: in a split, moving the focus between the
+                // two must not fade either.
+                let alone = self.split_other().is_none();
+                if alone {
+                    self.note_shown(&id, live.is_some());
+                }
                 div()
                     .flex()
                     .flex_col()
                     .size_full()
-                    .child(div().flex_1().min_h_0().child(transcript))
+                    .child(
+                        div()
+                            .relative()
+                            .flex_1()
+                            .min_h_0()
+                            .child(transcript)
+                            .when(alone, |d| d.children(self.render_fade())),
+                    )
                     .when(index == self.composer_tab(), |d| {
                         d.child(
                             div()

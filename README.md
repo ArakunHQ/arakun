@@ -1335,8 +1335,10 @@ forward through tabs, `Ctrl+Cmd+F` toggles full screen, and `Cmd+H`, `Cmd+M` and
   island notice opened over another tab too). While the sheet is closed, `J` / `K`
   only move through the list; while it is open, they open the next item. On a pilot
   card you clicked, `1` to `4` send its ready answers, `E` opens "Other answer…" and
-  `Y` marks a fixed or failed card dealt with; the buttons show their keys, and after
-  an answer the next question is picked. In the comment box, `Enter` sends the
+  `Y` marks a fixed or failed card dealt with, in the queue or the sheet; the buttons
+  show their keys, and after an answer the next question is picked (with the sheet open,
+  only from that pull request's cards). Moving to another pull request lets go of the
+  card. In the comment box, `Enter` sends the
   comment and `/` lists the actions
 
 ## Contributing

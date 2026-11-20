@@ -72,6 +72,16 @@ impl Shell {
                     );
                     return;
                 }
+                if *agent == model::Agent::Cursor {
+                    self.notify(
+                        AlertKind::Warning,
+                        "Connect Cloudflare to Cursor",
+                        "Arakun can't connect Cloudflare's MCP server to Cursor yet. Add it to ~/.cursor/mcp.json.",
+                        Some(Open::Cloudflare),
+                        cx,
+                    );
+                    return;
+                }
                 self.run_in_terminal(
                     &env_path,
                     &cloudflare::mcp_connect_command(*agent, state),

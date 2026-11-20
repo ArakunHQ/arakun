@@ -100,6 +100,7 @@ pub(super) struct QueuedPrompt {
     opencode_settings: Vec<(Setting, String)>,
     codex_settings: Vec<(Setting, String)>,
     devin_settings: Vec<(Setting, String)>,
+    cursor_settings: Vec<(Setting, String)>,
     workers_ai_settings: Vec<(Setting, String)>,
 }
 
@@ -699,6 +700,7 @@ impl Shell {
             },
             codex_settings: env.codex_settings.clone(),
             devin_settings: env.devin_settings.clone(),
+            cursor_settings: env.cursor_settings.clone(),
             workers_ai_settings: env.workers_ai_settings.clone(),
         }
     }
@@ -720,6 +722,7 @@ impl Shell {
         env.opencode_settings = p.opencode_settings;
         env.codex_settings = p.codex_settings;
         env.devin_settings = p.devin_settings;
+        env.cursor_settings = p.cursor_settings;
         env.workers_ai_settings = p.workers_ai_settings;
         let text = crate::agent::attach::move_mentions(&p.text, &p.from, env_path);
         let title = summary(&text);
@@ -980,6 +983,7 @@ impl Shell {
         env.opencode_settings = p.opencode_settings;
         env.codex_settings = p.codex_settings;
         env.devin_settings = p.devin_settings;
+        env.cursor_settings = p.cursor_settings;
         env.workers_ai_settings = p.workers_ai_settings;
         let picks = server_picks(env, p.agent);
         let note = self.rename_notes.remove(env_path);
@@ -1206,6 +1210,7 @@ impl Shell {
             (model::Agent::OpenCode, Some(env)) => opencode_draft(env),
             (model::Agent::Codex, Some(env)) => codex_draft(env),
             (model::Agent::Devin, Some(env)) => devin_draft(env),
+            (model::Agent::Cursor, Some(env)) => cursor_draft(env),
             (model::Agent::WorkersAi, Some(env)) => env.workers_ai_settings.clone(),
             _ => Vec::new(),
         };
@@ -1413,8 +1418,8 @@ impl Shell {
 
     /// Loads Droid's defaults and model list off the main thread; the list is
     /// cached, so Droid is only asked when the cache is missing or old.
-    /// Claude's, OpenCode's, Codex's and Devin's options are cached the same way; the agent
-    /// is only asked when none of its sessions has reported them yet.
+    /// Claude's, OpenCode's, Codex's, Devin's and Cursor's options are cached the same
+    /// way; the agent is only asked when none of its sessions has reported them yet.
     pub(super) fn warm_droid_catalog(&mut self, cx: &mut Context<Self>) {
         let droid = catalog::droid_native();
         cx.spawn(async move |this, cx| {
@@ -1433,6 +1438,9 @@ impl Shell {
                 .await;
             let _ = this.update(cx, |_, cx| cx.notify());
             cx.background_spawn(crate::guard::task(async { catalog::refresh_devin() }))
+                .await;
+            let _ = this.update(cx, |_, cx| cx.notify());
+            cx.background_spawn(crate::guard::task(async { catalog::refresh_cursor() }))
                 .await;
             let _ = this.update(cx, |_, cx| cx.notify());
         })
@@ -1607,10 +1615,13 @@ impl Shell {
                 }
                 Some((current, choices))
             }
-            // Devin's mode and model; it has no reasoning levels.
-            model::Agent::Devin => {
-                let options = catalog::devin_options();
-                let draft = devin_draft(env);
+            // Devin's and Cursor's mode and model; they have no reasoning levels.
+            model::Agent::Devin | model::Agent::Cursor => {
+                let (options, draft) = if agent == model::Agent::Devin {
+                    (catalog::devin_options(), devin_draft(env))
+                } else {
+                    (catalog::cursor_options(), cursor_draft(env))
+                };
                 let o = crate::agent::acp_option(&options, s)?;
                 let (mut current, choices) = crate::agent::acp_setting_options(o, s);
                 if let Some((_, v)) = draft
@@ -1651,6 +1662,7 @@ impl Shell {
             | model::Agent::OpenCode
             | model::Agent::Codex
             | model::Agent::Devin
+            | model::Agent::Cursor
             | model::Agent::WorkersAi => crate::agent::acp_label(s, &current, &options),
         })
     }
@@ -1713,6 +1725,7 @@ impl Shell {
             model::Agent::OpenCode => &mut env.opencode_settings,
             model::Agent::Codex => &mut env.codex_settings,
             model::Agent::Devin => &mut env.devin_settings,
+            model::Agent::Cursor => &mut env.cursor_settings,
             model::Agent::WorkersAi => &mut env.workers_ai_settings,
         };
         put_in_draft(
@@ -1858,6 +1871,7 @@ impl Shell {
                 }
                 model::Agent::Codex => env.codex_settings.retain(|(s, _)| !model_menu(s)),
                 model::Agent::Devin => env.devin_settings.retain(|(s, _)| !model_menu(s)),
+                model::Agent::Cursor => env.cursor_settings.retain(|(s, _)| !model_menu(s)),
                 model::Agent::WorkersAi => env.workers_ai_settings.retain(|(s, _)| !model_menu(s)),
             }
         }
@@ -1877,11 +1891,15 @@ impl Shell {
                         .filter(|(_, v)| !v.is_empty())
                         .collect()
                 }
-                model::Agent::Claude | model::Agent::Codex | model::Agent::Devin => {
+                model::Agent::Claude
+                | model::Agent::Codex
+                | model::Agent::Devin
+                | model::Agent::Cursor => {
                     let options = match agent {
                         model::Agent::Claude => catalog::claude_options(),
                         model::Agent::Codex => catalog::codex_options(),
-                        _ => catalog::devin_options(),
+                        model::Agent::Devin => catalog::devin_options(),
+                        _ => catalog::cursor_options(),
                     };
                     [Setting::Model, Setting::Effort, Setting::Fast]
                         .into_iter()
@@ -2246,6 +2264,7 @@ impl Shell {
                 AgentKind::OpenCode => model::Agent::OpenCode,
                 AgentKind::Codex => model::Agent::Codex,
                 AgentKind::Devin => model::Agent::Devin,
+                AgentKind::Cursor => model::Agent::Cursor,
                 AgentKind::WorkersAi => model::Agent::WorkersAi,
             };
             let mut session = Session::new(new_session_id(), d.title.clone().into(), agent);
@@ -2508,6 +2527,12 @@ pub(super) fn devin_draft(env: &model::Environment) -> Vec<(Setting, String)> {
     offered_draft(&env.devin_settings, &catalog::devin_options())
 }
 
+/// The Cursor settings an environment's next session starts with, without a
+/// model Cursor no longer offers.
+pub(super) fn cursor_draft(env: &model::Environment) -> Vec<(Setting, String)> {
+    offered_draft(&env.cursor_settings, &catalog::cursor_options())
+}
+
 /// `picked`, the model first, without a model the agent no longer offers.
 fn offered_draft(
     picked: &[(Setting, String)],
@@ -2589,6 +2614,7 @@ pub(super) fn agent_draft(env: &model::Environment, agent: model::Agent) -> &[(S
         model::Agent::OpenCode => &env.opencode_settings,
         model::Agent::Codex => &env.codex_settings,
         model::Agent::Devin => &env.devin_settings,
+        model::Agent::Cursor => &env.cursor_settings,
         model::Agent::WorkersAi => &env.workers_ai_settings,
     }
 }

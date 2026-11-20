@@ -35,7 +35,7 @@ Written in Rust with [GPUI](https://github.com/zed-industries/zed/tree/main/crat
 
 ## Why Arakun
 
-- **Many agents, one place.** Claude Code, Droid, OpenCode, Codex, Devin and Workers AI
+- **Many agents, one place.** Claude Code, Droid, OpenCode, Codex, Devin, Cursor and Workers AI
   sessions side by side. Give each task its own git worktree so the agents don't step on each
   other.
 - **The agents can use the app.** The `arakun` command line lets an agent open pages,
@@ -186,6 +186,7 @@ copy of it, rename it back, and start a version that can read it.
 | OpenCode | The `opencode` CLI |
 | Codex | Through the ACP adapter `@agentclientprotocol/codex-acp`, which brings its own `codex` |
 | Devin | The `devin` CLI (`devin acp`) |
+| Cursor | The Cursor CLI (`cursor-agent acp`) |
 | Cloudflare Workers AI | A tool loop Arakun runs itself against the Workers AI API |
 
 The Claude Code adapter runs the Claude Code binary bundled with it (the `claude` on
@@ -797,6 +798,11 @@ Arakun does not bundle the agents. Install the ones you want to use:
   with `devin auth login` (Settings › Devin runs it for you) or `WINDSURF_API_KEY` in
   the environment. Arakun starts `devin acp`; `ARAKUN_DEVIN_BIN` picks another `devin`
   and `ARAKUN_DEVIN_ACP` runs another command instead.
+- Cursor: the [Cursor CLI](https://cursor.com/docs/cli/installation), signed in with
+  `cursor-agent login` (Settings › Cursor runs it for you) or `CURSOR_API_KEY` in the
+  environment. Arakun starts `cursor-agent acp`; `ARAKUN_CURSOR_BIN` picks another
+  `cursor-agent` and `ARAKUN_CURSOR_ACP` runs another command instead. Cursor sessions
+  use the MCP servers in `~/.cursor/mcp.json` and the project's `.cursor/mcp.json`.
 - Workers AI: a Cloudflare API token with Workers AI access, either stored through
   `opencode auth login` or set as `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`.
 
@@ -1098,7 +1104,7 @@ arakun-server service install   # keep it running; see Keep it running
 
 `arakun-server help` lists them all.
 
-- **Agents.** Claude Code, Droid, OpenCode, Codex, Devin and Workers AI, as in the app. Sign in to
+- **Agents.** Claude Code, Droid, OpenCode, Codex, Devin, Cursor and Workers AI, as in the app. Sign in to
   each one on that machine first: the server uses its logins and its permission
   settings. An agent set to allow everything there asks for nothing here either.
   Claude Code and Codex also need their ACP adapter. The server installs a missing one

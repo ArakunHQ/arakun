@@ -1313,7 +1313,7 @@ fn model_name(id: &str) -> String {
 }
 
 /// Which hue each agent's series and share bar wear: Anthropic's clay for
-/// Claude Code, a quiet light gray for Droid. Darker grays keep Devin,
+/// Claude Code, a quiet light gray for Droid. Darker grays keep Cursor, Devin,
 /// OpenCode and Codex apart.
 fn agent_color(agent: AgentKind) -> Hsla {
     match agent {
@@ -1322,6 +1322,7 @@ fn agent_color(agent: AgentKind) -> Hsla {
         AgentKind::OpenCode => theme::mix(0.45),
         AgentKind::Codex => theme::mix(0.3),
         AgentKind::Devin => theme::mix(0.2),
+        AgentKind::Cursor => theme::mix(0.58),
         AgentKind::WorkersAi => gpui::rgb(0xf38020).into(),
     }
 }

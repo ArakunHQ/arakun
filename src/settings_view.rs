@@ -32,6 +32,8 @@ pub enum SettingsEvent {
     CodexSignOut,
     DevinSignIn,
     DevinSignOut,
+    CursorSignIn,
+    CursorSignOut,
     OpenUsage,
     /// Close Settings and open the Customize panel.
     OpenCustomize,
@@ -119,6 +121,7 @@ enum Section {
     Droid,
     OpenCode,
     Devin,
+    Cursor,
 }
 
 impl Section {
@@ -138,6 +141,7 @@ impl Section {
         Section::Droid,
         Section::OpenCode,
         Section::Devin,
+        Section::Cursor,
     ];
 
     fn group(self) -> Group {
@@ -156,6 +160,7 @@ impl Section {
             Section::Droid => Some(AgentKind::Droid),
             Section::OpenCode => Some(AgentKind::OpenCode),
             Section::Devin => Some(AgentKind::Devin),
+            Section::Cursor => Some(AgentKind::Cursor),
             _ => None,
         }
     }
@@ -176,6 +181,7 @@ impl Section {
             Section::Droid => "Droid",
             Section::OpenCode => "OpenCode",
             Section::Devin => "Devin",
+            Section::Cursor => "Cursor",
         }
     }
 
@@ -195,7 +201,8 @@ impl Section {
             | Section::Codex
             | Section::Droid
             | Section::OpenCode
-            | Section::Devin => "bot",
+            | Section::Devin
+            | Section::Cursor => "bot",
         }
     }
 
@@ -221,6 +228,7 @@ impl Section {
             Section::Droid => "Your Factory plan, and what Droid loads in the visible environment.",
             Section::OpenCode => "The providers OpenCode signs in to, OpenCode Go among them.",
             Section::Devin => "Devin's sign-in: your Devin account or a Windsurf API key.",
+            Section::Cursor => "Cursor's sign-in: your Cursor account or a Cursor API key.",
         }
     }
 
@@ -265,6 +273,7 @@ impl Section {
             }
             Section::OpenCode => "opencode go zen provider api key models sign in logout",
             Section::Devin => "devin cognition windsurf api key sign in logout",
+            Section::Cursor => "cursor cursor-agent api key sign in logout",
         }
     }
 
@@ -415,6 +424,10 @@ pub struct SettingsDialog {
     devin: bool,
     /// The variable with Devin's API key, when the environment has one.
     devin_env: Option<&'static str>,
+    /// Whether `cursor-agent login` has signed in.
+    cursor: bool,
+    /// The variable with Cursor's API key, when the environment has one.
+    cursor_env: Option<&'static str>,
     input: Entity<TextInput>,
     section: Section,
     voice: voice::Settings,
@@ -586,6 +599,8 @@ impl SettingsDialog {
             codex_env: crate::agent::codex_env_key(),
             devin: crate::agent::devin_signed_in(),
             devin_env: crate::agent::devin_env_key(),
+            cursor: crate::agent::cursor_signed_in(),
+            cursor_env: crate::agent::cursor_env_key(),
             input,
             section,
             voice,
@@ -868,6 +883,16 @@ impl SettingsDialog {
         }
     }
 
+    /// Cursor's own sign-in comes first; a key only in the environment is named
+    /// by its variable, never shown.
+    fn cursor_status(&self) -> String {
+        match (self.cursor, self.cursor_env) {
+            (true, _) => "Signed in".into(),
+            (false, Some(var)) => format!("API key · {var}"),
+            (false, None) => "Not signed in".into(),
+        }
+    }
+
     /// Whether an agent's section gets the green dot: it can run, through a
     /// sign-in or a key. `false` for the other sections.
     fn signed_in(&self, s: Section) -> bool {
@@ -877,6 +902,7 @@ impl SettingsDialog {
             Section::Droid => self.droid,
             Section::OpenCode => !self.opencode.is_empty(),
             Section::Devin => self.devin || self.devin_env.is_some(),
+            Section::Cursor => self.cursor || self.cursor_env.is_some(),
             _ => false,
         }
     }
@@ -1299,6 +1325,35 @@ impl SettingsDialog {
                         )
                         .into_any_element(),
                         no_sign_in_row(AgentKind::Devin),
+                    ],
+                )])
+            }
+            Section::Cursor => {
+                let signed_in = self.cursor;
+                stack(vec![titled(
+                    "Account",
+                    vec![
+                        row(
+                            self.cursor_status(),
+                            if signed_in {
+                                "The same sign-in the cursor-agent CLI uses. Arakun only checks that it is there."
+                            } else if self.cursor_env.is_some() {
+                                "Sessions use the API key in the environment. Sign in to use your Cursor account instead."
+                            } else {
+                                "Runs cursor-agent login in a terminal; approve the sign-in in the browser. CURSOR_API_KEY works too."
+                            },
+                            if signed_in {
+                                ui::button("set-cursor-out", "Sign out", ButtonKind::Danger, true)
+                                    .on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::CursorSignOut)))
+                                    .into_any_element()
+                            } else {
+                                ui::button("set-cursor-in", "Sign in", ButtonKind::Outline, true)
+                                    .on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::CursorSignIn)))
+                                    .into_any_element()
+                            },
+                        )
+                        .into_any_element(),
+                        no_sign_in_row(AgentKind::Cursor),
                     ],
                 )])
             }

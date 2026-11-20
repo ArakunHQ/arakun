@@ -62,7 +62,9 @@ impl Shell {
     }
 
     /// A terminal in the visible environment, optionally running `command`
-    /// instead of an interactive shell.
+    /// instead of an interactive shell. With no project, `command` runs in a
+    /// terminal of the home folder in the welcome's place: a sign-in needs
+    /// no project.
     pub(super) fn spawn_terminal_command(
         &mut self,
         command: Option<Vec<String>>,
@@ -71,6 +73,9 @@ impl Shell {
         cx: &mut Context<Self>,
     ) {
         if !self.has_projects() {
+            if let Some(command) = command {
+                self.spawn_terminal_alone(command, window, cx);
+            }
             return;
         }
         let cwd = self.env().path.clone();
@@ -86,8 +91,7 @@ impl Shell {
 
     /// Opens `kind`'s sign-in in a terminal. Claude Code's and Codex's CLIs
     /// come with their adapters, so before any session ran the adapter is
-    /// installed first, off the main thread. A notice says why when nothing
-    /// can open: terminals need a project.
+    /// installed first, off the main thread.
     pub(super) fn sign_in(
         &mut self,
         kind: crate::agent::AgentKind,
@@ -102,10 +106,7 @@ impl Shell {
             crate::agent::AgentKind::Claude | crate::agent::AgentKind::Codex
         );
         if cmd.is_some() || !installs {
-            self.run_account_command(&title, "sign-in", kind, cmd, window, cx);
-            return;
-        }
-        if !self.terminal_possible(&title, "sign-in", cx) {
+            self.run_account_command(&title, kind, cmd, window, cx);
             return;
         }
         let what = match crate::agent::adapter_install(kind) {
@@ -127,10 +128,6 @@ impl Shell {
                 }))
                 .await;
             let _ = this.update_in(cx, |this, window, cx| {
-                // The last project may have closed during the install.
-                if installed.is_ok() && !this.terminal_possible(&title, "sign-in", cx) {
-                    return;
-                }
                 match installed.map(|()| crate::agent::login_command(kind)) {
                     Ok(Some(cmd)) => this.spawn_terminal_command(Some(cmd), true, window, cx),
                     Ok(None) => this.notify(
@@ -162,7 +159,7 @@ impl Shell {
     ) {
         let title = format!("Sign out of {}", kind.label());
         let cmd = crate::agent::logout_command(kind);
-        self.run_account_command(&title, "sign-out", kind, cmd, window, cx);
+        self.run_account_command(&title, kind, cmd, window, cx);
     }
 
     /// Runs one of `kind`'s account commands in a terminal. `cmd` is `None`
@@ -171,15 +168,11 @@ impl Shell {
     pub(super) fn run_account_command(
         &mut self,
         title: &str,
-        what: &str,
         kind: crate::agent::AgentKind,
         cmd: Option<Vec<String>>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !self.terminal_possible(title, what, cx) {
-            return;
-        }
         match cmd {
             Some(cmd) => self.spawn_terminal_command(Some(cmd), true, window, cx),
             // "View" on the notice opens the page that says how to install it.
@@ -193,15 +186,68 @@ impl Shell {
         }
     }
 
-    /// Whether a terminal can open: they need a project. If not, a notice
-    /// titled `title` says so; `what` names what would have run.
-    fn terminal_possible(&mut self, title: &str, what: &str, cx: &mut Context<Self>) -> bool {
-        if self.has_projects() {
-            return true;
+    /// Runs `command` in a terminal of the home folder, shown in the
+    /// welcome's place, replacing one already there. When it exits, the
+    /// welcome comes back; when a project is added first, it moves to that
+    /// project's dock (`adopt_terminal_alone`).
+    fn spawn_terminal_alone(
+        &mut self,
+        command: Vec<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let home = crate::platform::home();
+        let terminal = match Terminal::spawn(home.clone(), Some(command), cx) {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!(
+                    "arakun: could not start a shell in {}: {e:#}",
+                    home.display()
+                );
+                return;
+            }
+        };
+        let view = cx.new(|cx| TerminalView::new(terminal.clone(), window, cx));
+        let events = cx.subscribe_in(
+            &terminal,
+            window,
+            |this, terminal, ev: &TerminalEvent, _, cx| {
+                let ours = this
+                    .terminal_alone
+                    .as_ref()
+                    .is_some_and(|a| a.terminal == *terminal);
+                match ev {
+                    TerminalEvent::Exited if ours => {
+                        this.terminal_alone = None;
+                        cx.notify();
+                    }
+                    TerminalEvent::TitleChanged => cx.notify(),
+                    _ => {}
+                }
+            },
+        );
+        window.focus(&view.focus_handle(cx), cx);
+        self.terminal_alone = Some(TerminalAlone {
+            terminal,
+            view,
+            _events: events,
+        });
+        cx.notify();
+    }
+
+    /// A project was added while a terminal showed in the welcome's place:
+    /// it goes on in that project's dock, so a sign-in isn't cut short.
+    pub(super) fn adopt_terminal_alone(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.has_projects() {
+            return;
         }
-        let body = format!("Open a project first: the {what} runs in one of its terminals.");
-        self.notify(crate::island::AlertKind::Warning, title, &body, None, cx);
-        false
+        let Some(alone) = self.terminal_alone.take() else {
+            return;
+        };
+        let path = self.env().path.clone();
+        if !crate::model::Remote::is_path(&path) {
+            self.add_terminal(&path, alone.terminal, true, window, cx);
+        }
     }
 
     /// Runs `command` in a new terminal of `env_path`; it prints `[exit N]`
@@ -808,5 +854,18 @@ impl Shell {
             })
             .child(header)
             .when(dock_open, |d| d.child(body).child(handle))
+    }
+}
+
+/// A terminal shown in the welcome's place, for a sign-in with no project.
+pub(super) struct TerminalAlone {
+    pub(super) terminal: Entity<Terminal>,
+    view: Entity<TerminalView>,
+    _events: Subscription,
+}
+
+impl TerminalAlone {
+    pub(super) fn view(&self) -> &Entity<TerminalView> {
+        &self.view
     }
 }

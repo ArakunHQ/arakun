@@ -433,7 +433,8 @@ after a week).
   in `DOOP_KEY` or `~/.config/arakun/doop_key`). The form signs in to Doop
   (doop.design), or to a self-hosted instance when you pick Self-hosted and type its
   address; every sign-in stays saved in
-  `~/.local/share/arakun/doop/sessions.json` and the header switches between them. The
+  `~/.local/share/arakun/doop/sessions.json`
+  (`%LOCALAPPDATA%\arakun\doop\sessions.json` on Windows) and the header switches between them. The
   tab reads through the instance's MCP endpoint (`<instance>/mcp`), so a canvas an
   instance doesn't list can be added by its link. Accounts › Agents adds that MCP server
   to Claude Code or Droid (as `doop`, or `doop-<host>` for a self-hosted instance), so

@@ -358,16 +358,25 @@ pub fn sign_in_with_key(host: &str, key: &str) -> Result<Session, Error> {
         },
         added_at: crate::model::unix_now(),
     };
-    match post(host, key, &request("tools/list", json!({})))? {
-        (200..=299, _) => Ok(named(s)),
-        (401 | 403, _) => Err(Error::SignedOut(format!(
+    let (status, text) = post(host, key, &request("tools/list", json!({})))?;
+    check_key(host, status, &text)?;
+    Ok(named(s))
+}
+
+/// Whether the answer to `tools/list` shows a key the instance takes: a
+/// result with its tools. A page or a JSON-RPC error is not a sign-in.
+fn check_key(host: &str, status: u16, text: &str) -> Result<(), Error> {
+    match answer(host, status, text) {
+        Ok(r) if r["tools"].is_array() => Ok(()),
+        Ok(_) => Err(Error::Failed(format!(
+            "{} didn't list its tools. Is this a Doop instance?",
+            host_label(host)
+        ))),
+        Err(Error::SignedOut(_)) => Err(Error::SignedOut(format!(
             "{} refused this key.",
             host_label(host)
         ))),
-        (status, _) => Err(Error::Failed(format!(
-            "{} answered {status}. Is this a Doop instance?",
-            host_label(host)
-        ))),
+        Err(e) => Err(e),
     }
 }
 
@@ -395,6 +404,43 @@ fn named(mut s: Session) -> Session {
     s
 }
 
+/// One sign-in under way. Canceling and saving both claim it, and only the
+/// first wins: a canceled sign-in is never saved, and one being saved can no
+/// longer be canceled.
+#[derive(Debug, Default)]
+pub struct Attempt(std::sync::atomic::AtomicU8);
+
+impl Attempt {
+    const RUNNING: u8 = 0;
+    const CANCELED: u8 = 1;
+    const SAVING: u8 = 2;
+
+    fn claim(&self, state: u8) -> bool {
+        use std::sync::atomic::Ordering::SeqCst;
+        self.0
+            .compare_exchange(Self::RUNNING, state, SeqCst, SeqCst)
+            .is_ok()
+    }
+
+    /// False when the sign-in is already being saved.
+    pub fn cancel(&self) -> bool {
+        self.claim(Self::CANCELED)
+    }
+
+    pub fn canceled(&self) -> bool {
+        self.0.load(std::sync::atomic::Ordering::SeqCst) == Self::CANCELED
+    }
+
+    /// Saves `s` unless the sign-in was canceled first.
+    pub fn save(&self, s: Session) -> Result<Session, String> {
+        if !self.claim(Self::SAVING) {
+            return Err("The sign-in was canceled.".into());
+        }
+        save_session(s.clone())?;
+        Ok(s)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Calls.
 
@@ -405,6 +451,10 @@ pub(crate) fn agent() -> &'static ureq::Agent {
         ureq::Agent::config_builder()
             .timeout_global(Some(Duration::from_secs(30)))
             .http_status_as_error(false)
+            // A redirect could lead off the instance, to an address the
+            // checks on the instance never saw: the answer is taken as it is.
+            .max_redirects(0)
+            .max_redirects_will_error(false)
             .user_agent(concat!("arakun/", env!("ARAKUN_VERSION")))
             .build()
             .into()
@@ -510,27 +560,85 @@ fn answer(host: &str, status: u16, text: &str) -> Result<Value, Error> {
     }
 }
 
+/// What `token` does about a saved sign-in.
+#[derive(Debug, PartialEq)]
+enum Plan {
+    Use(String),
+    /// Trade these tokens for new ones first.
+    Renew(oauth::Tokens),
+    /// The sign-in was removed while the call was on its way.
+    Gone,
+}
+
+/// A token is traded for a new one a minute before it runs out, or when the
+/// instance just refused it (`refused`). Without a refresh token there is
+/// nothing to trade: it is used for as long as it lasts.
+fn plan(saved: Option<&Session>, refused: Option<&str>, now: u64) -> Plan {
+    let Some(saved) = saved else {
+        return Plan::Gone;
+    };
+    let Credential::OAuth { tokens } = &saved.credential else {
+        return Plan::Use(saved.credential.bearer().to_string());
+    };
+    let early = if tokens.refresh.is_some() { 60 } else { 0 };
+    let spent = tokens.expires_at <= now + early;
+    if spent || refused == Some(tokens.access.as_str()) {
+        Plan::Renew(tokens.clone())
+    } else {
+        Plan::Use(tokens.access.clone())
+    }
+}
+
+fn saved_session(id: &str) -> Option<Session> {
+    let _g = store_lock();
+    Store::read_from(&store_file())
+        .sessions
+        .into_iter()
+        .find(|o| o.id == id)
+}
+
+/// One renewal at a time for each sign-in, so two calls don't spend the same
+/// refresh token. The store's own lock is never held while the network is.
+fn renew_lock(id: &str) -> std::sync::Arc<Mutex<()>> {
+    static LOCKS: OnceLock<Mutex<std::collections::HashMap<String, std::sync::Arc<Mutex<()>>>>> =
+        OnceLock::new();
+    LOCKS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .entry(id.to_string())
+        .or_default()
+        .clone()
+}
+
 /// The token to send as `s`: the saved one, traded for a new one first when
 /// it ran out or when the instance just refused `refused`.
 fn token(s: &Session, refused: Option<&str>) -> Result<String, Error> {
+    let gone = || Error::SignedOut("This Doop sign-in was removed.".to_string());
+    let lock = renew_lock(&s.id);
+    let _renewing = lock.lock().unwrap_or_else(|e| e.into_inner());
+    // Another call may have traded the token since `s` was read.
+    let old = match plan(
+        saved_session(&s.id).as_ref(),
+        refused,
+        crate::model::unix_now(),
+    ) {
+        Plan::Use(token) => return Ok(token),
+        Plan::Gone => return Err(gone()),
+        Plan::Renew(tokens) => tokens,
+    };
+    let fresh = oauth::refresh(&old)?;
+    let access = fresh.access.clone();
     let _g = store_lock();
     let mut store = Store::read_from(&store_file());
-    // Another call may have traded the token since `s` was read.
-    let saved = store
-        .sessions
-        .iter()
-        .find(|o| o.id == s.id)
-        .cloned()
-        .unwrap_or_else(|| s.clone());
-    let Credential::OAuth { tokens } = &saved.credential else {
-        return Ok(saved.credential.bearer().to_string());
+    // Removed, or signed in anew, while the instance answered: the new
+    // tokens belong to a sign-in that is no longer there.
+    let Some(saved) = store.sessions.iter().find(|o| o.id == s.id).cloned() else {
+        return Err(gone());
     };
-    let spent = tokens.expires_at <= crate::model::unix_now() + 60;
-    if !spent && refused != Some(tokens.access.as_str()) {
-        return Ok(tokens.access.clone());
+    if saved.credential != (Credential::OAuth { tokens: old }) {
+        return Ok(saved.credential.bearer().to_string());
     }
-    let fresh = oauth::refresh(tokens)?;
-    let access = fresh.access.clone();
     store.upsert(Session {
         credential: Credential::OAuth { tokens: fresh },
         ..saved
@@ -729,21 +837,54 @@ pub struct Canvas {
     pub fetched_at: u64,
 }
 
+/// Which frames of a canvas show.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Shown {
+    All,
+    /// The frames on the page with this id.
+    Page(String),
+    /// The frames on no page the canvas names.
+    Loose,
+}
+
 impl Canvas {
-    /// The frames on `page`, or all of them without one.
-    pub fn frames_on(&self, page: Option<&str>) -> Vec<&Frame> {
+    fn on_a_page(&self, f: &Frame) -> bool {
+        f.page
+            .as_ref()
+            .is_some_and(|id| self.pages.iter().any(|p| &p.id == id))
+    }
+
+    pub fn frames_on(&self, shown: &Shown) -> Vec<&Frame> {
         self.frames
             .iter()
-            .filter(|f| page.is_none() || f.page.as_deref() == page)
+            .filter(|f| match shown {
+                Shown::All => true,
+                Shown::Page(id) => f.page.as_ref() == Some(id),
+                Shown::Loose => !self.on_a_page(f),
+            })
             .collect()
     }
 
-    /// The pages that hold a frame, in their order.
-    pub fn pages_in_use(&self) -> Vec<&Page> {
-        self.pages
+    /// The groups to pick from, each with its name and how many frames it
+    /// holds: the pages that hold a frame, in their order, then "Other" for
+    /// frames on no known page, so none is ever hidden. Empty when the
+    /// canvas has no pages: all its frames show at once.
+    pub fn groups(&self) -> Vec<(Shown, String, usize)> {
+        let mut out: Vec<(Shown, String, usize)> = self
+            .pages
             .iter()
-            .filter(|p| self.frames.iter().any(|f| f.page.as_ref() == Some(&p.id)))
-            .collect()
+            .map(|p| {
+                let shown = Shown::Page(p.id.clone());
+                let n = self.frames_on(&shown).len();
+                (shown, p.name.clone(), n)
+            })
+            .filter(|(_, _, n)| *n > 0)
+            .collect();
+        let loose = self.frames_on(&Shown::Loose).len();
+        if !out.is_empty() && loose > 0 {
+            out.push((Shown::Loose, "Other".into(), loose));
+        }
+        out
     }
 }
 
@@ -929,7 +1070,7 @@ pub fn pins(host: &str) -> Vec<CanvasRef> {
 }
 
 /// Adds, renames (`Some`) or removes (`None`) a canvas added by link.
-pub fn set_pin(host: &str, id: &str, pin: Option<CanvasRef>) {
+pub fn set_pin(host: &str, id: &str, pin: Option<CanvasRef>) -> Result<(), String> {
     let _g = store_lock();
     let mut all = read_pins();
     let list = all.entry(host.to_string()).or_default();
@@ -938,35 +1079,39 @@ pub fn set_pin(host: &str, id: &str, pin: Option<CanvasRef>) {
     if list.is_empty() {
         all.remove(host);
     }
-    if let Ok(json) = serde_json::to_vec_pretty(&all) {
-        let _ = crate::durable::write(&pins_file(), &json);
-    }
+    let json = serde_json::to_vec_pretty(&all).map_err(|e| e.to_string())?;
+    crate::durable::write(&pins_file(), &json)
+        .map_err(|e| format!("Couldn't save the canvas list: {e}"))
 }
 
 // ---------------------------------------------------------------------------
 // Renders.
 
-fn thumb_dir(host: &str) -> PathBuf {
+/// The folder of one sign-in's renders. An instance may show a frame to one
+/// account and not to another, so no two sign-ins share pictures.
+fn thumb_dir(s: &Session) -> PathBuf {
+    let digest = sha2::Sha256::digest(s.id.as_bytes());
+    let mark: String = digest.iter().take(6).map(|b| format!("{b:02x}")).collect();
     crate::platform::app_dir()
         .join("cache")
         .join("doop")
-        .join(file_safe(host_label(host)))
+        .join(format!("{}-{mark}", file_safe(host_label(&s.host))))
 }
 
 /// Where a frame's render is kept. Its version is in the name, so a changed
 /// frame is a new file and the old picture is never shown for it.
-pub fn thumb_path(host: &str, frame: &Frame) -> PathBuf {
+pub fn thumb_path(s: &Session, frame: &Frame) -> PathBuf {
     let name = match &frame.version {
         Some(v) => format!("{}@{}.png", file_safe(&frame.id), file_safe(v)),
         None => format!("{}.png", file_safe(&frame.id)),
     };
-    thumb_dir(host).join(name)
+    thumb_dir(s).join(name)
 }
 
 /// A frame's render already on disk, and whether it is due for a new
 /// download: never when the frame says its version, after a day otherwise.
-pub fn cached_thumb(host: &str, frame: &Frame) -> Option<(PathBuf, bool)> {
-    let path = thumb_path(host, frame);
+pub fn cached_thumb(s: &Session, frame: &Frame) -> Option<(PathBuf, bool)> {
+    let path = thumb_path(s, frame);
     let modified = std::fs::metadata(&path).ok()?.modified().ok()?;
     let due = frame.version.is_none()
         && std::time::SystemTime::now()
@@ -1046,7 +1191,7 @@ pub fn download_thumb(s: &Session, tools: &[Tool], frame: &Frame) -> Result<Path
         })
     };
     let bytes = get_image(&url, None).or_else(signed).ok_or("no render")?;
-    let path = thumb_path(&s.host, frame);
+    let path = thumb_path(s, frame);
     crate::durable::write(&path, &shrink(bytes)).map_err(|e| e.to_string())?;
     drop_old_thumbs(&path, frame);
     Ok(path)
@@ -1059,16 +1204,29 @@ pub fn download_thumb(s: &Session, tools: &[Tool], frame: &Frame) -> Result<Path
 pub const AGENTS: [AgentKind; 2] = [AgentKind::Claude, AgentKind::Droid];
 
 /// What the agents call the server: `doop`, or `doop-design-acme-dev` for a
-/// self-hosted instance, so several can sit side by side.
+/// self-hosted instance, so several can sit side by side. No two addresses
+/// share a name: a dot is `-`, a hyphen `--` and the port's colon `_`.
 pub fn server_name(host: &str) -> String {
     if host == DEFAULT_HOST {
         return "doop".into();
     }
-    let slug: String = host_label(host)
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-        .collect();
-    format!("doop-{}", slug.trim_matches('-'))
+    let mut slug = String::new();
+    for c in host_label(host).chars() {
+        match c {
+            '.' => slug.push('-'),
+            '-' => slug.push_str("--"),
+            ':' => slug.push('_'),
+            c if c.is_ascii_alphanumeric() => slug.push(c),
+            _ => {}
+        }
+    }
+    // Plain http is another address than https on the same host.
+    let plain = if host.starts_with("http://") {
+        "http-"
+    } else {
+        ""
+    };
+    format!("doop-{plain}{slug}")
 }
 
 /// The server in `config` (Claude Code's `~/.claude.json`, Droid's
@@ -1194,11 +1352,38 @@ mod tests {
             page: None,
             version: version.map(str::to_string),
         };
-        let path = thumb_path("https://d.lan:8443", &frame("../../etc/passwd", None));
+        let who = |id: &str, host: &str| Session {
+            id: id.into(),
+            host: host.into(),
+            email: String::new(),
+            name: String::new(),
+            credential: Credential::AgentKey { key: "k".into() },
+            added_at: 0,
+        };
+        let a = who("https://d.lan:8443#a", "https://d.lan:8443");
+        let path = thumb_path(&a, &frame("../../etc/passwd", None));
         assert_eq!(path.file_name().unwrap(), ".._.._etc_passwd.png");
-        assert!(path.parent().unwrap().ends_with("doop/d.lan_8443"));
-        let path = thumb_path("https://d.lan", &frame("Nxj47aWtQb", Some("1794856326580")));
+        let dir = path
+            .parent()
+            .unwrap()
+            .file_name()
+            .unwrap()
+            .to_string_lossy();
+        assert!(
+            dir.starts_with("d.lan_8443-")
+                && path
+                    .parent()
+                    .unwrap()
+                    .parent()
+                    .unwrap()
+                    .ends_with("cache/doop")
+        );
+        let cover = frame("Nxj47aWtQb", Some("1794856326580"));
+        let path = thumb_path(&a, &cover);
         assert_eq!(path.file_name().unwrap(), "Nxj47aWtQb@1794856326580.png");
+        // Another account on the same instance never reads this one's renders.
+        let b = who("https://d.lan:8443#b", "https://d.lan:8443");
+        assert_ne!(thumb_path(&b, &cover), path);
     }
 
     #[test]
@@ -1365,7 +1550,8 @@ mod tests {
             ]
         );
         assert!(c.pages.is_empty());
-        assert_eq!(c.frames_on(None).len(), 2);
+        assert_eq!(c.frames_on(&Shown::All).len(), 2);
+        assert!(c.groups().is_empty());
         let nested = json!({"canvas": {"title": "App UI"}, "frames": [{"frameId": "f1"}]});
         let c = parse_canvas(&nested, None, "x", 0);
         assert_eq!(c.name, "App UI");
@@ -1410,14 +1596,33 @@ mod tests {
         assert_eq!(c.frames[0].page.as_deref(), Some("p2"));
         assert_eq!(c.frames[0].version.as_deref(), Some("1794856326580"));
         assert_eq!(c.frames[1].version.as_deref(), Some("20261116T191206581Z"));
-        let used: Vec<&str> = c.pages_in_use().iter().map(|p| p.name.as_str()).collect();
-        assert_eq!(used, ["Brand book", "Components"]);
+        let groups = c.groups();
+        assert_eq!(
+            groups,
+            vec![
+                (Shown::Page("p1".into()), "Brand book".to_string(), 1),
+                (Shown::Page("p2".into()), "Components".to_string(), 1),
+            ]
+        );
         let on: Vec<&str> = c
-            .frames_on(Some("p1"))
+            .frames_on(&groups[0].0)
             .iter()
             .map(|f| f.name.as_str())
             .collect();
         assert_eq!(on, ["01 Cover"]);
+        // A frame on no known page gets a group of its own, never hidden.
+        let mut c = c;
+        c.frames[1].page = None;
+        c.frames.push(Frame {
+            page: Some("gone".into()),
+            ..c.frames[0].clone()
+        });
+        let names: Vec<(String, usize)> = c.groups().into_iter().map(|(_, n, k)| (n, k)).collect();
+        assert_eq!(
+            names,
+            [("Components".to_string(), 1), ("Other".to_string(), 2)]
+        );
+        assert_eq!(c.frames_on(&Shown::Loose).len(), 2);
         // The text alone is enough.
         let c = parse_canvas(&text, None, "bnj8ZjYM5d", 0);
         assert_eq!((c.pages.len(), c.frames.len()), (3, 2));
@@ -1456,8 +1661,14 @@ mod tests {
         );
         assert_eq!(
             server_name("https://design.acme.dev:8443"),
-            "doop-design-acme-dev-8443"
+            "doop-design-acme-dev_8443"
         );
+        // Addresses that differ only in punctuation or scheme keep apart.
+        assert_ne!(
+            server_name("https://design-acme.example"),
+            server_name("https://design.acme.example")
+        );
+        assert_eq!(server_name("http://doop.lan"), "doop-http-doop-lan");
         assert_eq!(
             connect_command(AgentKind::Claude, "https://d.acme.dev", false).unwrap(),
             "claude mcp add --scope user --transport http doop-d-acme-dev https://d.acme.dev/mcp && claude /mcp"
@@ -1477,5 +1688,92 @@ mod tests {
             Some("design")
         );
         assert_eq!(server_in(&config, DEFAULT_HOST), None);
+    }
+
+    #[test]
+    fn a_key_is_only_saved_when_the_instance_lists_its_tools() {
+        let h = "https://d.acme.dev";
+        let ok = r#"{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}"#;
+        assert_eq!(check_key(h, 200, ok), Ok(()));
+        let rpc_error = r#"{"jsonrpc":"2.0","id":1,"error":{"message":"Bad key"}}"#;
+        assert_eq!(
+            check_key(h, 200, rpc_error),
+            Err(Error::Failed("Bad key".into()))
+        );
+        assert!(matches!(
+            check_key(h, 200, "<!doctype html>"),
+            Err(Error::Failed(_))
+        ));
+        let other = r#"{"jsonrpc":"2.0","id":1,"result":{"ok":true}}"#;
+        assert!(matches!(check_key(h, 200, other), Err(Error::Failed(m)) if m.contains("tools")));
+        assert!(
+            matches!(check_key(h, 401, "{}"), Err(Error::SignedOut(m)) if m.contains("refused this key"))
+        );
+        // A redirect is not followed, so it is not a sign-in either.
+        assert!(matches!(check_key(h, 302, ""), Err(Error::Failed(_))));
+    }
+
+    #[test]
+    fn tokens_are_renewed_only_when_they_can_and_must_be() {
+        let oauth = |refresh: Option<&str>, expires_at: u64| Session {
+            id: "a".into(),
+            host: DEFAULT_HOST.into(),
+            email: String::new(),
+            name: String::new(),
+            credential: Credential::OAuth {
+                tokens: oauth::Tokens {
+                    client_id: "c".into(),
+                    client_secret: None,
+                    token_endpoint: "https://doop.design/token".into(),
+                    access: "a1".into(),
+                    refresh: refresh.map(str::to_string),
+                    expires_at,
+                },
+            },
+            added_at: 0,
+        };
+        let now = 1000;
+        assert_eq!(
+            plan(Some(&oauth(Some("r"), 2000)), None, now),
+            Plan::Use("a1".into())
+        );
+        // A minute early with a refresh token; to the last second without one.
+        assert!(matches!(
+            plan(Some(&oauth(Some("r"), 1030)), None, now),
+            Plan::Renew(_)
+        ));
+        assert_eq!(
+            plan(Some(&oauth(None, 1030)), None, now),
+            Plan::Use("a1".into())
+        );
+        assert!(matches!(
+            plan(Some(&oauth(None, 1000)), None, now),
+            Plan::Renew(_)
+        ));
+        // The instance refused this very token; one traded since is used.
+        assert!(matches!(
+            plan(Some(&oauth(Some("r"), 2000)), Some("a1"), now),
+            Plan::Renew(_)
+        ));
+        assert_eq!(
+            plan(Some(&oauth(Some("r"), 2000)), Some("a0"), now),
+            Plan::Use("a1".into())
+        );
+        // A removed sign-in is never written back.
+        assert_eq!(plan(None, Some("a1"), now), Plan::Gone);
+    }
+
+    #[test]
+    fn a_sign_in_is_canceled_or_saved_never_both() {
+        let attempt = Attempt::default();
+        assert!(!attempt.canceled());
+        assert!(attempt.cancel());
+        assert!(attempt.canceled());
+        // Canceled first: nothing is written.
+        assert!(!attempt.claim(Attempt::SAVING));
+        let attempt = Attempt::default();
+        assert!(attempt.claim(Attempt::SAVING));
+        assert!(!attempt.cancel());
+        assert!(!attempt.canceled());
     }
 }

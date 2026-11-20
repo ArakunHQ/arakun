@@ -10,7 +10,6 @@
 
 use std::io::{BufRead as _, BufReader, Read as _, Write as _};
 use std::net::{TcpListener, TcpStream};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use base64::Engine as _;
@@ -71,13 +70,20 @@ fn get_json(url: &str, token: Option<&str>) -> Result<(u16, Value), Error> {
     ))
 }
 
-/// An endpoint from the metadata, if it is one a token may be sent to: https,
-/// or plain http when the instance itself is reached that way (a local one).
+/// An endpoint from the metadata, if it is one a token may be sent to:
+/// https, or plain http to a local address when the instance itself is
+/// reached that way. A local instance can't send tokens to a public http one.
 fn endpoint(host: &str, v: &Value) -> Option<String> {
     let url = v.as_str()?.trim();
-    let ok =
-        url.starts_with("https://") || (host.starts_with("http://") && url.starts_with("http://"));
-    (ok && !url.contains(char::is_whitespace)).then(|| url.to_string())
+    if url.contains(char::is_whitespace) {
+        return None;
+    }
+    let plain = url.starts_with("http://");
+    // `normalize_host` takes https anywhere and http only on a local address.
+    let ok = super::normalize_host(url).is_ok()
+        && url.contains("://")
+        && (!plain || host.starts_with("http://"));
+    ok.then(|| url.to_string())
 }
 
 fn parse_meta(host: &str, v: &Value) -> Option<Meta> {
@@ -97,22 +103,59 @@ fn parse_meta(host: &str, v: &Value) -> Option<Meta> {
     })
 }
 
+/// `https://login.example/tenant` → (`https://login.example`, `/tenant`).
+fn split_issuer(issuer: &str) -> (&str, &str) {
+    let issuer = issuer.trim_end_matches('/');
+    let after_scheme = issuer.find("://").map_or(0, |i| i + 3);
+    match issuer[after_scheme..].find('/') {
+        Some(i) => issuer.split_at(after_scheme + i),
+        None => (issuer, ""),
+    }
+}
+
+/// Where the metadata of the MCP endpoint may be, in the order to ask: for
+/// the endpoint itself (RFC 9728 puts the well-known part before its path),
+/// then for the instance as a whole.
+fn resource_urls(host: &str) -> [String; 2] {
+    [
+        format!("{host}/.well-known/oauth-protected-resource/mcp"),
+        format!("{host}/.well-known/oauth-protected-resource"),
+    ]
+}
+
+/// Where an authorization server's metadata may be, in the order to ask.
+/// RFC 8414 and OpenID Connect each put the well-known part before the
+/// issuer's path; servers from before them put it after.
+fn issuer_urls(issuer: &str) -> Vec<String> {
+    let (origin, path) = split_issuer(issuer);
+    let mut urls = vec![
+        format!("{origin}/.well-known/oauth-authorization-server{path}"),
+        format!("{origin}/.well-known/openid-configuration{path}"),
+    ];
+    if !path.is_empty() {
+        urls.push(format!(
+            "{origin}{path}/.well-known/oauth-authorization-server"
+        ));
+        urls.push(format!("{origin}{path}/.well-known/openid-configuration"));
+    }
+    urls
+}
+
 /// Where `host` wants its users to sign in: the authorization server its MCP
 /// endpoint names (itself, when it names none), then that server's metadata.
 fn discover(host: &str) -> Result<Meta, Error> {
-    let issuer = get_json(
-        &format!("{host}/.well-known/oauth-protected-resource"),
-        None,
-    )
-    .ok()
-    .and_then(|(_, v)| endpoint(host, &v["authorization_servers"][0]))
-    .unwrap_or_else(|| host.to_string());
-    let issuer = issuer.trim_end_matches('/');
-    for path in [
-        "/.well-known/oauth-authorization-server",
-        "/.well-known/openid-configuration",
-    ] {
-        if let (200..=299, v) = get_json(&format!("{issuer}{path}"), None)?
+    let issuer = resource_urls(host)
+        .iter()
+        .find_map(|url| {
+            let (status, v) = get_json(url, None).ok()?;
+            (200..=299)
+                .contains(&status)
+                .then(|| endpoint(host, &v["authorization_servers"][0]))
+                .flatten()
+        })
+        .unwrap_or_else(|| host.to_string());
+    for url in issuer_urls(&issuer) {
+        if let (200..=299, v) = get_json(&url, None)?
             && let Some(meta) = parse_meta(host, &v)
         {
             return Ok(meta);
@@ -291,14 +334,14 @@ fn respond(mut stream: &TcpStream, status: &str, line: &str) {
 fn wait_for_code(
     listener: &TcpListener,
     state: &str,
-    cancel: &AtomicBool,
+    canceled: &dyn Fn() -> bool,
 ) -> Result<String, Error> {
     listener
         .set_nonblocking(true)
         .map_err(|e| Error::Failed(e.to_string()))?;
     let until = Instant::now() + WAIT;
     while Instant::now() < until {
-        if cancel.load(Ordering::Relaxed) {
+        if canceled() {
             return Err(Error::Failed("The sign-in was canceled.".into()));
         }
         let Ok((stream, _)) = listener.accept() else {
@@ -406,8 +449,12 @@ fn who(meta: &Meta, access: &str) -> (String, String, String) {
 }
 
 /// Signs in to `host` in the browser: `open` gets the address to show, and
-/// the call returns once the user approved, refused, or `cancel` was set.
-pub fn sign_in(host: &str, cancel: &AtomicBool, open: impl FnOnce(&str)) -> Result<Session, Error> {
+/// the call returns once the user approved or refused, or `canceled` says so.
+pub fn sign_in(
+    host: &str,
+    canceled: &dyn Fn() -> bool,
+    open: impl FnOnce(&str),
+) -> Result<Session, Error> {
     let meta = discover(host)?;
     let register = meta.register.as_deref().ok_or_else(|| {
         Error::Failed(format!(
@@ -445,7 +492,7 @@ pub fn sign_in(host: &str, cancel: &AtomicBool, open: impl FnOnce(&str)) -> Resu
     open(&authorize_url(
         &meta, host, client_id, &redirect, &verifier, &state,
     ));
-    let code = wait_for_code(&listener, &state, cancel)?;
+    let code = wait_for_code(&listener, &state, canceled)?;
     drop(listener);
     let resource = mcp_url(host);
     let mut fields = vec![
@@ -513,6 +560,16 @@ mod tests {
             "token_endpoint": "https://doop.acme.dev/token",
         });
         assert_eq!(parse_meta("https://doop.acme.dev", &plain), None);
+        // A local instance can't name a public http endpoint for the tokens.
+        let leaky = json!({
+            "authorization_endpoint": "http://localhost:3000/authorize",
+            "token_endpoint": "http://tokens.example.com/token",
+        });
+        assert_eq!(parse_meta("http://localhost:3000", &leaky), None);
+        assert_eq!(
+            endpoint("http://localhost:3000", &json!("localhost:3000/token")),
+            None
+        );
         let local = json!({
             "authorization_endpoint": "http://localhost:3000/authorize",
             "token_endpoint": "http://localhost:3000/token",
@@ -521,6 +578,33 @@ mod tests {
         assert_eq!(m.register, None);
         assert!(m.scopes.is_empty());
         assert_eq!(parse_meta("https://doop.acme.dev", &json!("<html>")), None);
+    }
+
+    #[test]
+    fn metadata_is_asked_for_where_the_standards_put_it() {
+        assert_eq!(
+            resource_urls("https://d.acme.dev"),
+            [
+                "https://d.acme.dev/.well-known/oauth-protected-resource/mcp",
+                "https://d.acme.dev/.well-known/oauth-protected-resource",
+            ]
+        );
+        assert_eq!(
+            issuer_urls("https://doop.design/"),
+            [
+                "https://doop.design/.well-known/oauth-authorization-server",
+                "https://doop.design/.well-known/openid-configuration",
+            ]
+        );
+        assert_eq!(
+            issuer_urls("https://login.example/tenant"),
+            [
+                "https://login.example/.well-known/oauth-authorization-server/tenant",
+                "https://login.example/.well-known/openid-configuration/tenant",
+                "https://login.example/tenant/.well-known/oauth-authorization-server",
+                "https://login.example/tenant/.well-known/openid-configuration",
+            ]
+        );
     }
 
     #[test]
@@ -607,10 +691,10 @@ mod tests {
             let _ = back.read_to_string(&mut page);
             page
         });
-        let code = wait_for_code(&listener, "s1", &AtomicBool::new(false));
+        let code = wait_for_code(&listener, "s1", &|| false);
         assert_eq!(code, Ok("c0de".into()));
         assert!(browser.join().unwrap().contains("Signed in to Doop"));
-        let canceled = wait_for_code(&listener, "s1", &AtomicBool::new(true));
+        let canceled = wait_for_code(&listener, "s1", &|| true);
         assert!(matches!(canceled, Err(Error::Failed(m)) if m.contains("canceled")));
     }
 

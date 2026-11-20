@@ -13,7 +13,6 @@ mod accounts;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
@@ -24,7 +23,7 @@ use gpui::{
 };
 
 use crate::agent::AgentKind;
-use crate::doop::{self, Canvas, CanvasRef, Error, Frame, Session, Tool};
+use crate::doop::{self, Canvas, CanvasRef, Error, Frame, Session, Shown, Tool};
 use crate::input::{InputEvent, TextInput};
 use crate::theme;
 use crate::ui::{self, ButtonKind, Tone, Type, Typography as _, icon};
@@ -70,16 +69,21 @@ pub struct DoopView {
     pins: Vec<CanvasRef>,
     picked: Option<String>,
     canvas: Option<Canvas>,
-    /// The page of the canvas whose frames show; None shows them all.
-    page_id: Option<String>,
+    /// The frames of the canvas that show: a page of it, or all of them.
+    shown: Shown,
     thumbs: HashMap<String, Thumb>,
     loading: bool,
+    /// The instance's tools and canvases are being read.
+    listing: bool,
     error: Option<Error>,
     /// Unix seconds of the last full read.
     read_at: u64,
     /// Goes up when the session or the canvas changes: an answer for an
     /// older one is dropped.
     epoch: u64,
+    /// Goes up when the sign-in shown changes and with each read of its
+    /// canvases: picking a canvas leaves a read under way alone.
+    list_epoch: u64,
     page: Page,
     menu: Option<Point<Pixels>>,
     host_input: Entity<TextInput>,
@@ -88,7 +92,7 @@ pub struct DoopView {
     /// The form signs in to a self-hosted instance, not to Doop itself.
     own_instance: bool,
     /// Set while a sign-in runs; the flag stops one waiting on the browser.
-    connecting: Option<Arc<AtomicBool>>,
+    connecting: Option<Arc<doop::Attempt>>,
     connect_note: Option<(String, bool)>,
     add_note: Option<String>,
     /// The name each agent has the shown instance's MCP server under.
@@ -156,12 +160,14 @@ impl DoopView {
             pins,
             picked: None,
             canvas: None,
-            page_id: None,
+            shown: Shown::All,
             thumbs: HashMap::new(),
             loading: false,
+            listing: false,
             error: None,
             read_at: 0,
             epoch: 0,
+            list_epoch: 0,
             page: Page::Main,
             menu: None,
             host_input,
@@ -212,7 +218,7 @@ impl DoopView {
     pub fn refresh_if_stale(&mut self, cx: &mut Context<Self>) {
         self.read_agents();
         if self.session().is_some()
-            && !self.loading
+            && !self.listing
             && crate::model::unix_now().saturating_sub(self.read_at) >= STALE
         {
             self.refresh(false, cx);
@@ -233,10 +239,12 @@ impl DoopView {
     fn switch(&mut self, id: Option<String>, cx: &mut Context<Self>) {
         self.current = id;
         self.epoch += 1;
+        self.list_epoch += 1;
+        self.listing = false;
         self.tools = None;
         self.listed = None;
         self.picked = None;
-        self.page_id = None;
+        self.shown = Shown::All;
         self.canvas = None;
         self.thumbs.clear();
         self.error = None;
@@ -264,10 +272,10 @@ impl DoopView {
         let Some(s) = self.session().cloned() else {
             return;
         };
-        self.loading = true;
+        self.listing = true;
         self.error = None;
-        self.read_at = crate::model::unix_now();
-        let epoch = self.epoch;
+        self.list_epoch += 1;
+        let list_epoch = self.list_epoch;
         self._load = Some(cx.spawn(async move |this, cx| {
             let got = cx
                 .background_spawn(crate::guard::task(async move {
@@ -277,16 +285,22 @@ impl DoopView {
                 }))
                 .await;
             this.update(cx, |this, cx| {
-                if this.epoch != epoch {
+                if this.list_epoch != list_epoch {
                     return;
                 }
+                this.listing = false;
                 match got {
                     Ok((tools, listed)) => {
+                        // Fresh from now; a read that failed is tried again
+                        // when the tab next opens.
+                        this.read_at = crate::model::unix_now();
                         this.tools = Some(tools);
                         this.listed = listed;
                         let all = this.canvases();
                         if !all.iter().any(|(c, _)| Some(&c.id) == this.picked.as_ref()) {
+                            this.epoch += 1;
                             this.picked = all.first().map(|(c, _)| c.id.clone());
+                            this.shown = Shown::All;
                             this.canvas = None;
                             this.thumbs.clear();
                         }
@@ -333,9 +347,10 @@ impl DoopView {
                     Ok(canvas) => {
                         this.name_pin(&canvas);
                         // Keep the page shown if it is still there, else the first.
-                        let pages = canvas.pages_in_use();
-                        if !pages.iter().any(|p| Some(&p.id) == this.page_id.as_ref()) {
-                            this.page_id = pages.first().map(|p| p.id.clone());
+                        let groups = canvas.groups();
+                        if !groups.iter().any(|(g, _, _)| *g == this.shown) {
+                            this.shown =
+                                groups.into_iter().next().map_or(Shown::All, |(g, _, _)| g);
                         }
                         this.canvas = Some(canvas);
                         this.read_thumbs(renders, cx);
@@ -362,8 +377,14 @@ impl DoopView {
             .iter_mut()
             .find(|p| p.id == canvas.id && p.name != canvas.name)
         {
-            pin.name = canvas.name.clone();
-            doop::set_pin(&host, &canvas.id, Some(pin.clone()));
+            // Only a nicer label: if it can't be saved, the id stays the name.
+            let named = CanvasRef {
+                name: canvas.name.clone(),
+                ..pin.clone()
+            };
+            if doop::set_pin(&host, &canvas.id, Some(named.clone())).is_ok() {
+                *pin = named;
+            }
         }
     }
 
@@ -377,8 +398,8 @@ impl DoopView {
         };
         // Only the page shown: a canvas can hold hundreds of frames.
         let mut wanted: Vec<Frame> = Vec::new();
-        for f in canvas.frames_on(self.page_id.as_deref()) {
-            match doop::cached_thumb(&s.host, f) {
+        for f in canvas.frames_on(&self.shown) {
+            match doop::cached_thumb(&s, f) {
                 Some((path, due)) => {
                     self.thumbs.insert(f.id.clone(), Thumb::Ready(path));
                     if due || (force && f.version.is_none()) {
@@ -386,9 +407,9 @@ impl DoopView {
                     }
                 }
                 None => {
-                    if !matches!(self.thumbs.get(&f.id), Some(Thumb::Ready(_))) {
-                        self.thumbs.insert(f.id.clone(), Thumb::Loading);
-                    }
+                    // A picture still shown here is of another version of
+                    // the frame: it goes, even if the new one never arrives.
+                    self.thumbs.insert(f.id.clone(), Thumb::Loading);
                     wanted.push(f.clone());
                 }
             }
@@ -438,11 +459,11 @@ impl DoopView {
     }
 
     /// Shows another page of the canvas.
-    fn pick_page(&mut self, id: String, cx: &mut Context<Self>) {
-        if self.page_id.as_ref() == Some(&id) {
+    fn pick_page(&mut self, shown: Shown, cx: &mut Context<Self>) {
+        if self.shown == shown {
             return;
         }
-        self.page_id = Some(id);
+        self.shown = shown;
         self.read_thumbs(false, cx);
         cx.notify();
     }
@@ -453,7 +474,7 @@ impl DoopView {
         }
         self.epoch += 1;
         self.picked = Some(id);
-        self.page_id = None;
+        self.shown = Shown::All;
         self.canvas = None;
         self.thumbs.clear();
         self._thumbs = None;
@@ -488,7 +509,12 @@ impl DoopView {
                 id: id.clone(),
                 name: String::new(),
             };
-            doop::set_pin(&host, &id, Some(pin.clone()));
+            // Not saved: the link stays in the field to try again.
+            if let Err(e) = doop::set_pin(&host, &id, Some(pin.clone())) {
+                self.add_note = Some(e);
+                cx.notify();
+                return;
+            }
             self.pins.push(pin);
         }
         self.canvas_input.update(cx, |i, cx| i.set_text("", cx));
@@ -501,10 +527,20 @@ impl DoopView {
         let Some(host) = self.session().map(|s| s.host.clone()) else {
             return;
         };
-        doop::set_pin(&host, &id, None);
+        if let Err(e) = doop::set_pin(&host, &id, None) {
+            self.add_note = Some(e);
+            cx.notify();
+            return;
+        }
         self.pins.retain(|p| p.id != id);
         if self.picked.as_ref() == Some(&id) {
+            // Whatever was being read for it no longer has a place to land.
+            self.epoch += 1;
+            self.loading = false;
+            self._canvas = None;
+            self._thumbs = None;
             self.picked = None;
+            self.shown = Shown::All;
             self.canvas = None;
             self.thumbs.clear();
             self.error = None;
@@ -604,7 +640,7 @@ impl DoopView {
             .map(|c| crate::memory::ago(c.fetched_at, now));
         let refresh = ui::refresh_control(
             "doop-refresh",
-            self.loading,
+            self.loading || self.listing,
             updated,
             cx.listener(|this, _, _, cx| this.refresh(true, cx)),
         );
@@ -861,7 +897,7 @@ impl DoopView {
             return self.render_error(e, cx);
         }
         let Some(canvas) = &self.canvas else {
-            if self.loading {
+            if self.loading || self.listing {
                 return ui::loading("doop-loading", "Reading the canvas…").into_any_element();
             }
             return ui::empty_state(
@@ -877,20 +913,18 @@ impl DoopView {
         } else {
             canvas.name.clone()
         };
-        let shown = canvas.frames_on(self.page_id.as_deref());
+        let shown = canvas.frames_on(&self.shown);
         let mut grid = div().flex().flex_wrap().gap(crate::ui::sp(16.));
         for (i, f) in shown.iter().enumerate() {
             grid = grid.child(self.render_frame(i, f, cx));
         }
-        let pages = canvas.pages_in_use();
-        let strip = (pages.len() > 1).then(|| {
+        let groups = canvas.groups();
+        let strip = (groups.len() > 1).then(|| {
             let mut strip = div().flex().flex_wrap().gap(crate::ui::sp(6.));
-            for (i, p) in pages.iter().enumerate() {
-                let on = self.page_id.as_ref() == Some(&p.id);
-                let id = p.id.clone();
-                let count = canvas.frames_on(Some(&p.id)).len();
+            for (i, (group, name, count)) in groups.into_iter().enumerate() {
+                let on = self.shown == group;
                 strip = strip.child(
-                    ui::segment(("doop-page", i), None, p.name.clone(), on)
+                    ui::segment(("doop-page", i), None, name, on)
                         .child(
                             div()
                                 .ty(Type::Caption)
@@ -899,7 +933,7 @@ impl DoopView {
                                 .child(count.to_string()),
                         )
                         .on_click(
-                            cx.listener(move |this, _, _, cx| this.pick_page(id.clone(), cx)),
+                            cx.listener(move |this, _, _, cx| this.pick_page(group.clone(), cx)),
                         ),
                 );
             }

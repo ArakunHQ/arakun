@@ -2,8 +2,6 @@
 //! the browser, or with an agent key) on Doop or a self-hosted instance, and
 //! connecting the shown instance's MCP server to the agents.
 
-use std::sync::atomic::Ordering;
-
 use super::*;
 
 impl DoopView {
@@ -23,22 +21,22 @@ impl DoopView {
         }
     }
 
-    /// Runs a sign-in off the UI thread, saves it and shows it.
+    /// Runs a sign-in off the UI thread, saves it and shows it. A sign-in
+    /// canceled before the save began is dropped, whatever it came back with.
     fn connect(
         &mut self,
-        cancel: Arc<AtomicBool>,
-        sign_in: impl FnOnce() -> Result<Session, Error> + Send + 'static,
+        sign_in: impl FnOnce(&doop::Attempt) -> Result<Session, Error> + Send + 'static,
         cx: &mut Context<Self>,
     ) {
-        self.connecting = Some(cancel);
+        let attempt = Arc::new(doop::Attempt::default());
+        self.connecting = Some(attempt.clone());
         self.connect_note = None;
         cx.notify();
         self._connect = Some(cx.spawn(async move |this, cx| {
             let got = cx
                 .background_spawn(crate::guard::task(async move {
-                    let s = sign_in().map_err(|e| e.message())?;
-                    doop::save_session(s.clone())?;
-                    Ok::<Session, String>(s)
+                    let s = sign_in(&attempt).map_err(|e| e.message())?;
+                    attempt.save(s)
                 }))
                 .await;
             this.update(cx, |this, cx| {
@@ -61,12 +59,13 @@ impl DoopView {
         let Some(host) = self.typed_host(cx) else {
             return;
         };
-        let cancel = Arc::new(AtomicBool::new(false));
-        let flag = cancel.clone();
         self.connect(
-            cancel,
-            // The system's browser, where the user is already signed in to Doop.
-            move || doop::oauth::sign_in(&host, &flag, |url| crate::platform::open(url)),
+            move |attempt| {
+                // The system's browser, where the user is already signed in to Doop.
+                doop::oauth::sign_in(&host, &|| attempt.canceled(), |url| {
+                    crate::platform::open(url)
+                })
+            },
             cx,
         );
     }
@@ -80,17 +79,20 @@ impl DoopView {
         let Some(host) = self.typed_host(cx) else {
             return;
         };
-        self.connect(
-            Arc::new(AtomicBool::new(false)),
-            move || doop::sign_in_with_key(&host, &key),
-            cx,
-        );
+        self.connect(move |_| doop::sign_in_with_key(&host, &key), cx);
     }
 
-    /// Stops a sign-in that waits on the browser.
+    /// Stops the sign-in under way, unless it is already being saved: then
+    /// it finishes as if Cancel came too late.
     fn cancel_connect(&mut self, cx: &mut Context<Self>) {
-        if let Some(flag) = &self.connecting {
-            flag.store(true, Ordering::Relaxed);
+        let Some(attempt) = &self.connecting else {
+            return;
+        };
+        if attempt.cancel() {
+            // Whatever the instance still answers is no longer waited for.
+            self.connecting = None;
+            self._connect = None;
+            self.connect_note = Some(("The sign-in was canceled.".into(), false));
         }
         cx.notify();
     }
@@ -109,8 +111,11 @@ impl DoopView {
     }
 
     fn remove(&mut self, id: String, cx: &mut Context<Self>) {
+        // Not removed: the tab keeps showing what it showed.
         if let Err(e) = doop::remove_session(&id) {
             self.connect_note = Some((e, true));
+            cx.notify();
+            return;
         }
         self.sessions = doop::sessions();
         if self.current.as_ref() == Some(&id) {

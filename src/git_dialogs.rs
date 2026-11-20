@@ -174,7 +174,8 @@ impl CommitDialog {
                 "Sends the diff of {what} to {}, which writes the message",
                 agent.label()
             ),
-            None => "Needs Claude Code: as this environment's agent, or picked for naming branches"
+            None => "Needs this environment's agent, or the one picked for naming branches, \
+                     to be installed"
                 .to_string(),
         };
         ui::button_with(
@@ -763,7 +764,8 @@ impl PullRequestDialog {
                 "Sends the branch's commits and diff to {}, which writes the title and description",
                 agent.label()
             ),
-            None => "Needs Claude Code: as this environment's agent, or picked for naming branches"
+            None => "Needs this environment's agent, or the one picked for naming branches, \
+                     to be installed"
                 .to_string(),
         };
         ui::button_with(

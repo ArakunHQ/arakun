@@ -116,7 +116,7 @@ copy of it, rename it back, and start a version that can read it.
   its environment's name. The Workspace panel shows Sessions, an Explorer and the
   uncommitted
   Changes; the Branches tab draws every live branch against the default one.
-  In the Commit changes dialog, "Write with Claude Code" writes the message from what
+  In the Commit changes dialog, "Write with <agent>" writes the message from what
   the commit takes (the staged changes, or every change, new files too, when nothing
   is staged; up to 60,000 characters of diff) in the style of the last commit subjects.
   It picks the agent as the pull request dialog does, and you edit the message before
@@ -275,13 +275,15 @@ sees the project's skills.
   pull request template, else the commit messages). It opens as a draft unless you turn
   that off, pushes the branch first when it has commits GitHub doesn't, and then shows
   the new pull request in the GitHub tab. "Open GitHub's form" opens the page in your
-  browser instead, to write the description there. "Write with Claude Code" has Claude Code
-  write the title and the description from the branch's commits, its diff (up to 60,000
-  characters) and the template, when it is the environment's agent or the one picked for
-  naming branches; the button names the agent, so you see where the diff goes before
-  you click. It answers once with its tools off, so it reads nothing else, and
-  nothing goes to GitHub until you create the pull request. Other agents don't write it:
-  they can read files while they answer.
+  browser instead, to write the description there. "Write with <agent>" has the
+  environment's agent write the title and the description from the branch's commits, its
+  diff (up to 60,000 characters) and the template, or the one picked for naming branches
+  when the environment's agent isn't installed; the button names the agent, so you see
+  where the diff goes before you click. It answers once, in an empty folder, with as
+  little reach as its CLI allows: Claude Code, OpenCode and Workers AI with no tools,
+  Codex in a read-only sandbox without its shell or your Codex config, Droid with `droid
+  exec` (read-only), Cursor in ask mode and Devin in its default mode, which only reads.
+  Nothing goes to GitHub until you create the pull request.
 - **Queue.** The GitHub tab opens on one line that says how many things need you,
   then a quiet list grouped by where each pull request stands (Needs you, Stuck,
   pilot is on it, Waiting on CI, Waiting on others, Ready to merge), stacked pull

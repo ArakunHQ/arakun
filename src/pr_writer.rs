@@ -1,7 +1,8 @@
 //! A pull request's title and description written by a model: the "Write with
-//! AI" button of the Create pull request dialog. Claude Code answers once,
-//! with its tools switched off, from the branch's commits, its diff and the repository's
-//! template; the user reads the result before anything goes to GitHub.
+//! AI" button of the Create pull request dialog. The agent answers once, as
+//! locked down as it can be ([`env_name::ask`]), from the branch's commits, its diff
+//! and the repository's template; the user reads the result before anything goes to
+//! GitHub.
 //! [`commit`] does the same for the message of the Commit changes dialog.
 
 use std::time::Duration;
@@ -32,17 +33,15 @@ pub struct Input {
     pub template: Option<String>,
 }
 
-/// The agents that may write a description: those whose CLI answers with
-/// its tools switched off. The diff is text other people may have written,
-/// and the answer goes out in public: an agent that can read files while it
-/// answers (as `droid exec` can) could be talked into quoting one. A branch
-/// name is too short for that; a description is not.
-const WRITERS: [AgentKind; 1] = [AgentKind::Claude];
-
 /// The agent that writes for an environment whose sessions use `session`:
-/// that agent when it is one of [`WRITERS`], so the diff goes to no service
-/// the user didn't pick; else the one picked for naming branches. None when
-/// neither can.
+/// that agent when it can answer, so the diff goes to no service the user
+/// didn't pick; else the one picked for naming branches. None when neither can.
+///
+/// Every agent may write. The diff is text other people may have written, and
+/// the answer goes out in public, so each runs with as little reach as its CLI
+/// allows: Claude Code, OpenCode and Workers AI with no tools at all, the others
+/// only reading, in an empty folder. The user reads what it wrote before it goes
+/// anywhere.
 pub fn writer(session: AgentKind, installed: impl Fn(AgentKind) -> bool) -> Option<AgentKind> {
     pick(session, env_name::namer().choice.agent(), installed)
 }
@@ -55,13 +54,15 @@ fn pick(
     [Some(session), named]
         .into_iter()
         .flatten()
-        .find(|a| WRITERS.contains(a) && installed(*a))
+        .find(|a| installed(*a))
 }
 
-/// A model that writes well and still answers in seconds.
+/// A model that writes well and still answers in seconds. Other CLIs' model ids
+/// depend on the user's plan and providers: they use the CLI's default.
 fn model(agent: AgentKind) -> &'static str {
     match agent {
         AgentKind::Claude => "sonnet",
+        AgentKind::WorkersAi => crate::agent::workers_ai::ASK_MODEL,
         _ => "",
     }
 }
@@ -339,25 +340,33 @@ mod tests {
     }
 
     #[test]
-    fn only_an_agent_without_tools_writes() {
+    fn the_sessions_agent_writes_first() {
         let all = |_: AgentKind| true;
-        assert_eq!(pick(AgentKind::Claude, None, all), Some(AgentKind::Claude));
-        // Droid can read files while it answers: it never writes what goes
-        // out in public, whoever picked it.
-        assert_eq!(pick(AgentKind::Droid, None, all), None);
-        assert_eq!(pick(AgentKind::Droid, Some(AgentKind::Droid), all), None);
-        assert_eq!(pick(AgentKind::OpenCode, None, all), None);
-        // Another agent's sessions: the one picked for naming branches, if it may.
+        for agent in [
+            AgentKind::Claude,
+            AgentKind::Droid,
+            AgentKind::OpenCode,
+            AgentKind::Codex,
+            AgentKind::Devin,
+            AgentKind::Cursor,
+            AgentKind::WorkersAi,
+        ] {
+            assert_eq!(pick(agent, Some(AgentKind::Claude), all), Some(agent));
+        }
+        // The session's agent missing: the one picked for naming branches.
+        let only_claude = |a: AgentKind| a == AgentKind::Claude;
         assert_eq!(
-            pick(AgentKind::Droid, Some(AgentKind::Claude), all),
+            pick(AgentKind::Codex, Some(AgentKind::Claude), only_claude),
             Some(AgentKind::Claude)
         );
+        assert_eq!(pick(AgentKind::Codex, None, only_claude), None);
         // Not installed: nobody writes.
         assert_eq!(
             pick(AgentKind::Claude, Some(AgentKind::Claude), |_| false),
             None
         );
         assert_eq!(model(AgentKind::Claude), "sonnet");
+        assert_eq!(model(AgentKind::Codex), "");
     }
 
     #[test]

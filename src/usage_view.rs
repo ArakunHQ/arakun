@@ -276,8 +276,9 @@ pub struct UsageView {
     proxy_busy: Option<&'static str>,
     /// Why the last save, refresh or forget failed.
     proxy_note: Option<String>,
-    /// Counts the proxy's controls' jobs, so a background read that began
-    /// before one (say, Forget key) does not put back what it changed.
+    /// Counts when the proxy's controls' jobs start and end, so a background
+    /// read that overlapped one (say, Forget key) does not put back what it
+    /// changed.
     proxy_jobs: u64,
     /// The key field shows although a key is saved (Change key).
     proxy_key_open: bool,
@@ -675,6 +676,9 @@ impl UsageView {
                 .await;
             let _ = this.update(cx, |v, cx| {
                 v.proxy_busy = None;
+                // A poll that began while this ran may have read before it
+                // wrote: count the end too, so that poll's result is dropped.
+                v.proxy_jobs += 1;
                 match got {
                     Ok(proxy) => {
                         v.proxy = proxy;

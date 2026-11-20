@@ -6,7 +6,7 @@
 use super::sidebar_builder::{BuilderSel, DraggedPiece, DraggedSection, PinAsk};
 use super::*;
 use crate::sidebar::{Item, Mode, Piece};
-use gpui::Point;
+use gpui::{BorderStyle, Bounds, Corners, Edges, Hsla, Pixels, Point, canvas, quad};
 
 impl Shell {
     /// Customize is open on its Sidebar tab: the rail is being arranged.
@@ -16,10 +16,13 @@ impl Shell {
 
     /// Lays a click target over a rail piece or segment title while
     /// arranging: it selects instead of opening, and outlines the selection.
+    /// `compact` is a piece drawn as its icon alone (narrowed or in a row),
+    /// where the remove button sits on the corner instead of the row's end.
     pub(super) fn arrange_target(
         &self,
         sel: BuilderSel,
         el: AnyElement,
+        compact: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let selected = self.builder.sel == Some(sel);
@@ -30,6 +33,7 @@ impl Shell {
         let lifted = cx.has_active_drag() && self.builder.lifted == Some(sel);
         let target = div()
             .id(id)
+            .group("arrange-target")
             .absolute()
             .inset_0()
             .rounded(crate::ui::rad(8.))
@@ -61,6 +65,9 @@ impl Shell {
                     offset: Point::default(),
                 };
                 target
+                    .when(!cx.has_active_drag(), |d| {
+                        d.child(self.arrange_remove(path, compact, cx))
+                    })
                     .on_drag(dragged, move |d, offset, _, cx| {
                         let _ = shell.update(cx, |this, _| {
                             this.builder.lifted = d.from.map(BuilderSel::Item)
@@ -123,6 +130,65 @@ impl Shell {
             .when(lifted, |d| d.opacity(0.4))
             .child(el)
             .child(target)
+            .into_any_element()
+    }
+
+    /// The button that takes a piece out of the sidebar, shown while the
+    /// pointer is on it: removing should not need selecting first.
+    fn arrange_remove(
+        &self,
+        path: crate::sidebar::Path,
+        compact: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let (s, i) = path;
+        let button = div()
+            .id(("arrange-remove", s * 1000 + i))
+            .flex()
+            .items_center()
+            .justify_center()
+            .size(px(if compact { 16. } else { 20. }))
+            .rounded_full()
+            .bg(theme::raised())
+            .border_1()
+            .border_color(theme::border_strong())
+            .cursor_pointer()
+            .group("arrange-remove")
+            .hover(|st| st.border_color(theme::danger()))
+            .tooltip(ui::tip("Remove from the sidebar"))
+            .child(ui::hover_icon(
+                "cancel01",
+                if compact { 10. } else { 12. },
+                theme::text_subtle(),
+                theme::danger().into(),
+                "arrange-remove",
+            ))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                // Not a click on the piece: that would select it.
+                cx.stop_propagation();
+                this.change_sidebar(cx, |sb| {
+                    sb.remove(path);
+                });
+                this.clear_builder_selection();
+            }));
+        // Over the icon's corner when the piece is an icon, at the end of
+        // the row otherwise.
+        div()
+            .absolute()
+            .invisible()
+            .group_hover("arrange-target", |st| st.visible())
+            .map(|d| {
+                if compact {
+                    d.top(px(-6.)).right(px(-6.))
+                } else {
+                    d.top_0()
+                        .bottom_0()
+                        .right(crate::ui::sp(6.))
+                        .flex()
+                        .items_center()
+                }
+            })
+            .child(button)
             .into_any_element()
     }
 
@@ -408,4 +474,149 @@ fn arrange_heading(title: &'static str, note: String) -> gpui::Div {
                     .child(note),
             )
         })
+}
+
+/// A dashed outline GPUI's own dashes can't give: they grow with the
+/// border's width, so at one pixel they are two long with one between and
+/// read as a solid line. Arranging should look like another mode.
+pub(super) fn dashed_outline(color: Hsla, radius: Pixels) -> impl IntoElement {
+    canvas(
+        |_, _, _| {},
+        move |b: Bounds<Pixels>, _, window, _| {
+            let w = px(1.);
+            let r = radius.min(b.size.width / 2.).min(b.size.height / 2.);
+            let (x0, y0) = (b.origin.x, b.origin.y);
+            let (x1, y1) = (x0 + b.size.width, y0 + b.size.height);
+            let none = Pixels::default();
+            // The corners are quarter circles, each one a dash of its own.
+            let corners = [
+                (
+                    x0,
+                    y0,
+                    Corners {
+                        top_left: r,
+                        top_right: none,
+                        bottom_left: none,
+                        bottom_right: none,
+                    },
+                    Edges {
+                        top: w,
+                        left: w,
+                        right: none,
+                        bottom: none,
+                    },
+                ),
+                (
+                    x1 - r,
+                    y0,
+                    Corners {
+                        top_left: none,
+                        top_right: r,
+                        bottom_left: none,
+                        bottom_right: none,
+                    },
+                    Edges {
+                        top: w,
+                        right: w,
+                        left: none,
+                        bottom: none,
+                    },
+                ),
+                (
+                    x0,
+                    y1 - r,
+                    Corners {
+                        top_left: none,
+                        top_right: none,
+                        bottom_left: r,
+                        bottom_right: none,
+                    },
+                    Edges {
+                        bottom: w,
+                        left: w,
+                        top: none,
+                        right: none,
+                    },
+                ),
+                (
+                    x1 - r,
+                    y1 - r,
+                    Corners {
+                        top_left: none,
+                        top_right: none,
+                        bottom_left: none,
+                        bottom_right: r,
+                    },
+                    Edges {
+                        bottom: w,
+                        right: w,
+                        top: none,
+                        left: none,
+                    },
+                ),
+            ];
+            for (x, y, radii, edges) in corners {
+                window.paint_quad(quad(
+                    Bounds::new(point(x, y), size(r, r)),
+                    radii,
+                    gpui::transparent_black(),
+                    edges,
+                    color,
+                    BorderStyle::Solid,
+                ));
+            }
+            for (start, len) in dashes((b.size.width - r * 2.) / px(1.)) {
+                for y in [y0, y1 - w] {
+                    window.paint_quad(gpui::fill(
+                        Bounds::new(point(x0 + r + px(start), y), size(px(len), w)),
+                        color,
+                    ));
+                }
+            }
+            for (start, len) in dashes((b.size.height - r * 2.) / px(1.)) {
+                for x in [x0, x1 - w] {
+                    window.paint_quad(gpui::fill(
+                        Bounds::new(point(x, y0 + r + px(start)), size(w, px(len))),
+                        color,
+                    ));
+                }
+            }
+        },
+    )
+    .absolute()
+    .inset_0()
+}
+
+/// Where the dashes of a straight side go, as (start, length): about four
+/// pixels with three between, a half gap at each end so they stand apart
+/// from the corners, stretched a little so the side ends evenly.
+fn dashes(len: f32) -> Vec<(f32, f32)> {
+    const DASH: f32 = 4.;
+    const GAP: f32 = 3.;
+    if len < DASH {
+        return Vec::new();
+    }
+    let n = (len / (DASH + GAP)).round().max(1.) as usize;
+    let period = len / n as f32;
+    (0..n)
+        .map(|k| (k as f32 * period + GAP / 2., period - GAP))
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::dashes;
+
+    #[test]
+    fn dashes_leave_gaps_and_stay_on_the_side() {
+        let d = dashes(100.);
+        assert_eq!(d.len(), 14);
+        for pair in d.windows(2) {
+            let gap = pair[1].0 - (pair[0].0 + pair[0].1);
+            assert!((gap - 3.).abs() < 0.01);
+        }
+        let last = d.last().unwrap();
+        assert!(d[0].0 > 0. && last.0 + last.1 < 100.);
+        assert!(dashes(2.).is_empty());
+    }
 }

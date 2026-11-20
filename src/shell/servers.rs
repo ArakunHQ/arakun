@@ -569,6 +569,7 @@ fn offered_picks(
 /// what the environment picked (`draft`).
 fn draft_on_server(
     offered: &SettingList,
+    agent: AgentKind,
     draft: &[(Setting, String)],
     s: Setting,
 ) -> Option<(String, Vec<SettingOption>)> {
@@ -579,9 +580,11 @@ fn draft_on_server(
             .map(|(_, v)| v)
     };
     let picked = |s: Setting| draft.iter().find(|(d, _)| *d == s).map(|(_, v)| v);
-    // The reasoning levels offered are those of the model the server would
-    // start on; another model picked here may have others.
-    if s == Setting::Effort
+    // OpenCode's and Codex's reasoning levels are per model: the ones offered
+    // are those of the model the server would start on. Claude's are the same
+    // for every model, as the server sends them.
+    if matches!(agent, AgentKind::OpenCode | AgentKind::Codex)
+        && s == Setting::Effort
         && let Some(model) = picked(Setting::Model)
         && on_offer(Setting::Model)
             .is_some_and(|(current, o)| current != model && o.iter().any(|c| c.id == *model))
@@ -1716,7 +1719,12 @@ impl Shell {
         let remote = env.remote.as_ref()?;
         let key = (remote.server.clone(), remote.place.clone(), agent);
         let offered = self.servers.as_ref()?.options.get(&key)?;
-        draft_on_server(offered, super::sessions::agent_draft(env, agent), s)
+        draft_on_server(
+            offered,
+            agent.kind(),
+            super::sessions::agent_draft(env, agent),
+            s,
+        )
     }
 
     /// Where git runs for the environment at `env_path`: in its folder here,
@@ -3293,8 +3301,9 @@ mod tests {
             (Setting::Model, offer("m1", &["m1", "m2"])),
             (Setting::Effort, offer("low", &["low", "high"])),
         ];
-        let current =
-            |draft: &[(Setting, String)], s| draft_on_server(&offered, draft, s).map(|(c, _)| c);
+        let current = |draft: &[(Setting, String)], s| {
+            draft_on_server(&offered, AgentKind::Codex, draft, s).map(|(c, _)| c)
+        };
         assert_eq!(current(&[], Setting::Model).as_deref(), Some("m1"));
         assert_eq!(current(&[], Setting::Mode), None);
         let picked = [
@@ -3309,6 +3318,9 @@ mod tests {
         let other = [(Setting::Model, "m2".to_string())];
         assert_eq!(current(&other, Setting::Model).as_deref(), Some("m2"));
         assert_eq!(current(&other, Setting::Effort), None);
+        // Claude's levels are the same for every model, so they stay.
+        let claude = draft_on_server(&offered, AgentKind::Claude, &other, Setting::Effort);
+        assert_eq!(claude.map(|(c, _)| c).as_deref(), Some("low"));
     }
 
     #[test]

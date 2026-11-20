@@ -350,6 +350,10 @@ Usage:
                              collapsed, JSON's outline); the whole output goes
                              to a file it names. Needs no running Arakun
   arakun notices [--unseen]    the notifications Arakun has shown, newest first
+  arakun usage tools [--days N] [--json]
+                             where the tokens of Workers AI sessions' tool
+                             results go: each tool's calls and tokens, bash by
+                             the program it runs (cargo, git…), largest first
   arakun seat add <name>       save a Claude seat: a token from `claude setup-token`,
                              read from stdin and checked with one small call;
                              each new Claude Code session then runs on the seat
@@ -647,6 +651,9 @@ fn cli(args: Vec<String>) -> Cli {
     }
     if first == "shrink" {
         return Cli::Exit(crate::shrink::cli(&args[1..]));
+    }
+    if first == "usage" {
+        return Cli::Exit(crate::agent::ledger::cli(&args[1..]));
     }
     if first == "fetch" || first == "crawl" {
         return Cli::Exit(crate::fetch::cli(&args[1..], first == "crawl"));

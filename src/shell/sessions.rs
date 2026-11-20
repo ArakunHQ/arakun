@@ -73,7 +73,7 @@ pub fn status_of(t: &Thread) -> Status {
 }
 
 /// The saved transcript at `path`, ready to show; `None` when the session has none yet.
-fn read_restored(path: &Path) -> anyhow::Result<Option<Restored>> {
+pub(super) fn read_restored(path: &Path) -> anyhow::Result<Option<Restored>> {
     if !path.exists() {
         return Ok(None);
     }
@@ -282,6 +282,11 @@ impl Shell {
         if self.restoring.contains(id) || !self.needs_live(env_path, id, window, cx) {
             return;
         }
+        // Read while the pointer rested on its row: shown in this frame.
+        if let Some(restored) = self.take_ahead(id) {
+            self.go_live(env_path, id, restored, window, cx);
+            return;
+        }
         let sid = SharedString::from(id.to_string());
         self.restoring.insert(sid.clone());
         let (env, transcript) = (env_path.to_path_buf(), state::transcript_path(id));
@@ -317,6 +322,8 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Whatever was read ahead is older than what goes live now.
+        self.ahead.remove(id);
         let Some(session) = self.session_mut(env_path, id) else {
             return;
         };

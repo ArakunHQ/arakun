@@ -47,6 +47,8 @@ pub enum CustomizeEvent {
     SidebarPreset(Preset),
     RailWidth(f32),
     ResetSidebar,
+    /// The panel moved to another tab.
+    Tab(CustomizeTab),
     /// Undo the last sidebar change, or redo it with `true`.
     UndoSidebar(bool),
     /// Copy the sidebar's layout, or use one from the clipboard.
@@ -204,16 +206,15 @@ impl CustomizeView {
         }
     }
 
-    pub fn tab(&self) -> CustomizeTab {
-        self.tab
-    }
-
     pub fn set_arrange(&mut self, slot: ArrangeSlot) {
         self.arrange = Some(slot);
     }
 
     pub fn set_tab(&mut self, tab: CustomizeTab, cx: &mut Context<Self>) {
-        self.tab = tab;
+        if self.tab != tab {
+            self.tab = tab;
+            cx.emit(CustomizeEvent::Tab(tab));
+        }
         cx.notify();
     }
 

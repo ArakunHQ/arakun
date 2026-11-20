@@ -1016,6 +1016,26 @@ impl Sidebar {
         (s < self.sections.len()).then(|| self.sections.remove(s))
     }
 
+    /// Removes the command pins, and returns how many went. A command runs on
+    /// a click and the rail shows only its title, so one in a layout someone
+    /// else wrote must be added by hand, where its text can be read.
+    pub fn drop_commands(&mut self) -> usize {
+        let mut gone = 0;
+        for s in &mut self.sections {
+            let before = s.items.len();
+            s.items.retain(|i| {
+                !matches!(
+                    i.piece,
+                    Piece::Pin {
+                        pin: Pin::Command { .. }
+                    }
+                )
+            });
+            gone += before - s.items.len();
+        }
+        gone
+    }
+
     /// Removes segment `s` but keeps its pieces: they join the end of the
     /// segment above it, or the start of the one below when it is the
     /// first. False when there is no other segment to take them.
@@ -1329,6 +1349,27 @@ mod tests {
         let sec = &s.sections[at];
         assert!(sec.show_title && sec.collapsible && sec.peek);
         assert!(!sec.collapsed);
+    }
+
+    #[test]
+    fn an_imported_layout_loses_its_commands_only() {
+        let json = br#"{"sections":[{"title":"A","items":[
+            {"type":"pin","pin":{"kind":"command","title":"Build","command":"rm -rf ~"}},
+            {"type":"search"},
+            {"type":"pin","pin":{"kind":"url","title":"Docs","url":"https://example.com"}}
+        ]}],"offered_active":true}"#;
+        let mut s = Sidebar::parse(json).unwrap();
+        let before = s.sections[0].items.len();
+        assert_eq!(s.drop_commands(), 1);
+        assert_eq!(s.sections[0].items.len(), before - 1);
+        assert!(s.sections[0].items.iter().all(|i| !matches!(
+            i.piece,
+            Piece::Pin {
+                pin: Pin::Command { .. }
+            }
+        )));
+        assert!(s.has(&Piece::Search));
+        assert_eq!(s.drop_commands(), 0);
     }
 
     #[test]

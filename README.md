@@ -429,10 +429,13 @@ only sums up what is chosen. It opens without a project too.
   its outline and title, and a click on a piece or a title selects it instead of
   opening it. The tab then shows its options (name, emoji, folding, Fixed or Scroll,
   Ungroup, remove) and chips to add a group, a link, a command, a title, a separator,
-  a spacer or what the sidebar does not hold yet, into the selected segment, or dragged
-  onto the sidebar where they should go. Pieces and segment titles drag into another
+  a spacer or what the sidebar does not hold yet, into the selected segment with a
+  click. The pieces among them (not Group, Link, Command or Title, which ask for more
+  first) can also be dragged onto the sidebar where they should go. Pieces and segment titles drag into another
   order on the sidebar itself. The panel's header has undo and redo for these changes,
   and its footer copies the layout (Export) or uses one from the clipboard (Import).
+  An imported layout comes without its commands, which run on a click: add those with
+  Command…, where their text can be read.
   Done closes the panel, and "Customize sidebar…" in the sidebar's right-click menu
   opens this tab. Reset sidebar
   goes back to the default layout and width. The layout is kept in `sidebar.json`.

@@ -10,10 +10,8 @@ use gpui::Point;
 
 impl Shell {
     /// Customize is open on its Sidebar tab: the rail is being arranged.
-    pub(super) fn arranging(&self, cx: &App) -> bool {
-        self.customize
-            .as_ref()
-            .is_some_and(|(view, _)| view.read(cx).tab() == CustomizeTab::Sidebar)
+    pub(super) fn arranging(&self) -> bool {
+        self.customize.is_some() && self.customize_tab == CustomizeTab::Sidebar
     }
 
     /// Lays a click target over a rail piece or segment title while
@@ -319,7 +317,7 @@ impl Shell {
             .flex_col()
             .gap(crate::ui::sp(8.))
             .child(arrange_heading(
-                "Add · click or drag",
+                "Add",
                 target
                     .filter(|t| !t.is_empty())
                     .map(|t| format!("to {t}"))
@@ -349,7 +347,7 @@ impl Shell {
                         .text_size(px(ui::TEXT_SM))
                         .text_color(theme::text_subtle())
                         .child(
-                            "Click a piece or a group's title in the sidebar to see its options. Drag them to move them; drag a chip above onto the sidebar to place it.",
+                            "Click a piece or a group's title in the sidebar to see its options, and drag it to move it. Pieces in Add also drag onto the sidebar; Group, Link, Command and Title are added with a click.",
                         ),
                 )
                 .into_any_element(),

@@ -458,6 +458,8 @@ pub struct Shell {
     canvas_view: Entity<crate::canvas_view::CanvasView>,
     /// The Customize panel, while it is open in the workspace panel's place.
     customize: Option<(Entity<CustomizeView>, Subscription)>,
+    /// The tab Customize shows: on Sidebar, the rail is being arranged.
+    customize_tab: CustomizeTab,
     _usage_view: Subscription,
     /// (project root, branch) → the fix session whose push CI is judging.
     fix_loops: std::collections::HashMap<(std::path::PathBuf, String), runs::FixLoop>,
@@ -973,6 +975,7 @@ impl Shell {
             usage_view,
             gallery_view,
             customize: None,
+            customize_tab: CustomizeTab::Colors,
             iso_view,
             #[cfg(feature = "coderlabs")]
             canvas_view,
@@ -2449,7 +2452,7 @@ impl Shell {
         // Customize holds the panel's place: the toggle brings the workspace
         // panel back there rather than hiding it unseen.
         if self.customize.is_some() {
-            self.customize = None;
+            self.close_customize(cx);
             if !self.panel_open {
                 self.panel_open = true;
                 self.save(cx);
@@ -2487,6 +2490,7 @@ impl Shell {
         self.menu = None;
         if let Some((view, _)) = &self.customize {
             view.update(cx, |v, cx| v.set_tab(tab, cx));
+            self.customize_tab = tab;
         } else {
             let view = cx.new(|cx| CustomizeView::new(tab, window, cx));
             let sub =
@@ -2495,6 +2499,10 @@ impl Shell {
                     window,
                     |this, _, ev: &CustomizeEvent, window, cx| match ev {
                         CustomizeEvent::Close => this.close_customize(cx),
+                    CustomizeEvent::Tab(tab) => {
+                        this.customize_tab = *tab;
+                        cx.notify();
+                    }
                         CustomizeEvent::OpenGallery => this.open_gallery_tab(window, cx),
                         CustomizeEvent::Grays(g) => {
                             theme::set_grays(*g);
@@ -2529,6 +2537,7 @@ impl Shell {
                                 *s = p.layout();
                                 s.style = style;
                             });
+                            this.clear_builder_selection();
                         }
                         CustomizeEvent::RailWidth(w) => {
                             this.rail_w = *w;
@@ -2537,6 +2546,7 @@ impl Shell {
                         }
                         CustomizeEvent::ResetSidebar => {
                             this.change_sidebar(cx, |s| *s = crate::sidebar::Sidebar::default());
+                            this.clear_builder_selection();
                             this.rail_w = crate::state::RAIL_W;
                             this.save(cx);
                         }
@@ -2554,10 +2564,21 @@ impl Shell {
                                 .and_then(|c| c.text())
                                 .unwrap_or_default();
                             match crate::sidebar::Sidebar::parse(text.as_bytes()) {
-                                Some(s) => {
+                                Some(mut s) => {
+                                    // A command pin runs on a click and shows only its
+                                    // title, so one from a pasted layout is left out.
+                                    let dropped = s.drop_commands();
                                     this.change_sidebar(cx, |cur| *cur = s);
                                     this.clear_builder_selection();
-                                    this.builder.flash = Some("Layout imported".into());
+                                    this.builder.flash = Some(if dropped == 0 {
+                                        "Layout imported".into()
+                                    } else {
+                                        format!(
+                                            "Layout imported without its {dropped} command{}; add commands with Command…",
+                                            if dropped == 1 { "" } else { "s" }
+                                        )
+                                        .into()
+                                    });
                                 }
                                 None => {
                                     this.builder.flash =
@@ -2576,6 +2597,7 @@ impl Shell {
                         .map(|s| s.update(cx, |s, cx| s.render_arrange_panel(window, cx)))
                 }))
             });
+            self.customize_tab = tab;
             self.customize = Some((view, sub));
         }
         // It takes the workspace panel's place, so that place must be shown.
@@ -2622,6 +2644,7 @@ impl Shell {
     fn rail_shown(&self) -> bool {
         use crate::sidebar::Collapse;
         self.rail_open
+            || self.arranging()
             || !self.has_projects()
             || matches!(
                 self.sidebar.style.collapse,

@@ -145,7 +145,10 @@ pub(super) fn avatar(name: &str, size: f32) -> gpui::Div {
 impl Shell {
     /// Narrowed to icons: the rail's collapse is Icons and it is closed.
     pub(super) fn rail_narrow(&self) -> bool {
-        self.sidebar.style.collapse == Collapse::Icons && !self.rail_open && self.has_projects()
+        self.sidebar.style.collapse == Collapse::Icons
+            && !self.rail_open
+            && self.has_projects()
+            && !self.arranging()
     }
 
     pub(super) fn view_badge(&self, view: View, cx: &mut Context<Self>) -> Option<Badge> {
@@ -419,8 +422,8 @@ impl Shell {
 
     fn render_section(&self, si: usize, section: &Section, cx: &mut Context<Self>) -> AnyElement {
         let narrow = self.rail_narrow();
-        let arranging = self.arranging(cx);
-        let folded = section.collapsible && section.collapsed && !narrow;
+        let arranging = self.arranging();
+        let folded = section.collapsible && section.collapsed && !narrow && !arranging;
         // Narrowed, the rail is a column of icons already.
         let in_row = section.row && !narrow;
         let mut body = div()
@@ -564,9 +567,7 @@ impl Shell {
                 t.into_any_element()
             }
         });
-        if arranging && !folded {
-            body = body.child(self.arrange_end(si, section.items.len(), cx));
-        }
+        let end = (arranging && !folded).then(|| self.arrange_end(si, section.items.len(), cx));
         let selected = arranging && self.builder.sel == Some(BuilderSel::Section(si));
         div()
             .flex()
@@ -589,6 +590,7 @@ impl Shell {
             })
             .children(title)
             .child(body)
+            .children(end)
             .into_any_element()
     }
 
@@ -613,7 +615,7 @@ impl Shell {
         if item.only_when_busy
             && badge.is_none()
             && matches!(item.piece, Piece::View { .. })
-            && !self.arranging(cx)
+            && !self.arranging()
         {
             return None;
         }
@@ -829,7 +831,22 @@ impl Shell {
                 if narrow {
                     return None;
                 }
-                self.render_active_block(cx)?
+                match self.render_active_block(cx) {
+                    Some(block) => block,
+                    // Empty, it hides; arranging, it keeps a row to select and move.
+                    None if self.arranging() => div()
+                        .flex()
+                        .items_center()
+                        .gap(crate::ui::sp(8.))
+                        .h(px(style.density.row_h()))
+                        .px(crate::ui::sp(8.))
+                        .text_size(px(ui::TEXT_SM))
+                        .text_color(theme::text_faint())
+                        .child(icon(item.piece.icon(), 14.).text_color(theme::text_faint()))
+                        .child("Active sessions show here")
+                        .into_any_element(),
+                    None => return None,
+                }
             }
             Piece::Mascot => div()
                 .flex()
@@ -900,7 +917,7 @@ impl Shell {
         } else {
             None
         };
-        if item.only_when_busy && badge.is_none() && !self.arranging(cx) {
+        if item.only_when_busy && badge.is_none() && !self.arranging() {
             return None;
         }
         let open = matches!(

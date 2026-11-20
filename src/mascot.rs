@@ -919,6 +919,10 @@ impl Mascot {
         let mut p = Pose::default();
         if !animated() {
             self.act = None;
+            // A move begun before motion was reduced ends now: no hiding below
+            // the ledge, which nothing would wake up to undo.
+            self.perch = self.perch_want;
+            self.hide_until = 0.;
             p.blink = false;
             if self.state == State::Sleeping {
                 p.eye[1] = 0.13;

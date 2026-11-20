@@ -1726,6 +1726,8 @@ impl Island {
             self.progress = 0.;
         }
         if self.still {
+            // The old view would fade inside the snapped shape; drop it, even mid-fade.
+            self.prev = None;
             self.w = Spring { x: tw, v: 0. };
             self.h = Spring { x: th, v: 0. };
         } else {

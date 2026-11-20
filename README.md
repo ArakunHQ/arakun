@@ -427,11 +427,12 @@ after a week).
   missing says which one and the others keep working. PostHog counts queries per
   hour: the tab shows how many are left, keeps answers on disk and reads again only
   when they are 15 minutes old or you refresh.
-- **Doop.** The canvases of a [Doop](https://doop.arakun.dev) instance and the frames
+- **Doop.** The canvases of a [Doop](https://doop.design) instance and the frames
   of the one you pick, page by page, each with its render; a click opens the frame on
   the canvas in a browser tab. Sign in with the browser, or paste an agent key (the form offers the one
-  in `DOOP_KEY` or `~/.config/arakun/doop_key`). For a self-hosted instance, type its
-  address in the Instance field; every sign-in stays saved in
+  in `DOOP_KEY` or `~/.config/arakun/doop_key`). The form signs in to Doop
+  (doop.design), or to a self-hosted instance when you pick Self-hosted and type its
+  address; every sign-in stays saved in
   `~/.local/share/arakun/doop/sessions.json` and the header switches between them. The
   tab reads through the instance's MCP endpoint (`<instance>/mcp`), so a canvas an
   instance doesn't list can be added by its link. Accounts › Agents adds that MCP server

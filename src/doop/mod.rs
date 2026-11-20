@@ -1,7 +1,8 @@
 //! Doop for the Doop tab: the instances the user signed in to, the canvases
 //! each one holds, and the frames of a canvas with their renders.
 //!
-//! An instance is an origin (`https://doop.arakun.dev`, or a self-hosted one).
+//! An instance is an origin: Doop itself (`https://doop.design`), or a
+//! self-hosted one such as `https://doop.arakun.dev`.
 //! Everything is read through its MCP endpoint, `<instance>/mcp`, the same one
 //! the agents use: JSON-RPC over POST with a bearer token. The token is an
 //! OAuth one from a sign-in in the browser (`oauth`), or an agent key the user
@@ -29,8 +30,8 @@ use sha2::Digest as _;
 
 use crate::agent::AgentKind;
 
-/// Doop as Arakun hosts it. Any other origin is a self-hosted instance.
-pub const DEFAULT_HOST: &str = "https://doop.arakun.dev";
+/// The regular hosted Doop. Any other origin is a self-hosted instance.
+pub const DEFAULT_HOST: &str = "https://doop.design";
 
 /// A render is drawn at most this wide: the grid's cards are smaller.
 const THUMB_W: u32 = 720;
@@ -62,14 +63,14 @@ impl Error {
 // Instances.
 
 /// The origin of what the user typed: `doop.acme.dev`, a canvas link or the
-/// MCP address all name the same instance. Empty is Doop itself. Plain http
+/// MCP address all name the same instance. Plain http
 /// is only taken for a host on this machine or network, since the token
 /// travels with every call. The answer holds only characters that are safe
 /// in a shell command (`connect_command`).
 pub fn normalize_host(input: &str) -> Result<String, String> {
     let s = input.trim();
     if s.is_empty() {
-        return Ok(DEFAULT_HOST.into());
+        return Err("Type the address of the instance (doop.example.com).".into());
     }
     let (scheme, rest) = match s.split_once("://") {
         Some((scheme, rest)) => (scheme.to_ascii_lowercase(), rest),
@@ -112,7 +113,7 @@ fn is_local(authority: &str) -> bool {
             .any(|tld| host.ends_with(tld))
 }
 
-/// `doop.arakun.dev`: an instance as the tab names it.
+/// `doop.design`: an instance as the tab names it.
 pub fn host_label(host: &str) -> &str {
     host.trim_start_matches("https://")
         .trim_start_matches("http://")
@@ -1123,7 +1124,8 @@ mod tests {
 
     #[test]
     fn hosts_come_out_as_origins() {
-        assert_eq!(normalize_host("").unwrap(), DEFAULT_HOST);
+        assert!(normalize_host("  ").is_err());
+        assert_eq!(normalize_host("doop.design/mcp").unwrap(), DEFAULT_HOST);
         assert_eq!(
             normalize_host(" Doop.Acme.dev/ ").unwrap(),
             "https://doop.acme.dev"
@@ -1159,7 +1161,7 @@ mod tests {
     #[test]
     fn canvas_links_name_the_instance_and_the_id() {
         assert_eq!(
-            canvas_ref("https://doop.arakun.dev/c/bnj8ZjYM5d?frame=Nxj47aWtQb"),
+            canvas_ref("https://doop.design/c/bnj8ZjYM5d?frame=Nxj47aWtQb"),
             Some((Some(DEFAULT_HOST.into()), "bnj8ZjYM5d".into()))
         );
         assert_eq!(
@@ -1170,16 +1172,16 @@ mod tests {
             canvas_ref(" bnj8ZjYM5d "),
             Some((None, "bnj8ZjYM5d".into()))
         );
-        assert_eq!(canvas_ref("https://doop.arakun.dev/"), None);
+        assert_eq!(canvas_ref("https://doop.design/"), None);
         assert_eq!(canvas_ref("not a canvas"), None);
-        assert_eq!(canvas_ref("https://doop.arakun.dev/c/"), None);
+        assert_eq!(canvas_ref("https://doop.design/c/"), None);
     }
 
     #[test]
     fn links_escape_what_the_instance_sent() {
         assert_eq!(
             render_url(DEFAULT_HOST, "Nxj47aWtQb"),
-            "https://doop.arakun.dev/i/Nxj47aWtQb.png"
+            "https://doop.design/i/Nxj47aWtQb.png"
         );
         assert_eq!(
             canvas_url("https://d.lan", "a b", Some("../x")),
@@ -1449,6 +1451,10 @@ mod tests {
     fn agents_get_a_server_per_instance() {
         assert_eq!(server_name(DEFAULT_HOST), "doop");
         assert_eq!(
+            server_name("https://doop.arakun.dev"),
+            "doop-doop-arakun-dev"
+        );
+        assert_eq!(
             server_name("https://design.acme.dev:8443"),
             "doop-design-acme-dev-8443"
         );
@@ -1463,7 +1469,7 @@ mod tests {
         assert_eq!(connect_command(AgentKind::Codex, DEFAULT_HOST, false), None);
         let config = json!({"mcpServers": {
             "design": {"type": "http", "url": "https://d.acme.dev/mcp/"},
-            "off": {"url": "https://doop.arakun.dev/mcp", "disabled": true},
+            "off": {"url": "https://doop.design/mcp", "disabled": true},
             "local": {"command": "npx"}
         }});
         assert_eq!(

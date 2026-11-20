@@ -7,8 +7,12 @@ use std::sync::atomic::Ordering;
 use super::*;
 
 impl DoopView {
-    /// The instance typed in the form, or why it can't be one.
+    /// The instance the form signs in to: Doop itself, or the address typed,
+    /// or why that can't be one.
     fn typed_host(&mut self, cx: &mut Context<Self>) -> Option<String> {
+        if !self.own_instance {
+            return Some(doop::DEFAULT_HOST.to_string());
+        }
         match doop::normalize_host(self.host_input.read(cx).text()) {
             Ok(host) => Some(host),
             Err(e) => {
@@ -125,6 +129,14 @@ impl DoopView {
             .min_w_0()
             .child(icon("internet", 14.).text_color(theme::text_subtle()))
             .child(self.host_input.clone());
+        let options = [(false, "Doop"), (true, "Self-hosted")];
+        let which = ui::toggle_group("doop-which", &options, self.own_instance, |seg, own| {
+            seg.on_click(cx.listener(move |this, _, _, cx| {
+                this.own_instance = own;
+                this.connect_note = None;
+                cx.notify();
+            }))
+        });
         let key = ui::field()
             .flex_1()
             .min_w_0()
@@ -159,11 +171,22 @@ impl DoopView {
                 .flex_col()
                 .gap(crate::ui::sp(6.))
                 .child(label("Instance"))
-                .child(host)
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(crate::ui::sp(8.))
+                        .child(which)
+                        .when(self.own_instance, |d| d.child(host)),
+                )
                 .child(ui::text(
                     Type::Caption,
                     theme::text_faint(),
-                    "Leave it empty for doop.arakun.dev. For a self-hosted instance, type its address.",
+                    if self.own_instance {
+                        "The address of the instance you or your team host."
+                    } else {
+                        "Doop as hosted at doop.design."
+                    },
                 )),
         )
         .child(
@@ -174,7 +197,11 @@ impl DoopView {
                 .child(
                     ui::button(
                         "doop-browser",
-                        if busy { "Waiting…" } else { "Sign in with the browser" },
+                        if busy {
+                            "Waiting…"
+                        } else {
+                            "Sign in with the browser"
+                        },
                         ButtonKind::Primary,
                         !busy,
                     )
@@ -211,10 +238,10 @@ impl DoopView {
                         .gap(crate::ui::sp(8.))
                         .child(key)
                         .child(
-                            ui::button("doop-key-save", "Add", ButtonKind::Outline, !busy).when(
-                                !busy,
-                                |b| b.on_click(cx.listener(|this, _, _, cx| this.connect_key(cx))),
-                            ),
+                            ui::button("doop-key-save", "Add", ButtonKind::Outline, !busy)
+                                .when(!busy, |b| {
+                                    b.on_click(cx.listener(|this, _, _, cx| this.connect_key(cx)))
+                                }),
                         ),
                 )
                 .child(ui::text(

@@ -85,6 +85,8 @@ pub struct DoopView {
     host_input: Entity<TextInput>,
     key_input: Entity<TextInput>,
     canvas_input: Entity<TextInput>,
+    /// The form signs in to a self-hosted instance, not to Doop itself.
+    own_instance: bool,
     /// Set while a sign-in runs; the flag stops one waiting on the browser.
     connecting: Option<Arc<AtomicBool>>,
     connect_note: Option<(String, bool)>,
@@ -104,8 +106,7 @@ impl EventEmitter<DoopEvent> for DoopView {}
 
 impl DoopView {
     pub fn new(cx: &mut Context<Self>) -> Self {
-        let host_input =
-            cx.new(|cx| TextInput::new(doop::host_label(doop::DEFAULT_HOST), cx).mono());
+        let host_input = cx.new(|cx| TextInput::new("doop.example.com", cx).mono());
         let key_input = cx.new(|cx| TextInput::new("Agent key", cx).mono().secret());
         let canvas_input = cx.new(|cx| TextInput::new("Canvas link or id", cx));
         let clear = |this: &mut Self, cx: &mut Context<Self>| {
@@ -166,6 +167,7 @@ impl DoopView {
             host_input,
             key_input,
             canvas_input,
+            own_instance: false,
             connecting: None,
             connect_note: None,
             add_note: None,

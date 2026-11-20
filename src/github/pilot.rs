@@ -126,7 +126,46 @@ pub(super) fn local_http(url: &str) -> bool {
 }
 
 pub fn load_config() -> Option<Config> {
-    parse_config(&std::fs::read(config_file()).ok()?)
+    read_config().ok().flatten()
+}
+
+/// The settings: Ok(None) when there is no file (pilot is off), Err when
+/// there is one that can't be used, so a typo in it says so instead of
+/// looking like pilot was never set up.
+pub fn read_config() -> Result<Option<Config>, String> {
+    let path = config_file();
+    match std::fs::read(&path) {
+        Ok(bytes) => parse_config(&bytes)
+            .map(Some)
+            .ok_or_else(|| config_problem(&bytes)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("couldn't read {}: {e}", path.display())),
+    }
+}
+
+/// Why settings that don't parse can't be used, in the user's words.
+fn config_problem(bytes: &[u8]) -> String {
+    let fix = "connect again with \u{201c}arakun-pilot settings\u{2026}\u{201d}";
+    let Ok(v) = serde_json::from_slice::<serde_json::Value>(bytes) else {
+        return format!("its settings file isn't valid JSON; {fix}");
+    };
+    let url = v
+        .get("url")
+        .and_then(|u| u.as_str())
+        .unwrap_or_default()
+        .trim();
+    let token = v
+        .get("token")
+        .and_then(|t| t.as_str())
+        .unwrap_or_default()
+        .trim();
+    if url.is_empty() {
+        format!("its settings have no address; {fix}")
+    } else if token.is_empty() {
+        format!("its settings have no token; {fix}")
+    } else {
+        format!("its address must start with https:// (http:// only for localhost); {fix}")
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -515,7 +554,10 @@ fn encode(s: &str) -> String {
 /// What a status means. Never the token: errors only name the address.
 pub(super) fn status_problem(status: u16) -> String {
     match status {
-        401 | 403 => "the Worker refused the key (check the token in client.json)".into(),
+        401 | 403 => {
+            "the Worker refused the token (change it in \u{201c}arakun-pilot settings\u{2026}\u{201d})"
+                .into()
+        }
         _ => format!("the Worker answered {status}"),
     }
 }
@@ -524,7 +566,8 @@ pub(super) fn status_problem(status: u16) -> String {
 /// it gave one: "la rama ya existe" helps more than a bare 409.
 fn write_problem(status: u16, body: &[u8], admin: bool) -> String {
     if admin && matches!(status, 401 | 403) {
-        return "the Worker refused the admin key (check admin_token in client.json)".into();
+        return "the Worker refused the admin token (change it in \u{201c}arakun-pilot settings\u{2026}\u{201d})"
+            .into();
     }
     let reason = serde_json::from_slice::<serde_json::Value>(body)
         .ok()
@@ -692,7 +735,8 @@ pub fn parse_task_id(bytes: &[u8]) -> Option<String> {
 }
 
 /// Why a task can't go with these settings: tasks take the admin token.
-pub const NO_ADMIN: &str = "Sending tasks needs \"admin_token\" in arakun-pilot's client.json.";
+pub const NO_ADMIN: &str =
+    "Sending tasks needs the admin token: add it in \u{201c}arakun-pilot settings\u{2026}\u{201d}.";
 
 /// Hands the agent new work. Ok with the task's id ("" when the Worker
 /// named none); its result comes back later as an item.
@@ -700,6 +744,35 @@ pub fn send_task(cfg: &Config, t: &TaskRequest) -> Result<String, String> {
     let admin = cfg.admin_token.as_deref().ok_or(NO_ADMIN)?;
     let bytes = post_json(&cfg.url, "/tasks", admin, &task_body(t), true)?;
     Ok(parse_task_id(&bytes).unwrap_or_default())
+}
+
+/// See `Pilot::status`.
+fn status_line(
+    config: Option<&Config>,
+    config_problem: Option<&str>,
+    problem: Option<&str>,
+    last_read: Option<u64>,
+    now: u64,
+) -> Option<(String, bool)> {
+    if let Some(e) = config_problem {
+        return Some((format!("pilot is off: {e}"), true));
+    }
+    let cfg = config?;
+    let host = cfg
+        .url
+        .split_once("://")
+        .map_or(cfg.url.as_str(), |(_, rest)| rest);
+    Some(match (problem, last_read) {
+        (Some(e), _) => (format!("Can't reach {host}: {e}"), true),
+        (None, Some(t)) => {
+            let ago = match now.saturating_sub(t) {
+                0..60 => "just now".to_string(),
+                s => format!("{} ago", super::board::span(s)),
+            };
+            (format!("Connected to {host} · read {ago}"), false)
+        }
+        (None, None) => (format!("Connecting to {host}…"), false),
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -720,6 +793,10 @@ pub struct Pilot {
     /// A refresh was asked for while a read was going.
     again: bool,
     problem: Option<String>,
+    /// Why the settings file there is can't be used.
+    config_problem: Option<String>,
+    /// When the Worker last answered (unix seconds).
+    last_read: Option<u64>,
     /// The last board read, kept while a later read fails.
     board: Option<super::board::Board>,
     /// Why the last board read failed; `Missing` while the Worker has none.
@@ -741,6 +818,8 @@ impl Pilot {
             busy: false,
             again: false,
             problem: None,
+            config_problem: None,
+            last_read: None,
             board: None,
             board_problem: None,
             _poll: poll,
@@ -755,6 +834,23 @@ impl Pilot {
     /// Why the last read failed.
     pub fn problem(&self) -> Option<&str> {
         self.problem.as_deref()
+    }
+
+    /// Why the settings file can't be used: pilot is off until it is fixed.
+    pub fn config_problem(&self) -> Option<&str> {
+        self.config_problem.as_deref()
+    }
+
+    /// One line on how pilot is doing, and whether it is a problem; None
+    /// while it was never set up.
+    pub fn status(&self) -> Option<(String, bool)> {
+        status_line(
+            self.config.as_ref(),
+            self.config_problem.as_deref(),
+            self.problem.as_deref(),
+            self.last_read,
+            crate::model::unix_now(),
+        )
     }
 
     /// The board, once read.
@@ -799,8 +895,16 @@ impl Pilot {
             self.again = true;
             return;
         }
-        let config = load_config();
+        let (config, config_problem) = match read_config() {
+            Ok(c) => (c, None),
+            Err(e) => (None, Some(e)),
+        };
+        if config_problem != self.config_problem {
+            self.config_problem = config_problem;
+            cx.notify();
+        }
         if config != self.config {
+            self.last_read = None;
             // Another Worker (or none) knows other items.
             self.items.clear();
             self.problem = None;
@@ -862,6 +966,9 @@ impl Pilot {
                 match read {
                     Ok(read) => {
                         this.problem = None;
+                        if this.config.is_some() {
+                            this.last_read = Some(crate::model::unix_now());
+                        }
                         let quiet = std::mem::take(&mut this.fresh_book);
                         let pops = this.book.absorb(&mut this.items, read, quiet);
                         if !pops.is_empty() {
@@ -950,6 +1057,29 @@ impl Pilot {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_status_says_what_is_wrong_first() {
+        let cfg = parse_config(br#"{"url": "https://p.dev", "token": "t"}"#).unwrap();
+        assert_eq!(status_line(None, None, None, None, 0), None);
+        let (off, bad) =
+            status_line(None, Some("its settings have no token"), None, None, 0).unwrap();
+        assert!(bad && off.starts_with("pilot is off"));
+        let (down, bad) =
+            status_line(Some(&cfg), None, Some("could not reach"), Some(1), 100).unwrap();
+        assert!(bad && down.starts_with("Can't reach p.dev"));
+        let (ok, bad) = status_line(Some(&cfg), None, None, Some(1000), 1000 + 125).unwrap();
+        assert!(!bad);
+        assert_eq!(ok, "Connected to p.dev · read 2 min ago");
+    }
+
+    #[test]
+    fn a_broken_settings_file_says_what_is_missing() {
+        assert!(config_problem(b"{oops").contains("isn't valid JSON"));
+        assert!(config_problem(br#"{"url": "https://p.dev"}"#).contains("no token"));
+        assert!(config_problem(br#"{"token": "t"}"#).contains("no address"));
+        assert!(config_problem(br#"{"url": "http://p.dev", "token": "t"}"#).contains("https://"));
+    }
 
     #[test]
     fn every_untold_id_is_told_past_one_batch() {
@@ -1386,8 +1516,8 @@ mod tests {
             write_problem(409, br#"{"error": "la rama ya existe"}"#, true),
             "the Worker answered 409 (la rama ya existe)"
         );
-        assert!(write_problem(403, b"", true).contains("admin_token"));
-        assert!(write_problem(401, b"", false).contains("token in client.json"));
+        assert!(write_problem(403, b"", true).contains("admin token"));
+        assert!(write_problem(401, b"", false).contains("refused the token"));
         assert_eq!(
             write_problem(500, b"<html>", false),
             "the Worker answered 500"

@@ -584,10 +584,16 @@ impl GitHubView {
                 .into_any_element()
         };
         if let Some(BoardProblem::Failed(e)) = self.pilot.read(cx).board_problem() {
-            out.push(line(
-                "gh-board-problem",
-                format!("Couldn't read pilot's board: {e}"),
-            ));
+            let text = format!("Couldn't read pilot's board: {e}");
+            out.push(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(crate::ui::sp(8.))
+                    .child(line("gh-board-problem", text))
+                    .child(super::pilot::settings_link("gh-board-fix", cx))
+                    .into_any_element(),
+            );
         }
         let g = self.github.read(cx);
         match g.problem().or(g.search_problem()) {

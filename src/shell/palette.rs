@@ -344,7 +344,7 @@ impl Shell {
                     let result = cx
                         .background_spawn(crate::guard::task(async move {
                             let cfg = pilot::load_config()
-                                .ok_or("couldn't find arakun-pilot's client.json")?;
+                                .ok_or("arakun-pilot isn't connected: connect it with \u{201c}Connect arakun-pilot\u{2026}\u{201d}")?;
                             pilot::send_task(&cfg, &req)
                         }))
                         .await;

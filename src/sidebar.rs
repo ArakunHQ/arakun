@@ -25,6 +25,7 @@ pub enum View {
     Extensions,
     Cloudflare,
     PostHog,
+    Doop,
     #[cfg(feature = "coderlabs")]
     Site,
     Isometric,
@@ -53,6 +54,7 @@ impl View {
         View::Extensions,
         View::Cloudflare,
         View::PostHog,
+        View::Doop,
         #[cfg(feature = "coderlabs")]
         View::Site,
         View::Isometric,
@@ -74,6 +76,7 @@ impl View {
         View::Usage,
         View::Cloudflare,
         View::PostHog,
+        View::Doop,
         View::Isometric,
         View::Phone,
         View::Servers,
@@ -98,6 +101,7 @@ impl View {
             View::Extensions => "Marketplace",
             View::Cloudflare => "Cloudflare",
             View::PostHog => "PostHog",
+            View::Doop => "Doop",
             #[cfg(feature = "coderlabs")]
             View::Site => "arakun.dev",
             View::Isometric => "Isometric",
@@ -125,6 +129,7 @@ impl View {
             View::Extensions => "store01",
             View::Cloudflare => "internet",
             View::PostHog => "chart-breakout-square",
+            View::Doop => "paint-board",
             #[cfg(feature = "coderlabs")]
             View::Site => "globe",
             View::Isometric => "cube",
@@ -153,6 +158,7 @@ impl View {
             View::Extensions => "Plugins, MCP servers and skills",
             View::Cloudflare => "Workers, tunnels and DNS",
             View::PostHog => "Product analytics for each repo",
+            View::Doop => "Design canvases and their frames",
             #[cfg(feature = "coderlabs")]
             View::Site => "Your arakun.dev account",
             View::Isometric => "Animated isometric scenes",
@@ -644,6 +650,7 @@ impl Preset {
             View::Extensions,
             View::Cloudflare,
             View::PostHog,
+            View::Doop,
             #[cfg(feature = "coderlabs")]
             View::Site,
             View::Isometric,

@@ -144,6 +144,7 @@ impl Shell {
             #[cfg(feature = "team")]
             TabKind::Team => self.team_view.update(cx, |v, cx| v.focus(window, cx)),
             TabKind::PostHog => self.posthog_view.update(cx, |v, cx| v.focus(window, cx)),
+            TabKind::Doop => self.doop_view.update(cx, |v, cx| v.focus(window, cx)),
             TabKind::Branches => self.branches_view.update(cx, |v, cx| v.focus(window, cx)),
             TabKind::GitHub => self.github_view.update(cx, |v, cx| v.focus(window, cx)),
             TabKind::Phone => self.phone_view.update(cx, |v, cx| v.focus(window, cx)),
@@ -542,6 +543,7 @@ impl Shell {
             TabKind::Memory => self.open_memory_tab(window, cx),
             TabKind::Cloudflare => self.open_cloudflare_tab(window, cx),
             TabKind::PostHog => self.open_posthog_tab(window, cx),
+            TabKind::Doop => self.open_doop_tab(window, cx),
             TabKind::Usage => self.open_usage_tab(window, cx),
             TabKind::Gallery => self.open_gallery_tab(window, cx),
             TabKind::Isometric => self.open_iso_tab(window, cx),

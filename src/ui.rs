@@ -229,6 +229,15 @@ pub fn focusable(d: gpui::Stateful<gpui::Div>) -> gpui::Stateful<gpui::Div> {
         .on_mouse_down(gpui::MouseButton::Left, |_, window, _| {
             window.prevent_default()
         })
+        // gpui clicks on the release, but a dialog's own Enter (confirm)
+        // listens to the press: keep it from reaching the dialog, or Enter on
+        // Cancel would confirm. gpui has noted the press before this runs.
+        .on_key_down(|ev, _, cx| {
+            let k = &ev.keystroke;
+            if (k.key == "enter" || k.key == "space") && !k.modifiers.modified() {
+                cx.stop_propagation();
+            }
+        })
 }
 
 fn focus_ring() -> Vec<gpui::BoxShadow> {
@@ -616,6 +625,9 @@ pub fn segmented() -> gpui::Div {
 // ---------------------------------------------------------------------------
 // Dialogs and menus.
 
+/// The key context of a dialog's panel: Tab stays inside it while it is open.
+pub const MODAL_CONTEXT: &str = "Modal";
+
 /// Panel of a centered dialog: `rounded-2xl border-content/7 shadow-2xl`.
 ///
 /// It never outgrows the window: the part meant to give way on short windows
@@ -623,6 +635,7 @@ pub fn segmented() -> gpui::Div {
 pub fn modal_panel(id: impl Into<ElementId>, width: f32) -> gpui::Stateful<gpui::Div> {
     div()
         .id(id)
+        .key_context(MODAL_CONTEXT)
         .occlude()
         .flex()
         .flex_col()

@@ -3550,13 +3550,43 @@ impl Shell {
         if self.composer_focus.is_focused(window) || types_tab(&window.context_stack()) {
             return;
         }
-        if m.shift {
-            window.focus_prev(cx);
-        } else {
-            window.focus_next(cx);
+        let step = |window: &mut Window, cx: &mut Context<Self>| {
+            if m.shift {
+                window.focus_prev(cx);
+            } else {
+                window.focus_next(cx);
+            }
+        };
+        step(window, cx);
+        // gpui's tab order spans the window, so an open dialog would let Tab
+        // reach the controls behind it. Step on to the next stop inside one;
+        // back at the first stop means no dialog is open.
+        let first = window.focused(cx);
+        for _ in 0..MAX_TAB_STOPS {
+            if in_modal(&window.context_stack()) {
+                break;
+            }
+            step(window, cx);
+            let now = window.focused(cx);
+            if now.is_none() || now == first {
+                break;
+            }
+        }
+        if !in_modal(&window.context_stack())
+            && let Some(first) = first
+        {
+            window.focus(&first, cx);
         }
         cx.stop_propagation();
     }
+}
+
+/// How many tab stops Tab passes at most looking for one inside a dialog.
+const MAX_TAB_STOPS: usize = 1024;
+
+/// Whether focus is inside a dialog (`ui::modal_panel`).
+fn in_modal(contexts: &[gpui::KeyContext]) -> bool {
+    contexts.iter().any(|c| c.contains(ui::MODAL_CONTEXT))
 }
 
 /// Whether focus is in something that types a Tab or moves with it: a
@@ -4506,5 +4536,7 @@ mod tests {
         assert!(types_tab(&[ctx("Shell"), ctx("Terminal")]));
         assert!(types_tab(&[ctx("Shell"), ctx("Browser")]));
         assert!(types_tab(&[ctx("Shell"), ctx("Palette"), ctx("TextInput")]));
+        assert!(in_modal(&[ctx("Shell"), ctx(ui::MODAL_CONTEXT)]));
+        assert!(!in_modal(&[ctx("Shell"), ctx("ThreadView")]));
     }
 }

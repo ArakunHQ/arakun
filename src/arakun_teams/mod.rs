@@ -42,6 +42,18 @@ pub struct Teams {
     phase: Phase,
     error: Option<SharedString>,
     _task: Option<Task<()>>,
+    /// Asks `/me` again after it failed for a reason other than a 401, such as
+    /// starting offline, so the Teams tab can still show in this run.
+    retry: Option<Task<()>>,
+    retry_after: Duration,
+}
+
+/// The first wait before asking `/me` again; it doubles up to `LAST_RETRY`.
+const FIRST_RETRY: Duration = Duration::from_secs(15);
+const LAST_RETRY: Duration = Duration::from_secs(10 * 60);
+
+fn next_retry(after: Duration) -> Duration {
+    (after * 2).min(LAST_RETRY)
 }
 
 impl Teams {
@@ -55,6 +67,8 @@ impl Teams {
             phase: Phase::Idle,
             error: None,
             _task: None,
+            retry: None,
+            retry_after: FIRST_RETRY,
         };
         let base = match base {
             Ok(base) => base,
@@ -140,6 +154,7 @@ impl Teams {
             Ok(me) => {
                 self.me = Some(me);
                 self.error = None;
+                self.stop_retrying();
             }
             // The server ended the session (it expired, or was signed out
             // elsewhere): forget it here too.
@@ -147,11 +162,29 @@ impl Teams {
                 self.session = None;
                 self.me = None;
                 self.error = Some("The Teams session ended. Sign in again.".into());
+                self.stop_retrying();
                 cx.background_spawn(async move { keyring::clear(KEYRING_ACCOUNT) })
                     .detach();
             }
-            Err(e) => self.error = Some(format!("Teams: {e}").into()),
+            Err(e) => {
+                self.error = Some(format!("Teams: {e}").into());
+                self.retry_later(cx);
+            }
         }
+    }
+
+    fn retry_later(&mut self, cx: &mut Context<Self>) {
+        let wait = self.retry_after;
+        self.retry_after = next_retry(wait);
+        self.retry = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(wait).await;
+            let _ = this.update(cx, |this, cx| this.refresh_if_unknown(cx));
+        }));
+    }
+
+    fn stop_retrying(&mut self) {
+        self.retry = None;
+        self.retry_after = FIRST_RETRY;
     }
 
     /// Starts GitHub's device flow: shows a code, opens GitHub's page for it,
@@ -213,6 +246,7 @@ impl Teams {
         self.error = None;
         self.phase = Phase::Idle;
         self._task = None;
+        self.stop_retrying();
         cx.notify();
         if fixture().is_some() {
             return;
@@ -347,6 +381,17 @@ mod tests {
         assert!(!session_ok("short"));
         assert!(!session_ok("has spaces in it, which no session has"));
         assert!(!session_ok("Qm9vbXNoYWthbGFrYS1ib29tc2hha2FsYWthLWJvb20\n"));
+    }
+
+    #[test]
+    fn me_is_asked_again_less_and_less_often() {
+        let mut after = FIRST_RETRY;
+        let mut waits = Vec::new();
+        for _ in 0..8 {
+            waits.push(after.as_secs());
+            after = next_retry(after);
+        }
+        assert_eq!(waits, [15, 30, 60, 120, 240, 480, 600, 600]);
     }
 
     #[test]

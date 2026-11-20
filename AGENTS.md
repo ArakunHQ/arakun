@@ -62,9 +62,10 @@ Every commit message and pull request title follows
   ready and CodeRabbit has finished, the reviewers are asked unless CodeRabbit approved
   and every review thread is resolved.
 - Answer every CodeRabbit comment: fix it and push, or reply with the reason you
-  won't. Don't resolve its threads or post `@coderabbitai resolve` or `approve`
-  yourself; the reviewer resolves what is left and approves. A workflow dismisses
-  CodeRabbit's approval when the author resolved one of its threads or one is open. If you change a rule here or in
+  won't. Resolve a thread on GitHub once the pushed commit fixes it; leave the ones
+  you declined open for the reviewer. Don't post `@coderabbitai resolve` or `approve`.
+  A workflow dismisses CodeRabbit's approval when a thread is still open, so resolve
+  the fixed ones right after you push. If you change a rule here or in
   CONTRIBUTING.md, check the instructions in `.coderabbit.yaml` too.
 
 ### Stacked pull requests

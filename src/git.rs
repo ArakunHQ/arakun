@@ -722,7 +722,7 @@ pub fn commit_diff(dir: &Path, all: bool, cap: usize) -> Result<(String, String,
         let new = read(dir, &["ls-files", "--others", "--exclude-standard", "-z"])?;
         for path in new.split('\0').filter(|p| !p.is_empty()) {
             stat.push_str(&format!(" {path} (new file)\n"));
-            // The list of files is whole; the diffs stop once past the cap.
+            // The diffs stop once past the cap; the list goes on, cut below.
             if chars > cap {
                 skipped = true;
                 continue;
@@ -739,7 +739,30 @@ pub fn commit_diff(dir: &Path, all: bool, cap: usize) -> Result<(String, String,
         }
     }
     let (diff, cut) = cut_at_line(diff, cap);
-    Ok((stat, diff, cut || skipped))
+    Ok((cap_stat(stat, STAT_LINES), diff, cut || skipped))
+}
+
+/// How many lines of the list of files a model reads: a folder of
+/// dependencies nobody ignored would otherwise list tens of thousands.
+const STAT_LINES: usize = 300;
+
+/// `stat` cut to `keep` lines, with a line that says how many files were
+/// left out. Git's summary line ("3 files changed, …") is no file: a file's
+/// line has a ` | ` or is a new file's, whatever its path says.
+fn cap_stat(stat: String, keep: usize) -> String {
+    let mut lines = stat.lines();
+    let mut kept: String = lines
+        .by_ref()
+        .take(keep)
+        .map(|l| format!("{l}\n"))
+        .collect();
+    let more = lines
+        .filter(|l| l.contains(" | ") || l.ends_with(" (new file)"))
+        .count();
+    if more > 0 {
+        kept.push_str(&format!(" … and {more} more files\n"));
+    }
+    kept
 }
 
 /// The subjects of the last `n` commits on HEAD, newest first: the style a
@@ -1769,6 +1792,27 @@ test: cover the resize\u{1f}\u{1e}\n";
     }
 
     #[test]
+    fn a_long_list_of_files_is_cut_and_says_by_how_many() {
+        let stat = " a | 1 +\n b | 2 +-\n 2 files changed, 2 insertions(+)\n c (new file)\n d (new file)\n";
+        assert_eq!(
+            super::cap_stat(stat.into(), 2),
+            " a | 1 +\n b | 2 +-\n … and 2 more files\n"
+        );
+        // Cut after git's summary line: that line is no file.
+        assert_eq!(
+            super::cap_stat(stat.into(), 1),
+            " a | 1 +\n … and 3 more files\n"
+        );
+        assert_eq!(super::cap_stat(stat.into(), 10), stat);
+        // A path that says "changed" is still a file.
+        let stat = " a | 1 +\n 1 file changed, 1 insertion(+)\n what changed/b (new file)\n";
+        assert_eq!(
+            super::cap_stat(stat.into(), 1),
+            " a | 1 +\n … and 1 more files\n"
+        );
+    }
+
+    #[test]
     fn a_commit_diff_takes_the_staged_or_every_change() {
         let dir = repo();
         std::fs::write(dir.join("staged.txt"), "kept\n").unwrap();
@@ -1806,6 +1850,7 @@ test: cover the resize\u{1f}\u{1e}\n";
         assert!(!diff.contains("xxxx") && cut, "{diff}");
 
         assert_eq!(super::recent_subjects(&dir, 5), vec!["x".to_string()]);
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 

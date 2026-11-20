@@ -5,6 +5,8 @@
 //! GitHub.
 //! [`commit`] does the same for the message of the Commit changes dialog.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use anyhow::{Result, anyhow};
@@ -18,6 +20,24 @@ use crate::git::PrCommit;
 pub const DIFF_CHARS: usize = 60_000;
 /// Longer than naming a branch: there is a diff to read.
 const TIMEOUT: Duration = Duration::from_secs(180);
+
+/// Stops what a dialog asked an agent to write once the dialog is gone:
+/// nobody reads the answer, and the agent would spend tokens for nothing.
+#[derive(Default)]
+pub struct StopOnDrop(Arc<AtomicBool>);
+
+impl StopOnDrop {
+    /// The flag a write watches.
+    pub fn flag(&self) -> Arc<AtomicBool> {
+        self.0.clone()
+    }
+}
+
+impl Drop for StopOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+}
 
 /// What the model writes from.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -171,8 +191,9 @@ pub fn parse(reply: &str) -> Option<(String, String)> {
 }
 
 /// Asks `agent` for the title and description. Blocks; run it in the background.
-pub fn write(agent: AgentKind, input: &Input) -> Result<(String, String)> {
-    let reply = env_name::ask(agent, model(agent), prompt(input), TIMEOUT)?;
+/// `stop` ends the agent early: the dialog that asked was closed.
+pub fn write(agent: AgentKind, input: &Input, stop: &AtomicBool) -> Result<(String, String)> {
+    let reply = env_name::ask_until(agent, model(agent), prompt(input), TIMEOUT, stop)?;
     // The answer itself stays out of the error: it was written from the
     // diff, and may repeat anything in it.
     parse(&reply).ok_or_else(|| anyhow!("the agent's answer had no title. Try again."))
@@ -181,6 +202,8 @@ pub fn write(agent: AgentKind, input: &Input) -> Result<(String, String)> {
 /// A commit message written by a model, from the diff the commit would take
 /// and the subjects of the commits before it.
 pub mod commit {
+    use std::sync::atomic::AtomicBool;
+
     use anyhow::{Result, anyhow};
 
     use super::{DIFF_CHARS, TIMEOUT, model};
@@ -242,13 +265,13 @@ pick the type and scope the same way; match their case and punctuation.\n\
     }
 
     /// Asks `agent` for the message. Blocks; run it in the background.
-    pub fn write(agent: AgentKind, source: &CommitSource) -> Result<String> {
+    pub fn write(agent: AgentKind, source: &CommitSource, stop: &AtomicBool) -> Result<String> {
         if source.stat.trim().is_empty() && source.diff.trim().is_empty() {
             return Err(anyhow!(
                 "Nothing to write from: git found no changes to commit."
             ));
         }
-        let reply = crate::env_name::ask(agent, model(agent), prompt(source), TIMEOUT)?;
+        let reply = crate::env_name::ask_until(agent, model(agent), prompt(source), TIMEOUT, stop)?;
         parse(&reply).ok_or_else(|| anyhow!("the agent's answer was empty. Try again."))
     }
 }

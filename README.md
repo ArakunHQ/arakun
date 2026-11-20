@@ -122,9 +122,9 @@ copy of it, rename it back, and start a version that can read it.
   Changes; the Branches tab draws every live branch against the default one.
   In the Commit changes dialog, "Write with <agent>" writes the message from what
   the commit takes (the staged changes, or every change, new files too, when nothing
-  is staged; up to 60,000 characters of diff) in the style of the last commit subjects.
-  It picks the agent as the pull request dialog does, and you edit the message before
-  you commit.
+  is staged; up to 60,000 characters of diff and the first 300 files) in the style of
+  the last commit subjects. It picks the agent as the pull request dialog does, and you
+  edit the message before you commit. Closing the dialog while it writes stops the agent.
 
   <img src="docs/screenshots/changes.png" alt="A file's diff in a tab, next to the Changes list with lines added and removed per file" width="760">
 - **Add or clone a project.** "Add project" (`Ctrl+O`) searches the git repositories

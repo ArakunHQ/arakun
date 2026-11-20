@@ -143,7 +143,7 @@ impl ThreadView {
         cx: &Context<Self>,
     ) -> AnyElement {
         let open = self.open.contains(&ix);
-        match entry {
+        let row = match entry {
             Entry::Thought { text } | Entry::Agent { text } => {
                 let thought = matches!(entry, Entry::Thought { .. });
                 let summary = markdown::summary(text);
@@ -159,30 +159,32 @@ impl ThreadView {
                 };
                 let streaming = thought && live && ix + 1 == self.thread.read(cx).entries().len();
                 let group: SharedString = format!("row-{ix}").into();
+                let label = div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(px(crate::ui::TEXT_LG))
+                    .text_color(color)
+                    .group_hover(group.clone(), |s| s.text_color(theme::text_muted()))
+                    .child(if open && thought || streaming && summary == "Thinking" {
+                        "Thinking…".to_string()
+                    } else {
+                        summary
+                    });
                 let mut row = div().flex().flex_col().min_w_0().child(
                     div()
                         .id(("row", ix))
-                        .group(group.clone())
+                        .group(group)
                         .flex()
                         .items_center()
                         .gap(crate::ui::sp(6.))
                         .py(crate::ui::sp(4.))
                         .cursor_pointer()
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .truncate()
-                                .text_size(px(crate::ui::TEXT_LG))
-                                .text_color(color)
-                                .group_hover(group, |s| s.text_color(theme::text_muted()))
-                                .when(streaming, |d| d.opacity(pulse(self.phase)))
-                                .child(if open && thought || streaming && summary == "Thinking" {
-                                    "Thinking…".to_string()
-                                } else {
-                                    summary
-                                }),
-                        )
+                        .child(if streaming {
+                            pulse(("thought-pulse", ix), self.active, label)
+                        } else {
+                            label.into_any_element()
+                        })
                         .on_click(cx.listener(move |this, _, _, cx| this.toggle_open(ix, cx))),
                 );
                 if open {
@@ -191,12 +193,12 @@ impl ThreadView {
                     } else {
                         MdStyle::reply()
                     };
-                    row = row.child(
-                        div()
-                            .min_w_0()
-                            .pb(crate::ui::sp(8.))
-                            .child(self.surface(ix, text, st, cx)),
-                    );
+                    let body = div()
+                        .min_w_0()
+                        .pb(crate::ui::sp(8.))
+                        .child(self.surface(ix, text, st, cx))
+                        .into_any_element();
+                    row = row.child(self.unfold(Fold::Row, ix, body, cx));
                 }
                 row.into_any_element()
             }
@@ -213,7 +215,8 @@ impl ThreadView {
                 if let Some(p) = asking {
                     col = col.child(self.permission_card(p, Some(tool), cwd, window, cx));
                 } else if open {
-                    col = col.child(tool_details(tool, cwd));
+                    let details = tool_details(tool, cwd);
+                    col = col.child(self.unfold(Fold::Row, ix, details, cx));
                 }
                 col.into_any_element()
             }
@@ -243,7 +246,8 @@ impl ThreadView {
                 after,
             } => compaction_divider(*removed, *before, *after),
             Entry::User { .. } => div().into_any_element(),
-        }
+        };
+        self.arrive(ix, row, cx)
     }
 
     pub(super) fn tool_row(
@@ -310,7 +314,7 @@ impl ThreadView {
                     .text_color(theme::text_faint())
                     .into_any_element()
             } else {
-                spinner(self.phase, 14., theme::mix(0.4))
+                spinner(("tool-spin", ix), self.active, 14., theme::mix(0.4))
             })
         } else {
             None
@@ -417,16 +421,13 @@ impl ThreadView {
                 )
             })
             .when(expandable, |d| {
-                d.child(
+                d.child(chevron(
+                    ("tool-chevron", ix),
+                    open,
                     icon("arrow-right01", 14.)
                         .text_color(theme::text_faint())
-                        .group_hover(group, |s| s.text_color(theme::text_muted()))
-                        .when(open, |s| {
-                            s.with_transformation(Transformation::rotate(radians(
-                                std::f32::consts::FRAC_PI_2,
-                            )))
-                        }),
-                )
+                        .group_hover(group, |s| s.text_color(theme::text_muted())),
+                ))
                 .on_click(cx.listener(move |this, _, _, cx| this.toggle_open(ix, cx)))
             })
             .into_any_element()

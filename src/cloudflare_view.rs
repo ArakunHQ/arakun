@@ -267,18 +267,9 @@ impl CloudflareView {
             }
         });
         // Signed in before: keep the account warm in the background.
-        let warm = cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(WARM_FIRST).await;
-            loop {
-                let alive = this.update(cx, |this, cx| {
-                    if this.snap.is_some() {
-                        this.refresh_if_stale(cx);
-                    }
-                });
-                if alive.is_err() {
-                    break;
-                }
-                cx.background_executor().timer(WARM).await;
+        let warm = crate::poll::poll_every(cx, WARM_FIRST, WARM, |this, cx| {
+            if this.snap.is_some() {
+                this.refresh_if_stale(cx);
             }
         });
         Self {

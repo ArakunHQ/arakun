@@ -352,14 +352,7 @@ impl UsageView {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let shown = std::sync::Arc::new(Shown::default());
         let probe_ok = shown.clone();
-        let poll = cx.spawn(async move |this, cx| {
-            loop {
-                if this.update(cx, |v, cx| v.rescan(cx)).is_err() {
-                    break;
-                }
-                cx.background_executor().timer(POLL).await;
-            }
-        });
+        let poll = crate::poll::poll_every(cx, Duration::ZERO, POLL, Self::rescan);
         let plan_poll = cx.spawn(async move |this, cx| {
             loop {
                 // Reading a named seat sends it a message, which can start its

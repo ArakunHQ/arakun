@@ -13,9 +13,9 @@ tone_instructions: >-
   why, then the fix. No praise, no filler, no emoji.
 
 reviews:
-  # Only the most important feedback. Every comment has to be answered
-  # (AGENTS.md), so a minor one costs as much as a real bug.
-  profile: quiet
+  # Balanced feedback, CodeRabbit's default. `quiet` gives only the most
+  # important comments. Every comment still has to be answered (AGENTS.md).
+  profile: chill
 
   # Requests changes on blocking findings (major and critical only). Approves
   # pull requests it rates moderate risk or less, once those findings are

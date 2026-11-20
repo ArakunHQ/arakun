@@ -141,12 +141,19 @@ pub fn load() -> Vec<Saved> {
         .unwrap_or_default()
 }
 
+/// Written on the file writer's thread, after every save before it: the one
+/// a Forget makes lands last, so an earlier one can't bring the server back.
 pub fn save(servers: &[Saved]) {
-    let saved = serde_json::to_vec_pretty(servers)
-        .map_err(std::io::Error::other)
-        .and_then(|bytes| crate::durable::write_private(&file(), &bytes));
-    if let Err(e) = saved {
-        eprintln!("arakun: could not save {}: {e}", file().display());
+    match serde_json::to_vec_pretty(servers) {
+        Ok(bytes) => {
+            // Whether it went is logged there: nothing here waits on it.
+            drop(crate::durable::write_private_soon(
+                file(),
+                bytes,
+                "could not save servers.json",
+            ));
+        }
+        Err(e) => eprintln!("arakun: could not save {}: {e}", file().display()),
     }
 }
 
@@ -211,16 +218,22 @@ pub fn load_inboxes() -> HashMap<String, Value> {
         .unwrap_or_default()
 }
 
-/// Whether they were saved.
-pub fn save_inboxes(inboxes: &HashMap<String, Value>) -> bool {
+/// Written as `save` is. What comes back says whether they were.
+pub fn save_inboxes(inboxes: &HashMap<String, Value>) -> futures::channel::oneshot::Receiver<bool> {
     // Folder paths and session titles: this user's only, as the servers are.
-    let saved = serde_json::to_vec(inboxes)
-        .map_err(std::io::Error::other)
-        .and_then(|bytes| crate::durable::write_private(&inbox_file(), &bytes));
-    if let Err(e) = &saved {
-        eprintln!("arakun: could not save {}: {e}", inbox_file().display());
+    match serde_json::to_vec(inboxes) {
+        Ok(bytes) => crate::durable::write_private_soon(
+            inbox_file(),
+            bytes,
+            "could not save servers-inbox.json",
+        ),
+        Err(e) => {
+            eprintln!("arakun: could not save {}: {e}", inbox_file().display());
+            let (done, saved) = futures::channel::oneshot::channel();
+            let _ = done.send(false);
+            saved
+        }
     }
-    saved.is_ok()
 }
 
 #[cfg(test)]

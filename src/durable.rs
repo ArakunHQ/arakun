@@ -78,9 +78,38 @@ fn write_in(path: &Path, bytes: &[u8], make_dir: bool, private: bool) -> io::Res
 /// with the last one. A failure is logged after `what`.
 #[allow(dead_code)] // most examples that include this file write nothing
 pub fn write_soon(path: std::path::PathBuf, bytes: Vec<u8>, what: &'static str) {
-    let save = Soon::Write(path, bytes, what);
-    if let Err(std::sync::mpsc::SendError(Soon::Write(path, bytes, what))) = soon().send(save) {
-        write_logged(&path, &bytes, what);
+    queue(Save {
+        path,
+        bytes,
+        what,
+        private: false,
+        done: None,
+    });
+}
+
+/// `write_private` on the same thread and in the same order as `write_soon`.
+/// What comes back says whether the file holds these bytes, or a later save
+/// that replaced them before they were written: false when that failed.
+#[allow(dead_code)] // the examples that include this file keep nothing private
+pub fn write_private_soon(
+    path: std::path::PathBuf,
+    bytes: Vec<u8>,
+    what: &'static str,
+) -> futures::channel::oneshot::Receiver<bool> {
+    let (done, saved) = futures::channel::oneshot::channel();
+    queue(Save {
+        path,
+        bytes,
+        what,
+        private: true,
+        done: Some(vec![done]),
+    });
+    saved
+}
+
+fn queue(save: Save) {
+    if let Err(std::sync::mpsc::SendError(Soon::Write(save))) = soon().send(Soon::Write(save)) {
+        save.write();
     }
 }
 
@@ -93,8 +122,34 @@ pub fn flush() {
     }
 }
 
+struct Save {
+    path: std::path::PathBuf,
+    bytes: Vec<u8>,
+    what: &'static str,
+    private: bool,
+    /// Told whether it was written. Those of the saves it replaced in a batch
+    /// are told too: what they waited for is now this one.
+    done: Option<Vec<futures::channel::oneshot::Sender<bool>>>,
+}
+
+impl Save {
+    fn write(self) {
+        let written = if self.private {
+            write_private(&self.path, &self.bytes)
+        } else {
+            write(&self.path, &self.bytes)
+        };
+        if let Err(e) = &written {
+            eprintln!("arakun: {}: {e}", self.what);
+        }
+        for done in self.done.into_iter().flatten() {
+            let _ = done.send(written.is_ok());
+        }
+    }
+}
+
 enum Soon {
-    Write(std::path::PathBuf, Vec<u8>, &'static str),
+    Write(Save),
     Flush(std::sync::mpsc::Sender<()>),
 }
 
@@ -125,28 +180,27 @@ fn soon() -> &'static std::sync::mpsc::Sender<Soon> {
 /// the quit to wait on. Flushes are answered after, when what they waited for
 /// (or something newer) is on disk.
 fn write_batch(batch: Vec<Soon>) {
-    let mut writes: Vec<(std::path::PathBuf, Vec<u8>, &'static str)> = Vec::new();
+    let mut writes: Vec<Save> = Vec::new();
     let mut flushes = Vec::new();
     for save in batch {
         match save {
-            Soon::Write(path, bytes, what) => {
-                writes.retain(|(p, ..)| *p != path);
-                writes.push((path, bytes, what));
+            Soon::Write(mut save) => {
+                if let Some(i) = writes.iter().position(|w| w.path == save.path) {
+                    let replaced = writes.remove(i);
+                    if let Some(waiting) = replaced.done {
+                        save.done.get_or_insert_default().extend(waiting);
+                    }
+                }
+                writes.push(save);
             }
             Soon::Flush(done) => flushes.push(done),
         }
     }
-    for (path, bytes, what) in writes {
-        write_logged(&path, &bytes, what);
+    for save in writes {
+        save.write();
     }
     for done in flushes {
         let _ = done.send(());
-    }
-}
-
-fn write_logged(path: &Path, bytes: &[u8], what: &str) {
-    if let Err(e) = write(path, bytes) {
-        eprintln!("arakun: {what}: {e}");
     }
 }
 
@@ -292,6 +346,16 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    fn save(path: &std::path::Path, bytes: &[u8]) -> super::Soon {
+        super::Soon::Write(super::Save {
+            path: path.to_path_buf(),
+            bytes: bytes.to_vec(),
+            what: "test",
+            private: false,
+            done: None,
+        })
+    }
+
     #[test]
     fn a_batch_writes_each_file_once_with_its_last_save() {
         let dir = scratch("batch");
@@ -299,15 +363,53 @@ mod tests {
         let (a, b) = (dir.join("a"), dir.join("b"));
         let (done, wait) = std::sync::mpsc::channel();
         super::write_batch(vec![
-            super::Soon::Write(a.clone(), b"a1".to_vec(), "test"),
-            super::Soon::Write(b.clone(), b"b1".to_vec(), "test"),
+            save(&a, b"a1"),
+            save(&b, b"b1"),
             super::Soon::Flush(done),
-            super::Soon::Write(a.clone(), b"a2".to_vec(), "test"),
+            save(&a, b"a2"),
         ]);
         assert!(wait.try_recv().is_ok(), "the flush is answered");
         assert_eq!(std::fs::read(&a).unwrap(), b"a2");
         assert_eq!(std::fs::read(&b).unwrap(), b"b1");
         assert_eq!(entries(&dir), ["a", "b"]);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_save_replaced_in_a_batch_hears_how_the_last_one_went() {
+        let dir = scratch("replaced");
+        let taken = dir.join("taken");
+        std::fs::create_dir_all(taken.join("inside")).unwrap();
+        let waiting = |path: &std::path::Path, bytes: &[u8]| {
+            let (done, heard) = futures::channel::oneshot::channel();
+            let mut soon = save(path, bytes);
+            if let super::Soon::Write(s) = &mut soon {
+                s.done = Some(vec![done]);
+            }
+            (soon, heard)
+        };
+        let (first, first_heard) = waiting(&taken, b"1");
+        let (last, last_heard) = waiting(&taken, b"2");
+        super::write_batch(vec![first, last]);
+        // A directory is in the way: neither is on disk, and both hear so.
+        assert_eq!(futures::executor::block_on(first_heard), Ok(false));
+        assert_eq!(futures::executor::block_on(last_heard), Ok(false));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn writes_private_soon_and_says_so() {
+        let dir = scratch("private-soon");
+        let path = dir.join("servers.json");
+        let saved = super::write_private_soon(path.clone(), b"[]".to_vec(), "test");
+        assert_eq!(futures::executor::block_on(saved), Ok(true));
+        assert_eq!(std::fs::read(&path).unwrap(), b"[]");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
         let _ = std::fs::remove_dir_all(dir);
     }
 

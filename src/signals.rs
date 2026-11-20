@@ -1,12 +1,69 @@
 //! SIGTERM, SIGINT and SIGHUP (Ctrl+C and Ctrl+Break in a Windows console)
 //! quit the way closing the window does, so the state, drafts and transcripts
 //! are saved first. A second signal is not caught: it ends arakun right away if
-//! quitting hangs.
+//! quitting hangs. Quitting also has a deadline of its own (`end_if_stuck`), so a
+//! single signal or a closed window can't leave arakun running without a window.
+
+use std::io::Write;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use gpui::App;
 
+/// How long quitting may take before arakun ends without finishing it. Saving
+/// takes well under a second; the slowest step, sending usage events, stops
+/// after 2 s.
+const QUIT_DEADLINE: Duration = Duration::from_secs(10);
+
+/// Ends the process if it is still running `QUIT_DEADLINE` from now. Quitting
+/// runs on the UI thread: a step that never returns (CEF shutting down, a
+/// writer thread that hangs) would otherwise keep a process with no window,
+/// which macOS then brings forward instead of starting Arakun again (issue 515).
+/// Only the first call starts the timer.
+pub fn end_if_stuck() {
+    static STARTED: AtomicBool = AtomicBool::new(false);
+    if STARTED.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    let _ = std::thread::Builder::new()
+        .name("arakun-quit-deadline".into())
+        .spawn(|| {
+            std::thread::sleep(QUIT_DEADLINE);
+            // The message can block (a stuck thread holds stderr's lock, or no one
+            // reads the pipe), so it is written elsewhere and not waited on for long.
+            let (done, written) = std::sync::mpsc::channel();
+            let _ = std::thread::Builder::new().spawn(move || {
+                // eprintln! would panic on a write error such as a closed pipe.
+                let _ = writeln!(
+                    std::io::stderr(),
+                    "arakun: quitting took more than {}s; stopping without finishing",
+                    QUIT_DEADLINE.as_secs()
+                );
+                let _ = done.send(());
+            });
+            let _ = written.recv_timeout(Duration::from_millis(500));
+            end_now();
+        });
+}
+
+/// Ends the process at once. The UI thread may hold locks the exit handlers
+/// need, so on Unix they are skipped.
+#[cfg(unix)]
+fn end_now() -> ! {
+    // SAFETY: _exit only ends the process; it runs no handlers that could block.
+    unsafe { libc::_exit(1) }
+}
+
+#[cfg(not(unix))]
+fn end_now() -> ! {
+    std::process::exit(1)
+}
+
 pub fn quit_on_signals(cx: &mut App) {
-    let Some(rx) = imp::listen() else { return };
+    // Started on the signal's own thread: the UI thread may be the one stuck.
+    let Some(rx) = imp::listen(end_if_stuck) else {
+        return;
+    };
     cx.spawn(async move |cx| {
         if rx.await.is_ok() {
             cx.update(|cx| cx.quit());
@@ -17,7 +74,7 @@ pub fn quit_on_signals(cx: &mut App) {
 
 /// Resolves on the first of those signals, for a process without a window.
 pub fn first_signal() -> Option<futures::channel::oneshot::Receiver<()>> {
-    imp::listen()
+    imp::listen(|| {})
 }
 
 #[cfg(unix)]
@@ -39,7 +96,8 @@ mod imp {
         }
     }
 
-    pub fn listen() -> Option<oneshot::Receiver<()>> {
+    /// `first` runs on the listener's thread when the signal comes.
+    pub fn listen(first: fn()) -> Option<oneshot::Receiver<()>> {
         let mut fds = [0; 2];
         // SAFETY: plain syscalls on a local array; the handler only writes to the pipe.
         unsafe {
@@ -70,6 +128,7 @@ mod imp {
                         libc::signal(sig, libc::SIG_DFL);
                     }
                 }
+                first();
                 let _ = tx.send(());
             });
         Some(rx)
@@ -86,7 +145,10 @@ mod imp {
     };
     use windows_sys::core::BOOL;
 
-    static TX: Mutex<Option<oneshot::Sender<()>>> = Mutex::new(None);
+    /// Where the event goes, and what runs first on the handler's thread.
+    type Waiting = (oneshot::Sender<()>, fn());
+
+    static TX: Mutex<Option<Waiting>> = Mutex::new(None);
 
     /// Runs on a thread Windows starts for the event. Once the sender is taken, the
     /// next Ctrl+C falls through to the default handler, which ends arakun.
@@ -95,7 +157,8 @@ mod imp {
             return 0;
         }
         match TX.lock().ok().and_then(|mut tx| tx.take()) {
-            Some(tx) => {
+            Some((tx, first)) => {
+                first();
                 let _ = tx.send(());
                 1
             }
@@ -103,9 +166,10 @@ mod imp {
         }
     }
 
-    pub fn listen() -> Option<oneshot::Receiver<()>> {
+    /// `first` runs on the handler's thread when the event comes.
+    pub fn listen(first: fn()) -> Option<oneshot::Receiver<()>> {
         let (tx, rx) = oneshot::channel::<()>();
-        *TX.lock().ok()? = Some(tx);
+        *TX.lock().ok()? = Some((tx, first));
         // SAFETY: registers a handler that only touches the mutex above.
         (unsafe { SetConsoleCtrlHandler(Some(on_ctrl), 1) } != 0).then_some(rx)
     }

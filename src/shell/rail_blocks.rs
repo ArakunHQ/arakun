@@ -425,7 +425,8 @@ impl Shell {
         let arranging = self.arranging();
         let folded = section.collapsible && section.collapsed && !narrow && !arranging;
         // Narrowed, the rail is a column of icons already.
-        let in_row = section.row && !narrow;
+        // Arranging, a row of icons is a list too: every piece can be reached.
+        let in_row = section.row && !narrow && !arranging;
         let mut body = div()
             .flex()
             .when(in_row, |d| d.flex_row().flex_wrap().items_center())

@@ -3702,6 +3702,15 @@ impl Render for Shell {
         };
 
         let palette_open = matches!(self.modal, Some((Modal::Palette(_), _)));
+        // Dialogs sit in the middle, like the system's own. Lists that filter
+        // as you type stay near the top, so they don't jump as their height changes.
+        let center_modal = !matches!(
+            self.modal,
+            Some((
+                Modal::Palette(_) | Modal::Picker(_) | Modal::Attach(_) | Modal::New(_),
+                _
+            ))
+        );
         let modal: Option<(AnyElement, u64)> = self.modal.as_ref().map(|(m, _)| match m {
             Modal::Picker(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),
             Modal::Attach(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),
@@ -4043,7 +4052,13 @@ impl Render for Shell {
                         .flex()
                         .flex_col()
                         .items_center()
-                        .pt(relative(0.10))
+                        .map(|d| {
+                            if center_modal {
+                                d.pt(crate::ui::sp(12.))
+                            } else {
+                                d.pt(relative(0.10))
+                            }
+                        })
                         .pb(crate::ui::sp(12.))
                         .px(crate::ui::sp(12.))
                         .occlude()
@@ -4065,6 +4080,7 @@ impl Render for Shell {
                                 .flex()
                                 .flex_col()
                                 .items_center()
+                                .when(center_modal, |d| d.justify_center())
                                 .flex_1()
                                 .min_h_0()
                                 .w_full()

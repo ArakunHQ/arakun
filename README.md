@@ -600,6 +600,18 @@ you quit Arakun, so the next start runs it. Settings › General › Updates sho
 and on Linux and macOS **Restart now**. Turn **Update automatically** off there to stop
 the checks; `ARAKUN_UPDATES=0` turns them off for one run.
 
+When a version has a serious problem, Arakun can ask you to update, or require it. Once
+an hour, and a few seconds after it starts, a release build reads the `update-policy`
+feature flag from Arakun's PostHog project. The request carries only the version, the
+update channel, the operating system and the processor type; the id it sends is your
+install's random id only if you agreed to usage counts, and a new one each start
+otherwise. If the flag says *request*, Arakun downloads the latest release and asks you
+to restart into it, once per start. If it says *force*, a dialog stays over the window
+until you restart into the new version (on Windows: quit and open Arakun again) or quit.
+Neither happens when no newer release exists. Maintainers set this per version in
+PostHog: one condition set per version range on `$app_version`, with a semver operator,
+and the variant to use.
+
 From a terminal, `arakun update` downloads the latest release and installs it. If Arakun
 is running, it is installed when Arakun quits: on Linux and macOS `arakun restart` does
 that now; on Windows, quit Arakun and open it again. `arakun update --check` only says

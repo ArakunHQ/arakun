@@ -33,11 +33,11 @@ use serde_json::{Map, Value, json};
 
 /// The project token: write-only, so it is safe in the binary. A build can
 /// point at another project with `ARAKUN_POSTHOG_KEY` (empty turns it off).
-const KEY: &str = match option_env!("ARAKUN_POSTHOG_KEY") {
+pub(crate) const KEY: &str = match option_env!("ARAKUN_POSTHOG_KEY") {
     Some(key) => key,
     None => "phc_kXKrLfaWumKa3mfXcFVBCRpyKa6DZiUv7hCkQW2epLQZ",
 };
-const HOST: &str = match option_env!("ARAKUN_POSTHOG_HOST") {
+pub(crate) const HOST: &str = match option_env!("ARAKUN_POSTHOG_HOST") {
     Some(host) => host,
     None => "https://us.i.posthog.com",
 };
@@ -399,6 +399,7 @@ pub mod events {
     pub const BROWSER_TAB_OPENED: &str = "browser tab opened";
     pub const ONBOARDING_FINISHED: &str = "onboarding finished";
     pub const APP_QUIT: &str = "app quit";
+    pub const UPDATE_ASKED: &str = "update asked";
 }
 
 // ---- events -----------------------------------------------------------------
@@ -475,6 +476,22 @@ fn install_id() -> String {
         let id: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
         let _ = crate::durable::write(&path, id.as_bytes());
         id
+    })
+    .clone()
+}
+
+/// Who `flags` asks for: the install's id when the user agreed to usage
+/// counts, else a random one that lives as long as this process, so a
+/// feature flag check can't tie this machine to anything.
+pub(crate) fn flags_id() -> String {
+    if effective().usage {
+        return install_id();
+    }
+    static ID: OnceLock<String> = OnceLock::new();
+    ID.get_or_init(|| {
+        let mut bytes = [0u8; 16];
+        let _ = getrandom::fill(&mut bytes);
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
     })
     .clone()
 }

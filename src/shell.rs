@@ -366,6 +366,9 @@ pub struct Shell {
     _quit: [Subscription; 2],
     /// `arakun restart` asked to quit: save for the next arakun and launch it.
     restarting: bool,
+    /// The `update-policy` feature flag's dialog (`shell::updates`), over
+    /// everything else, dialogs included.
+    update_dialog: Option<(Entity<crate::update_dialog::UpdateDialog>, Subscription)>,
     /// The pages last marked visible, so tab switches can tell when to update CEF.
     shown_browsers: Vec<gpui::EntityId>,
     /// Answers `arakun <command>` from the control socket.
@@ -1024,6 +1027,7 @@ impl Shell {
             inbox_shown: Cell::new(0),
             clear_armed: false,
             restarting: false,
+            update_dialog: None,
             _runs: runs_subs,
             _quit: [
                 cx.on_app_quit(|this, cx| {
@@ -3701,6 +3705,7 @@ impl Render for Shell {
             self.render_welcome(window, cx).into_any_element()
         };
 
+        let update_dialog = self.update_dialog.as_ref().map(|(d, _)| d.clone());
         let palette_open = matches!(self.modal, Some((Modal::Palette(_), _)));
         let modal: Option<(AnyElement, u64)> = self.modal.as_ref().map(|(m, _)| match m {
             Modal::Picker(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),
@@ -4089,6 +4094,24 @@ impl Render for Shell {
                                 d.bg(gpui::black().opacity(dim * ui::motion::ease_out(t)))
                             },
                         ),
+                )
+            })
+            .when_some(update_dialog, |d, dialog| {
+                d.child(
+                    div()
+                        .id("update-backdrop")
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .size_full()
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .pt(relative(0.10))
+                        .px(crate::ui::sp(12.))
+                        .occlude()
+                        .bg(gpui::black().opacity(0.4))
+                        .child(dialog),
                 )
             })
             .when(self.env_menu_open, |d| {

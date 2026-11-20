@@ -834,6 +834,7 @@ impl Hub {
                 self.rotate(team_id, cx);
             } else {
                 self.seal_for_new_devices(team_id, cx);
+                self.reseal_names(team_id, cx);
             }
         }
     }
@@ -1324,6 +1325,63 @@ impl Hub {
         );
     }
 
+    /// Seals the channel names still sealed with an older key again with the
+    /// newest one, so a member approved without the older epochs can read
+    /// them. Names this device cannot open stay as they are. A failure is
+    /// tried again the next time the team is read.
+    fn reseal_names(&mut self, team_id: &str, cx: &mut Context<Self>) {
+        let Some(t) = self.team.get(team_id) else {
+            return;
+        };
+        let Some((epoch, key)) = self.sending_key(team_id) else {
+            return;
+        };
+        let stale = stale_names(&t.detail, &t.channels, epoch);
+        if stale.is_empty() {
+            return;
+        }
+        let Some(version) = self.membership.get(team_id).copied() else {
+            return;
+        };
+        let busy = format!("names:{team_id}:{version}");
+        if !self.busy.insert(busy.clone()) {
+            return;
+        }
+        let team_id = team_id.to_string();
+        self.run(
+            cx,
+            {
+                let team_id = team_id.clone();
+                move |net| {
+                    for (channel, name) in &stale {
+                        let sealed =
+                            crypto::seal_channel_name(&team_id, channel, epoch, &key, name);
+                        net.call().rename_channel(&team_id, channel, &sealed)?;
+                    }
+                    Ok(())
+                }
+            },
+            move |hub, result, cx| {
+                hub.busy.remove(&busy);
+                if hub.membership.get(&team_id) != Some(&version) {
+                    return;
+                }
+                match result {
+                    Ok(()) => hub.load_team(&team_id, cx),
+                    // A newer key: the next read seals with it.
+                    Err(ApiError::Status(409, _)) => {}
+                    Err(e) => {
+                        if let Some(t) = hub.team.get_mut(&team_id) {
+                            t.problem = Some(format!(
+                                "Could not seal the channel names with the team's new key: {e}"
+                            ));
+                        }
+                    }
+                }
+            },
+        );
+    }
+
     pub fn dismiss_notice(&mut self, device_id: &str, cx: &mut Context<Self>) {
         self.notices.retain(|n| n.device_id != device_id);
         cx.notify();
@@ -1795,6 +1853,20 @@ fn pin_directory(kept: &mut Kept, gid: u64, trusted: &[DeviceRow]) -> bool {
     kept.roots.entry(gid).or_insert_with(|| root.clone()) == &root
 }
 
+/// The channels whose name is sealed with an epoch older than `epoch`, with
+/// the name this device read. One it could not open is left out.
+fn stale_names(detail: &TeamDetail, read: &[ChannelInfo], epoch: u64) -> Vec<(String, String)> {
+    detail
+        .channels
+        .iter()
+        .filter(|c| c.name_ct.epoch < epoch)
+        .filter_map(|c| {
+            let name = read.iter().find(|r| r.id == c.channel_id)?.name.clone()?;
+            Some((c.channel_id.clone(), name))
+        })
+        .collect()
+}
+
 /// The keys from the newest back to the first gap: a skipped epoch has no
 /// envelopes, and an approval must cover every epoch from its first.
 fn contiguous_tail(keys: &[(u64, TeamKey)]) -> Vec<(u64, TeamKey)> {
@@ -2101,6 +2173,37 @@ mod tests {
         assert_eq!(contiguous_tail(&[k(1), k(2), k(3)]), vec![k(1), k(2), k(3)]);
         assert_eq!(contiguous_tail(&[k(1), k(2), k(4), k(5)]), vec![k(4), k(5)]);
         assert!(contiguous_tail(&[]).is_empty());
+    }
+
+    #[test]
+    fn only_readable_names_under_an_older_key_are_sealed_again() {
+        let channel = |id: &str, epoch: u64| super::super::api::ChannelRow {
+            channel_id: id.into(),
+            name_ct: crypto::seal_channel_name("T", id, epoch, &[epoch as u8; 32], "x"),
+            created_at: 1,
+        };
+        let mut t = delivery_team(vec![], 3);
+        t.detail.channels = vec![channel("A", 1), channel("B", 2), channel("C", 3)];
+        let read = [
+            ChannelInfo {
+                id: "A".into(),
+                name: Some("general".into()),
+            },
+            // Sealed with a key this device never got.
+            ChannelInfo {
+                id: "B".into(),
+                name: None,
+            },
+            ChannelInfo {
+                id: "C".into(),
+                name: Some("ideas".into()),
+            },
+        ];
+        assert_eq!(
+            stale_names(&t.detail, &read, 3),
+            vec![("A".to_string(), "general".to_string())]
+        );
+        assert!(stale_names(&t.detail, &read, 1).is_empty());
     }
 
     fn delivery_team(devices: Vec<DeviceRow>, epoch: u64) -> TeamState {

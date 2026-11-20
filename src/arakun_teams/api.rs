@@ -518,6 +518,19 @@ impl Call<'_> {
             .map(|_| ())
     }
 
+    /// `PUT /teams/<id>/channels/<id>`: the channel's name, sealed again.
+    pub fn rename_channel(
+        &self,
+        team_id: &str,
+        channel_id: &str,
+        name_ct: &Sealed,
+    ) -> Result<(), ApiError> {
+        let body = serde_json::json!({ "name_ct": name_ct });
+        let path = format!("/teams/{team_id}/channels/{channel_id}");
+        self.post::<serde_json::Value>("PUT", &path, body)
+            .map(|_| ())
+    }
+
     /// Up to 200 messages after `after`, oldest first.
     pub fn history(
         &self,

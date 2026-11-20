@@ -1324,10 +1324,12 @@ pub fn conflicts_prompt(item: &ItemRef, title: &str, pull: &Pull) -> String {
     format!(
         "The pull request \"{title}\" ({label}) conflicts with its base branch `{base}`.\nURL: {url}\n\n\
 This checkout may be another repository or another branch: check with `git remote -v` and \
-`git branch --show-current`. If it isn't {repo}, say so and stop. Run `git fetch origin {branch}`. If it isn't on \
-`{branch}`, switch to it when the working tree is clean, else say so and stop. Then run \
-`git merge --ff-only origin/{branch}` so the branch has the pull request's latest commits; if that fails, the local \
-branch has diverged from the pull request: say so and stop.\n\n\
+`git branch --show-current`. If it isn't {repo}, say so and stop. Fetch the pull request's current head from \
+{repo} with `git fetch origin refs/pull/{number}/head` (it works for branches in forks too); if that fails, say so \
+and stop. If it isn't on `{branch}`, switch to it when the working tree is clean (`git switch -c {branch} FETCH_HEAD` \
+if it doesn't exist here), else say so and stop. Then run `git merge --ff-only FETCH_HEAD` so the branch has the \
+pull request's latest commits; if that fails, the local branch has diverged from the pull request: say so and \
+stop.\n\n\
 Fetch the base (`git fetch origin {base}`) and merge `origin/{base}` into `{branch}`; don't rebase, so nobody has \
 to force-push. Settle each conflict by keeping what both sides meant: read the pull request \
 (`gh pr view {url}`) and the commits on `{base}` that touched the same lines to understand each side. When the \
@@ -1335,6 +1337,7 @@ two can't both hold, keep the base's behavior, and tell me what of the pull requ
 Build and run the tests that cover the files that conflicted, then commit the merge. Tell me which files \
 conflicted and how you settled each. Don't push.",
         label = item.label(),
+        number = item.number,
     )
 }
 
@@ -5619,7 +5622,11 @@ mod tests {
         );
         // A stale local branch would leave the newest conflicts unmerged.
         assert!(
-            prompt.contains("`git merge --ff-only origin/fix/tab-name`"),
+            prompt.contains("`git fetch origin refs/pull/41/head`"),
+            "{prompt}"
+        );
+        assert!(
+            prompt.contains("`git merge --ff-only FETCH_HEAD`"),
             "{prompt}"
         );
         assert!(prompt.ends_with("Don't push."), "{prompt}");

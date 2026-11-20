@@ -13,6 +13,10 @@
 #                        the window. arakun.dev/install-server serves this script
 #                        with `main "$@"` at the end changed to `main --server "$@"`,
 #                        so keep that line as it is.
+#                        It also installs what the server runs agents with, unless
+#                        --no-tools: git and gh with the package manager (as root or
+#                        with sudo that needs no password), and Node.js from nodejs.org
+#                        in ${XDG_DATA_HOME:-~/.local/share}/arakun/node.
 # --nightly:             the newest nightly build of main instead of the latest release.
 # ARAKUN_VERSION pins a release, like --version (`nightly` is --nightly).
 # Windows: tools/install-release.ps1.
@@ -135,9 +139,135 @@ check_glibc() {
   fi
 }
 
+# The Node.js major the Claude Code adapter needs at least (the "engines" of
+# @agentclientprotocol/claude-agent-acp, CLAUDE_ACP_PACKAGE in src/agent/launch.rs).
+node_major=22
+
+# The major version of the node on PATH, or nothing.
+node_version() {
+  v=$(node --version 2>/dev/null) || return 0
+  v=${v#v}
+  printf '%s\n' "${v%%.*}"
+}
+
+# Runs a command as root: directly when this is root, else with sudo when it
+# needs no password. Returns 1 without running it otherwise.
+as_root() {
+  if [ "$(id -u)" = 0 ]; then
+    "$@"
+  elif command -v sudo >/dev/null && sudo -n true 2>/dev/null; then
+    sudo "$@"
+  else
+    return 1
+  fi
+}
+
+# The command that installs the system packages $@, or nothing on a system
+# this script does not know.
+pkg_install_cmd() {
+  if command -v apt-get >/dev/null; then
+    echo "apt-get install -y $*"
+  elif command -v dnf >/dev/null; then
+    echo "dnf install -y $*"
+  elif command -v zypper >/dev/null; then
+    echo "zypper --non-interactive install $*"
+  elif command -v pacman >/dev/null; then
+    echo "pacman -S --noconfirm --needed $*"
+  elif command -v apk >/dev/null; then
+    echo "apk add $*"
+  fi
+}
+
+# Installs the system packages $@. Says what to run instead when it cannot.
+pkg_install() {
+  cmd=$(pkg_install_cmd "$@")
+  if [ -z "$cmd" ]; then
+    say "warning: install $* with your package manager; arakun-server needs it"
+    return 0
+  fi
+  say "installing $*"
+  if command -v apt-get >/dev/null; then
+    # A fresh VPS often has no package lists yet.
+    as_root apt-get update -qq >/dev/null 2>&1 || true
+  fi
+  # shellcheck disable=SC2086 # $cmd is a command line on purpose
+  if ! as_root env DEBIAN_FRONTEND=noninteractive $cmd >/dev/null 2>&1; then
+    say "warning: could not install $*; run this as root, then start the server:"
+    printf '\n  %s\n\n' "$cmd"
+  fi
+}
+
+# Installs Node.js $node_major from nodejs.org into the data folder and links
+# node, npm and npx into $bindir. For the user only, so it needs no root, and
+# distributions often ship an older Node than the adapter needs.
+install_node() {
+  case $platform in
+    linux-x86_64) node_arch=linux-x64 ;;
+    linux-arm64) node_arch=linux-arm64 ;;
+  esac
+  dist=https://nodejs.org/dist/latest-v$node_major.x
+  curl -fsSL -o "$tmp/node-sums" "$dist/SHASUMS256.txt" ||
+    die "could not download $dist/SHASUMS256.txt (use --no-tools to skip Node.js)"
+  node_file=$(awk -v a="$node_arch" '$2 ~ "^node-v[0-9.]+-" a "\\.tar\\.gz$" { print $2; exit }' "$tmp/node-sums")
+  [ -n "$node_file" ] || die "nodejs.org lists no Node.js $node_major for $node_arch"
+  say "downloading ${node_file%.tar.gz}"
+  curl -fSL --progress-bar -o "$tmp/$node_file" "$dist/$node_file" ||
+    die "could not download $dist/$node_file"
+  want=$(listed "$node_file" "$tmp/node-sums")
+  have=$(sha256 "$tmp/$node_file")
+  [ "$have" = "$want" ] || die "checksum mismatch for $node_file (expected $want, got $have)"
+
+  mkdir -p "${node_dir%/*}" "$tmp/node"
+  tar -C "$tmp/node" -xzf "$tmp/$node_file"
+  rm -rf "$node_dir.new" "$node_dir.old"
+  mv "$tmp/node/${node_file%.tar.gz}" "$node_dir.new"
+  if [ -e "$node_dir" ]; then mv "$node_dir" "$node_dir.old"; fi
+  mv "$node_dir.new" "$node_dir"
+  rm -rf "$node_dir.old"
+  for b in node npm npx; do
+    # A node of the user's own there stays; it would come first on PATH.
+    if [ -e "$bindir/$b" ] && [ ! -L "$bindir/$b" ]; then
+      say "warning: $bindir/$b is not Arakun's; left as it is"
+      continue
+    fi
+    ln -sfn "$node_dir/bin/$b" "$bindir/$b"
+  done
+  say "installed Node.js $(PATH="$bindir:$PATH" node_version) in $node_dir, linked in $bindir"
+}
+
+# What the server runs agents with: git for their worktrees, Node.js and npm
+# to install the Claude Code and Codex adapters, and gh for pull requests.
+# Without Node, a new session fails as it starts.
+server_tools() {
+  node_dir=${XDG_DATA_HOME:-$HOME/.local/share}/arakun/node
+  command -v git >/dev/null || pkg_install git
+  if ! command -v gh >/dev/null; then
+    # Not every distribution packages gh; the server works without it.
+    if [ -n "$(pkg_install_cmd gh)" ] && as_root true 2>/dev/null; then
+      pkg_install gh
+    else
+      say "gh is not installed; the server shows no pull requests without it (https://cli.github.com)"
+    fi
+  fi
+  # Where the service finds it: $bindir comes first on its PATH.
+  have_node=$(PATH="$bindir:$PATH" node_version)
+  if [ -z "$have_node" ] || [ "$have_node" -lt "$node_major" ] ||
+    ! PATH="$bindir:$PATH" command -v npm >/dev/null; then
+    if [ -n "$have_node" ]; then
+      say "Node.js $have_node is too old; the Claude Code adapter needs $node_major or newer"
+    fi
+    install_node
+  fi
+  # One from an earlier run too.
+  if [ -d "$node_dir" ]; then
+    uninstall="$uninstall ~/.local/bin/node ~/.local/bin/npm ~/.local/bin/npx \"$node_dir\""
+  fi
+}
+
 main() {
   version=${ARAKUN_VERSION:-}
   server=
+  tools=1
   while [ $# -gt 0 ]; do
     case $1 in
       --version)
@@ -148,11 +278,14 @@ main() {
       --version=*) version=${1#--version=} ;;
       --server) server=1 ;;
       --nightly) version=nightly ;;
+      --no-tools) tools= ;;
       -h | --help)
         # Not read from $0: under `curl | sh` there is no file.
-        echo "usage: install-release.sh [--server] [--nightly | --version vX.Y.Z]   (or ARAKUN_VERSION=vX.Y.Z)"
-        echo "  --server   install arakun-server (Linux), the server without the window"
-        echo "  --nightly  install the newest nightly build of main (it can break)"
+        echo "usage: install-release.sh [--server [--no-tools]] [--nightly | --version vX.Y.Z]   (or ARAKUN_VERSION=vX.Y.Z)"
+        echo "  --server    install arakun-server (Linux), the server without the window,"
+        echo "              and what it runs agents with: git, gh and Node.js $node_major"
+        echo "  --no-tools  with --server: leave git, gh and Node.js to you"
+        echo "  --nightly   install the newest nightly build of main (it can break)"
         return 0
         ;;
       *) die "unknown option $1" ;;
@@ -274,7 +407,8 @@ main() {
     chmod 755 "$bindir/.arakun-server.new"
     mv -f "$bindir/.arakun-server.new" "$bindir/arakun-server"
     say "installed arakun-server in $bindir"
-    uninstall="rm ~/.local/bin/arakun-server"
+    uninstall="rm -rf ~/.local/bin/arakun-server"
+    if [ -n "$tools" ]; then server_tools; fi
   elif [ "$platform" = macos-arm64 ]; then
     apps=$HOME/Applications
     app=$apps/Arakun.app

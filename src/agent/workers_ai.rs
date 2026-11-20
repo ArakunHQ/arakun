@@ -810,16 +810,38 @@ fn skills(cwd: &Path) -> Vec<claude_ext::Skill> {
     found
 }
 
+/// How the system prompt's list of skills starts; `with_skills` finds it by this.
+const SKILLS_HEAD: &str = "\n\n# Skills\n\nSkills are instructions for particular kinds of task. When the \
+     task matches a skill's description, or the user types /<name> of one, call the skill tool with its \
+     name before you start, then follow what it returns.\n";
+
+/// A saved system prompt with `list` (from `skills_prompt`) as its skills: the old
+/// list replaced, or added to a prompt from before skills. The rest stays as it was.
+fn with_skills(system: &str, list: &str) -> String {
+    let Some(start) = system.find(SKILLS_HEAD) else {
+        return format!("{system}{list}");
+    };
+    // The list is lines of "- "; the section ends at the first blank line after it.
+    let body = start + SKILLS_HEAD.len();
+    let mut end = system.len();
+    let mut at = body;
+    while let Some(i) = system[at..].find("\n\n") {
+        let next = at + i + 2;
+        if !system[next..].starts_with("- ") {
+            end = at + i;
+            break;
+        }
+        at = next;
+    }
+    format!("{}{list}{}", &system[..start], &system[end..])
+}
+
 /// The system prompt's list of skills, empty when there are none.
 fn skills_prompt(skills: &[claude_ext::Skill]) -> String {
     if skills.is_empty() {
         return String::new();
     }
-    let mut s = String::from(
-        "\n\n# Skills\n\nSkills are instructions for particular kinds of task. When the task matches a \
-         skill's description, or the user types /<name> of one, call the skill tool with its name before \
-         you start, then follow what it returns.\n",
-    );
+    let mut s = String::from(SKILLS_HEAD);
     let start = s.len();
     for (i, skill) in skills.iter().enumerate() {
         let d = skill.description.trim();
@@ -1905,8 +1927,19 @@ impl Agent {
             // The transcript already shows the history, so loading replays nothing.
             "session/resume" | "session/load" => {
                 match params["sessionId"].as_str().and_then(Session::load) {
-                    Some(s) => {
+                    Some(mut s) => {
                         knobs::log_once();
+                        // The model sees the skills there are now, not those when it began.
+                        let list = skills_prompt(&skills(&s.cwd));
+                        if let Some(system) = s
+                            .messages
+                            .first_mut()
+                            .filter(|m| m["role"] == "system")
+                            .and_then(|m| m.get_mut("content"))
+                            && let Some(text) = system.as_str()
+                        {
+                            *system = json!(with_skills(text, &list));
+                        }
                         let (sid, cwd) = (s.id.clone(), s.cwd.clone());
                         let result = json!({"configOptions": s.config()});
                         *lock(&self.session) = Some(Arc::new(Mutex::new(s)));
@@ -3590,6 +3623,38 @@ mod tests {
         let missing = load_skill_in(&found, &dir, &json!({"name": "nope"})).unwrap_err();
         assert!(missing.contains(&name));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_resumed_prompt_gets_the_skills_there_are_now() {
+        let skill = |name: &str| claude_ext::Skill {
+            name: name.into(),
+            description: format!("does {name}"),
+            source: "project".into(),
+            path: PathBuf::new(),
+        };
+        let rules = "\n\n# Rules\n\n- keep it short";
+        // A session from before skills gets them added.
+        let old = format!("You are a coding agent.{rules}");
+        let list = skills_prompt(&[skill("a")]);
+        let added = with_skills(&old, &list);
+        assert_eq!(added, format!("{old}{list}"));
+        // Its list is replaced, and what comes after it kept.
+        let saved = format!("You are a coding agent.{list}{rules}");
+        let now = skills_prompt(&[skill("b"), skill("c")]);
+        assert_eq!(
+            with_skills(&saved, &now),
+            format!("You are a coding agent.{now}{rules}")
+        );
+        assert_eq!(with_skills(&format!("x{list}"), &now), format!("x{now}"));
+        // Skills that are gone leave no section.
+        assert_eq!(
+            with_skills(&saved, ""),
+            format!("You are a coding agent.{rules}")
+        );
+        // A project's own "# Skills" heading is not the list.
+        let project = "\n\n# Skills\n\nOurs.";
+        assert_eq!(with_skills(project, ""), project);
     }
 
     #[test]

@@ -234,6 +234,42 @@ pub enum ClientMsg {
     Visible {
         visible: bool,
     },
+    /// A terminal in place `place`, under the id `term` the app picked: the
+    /// login shell there, running `run` first when it says one. Its output
+    /// follows as `term_output`, then `term_exit` once it ends.
+    TermOpen {
+        term: String,
+        place: String,
+        #[serde(default)]
+        run: Option<String>,
+        cols: u16,
+        rows: u16,
+    },
+    /// Follows terminal `term` again, from offset `from` of its output: what
+    /// the app missed while the connection was down.
+    TermAttach {
+        term: String,
+        from: u64,
+    },
+    /// Bytes typed into a terminal, base64.
+    TermInput {
+        term: String,
+        data: String,
+    },
+    TermResize {
+        term: String,
+        cols: u16,
+        rows: u16,
+    },
+    /// The app drew a terminal's output up to offset `at`: more may come.
+    TermSeen {
+        term: String,
+        at: u64,
+    },
+    /// Hangs a terminal up.
+    TermClose {
+        term: String,
+    },
     Ping,
 }
 

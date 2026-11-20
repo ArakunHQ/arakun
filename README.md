@@ -946,7 +946,10 @@ The link is good for two minutes and pairs one device. There are two ways to use
   go idle, and their agents stop; a running turn is left alone) or to delete it: the
   server removes the worktree, everything in it and its sessions, and the branch too if
   you ask. A repository's main folder is never deleted. A phone paired with this app sees and works in the
-  servers' sessions too. Git, terminals and the file tree stay with this machine's folders;
+  servers' sessions too. A terminal in a server's environment is a shell in that folder
+  on the server, and the project commands from Settings run there too. It keeps running
+  while the connection is down and picks up where it was once it is back; one no app
+  follows for an hour is hung up. Git and the file tree stay with this machine's folders;
   `/stage`, fork, rewind and "Continue with" are not available for a server's session
   yet. In the Marketplace, "Install on" picks a paired server: Discover then lists
   the plugins its marketplaces offer, and Install adds a plugin or MCP server for

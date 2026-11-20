@@ -34,6 +34,8 @@ use crate::servers::client::{Client, Event, Events, Status as LinkStatus};
 use crate::servers::{self, Saved};
 use crate::servers_view::{PlaceRow, Reach, ServerRow, ServersEvent, ServersState, SessionRow};
 
+mod terms;
+
 /// One server: its connection and what it last said it holds.
 struct Conn {
     client: Client,
@@ -145,6 +147,8 @@ pub(super) struct ServersLink {
     /// Gives a pairing up when its link has run out.
     pairing_timeout: Option<Task<()>>,
     error: Option<String>,
+    /// The terminals open in servers' environments.
+    terms: terms::Terms,
     _listen: Task<()>,
 }
 
@@ -753,6 +757,7 @@ impl Shell {
             pairing: None,
             pairing_timeout: None,
             error: None,
+            terms: terms::Terms::new(window, cx),
             _listen: listen,
         });
         for (id, inbox) in &seeded {
@@ -1518,6 +1523,10 @@ impl Shell {
                 }
                 return;
             }
+            Some("term_open") => {
+                self.server_term_lost(msg, cx);
+                return;
+            }
             _ => return,
         };
         let why = "The connection dropped first.";
@@ -2074,9 +2083,18 @@ impl Shell {
                     let why = "The server dropped before it answered. If the environment is still there, try again.";
                     self.servers_delete_failed(asked, why.into(), cx);
                 }
+                if back {
+                    self.server_terms_back(id, cx);
+                }
             }
             Event::Message(msg) => {
                 let kind = msg["type"].as_str().unwrap_or("");
+                if self.server_term_message(id, &msg, cx) {
+                    return;
+                }
+                let Some(link) = &mut self.servers else {
+                    return;
+                };
                 if matches!(kind, "market" | "market_done") {
                     self.extensions_view
                         .update(cx, |v, cx| v.server_said(id, &msg, cx));

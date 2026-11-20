@@ -26,6 +26,8 @@
 pub mod daemon;
 #[path = "server/local.rs"]
 mod local;
+#[path = "server/pty.rs"]
+mod pty;
 #[path = "server/service.rs"]
 mod service;
 #[path = "server/store.rs"]

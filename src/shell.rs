@@ -3399,7 +3399,8 @@ impl Shell {
     /// A new session in project `pi`: the New session tab of its main
     /// checkout, ready to type in at once. The first prompt sent there makes
     /// the worktree, so nobody waits on git before writing. On a server the
-    /// worktree is made first, as a prompt queued for it would be lost.
+    /// worktree is made first, as a prompt queued for it would be lost, and
+    /// so when environments are spread and a server's turn is next.
     pub(super) fn draft_new_session(
         &mut self,
         pi: usize,
@@ -3416,9 +3417,20 @@ impl Shell {
             .get(project.active_env)
             .is_some_and(|e| e.remote.is_some())
             || project.is_remote();
-        let checkout = project.environments.iter().position(|e| e.is_checkout);
+        let checkout = project
+            .environments
+            .iter()
+            .position(|e| e.is_checkout && e.remote.is_none());
+        // Spread across machines, the balancer says where it goes, not the
+        // open environment: a prompt written in the draft would stay on this
+        // computer, so a server's pick is made at once there.
+        let here = match self.spread_target(pi) {
+            Some(Some(_)) => false,
+            Some(None) => true,
+            None => !on_server,
+        };
         match checkout {
-            Some(ei) if !on_server => {
+            Some(ei) if here => {
                 self.select_env(pi, ei, window, cx);
                 self.show_new_session_tab(window, cx);
             }

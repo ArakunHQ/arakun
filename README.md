@@ -55,11 +55,15 @@ Windows and other options: see [Install](#install).
 
 ### First launch
 
-Before you have a project, Arakun walks you through a short setup: which agents it
-found and the one to start with, dark or light and five shortcuts, GitHub and the phone
-remote, the question about crash reports, and your first project. Every step can be
-skipped, and "Skip setup" leaves it at once. Adding a project ends it. Open it again
-with "Show onboarding" in the palette (`Ctrl+K`). That it was done is kept in
+Before you have a project, Arakun checks the machine for agents and GitHub, then walks
+you through four short steps while a small copy of the window beside them changes as
+you pick: the agent new sessions start with, your first project, the color scheme and
+sidebar layout, and GitHub, the phone remote and crash reports. Enter goes to the next
+step, and on the last one it finishes the setup. Esc goes back one step; on the first
+step of a setup opened again, it closes it. Every step can be skipped, and "Skip setup"
+leaves it at once. It ends on the start screen of the project
+you added, with three shortcuts worth knowing. Open it again with "Show onboarding" in
+the palette (`Ctrl+K`). That it was done is kept in
 `state.onboarding.json`, next to `state.json` in Arakun's data folder.
 
 If Arakun can't read one of its files there (`state.json`, `history.json`,
@@ -159,7 +163,7 @@ copy of it, rename it back, and start a version that can read it.
   On by default; turn off Settings › Branches › Archive after merge (saved in
   `~/.local/share/arakun/settle-after-merge`, `%LOCALAPPDATA%\arakun\` on Windows).
 - **Old environments removed.** Settings › Branches › Remove old environments (Off, 7, 14
-  or 30 days; also asked during the setup) removes an environment's worktree once its
+  or 30 days) removes an environment's worktree once its
   pull request is merged or closed and it sat unused that long. Arakun checks every hour,
   asking `git` and `gh`. An environment stays when it has uncommitted or untracked files,
   git-ignored files other than build output (`target/`, `node_modules/` and the like),

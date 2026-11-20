@@ -544,6 +544,12 @@ pub struct Shell {
     clear_armed: bool,
     /// The setup, while it shows in the window's place (`shell::onboarding`).
     onboarding: Option<onboarding::Onboarding>,
+    /// A few keys on the start screen, right after someone new finishes the
+    /// setup, until they close them.
+    setup_tips: bool,
+    /// Someone asked the setup to pair the phone before they had a project:
+    /// the Phone tab opens once the first one is added.
+    phone_after_project: bool,
 }
 
 struct InboxItem {
@@ -1062,6 +1068,8 @@ impl Shell {
             notices: RefCell::new(crate::notices::load()),
             inbox_open: false,
             onboarding: None,
+            setup_tips: false,
+            phone_after_project: false,
             alone: None,
             terminal_alone: None,
             inbox_shown: Cell::new(0),
@@ -1721,8 +1729,9 @@ impl Shell {
         window.focus(&self.composer_focus, cx);
         self.ensure_terminal(window, cx);
         self.sync_poll(window, cx);
-        // A project is what the setup was for, however it was added.
-        self.finish_onboarding(window, cx);
+        // The setup goes on to its next step, or ends when the project
+        // came some other way.
+        self.onboarding_project_added(window, cx);
         cx.notify();
     }
 
@@ -2837,14 +2846,7 @@ impl Shell {
                             this.change_sidebar(cx, |s| s.style = style);
                         }
                         CustomizeEvent::SidebarPreset(p) => {
-                            // A preset lays out the pieces; the look stays as chosen.
-                            let p = *p;
-                            this.change_sidebar(cx, |s| {
-                                let style = s.style;
-                                *s = p.layout();
-                                s.style = style;
-                            });
-                            this.clear_builder_selection();
+                            this.apply_sidebar_preset(*p, cx);
                         }
                         CustomizeEvent::RailWidth(w) => {
                             this.rail_w = *w;

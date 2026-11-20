@@ -5,7 +5,8 @@
 //! removes.
 //!
 //! An environment is only removed when nothing in it can be lost: no
-//! uncommitted or untracked files, and every commit is in the pull request.
+//! uncommitted, untracked or git-ignored files (build output aside), and every
+//! commit is in the pull request.
 
 use std::path::Path;
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -215,11 +216,71 @@ fn head_in(dir: &Path, pr_head: &str) -> bool {
         || crate::git::read(dir, &["merge-base", "--is-ancestor", head, pr_head]).is_ok()
 }
 
+/// Ignored folders a build or package manager makes again, so losing them is
+/// fine. Anything else ignored, like a `.env`, keeps the environment.
+const REBUILDABLE: &[&str] = &[
+    "target",
+    "node_modules",
+    "dist",
+    "build",
+    "out",
+    ".next",
+    ".turbo",
+    ".cache",
+    ".venv",
+    "venv",
+    "__pycache__",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".gradle",
+];
+
+/// Files the system leaves behind that nobody misses.
+const JUNK: &[&str] = &[".DS_Store", "Thumbs.db", "desktop.ini"];
+
+/// Whether one line of `git ls-files --others --ignored --directory` is safe
+/// to lose: a whole rebuildable folder, or system junk.
+fn expendable(entry: &str) -> bool {
+    let (path, is_dir) = match entry.strip_suffix('/') {
+        Some(dir) => (dir, true),
+        None => (entry, false),
+    };
+    let name = path.rsplit('/').next().unwrap_or(path);
+    if is_dir {
+        REBUILDABLE.contains(&name)
+    } else {
+        JUNK.contains(&name) || name.ends_with(".pyc")
+    }
+}
+
+/// `git worktree remove` deletes ignored files without a word, and
+/// `git status` never lists them, so ask for them on their own. `--directory`
+/// lists an ignored folder once instead of every file in it.
+fn ignored_files_kept(dir: &Path) -> bool {
+    let args = [
+        "ls-files",
+        "--others",
+        "--ignored",
+        "--exclude-standard",
+        "--directory",
+        "-z",
+    ];
+    match crate::git::read(dir, &args) {
+        Ok(out) => out.split('\0').any(|e| !e.is_empty() && !expendable(e)),
+        // Can't tell: keep it.
+        Err(_) => true,
+    }
+}
+
 /// Asks git and GitHub whether the environment at `dir` can go: its pull
-/// request is merged or closed, nothing is uncommitted, and every commit is in
-/// the pull request. Slow: runs git and gh.
+/// request is merged or closed, nothing is uncommitted, no ignored file other
+/// than build output would be lost, and every commit is in the pull request.
+/// Slow: runs git and gh.
 pub fn removable(dir: &Path) -> bool {
     if !crate::git::status(dir).is_ok_and(|c| c.is_empty()) {
+        return false;
+    }
+    if ignored_files_kept(dir) {
         return false;
     }
     pr_of(dir).is_some_and(|pr| pr.done() && head_in(dir, &pr.head))
@@ -335,6 +396,51 @@ mod tests {
         assert!(head_in(&dir, &second));
         assert!(!head_in(&dir, "0123456789012345678901234567890123456789"));
         assert!(!head_in(&dir, ""));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn only_build_output_and_junk_may_be_lost() {
+        for e in [
+            "target/",
+            "web/node_modules/",
+            "a/b/__pycache__/",
+            ".DS_Store",
+            "src/.DS_Store",
+            "x/y.pyc",
+        ] {
+            assert!(expendable(e), "{e}");
+        }
+        // A file named like a build folder is not one.
+        for e in [
+            ".env",
+            "notes.md",
+            "config/local.toml",
+            "target",
+            "secrets/",
+        ] {
+            assert!(!expendable(e), "{e}");
+        }
+    }
+
+    #[test]
+    fn an_ignored_file_keeps_the_environment() {
+        let dir = std::env::temp_dir().join(format!("arakun-cleanup-ign-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = crate::git::git(&dir)
+            .args(["init", "-q", "-b", "main"])
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        std::fs::write(dir.join(".gitignore"), "target/\n.env\n").unwrap();
+        assert!(!ignored_files_kept(&dir));
+        std::fs::create_dir_all(dir.join("target/debug")).unwrap();
+        std::fs::write(dir.join("target/debug/app"), "bin").unwrap();
+        std::fs::write(dir.join(".DS_Store"), "").unwrap();
+        assert!(!ignored_files_kept(&dir));
+        std::fs::write(dir.join(".env"), "TOKEN=1").unwrap();
+        assert!(ignored_files_kept(&dir));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

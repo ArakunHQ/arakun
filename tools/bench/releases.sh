@@ -7,15 +7,19 @@
 # before AFTER. Both take a release tag (v0.11.0) or a nightly's
 # (0.9.1-nightly.202611201542).
 #
-# Downloads each release's Linux build with `gh`, checks it against the signed
-# SHA256SUMS, and runs `bench.py perf` on one after the other. The results go to
-# DIR (default target/bench/releases) as <tag>.json, and the comparison as
-# comparison.md. Exits 1 when AFTER is slower past the threshold, as
-# `bench.py compare` does.
+# Downloads each release's Linux build with `gh`, checks it against the
+# release's SHA256SUMS and that file's signature, and runs `bench.py perf` on
+# one after the other. The results go to DIR (default target/bench/releases) as
+# <tag>.json, and the comparison as comparison.md. Exits 1 when AFTER is
+# slower past the threshold, as `bench.py compare` does.
 #
-# Needs Linux, gh, Xvfb, minisign (it checks the signature; nothing runs
-# unsigned) and what a release needs to run (libxkbcommon-x11 and a Vulkan driver
-# such as Mesa's). The Benchmark releases workflow runs this script.
+# Releases from before signing have no SHA256SUMS.minisig. Those run on their
+# checksum alone, with a warning. A signature that is there but does not match
+# stops the script.
+#
+# Needs Linux, gh, Xvfb, minisign for the signed releases, and what a release
+# needs to run (libxkbcommon-x11 and a Vulkan driver such as Mesa's). The
+# Benchmark releases workflow runs this script.
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -41,7 +45,7 @@ while [ $# -gt 0 ]; do
       shift
       ;;
     -h | --help)
-      sed -n '2,18s/^# \{0,1\}//p' "$0"
+      sed -n '2,22s/^# \{0,1\}//p' "$0"
       exit 0
       ;;
     -*) die "unknown option $1" ;;
@@ -59,9 +63,8 @@ case $(uname -m) in
   aarch64 | arm64) platform=linux-arm64 ;;
   *) die "no release build for $(uname -m)" ;;
 esac
-# minisign too: the checksums come from the same release as the build, so only
-# the signature says the build is Arakun's.
-for tool in gh Xvfb python3 sha256sum minisign; do
+# minisign only for a signed release; fetch asks for it then.
+for tool in gh Xvfb python3 sha256sum; do
   command -v "$tool" >/dev/null || die "$tool is needed"
 done
 
@@ -111,10 +114,18 @@ fetch() {
   gh release download "$tag" --dir "$dir" \
     --pattern "$name.tar.gz" --pattern SHA256SUMS --pattern SHA256SUMS.minisig ||
     die "could not download $name.tar.gz from the release $tag"
-  for key in "${keys[@]}"; do
-    if minisign -Vq -p "$key" -m "$dir/SHA256SUMS" -x "$dir/SHA256SUMS.minisig" 2>/dev/null; then ok=1; fi
-  done
-  [ -n "$ok" ] || die "the SHA256SUMS of $tag is not signed with one of Arakun's keys"
+  [ -f "$dir/SHA256SUMS" ] || die "the release $tag has no SHA256SUMS to check $name.tar.gz against"
+  if [ -f "$dir/SHA256SUMS.minisig" ]; then
+    # The checksums come from the same release as the build, so only the
+    # signature says the build is Arakun's.
+    command -v minisign >/dev/null || die "minisign is needed to check the signature of $tag"
+    for key in "${keys[@]}"; do
+      if minisign -Vq -p "$key" -m "$dir/SHA256SUMS" -x "$dir/SHA256SUMS.minisig" 2>/dev/null; then ok=1; fi
+    done
+    [ -n "$ok" ] || die "the SHA256SUMS of $tag is not signed with one of Arakun's keys"
+  else
+    echo "warning: $tag predates signed releases; checking its checksum only" >&2
+  fi
   # Fails too when SHA256SUMS does not list the archive.
   (cd "$dir" && sha256sum --check --ignore-missing --quiet SHA256SUMS) ||
     die "checksum mismatch for $name.tar.gz"

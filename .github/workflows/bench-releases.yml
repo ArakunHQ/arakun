@@ -55,8 +55,8 @@ jobs:
             assets/*.pub
 
       # What a release needs to run and draw without a screen: Xvfb, the X
-      # keyboard library it links, and Mesa's CPU Vulkan driver. minisign checks
-      # the releases' signatures.
+      # keyboard library it links, and Mesa's CPU Vulkan driver. minisign checks the
+      # signatures of the releases that have one.
       - name: Xvfb, Vulkan and minisign
         env:
           DEBIAN_FRONTEND: noninteractive

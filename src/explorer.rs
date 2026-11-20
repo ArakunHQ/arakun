@@ -111,7 +111,7 @@ pub fn list_dir(dir: &Path) -> Vec<Entry> {
     entries
 }
 
-const MAX_VIEW_BYTES: u64 = 8 << 20;
+pub const MAX_VIEW_BYTES: u64 = 8 << 20;
 
 /// How arakun shows a file it is asked to open.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

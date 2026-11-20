@@ -29,7 +29,7 @@ pub fn bars(values: &[u64], height: f32, ticks: Vec<SharedString>) -> gpui::Div 
     let peak = values.iter().position(|v| *v == max).filter(|_| max > 0);
     let color = Tone::Info.color();
     let label = |text: String| {
-        ui::text(Type::Caption, theme::text_faint(), text)
+        ui::text(Type::Caption, theme::text_subtle(), text)
             .font_family(theme::FONT_MONO)
             .whitespace_nowrap()
     };

@@ -366,7 +366,7 @@ impl Render for AreaChart {
                     .right(px(10.))
                     .top(px(y - 7.))
                     .ty(Type::Caption)
-                    .text_color(theme::text_faint())
+                    .text_color(theme::text_subtle())
                     .child((self.axis_format)(step * (ticks - k) as f64)),
             );
         }
@@ -376,7 +376,7 @@ impl Render for AreaChart {
             .justify_between()
             .ml(px(AXIS_W))
             .ty(Type::Caption)
-            .text_color(theme::text_faint());
+            .text_color(theme::text_subtle());
         for t in &self.ticks {
             x_row = x_row.child(t.clone());
         }

@@ -13,9 +13,9 @@
 # comparison.md. Exits 1 when AFTER is slower past the threshold, as
 # `bench.py compare` does.
 #
-# Needs Linux, gh, Xvfb and what a release needs to run (libxkbcommon-x11 and a
-# Vulkan driver such as Mesa's). The signature is checked with minisign; without
-# it only the checksum is. The Benchmark releases workflow runs this script.
+# Needs Linux, gh, Xvfb, minisign (it checks the signature; nothing runs
+# unsigned) and what a release needs to run (libxkbcommon-x11 and a Vulkan driver
+# such as Mesa's). The Benchmark releases workflow runs this script.
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -50,6 +50,8 @@ while [ $# -gt 0 ]; do
   shift
 done
 [ ${#tags[@]} -le 2 ] || die "takes two releases at most"
+# With no runs the results are empty, and an empty comparison passes.
+[[ $runs =~ ^[1-9][0-9]*$ ]] || die "--runs takes a whole number, 1 or more"
 
 [ "$(uname -s)" = Linux ] || die "the releases are benchmarked on Linux only"
 case $(uname -m) in
@@ -57,7 +59,9 @@ case $(uname -m) in
   aarch64 | arm64) platform=linux-arm64 ;;
   *) die "no release build for $(uname -m)" ;;
 esac
-for tool in gh Xvfb python3 sha256sum; do
+# minisign too: the checksums come from the same release as the build, so only
+# the signature says the build is Arakun's.
+for tool in gh Xvfb python3 sha256sum minisign; do
   command -v "$tool" >/dev/null || die "$tool is needed"
 done
 
@@ -107,14 +111,10 @@ fetch() {
   gh release download "$tag" --dir "$dir" \
     --pattern "$name.tar.gz" --pattern SHA256SUMS --pattern SHA256SUMS.minisig ||
     die "could not download $name.tar.gz from the release $tag"
-  if command -v minisign >/dev/null; then
-    for key in "${keys[@]}"; do
-      if minisign -Vq -p "$key" -m "$dir/SHA256SUMS" -x "$dir/SHA256SUMS.minisig" 2>/dev/null; then ok=1; fi
-    done
-    [ -n "$ok" ] || die "the SHA256SUMS of $tag is not signed with one of Arakun's keys"
-  else
-    echo "warning: the signature of $tag was not checked; install minisign to check it" >&2
-  fi
+  for key in "${keys[@]}"; do
+    if minisign -Vq -p "$key" -m "$dir/SHA256SUMS" -x "$dir/SHA256SUMS.minisig" 2>/dev/null; then ok=1; fi
+  done
+  [ -n "$ok" ] || die "the SHA256SUMS of $tag is not signed with one of Arakun's keys"
   # Fails too when SHA256SUMS does not list the archive.
   (cd "$dir" && sha256sum --check --ignore-missing --quiet SHA256SUMS) ||
     die "checksum mismatch for $name.tar.gz"

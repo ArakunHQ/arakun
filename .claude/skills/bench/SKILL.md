@@ -48,7 +48,8 @@ offsets around it, so keep it self-contained and leave the app as it found it.
 ## Perf: compare two releases
 
 `tools/bench/releases.sh [BEFORE [AFTER]]` downloads the Linux builds of two releases
-with `gh`, checks them against the signed `SHA256SUMS`, runs `perf` on one after the
+with `gh`, checks them against the signed `SHA256SUMS` (it needs `minisign` for the
+signature and stops without it), runs `perf` on one after the
 other and writes `<tag>.json` and `comparison.md` to `target/bench/releases/`. Without
 tags it takes the latest release and the one before it; a nightly's tag works too. It
 takes `--runs`, `--only` and `--threshold`, and exits 1 like `compare`.

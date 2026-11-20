@@ -6,7 +6,9 @@
 //! and keeps only the session the server answers with, in the system keyring.
 
 pub mod api;
+pub mod bot;
 pub mod crypto;
+pub mod decisions;
 pub mod hub;
 pub mod sign_in;
 pub mod socket;

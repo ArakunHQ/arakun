@@ -18,6 +18,10 @@ mod agent;
 mod broker;
 #[path = "../../src/durable.rs"]
 mod durable;
+// The files of its folders, for a paired app's Explorer (`server/files.rs`).
+#[allow(dead_code)]
+#[path = "../../src/explorer.rs"]
+mod explorer;
 #[allow(dead_code)]
 #[path = "../../src/fetch.rs"]
 mod fetch;

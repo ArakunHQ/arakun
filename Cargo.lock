@@ -343,6 +343,7 @@ dependencies = [
  "getrandom 0.4.3",
  "gpui",
  "gpui_platform",
+ "ignore",
  "imagesize 0.15.0",
  "libc",
  "lyon_tessellation",

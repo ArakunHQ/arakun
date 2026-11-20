@@ -351,7 +351,8 @@ pub struct Shell {
     completion: Option<Completion>,
     /// `git ls-files` of an environment, cached briefly for `@` completion.
     file_index: Option<(std::path::PathBuf, Instant, Arc<Vec<String>>)>,
-    file_index_loading: bool,
+    /// The environment whose file index is being read, if any.
+    file_index_loading: Option<std::path::PathBuf>,
     /// The skills an environment's agents read, cached briefly for `/` completion.
     skill_index: Option<(std::path::PathBuf, Instant, Arc<Vec<crate::agent::Choice>>)>,
     skill_index_loading: bool,
@@ -932,7 +933,7 @@ impl Shell {
             stale_diffs: Vec::new(),
             completion: None,
             file_index: None,
-            file_index_loading: false,
+            file_index_loading: None,
             skill_index: None,
             skill_index_loading: false,
             home_face,

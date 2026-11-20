@@ -23,8 +23,9 @@ impl Shell {
         dirs: Vec<std::path::PathBuf>,
         cx: &mut Context<Self>,
     ) {
-        // A server's folder has no files here to list.
+        // A server's folder: listed over there.
         if crate::model::Remote::is_path(&env_path) {
+            self.server_list_dirs(&env_path, dirs);
             return;
         }
         cx.spawn(async move |this, cx| {
@@ -163,6 +164,13 @@ impl Shell {
         kind: TabKind,
         cx: &mut Context<Self>,
     ) {
+        // A server's file: read over there. Its diffs go through `git_at`.
+        if crate::model::Remote::is_path(&env_path)
+            && let TabKind::File { path } = &kind
+        {
+            self.server_read_file(&env_path, path, cx);
+            return;
+        }
         if let TabKind::File { path } = &kind
             && explorer::file_kind(path) == explorer::FileKind::Image
         {
@@ -237,34 +245,7 @@ impl Shell {
                     };
                     match result {
                         Ok((path, lines)) => {
-                            let is_diff = matches!(&k, TabKind::Diff { .. });
-                            // Diff markers are not code; headers feed nothing.
-                            let code: Vec<String> = if is_diff {
-                                lines
-                                    .iter()
-                                    .map(|l| highlight::diff_code(l).to_string())
-                                    .collect()
-                            } else {
-                                lines.iter().map(|l| l.to_string()).collect()
-                            };
-                            let mut doc = model::Doc::plain(lines);
-                            if let Some(spans) = highlight::highlight(&path, &code) {
-                                doc.spans = spans
-                                    .into_iter()
-                                    .enumerate()
-                                    .map(|(i, spans)| {
-                                        if is_diff && highlight::diff_shifted(&doc.lines[i]) {
-                                            spans
-                                                .into_iter()
-                                                .map(|(r, c)| (r.start + 1..r.end + 1, c))
-                                                .collect()
-                                        } else {
-                                            spans
-                                        }
-                                    })
-                                    .collect();
-                            }
-                            Document::Lines(Arc::new(doc))
+                            lines_document(&path, lines, matches!(&k, TabKind::Diff { .. }))
                         }
                         Err(e) => Document::Failed(e.into()),
                     }
@@ -308,12 +289,49 @@ impl Shell {
     }
 
     /// The open file or diff tab of an environment that shows `kind`.
-    fn doc_tab_mut(&mut self, env_path: &std::path::Path, kind: &TabKind) -> Option<&mut Tab> {
+    pub(super) fn doc_tab_mut(
+        &mut self,
+        env_path: &std::path::Path,
+        kind: &TabKind,
+    ) -> Option<&mut Tab> {
         self.strip
             .tabs
             .iter_mut()
             .find(|t| t.is_in(env_path) && same_doc(&t.kind, kind))
     }
+}
+
+/// The lines of a file or a diff (`is_diff`) as a document, colored by the
+/// language `path` names when it is a known one. Slow on a large file: run
+/// it to the side.
+pub(super) fn lines_document(path: &str, lines: Vec<SharedString>, is_diff: bool) -> Document {
+    // Diff markers are not code; headers feed nothing.
+    let code: Vec<String> = if is_diff {
+        lines
+            .iter()
+            .map(|l| highlight::diff_code(l).to_string())
+            .collect()
+    } else {
+        lines.iter().map(|l| l.to_string()).collect()
+    };
+    let mut doc = model::Doc::plain(lines);
+    if let Some(spans) = highlight::highlight(path, &code) {
+        doc.spans = spans
+            .into_iter()
+            .enumerate()
+            .map(|(i, spans)| {
+                if is_diff && highlight::diff_shifted(&doc.lines[i]) {
+                    spans
+                        .into_iter()
+                        .map(|(r, c)| (r.start + 1..r.end + 1, c))
+                        .collect()
+                } else {
+                    spans
+                }
+            })
+            .collect();
+    }
+    Document::Lines(Arc::new(doc))
 }
 
 /// Why a diff over the limit for a file tab is held back (`git_call::diff`).
@@ -334,7 +352,7 @@ pub(super) fn is_markdown(tab: &Tab) -> bool {
 }
 
 /// The loaded text of a markdown tab, parsed for the MD Viewer.
-fn parse_markdown(tab: &Tab) -> Option<Rc<Vec<crate::agent::markdown::Block>>> {
+pub(super) fn parse_markdown(tab: &Tab) -> Option<Rc<Vec<crate::agent::markdown::Block>>> {
     let Some(Document::Lines(doc)) = &tab.doc else {
         return None;
     };
@@ -388,7 +406,8 @@ impl Shell {
         let env = self.env();
         let ex = &env.explorer;
         if !ex.children.contains_key(&ex.root) {
-            return panel_empty("Loading files…").into_any_element();
+            let why = ex.failed.as_ref().map_or("Loading files…", |w| w.as_ref());
+            return panel_empty(why).into_any_element();
         }
         let rows = Rc::new(ex.rows());
         if rows.is_empty() {
@@ -508,6 +527,14 @@ impl Shell {
     /// The working file behind a file or diff tab, and the line to open it at
     /// (a diff's first hunk).
     pub(super) fn doc_edit_target(&self, tab: &Tab) -> Option<(std::path::PathBuf, Option<usize>)> {
+        // A server's file is not on this machine to edit or open.
+        if tab
+            .env
+            .as_deref()
+            .is_some_and(crate::model::Remote::is_path)
+        {
+            return None;
+        }
         match &tab.kind {
             TabKind::File { path } => Some((path.clone(), None)),
             // A server's file is not on this computer to open or edit.

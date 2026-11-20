@@ -1092,9 +1092,10 @@ The link is good for two minutes and pairs one device. There are two ways to use
   that folder's changes and diffs, and stage, discard, commit, pull, push and the pull
   request button run there, with the server's `git` and `gh` logins
   (`ARAKUN_GITHUB=readonly` on the server keeps it from pushing or opening pull requests;
-  set it before `service install`).
-  Merging into the main checkout and GitHub's form stay with this machine's folders, and
-  so does the file tree. Fork, compact, rewind and `/stage` in a server's session run on the server, with its
+  set it before `service install`). The Explorer lists a server's environment, its files
+  open in file tabs (text only, read from the server), and `@` in the composer completes
+  its paths. Merging into the main checkout and GitHub's form stay with this machine's
+  folders. Fork, compact, rewind and `/stage` in a server's session run on the server, with its
   agent and its git: a fork or a rewind opens as a new session there. "Continue with"
   hands a server's session to another of the agents on that server, in the same tab.
   In a server's environment, the model menu lists the models and reasoning levels that

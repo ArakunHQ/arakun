@@ -36,6 +36,7 @@ use crate::servers::client::{Client, Event, Events, Status as LinkStatus};
 use crate::servers::{self, Saved};
 use crate::servers_view::{PlaceRow, Reach, ServerRow, ServersEvent, ServersState, SessionRow};
 
+mod files;
 mod terms;
 
 /// One server: its connection and what it last said it holds.
@@ -1915,6 +1916,10 @@ impl Shell {
                 self.server_term_lost(msg, cx);
                 return;
             }
+            Some("list_dir" | "read_file" | "list_files") => {
+                self.server_files_lost(server, msg, cx);
+                return;
+            }
             _ => return,
         };
         let why = "The connection dropped first.";
@@ -2583,6 +2588,7 @@ impl Shell {
                 }
                 if back {
                     self.server_terms_back(id, cx);
+                    self.server_files_back(id, cx);
                 } else {
                     self.servers_drop_rewinds(id, cx);
                 }
@@ -2599,7 +2605,8 @@ impl Shell {
                     link.git_asks.older(id);
                     return;
                 }
-                if self.server_term_message(id, &msg, cx) {
+                if self.server_term_message(id, &msg, cx) || self.server_files_message(id, &msg, cx)
+                {
                     return;
                 }
                 let Some(link) = &mut self.servers else {

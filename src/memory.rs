@@ -911,6 +911,9 @@ arakun mem context                  the index new sessions start with
 arakun mem prompt                   how-to and index, for an agent arakun does not start
 arakun mem list [--global]          everything saved, newest first
 arakun mem forget <id…>             delete
+arakun mem scripts [--days N] [--min N] [-n N]
+                                  scripts agents wrote again in this project's sessions,
+                                  worth keeping as a script (in 3+ sessions of 30 days)
 kinds: decision bugfix gotcha convention preference discovery pattern config session note";
 
 pub fn cli(args: &[String], cwd: &Path) -> i32 {
@@ -1131,6 +1134,12 @@ pub fn run(args: &[String], cwd: &Path, root: &Path, at: u64) -> Result<String, 
                 .collect::<Vec<_>>()
                 .join("\n"))
         }
+        Some("scripts") => crate::repeats::run(
+            rest,
+            &project,
+            &crate::state::data_dir().join("sessions"),
+            at,
+        ),
         Some("context") => Ok(context(
             &load(&file(Scope::Project)),
             &load(&file(Scope::Global)),

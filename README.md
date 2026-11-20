@@ -212,7 +212,8 @@ terminal-only. The status line and keybindings from your settings don't apply in
   failing command or the same edit over and over) and offers to stop and rethink.
 - **Memory.** Agents save what they learn (`arakun mem`), and every new session starts
   with an index of it in the system prompt. Plain JSON files, one per repository plus a
-  global one.
+  global one. `arakun mem scripts` lists the scripts agents wrote again and again in a
+  project's sessions, worth keeping as a script of the project.
 - **Headless agents.** `arakun agent run` starts an agent in its own process that keeps
   going with the app closed. Its tools run inside a bubblewrap sandbox (workspace
   writable, the rest read-only, no credentials, no network unless `--allow net`), and a
@@ -915,6 +916,7 @@ arakun show                       # bring the window up (running `arakun` again 
 arakun quit                       # quit Arakun, also when its window is hidden
 arakun palette                    # bring the window up with Ctrl+K open
 arakun mem search <words>         # search what agents remember about this project
+arakun mem scripts                # scripts agents keep writing here, worth keeping
 arakun github draft o/r#12 --verdict approve --head <sha> --body-file - --agent Claude < review.md
                                   # save a review draft for the GitHub tab; sends nothing.
                                   # --body-file takes a file or - (stdin); an agent's file

@@ -21,6 +21,7 @@ use crate::git;
 pub mod avatars;
 pub mod board;
 pub mod pilot;
+pub mod pilot_setup;
 pub mod pr;
 pub mod pulse;
 pub mod queue;
@@ -719,8 +720,8 @@ pub const USAGE: &str = "arakun github draft <owner/repo>#<n> --verdict <approve
     `--body-file -` reads the review from stdin.
     `--head` is the commit you read (`gh pr view <url> --json headRefOid`); an approval needs it.";
 
-/// `arakun github …`. Only `draft`: it writes the draft file and needs no
-/// running Arakun.
+/// `arakun github …`: `draft` writes the draft file and `pilot` the
+/// pilot settings; neither needs a running Arakun.
 pub fn cli(args: &[String]) -> i32 {
     match args.first().map(String::as_str) {
         Some("draft") if args[1..].iter().any(|a| crate::control::is_help(a)) => {
@@ -737,12 +738,16 @@ pub fn cli(args: &[String]) -> i32 {
                 1
             }
         },
+        Some("pilot") => pilot_setup::cli(&args[1..]),
         Some("help" | "-h" | "--help") | None => {
-            println!("{USAGE}");
+            println!("{USAGE}\n{}", pilot_setup::USAGE);
             0
         }
         Some(other) => {
-            eprintln!("arakun github: unknown command `{other}`\n{USAGE}");
+            eprintln!(
+                "arakun github: unknown command `{other}`\n{USAGE}\n{}",
+                pilot_setup::USAGE
+            );
             2
         }
     }

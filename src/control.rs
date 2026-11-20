@@ -427,6 +427,10 @@ Usage:
                              approve, request-changes or comment; - reads stdin;
                              --head is the commit read, which an approval needs);
                              nothing is sent to GitHub until you post it there
+  arakun github pilot connect <url> --token -
+                             connect arakun-pilot, the pull request agent: checks
+                             the Worker, then saves its settings (also status,
+                             disconnect; arakun github pilot help)
   arakun dev …                 a test arakun on a virtual display, to screenshot
                              and click without touching this screen (arakun dev help)
 ";

@@ -326,8 +326,11 @@ sees the project's skills.
   repository line above the verdict to show only some organizations or repositories; the rest
   doesn't show, count or alert. "Mark all read" marks only what that choice shows.
 - **Pull request agent.** With a pull request agent on a server of your own
-  (arakun-pilot), `~/.config/arakun-pilot/client.json` (`$XDG_CONFIG_HOME` when set to an absolute path;
-  `{"url": "…", "token": "…"}`) turns it on, and Arakun reads `GET <url>/board` and
+  (arakun-pilot), `arakun github pilot connect <url> --token -` (the token on stdin)
+  checks the Worker and saves its settings; `arakun github pilot status` says whether
+  they still work and `arakun github pilot disconnect` removes them. They go in
+  `~/.config/arakun-pilot/client.json` (`$XDG_CONFIG_HOME` when set to an absolute path;
+  `{"url": "…", "token": "…"}`, readable only by you), and Arakun reads `GET <url>/board` and
   `GET <url>/items` every minute. A test Arakun with `ARAKUN_STATE` set, as `arakun dev`
   starts one, reads `arakun-pilot/client.json` in the folder of that state file instead.
   The `url` must be `https://`; plain `http://` works only for `localhost`, `127.0.0.1`
@@ -1028,6 +1031,9 @@ arakun github draft o/r#12 --verdict approve --head <sha> --body-file - --agent 
                                   # asks the user first if it is outside its workspace or
                                   # the command shares its line with others. --head is
                                   # the commit the agent read; an approval needs it
+arakun github pilot connect <url> --token -
+                                  # connect arakun-pilot: check the Worker, save its
+                                  # settings (also status, disconnect)
 arakun agent run <prompt>         # start a headless agent
 arakun server serve               # run sessions on this machine without the window (arakun server help)
 arakun --version                  # print the version (needs no running Arakun)

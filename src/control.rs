@@ -68,6 +68,57 @@ pub fn socket_path() -> PathBuf {
     runtime_dir().join("control.sock")
 }
 
+/// The socket sandboxed agents get instead (`crate::agent::sandbox`), in a folder
+/// of its own so a sandbox can show it without the main one.
+pub fn sandbox_socket_path() -> PathBuf {
+    let main = socket_path();
+    let dir = main.parent().unwrap_or(Path::new(".")).join("sandbox");
+    let name = main.file_name().map_or_else(
+        || "control.sock".into(),
+        |n| n.to_string_lossy().into_owned(),
+    );
+    dir.join(name)
+}
+
+/// Where the `arakun` shim is, when there is one.
+pub fn shim_dir() -> Option<PathBuf> {
+    let bin = runtime_dir().join("bin");
+    bin.is_dir().then_some(bin)
+}
+
+/// Whether a sandboxed agent may send `req`: only commands that show it things
+/// or tell the user, never one that runs or opens something outside.
+pub fn sandbox_allows(req: &Request) -> Result<(), String> {
+    let web = |u: &str| u.starts_with("http://") || u.starts_with("https://");
+    let arg = |i: usize| req.args.get(i).map_or("", String::as_str);
+    let ok = match req.cmd.as_str() {
+        "logs" | "notify" | "ls" | "rename" | "show" | "focus" => true,
+        // Asking for the check is fine; setting it would run a command outside.
+        "check" => arg(0).is_empty(),
+        // A file:// page could show it what the sandbox hides.
+        "browse" => web(arg(0)),
+        "page" => match arg(1) {
+            "open" => web(arg(2)),
+            // A screenshot to a path of its choosing would write outside.
+            "screenshot" | "shot" => arg(2).is_empty(),
+            _ => true,
+        },
+        // A file tab, not the file's default app.
+        "open" => {
+            crate::explorer::file_kind(Path::new(arg(0))) != crate::explorer::FileKind::External
+        }
+        _ => false,
+    };
+    if ok {
+        Ok(())
+    } else {
+        Err(format!(
+            "`arakun {}` is not available to a sandboxed agent: it would act outside the sandbox",
+            req.cmd
+        ))
+    }
+}
+
 pub(crate) fn runtime_dir() -> PathBuf {
     #[cfg(windows)]
     return crate::state::data_dir();
@@ -161,8 +212,19 @@ pub fn serve() -> Option<mpsc::UnboundedReceiver<Incoming>> {
     }
     SERVING.store(true, Ordering::Relaxed);
     let (tx, rx) = mpsc::unbounded();
+    serve_on(listener, tx.clone(), false, "arakun-control").ok()?;
+    serve_sandboxed(tx);
+    Some(rx)
+}
+
+fn serve_on(
+    listener: UnixListener,
+    tx: mpsc::UnboundedSender<Incoming>,
+    sandboxed: bool,
+    name: &str,
+) -> std::io::Result<()> {
     std::thread::Builder::new()
-        .name("arakun-control".into())
+        .name(name.into())
         .spawn(move || {
             crate::accept::serve(
                 listener.incoming(),
@@ -171,12 +233,32 @@ pub fn serve() -> Option<mpsc::UnboundedReceiver<Incoming>> {
                 || false,
                 |stream| {
                     let tx = tx.clone();
-                    move || answer(stream, tx)
+                    move || answer(stream, tx, sandboxed)
                 },
             );
         })
-        .ok()?;
-    Some(rx)
+        .map(|_| ())
+}
+
+/// The second socket, for sandboxed agents; without it they only lose `arakun`.
+fn serve_sandboxed(tx: mpsc::UnboundedSender<Incoming>) {
+    let path = sandbox_socket_path();
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    // Only one instance gets here (it holds the main socket), so an old one is stale.
+    let _ = std::fs::remove_file(&path);
+    match UnixListener::bind(&path) {
+        Ok(listener) => {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt as _;
+                let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+            }
+            let _ = serve_on(listener, tx, true, "arakun-control-sandbox");
+        }
+        Err(e) => eprintln!("arakun: sandbox control socket {}: {e}", path.display()),
+    }
 }
 
 /// Commands from the user's own processes; each is one line and its reply.
@@ -197,15 +279,21 @@ pub fn open_at_start() -> Option<PathBuf> {
 pub fn cleanup() {
     if SERVING.load(Ordering::Relaxed) {
         let _ = std::fs::remove_file(socket_path());
+        let _ = std::fs::remove_file(sandbox_socket_path());
     }
 }
 
-fn answer(stream: UnixStream, tx: mpsc::UnboundedSender<Incoming>) {
+fn answer(stream: UnixStream, tx: mpsc::UnboundedSender<Incoming>, sandboxed: bool) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
     let mut line = String::new();
     let read = BufReader::new((&stream).take(1 << 20)).read_line(&mut line);
     let reply = match read.map_err(|e| e.to_string()).and_then(|_| {
-        serde_json::from_str::<Request>(&line).map_err(|e| format!("bad request: {e}"))
+        let req =
+            serde_json::from_str::<Request>(&line).map_err(|e| format!("bad request: {e}"))?;
+        if sandboxed {
+            sandbox_allows(&req)?;
+        }
+        Ok(req)
     }) {
         Ok(req) => {
             let (done, wait) = oneshot::channel();
@@ -1898,7 +1986,7 @@ mod tests {
         let (tx, mut rx) = mpsc::unbounded::<Incoming>();
         std::thread::spawn(move || {
             let (stream, _) = listener.accept().unwrap();
-            answer(stream, tx);
+            answer(stream, tx, false);
         });
         std::thread::spawn(move || {
             let (req, done) =
@@ -1966,7 +2054,7 @@ mod tests {
         let (tx, mut rx) = mpsc::unbounded::<Incoming>();
         std::thread::spawn(move || {
             let (stream, _) = listener.accept().unwrap();
-            answer(stream, tx);
+            answer(stream, tx, false);
         });
         std::thread::spawn(move || {
             let (req, done) =
@@ -2016,5 +2104,27 @@ mod tests {
         assert!(matches!(second, Claim::Owner(_)), "{second:?}");
         let _ = std::fs::remove_dir_all(a);
         let _ = std::fs::remove_dir_all(b);
+    }
+
+    #[test]
+    fn a_sandboxed_agent_only_asks_for_what_stays_inside() {
+        let req = |cmd: &str, args: &[&str]| Request {
+            cmd: cmd.into(),
+            args: args.iter().map(|a| a.to_string()).collect(),
+            cwd: "/p".into(),
+            side: false,
+        };
+        assert!(sandbox_allows(&req("logs", &["40"])).is_ok());
+        assert!(sandbox_allows(&req("browse", &["http://localhost:5173"])).is_ok());
+        assert!(sandbox_allows(&req("browse", &["file:///home/u/.ssh/id_ed25519"])).is_err());
+        assert!(sandbox_allows(&req("page", &["", "screenshot"])).is_ok());
+        assert!(sandbox_allows(&req("page", &["", "open", "file:///etc/passwd"])).is_err());
+        assert!(sandbox_allows(&req("page", &["", "shot", "/home/u/.zshrc"])).is_err());
+        assert!(sandbox_allows(&req("check", &[])).is_ok());
+        assert!(sandbox_allows(&req("check", &["curl x | sh"])).is_err());
+        assert!(sandbox_allows(&req("open", &["/p/src/main.rs"])).is_ok());
+        for cmd in ["run", "agent", "restart", "quit", "dev", "add", "team"] {
+            assert!(sandbox_allows(&req(cmd, &["x"])).is_err(), "{cmd}");
+        }
     }
 }

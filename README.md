@@ -233,6 +233,23 @@ sees the project's skills.
   (`--policy readonly|workspace|full`) decides which tool calls need your approval
   (`arakun agent approve|deny`). The sandbox is bubblewrap on Linux (needs `bwrap`) and
   Seatbelt (`sandbox-exec`) on macOS; headless runs use Workers AI models for now.
+- **Sandboxed agents.** Turn on Sandbox agents in Settings › Project and the agents
+  of that project's sessions run in a sandbox: Seatbelt on macOS, bubblewrap on Linux
+  (needs `bwrap`). They can write the environment, the repository's Git folder (not
+  its config or hooks), package caches and temporary folders; other tools' logins and
+  tokens (`GH_TOKEN`, cloud keys), browser profiles and files that look like secrets
+  (`.env`, keys) stay hidden. On Linux only the secret files a scan finds at the
+  start are hidden (up to 8 folders deep, 50,000 entries, skipping `node_modules`,
+  `target` and the like); macOS also hides ones made later, by name. An environment
+  whose `.git` file leads to a folder its repository doesn't list won't start. They
+  keep the network and their own login (on macOS the keychain), and reach Arakun
+  through a socket of their own that refuses `arakun run`, `arakun agent` and anything
+  else that would act outside. On Linux, sandboxed Claude Code keeps its settings in
+  `~/.claude/.claude.json` (a copy of `~/.claude.json` at first), because bubblewrap
+  can't let it write beside the file in `$HOME`. Workers AI sessions and Windows can't
+  be sandboxed yet. A sandboxed
+  agent can still change what you later run outside it: the project's files, and its
+  own settings such as `~/.claude.json`.
 - **Server.** `arakun server serve` is Arakun without a window, for a machine nobody
   sits at: a build box, the workstation at the office, a VPS. It runs sessions of any
   agent signed in on that machine and keeps them going while nothing is connected.

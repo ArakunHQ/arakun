@@ -60,6 +60,18 @@ mod memory {
     pub fn prompt_for(_: &std::path::Path) -> String {
         String::new()
     }
+    pub fn root() -> std::path::PathBuf {
+        crate::platform::app_dir().join("memory")
+    }
+}
+/// The server answers no `arakun` commands; a sandboxed session here reaches none.
+mod control {
+    pub fn sandbox_socket_path() -> std::path::PathBuf {
+        crate::platform::app_dir().join("sandbox/control.sock")
+    }
+    pub fn shim_dir() -> Option<std::path::PathBuf> {
+        None
+    }
 }
 /// What the phone's messages and the server use of the app's model.
 mod model {

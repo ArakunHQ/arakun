@@ -5,6 +5,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::path::{Component, Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result, anyhow};
@@ -624,6 +625,9 @@ struct Caps {
 pub struct Thread {
     kind: AgentKind,
     backend: Backend,
+    /// The sandbox the agent runs in, when its project has one; its `fs/*`
+    /// requests follow the same rules.
+    sandbox: Option<Arc<super::sandbox::Session>>,
     /// The session runs on a server: this thread shows it, and what the user
     /// does goes out as [`ThreadEvent::Remote`].
     remote: bool,
@@ -1136,6 +1140,7 @@ impl Thread {
             auth_hint: None,
             needs_login: false,
             needs_install: None,
+            sandbox: None,
             install_approved: false,
             modes: None,
             models: None,
@@ -1665,7 +1670,7 @@ impl Thread {
             let (progress_tx, mut progress_rx) = fmpsc::unbounded::<String>();
             let resolve = cx.background_executor().spawn(async move {
                 if native {
-                    return launch::resolve_droid_native(Some(&cwd)).map(|s| (s, None));
+                    return launch::resolve_droid_native(Some(&cwd)).map(|s| (s, None, None));
                 }
                 let mut spec = launch::resolve(kind, Some(&cwd), install, &|line| {
                     let _ = progress_tx.unbounded_send(line);
@@ -1680,7 +1685,20 @@ impl Thread {
                     spec.env.extend(set);
                     spec.unset.extend(unset);
                 }
-                Ok((spec, seat))
+                if !super::sandbox::wanted(&cwd).map_err(|e| {
+                    anyhow!("{e}. The sandbox won't start an agent in a Git folder it can't trust.")
+                })? {
+                    return Ok((spec, seat, None));
+                }
+                // Its tools would run in arakun itself, outside any sandbox.
+                if kind == AgentKind::WorkersAi {
+                    anyhow::bail!(
+                        "Workers AI runs its tools inside arakun, which has no sandbox for them yet. Turn off Sandbox agents in Settings › Project to use it here."
+                    );
+                }
+                let sandbox = super::sandbox::Session::new(kind, &cwd)?;
+                let spec = sandbox.wrap(spec);
+                Ok((spec, seat, Some(Arc::new(sandbox))))
             });
             let progress = {
                 let this = this.clone();
@@ -1696,10 +1714,11 @@ impl Thread {
             let spec = resolve.await;
             progress.await;
             let _ = this.update(cx, |t, cx| match spec {
-                Ok((spec, seat)) => {
+                Ok((spec, seat, sandbox)) => {
                     if let Some(seat) = seat {
                         t.take_seat(seat, cx);
                     }
+                    t.sandbox = sandbox;
                     t.launch(spec, cx)
                 }
                 Err(e) => {
@@ -2918,6 +2937,11 @@ impl Thread {
         self.check_offered
     }
 
+    /// The sandbox the agent runs in, so what runs for it can run there too.
+    pub fn sandbox(&self) -> Option<Arc<super::sandbox::Session>> {
+        self.sandbox.clone()
+    }
+
     /// Offers `command` as the project's check, once per session.
     pub fn offer_check(&mut self, command: String, cx: &mut Context<Self>) {
         if self.check_offered {
@@ -3387,12 +3411,13 @@ impl Thread {
             // Off the main thread: a big file, or one on a slow disk, would freeze the window.
             "fs/read_text_file" => {
                 let cwd = self.cwd.clone();
+                let sandbox = self.sandbox.clone();
                 let conn = Rc::downgrade(&conn);
                 cx.spawn(async move |_, cx| {
                     let read = cx
-                        .background_spawn(crate::guard::task(
-                            async move { read_file(&cwd, &params) },
-                        ))
+                        .background_spawn(crate::guard::task(async move {
+                            read_file(&cwd, sandbox.as_deref(), &params)
+                        }))
                         .await;
                     // The agent may have gone in the meantime.
                     let Some(conn) = conn.upgrade() else {
@@ -3405,10 +3430,33 @@ impl Thread {
                 })
                 .detach();
             }
-            "fs/write_text_file" => match self.write_file(&params) {
-                Ok(()) => conn.respond(id, json!({})),
-                Err(e) => conn.respond_error(id, -32002, &format!("{e:#}")),
-            },
+            // Checked here, written off the main thread: a sandboxed write starts a
+            // process, and a big file on a slow disk would freeze the window too.
+            "fs/write_text_file" => {
+                let checked = self.writable_path(&params);
+                let sandbox = self.sandbox.clone();
+                let content = params["content"].as_str().unwrap_or("").to_string();
+                let conn = Rc::downgrade(&conn);
+                cx.spawn(async move |_, cx| {
+                    let written = match checked {
+                        Ok(path) => {
+                            cx.background_spawn(crate::guard::task(async move {
+                                write_text(&path, sandbox.as_deref(), &content)
+                            }))
+                            .await
+                        }
+                        Err(e) => Err(e),
+                    };
+                    let Some(conn) = conn.upgrade() else {
+                        return;
+                    };
+                    match written {
+                        Ok(()) => conn.respond(id, json!({})),
+                        Err(e) => conn.respond_error(id, -32002, &format!("{e:#}")),
+                    }
+                })
+                .detach();
+            }
             _ => conn.respond_error(id, -32601, &format!("method not found: {method}")),
         }
     }
@@ -3422,13 +3470,16 @@ impl Thread {
             .map(|c| (c.id.clone(), c.thread.clone()))
     }
 
-    fn write_file(&self, params: &Value) -> Result<()> {
+    /// Where the agent's `fs/write_text_file` goes, if it may write there.
+    fn writable_path(&self, params: &Value) -> Result<PathBuf> {
         let path = confine(&self.cwd, params["path"].as_str().unwrap_or(""))?;
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
+        if self.sandbox.as_ref().is_some_and(|s| !s.may_write(&path)) {
+            return Err(anyhow!(
+                "the sandbox does not let the agent write {}",
+                path.display()
+            ));
         }
-        std::fs::write(&path, params["content"].as_str().unwrap_or(""))
-            .with_context(|| format!("writing {}", path.display()))
+        Ok(path)
     }
 
     // ---- session/update --------------------------------------------------
@@ -3852,32 +3903,73 @@ fn confine(cwd: &Path, raw: &str) -> Result<PathBuf> {
     Ok(real)
 }
 
+/// Writes the agent's `fs/write_text_file`. Runs off the main thread.
+fn write_text(path: &Path, sandbox: Option<&super::sandbox::Session>, content: &str) -> Result<()> {
+    // Written from inside: checked paths can still be swapped for links.
+    if let Some(s) = sandbox {
+        return s.write(path, content.as_bytes());
+    }
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(path, content).with_context(|| format!("writing {}", path.display()))
+}
+
 /// Most of a file the agent gets in one answer. A bigger file would freeze the
 /// window while the reply is built, and the agent can read it in parts.
 const READ_MAX: usize = 8 << 20;
 
 /// Answers the agent's `fs/read_text_file`: the whole file, or `limit` lines
 /// from `line` (1-based). Runs off the main thread.
-fn read_file(cwd: &Path, params: &Value) -> Result<String> {
+fn read_file(
+    cwd: &Path,
+    sandbox: Option<&super::sandbox::Session>,
+    params: &Value,
+) -> Result<String> {
     let path = confine(cwd, params["path"].as_str().unwrap_or(""))?;
+    if sandbox.is_some_and(|s| !s.may_read(&path)) {
+        return Err(anyhow!("{} is hidden from the sandbox", path.display()));
+    }
     let line = params["line"].as_u64().map(|l| l.max(1) as usize);
     let limit = params["limit"].as_u64().map(|l| l as usize);
-    read_text(&path, line, limit)
+    match sandbox {
+        // Read from inside: checked paths can still be swapped for links.
+        Some(s) => {
+            let bytes = s.read(&path, SANDBOX_READ_MAX)?;
+            let len = bytes.len() as u64;
+            read_lines(std::io::Cursor::new(bytes), len, &path, line, limit)
+        }
+        None => read_text(&path, line, limit),
+    }
 }
 
+/// Most of a file read through a sandbox, which can't stream it.
+const SANDBOX_READ_MAX: usize = 8 * READ_MAX;
+
 fn read_text(path: &Path, line: Option<usize>, limit: Option<usize>) -> Result<String> {
-    use std::io::BufRead as _;
     let meta = std::fs::metadata(path).with_context(|| format!("reading {}", path.display()))?;
     // Reading a FIFO or a device could wait or go on for good.
     if !meta.is_file() {
         return Err(anyhow!("{} is not a regular file", path.display()));
     }
+    let file = std::fs::File::open(path).with_context(|| format!("reading {}", path.display()))?;
+    read_lines(std::io::BufReader::new(file), meta.len(), path, line, limit)
+}
+
+/// `limit` lines from `line` of `r`, whose size is `len`.
+fn read_lines(
+    mut r: impl std::io::BufRead,
+    len: u64,
+    path: &Path,
+    line: Option<usize>,
+    limit: Option<usize>,
+) -> Result<String> {
     let mb = |n: u64| n.div_ceil(1 << 20);
     let too_big = || match (line, limit) {
         (None, None) => anyhow!(
             "{} is {} MB, more than the {} MB arakun reads at once. Read it in parts with `line` and `limit`.",
             path.display(),
-            mb(meta.len()),
+            mb(len),
             mb(READ_MAX as u64)
         ),
         _ => anyhow!(
@@ -3886,11 +3978,9 @@ fn read_text(path: &Path, line: Option<usize>, limit: Option<usize>) -> Result<S
             mb(READ_MAX as u64)
         ),
     };
-    if line.is_none() && limit.is_none() && meta.len() > READ_MAX as u64 {
+    if line.is_none() && limit.is_none() && len > READ_MAX as u64 {
         return Err(too_big());
     }
-    let file = std::fs::File::open(path).with_context(|| format!("reading {}", path.display()))?;
-    let mut r = std::io::BufReader::new(file);
     let read = |e| anyhow::Error::new(e).context(format!("reading {}", path.display()));
     // Lines before `line` are skipped without keeping them.
     let mut skipped = 0;
@@ -4639,9 +4729,9 @@ mod tests {
         assert_eq!(read(Some(9), None), "");
         assert_eq!(read(None, Some(0)), "");
         let params = json!({"path": "a.txt", "line": 0, "limit": 1});
-        assert_eq!(read_file(&dir, &params).unwrap(), "one\n");
+        assert_eq!(read_file(&dir, None, &params).unwrap(), "one\n");
         let outside = json!({"path": "../elsewhere.txt"});
-        assert!(read_file(&dir, &outside).is_err());
+        assert!(read_file(&dir, None, &outside).is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

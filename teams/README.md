@@ -271,8 +271,8 @@ devices: `400` without it, `403` if it is someone else's.
 | `GET /teams/<team_id>/channels/<channel_id>/ws` | member, device | `101`, the channel's socket. `426` without `Upgrade: websocket`. |
 | `GET /teams/<team_id>/channels/<channel_id>/messages?after=<seq>&limit=<n>` | member, device | `200 [{seq, at, message}]`, oldest first; `limit` 1 to 200. |
 
-A channel keeps at most 10,000 messages. Once its sequence exceeds 10,000,
-each successful send keeps the newest 9,000. If the first history row has a
+A channel keeps at most 10,000 messages. A send that makes it more than
+10,000 drops the oldest, so the newest 9,000 stay. If the first history row has a
 `seq` greater than `after + 1`, the missing prefix is no longer available on
 the server. Mark the gap, keep any local copies, and resume from the first
 returned row instead of requesting the missing prefix again.

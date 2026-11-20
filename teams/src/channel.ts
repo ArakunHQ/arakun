@@ -48,9 +48,10 @@ export interface Stored {
 const MAX_FRAME = 96 * 1024;
 /// The most messages a channel keeps: the object has a storage quota a
 /// channel would otherwise fill, after which every send fails. Old ones are
-/// dropped in runs, so the check does not delete on every message. seq is
-/// contiguous, so a client that asked for history from before the oldest one
-/// kept sees the gap and knows to resync.
+/// dropped in runs: once there are more than MAX_MESSAGES, the newest TRIM_TO
+/// stay, so about one send in a thousand deletes. seq is contiguous, so a
+/// client that asked for history from before the oldest one kept sees the gap
+/// and knows to resync.
 const MAX_MESSAGES = 10_000;
 const TRIM_TO = 9_000;
 /// In the 4000s so they never collide with the protocol's own codes.
@@ -118,10 +119,17 @@ export class Channel extends DurableObject<Env> {
       message TEXT NOT NULL
     )`);
     // Retention drops ciphertext, not the channel's record of accepted IDs.
-    // A trigger makes the ID and the delete part of the same transaction.
-    this.sql.exec("CREATE TABLE IF NOT EXISTS retired_ids (id TEXT PRIMARY KEY) WITHOUT ROWID");
+    // A trigger makes the ID and the delete part of the same transaction. The
+    // epoch lets a trim forget IDs that no send can reuse any more.
+    this.sql.exec("CREATE TABLE IF NOT EXISTS retired_ids (id TEXT PRIMARY KEY, epoch INTEGER) WITHOUT ROWID");
+    if (this.sql.exec("SELECT 1 FROM pragma_table_info('retired_ids') WHERE name = 'epoch'").toArray().length === 0) {
+      // A channel made before the column: its IDs keep a null epoch, which no
+      // trim forgets, and the trigger is made again to fill the column.
+      this.sql.exec("ALTER TABLE retired_ids ADD COLUMN epoch INTEGER");
+      this.sql.exec("DROP TRIGGER IF EXISTS retire_message");
+    }
     this.sql.exec(`CREATE TRIGGER IF NOT EXISTS retire_message BEFORE DELETE ON messages
-      BEGIN INSERT OR IGNORE INTO retired_ids (id) VALUES (OLD.id); END`);
+      BEGIN INSERT OR IGNORE INTO retired_ids (id, epoch) VALUES (OLD.id, json_extract(OLD.message, '$.epoch')); END`);
   }
 
   /// Opens a socket. Only the Worker calls this, after its checks.
@@ -299,7 +307,16 @@ export class Channel extends DurableObject<Env> {
         const n = this.sql
           .exec<{ seq: number }>("INSERT INTO messages (id, at, device_id, message) VALUES (?, ?, ?, ?) RETURNING seq", msg.id, at, msg.device_id, JSON.stringify(msg))
           .one().seq;
-        if (n > MAX_MESSAGES) this.sql.exec("DELETE FROM messages WHERE seq <= ?", n - TRIM_TO);
+        // seq never goes down, so the count comes from the oldest kept row,
+        // not from n: otherwise every send past 10,000 would delete one.
+        const oldest = this.sql.exec<{ seq: number }>("SELECT MIN(seq) AS seq FROM messages").one().seq;
+        if (n - oldest + 1 > MAX_MESSAGES) {
+          this.sql.exec("DELETE FROM messages WHERE seq <= ?", n - TRIM_TO);
+          // A send older than the newest stored epoch is refused, and this
+          // message is the newest, so IDs of older epochs can never be sent
+          // again. Without this the table would grow with every trim.
+          this.sql.exec("DELETE FROM retired_ids WHERE epoch < ?", msg.epoch);
+        }
         return n;
       });
     } catch (e) {

@@ -563,6 +563,45 @@ describe("history", () => {
     a.ws.close();
   });
 
+  it("trims in runs, not on every send after the first trim", async () => {
+    const t = await team();
+    const a = await openChannel(t.owner.user, t.owner.device, t.teamId, t.channelId);
+    const stub = env.CHANNEL.get(env.CHANNEL.idFromName(`${t.teamId}/${t.channelId}`)) as DurableObjectStub;
+    // As after a trim: 9,000 messages, seq 1,001 to 10,000.
+    await runInDurableObject<Channel, void>(stub, (_, state) => {
+      state.storage.sql.exec(
+        `WITH RECURSIVE n(seq) AS (SELECT 1001 UNION ALL SELECT seq + 1 FROM n WHERE seq < 10000)
+         INSERT INTO messages SELECT seq, 'm' || seq, 0, 'd', '{"epoch":1}' FROM n`,
+      );
+    });
+    a.send(await message(t.teamId, t.channelId, t.owner.device, 1, t.keys.get(1)!, "kept"));
+    expect((await stored(a)).seq).toBe(10001);
+    const count = await runInDurableObject<Channel, number>(stub, (_, state) =>
+      state.storage.sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM messages").one().n,
+    );
+    expect(count).toBe(9001);
+    a.ws.close();
+  });
+
+  it("forgets retired IDs only of epochs no send can use", async () => {
+    const t = await team();
+    const a = await openChannel(t.owner.user, t.owner.device, t.teamId, t.channelId);
+    const stub = env.CHANNEL.get(env.CHANNEL.idFromName(`${t.teamId}/${t.channelId}`)) as DurableObjectStub;
+    await runInDurableObject<Channel, void>(stub, (_, state) => {
+      const sql = state.storage.sql;
+      sql.exec("INSERT INTO retired_ids VALUES ('older', 0), ('current', 1), ('unknown', NULL)");
+      sql.exec("INSERT INTO messages VALUES (1, 'first', 0, 'd', '{\"epoch\":1}')");
+      sql.exec("UPDATE sqlite_sequence SET seq = 10000 WHERE name = 'messages'");
+    });
+    a.send(await message(t.teamId, t.channelId, t.owner.device, 1, t.keys.get(1)!, "trims"));
+    await stored(a);
+    const left = await runInDurableObject<Channel, string[]>(stub, (_, state) =>
+      state.storage.sql.exec<{ id: string }>("SELECT id FROM retired_ids ORDER BY id").toArray().map((r) => r.id),
+    );
+    expect(left).toEqual(["current", "first", "unknown"]);
+    a.ws.close();
+  });
+
   it("keeps older history when a message cannot be inserted", async () => {
     const t = await team();
     const a = await openChannel(t.owner.user, t.owner.device, t.teamId, t.channelId);

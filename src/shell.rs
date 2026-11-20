@@ -271,6 +271,9 @@ pub struct Shell {
     /// A line for the next prompt to an environment's sessions after arakun renamed
     /// its branch: they started on the old name.
     rename_notes: std::collections::HashMap<std::path::PathBuf, String>,
+    /// Where a server's first prompt put back in an environment's composer was
+    /// written: what it mentions is still looked for there when it is sent again.
+    mention_sources: std::collections::HashMap<std::path::PathBuf, std::path::PathBuf>,
     /// Sessions whose transcript is being read off the main thread, to show them.
     restoring: std::collections::HashSet<SharedString>,
     /// Reads in `restoring` an `ensure_live` beat: when one ends, its older
@@ -857,6 +860,7 @@ impl Shell {
             env_followed: false,
             refresh_gen: Default::default(),
             rename_notes: Default::default(),
+            mention_sources: Default::default(),
             restoring: Default::default(),
             restoring_stale: Default::default(),
             active_project,
@@ -1728,7 +1732,7 @@ impl Shell {
                     let (branch, auto_name) = (branch.clone(), *auto_name);
                     // The dialog stays until the server answers.
                     let asked = Some(dialog.entity_id());
-                    this.servers_new_env_on(&server, &from, branch, auto_name, asked, cx);
+                    this.servers_new_env_on(&server, &from, branch, auto_name, asked, None, cx);
                 }
                 _ => this.close_modal(window, cx),
             },
@@ -1766,8 +1770,24 @@ impl Shell {
             .is_some_and(|e| e.remote.is_some())
             || project.is_remote();
         if on_server {
-            let from = server_source(project, |p| self.server_env_retired(p));
+            // A queued prompt goes only to the server it was written on,
+            // never to another that has this project too.
+            let written_on = prompt.as_ref().map(|p| {
+                self.find_env(p.from())
+                    .and_then(|e| e.remote.as_ref())
+                    .map(|r| r.server.clone())
+            });
+            let from = server_source(project, |p| self.server_env_retired(p)).filter(|&i| {
+                written_on.as_ref().is_none_or(|server| {
+                    server.is_some()
+                        && project.environments[i].remote.as_ref().map(|r| &r.server)
+                            == server.as_ref()
+                })
+            });
             let Some(from) = from else {
+                if let Some(prompt) = prompt {
+                    self.unqueue(prompt, cx);
+                }
                 self.notify(
                     crate::island::AlertKind::Warning,
                     "Could not make the environment",
@@ -1777,7 +1797,7 @@ impl Shell {
                 );
                 return;
             };
-            self.servers_new_env(pi, from, cx);
+            self.servers_new_env(pi, from, prompt, cx);
             return;
         }
         let (repo, project_name) = (project.path.clone(), project.name.clone());

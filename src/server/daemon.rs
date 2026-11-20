@@ -1705,12 +1705,26 @@ impl Daemon {
                 agent,
                 text,
                 settings,
+                mentions_from,
             } => {
                 let path = PathBuf::from(env);
                 if let Err(e) = self.admit(&path) {
                     self.transport.send(client, error_about("start", &e));
                     return;
                 }
+                // A first prompt written in the main folder and started in a
+                // new worktree: a file it names that git did not check out
+                // there (untracked, ignored) is still found where it was
+                // written, as the app does with its own worktrees. Only from
+                // one of this server's folders.
+                let text = match mentions_from.map(PathBuf::from) {
+                    Some(from)
+                        if self.admit(&from).is_ok() && self.store.place(&from).is_some() =>
+                    {
+                        agent::attach::move_mentions(&text, &from, &path)
+                    }
+                    _ => text,
+                };
                 let Some(place) = self.store.place_mut(&path) else {
                     // Said to be about the start: the app waits for its answer.
                     self.transport
@@ -2052,14 +2066,22 @@ impl Daemon {
                     let made = cx
                         .background_executor()
                         .spawn(async move {
-                            let path = add_worktree(&from, &branch)?;
-                            let meta = PlaceMeta::read(&path);
-                            Ok((path, meta))
+                            // Git makes no worktree of a repository with no
+                            // commits yet. None says so.
+                            if !has_commits(&from) {
+                                return None;
+                            }
+                            Some(add_worktree(&from, &branch).map(|path| {
+                                let meta = PlaceMeta::read(&path);
+                                (path, meta)
+                            }))
                         })
                         .await;
                     // The new folder starts with the agent of the one it came from.
-                    let _ = this.update(cx, |this, cx| {
-                        this.place_added_with(client, made, agent, true, cx)
+                    let _ = this.update(cx, |this, cx| match made {
+                        Some(made) => this.place_added_with(client, made, agent, true, cx),
+                        // The app starts its first prompt in that folder then.
+                        None => this.transport.send(client, no_commits()),
                     });
                 })
                 .detach();
@@ -3157,6 +3179,17 @@ fn place_failed(message: &str) -> String {
     json!({ "type": "place_failed", "message": message }).to_string()
 }
 
+/// A new environment refused because its repository has no commits yet.
+/// `no_commits` lets the app start a first prompt in the folder instead.
+fn no_commits() -> String {
+    json!({
+        "type": "place_failed",
+        "message": "That repository has no commits yet, so no worktree can be made of it.",
+        "no_commits": true,
+    })
+    .to_string()
+}
+
 /// Makes `path` a place in `store`, saved. A place that is there already is
 /// saved too: an earlier save may have failed, and it would be gone at the
 /// next start. On a failed save, a place this added goes again. A new place
@@ -3382,6 +3415,14 @@ fn git(dir: &Path) -> std::process::Command {
     let mut git = git_command();
     git.arg("-C").arg(dir).stdin(std::process::Stdio::null());
     git
+}
+
+/// Whether `dir`'s HEAD names a commit. When git cannot tell, true: making
+/// the worktree then says what is wrong.
+fn has_commits(dir: &Path) -> bool {
+    // `--verify --quiet` exits 1, silently, only when HEAD names no commit.
+    local_output(git(dir).args(["rev-parse", "--verify", "--quiet", "HEAD"]))
+        .map_or(true, |out| out.status.code() != Some(1))
 }
 
 /// Runs git on the repository's files only; its last words when it fails.
@@ -4095,6 +4136,20 @@ mod tests {
             "first",
         ]))
         .unwrap();
+    }
+
+    #[test]
+    fn a_repository_with_no_commits_is_told_apart() {
+        let tmp = scratch("empty");
+        let app = tmp.join("app");
+        std::fs::create_dir(&app).unwrap();
+        run_git(git(&app).args(["init", "-q"])).unwrap();
+        assert!(!has_commits(&app));
+        let made = tmp.join("made");
+        std::fs::create_dir(&made).unwrap();
+        repo_at(&made, &[]);
+        assert!(has_commits(&made));
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]

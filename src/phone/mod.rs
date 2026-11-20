@@ -117,6 +117,10 @@ pub enum ClientMsg {
         /// the model first. The environment remembers them, as the desktop does.
         #[serde(default)]
         settings: Vec<(String, String)>,
+        /// The folder the prompt was written in, when that is another: a
+        /// relative mention of a file there but not in `env` points there.
+        #[serde(default)]
+        mentions_from: Option<String>,
     },
     /// The model and reasoning a new session of `agent` in `env` would start with,
     /// and their choices.
@@ -1640,7 +1644,8 @@ mod tests {
                 env: "/w/app".into(),
                 agent: Some("claude".into()),
                 text: "hi".into(),
-                settings: vec![]
+                settings: vec![],
+                mentions_from: None,
             }
         );
         let without: ClientMsg = serde_json::from_str(
@@ -1653,9 +1658,18 @@ mod tests {
                 env: "/w/app".into(),
                 agent: None,
                 text: "hi".into(),
-                settings: vec![("modelId".into(), "m".into())]
+                settings: vec![("modelId".into(), "m".into())],
+                mentions_from: None,
             }
         );
+        let moved: ClientMsg = serde_json::from_str(
+            r#"{"type":"start","env":"/w/new","text":"hi","mentions_from":"/w/app"}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            moved,
+            ClientMsg::Start { mentions_from: Some(f), .. } if f == "/w/app"
+        ));
     }
 
     #[test]

@@ -80,18 +80,19 @@ copy of it, rename it back, and start a version that can read it.
   `Ctrl+T`, opens a composer at once and gives the session its own worktree on a random
   branch when you send the first prompt, which names the branch. An open worktree is used only while it has no session yet; `Alt`+click
   on New session asks for the branch. A prompt written in the main checkout, such as on
-  a project's start screen, starts its session in a new worktree too (on a server, it
-  starts where it was written). The sidebar lists each worktree by its session's title.
+  a project's start screen, starts its session in a new worktree too, on a server as here (a server that runs
+  an older Arakun, or a folder there that is no repository, starts it where it was
+  written). The sidebar lists each worktree by its session's title.
   The main checkout is listed only while it holds older sessions; open it from the
   project's right-click menu (Open main checkout, one per machine). Before a
   repository's first commit there is nothing to branch from, so sessions start in
   the main checkout.
 - **Several at once.** `Ctrl`+click (`Cmd`+click on macOS) rows of the sidebar's list
   to pick them, and `Shift`+click to pick a run of them. In the Active list, either
-  picks the session's worktree. A bar under them archives them, closes their
-  sessions (their tabs close and idle agents stop; the worktrees stay), or
-  deletes the worktrees after one question. Branches stay. The main checkout and
-  worktrees on a server are deleted one at a time. `Esc` clears the pick.
+  picks the session's worktree. A bar under them settles their
+  sessions, closes them (their tabs close and idle agents stop; the worktrees stay), or
+  deletes the worktrees after one question, those on a server too: each server
+  deletes its own. Branches stay, and so does the main checkout. `Esc` clears the pick.
 - **Projects and worktrees.** A rail of projects, each with its environments (the main
   checkout plus git worktrees). The default sidebar shows the open project, with the
   others in its dropdown, and its sessions as a flat list: a status dot, the title,

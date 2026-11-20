@@ -12,6 +12,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 use sha2::Digest as _;
@@ -417,6 +419,11 @@ pub struct Kept {
     /// names, until an admin approves.
     #[serde(default)]
     asked: BTreeMap<String, String>,
+    /// Devices of other people whose compare numbers the user checked with
+    /// them and found the same. A device ID derives from its signing key, so a
+    /// new key is a new, unchecked device.
+    #[serde(default)]
+    verified: BTreeSet<String>,
 }
 
 impl Kept {
@@ -586,6 +593,19 @@ impl Kept {
         self.asked.remove(team_id).is_some()
     }
 
+    pub fn verified(&self, device_id: &str) -> bool {
+        self.verified.contains(device_id)
+    }
+
+    /// Marks a device checked, or not; whether that changed anything.
+    pub fn set_verified(&mut self, device_id: &str, yes: bool) -> bool {
+        if yes {
+            self.verified.insert(device_id.to_string())
+        } else {
+            self.verified.remove(device_id)
+        }
+    }
+
     /// Forgets a team this user is no longer in.
     pub fn forget_team(&mut self, team_id: &str) {
         self.keys.remove(team_id);
@@ -647,6 +667,7 @@ impl Local {
         Sealer {
             file_key: self.file_key,
             device: self.device.id().to_string(),
+            order: Arc::default(),
             path: self.path.clone(),
         }
     }
@@ -657,7 +678,28 @@ impl Local {
 pub struct Sealer {
     file_key: TeamKey,
     device: String,
+    /// Each save replaces the whole file from a background thread, so an
+    /// older snapshot that finishes late must not undo a newer one.
+    order: Arc<Order>,
     path: PathBuf,
+}
+
+#[derive(Default)]
+struct Order {
+    issued: AtomicU64,
+    written: Mutex<u64>,
+}
+
+impl Order {
+    /// The turn to write `ticket`, or `None` when a newer one was written.
+    fn admit(&self, ticket: u64) -> Option<std::sync::MutexGuard<'_, u64>> {
+        let mut written = self.written.lock().unwrap_or_else(|e| e.into_inner());
+        if ticket <= *written {
+            return None;
+        }
+        *written = ticket;
+        Some(written)
+    }
 }
 
 pub(super) async fn after_save<T>(
@@ -671,11 +713,22 @@ pub(super) async fn after_save<T>(
 }
 
 impl Sealer {
-    pub fn write(&self, kept: &Kept) {
+    /// A place in line for the snapshot about to be written. Take it on the
+    /// thread that made the snapshot, so the numbers follow the changes.
+    pub fn ticket(&self) -> u64 {
+        self.order.issued.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
+    /// Writes `kept` unless a newer ticket was written already.
+    pub fn write(&self, ticket: u64, kept: &Kept) {
         if kept.device != self.device {
             eprintln!("arakun: refusing to save a Teams cache belonging to a different device");
             return;
         }
+        // Held through the write, so two saves never interleave.
+        let Some(_turn) = self.order.admit(ticket) else {
+            return;
+        };
         let saved = serde_json::to_vec(kept)
             .map_err(std::io::Error::other)
             .and_then(|plain| {
@@ -693,6 +746,10 @@ impl Sealer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn write_now(sealer: &Sealer, kept: &Kept) {
+        sealer.write(sealer.ticket(), kept);
+    }
     use std::cell::RefCell;
 
     struct Fixture {
@@ -754,7 +811,7 @@ mod tests {
             let mut kept = local.read().unwrap();
             kept.put_key("shared", 3, &[42; 32]);
             kept.ask("private", "unannounced team");
-            local.sealer().write(&kept);
+            write_now(&local.sealer(), &kept);
             local
         }
     }
@@ -792,7 +849,7 @@ mod tests {
         let (release, gate) = futures::channel::oneshot::channel::<()>();
         let saving = async {
             gate.await.unwrap();
-            local.sealer().write(&accepted);
+            write_now(&local.sealer(), &accepted);
         }
         .shared();
         let reload = || {
@@ -820,10 +877,10 @@ mod tests {
         ak.put_key("shared", 1, &[1; 32]);
         bk.put_key("shared", 1, &[2; 32]);
         ak.ask("alone", "private team");
-        b.sealer().write(&bk);
+        write_now(&b.sealer(), &bk);
         // A delayed save captured before the switch cannot target Bob's cache.
-        a.sealer().write(&ak);
-        b.sealer().write(&ak);
+        write_now(&a.sealer(), &ak);
+        write_now(&b.sealer(), &ak);
         let back = f.load(&alice, no_lookup).unwrap();
         assert_eq!(back.device.id(), a.device.id());
         assert_eq!(back.read().unwrap(), ak);
@@ -845,7 +902,7 @@ mod tests {
         let b = f.load(&bob, || Ok(vec![])).unwrap();
         assert_ne!(b.device.id(), old.device.id());
         assert!(b.read().unwrap().asked().is_empty());
-        b.sealer().write(&b.read().unwrap());
+        write_now(&b.sealer(), &b.read().unwrap());
         let a = f.load(&alice, || Ok(vec![row(&old.device)])).unwrap();
         assert_eq!(a.device.id(), old.device.id());
         assert_eq!(a.file_key, old.file_key);
@@ -931,6 +988,15 @@ mod tests {
     }
 
     #[test]
+    fn an_older_snapshot_does_not_overwrite_a_newer_one() {
+        let order = Order::default();
+        assert!(order.admit(2).is_some());
+        assert!(order.admit(1).is_none());
+        assert!(order.admit(2).is_none());
+        assert!(order.admit(3).is_some());
+    }
+
+    #[test]
     fn a_test_arakun_keeps_its_own_keyring_entries() {
         assert_eq!(account_for("teams-session", None), "teams-session");
         assert_eq!(account_for("teams-session", Some("")), "teams-session");
@@ -969,6 +1035,12 @@ mod tests {
         assert!(k.see(7, ["a".to_string()]));
         assert!(!k.see(7, ["a".to_string()]));
         assert!(k.seen(7).unwrap().contains("a"));
+        assert!(!k.verified("a"));
+        assert!(k.set_verified("a", true));
+        assert!(!k.set_verified("a", true));
+        assert!(k.verified("a"));
+        assert!(k.set_verified("a", false));
+        assert!(!k.verified("a"));
         assert!(k.grants.is_empty());
         assert!(!k.needs_delivery("T", 7, 10, "a", 1));
         let mut team = TeamDetail {
@@ -991,7 +1063,8 @@ mod tests {
         assert!(!k.needs_delivery("T", 7, 10, "a", 2));
         assert!(k.needs_delivery("T", 7, 10, "a", 3));
         k.delivered("T", 7, 10, "a", 3);
-        local.sealer().write(&k);
+        let sealer = local.sealer();
+        sealer.write(sealer.ticket(), &k);
         k = local.read().unwrap();
         assert!(!k.needs_delivery("T", 7, 10, "a", 3));
         assert!(k.needs_delivery("T", 7, 10, "b", 3));

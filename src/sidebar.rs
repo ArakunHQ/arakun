@@ -109,7 +109,7 @@ impl View {
             View::Phone => "Phone",
             View::Servers => "Servers",
             View::Automations => "Automations",
-            View::Teams => "Teams",
+            View::Teams => "Team",
             #[cfg(feature = "team")]
             View::Team => "Team",
         }
@@ -137,7 +137,7 @@ impl View {
             View::Phone => "signal-full02",
             View::Servers => "computer",
             View::Automations => "flash",
-            View::Teams => "message-multiple01",
+            View::Teams => "ungroup-items",
             #[cfg(feature = "team")]
             View::Team => "ungroup-items",
         }
@@ -656,7 +656,6 @@ impl Preset {
             View::Phone,
             View::Servers,
             View::Automations,
-            View::Teams,
             #[cfg(feature = "team")]
             View::Team,
         ];
@@ -671,7 +670,11 @@ impl Preset {
                 Section::new(
                     "Top",
                     Mode::Fixed,
-                    vec![Piece::Search, Piece::view(View::Inbox)],
+                    vec![
+                        Piece::Search,
+                        Piece::view(View::Inbox),
+                        Piece::view(View::Teams),
+                    ],
                 ),
                 active(),
                 Section::new(
@@ -683,7 +686,8 @@ impl Preset {
                         only_open: true,
                     }],
                 ),
-                account(vec![Piece::Usage]),
+                // The User row is where Teams signs in with GitHub.
+                account(vec![Piece::Usage, Piece::User]),
                 Section::new(
                     "Views",
                     Mode::Fixed,
@@ -716,7 +720,11 @@ impl Preset {
                 Section::new(
                     "Top",
                     Mode::Fixed,
-                    vec![Piece::Search, Piece::view(View::Inbox)],
+                    vec![
+                        Piece::Search,
+                        Piece::view(View::Inbox),
+                        Piece::view(View::Teams),
+                    ],
                 ),
                 active(),
                 projects,
@@ -747,6 +755,7 @@ impl Preset {
                     vec![
                         Piece::Search,
                         Piece::view(View::Inbox),
+                        Piece::view(View::Teams),
                         #[cfg(feature = "coderlabs")]
                         Piece::view(View::Tasks),
                     ],
@@ -766,7 +775,12 @@ impl Preset {
                 Section::new(
                     "Top",
                     Mode::Fixed,
-                    vec![Piece::User, Piece::Search, Piece::view(View::Inbox)],
+                    vec![
+                        Piece::User,
+                        Piece::Search,
+                        Piece::view(View::Inbox),
+                        Piece::view(View::Teams),
+                    ],
                 ),
                 Section::new(
                     "Pinned",
@@ -795,7 +809,11 @@ impl Preset {
                     Section::new(
                         "Top",
                         Mode::Fixed,
-                        vec![Piece::Search, Piece::view(View::Inbox)],
+                        vec![
+                            Piece::Search,
+                            Piece::view(View::Inbox),
+                            Piece::view(View::Teams),
+                        ],
                     ),
                     Section::new(
                         "Views",
@@ -819,7 +837,11 @@ impl Preset {
                 Section::new(
                     "Top",
                     Mode::Fixed,
-                    vec![Piece::Search, Piece::view(View::Inbox)],
+                    vec![
+                        Piece::Search,
+                        Piece::view(View::Inbox),
+                        Piece::view(View::Teams),
+                    ],
                 ),
                 Section::new(
                     "Views",
@@ -828,7 +850,7 @@ impl Preset {
                         &View::ALL
                             .iter()
                             .copied()
-                            .filter(|v| *v != View::Inbox)
+                            .filter(|v| !matches!(v, View::Inbox | View::Teams))
                             .collect::<Vec<_>>(),
                     ),
                 ),
@@ -1155,6 +1177,21 @@ impl Sidebar {
         };
         let end = self.sections[s].items.len();
         self.insert(Item::new(piece), (s, end))
+    }
+
+    /// Puts a view the rail does not hold right under Search, after Inbox
+    /// when Inbox sits beside it: where the design keeps Team. Without
+    /// Search, it goes where `place` puts views. False when it is there.
+    pub fn place_after_search(&mut self, view: View) -> bool {
+        if self.has(&Piece::view(view)) {
+            return false;
+        }
+        let Some((s, i)) = self.find(&Piece::Search) else {
+            return self.place(view);
+        };
+        let inbox = self.sections[s].inbox_by_search().map(|(_, inbox)| inbox);
+        let at = inbox.map_or(i, |inbox| inbox.max(i)) + 1;
+        self.insert(Item::new(Piece::view(view)), (s, at))
     }
 
     /// One of each unique piece.
@@ -1634,6 +1671,32 @@ mod tests {
             trial_of: None,
         };
         assert!(!none.place(View::Notes));
+    }
+
+    #[test]
+    fn team_lands_under_search() {
+        let mut s = small();
+        assert!(s.place_after_search(View::Teams));
+        assert_eq!(
+            names(&s),
+            ["A[Search,Inbox,Team]", "B[Projects,Runs]", "C[Settings]"]
+        );
+        assert!(!s.place_after_search(View::Teams), "already there");
+        let mut alone = Sidebar {
+            style: Style::default(),
+            sections: vec![
+                Section::new("A", Mode::Fixed, vec![Piece::Settings]),
+                Section::new(
+                    "B",
+                    Mode::Fixed,
+                    vec![Piece::Search, Piece::view(View::Runs)],
+                ),
+            ],
+            known: View::ALL.to_vec(),
+            ..small()
+        };
+        assert!(alone.place_after_search(View::Teams));
+        assert_eq!(names(&alone), ["A[Settings]", "B[Search,Team,Runs]"]);
     }
 
     #[test]

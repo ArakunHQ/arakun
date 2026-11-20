@@ -94,6 +94,27 @@ pub fn device_id_of(sig_pub: &[u8]) -> String {
     b64(&sha2::Sha256::digest(sig_pub)[..16])
 }
 
+/// The numbers two people read to each other to check that a device is who
+/// it says, Signal style: six groups of five digits from both devices' `sig`
+/// public keys (base64url). Sorted first, so each side gets the same numbers
+/// whichever device it is on. `None` when a key is not a P-256 point.
+pub fn compare_numbers(a: &str, b: &str) -> Option<[String; 6]> {
+    let a = point(a, "sig_pub").ok()?;
+    let b = point(b, "sig_pub").ok()?;
+    let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+    let mut h = sha2::Sha512::new();
+    h.update(b"arakun-teams compare v1");
+    h.update(&lo);
+    h.update(&hi);
+    let digest = h.finalize();
+    Some(std::array::from_fn(|i| {
+        let n = digest[i * 5..i * 5 + 5]
+            .iter()
+            .fold(0u64, |n, b| (n << 8) | u64::from(*b));
+        format!("{:05}", n % 100_000)
+    }))
+}
+
 /// Whether `sig` (base64url, raw r||s) is the signature of `sig_pub` over the
 /// UTF-8 bytes of `text`.
 pub fn verify(sig_pub: &[u8], text: &str, sig: &str) -> bool {
@@ -671,6 +692,23 @@ mod tests {
             assert_eq!(d.id(), s(&v, &[who, "device_id"]));
             assert_eq!(d.id().len(), 22);
         }
+    }
+
+    #[test]
+    fn compare_numbers_match_on_both_sides() {
+        let (a, b) = (Device::generate(), Device::generate());
+        let mine = compare_numbers(a.sig_pub(), b.sig_pub()).unwrap();
+        assert_eq!(
+            compare_numbers(b.sig_pub(), a.sig_pub()),
+            Some(mine.clone())
+        );
+        assert!(
+            mine.iter()
+                .all(|g| g.len() == 5 && g.bytes().all(|c| c.is_ascii_digit()))
+        );
+        let c = Device::generate();
+        assert_ne!(compare_numbers(a.sig_pub(), c.sig_pub()), Some(mine));
+        assert_eq!(compare_numbers("not a key", b.sig_pub()), None);
     }
 
     #[test]

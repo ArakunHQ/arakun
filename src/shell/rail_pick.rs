@@ -406,7 +406,13 @@ impl Shell {
         let can_close = envs().any(|e| !e.sessions.is_empty());
         let can_delete = envs().any(|e| !e.is_checkout);
         let action = |id: &'static str, icon_name: &'static str, tip: &'static str, on: bool| {
-            ui::icon_button(id, icon_name, 14., tip).when(!on, |d| d.opacity(0.4).cursor_default())
+            // gpui has no disabled state to give screen readers: without a
+            // click handler the button offers no action, and this says why.
+            ui::icon_button(id, icon_name, 14., tip).when(!on, |d| {
+                d.opacity(0.4)
+                    .cursor_default()
+                    .aria_description("Not available for the selected environments")
+            })
         };
         Some(
             div()

@@ -667,6 +667,7 @@ impl Shell {
                                 .px(crate::ui::sp(4.))
                                 .when_some(effort_tip(&o.id), |d, tip| d.tooltip(ui::tip(tip)))
                                 .when(!enabled, |d| d.opacity(0.45).cursor_default())
+                                .when_some(o.disabled.clone(), |d, why| d.aria_description(why))
                                 .when(enabled, |d| {
                                     d.on_click(cx.listener(move |this, _, window, cx| {
                                         this.menu_run(key.clone(), window, cx)
@@ -790,6 +791,9 @@ impl Shell {
                 )
                 .when(self.menu_focus(offset + i), |d| d.bg(theme::fill_hover()))
                 .when(!enabled, |d| d.opacity(0.45).cursor_default())
+                // gpui has no disabled state to give screen readers; the
+                // reason says the choice is out of reach, and why.
+                .when_some(o.disabled.clone(), |d, why| d.aria_description(why))
                 .child(
                     div()
                         .flex_1()

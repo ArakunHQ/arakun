@@ -635,6 +635,12 @@ impl GitHubView {
                         13.,
                         "Open on GitHub",
                     )
+                    // Checks of different workflows can share a name.
+                    .aria_label(if c.workflow.is_empty() {
+                        format!("Open {} on GitHub", c.name)
+                    } else {
+                        format!("Open {} ({}) on GitHub", c.name, c.workflow)
+                    })
                     .on_click(cx.listener(move |this, _, _, cx| {
                         cx.stop_propagation();
                         this.open_url(url.clone(), cx)

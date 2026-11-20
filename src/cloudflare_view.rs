@@ -545,13 +545,22 @@ impl CloudflareView {
         .on_click(cx.listener(move |this, _, _, cx| this.ask(&subject, cx)))
     }
 
-    fn open_button(&self, id: String, path: String, cx: &mut Context<Self>) -> Stateful<Div> {
+    /// `what` names the resource for screen readers: every row has this
+    /// button, and the row's text never reaches them.
+    fn open_button(
+        &self,
+        id: String,
+        path: String,
+        what: &str,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
         icon_button(
             SharedString::from(id),
             "link-square02",
             13.,
             "Open in Cloudflare",
         )
+        .aria_label(format!("Open {what} in Cloudflare"))
         .on_click(cx.listener(move |this, _, _, cx| this.open(&path, cx)))
     }
 
@@ -634,7 +643,7 @@ impl CloudflareView {
                 cx,
             ))
             .when_some(subject_path(&issue.subject), |d, path| {
-                d.child(self.open_button(format!("cf-issue-open-{i}"), path, cx))
+                d.child(self.open_button(format!("cf-issue-open-{i}"), path, &issue.title, cx))
             })
     }
 
@@ -888,7 +897,7 @@ impl CloudflareView {
                 )
                 .on_click(cx.listener(move |this, _, _, cx| this.open(&security, cx)))
             })
-            .child(self.open_button(format!("cf-zone-{name}"), name.clone(), cx));
+            .child(self.open_button(format!("cf-zone-{name}"), name.clone(), &name, cx));
         let week = div()
             .flex()
             .items_end()
@@ -1229,7 +1238,7 @@ impl CloudflareView {
                 Subject::Tunnel(name.clone()),
                 cx,
             ))
-            .child(self.open_button(format!("cf-tun-open-{name}"), "tunnels".into(), cx));
+            .child(self.open_button(format!("cf-tun-open-{name}"), "tunnels".into(), &name, cx));
         let hosts = if t.hostnames.is_empty() {
             "No DNS record routes to it".to_string()
         } else {
@@ -1391,6 +1400,7 @@ impl CloudflareView {
                             .child(self.open_button(
                                 format!("cf-pages-open-{name}"),
                                 format!("pages/view/{name}"),
+                                &name,
                                 cx,
                             )),
                     )
@@ -1524,6 +1534,7 @@ impl CloudflareView {
             .child(self.open_button(
                 format!("cf-open-{name}"),
                 format!("workers/services/view/{name}/production"),
+                &name,
                 cx,
             ));
         let stats = (w.requests > 0).then(|| {
@@ -1821,6 +1832,7 @@ impl CloudflareView {
                     .child(self.open_button(
                         format!("cf-flow-{name}"),
                         "workers/workflows".into(),
+                        &name,
                         cx,
                     )),
             );
@@ -1873,6 +1885,7 @@ impl CloudflareView {
                             .child(self.open_button(
                                 format!("cf-gw-{id}"),
                                 "ai/ai-gateway".into(),
+                                &id,
                                 cx,
                             )),
                     )

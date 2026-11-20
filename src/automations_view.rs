@@ -481,15 +481,19 @@ impl AutomationsDialog {
             })
             .child(
                 icon_button(("auto-run", i), "play", 14., "Run now")
+                    .aria_label(format!("Run {} now", a.name))
                     .on_click(cx.listener(move |_, _, _, cx| cx.emit(AutomationsEvent::Run(i)))),
             )
             .child(
-                icon_button(("auto-edit", i), "pencil-edit02", 14., "Edit").on_click(
-                    cx.listener(move |this, _, window, cx| this.edit(Some(i), window, cx)),
-                ),
+                icon_button(("auto-edit", i), "pencil-edit02", 14., "Edit")
+                    .aria_label(format!("Edit {}", a.name))
+                    .on_click(
+                        cx.listener(move |this, _, window, cx| this.edit(Some(i), window, cx)),
+                    ),
             )
             .child(
                 icon_button(("auto-delete", i), "delete02", 14., "Delete")
+                    .aria_label(format!("Delete {}", a.name))
                     .on_click(cx.listener(move |_, _, _, cx| cx.emit(AutomationsEvent::Delete(i)))),
             )
             .when(scheduled, |d| {

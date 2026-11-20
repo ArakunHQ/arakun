@@ -2035,6 +2035,9 @@ pub fn pin_chip(
         .id(id)
         .role(Role::Button)
         .aria_label(label.clone())
+        // Only the highlighted one says so; the rest would all be "not
+        // selected", which is noise.
+        .when(selected, |d| d.aria_selected(true))
         .flex()
         .flex_none()
         .items_center()

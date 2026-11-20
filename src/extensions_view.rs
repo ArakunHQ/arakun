@@ -932,6 +932,7 @@ impl ExtensionsView {
                         let short = s.name.rsplit(':').next().unwrap_or(&s.name).to_string();
                         let path = s.path.join("SKILL.md");
                         let open_path = path.clone();
+                        let open_label = format!("Open SKILL.md of {short}");
                         rows.push(
                             row_base(SharedString::from(format!("skill-{source}-{i}")), 52.)
                                 .child(name_cell(mark, 28., short, s.description.clone(), false))
@@ -947,6 +948,7 @@ impl ExtensionsView {
                                             14.,
                                             "Open SKILL.md",
                                         )
+                                        .aria_label(open_label)
                                         .on_click(
                                             cx.listener(move |_, _, _, cx| {
                                                 cx.stop_propagation();

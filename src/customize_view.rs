@@ -772,16 +772,20 @@ impl CustomizeView {
                     d.child(
                         ui::icon_button("customize-undo", "undo", 14., "Undo")
                             .when(!undo, |b| b.opacity(0.4))
-                            .on_click(cx.listener(|_, _, _, cx| {
-                                cx.emit(CustomizeEvent::UndoSidebar(false))
-                            })),
+                            .when(undo, |b| {
+                                b.on_click(cx.listener(|_, _, _, cx| {
+                                    cx.emit(CustomizeEvent::UndoSidebar(false))
+                                }))
+                            }),
                     )
                     .child(
                         ui::icon_button("customize-redo", "arrow-turn-forward", 14., "Redo")
                             .when(!redo, |b| b.opacity(0.4))
-                            .on_click(cx.listener(|_, _, _, cx| {
-                                cx.emit(CustomizeEvent::UndoSidebar(true))
-                            })),
+                            .when(redo, |b| {
+                                b.on_click(cx.listener(|_, _, _, cx| {
+                                    cx.emit(CustomizeEvent::UndoSidebar(true))
+                                }))
+                            }),
                     )
                 },
             )

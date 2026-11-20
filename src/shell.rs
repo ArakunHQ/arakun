@@ -3134,6 +3134,8 @@ impl Shell {
         match &self.modal {
             Some((Modal::GitConfirm(d), _)) => d.read(cx).busy(),
             Some((Modal::DeleteEnv(d), _)) => d.read(cx).busy(),
+            // A click outside while it checks would lose the save's error.
+            Some((Modal::Pilot(d), _)) => d.read(cx).busy(),
             _ => false,
         }
     }

@@ -1341,8 +1341,13 @@ impl Shell {
         );
         // The settings pilot read last (every minute, off this thread's
         // drawing): the palette never waits on the disk.
-        let pilot = self.pilot.read(cx).config();
-        items.push(pilot_command(pilot.is_some()));
+        let p = self.pilot.read(cx);
+        let pilot = p.config();
+        // A settings file that can't be used is still one to fix or remove:
+        // the form opens on it with Disconnect, as the tab's menu does.
+        items.push(pilot_command(
+            pilot.is_some() || p.config_problem().is_some(),
+        ));
         items.extend(cloud_command(pilot));
     }
 

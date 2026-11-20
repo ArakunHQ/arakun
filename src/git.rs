@@ -747,7 +747,8 @@ pub fn commit_diff(dir: &Path, all: bool, cap: usize) -> Result<(String, String,
 const STAT_LINES: usize = 300;
 
 /// `stat` cut to `keep` lines, with a line that says how many files were
-/// left out. Git's summary line ("3 files changed, …") is no file.
+/// left out. Git's summary line ("3 files changed, …") is no file: a file's
+/// line has a ` | ` or is a new file's, whatever its path says.
 fn cap_stat(stat: String, keep: usize) -> String {
     let mut lines = stat.lines();
     let mut kept: String = lines
@@ -755,7 +756,9 @@ fn cap_stat(stat: String, keep: usize) -> String {
         .take(keep)
         .map(|l| format!("{l}\n"))
         .collect();
-    let more = lines.filter(|l| !l.contains(" changed")).count();
+    let more = lines
+        .filter(|l| l.contains(" | ") || l.ends_with(" (new file)"))
+        .count();
     if more > 0 {
         kept.push_str(&format!(" … and {more} more files\n"));
     }
@@ -1801,6 +1804,12 @@ test: cover the resize\u{1f}\u{1e}\n";
             " a | 1 +\n … and 3 more files\n"
         );
         assert_eq!(super::cap_stat(stat.into(), 10), stat);
+        // A path that says "changed" is still a file.
+        let stat = " a | 1 +\n 1 file changed, 1 insertion(+)\n what changed/b (new file)\n";
+        assert_eq!(
+            super::cap_stat(stat.into(), 1),
+            " a | 1 +\n … and 1 more files\n"
+        );
     }
 
     #[test]

@@ -1181,6 +1181,13 @@ pub fn output_until(
 ) -> std::io::Result<std::process::Output> {
     use std::io::{Read as _, Write as _};
     use std::time::{Duration, Instant};
+    // Stopped before it starts: no process, so no prompt sent and nothing spent.
+    if stop.load(std::sync::atomic::Ordering::Relaxed) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Interrupted,
+            format!("{} was stopped", command_name(cmd)),
+        ));
+    }
     cmd.stdin(if input.is_some() {
         Stdio::piped()
     } else {

@@ -251,6 +251,10 @@ pub fn ask_until(
 ) -> Result<String> {
     let model = model.trim();
     if agent == AgentKind::WorkersAi {
+        // One blocking request that can't be called back once sent: stop before it.
+        if stop.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(anyhow!("the agent was stopped"));
+        }
         return crate::agent::workers_ai::ask(model, &input, timeout).map_err(|e| anyhow!(e));
     }
     // Looked up first, so a missing CLI fails before a folder is made.
@@ -575,6 +579,20 @@ mod tests {
         let err = run(cmd, String::new(), TIMEOUT, &stop).unwrap_err();
         assert_eq!(err.to_string(), "the agent was stopped");
         assert!(started.elapsed() < Duration::from_secs(10));
+    }
+
+    /// A dialog closed before its agent starts: the agent never runs.
+    #[cfg(unix)]
+    #[test]
+    fn an_agent_stopped_before_it_starts_never_runs() {
+        let dir = std::env::temp_dir().join(format!("arakun-stopped-{}", std::process::id()));
+        let _ = std::fs::remove_file(&dir);
+        let mut cmd = crate::platform::command("sh");
+        cmd.arg("-c").arg(format!("touch '{}'", dir.display()));
+        let err = run(cmd, String::new(), TIMEOUT, &AtomicBool::new(true)).unwrap_err();
+        assert_eq!(err.to_string(), "the agent was stopped");
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(!dir.exists());
     }
 
     #[test]

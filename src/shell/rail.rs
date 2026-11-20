@@ -263,34 +263,88 @@ fn short_env_name(project: &str, env: &str) -> String {
         .to_string()
 }
 
+/// The shape of a status mark. Each state has its own, so it reads without
+/// its color (WCAG 1.4.1): someone who can't tell red from green still sees
+/// a check or a cross.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Shape {
+    /// Nothing going on.
+    Dot,
+    /// Under way.
+    Ring,
+    Check,
+    Cross,
+    /// Waits on you.
+    Alert,
+}
+
+impl Shape {
+    fn of_status(status: Status) -> Self {
+        match status {
+            Status::Idle => Self::Dot,
+            Status::Working => Self::Ring,
+            Status::NeedsInput => Self::Alert,
+            Status::Error => Self::Cross,
+        }
+    }
+
+    fn of_ci(state: ci::State) -> Self {
+        match state {
+            ci::State::Passed => Self::Check,
+            ci::State::Failed => Self::Cross,
+            ci::State::Running | ci::State::Queued => Self::Ring,
+            ci::State::Cancelled | ci::State::Skipped => Self::Dot,
+        }
+    }
+}
+
+/// A status mark in a 10 px box, so marks of every shape line up.
+fn mark(shape: Shape, color: Hsla) -> gpui::Div {
+    let glyph = |name| ui::icon(name, 10.).text_color(color);
+    let inner = match shape {
+        Shape::Dot => div()
+            .size(px(6.))
+            .rounded_full()
+            .bg(color)
+            .into_any_element(),
+        Shape::Ring => div()
+            .size(px(7.))
+            .rounded_full()
+            .border_1()
+            .border_color(color)
+            .into_any_element(),
+        Shape::Check => glyph("mark-check").into_any_element(),
+        Shape::Cross => glyph("mark-cross").into_any_element(),
+        Shape::Alert => glyph("mark-alert").into_any_element(),
+    };
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .justify_center()
+        .size(px(10.))
+        .child(inner)
+}
+
 pub(super) fn status_dot(status: Status) -> impl IntoElement {
     let color = match status {
         Status::Idle => theme::mix(0.25),
         Status::Working => theme::working(),
         Status::NeedsInput => theme::needs_you(),
-        Status::Error => theme::diff_del().into(),
+        Status::Error => theme::failed().into(),
     };
-    div().size(px(6.)).rounded_full().bg(color).flex_none()
+    mark(Shape::of_status(status), color)
 }
 
-/// A run state as a small dot; work in progress pulses as a ring.
+/// A run state: a check, a cross, or a ring while it runs.
 pub(super) fn ci_mark(state: ci::State) -> gpui::Div {
     let color: Hsla = match state {
-        ci::State::Passed => theme::success().into(),
-        ci::State::Failed => theme::error().into(),
+        ci::State::Passed => theme::passed().into(),
+        ci::State::Failed => theme::failed().into(),
         ci::State::Running | ci::State::Queued => theme::attention().into(),
         _ => theme::mix(0.3),
     };
-    if state.done() {
-        div().size(px(6.)).rounded_full().bg(color).flex_none()
-    } else {
-        div()
-            .size(px(7.))
-            .rounded_full()
-            .border_1()
-            .border_color(color)
-            .flex_none()
-    }
+    mark(Shape::of_ci(state), color)
 }
 
 impl Shell {
@@ -1459,5 +1513,26 @@ mod tests {
         assert_eq!(passed.failed_run, None);
         assert!(!passed.ci_running);
         assert!(GitHubState::of(Some(ci::State::Running), Some(3), None).ci_running);
+    }
+
+    #[test]
+    fn every_state_has_its_own_shape() {
+        // Color alone must not tell these apart.
+        let session = [
+            Status::Idle,
+            Status::Working,
+            Status::NeedsInput,
+            Status::Error,
+        ]
+        .map(Shape::of_status);
+        for (i, a) in session.iter().enumerate() {
+            assert!(!session[i + 1..].contains(a), "{a:?} is used twice");
+        }
+        let (passed, failed, running) = (
+            Shape::of_ci(ci::State::Passed),
+            Shape::of_ci(ci::State::Failed),
+            Shape::of_ci(ci::State::Running),
+        );
+        assert!(passed != failed && failed != running && passed != running);
     }
 }

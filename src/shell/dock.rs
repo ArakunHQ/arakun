@@ -643,7 +643,7 @@ impl Shell {
                 d.when_some(branch_ci, |d, (state, run)| {
                     let id = run.id;
                     let color: Hsla = match state {
-                        ci::State::Failed => theme::error().into(),
+                        ci::State::Failed => theme::failed().into(),
                         ci::State::Running | ci::State::Queued => theme::attention().into(),
                         _ => theme::mix(0.55),
                     };
@@ -658,7 +658,7 @@ impl Shell {
                             .rounded(ui::nested(ui::RADIUS_XL, ui::DOCK_INSET))
                             .cursor_pointer()
                             .text_color(color)
-                            .when(state == ci::State::Failed, |d| d.bg(gpui::rgba(0xe5484d1f)))
+                            .when(state == ci::State::Failed, |d| d.bg(color.opacity(0.12)))
                             .hover(|s| s.bg(theme::fill_selected()))
                             .child(ci_mark(state))
                             .child(runs::ci_chip_label(state, &run))

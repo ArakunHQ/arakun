@@ -923,6 +923,23 @@ pub fn link() -> Rgba {
     by_mode(LINK, LINK_LIGHT)
 }
 
+/// A run that passed. GitHub's green, or the colorblind diff palette's blue
+/// when the user picked it, so passed and failed don't hang on red and green.
+pub fn passed() -> Rgba {
+    match diff_palette() {
+        DiffPalette::Colorblind => diff_add(),
+        _ => success(),
+    }
+}
+/// A run that failed, or a session that stopped on an error: GitHub's red,
+/// or the colorblind palette's orange.
+pub fn failed() -> Rgba {
+    match diff_palette() {
+        DiffPalette::Colorblind => diff_del(),
+        _ => error(),
+    }
+}
+
 pub fn pr_open() -> Rgba {
     success()
 }

@@ -1759,6 +1759,7 @@ impl TeamsView {
         let mut rows = Self::rows();
         for (i, p) in pending.iter().enumerate() {
             let (t1, t2, gid) = (tid.clone(), tid.clone(), p.github_id);
+            let request = p.request_id.clone();
             let busy = approving[i];
             rows = rows
                 .child(
@@ -1794,7 +1795,8 @@ impl TeamsView {
                             !busy && !keyless,
                         )
                         .on_click(cx.listener(move |this, _, _, cx| {
-                            this.hub.update(cx, |h, cx| h.approve(&t2, gid, cx))
+                            this.hub
+                                .update(cx, |h, cx| h.approve(&t2, gid, &request, cx))
                         })),
                     ),
                 )

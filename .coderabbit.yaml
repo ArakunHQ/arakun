@@ -64,6 +64,8 @@ reviews:
           - "src/github/**"
           - "src/phone/**"
           - "relay/**"
+          - "teams/**"
+          - "src/arakun_teams/**"
           - "phone/**"
           - "Cargo.toml"
           - "Cargo.lock"
@@ -93,7 +95,7 @@ reviews:
     behavior across several files or views (new panels, menus, settings,
     shortcuts or background work) that stays out of the paths and kinds of
     change listed next. High or higher: any change to
-    src/phone (end-to-end encryption and its wire format), relay/, teams/ or phone/;
+    src/phone (end-to-end encryption and its wire format), relay/, phone/, teams/ or src/arakun_teams/;
     the headless agent sandbox, its policy and its broker (src/headless*);
     the control socket (src/control.rs); code that reads, stores or sends
     tokens and API keys (src/account.rs, src/fetch.rs, src/voice.rs,

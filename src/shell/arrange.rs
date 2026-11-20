@@ -165,7 +165,10 @@ impl Shell {
                     cx.listener(|this, _, window, cx| this.ask_pin(PinAsk::Title, window, cx)),
                 ),
             );
-        if let Some(pin) = self.tab_pin() {
+        // "This tab" needs a project: with none there is no tab to pin.
+        if self.has_projects()
+            && let Some(pin) = self.tab_pin()
+        {
             let piece = Piece::Pin { pin };
             chips = chips.child(
                 chip("arr-tab".into(), piece.icon(), "This tab".into())

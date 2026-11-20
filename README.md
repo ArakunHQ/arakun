@@ -170,7 +170,8 @@ copy of it, rename it back, and start a version that can read it.
   saved in `~/.local/share/arakun/open-links` (`%LOCALAPPDATA%\arakun\open-links` on
   Windows). A link to a pull request or issue on the host `gh` is signed in to opens in
   the GitHub tab instead, from a chat, a terminal (⌘-click, Ctrl-click elsewhere), the
-  palette or the pull request button; its "Open on GitHub" opens the page.
+  palette, the pull request button or a session card's pull request chip; its "Open on
+  GitHub" opens the page.
 
 ### Agents
 

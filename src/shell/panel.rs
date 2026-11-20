@@ -581,9 +581,11 @@ pub(super) fn session_card(
                             .hover(|s| s.bg(theme::fill_selected()).text_color(theme::content()))
                             .child(icon("git-pull-request", 11.).text_color(theme::text_faint()))
                             .child(format!("#{number}"))
-                            .on_click(move |_, _, cx| {
+                            // Through the shell, as a chat link: the GitHub tab
+                            // when `gh` can read it, else the page.
+                            .on_click(move |_, window, cx| {
                                 cx.stop_propagation();
-                                cx.open_url(&url);
+                                crate::agent::markdown::open_link(&url, window, cx);
                             }),
                     )
                 })

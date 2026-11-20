@@ -737,6 +737,7 @@ impl Hub {
             changed |= self.kept.put_key(team_id, *epoch, key);
         }
         changed |= self.kept.observe_grants(&read.detail);
+        changed |= self.kept.observe_skips(&read.detail);
         // New devices of members seen before; the first look at a member
         // only learns what they have.
         let mine = self.device_id().unwrap_or_default().to_string();
@@ -1204,7 +1205,9 @@ impl Hub {
             return;
         }
         self.save(cx);
-        let keys = contiguous_tail(&self.kept.keys(team_id));
+        let keys = contiguous_tail(&self.kept.keys(team_id), |older, newer| {
+            self.kept.skipped_between(team_id, older, newer)
+        });
         if keys.is_empty() {
             self.error = Some("This device holds no key of the team yet.".into());
             cx.notify();
@@ -1955,12 +1958,19 @@ fn stale_names(detail: &TeamDetail, read: &[ChannelInfo], epoch: u64) -> Vec<(St
         .collect()
 }
 
-/// The keys from the newest back to the first gap: a skipped epoch has no
-/// envelopes, and an approval must cover every epoch from its first.
-fn contiguous_tail(keys: &[(u64, TeamKey)]) -> Vec<(u64, TeamKey)> {
+/// The keys from the newest back to the first gap, since an approval must
+/// cover every keyed epoch from its first. A gap of epochs `skipped(older,
+/// newer)` knows were skipped is no gap: they have no key to give.
+fn contiguous_tail(
+    keys: &[(u64, TeamKey)],
+    skipped: impl Fn(u64, u64) -> bool,
+) -> Vec<(u64, TeamKey)> {
     let mut out: Vec<(u64, TeamKey)> = Vec::new();
     for (epoch, key) in keys.iter().rev() {
-        if out.last().is_some_and(|(e, _)| *e != epoch + 1) {
+        if out
+            .last()
+            .is_some_and(|(e, _)| *e != epoch + 1 && !skipped(*epoch, *e))
+        {
             break;
         }
         out.push((*epoch, *key));
@@ -2288,9 +2298,41 @@ mod tests {
     #[test]
     fn approvals_give_keys_back_to_the_first_gap() {
         let k = |e: u64| (e, [e as u8; 32]);
-        assert_eq!(contiguous_tail(&[k(1), k(2), k(3)]), vec![k(1), k(2), k(3)]);
-        assert_eq!(contiguous_tail(&[k(1), k(2), k(4), k(5)]), vec![k(4), k(5)]);
-        assert!(contiguous_tail(&[]).is_empty());
+        let none = |_: u64, _: u64| false;
+        assert_eq!(
+            contiguous_tail(&[k(1), k(2), k(3)], none),
+            vec![k(1), k(2), k(3)]
+        );
+        assert_eq!(
+            contiguous_tail(&[k(1), k(2), k(4), k(5)], none),
+            vec![k(4), k(5)]
+        );
+        assert!(contiguous_tail(&[], none).is_empty());
+    }
+
+    #[test]
+    fn approvals_go_past_an_epoch_seen_skipped() {
+        let k = |e: u64| (e, [e as u8; 32]);
+        let mut t = delivery_team(vec![], 1).detail;
+        let mut kept = Kept::default();
+        // Two removals before a rotation: epoch 3 is current, 2 never keyed.
+        t.epoch = 3;
+        t.rotation_pending = true;
+        assert!(kept.observe_skips(&t));
+        assert!(!kept.observe_skips(&t));
+        let skipped = |older, newer| kept.skipped_between("T", older, newer);
+        let held = [k(1), k(3), k(4)];
+        assert_eq!(contiguous_tail(&held, skipped), held.to_vec());
+        // A key this device lacks is still a gap.
+        let held = [k(1), k(2), k(4), k(5)];
+        assert_eq!(contiguous_tail(&held, skipped), vec![k(4), k(5)]);
+        // Epoch 3 may still get a key: only 2 is known to be skipped.
+        assert!(!kept.skipped_between("T", 1, 4));
+        // A pending rotation right after the keyed epoch skips nothing.
+        let mut next = delivery_team(vec![], 4).detail;
+        next.epoch = 5;
+        next.rotation_pending = true;
+        assert!(!kept.observe_skips(&next));
     }
 
     #[test]
@@ -2406,7 +2448,7 @@ mod tests {
         t.detail.members[0].first_key_epoch = Some(3);
         let mut kept = Kept::default();
         let held = [(1, [1; 32]), (3, [3; 32]), (4, [4; 32])];
-        let approved = seal_all(&net, "T", &contiguous_tail(&held), &[old]).unwrap();
+        let approved = seal_all(&net, "T", &contiguous_tail(&held, |_, _| false), &[old]).unwrap();
         kept.admitted("T", 21, 4, &approved);
         kept.observe_grants(&t.detail);
         assert!(!kept.needs_delivery("T", 21, 10, root.id(), 3));
@@ -2583,7 +2625,13 @@ mod tests {
             .unwrap();
         let theirs = trusted_devices(mb.github_id, &p.devices);
         assert_eq!(theirs.len(), 1);
-        let envelopes = seal_all(&a, &team, &contiguous_tail(&[(1, key)]), &theirs).unwrap();
+        let envelopes = seal_all(
+            &a,
+            &team,
+            &contiguous_tail(&[(1, key)], |_, _| false),
+            &theirs,
+        )
+        .unwrap();
         let reviewed: Vec<String> = p.devices.iter().map(|d| d.device_id.clone()).collect();
         a.call()
             .approve(

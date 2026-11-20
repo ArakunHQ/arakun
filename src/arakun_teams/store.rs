@@ -417,6 +417,9 @@ pub struct Kept {
     /// names, until an admin approves.
     #[serde(default)]
     asked: BTreeMap<String, String>,
+    /// Team → a keyed epoch → the newest epoch seen skipped right after it.
+    #[serde(default)]
+    skipped: BTreeMap<String, BTreeMap<u64, u64>>,
 }
 
 impl Kept {
@@ -537,6 +540,39 @@ impl Kept {
         changed
     }
 
+    /// Notes the epochs a pending rotation skips: those between the newest
+    /// keyed one and the current one. The Worker gives a key only to the
+    /// current epoch or one that has envelopes already, so these never get one.
+    pub(super) fn observe_skips(&mut self, team: &TeamDetail) -> bool {
+        let Some(keyed) = team.keyed_epoch else {
+            return false;
+        };
+        if !team.rotation_pending || team.epoch <= keyed.saturating_add(1) {
+            return false;
+        }
+        let last = team.epoch - 1;
+        let seen = self
+            .skipped
+            .entry(team.team_id.clone())
+            .or_default()
+            .entry(keyed)
+            .or_default();
+        if *seen >= last {
+            return false;
+        }
+        *seen = last;
+        true
+    }
+
+    /// Whether every epoch between `older` and `newer` was seen skipped, so
+    /// none of them has a key.
+    pub(super) fn skipped_between(&self, team_id: &str, older: u64, newer: u64) -> bool {
+        self.skipped
+            .get(team_id)
+            .and_then(|m| m.get(&older))
+            .is_some_and(|last| last.saturating_add(1) >= newer)
+    }
+
     pub(super) fn needs_delivery(
         &self,
         team: &str,
@@ -590,11 +626,13 @@ impl Kept {
     pub fn forget_team(&mut self, team_id: &str) {
         self.keys.remove(team_id);
         self.grants.remove(team_id);
+        self.skipped.remove(team_id);
     }
 
     pub(super) fn retain_teams(&mut self, ids: &std::collections::HashSet<&str>) {
         self.keys.retain(|id, _| ids.contains(id.as_str()));
         self.grants.retain(|id, _| ids.contains(id.as_str()));
+        self.skipped.retain(|id, _| ids.contains(id.as_str()));
     }
 }
 

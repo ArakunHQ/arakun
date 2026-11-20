@@ -46,9 +46,12 @@ fn pr_card(
     repo: Option<&ci::Repo>,
     env_pr: Option<&git::PullRequest>,
 ) -> Option<PrCard> {
-    let url = match link {
-        Some(url) => url.to_string(),
-        None => repo?.pr_of(branch)?.url.clone(),
+    let url = match (link, repo) {
+        (Some(url), _) => url.to_string(),
+        (None, Some(repo)) => repo.pr_of(branch)?.url.clone(),
+        // The project's pull requests are not read (yet): the branch's own
+        // read, while it is open, still names it.
+        (None, None) => env_pr.filter(|p| p.state == "OPEN")?.url.clone(),
     };
     let (slug, number) = parse_pr_url(&url)?;
     // Open pull requests of this repository only: another one's #12 is not ours.
@@ -58,6 +61,9 @@ fn pr_card(
             .find(|p| p.number == number && parse_pr_url(&p.url).is_some_and(|(s, _)| s == slug))
     });
     let read = env_pr.filter(|p| p.number == number && p.url == url);
+    let title = open.map(|p| p.title.clone());
+    // Merged is final: an open entry left in an older list read is stale.
+    let open = open.filter(|_| !read.is_some_and(|p| p.state == "MERGED"));
     let state = match (open, read) {
         (Some(p), _) if p.is_draft => Some(("Draft", Tone::Neutral)),
         (Some(_), _) => Some(("Open", Tone::Success)),
@@ -87,7 +93,7 @@ fn pr_card(
         number,
         url,
         repo: slug,
-        title: open.map(|p| p.title.clone()),
+        title,
         state,
         review,
         conflicts: open.is_some_and(|p| p.conflicts()),
@@ -706,6 +712,41 @@ mod tests {
         );
         assert_eq!(pr_card(None, "other", Some(&repo), None), None);
         assert_eq!(pr_card(None, "feat", None, None), None);
+    }
+
+    #[test]
+    fn without_project_pull_requests_the_branch_read_names_an_open_one() {
+        let mut read = git::PullRequest {
+            number: 12,
+            url: URL.into(),
+            state: "OPEN".into(),
+            is_draft: false,
+        };
+        let card = pr_card(None, "feat", None, Some(&read)).unwrap();
+        assert_eq!(
+            (card.number, card.state),
+            (12, Some(("Open", Tone::Success)))
+        );
+        read.state = "MERGED".into();
+        assert_eq!(pr_card(None, "feat", None, Some(&read)), None);
+        read.state = "CLOSED".into();
+        assert_eq!(pr_card(None, "feat", None, Some(&read)), None);
+    }
+
+    #[test]
+    fn a_merged_read_wins_over_a_stale_open_entry() {
+        let mut repo = ci::Repo::default();
+        repo.prs = vec![open_pr(12, "feat", false)];
+        let merged = git::PullRequest {
+            number: 12,
+            url: URL.into(),
+            state: "MERGED".into(),
+            is_draft: false,
+        };
+        let card = pr_card(Some(URL), "feat", Some(&repo), Some(&merged)).unwrap();
+        assert_eq!(card.state, Some(("Merged", Tone::Accent)));
+        assert_eq!(card.title.as_deref(), Some("Pull request 12"));
+        assert_eq!((card.review, card.conflicts), (None, false));
     }
 
     #[test]

@@ -1301,14 +1301,30 @@ pub fn fix_checks_prompt(
     }
     p.push_str(&format!(
         "\nRead the rest with `gh` (`gh pr checks {url}`, `gh run view --job <job id> --log-failed -R {repo}`; \
-the job id ends each check's address). This checkout may be another repository or another branch: check with \
-`git remote -v` and `git branch --show-current`, and if it isn't `{branch}` of {repo}, say so and stop.\n\n\
+the job id ends each check's address).\n\n{checkout}\n\n\
 Find the cause and fix it in this checkout. Run the same command locally to confirm it passes, then summarize \
 what changed. Don't push.",
         repo = item.repo,
-        branch = pull.head_ref_name,
+        checkout = checkout_step(item, &pull.head_ref_name),
     ));
     p
+}
+
+/// How an agent gets onto a pull request's branch before working on it. The
+/// project open is often on another branch (main, most of the time), so the
+/// agent switches when it safely can instead of giving up.
+fn checkout_step(item: &ItemRef, branch: &str) -> String {
+    format!(
+        "This checkout may be another repository or another branch: check with `git remote -v` and \
+`git branch --show-current`. If it isn't {repo}, say so and stop. Fetch the pull request's current head from \
+{repo} with `git fetch origin refs/pull/{number}/head` (it works for branches in forks too); if that fails, say so \
+and stop. If it isn't on `{branch}`, switch to it when the working tree is clean (`git switch -c {branch} FETCH_HEAD` \
+if it doesn't exist here), else say so and stop. Then run `git merge --ff-only FETCH_HEAD` so the branch has the \
+pull request's latest commits; if that fails, the local branch has diverged from the pull request: say so and \
+stop.",
+        repo = item.repo,
+        number = item.number,
+    )
 }
 
 /// Whether "Resolve conflicts with agent" has something to do.
@@ -1319,17 +1335,11 @@ pub fn has_conflicts(pull: &Pull) -> bool {
 /// The prompt behind "Resolve conflicts with agent": bring the base branch
 /// into the pull request's branch and settle the conflicts, without pushing.
 pub fn conflicts_prompt(item: &ItemRef, title: &str, pull: &Pull) -> String {
-    let (url, repo) = (item.url(), &item.repo);
+    let url = item.url();
     let (base, branch) = (&pull.base_ref_name, &pull.head_ref_name);
     format!(
         "The pull request \"{title}\" ({label}) conflicts with its base branch `{base}`.\nURL: {url}\n\n\
-This checkout may be another repository or another branch: check with `git remote -v` and \
-`git branch --show-current`. If it isn't {repo}, say so and stop. Fetch the pull request's current head from \
-{repo} with `git fetch origin refs/pull/{number}/head` (it works for branches in forks too); if that fails, say so \
-and stop. If it isn't on `{branch}`, switch to it when the working tree is clean (`git switch -c {branch} FETCH_HEAD` \
-if it doesn't exist here), else say so and stop. Then run `git merge --ff-only FETCH_HEAD` so the branch has the \
-pull request's latest commits; if that fails, the local branch has diverged from the pull request: say so and \
-stop.\n\n\
+{checkout}\n\n\
 Fetch the base (`git fetch origin {base}`) and merge `origin/{base}` into `{branch}`; don't rebase, so nobody has \
 to force-push. Settle each conflict by keeping what both sides meant: read the pull request \
 (`gh pr view {url}`) and the commits on `{base}` that touched the same lines to understand each side. When the \
@@ -1337,7 +1347,7 @@ two can't both hold, keep the base's behavior, and tell me what of the pull requ
 Build and run the tests that cover the files that conflicted, then commit the merge. Tell me which files \
 conflicted and how you settled each. Don't push.",
         label = item.label(),
-        number = item.number,
+        checkout = checkout_step(item, branch),
     )
 }
 
@@ -1414,13 +1424,12 @@ URL: {url}\n\nOpen threads ({count}):\n",
         ));
     }
     p.push_str(&format!(
-        "\nRead any comment cut short above in full with `gh api repos/{repo}/pulls/{n}/comments`. This checkout may \
-be another repository or another branch: check with `git remote -v` and `git branch --show-current`, and if it \
-isn't `{branch}` of {repo}, say so and stop.\n\n\
+        "\nRead any comment cut short above in full with `gh api repos/{repo}/pulls/{n}/comments`.\n\n{checkout}\n\n\
 For each thread, check the comment against the code. Fix it in this checkout when it is right; when it is wrong \
 or not worth it, don't change the code and give the reason. Build and run the tests that cover what you changed.\n\n\
 Then list every thread by its number with what you did, or the reason you didn't, in a sentence I can post as \
-the reply. Don't commit, push, reply to or resolve anything on GitHub: I do that myself."
+the reply. Don't commit, push, reply to or resolve anything on GitHub: I do that myself.",
+        checkout = checkout_step(item, branch),
     ));
     p
 }
@@ -4020,6 +4029,10 @@ mod tests {
             "{prompt}"
         );
         assert!(!prompt.contains("log of Tests"), "{prompt}");
+        assert!(
+            prompt.contains("`git switch -c pr/resize FETCH_HEAD`"),
+            "{prompt}"
+        );
         assert!(prompt.ends_with("Don't push."), "{prompt}");
     }
 
@@ -5654,6 +5667,16 @@ mod tests {
         );
         assert!(prompt.contains("Karlo requested changes"), "{prompt}");
         assert!(prompt.contains("I do that myself."), "{prompt}");
+        // The project is often on main: the agent switches to the branch
+        // instead of stopping.
+        assert!(
+            prompt.contains("`git switch -c fix/tab-name FETCH_HEAD`"),
+            "{prompt}"
+        );
+        assert!(
+            prompt.contains("`git fetch origin refs/pull/41/head`"),
+            "{prompt}"
+        );
 
         // A resolved thread is not the agent's to address.
         for c in &mut p.inline[..2] {

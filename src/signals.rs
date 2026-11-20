@@ -28,10 +28,17 @@ pub fn end_if_stuck() {
         .name("arakun-quit-deadline".into())
         .spawn(|| {
             std::thread::sleep(QUIT_DEADLINE);
-            eprintln!(
-                "arakun: quitting took more than {}s; stopping without finishing",
-                QUIT_DEADLINE.as_secs()
-            );
+            // The message can block (a stuck thread holds stderr's lock, or no one
+            // reads the pipe), so it is written elsewhere and not waited on for long.
+            let (done, written) = std::sync::mpsc::channel();
+            let _ = std::thread::Builder::new().spawn(move || {
+                eprintln!(
+                    "arakun: quitting took more than {}s; stopping without finishing",
+                    QUIT_DEADLINE.as_secs()
+                );
+                let _ = done.send(());
+            });
+            let _ = written.recv_timeout(Duration::from_millis(500));
             end_now();
         });
 }

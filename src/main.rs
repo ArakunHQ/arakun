@@ -308,6 +308,9 @@ fn main() {
         ui::motion::follow_system(cx);
         cx.on_window_closed(|cx, _| {
             if cx.windows().is_empty() {
+                // Now: the shell saves as it is released, which can come before
+                // the quit steps that would start the deadline.
+                signals::end_if_stuck();
                 cx.quit();
             }
         })

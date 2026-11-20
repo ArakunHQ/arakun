@@ -346,8 +346,14 @@ sees the project's skills.
   `…` menu says how pilot is doing ("Connected to … · read 2 min ago", or what is
   wrong), and when pilot can't be read, or its settings file can't be used, the
   queue says why with a "Settings…" link to the form. From a terminal,
-  `arakun github pilot connect <url> --token -` (the token on stdin) does the same; `arakun github pilot status` says whether
-  they still work and `arakun github pilot disconnect` removes them. They go in
+  `arakun github pilot connect <url> --token -` (the token on stdin) does the same;
+  `arakun github pilot status` says whether they still work and
+  `arakun github pilot disconnect` removes them. A token never goes in the command line,
+  where `ps` and shell history would show it: `--token -` reads it from stdin, else
+  `ARAKUN_PILOT_TOKEN`, else the token already saved for the same address. The admin
+  token comes the same way, from `--admin-token -` or `ARAKUN_PILOT_ADMIN_TOKEN` (only
+  one of the two can come from stdin); `--no-admin-token` removes the saved one, and
+  `--no-check` saves without asking the Worker first. An empty stdin is an error. They go in
   `~/.config/arakun-pilot/client.json` (`$XDG_CONFIG_HOME` when set to an absolute path;
   `{"url": "…", "token": "…"}`, readable only by you), and Arakun reads `GET <url>/board` and
   `GET <url>/items` every minute. A test Arakun with `ARAKUN_STATE` set, as `arakun dev`
@@ -1072,7 +1078,10 @@ arakun github draft o/r#12 --verdict approve --head <sha> --body-file - --agent 
                                   # the commit the agent read; an approval needs it
 arakun github pilot connect <url> --token -
                                   # connect arakun-pilot: check the Worker, save its
-                                  # settings (also status, disconnect)
+                                  # settings (also status, disconnect). Tokens come
+                                  # from stdin (-) or ARAKUN_PILOT_TOKEN and
+                                  # ARAKUN_PILOT_ADMIN_TOKEN; also --admin-token -,
+                                  # --no-admin-token, --no-check
 arakun agent run <prompt>         # start a headless agent
 arakun server serve               # run sessions on this machine without the window (arakun server help)
 arakun --version                  # print the version (needs no running Arakun)

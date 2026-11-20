@@ -5,6 +5,7 @@
 use std::io;
 use std::path::PathBuf;
 
+use super::board::BoardProblem;
 use super::pilot::{self, Config};
 
 /// What the user typed, before it is checked. An empty token keeps the one
@@ -66,8 +67,9 @@ pub fn url_problem(url: &str) -> Option<&'static str> {
 pub struct Checked {
     /// Open cards at `/items`.
     pub cards: usize,
-    /// Whether `/board` answered; a Worker without one fills only "Your agent".
-    pub board: bool,
+    /// `/board`: Ok when it answered, Missing for a Worker without one
+    /// (it fills only "Your agent"), Failed when it broke.
+    pub board: Result<(), BoardProblem>,
 }
 
 /// Reads `/items` and `/board` with the read token. The admin token is not
@@ -84,7 +86,9 @@ pub fn check(cfg: &Config) -> Result<Checked, String> {
             .len(),
         (status, _) => return Err(refused(status)),
     };
-    let board = super::board::fetch(Some(cfg)).is_ok();
+    // A board that failed is not one that is missing: a 500 or a timeout
+    // must not read as "no board".
+    let board = super::board::fetch(Some(cfg)).map(|_| ());
     Ok(Checked { cards, board })
 }
 
@@ -123,11 +127,15 @@ pub fn remove() -> io::Result<bool> {
 // ---------------------------------------------------------------------------
 // The command line
 
-pub const USAGE: &str = "arakun github pilot connect <url> [--token <t|->] [--admin-token <t|->] [--no-admin-token] [--no-check]
+pub const USAGE: &str = "arakun github pilot connect <url> [--token -] [--admin-token -] [--no-admin-token] [--no-check]
     check the Worker's address and token, then save them so the GitHub tab shows
-    pilot's board. `-` reads the token from stdin (keeps it out of shell history);
-    without --token, ARAKUN_PILOT_TOKEN, or the token saved for the same address.
-    --admin-token (or ARAKUN_PILOT_ADMIN_TOKEN) lets Arakun send pilot tasks.
+    pilot's board. A token never goes in the command line, where ps and shell
+    history show it: `--token -` reads it from stdin, else ARAKUN_PILOT_TOKEN,
+    else the token saved for the same address. The admin token, which lets
+    Arakun send pilot tasks, comes the same way: `--admin-token -` or
+    ARAKUN_PILOT_ADMIN_TOKEN (only one of the two from stdin).
+    --no-admin-token removes the saved admin token; --no-check saves without
+    asking the Worker first.
 arakun github pilot status
     say where the settings are and whether the Worker takes them.
 arakun github pilot disconnect
@@ -199,8 +207,10 @@ fn parse_connect(args: &[String]) -> Result<ConnectArgs, String> {
                 .ok_or_else(|| format!("{name} needs a value")),
         };
         match flag {
-            "--token" => out.token = Some(value("--token")?),
-            "--admin-token" => out.admin_token = Some(value("--admin-token")?),
+            "--token" => out.token = Some(stdin_only("--token", value("--token")?)?),
+            "--admin-token" => {
+                out.admin_token = Some(stdin_only("--admin-token", value("--admin-token")?)?)
+            }
             "--no-admin-token" | "--no-check" if inline.is_some() => {
                 return Err(format!("{flag} takes no value"));
             }
@@ -224,36 +234,64 @@ fn parse_connect(args: &[String]) -> Result<ConnectArgs, String> {
     Ok(out)
 }
 
-fn stdin_line() -> Result<String, String> {
-    let mut line = String::new();
-    io::stdin()
-        .read_line(&mut line)
-        .map_err(|e| format!("could not read stdin: {e}"))?;
-    Ok(line.trim().to_string())
+/// A token flag takes only `-`: a token in the arguments shows in `ps` and
+/// in shell history. The value is never echoed, since it may be a token.
+fn stdin_only(flag: &str, value: String) -> Result<String, String> {
+    if value == "-" {
+        return Ok(value);
+    }
+    let env = match flag {
+        "--admin-token" => "ARAKUN_PILOT_ADMIN_TOKEN",
+        _ => "ARAKUN_PILOT_TOKEN",
+    };
+    Err(format!(
+        "{flag} takes only `-` (the token on stdin), or set {env}: a token in the command line shows in ps and shell history"
+    ))
 }
 
-/// A flag's token, `-` read from stdin, else the environment variable.
-fn token_from(flag: Option<String>, env: &str) -> Result<Option<String>, String> {
-    match flag.as_deref() {
-        Some("-") => stdin_line().map(Some),
-        Some(_) => Ok(flag),
+/// The token on stdin's first line. Empty is an error: it would keep the
+/// saved token (or drop the saved admin token) without saying so.
+fn stdin_token(flag: &str, input: impl io::BufRead) -> Result<String, String> {
+    let mut input = input;
+    let mut line = String::new();
+    input
+        .read_line(&mut line)
+        .map_err(|e| format!("could not read stdin: {e}"))?;
+    let token = line.trim();
+    if token.is_empty() {
+        return Err(format!(
+            "{flag} -: stdin was empty, so there is no token to save"
+        ));
+    }
+    Ok(token.to_string())
+}
+
+/// A flag's token from stdin, else the environment variable.
+fn token_from(flag: Option<&str>, name: &str, env: &str) -> Result<Option<String>, String> {
+    match flag {
+        Some(_) => stdin_token(name, io::stdin().lock()).map(Some),
         None => Ok(std::env::var(env).ok().filter(|t| !t.trim().is_empty())),
     }
 }
 
 fn connect_cli(a: ConnectArgs) -> Result<String, String> {
-    let token = token_from(a.token, "ARAKUN_PILOT_TOKEN")?;
+    let token = token_from(a.token.as_deref(), "--token", "ARAKUN_PILOT_TOKEN")?;
     let admin = if a.no_admin {
         Some(String::new())
     } else {
-        token_from(a.admin_token, "ARAKUN_PILOT_ADMIN_TOKEN")?
+        token_from(
+            a.admin_token.as_deref(),
+            "--admin-token",
+            "ARAKUN_PILOT_ADMIN_TOKEN",
+        )?
     };
     let draft = Draft {
         url: a.url,
         token: token.unwrap_or_default(),
         admin_token: admin,
     };
-    let cfg = settings(&draft, pilot::load_config().as_ref())?;
+    // A broken file keeps nothing: connecting again is how it gets fixed.
+    let cfg = settings(&draft, pilot::read_config().ok().flatten().as_ref())?;
     let checked = if a.no_check {
         None
     } else {
@@ -277,27 +315,36 @@ pub fn found(c: &Checked) -> String {
         1 => "1 open card".to_string(),
         n => format!("{n} open cards"),
     };
-    if c.board {
-        format!("The Worker answered: {cards} and a board.")
-    } else {
-        format!("The Worker answered: {cards}, no board (its cards show under \"Your agent\").")
+    match &c.board {
+        Ok(()) => format!("The Worker answered: {cards} and a board."),
+        Err(BoardProblem::Missing) => {
+            format!("The Worker answered: {cards}, no board (its cards show under \"Your agent\").")
+        }
+        Err(BoardProblem::Failed(e)) => {
+            format!("The Worker answered: {cards}, but its board failed: {e}")
+        }
     }
 }
 
 fn status_cli() -> Result<String, String> {
     let path = pilot::config_file();
-    let Ok(bytes) = std::fs::read(&path) else {
-        return Err(format!(
-            "not connected ({} doesn't exist). Connect with: arakun github pilot connect <url> --token -",
-            path.display()
-        ));
+    // Only a missing file is "not connected": one that can't be read or
+    // parsed says why.
+    let cfg = match pilot::read_config() {
+        Ok(Some(cfg)) => cfg,
+        Ok(None) => {
+            return Err(format!(
+                "not connected ({} doesn't exist). Connect with: arakun github pilot connect <url> --token -",
+                path.display()
+            ));
+        }
+        Err(e) => {
+            return Err(format!(
+                "pilot is off: {e} (or arakun github pilot connect <url> --token -)\nSettings: {}",
+                path.display()
+            ));
+        }
     };
-    let cfg = pilot::parse_config(&bytes).ok_or_else(|| {
-        format!(
-            "{} can't be read: it needs \"url\" (https://) and \"token\". Connect again to rewrite it.",
-            path.display()
-        )
-    })?;
     let admin = if cfg.admin_token.is_some() {
         "yes"
     } else {
@@ -309,7 +356,13 @@ fn status_cli() -> Result<String, String> {
         cfg.url
     );
     match check(&cfg) {
-        Ok(c) => Ok(format!("{head}\n{}", found(&c))),
+        Ok(
+            c @ Checked {
+                board: Ok(()) | Err(BoardProblem::Missing),
+                ..
+            },
+        ) => Ok(format!("{head}\n{}", found(&c))),
+        Ok(c) => Err(format!("{head}\n{}", found(&c))),
         Err(e) => Err(format!("{head}\n{e}")),
     }
 }
@@ -386,11 +439,57 @@ mod tests {
     }
 
     #[test]
+    fn a_token_never_comes_from_the_arguments() {
+        for args in [
+            ["https://p.dev", "--token", "secret"],
+            ["https://p.dev", "--admin-token", "secret"],
+        ] {
+            let err = parse_connect(&args.map(String::from)).unwrap_err();
+            assert!(
+                err.contains("ARAKUN_PILOT") && !err.contains("secret"),
+                "{err}"
+            );
+        }
+        let inline = ["https://p.dev", "--token=secret"].map(String::from);
+        assert!(!parse_connect(&inline).unwrap_err().contains("secret"));
+        let stdin = ["https://p.dev", "--admin-token=-"].map(String::from);
+        assert_eq!(
+            parse_connect(&stdin).unwrap().admin_token.as_deref(),
+            Some("-")
+        );
+    }
+
+    #[test]
+    fn an_empty_stdin_is_an_error_not_a_kept_or_dropped_token() {
+        assert_eq!(stdin_token("--token", &b" t \n"[..]).unwrap(), "t");
+        for input in [&b""[..], b"\n", b"  \n"] {
+            let err = stdin_token("--admin-token", input).unwrap_err();
+            assert!(
+                err.contains("--admin-token") && err.contains("empty"),
+                "{err}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_failed_board_is_not_a_missing_one() {
+        let failed = Checked {
+            cards: 1,
+            board: Err(BoardProblem::Failed("the Worker answered 500".into())),
+        };
+        assert!(found(&failed).contains("board failed: the Worker answered 500"));
+        let missing = Checked {
+            cards: 2,
+            board: Err(BoardProblem::Missing),
+        };
+        assert!(found(&missing).contains("no board"));
+    }
+
+    #[test]
     fn flag_values_can_follow_an_equals_sign_and_stay_out_of_errors() {
-        let args = ["https://p.dev", "--token=t", "--admin-token=a"].map(String::from);
+        let args = ["https://p.dev", "--token=-", "--no-check"].map(String::from);
         let a = parse_connect(&args).unwrap();
-        assert_eq!(a.token.as_deref(), Some("t"));
-        assert_eq!(a.admin_token.as_deref(), Some("a"));
+        assert_eq!(a.token.as_deref(), Some("-"));
         let typo = ["https://p.dev", "--tokn=secret"].map(String::from);
         let err = parse_connect(&typo).unwrap_err();
         assert!(err.contains("--tokn") && !err.contains("secret"), "{err}");
@@ -426,7 +525,7 @@ mod tests {
             check(&cfg).unwrap(),
             Checked {
                 cards: 0,
-                board: false
+                board: Err(BoardProblem::Missing)
             }
         );
     }

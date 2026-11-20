@@ -1385,8 +1385,20 @@ impl Shell {
             return;
         };
         let settings = super::sessions::server_picks(env, agent);
-        // As in `servers_start`: a pick the server does not offer would only
-        // fail the new session there, after the old one is gone.
+        // As in `servers_start`: the new session must not start in a folder
+        // the server no longer offers. The old session stays as it is.
+        if self.server_env_retired(env_path) {
+            if let Some(thread) = thread_of(&self.projects, env_path, id) {
+                let notice = format!(
+                    "{} no longer offers this folder, so no new session starts in it.",
+                    remote.machine
+                );
+                thread.update(cx, |t, cx| t.post_notice(notice, true, cx));
+            }
+            return;
+        }
+        // A pick the server does not offer would only fail the new session
+        // there, after the old one is gone.
         let offered = self.servers.as_ref().and_then(|link| {
             link.options
                 .get(&(remote.server.clone(), remote.place.clone(), agent.kind()))

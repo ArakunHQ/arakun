@@ -1316,9 +1316,10 @@ what changed. Don't push.",
 fn checkout_step(item: &ItemRef, branch: &str) -> String {
     format!(
         "This checkout may be another repository or another branch: check with `git remote -v` and \
-`git branch --show-current`. If it isn't {repo}, say so and stop. Fetch the pull request's current head from \
-{repo} with `git fetch origin refs/pull/{number}/head` (it works for branches in forks too); if that fails, say so \
-and stop. If it isn't on `{branch}`, switch to it when the working tree is clean (`git switch -c {branch} FETCH_HEAD` \
+`git branch --show-current`. If no remote points at {repo}, say so and stop. Use the remote that points at \
+{repo} (in a fork checkout that is often `upstream`, not `origin`) wherever `<remote>` appears below. Fetch the \
+pull request's current head with `git fetch <remote> refs/pull/{number}/head` (it works for branches in forks \
+too); if that fails, say so and stop. If it isn't on `{branch}`, switch to it when the working tree is clean (`git switch -c {branch} FETCH_HEAD` \
 if it doesn't exist here), else say so and stop. Then run `git merge --ff-only FETCH_HEAD` so the branch has the \
 pull request's latest commits; if that fails, the local branch has diverged from the pull request: say so and \
 stop.",
@@ -1340,7 +1341,7 @@ pub fn conflicts_prompt(item: &ItemRef, title: &str, pull: &Pull) -> String {
     format!(
         "The pull request \"{title}\" ({label}) conflicts with its base branch `{base}`.\nURL: {url}\n\n\
 {checkout}\n\n\
-Fetch the base (`git fetch origin {base}`) and merge `origin/{base}` into `{branch}`; don't rebase, so nobody has \
+Fetch the base (`git fetch <remote> {base}`) and merge `<remote>/{base}` into `{branch}`; don't rebase, so nobody has \
 to force-push. Settle each conflict by keeping what both sides meant: read the pull request \
 (`gh pr view {url}`) and the commits on `{base}` that touched the same lines to understand each side. When the \
 two can't both hold, keep the base's behavior, and tell me what of the pull request you dropped.\n\n\
@@ -5630,12 +5631,17 @@ mod tests {
         let prompt = conflicts_prompt(&item(ItemKind::Pull), "Keep the tab name", &p);
         assert!(prompt.contains("base branch `main`"), "{prompt}");
         assert!(
-            prompt.contains("merge `origin/main` into `fix/tab-name`"),
+            prompt.contains("merge `<remote>/main` into `fix/tab-name`"),
+            "{prompt}"
+        );
+        // In a fork checkout `origin` is the fork: its pull 41 is another one.
+        assert!(
+            prompt.contains("remote that points at ArakunHQ/arakun"),
             "{prompt}"
         );
         // A stale local branch would leave the newest conflicts unmerged.
         assert!(
-            prompt.contains("`git fetch origin refs/pull/41/head`"),
+            prompt.contains("`git fetch <remote> refs/pull/41/head`"),
             "{prompt}"
         );
         assert!(
@@ -5674,7 +5680,7 @@ mod tests {
             "{prompt}"
         );
         assert!(
-            prompt.contains("`git fetch origin refs/pull/41/head`"),
+            prompt.contains("`git fetch <remote> refs/pull/41/head`"),
             "{prompt}"
         );
 

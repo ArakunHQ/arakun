@@ -6,7 +6,7 @@
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, AppContext as _, Context, Focusable as _, FontWeight, Hsla,
+    AnyElement, App, AppContext as _, Context, Focusable as _, FontWeight, Hsla,
     InteractiveElement as _, IntoElement, ParentElement as _, StatefulInteractiveElement as _,
     Styled as _, Window, div, px,
 };
@@ -117,6 +117,46 @@ fn quote(color: Hsla, text: impl Into<gpui::SharedString>, strong: bool) -> gpui
         .child(text.into())
 }
 
+/// The keys of a picked card's ready answers, in order (`OPCIONES_MAX`).
+const ANSWER_KEYS: [&str; 4] = ["1", "2", "3", "4"];
+
+/// The card to pick once `gone` is dealt with: the next question after it,
+/// else the next card, wrapping round; None when it was the last.
+fn next_card(cards: &[Item], gone: &str) -> Option<String> {
+    let at = cards.iter().position(|c| c.id == gone).unwrap_or(0);
+    let rest: Vec<&Item> = cards[at..]
+        .iter()
+        .chain(&cards[..at])
+        .filter(|c| c.id != gone)
+        .collect();
+    rest.iter()
+        .find(|c| c.kind == Kind::NeedsYou)
+        .or(rest.first())
+        .map(|c| c.id.clone())
+}
+
+/// What a key does on the picked card.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum CardKey {
+    Answer(Answer),
+    Other,
+    Done,
+}
+
+/// The key `key` on `card`, when it does something there.
+pub(super) fn card_key(card: &Item, key: &str) -> Option<CardKey> {
+    match (card.kind, key) {
+        (Kind::NeedsYou, "e") => Some(CardKey::Other),
+        (Kind::NeedsYou, k) => {
+            let n = ANSWER_KEYS.iter().position(|a| *a == k)?;
+            let o = card.opciones.get(n)?;
+            Some(CardKey::Answer(Answer::Opcion(o.id.clone())))
+        }
+        (Kind::Fixed | Kind::Failed | Kind::Other, "y") => Some(CardKey::Done),
+        _ => None,
+    }
+}
+
 /// "Settings…" after a pilot problem: the form that fixes it.
 pub(super) fn settings_link(
     id: &'static str,
@@ -136,16 +176,23 @@ pub(super) fn settings_link(
 impl GitHubView {
     /// The section's heading and its cards; nothing when no card waits.
     /// With a board, only the cards no sheet shows: "From pilot".
-    pub(super) fn pilot_section(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+    /// The cards the queue shows, in its order: all of them without a
+    /// board, with one those no sheet shows.
+    pub(super) fn pilot_cards(&self, cx: &App) -> Vec<Item> {
         let p = self.pilot.read(cx);
         let board = p.board();
         // The focus menu's promise: what it leaves out doesn't show.
         let focus = self.github.read(cx).focus();
-        let items: Vec<Item> = p
-            .shown_in(focus)
+        p.shown_in(focus)
             .filter(|c| board.is_none_or(|b| board::card_place(b, c) == CardPlace::Loose))
             .cloned()
-            .collect();
+            .collect()
+    }
+
+    pub(super) fn pilot_section(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let items = self.pilot_cards(cx);
+        let p = self.pilot.read(cx);
+        let board = p.board();
         // Broken settings show here too: pilot would just look off.
         let problem = p
             .config_problem()
@@ -507,7 +554,7 @@ impl GitHubView {
                 ("gh-pilot-done", ix),
                 Some(("tick02", None)),
                 label,
-                None,
+                focused.then_some("Y"),
                 if primary {
                     PillKind::Primary
                 } else {
@@ -575,7 +622,8 @@ impl GitHubView {
                             ("gh-pilot-opcion", ix * 10 + oi),
                             None,
                             o.texto.clone(),
-                            None,
+                            // The picked card answers from the keyboard.
+                            focused.then(|| ANSWER_KEYS[oi]),
                             kind,
                             !sending,
                         )
@@ -594,7 +642,11 @@ impl GitHubView {
                         .font_weight(FontWeight::NORMAL)
                         .text_color(theme::text_subtle())
                         .hover(|s| s.text_color(theme::text()))
-                        .child("Other answer…")
+                        .child(if focused {
+                            "Other answer… (E)"
+                        } else {
+                            "Other answer…"
+                        })
                         .on_click(cx.listener(move |this, _, window, cx| {
                             cx.stop_propagation();
                             this.pilot_open_other(&other_id, window, cx);
@@ -726,6 +778,31 @@ impl GitHubView {
         cx.notify();
     }
 
+    /// A key on the picked card: an answer, "Other answer…" or done. False
+    /// when the key does nothing there, so it keeps its queue meaning.
+    pub(super) fn pilot_key(
+        &mut self,
+        key: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(id) = self.pilot_focus.clone() else {
+            return false;
+        };
+        let Some(card) = self.pilot_cards(cx).into_iter().find(|c| c.id == id) else {
+            return false;
+        };
+        match card_key(&card, key) {
+            Some(CardKey::Answer(a)) => {
+                self.pilot_answer(&id, a, cx);
+            }
+            Some(CardKey::Other) => self.pilot_open_other(&id, window, cx),
+            Some(CardKey::Done) => self.pilot_finish(&id, cx),
+            None => return false,
+        }
+        true
+    }
+
     /// "Other answer…": a line under the card for the user's own words.
     pub(super) fn pilot_open_other(
         &mut self,
@@ -799,7 +876,8 @@ impl GitHubView {
                             this.pilot_other = None;
                         }
                         if this.pilot_focus.as_deref() == Some(id.as_str()) {
-                            this.pilot_focus = None;
+                            let cards = this.pilot_cards(cx);
+                            this.pilot_focus = next_card(&cards, &id);
                         }
                         this.pilot_open.remove(&id);
                         let clear = cx.spawn(async move |this, cx| {
@@ -906,7 +984,8 @@ impl GitHubView {
         self.pilot_notes.remove(id);
         self.pilot_open.remove(id);
         if self.pilot_focus.as_deref() == Some(id) {
-            self.pilot_focus = None;
+            let cards = self.pilot_cards(cx);
+            self.pilot_focus = next_card(&cards, id);
         }
         let id = id.to_string();
         self.pilot.update(cx, |p, cx| p.done(&id, cx));
@@ -1013,6 +1092,44 @@ mod tests {
             id: id.into(),
             texto: id.to_uppercase(),
         }
+    }
+
+    fn card(id: &str, kind: Kind) -> Item {
+        Item {
+            id: id.into(),
+            kind,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn the_next_question_is_picked_after_an_answer() {
+        let cards = [
+            card("a", Kind::NeedsYou),
+            card("b", Kind::Fixed),
+            card("c", Kind::NeedsYou),
+        ];
+        assert_eq!(next_card(&cards, "a").as_deref(), Some("c"));
+        // Round to the start before settling for a card that asks nothing.
+        assert_eq!(next_card(&cards, "c").as_deref(), Some("a"));
+        assert_eq!(next_card(&cards[1..2], "b"), None);
+        assert_eq!(next_card(&cards[..2], "a").as_deref(), Some("b"));
+    }
+
+    #[test]
+    fn keys_answer_the_picked_card() {
+        let mut q = card("q", Kind::NeedsYou);
+        q.opciones = vec![opcion("migrar"), opcion("quedan")];
+        assert_eq!(
+            card_key(&q, "2"),
+            Some(CardKey::Answer(Answer::Opcion("quedan".into())))
+        );
+        assert_eq!(card_key(&q, "3"), None);
+        assert_eq!(card_key(&q, "e"), Some(CardKey::Other));
+        assert_eq!(card_key(&q, "y"), None);
+        assert_eq!(card_key(&card("f", Kind::Fixed), "y"), Some(CardKey::Done));
+        // A brief's approval asks twice in the sheet: no key skips that.
+        assert_eq!(card_key(&card("b", Kind::Brief), "y"), None);
     }
 
     #[test]

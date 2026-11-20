@@ -1502,6 +1502,11 @@ impl GitHubView {
         {
             return;
         }
+        // A picked pilot card takes its own keys first: 1-4, E and Y.
+        if !self.sheet_open && self.pilot_key(k.key.as_str(), window, cx) {
+            cx.stop_propagation();
+            return;
+        }
         let pull = self.item().is_some_and(|i| i.kind == ItemKind::Pull);
         let mine = self.is_mine(cx);
         match k.key.as_str() {

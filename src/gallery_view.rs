@@ -544,7 +544,7 @@ impl Render for GalleryView {
             .child(ui::icon("search01", 14.).text_color(theme::text_faint()))
             .child(
                 div()
-                    .text_color(theme::text_faint())
+                    .text_color(theme::text_subtle())
                     .child("Search sessions…"),
             );
 

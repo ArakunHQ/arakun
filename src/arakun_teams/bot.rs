@@ -47,15 +47,17 @@ const TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const BODY_BYTES: usize = 44_000;
 
 /// Built-in tools the run has at all: reading and searching the project, and
-/// the web. Nothing that edits files or runs commands.
-pub const TOOLS: &str = "Read,Grep,Glob,WebSearch,WebFetch";
+/// searching the web. Nothing that edits files or runs commands.
+pub const TOOLS: &str = "Read,Grep,Glob,WebSearch";
 /// Tools approved without asking. File tools are left out on purpose: then
 /// Claude Code allows them only inside the working folder, and
 /// `--permission-mode dontAsk` refuses the rest instead of asking.
-pub const ALLOWED: &str = "WebSearch,WebFetch";
+pub const ALLOWED: &str = "WebSearch";
 /// Refused outright, should a version of Claude Code add them back.
-pub const DISALLOWED: &str =
-    "Bash,PowerShell,Edit,MultiEdit,Write,NotebookEdit,Task,Agent,Skill,SlashCommand,KillShell";
+/// WebFetch is among them: the chat steers the run, and a fetch can carry
+/// project code to any address the chat names. A search goes only to the
+/// search service.
+pub const DISALLOWED: &str = "Bash,PowerShell,Edit,MultiEdit,Write,NotebookEdit,WebFetch,Task,Agent,Skill,SlashCommand,KillShell";
 
 /// Whether `text` calls the bot: `@bot` as a word, in any case. An address
 /// such as `me@bot.dev` or a name such as `@bottle` does not.
@@ -441,11 +443,11 @@ pub fn answer_prompt(job: &Job, summaries: Option<&[(std::ops::Range<usize>, Str
     );
     if job.project {
         p.push_str(
-            "- Check them against the project in the current folder: read its code and docs with Read, Grep and Glob. Use WebSearch or WebFetch only when it helps and the project can't answer.\n",
+            "- Check them against the project in the current folder: read its code and docs with Read, Grep and Glob. Use WebSearch only when it helps and the project can't answer.\n",
         );
     } else {
         p.push_str(
-            "- No project is open in Arakun, so the current folder is empty: there is no code or docs to check. Use WebSearch or WebFetch only when it helps, and list what you would have checked under \"unchecked\".\n",
+            "- No project is open in Arakun, so the current folder is empty: there is no code or docs to check. Use WebSearch only when it helps, and list what you would have checked under \"unchecked\".\n",
         );
     }
     p.push_str(
@@ -1502,12 +1504,12 @@ mod tests {
             let i = args.iter().position(|a| a == flag).unwrap();
             args[i + 1].clone()
         };
-        assert_eq!(after("--tools"), "Read,Grep,Glob,WebSearch,WebFetch");
-        assert_eq!(after("--allowedTools"), "WebSearch,WebFetch");
+        assert_eq!(after("--tools"), "Read,Grep,Glob,WebSearch");
+        assert_eq!(after("--allowedTools"), "WebSearch");
         assert_eq!(after("--permission-mode"), "dontAsk");
         assert_eq!(after("--output-format"), "json");
         assert_eq!(after("--setting-sources"), "");
-        for tool in ["Bash", "Edit", "Write", "NotebookEdit"] {
+        for tool in ["Bash", "Edit", "Write", "NotebookEdit", "WebFetch"] {
             assert!(after("--disallowedTools").split(',').any(|t| t == tool));
             assert!(!after("--tools").split(',').any(|t| t == tool));
         }

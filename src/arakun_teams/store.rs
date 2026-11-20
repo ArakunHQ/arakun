@@ -25,7 +25,23 @@ const DEVICE_ACCOUNT: &str = "teams-device";
 /// (`ARAKUN_STATE`, as `arakun dev` sets) keeps its own Teams session and
 /// device, so it never signs the person's own Arakun out or takes its keys.
 pub fn account(name: &str) -> String {
-    account_for(name, std::env::var("ARAKUN_STATE").ok().as_deref())
+    let state = std::env::var("ARAKUN_STATE").ok();
+    account_for(name, state.as_deref().map(profile).as_deref())
+}
+
+/// `ARAKUN_STATE` as it names this profile's credentials. A relative path
+/// is read from the working directory, like the state file itself, so two
+/// folders with `state.json` don't share one device and session. An
+/// absolute path stays as given, so the names already in use don't change.
+fn profile(state: &str) -> String {
+    let path = Path::new(state);
+    if path.is_absolute() {
+        return state.to_string();
+    }
+    std::path::absolute(path)
+        .ok()
+        .and_then(|p| p.to_str().map(str::to_string))
+        .unwrap_or_else(|| state.to_string())
 }
 
 fn account_for(name: &str, state: Option<&str>) -> String {
@@ -86,11 +102,13 @@ pub fn load_device(
         .as_deref()
         .map(|s| s.to_str().ok_or("The Teams state path is not UTF-8."))
         .transpose()?
-        .filter(|s| !s.is_empty());
+        .filter(|s| !s.is_empty())
+        .map(profile);
     let dir = state
+        .as_deref()
         .and_then(|s| Path::new(s).parent())
         .map_or_else(crate::state::data_dir, Path::to_owned);
-    let scope = Scope::new(base, github_id, state, &dir);
+    let scope = Scope::new(base, github_id, state.as_deref(), &dir);
     // Two tabs starting together must not create different identities for
     // one account. The application already holds the state lock across processes.
     static INIT: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -976,6 +994,16 @@ mod tests {
             account_for("teams-device", Some("/tmp/dev/state.json")),
             "teams-device@/tmp/dev/state.json"
         );
+    }
+
+    #[test]
+    fn a_relative_state_names_its_own_folder() {
+        let absolute = std::env::temp_dir().join("dev").join("state.json");
+        let absolute = absolute.to_str().unwrap();
+        assert_eq!(profile(absolute), absolute);
+        let here = std::env::current_dir().unwrap().join("state.json");
+        assert_eq!(profile("state.json"), here.to_str().unwrap());
+        assert_eq!(profile(""), "");
     }
 
     #[test]

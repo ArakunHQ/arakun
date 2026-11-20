@@ -94,13 +94,48 @@ fn program(command: &str) -> Option<String> {
             .min()?;
         rest = after[cut..].trim_start();
     }
-    let word = rest.split_whitespace().find(|w| {
-        !(w.contains('=') && !w.starts_with('='))
-            && !matches!(*w, "env" | "sudo" | "time" | "exec" | "command")
-    })?;
+    let mut words = rest.split_whitespace();
+    let mut wrapper: Option<&str> = None;
+    let word = loop {
+        let w = words.next()?;
+        if w.contains('=') && !w.starts_with('=') {
+            continue;
+        }
+        // A wrapper's options, and the argument of those that take one
+        // (`sudo -u me`, `env -u VAR`), come before the program it runs.
+        if let Some(wr) = wrapper
+            && w.starts_with('-')
+        {
+            if takes_arg(wr, w) {
+                words.next();
+            }
+            continue;
+        }
+        if matches!(
+            w,
+            "env" | "sudo" | "time" | "exec" | "command" | "nice" | "nohup"
+        ) {
+            wrapper = Some(w);
+            continue;
+        }
+        break w;
+    };
     let word = word.trim_start_matches(['(', '{']);
     let word = word.rsplit('/').next().unwrap_or(word);
     (!word.is_empty()).then(|| word.to_string())
+}
+
+/// Whether the short option `opt` of `wrapper` takes the next word as its argument.
+fn takes_arg(wrapper: &str, opt: &str) -> bool {
+    let takes: &[&str] = match wrapper {
+        "sudo" => &["-u", "-g", "-C", "-D", "-h", "-p", "-r", "-t", "-U"],
+        "env" => &["-u", "-C", "-S"],
+        "time" => &["-o", "-f"],
+        "nice" => &["-n"],
+        "exec" => &["-a"],
+        _ => &[],
+    };
+    takes.contains(&opt)
 }
 
 /// What each tool's results used over `turns`, largest first.
@@ -120,6 +155,7 @@ impl Turn {
     pub fn is_empty(&self) -> bool {
         self.input + self.output + self.cache_read + self.cache_write + self.credits == 0
             && self.cost <= 0.
+            && self.tools.is_empty()
     }
 }
 
@@ -277,6 +313,11 @@ mod tests {
             (7, 0., None)
         );
         assert!(!bare.is_empty());
+        let tools_only: Turn = serde_json::from_str(
+            r#"{"at":3,"agent":"workers-ai","session":"y","cwd":"/q","tools":{"grep":{"calls":1,"bytes":9}}}"#,
+        )
+        .unwrap();
+        assert!(!tools_only.is_empty());
         assert!(bare.tools.is_empty());
         assert!(!serde_json::to_string(&bare).unwrap().contains("tools"));
     }
@@ -290,6 +331,9 @@ mod tests {
         assert_eq!(k("RUST_LOG=1 FOO=a=b /usr/bin/git log"), "bash git");
         assert_eq!(k("sudo env X=1 make"), "bash make");
         assert_eq!(k("(grep -rn x src)"), "bash grep");
+        assert_eq!(k("sudo -n cargo test"), "bash cargo");
+        assert_eq!(k("env -u RUSTFLAGS cargo build"), "bash cargo");
+        assert_eq!(k("sudo -u me -- make"), "bash make");
         assert_eq!(k("   "), "bash");
         assert_eq!(k("cd /x"), "bash");
         assert_eq!(tool_key("read_file", None), "read_file");

@@ -2659,7 +2659,7 @@ impl Daemon {
         let dir = PathBuf::from(place);
         // Git runs nowhere else: a device names one of the folders it offers.
         if self.store.place(&dir).is_none() || self.deleting.contains(&dir) {
-            let why = "that folder is not one of this server's".to_string();
+            let why = anyhow::anyhow!("that folder is not one of this server's");
             let reply = crate::git_call::reply(reference, Err(why));
             self.transport.send(client, reply.to_string());
             return;
@@ -2667,9 +2667,7 @@ impl Daemon {
         cx.spawn(async move |this, cx| {
             let done = cx
                 .background_executor()
-                .spawn(crate::guard::task(async move {
-                    call.run(&dir).map_err(|e| e.to_string())
-                }))
+                .spawn(crate::guard::task(async move { call.run(&dir) }))
                 .await;
             let reply = crate::git_call::reply(reference, done);
             let _ = this.update(cx, |this, _| {

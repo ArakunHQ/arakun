@@ -199,21 +199,44 @@ impl ServerGit {
         link.send(&msg);
         match answer.recv_timeout(wait) {
             Ok(Ok(value)) => Ok(value),
-            Ok(Err(why)) => Err(anyhow!("{why}")),
+            Ok(Err(Failed { why, timed_out })) if timed_out => Err(late(why)),
+            Ok(Err(Failed { why, .. })) => Err(anyhow!("{why}")),
             Err(_) => {
                 self.asks.forget(reference);
                 // The server may still finish a change it is slow to answer.
-                Err(anyhow!(if reads(&msg["call"]) {
-                    "The server did not answer in time."
+                Err(late(if reads(&msg["call"]) {
+                    "The server did not answer in time.".into()
                 } else {
-                    "The server did not answer in time, and may still finish. Check its changes before you try again."
+                    "The server did not answer in time, and may still finish. Check its changes before you try again.".into()
                 }))
             }
         }
     }
 }
 
-type Answer = std::result::Result<Value, String>;
+type Answer = std::result::Result<Value, Failed>;
+
+/// Why a request failed, and whether git (or the wait for it) ran out of
+/// time: then the status reads pause, as they do for a folder here.
+#[derive(Debug, PartialEq, Eq)]
+struct Failed {
+    why: String,
+    timed_out: bool,
+}
+
+impl From<&str> for Failed {
+    fn from(why: &str) -> Failed {
+        Failed {
+            why: why.into(),
+            timed_out: false,
+        }
+    }
+}
+
+/// An error `git::timed_out` knows, saying `why`.
+fn late(why: String) -> anyhow::Error {
+    std::io::Error::new(std::io::ErrorKind::TimedOut, why).into()
+}
 
 /// The `git` requests out to servers, by `ref`, until each is answered.
 /// Shared between the shell, which hears the answers, and the threads that
@@ -267,7 +290,10 @@ impl Asks {
             return;
         };
         let answer = match msg["error"].as_str() {
-            Some(error) => Err(error.to_string()),
+            Some(error) => Err(Failed {
+                why: error.to_string(),
+                timed_out: msg["timed_out"] == true,
+            }),
             None => Ok(msg["ok"].clone()),
         };
         let _ = tx.send(answer);
@@ -283,7 +309,7 @@ impl Asks {
             return;
         }
         if let Some((_, tx)) = w.out.remove(&reference) {
-            let _ = tx.send(Err(dropped(&msg["call"])));
+            let _ = tx.send(Err(dropped(&msg["call"]).as_str().into()));
         }
     }
 
@@ -299,7 +325,7 @@ impl Asks {
             .collect();
         for reference in ended {
             if let Some((_, tx)) = w.out.remove(&reference) {
-                let _ = tx.send(Err(why.to_string()));
+                let _ = tx.send(Err(why.into()));
             }
         }
     }
@@ -403,8 +429,22 @@ mod tests {
             rb.try_recv()
                 .unwrap()
                 .unwrap_err()
+                .why
                 .contains("Check its changes")
         );
+    }
+
+    #[test]
+    fn a_server_timeout_reads_as_one() {
+        let asks = Asks::default();
+        let (a, ra) = asks.open("s1").unwrap();
+        asks.answered(
+            "s1",
+            &json!({ "type": "git", "ref": a, "error": "slow", "timed_out": true }),
+        );
+        let failed = ra.try_recv().unwrap().unwrap_err();
+        assert!(failed.timed_out);
+        assert!(git::timed_out(&late(failed.why)));
     }
 
     #[test]

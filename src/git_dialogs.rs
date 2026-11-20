@@ -289,6 +289,9 @@ pub struct PullRequestDialog {
     /// The base whose commits could not be read: the server could not be
     /// asked, which says nothing about whether it has that branch.
     unread: Option<String>,
+    /// Counts the plan reads: only the latest one may change the dialog,
+    /// whichever finishes last.
+    plans: u64,
     error: Option<SharedString>,
     _subs: Vec<Subscription>,
 }
@@ -365,6 +368,7 @@ impl PullRequestDialog {
             busy: None,
             planning: None,
             unread: None,
+            plans: 0,
             error: None,
             _subs: subs,
         }
@@ -375,6 +379,10 @@ impl PullRequestDialog {
     /// the pull requests below too. A title the user changed stays.
     fn refresh_plan(&mut self, cx: &mut Context<Self>) {
         let base = self.base.read(cx).text().trim().to_string();
+        // A read still out is for a base no longer typed.
+        self.plans += 1;
+        let read = self.plans;
+        self.unread = None;
         if base.is_empty() || base == self.plan.base {
             self.planning = None;
             // Back on the base read last: what the agent wrote for another
@@ -383,7 +391,6 @@ impl PullRequestDialog {
             return;
         }
         self.planning = Some(base.clone());
-        self.unread = None;
         let (at, remote, branch) = (self.at.clone(), self.remote.clone(), self.branch.clone());
         cx.spawn(async move |this, cx| {
             let onto = base.clone();
@@ -393,9 +400,10 @@ impl PullRequestDialog {
                 }))
                 .await;
             let _ = this.update(cx, |this, cx| {
-                if this.planning.as_deref() == Some(base.as_str()) {
-                    this.planning = None;
+                if this.plans != read {
+                    return;
                 }
+                this.planning = None;
                 if this.base.read(cx).text().trim() != base {
                     return;
                 }

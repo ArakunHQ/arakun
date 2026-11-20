@@ -909,7 +909,7 @@ impl Shell {
             ),
             // Answered with its `ref`, so whoever waits on it stops waiting.
             ClientMsg::Git { reference, .. } => {
-                let why = "commit this computer's changes in Arakun itself".to_string();
+                let why = anyhow::anyhow!("commit this computer's changes in Arakun itself");
                 let reply = crate::git_call::reply(reference, Err(why));
                 self.phone_send(client, reply.to_string());
             }

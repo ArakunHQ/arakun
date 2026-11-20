@@ -280,11 +280,15 @@ pub fn pr_source(dir: &Path, remote: &str, base: &str, branch: &str, max_diff: u
     }
 }
 
-/// The server's answer to request `reference`.
-pub fn reply(reference: u64, result: Result<Value, String>) -> Value {
+/// The server's answer to request `reference`. A git that ran out of time
+/// says so, so the app waits before it asks again, as it does with its own.
+pub fn reply(reference: u64, result: Result<Value>) -> Value {
     match result {
         Ok(value) => json!({ "type": "git", "ref": reference, "ok": value }),
-        Err(error) => json!({ "type": "git", "ref": reference, "error": error }),
+        Err(error) if git::timed_out(&error) => json!({
+            "type": "git", "ref": reference, "error": error.to_string(), "timed_out": true,
+        }),
+        Err(error) => json!({ "type": "git", "ref": reference, "error": error.to_string() }),
     }
 }
 
@@ -418,8 +422,13 @@ mod tests {
             json!({ "type": "git", "ref": 3, "ok": null })
         );
         assert_eq!(
-            reply(4, Err("no".into())),
+            reply(4, Err(anyhow::anyhow!("no"))),
             json!({ "type": "git", "ref": 4, "error": "no" })
+        );
+        let slow = std::io::Error::new(std::io::ErrorKind::TimedOut, "git status took too long");
+        assert_eq!(
+            reply(5, Err(slow.into())),
+            json!({ "type": "git", "ref": 5, "error": "git status took too long", "timed_out": true })
         );
     }
 }

@@ -172,9 +172,10 @@ impl Shell {
             }
             return;
         }
+        // A tab closed and opened again counts from zero: its id tells the two apart.
         let Some(load) = self.doc_tab_mut(&env_path, &kind).map(|tab| {
             tab.loads += 1;
-            tab.loads
+            (tab.id, tab.loads)
         }) else {
             return;
         };
@@ -193,7 +194,7 @@ impl Shell {
                     .await;
                 let _ = this.update(cx, |this, cx| {
                     if let Some(tab) = this.doc_tab_mut(&env_path, &kind)
-                        && tab.loads == load
+                        && (tab.id, tab.loads) == load
                     {
                         if let Document::Sheet(book) = &doc {
                             tab.sheet = tab.sheet.min(book.sheets.len() - 1);
@@ -272,7 +273,7 @@ impl Shell {
             let _ = this.update(cx, |this, cx| {
                 // An older load that finishes late would undo a newer one.
                 if let Some(tab) = this.doc_tab_mut(&env_path, &kind)
-                    && tab.loads == load
+                    && (tab.id, tab.loads) == load
                 {
                     tab.doc = Some(doc);
                     if tab.markdown.is_some() {

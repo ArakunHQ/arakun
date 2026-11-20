@@ -112,7 +112,8 @@ impl Shell {
                         this.builder.lifted = None;
                         this.change_sidebar(cx, |s| {
                             s.move_section(d.from, si);
-                        })
+                        });
+                        this.clear_builder_selection();
                     }))
                     .on_drop(cx.listener(move |this, d: &DraggedPiece, _, cx| {
                         this.drop_piece(d, (si, 0), cx)
@@ -144,7 +145,8 @@ impl Shell {
                 this.builder.lifted = None;
                 this.change_sidebar(cx, |s| {
                     s.move_section(d.from, si + 1);
-                })
+                });
+                this.clear_builder_selection();
             }))
             .into_any_element()
     }

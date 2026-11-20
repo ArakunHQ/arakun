@@ -431,7 +431,7 @@ impl Shell {
             .px(crate::ui::sp(8.));
         if !folded {
             // Narrowed or in a row, every piece is one icon, so Inbox keeps its own.
-            let pair = if narrow || in_row {
+            let pair = if narrow || in_row || arranging {
                 None
             } else {
                 section.inbox_by_search()
@@ -609,7 +609,12 @@ impl Shell {
             Piece::View { view } if style.badges => self.view_badge(*view, cx),
             _ => None,
         };
-        if item.only_when_busy && badge.is_none() && matches!(item.piece, Piece::View { .. }) {
+        // Arranging, a quiet piece still shows, so it can be selected and moved.
+        if item.only_when_busy
+            && badge.is_none()
+            && matches!(item.piece, Piece::View { .. })
+            && !self.arranging(cx)
+        {
             return None;
         }
         let name = item.name();
@@ -895,7 +900,7 @@ impl Shell {
         } else {
             None
         };
-        if item.only_when_busy && badge.is_none() {
+        if item.only_when_busy && badge.is_none() && !self.arranging(cx) {
             return None;
         }
         let open = matches!(

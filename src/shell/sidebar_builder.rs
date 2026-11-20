@@ -381,10 +381,7 @@ impl Shell {
     /// The tab on screen as a pin, when it is a page or a file.
     pub(super) fn tab_pin(&self) -> Option<Pin> {
         let env = self.env();
-        // The builder itself is on screen; the tab before it is the one meant.
-        let tab = self.strip.tabs.iter().rev().find(|t| {
-            t.is_in(&env.path) && matches!(t.kind, TabKind::Browser { .. } | TabKind::File { .. })
-        })?;
+        let tab = self.strip.active().filter(|t| t.is_in(&env.path))?;
         match &tab.kind {
             TabKind::Browser { url } if !url.is_empty() => Some(Pin::Url {
                 title: url_title(url),
@@ -403,6 +400,14 @@ impl Shell {
 
     // ── The tab ─────────────────────────────────────────────────────────
 
+    /// Forgets the selection and its fields. They point at a place, not at
+    /// a piece: after a move or an import, another piece sits there.
+    pub(super) fn clear_builder_selection(&mut self) {
+        self.builder.sel = None;
+        self.builder.inputs = None;
+        self.builder.prompt = None;
+    }
+
     pub(super) fn drop_piece(&mut self, d: &DraggedPiece, to: ItemPath, cx: &mut Context<Self>) {
         self.builder.lifted = None;
         let (from, item) = (d.from, d.item.clone());
@@ -412,6 +417,7 @@ impl Shell {
                 None => s.insert(item, to),
             };
         });
+        self.clear_builder_selection();
     }
 
     pub(super) fn render_item_options(

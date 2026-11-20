@@ -2556,6 +2556,7 @@ impl Shell {
                             match crate::sidebar::Sidebar::parse(text.as_bytes()) {
                                 Some(s) => {
                                     this.change_sidebar(cx, |cur| *cur = s);
+                                    this.clear_builder_selection();
                                     this.builder.flash = Some("Layout imported".into());
                                 }
                                 None => {

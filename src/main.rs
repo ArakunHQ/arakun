@@ -83,6 +83,7 @@ mod settings_view;
 mod settle;
 mod sheet;
 mod shell;
+mod shrink;
 mod sidebar;
 mod signals;
 #[cfg(feature = "coderlabs")]

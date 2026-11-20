@@ -909,6 +909,8 @@ arakun check                      # run the project check here
 arakun rename fix/tab-name         # rename this environment's branch (before it is pushed)
 arakun page screenshot            # PNG of the environment's browser tab
 arakun notify "done"              # desktop notification
+arakun shrink -- cargo test       # run it and print a summary: failures, collapsed logs,
+                                  # JSON outline; the whole output goes to a file it names
 arakun notices --unseen           # notices you haven't read yet
 arakun ls                         # projects, environments and sessions
 arakun show                       # bring the window up (running `arakun` again does too)

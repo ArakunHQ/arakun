@@ -916,6 +916,44 @@ impl TeamsView {
             .into_any_element()
     }
 
+    /// The bar over pages of no team. Without a team there is no team menu,
+    /// yet a second device needs Your devices on this one to be let in.
+    fn render_teamless_bar(&self, cx: &mut Context<Self>) -> AnyElement {
+        let on_devices = self.pane == Pane::Devices;
+        div()
+            .flex()
+            .flex_none()
+            .items_center()
+            .justify_end()
+            .h(px(ui::BAR_H))
+            .px(ui::sp(12.))
+            .border_b_1()
+            .border_color(theme::border_subtle())
+            .child(if on_devices {
+                ui::button_with(
+                    "teams-devices-back",
+                    Some("arrow-left01"),
+                    "Back",
+                    ButtonKind::Ghost,
+                    true,
+                )
+                .on_click(cx.listener(|this, _, window, cx| this.show(Pane::None, window, cx)))
+            } else {
+                ui::button_with(
+                    "teams-to-devices",
+                    Some("computer"),
+                    "Your devices",
+                    ButtonKind::Ghost,
+                    true,
+                )
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.hub.update(cx, |h, cx| h.load_my_devices(cx));
+                    this.show(Pane::Devices, window, cx)
+                }))
+            })
+            .into_any_element()
+    }
+
     /// The menu under the team's name: every team, a new one, your devices.
     fn render_team_menu(&self, cx: &mut Context<Self>) -> AnyElement {
         let hub = self.hub.read(cx);
@@ -3189,7 +3227,10 @@ impl TeamsView {
                     Self::centered(ui::loading("teams-opening", "Opening the team…")),
                 ),
             };
-        let header = header_team.map(|t| self.render_header(&t, header_channel, faces, cx));
+        let header = match header_team {
+            Some(t) => self.render_header(&t, header_channel, faces, cx),
+            None => self.render_teamless_bar(cx),
+        };
         let retry = ui::button_with(
             "teams-retry-banner",
             Some("refresh01"),
@@ -3203,7 +3244,7 @@ impl TeamsView {
             .flex_col()
             .flex_1()
             .min_h_0()
-            .children(header)
+            .child(header)
             .children(unreachable.map(|e| {
                 Self::banner(
                     "alert-circle",

@@ -2022,7 +2022,9 @@ impl Daemon {
                 let reply = match self.live.get(&session) {
                     Some(live) => {
                         let t = live.thread.read(cx);
-                        commands = (!t.commands().is_empty())
+                        // Empty but known still goes: the app may hold an older list.
+                        commands = t
+                            .commands_known()
                             .then(|| wire::commands_message(&session, t.commands()));
                         wire::session_live(&head, t, status_of(t), &self.scope(t.cwd()))
                     }

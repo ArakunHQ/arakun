@@ -1130,7 +1130,9 @@ The link is good for two minutes and pairs one device. There are two ways to use
   that folder's changes and diffs, and stage, discard, commit, pull, push and the pull
   request button run there, with the server's `git` and `gh` logins
   (`ARAKUN_GITHUB=readonly` on the server keeps it from pushing or opening pull requests;
-  set it before `service install`). The Explorer lists a server's environment, its files
+  set it before `service install`). On a server reached over plain http, the diffs,
+  commit messages and pull request text cross the network unencrypted, like the rest of
+  that link: reach it over https or the relay. The Explorer lists a server's environment, its files
   open in file tabs (text only, read from the server), and `@` in the composer completes
   its paths. Merging into the main checkout and GitHub's form stay with this machine's
   folders. Fork, compact, rewind and `/stage` in a server's session run on the server, with its

@@ -459,15 +459,19 @@ impl Call<'_> {
         self.get(&format!("/teams/{team_id}/pending"))
     }
 
+    /// `devices` and `keyed_epoch` are what the admin reviewed, so a device
+    /// added or a rotation ended since then answers `409`, not `400`.
     pub fn approve(
         &self,
         team_id: &str,
         github_id: u64,
         request_id: &str,
+        devices: &[String],
+        keyed_epoch: Option<u64>,
         envelopes: &[Envelope],
     ) -> Result<(), ApiError> {
         let path = format!("/teams/{team_id}/pending/{github_id}/approve");
-        let body = serde_json::json!({ "request_id": request_id, "envelopes": envelopes });
+        let body = approval(request_id, devices, keyed_epoch, envelopes);
         self.post::<serde_json::Value>("POST", &path, body)
             .map(|_| ())
     }
@@ -622,6 +626,25 @@ fn github_error(body: &str) -> String {
         .unwrap_or_default()
 }
 
+/// The body of an approval. A Worker without the team's `keyed_epoch` gave
+/// the client none to send back, so it is left out then.
+fn approval(
+    request_id: &str,
+    devices: &[String],
+    keyed_epoch: Option<u64>,
+    envelopes: &[Envelope],
+) -> serde_json::Value {
+    let mut body = serde_json::json!({
+        "request_id": request_id,
+        "devices": devices,
+        "envelopes": envelopes,
+    });
+    if let Some(epoch) = keyed_epoch {
+        body["keyed_epoch"] = epoch.into();
+    }
+    body
+}
+
 fn agent() -> &'static ureq::Agent {
     static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
     AGENT.get_or_init(|| {
@@ -738,6 +761,18 @@ mod tests {
             Err(ApiError::Status(429, "too many sign-ins".into()))
         );
         assert_eq!(json::<Me>(200, "<html>"), Err(ApiError::Unreadable));
+    }
+
+    #[test]
+    fn an_approval_names_what_the_admin_reviewed() {
+        let devices = ["d1".to_string(), "d2".to_string()];
+        let body = approval("r", &devices, Some(4), &[]);
+        assert_eq!(body["request_id"], "r");
+        assert_eq!(body["devices"], serde_json::json!(["d1", "d2"]));
+        assert_eq!(body["keyed_epoch"], 4);
+        assert_eq!(body["envelopes"], serde_json::json!([]));
+        let older = approval("r", &devices, None, &[]);
+        assert!(older.get("keyed_epoch").is_none());
     }
 
     #[test]

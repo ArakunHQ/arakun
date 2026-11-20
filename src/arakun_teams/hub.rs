@@ -1179,7 +1179,8 @@ impl Hub {
             return;
         };
         let team_epoch = t.detail.epoch;
-        let keyed_epoch = t.detail.keyed_epoch.unwrap_or(team_epoch);
+        let reviewed_epoch = t.detail.keyed_epoch;
+        let keyed_epoch = reviewed_epoch.unwrap_or(team_epoch);
         let Some(p) = t
             .pending
             .iter()
@@ -1212,6 +1213,9 @@ impl Hub {
         self.info = None;
         let team_id = team_id.to_string();
         let login = p.login.clone();
+        // The same snapshot the keys are sealed for, so a change since
+        // answers 409 and the admin looks again.
+        let reviewed: Vec<String> = p.devices.iter().map(|d| d.device_id.clone()).collect();
         self.run(
             cx,
             {
@@ -1223,8 +1227,14 @@ impl Hub {
                     let parts = grant_parts(&keys, trusted.len());
                     let (newest, older) = parts.split_first().expect("keys is not empty");
                     let mut given = seal_all(net, &team_id, newest, &trusted)?;
-                    net.call()
-                        .approve(&team_id, github_id, &p.request_id, &given)?;
+                    net.call().approve(
+                        &team_id,
+                        github_id,
+                        &p.request_id,
+                        &reviewed,
+                        reviewed_epoch,
+                        &given,
+                    )?;
                     for part in older {
                         let batch = seal_all(net, &team_id, part, &trusted)?;
                         if let Err(e) =
@@ -1258,6 +1268,10 @@ impl Hub {
                                 "Approved @{login}, but their oldest team keys could not be given: {e}"
                             ));
                         }
+                    }
+                    Err(ApiError::Status(409, e)) => {
+                        hub.error = Some(format!("Could not approve @{login}: {e}"));
+                        hub.load_team(&team_id, cx);
                     }
                     Err(e) => hub.error = Some(format!("Could not approve: {e}")),
                 }
@@ -2495,8 +2509,16 @@ mod tests {
         let theirs = trusted_devices(mb.github_id, &p.devices);
         assert_eq!(theirs.len(), 1);
         let envelopes = seal_all(&a, &team, &contiguous_tail(&[(1, key)]), &theirs).unwrap();
+        let reviewed: Vec<String> = p.devices.iter().map(|d| d.device_id.clone()).collect();
         a.call()
-            .approve(&team, mb.github_id, &p.request_id, &envelopes)
+            .approve(
+                &team,
+                mb.github_id,
+                &p.request_id,
+                &reviewed,
+                Some(1),
+                &envelopes,
+            )
             .unwrap();
 
         // B reads the team as load_team does: the key, checked, and the channel.

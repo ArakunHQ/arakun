@@ -293,14 +293,14 @@ impl Shell {
                     })
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.session_filter = match this.session_filter {
-                            None => Some(Agent::Droid),
-                            Some(Agent::Droid) => Some(Agent::Claude),
-                            Some(Agent::Claude) => Some(Agent::OpenCode),
-                            Some(Agent::OpenCode) => Some(Agent::Codex),
-                            Some(Agent::Codex) => Some(Agent::Devin),
-                            Some(Agent::Devin) => Some(Agent::Cursor),
-                            Some(Agent::Cursor) => Some(Agent::WorkersAi),
-                            Some(Agent::WorkersAi) => None,
+                            None => Some(AgentKind::Droid),
+                            Some(AgentKind::Droid) => Some(AgentKind::Claude),
+                            Some(AgentKind::Claude) => Some(AgentKind::OpenCode),
+                            Some(AgentKind::OpenCode) => Some(AgentKind::Codex),
+                            Some(AgentKind::Codex) => Some(AgentKind::Devin),
+                            Some(AgentKind::Devin) => Some(AgentKind::Cursor),
+                            Some(AgentKind::Cursor) => Some(AgentKind::WorkersAi),
+                            Some(AgentKind::WorkersAi) => None,
                         };
                         cx.notify();
                     })),

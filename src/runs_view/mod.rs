@@ -16,8 +16,9 @@ use gpui::{
     UniformListScrollHandle, Window, div, px, rgb, rgba,
 };
 
+use crate::agent::AgentKind;
 use crate::ci::{self, Ci, Load, Run, State};
-use crate::model::{self, Agent, Status};
+use crate::model::{self, Status};
 use crate::theme;
 use crate::ui::{self, icon};
 
@@ -28,7 +29,7 @@ pub struct LinkedSession {
     pub env: usize,
     pub id: SharedString,
     pub title: SharedString,
-    pub agent: Agent,
+    pub agent: AgentKind,
     pub status: Status,
     /// Unix seconds.
     pub updated: u64,

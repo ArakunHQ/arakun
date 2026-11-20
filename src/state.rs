@@ -5,10 +5,11 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::agent::AgentKind;
 use crate::agent::{SessionMeta, Setting};
 use crate::model::{
-    Agent, Automation, Environment, Project, Session, Snippet, Split, SplitDir, Status, Tab,
-    TabKind, TabStrip,
+    Automation, Environment, Project, Session, Snippet, Split, SplitDir, Status, Tab, TabKind,
+    TabStrip,
 };
 
 #[derive(Serialize, Deserialize, Default)]
@@ -786,7 +787,7 @@ pub fn snapshot_with(
                         placeholder: e.placeholder.clone(),
                         follow_branch: e.follow_branch,
                         used: e.used,
-                        agent: Some(e.agent.key().into()),
+                        agent: Some(e.agent.id().into()),
                         settings: e
                             .draft_settings
                             .iter()
@@ -829,7 +830,7 @@ pub fn snapshot_with(
                             .map(|s| SessionState {
                                 id: s.id.to_string(),
                                 title: s.title.to_string(),
-                                agent: s.agent.key().into(),
+                                agent: s.agent.id().into(),
                                 updated: s.updated,
                                 added: s.added,
                                 removed: s.removed,
@@ -895,7 +896,7 @@ pub fn snapshot_with(
         .map(|(k, _)| k.to_string())
         .collect(),
         ui_zoom: layout.ui_zoom,
-        last_agent: crate::model::default_agent().key().to_string(),
+        last_agent: crate::model::default_agent().id().to_string(),
         island_off: !crate::island::enabled(),
         background: crate::background::enabled(),
         window: layout.window,
@@ -929,7 +930,7 @@ pub fn restore(state: State) -> (Vec<Project>, usize, Layout, TabStrip) {
                     }
                     env.set_branch(e.branch);
                     if let Some(agent) = e.agent {
-                        env.agent = Agent::from_key(&agent);
+                        env.agent = AgentKind::from_id(&agent);
                     }
                     env.draft_settings = e
                         .settings
@@ -975,7 +976,7 @@ pub fn restore(state: State) -> (Vec<Project>, usize, Layout, TabStrip) {
                             let mut session = Session::new(
                                 s.id.into(),
                                 s.title.into(),
-                                Agent::from_key(&s.agent),
+                                AgentKind::from_id(&s.agent),
                             );
                             session.updated = s.updated;
                             session.added = s.added;
@@ -1128,7 +1129,7 @@ pub fn restore(state: State) -> (Vec<Project>, usize, Layout, TabStrip) {
         .max_by_key(|s| s.updated)
         .map(|s| s.agent);
     match (last_agent.is_empty(), latest) {
-        (false, _) => crate::model::set_default_agent(Agent::from_key(&last_agent)),
+        (false, _) => crate::model::set_default_agent(AgentKind::from_id(&last_agent)),
         (true, Some(agent)) => crate::model::set_default_agent(agent),
         (true, None) => {}
     }
@@ -1560,7 +1561,7 @@ mod tests {
     fn split_survives_a_restart() {
         let mut project = new_project(Path::new("/tmp/arakun-split-test"));
         let env = &mut project.environments[0];
-        env.sessions = vec![Session::new("s1".into(), "One".into(), Agent::Droid)];
+        env.sessions = vec![Session::new("s1".into(), "One".into(), AgentKind::Droid)];
         let here = env.path.clone();
         let mut strip = TabStrip {
             tabs: vec![
@@ -1568,7 +1569,7 @@ mod tests {
                     &here,
                     "One",
                     TabKind::Session {
-                        agent: Agent::Droid,
+                        agent: AgentKind::Droid,
                         id: "s1".into(),
                     },
                 ),

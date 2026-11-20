@@ -564,7 +564,7 @@ impl Shell {
             let skills = (self.env().remote.is_none()
                 && matches!(
                     self.composer_agent(),
-                    model::Agent::Claude | model::Agent::WorkersAi
+                    AgentKind::Claude | AgentKind::WorkersAi
                 ))
             .then(|| self.skill_index(cx))
             .flatten();
@@ -1209,10 +1209,10 @@ impl Shell {
             .when_some(note_row, |d, p| d.child(p))
             .when_some(context_row, |d, p| d.child(p))
             .when_some(self.agent_out_of_limits(agent, cx), |d, why| {
-                let other = if agent == Agent::Droid {
-                    Agent::Claude
+                let other = if agent == AgentKind::Droid {
+                    AgentKind::Claude
                 } else {
-                    Agent::Droid
+                    AgentKind::Droid
                 };
                 let other_ok = self.agent_out_of_limits(other, cx).is_none();
                 d.child(

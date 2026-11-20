@@ -51,7 +51,7 @@ impl Shell {
             CloudflareEvent::Ask(ask) => self.start_ask(ask, window, cx),
             CloudflareEvent::ConnectMcp(agent, state) => {
                 // The button is off without Codex, but the state it showed can be old.
-                if *agent == model::Agent::Codex && crate::agent::codex_cli().is_none() {
+                if *agent == AgentKind::Codex && crate::agent::codex_cli().is_none() {
                     self.notify(
                         AlertKind::Warning,
                         "Connect Cloudflare to Codex",
@@ -62,7 +62,7 @@ impl Shell {
                     return;
                 }
                 // The card is hidden for Devin; this covers a state from before.
-                if *agent == model::Agent::Devin {
+                if *agent == AgentKind::Devin {
                     self.notify(
                         AlertKind::Warning,
                         "Connect Cloudflare to Devin",
@@ -72,7 +72,7 @@ impl Shell {
                     );
                     return;
                 }
-                if *agent == model::Agent::Cursor {
+                if *agent == AgentKind::Cursor {
                     self.notify(
                         AlertKind::Warning,
                         "Connect Cloudflare to Cursor",

@@ -21,17 +21,7 @@ pub const USAGE_NOTE: &str = "Read with the sign-ins your agent CLIs already hav
 
 /// The hosts a CLI's sign-in may be sent to.
 pub fn hosts(agent: AgentKind) -> &'static [&'static str] {
-    match agent {
-        AgentKind::Claude => &["api.anthropic.com"],
-        AgentKind::Droid => &["api.factory.ai"],
-        AgentKind::OpenCode => &["opencode.ai"],
-        AgentKind::WorkersAi => &["api.cloudflare.com"],
-        // The server `devin auth login` signs in with; `devin_plan` reads the quota there.
-        AgentKind::Devin => &["server.codeium.com"],
-        // Arakun reads only how Codex is signed in, never its tokens, and only
-        // whether Cursor is.
-        AgentKind::Codex | AgentKind::Cursor => &[],
-    }
+    agent.spec().sign_in_hosts
 }
 
 /// Fails unless `url` is https to one of `agent`'s [`hosts`]. Call it before
@@ -56,26 +46,7 @@ pub fn check(agent: AgentKind, url: &str) -> Result<()> {
 /// in Settings. It sits under the section's Sign in or Connect button, so it
 /// says what that button runs.
 pub fn notice(agent: AgentKind) -> &'static str {
-    match agent {
-        AgentKind::Claude => {
-            "Arakun has no account of its own and never asks you to approve access. Sign in runs Claude Code's own login. Arakun only reads what Claude Code saves, sends it only to api.anthropic.com, and never changes it."
-        }
-        AgentKind::Codex => {
-            "Arakun has no account of its own and never asks you to approve access. Sign in runs the codex CLI's own login. Arakun only checks which kind of sign-in Codex has and never reads the tokens."
-        }
-        AgentKind::Devin => {
-            "Arakun has no account of its own and never asks you to approve access. Sign in runs the devin CLI's own login. Arakun reads the key Devin saves only to show your plan's quota, sends it only to server.codeium.com, and never changes it."
-        }
-        AgentKind::Cursor => {
-            "Arakun has no account of its own and never asks you to approve access. Sign in runs the cursor-agent CLI's own login. Arakun only checks that Cursor has a sign-in and never reads the tokens."
-        }
-        AgentKind::Droid => {
-            "Arakun has no account of its own and never asks you to approve access. It reads the login droid already has and never changes it; droid renews it itself. A Factory API key you connect here, or FACTORY_API_KEY, is used instead; a connected key is kept in the system keyring. Either one goes only to api.factory.ai."
-        }
-        AgentKind::OpenCode | AgentKind::WorkersAi => {
-            "Arakun has no account of its own and never asks you to approve access. Sign in and Connect run OpenCode's own login. Arakun only reads the keys OpenCode saves, sends the Go key only to opencode.ai and the Workers AI key only to api.cloudflare.com, and never changes them."
-        }
-    }
+    agent.spec().sign_in_notice
 }
 
 #[cfg(test)]

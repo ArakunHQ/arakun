@@ -13,8 +13,8 @@ use gpui::{
 };
 
 use super::{Shell, agent_icon};
+use crate::agent::AgentKind;
 use crate::agent::Entry;
-use crate::model::Agent;
 use crate::state;
 use crate::theme;
 use crate::ui::icon;
@@ -30,13 +30,13 @@ pub(super) struct DraggedSession {
     pub env: PathBuf,
     pub id: SharedString,
     pub title: SharedString,
-    pub agent: Agent,
+    pub agent: AgentKind,
     /// Where the pointer grabbed the card, so the preview stays under it.
     offset: Point<Pixels>,
 }
 
 impl DraggedSession {
-    pub fn new(env: PathBuf, id: SharedString, title: SharedString, agent: Agent) -> Self {
+    pub fn new(env: PathBuf, id: SharedString, title: SharedString, agent: AgentKind) -> Self {
         DraggedSession {
             env,
             id,

@@ -5,7 +5,6 @@
 use serde::{Deserialize, Serialize};
 
 use crate::agent::AgentKind;
-use crate::model::Agent;
 use crate::sidebar::View;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -107,13 +106,13 @@ pub fn set_done() {
 
 /// The agents that need something on the machine, in the order shown.
 /// Workers AI is left out: it has no CLI to find.
-pub const AGENTS: [Agent; 6] = [
-    Agent::Claude,
-    Agent::Codex,
-    Agent::OpenCode,
-    Agent::Droid,
-    Agent::Devin,
-    Agent::Cursor,
+pub const AGENTS: [AgentKind; 6] = [
+    AgentKind::Claude,
+    AgentKind::Codex,
+    AgentKind::OpenCode,
+    AgentKind::Droid,
+    AgentKind::Devin,
+    AgentKind::Cursor,
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -128,15 +127,15 @@ pub enum Readiness {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AgentRow {
-    pub agent: Agent,
+    pub agent: AgentKind,
     pub state: Readiness,
 }
 
 /// Claude Code and Codex run through an adapter that Arakun installs with npm
 /// and that brings the agent's own binary; `has` is that adapter. OpenCode,
 /// Droid, Devin and Cursor are the user's own CLIs; `has` is the CLI.
-fn readiness(agent: Agent, has: bool, npm: bool) -> Readiness {
-    let through_npm = matches!(agent, Agent::Claude | Agent::Codex);
+fn readiness(agent: AgentKind, has: bool, npm: bool) -> Readiness {
+    let through_npm = matches!(agent, AgentKind::Claude | AgentKind::Codex);
     match (has, through_npm && npm) {
         (true, _) => Readiness::Ready,
         (false, true) => Readiness::OnFirstUse,
@@ -151,13 +150,13 @@ pub fn find_agents() -> Vec<AgentRow> {
         .iter()
         .map(|&agent| {
             let has = match agent {
-                Agent::Claude => crate::agent::adapter_install(AgentKind::Claude).is_none(),
-                Agent::Codex => crate::agent::adapter_install(AgentKind::Codex).is_none(),
-                Agent::OpenCode => crate::agent::opencode_bin().is_ok(),
-                Agent::Droid => crate::agent::droid_bin().is_ok(),
-                Agent::Devin => crate::agent::devin_bin().is_ok(),
-                Agent::Cursor => crate::agent::cursor_bin().is_ok(),
-                Agent::WorkersAi => false,
+                AgentKind::Claude => crate::agent::adapter_install(AgentKind::Claude).is_none(),
+                AgentKind::Codex => crate::agent::adapter_install(AgentKind::Codex).is_none(),
+                AgentKind::OpenCode => crate::agent::opencode_bin().is_ok(),
+                AgentKind::Droid => crate::agent::droid_bin().is_ok(),
+                AgentKind::Devin => crate::agent::devin_bin().is_ok(),
+                AgentKind::Cursor => crate::agent::cursor_bin().is_ok(),
+                AgentKind::WorkersAi => false,
             };
             AgentRow {
                 agent,
@@ -168,22 +167,22 @@ pub fn find_agents() -> Vec<AgentRow> {
 }
 
 /// Where to get what a missing agent needs, and what the link says.
-pub fn install_link(agent: Agent) -> (&'static str, &'static str) {
+pub fn install_link(agent: AgentKind) -> (&'static str, &'static str) {
     match agent {
-        Agent::Claude | Agent::Codex => ("Needs Node.js for npm", "https://nodejs.org"),
-        Agent::OpenCode => ("Get OpenCode", AgentKind::OpenCode.install_url()),
-        Agent::Droid => ("Get Droid", AgentKind::Droid.install_url()),
-        Agent::Devin => ("Get the Devin CLI", AgentKind::Devin.install_url()),
-        Agent::Cursor => ("Get the Cursor CLI", AgentKind::Cursor.install_url()),
-        Agent::WorkersAi => ("", ""),
+        AgentKind::Claude | AgentKind::Codex => ("Needs Node.js for npm", "https://nodejs.org"),
+        AgentKind::OpenCode => ("Get OpenCode", AgentKind::OpenCode.install_url()),
+        AgentKind::Droid => ("Get Droid", AgentKind::Droid.install_url()),
+        AgentKind::Devin => ("Get the Devin CLI", AgentKind::Devin.install_url()),
+        AgentKind::Cursor => ("Get the Cursor CLI", AgentKind::Cursor.install_url()),
+        AgentKind::WorkersAi => ("", ""),
     }
 }
 
 /// The agent to start with: `current` when it can run, else the first that
 /// is ready, else the first that only needs its adapter. None when nothing
 /// can run, so the default stays as it was.
-pub fn pick(rows: &[AgentRow], current: Agent) -> Option<Agent> {
-    let usable = |a: Agent| {
+pub fn pick(rows: &[AgentRow], current: AgentKind) -> Option<AgentKind> {
+    let usable = |a: AgentKind| {
         rows.iter()
             .any(|r| r.agent == a && r.state != Readiness::Missing)
     };
@@ -248,7 +247,7 @@ pub fn views_set_up(fresh: bool, github: Option<GitHub>, pair_phone: bool) -> Ve
 mod tests {
     use super::*;
 
-    fn row(agent: Agent, state: Readiness) -> AgentRow {
+    fn row(agent: AgentKind, state: Readiness) -> AgentRow {
         AgentRow { agent, state }
     }
 
@@ -280,37 +279,49 @@ mod tests {
 
     #[test]
     fn npm_agents_can_wait_for_their_adapter() {
-        assert_eq!(readiness(Agent::Claude, true, false), Readiness::Ready);
-        assert_eq!(readiness(Agent::Codex, false, true), Readiness::OnFirstUse);
-        assert_eq!(readiness(Agent::Claude, false, false), Readiness::Missing);
+        assert_eq!(readiness(AgentKind::Claude, true, false), Readiness::Ready);
+        assert_eq!(
+            readiness(AgentKind::Codex, false, true),
+            Readiness::OnFirstUse
+        );
+        assert_eq!(
+            readiness(AgentKind::Claude, false, false),
+            Readiness::Missing
+        );
         // npm does not bring the user's own CLIs.
-        assert_eq!(readiness(Agent::Droid, false, true), Readiness::Missing);
-        assert_eq!(readiness(Agent::Devin, false, true), Readiness::Missing);
-        assert_eq!(readiness(Agent::Cursor, false, true), Readiness::Missing);
-        assert_eq!(readiness(Agent::OpenCode, true, false), Readiness::Ready);
+        assert_eq!(readiness(AgentKind::Droid, false, true), Readiness::Missing);
+        assert_eq!(readiness(AgentKind::Devin, false, true), Readiness::Missing);
+        assert_eq!(
+            readiness(AgentKind::Cursor, false, true),
+            Readiness::Missing
+        );
+        assert_eq!(
+            readiness(AgentKind::OpenCode, true, false),
+            Readiness::Ready
+        );
     }
 
     #[test]
     fn the_pick_keeps_a_default_that_can_run() {
         let rows = [
-            row(Agent::Claude, Readiness::OnFirstUse),
-            row(Agent::Codex, Readiness::Missing),
-            row(Agent::OpenCode, Readiness::Ready),
-            row(Agent::Droid, Readiness::Missing),
+            row(AgentKind::Claude, Readiness::OnFirstUse),
+            row(AgentKind::Codex, Readiness::Missing),
+            row(AgentKind::OpenCode, Readiness::Ready),
+            row(AgentKind::Droid, Readiness::Missing),
         ];
-        assert_eq!(pick(&rows, Agent::Claude), Some(Agent::Claude));
+        assert_eq!(pick(&rows, AgentKind::Claude), Some(AgentKind::Claude));
         // Droid, the default until one is picked, is not here: a ready agent
         // goes before one that still needs its adapter.
-        assert_eq!(pick(&rows, Agent::Droid), Some(Agent::OpenCode));
+        assert_eq!(pick(&rows, AgentKind::Droid), Some(AgentKind::OpenCode));
         let waiting = [
-            row(Agent::Claude, Readiness::OnFirstUse),
-            row(Agent::Droid, Readiness::Missing),
+            row(AgentKind::Claude, Readiness::OnFirstUse),
+            row(AgentKind::Droid, Readiness::Missing),
         ];
-        assert_eq!(pick(&waiting, Agent::Droid), Some(Agent::Claude));
-        let none = [row(Agent::Droid, Readiness::Missing)];
-        assert_eq!(pick(&none, Agent::Droid), None);
+        assert_eq!(pick(&waiting, AgentKind::Droid), Some(AgentKind::Claude));
+        let none = [row(AgentKind::Droid, Readiness::Missing)];
+        assert_eq!(pick(&none, AgentKind::Droid), None);
         // Workers AI needs no CLI, so it is not listed and cannot be kept.
-        assert_eq!(pick(&rows, Agent::WorkersAi), Some(Agent::OpenCode));
+        assert_eq!(pick(&rows, AgentKind::WorkersAi), Some(AgentKind::OpenCode));
     }
 
     #[test]

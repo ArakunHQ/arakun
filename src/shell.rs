@@ -36,6 +36,7 @@ mod drag;
 mod extensions;
 mod git_actions;
 mod github;
+pub use github::open_terminal_link;
 mod headless;
 mod home;
 mod inbox;
@@ -2323,9 +2324,20 @@ impl Shell {
         cx.notify();
     }
 
+    /// A pull request or issue in the GitHub tab when `gh` can read it, else
+    /// the page as `open_page` opens it.
+    fn open_url(&mut self, url: String, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(item) = self.github_item(&url, cx) {
+            self.open_github_tab(window, cx);
+            self.github_view.update(cx, |v, cx| v.reveal(&item, cx));
+        } else {
+            self.open_page(url, window, cx);
+        }
+    }
+
     /// In a arakun browser tab when there is an environment to hold it and the user
     /// keeps links in Arakun, else the desktop browser.
-    fn open_url(&mut self, url: String, window: &mut Window, cx: &mut Context<Self>) {
+    fn open_page(&mut self, url: String, window: &mut Window, cx: &mut Context<Self>) {
         if self.has_projects() && crate::browser::links_in_arakun() {
             self.open_browser_tab(url, window, cx);
         } else {

@@ -1417,7 +1417,9 @@ impl Shell {
             }
         }
         for tab in &mut self.strip.tabs {
-            if matches!(&tab.kind, TabKind::Session { id, .. } if id.as_ref() == old) {
+            if tab.is_in(&env_path)
+                && matches!(&tab.kind, TabKind::Session { id, .. } if id.as_ref() == old)
+            {
                 tab.kind = TabKind::Session {
                     agent,
                     id: new.to_string().into(),

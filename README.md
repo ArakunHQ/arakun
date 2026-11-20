@@ -1038,7 +1038,8 @@ arakun-server service install   # keep it running; see Keep it running
 - **What it keeps.** `~/.local/share/arakun/server/`, which only your user can read:
   `phone.json` (how it is reached, its relay identity, the paired devices),
   `state.json` (folders and sessions), `sessions/` (transcripts, saved as the agents
-  work) and `uploads/` (photos sent with prompts). `ARAKUN_SERVER_DIR` names another
+  work), `linked/` (the conversation of a session handed to another agent, as
+  markdown that the new agent reads) and `uploads/` (photos sent with prompts). `ARAKUN_SERVER_DIR` names another
   folder, for a second server on the machine. The app's own files are not touched: the
   app and a server can run side by side.
 - **The local socket.** The commands above reach the server over `server.sock` in

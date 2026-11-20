@@ -162,6 +162,8 @@ pub struct Daemon {
     asked: HashMap<String, ClientId>,
     /// Rewinds a device asked for, until their plan is sent or they ran.
     rewinds: HashMap<String, Rewinding>,
+    /// Sessions being handed to another agent, until the new one is saved.
+    handing_over: HashSet<String>,
     /// Sessions whose entries changed since the last flush, with the lowest index that did.
     dirty: HashMap<String, usize>,
     /// Sessions whose status, permission or usage changed since the last flush.
@@ -787,6 +789,7 @@ impl Daemon {
             installed_for: HashSet::new(),
             asked: HashMap::new(),
             rewinds: HashMap::new(),
+            handing_over: HashSet::new(),
             dirty: HashMap::new(),
             state_dirty: Vec::new(),
             inbox_dirty: false,
@@ -1200,60 +1203,18 @@ impl Daemon {
     /// does in the app: a session of `agent` takes its place, showing the
     /// conversation so far and told about it with the next prompt, and the
     /// old one is gone. `settings` are picked for `agent` there first.
-    /// Returns the new session's id.
+    /// `client` is told the new session, or why there is none.
     fn continue_with(
         &mut self,
-        id: &str,
+        client: ClientId,
+        id: String,
         agent: &str,
         settings: &[(String, String)],
         cx: &mut Context<Self>,
-    ) -> Result<String, String> {
-        let agent = AgentKind::parse(agent).ok_or_else(|| unknown_agent(agent))?;
-        let old = self
-            .store
-            .session(id)
-            .ok_or("that session is gone")?
-            .clone();
-        self.admit(&old.place)?;
-        if old.agent == agent {
-            return Err(format!("it already runs {}", agent.label()));
-        }
-        let entries = match self.thread(id) {
-            Some(thread) => {
-                let t = thread.read(cx);
-                if matches!(status_of(t), Status::Working | Status::NeedsInput) || t.in_background()
-                {
-                    return Err(
-                        "it is working; continue with another agent once the turn is done".into(),
-                    );
-                }
-                t.entries().to_vec()
-            }
-            None => self.saved_entries(id)?,
-        };
-        if self.rewinds.contains_key(id) {
-            return Err("it is being rewound".into());
-        }
-        // Read before the old one goes: the agent's own session is in it.
-        let talked = entries.iter().any(|e| matches!(e, Entry::User { .. }));
-        let handoff = if talked {
-            let linked = self.store.linked_path(id);
-            let markdown =
-                agent::notes::transcript_markdown(&old.title, old.agent.label(), &entries);
-            linked
-                .parent()
-                .map_or(Ok(()), std::fs::create_dir_all)
-                .and_then(|_| std::fs::write(&linked, markdown))
-                .map_err(|e| format!("could not write {}: {e}", linked.display()))?;
-            Some(agent::notes::handoff(
-                old.agent.label(),
-                &old.title,
-                &entries,
-                &linked.to_string_lossy(),
-                agent::notes::HANDOFF_BUDGET,
-            ))
-        } else {
-            None
+    ) {
+        let (old, agent, entries) = match self.can_continue(&id, agent, cx) {
+            Ok(ready) => ready,
+            Err(e) => return self.transport.send(client, session_error(&id, &e)),
         };
         if let Some(place) = self.store.place_mut(&old.place) {
             for (key, value) in settings {
@@ -1267,43 +1228,29 @@ impl Daemon {
             .place(&old.place)
             .map(|p| p.picked(agent))
             .unwrap_or_default();
-
-        let at = self
-            .store
-            .sessions
-            .iter()
-            .position(|s| s.id == id)
-            .unwrap_or(0);
-        self.drop_session(id, cx);
-        let new = store::new_id();
-        let now = unix_now();
-        self.store.sessions.insert(
-            at.min(self.store.sessions.len()),
-            Record {
-                id: new.clone(),
-                title: old.title.clone(),
-                agent,
-                place: old.place.clone(),
-                created: now,
-                updated: now,
-                added: old.added,
-                removed: old.removed,
-                meta: None,
-                failed: false,
-                status: Status::Idle,
-            },
-        );
-        let thread = match handoff {
-            Some(handoff) => Thread::continued(
+        let talked = entries.iter().any(|e| matches!(e, Entry::User { .. }));
+        let linked = self.store.linked_path(&id);
+        let markdown = talked
+            .then(|| agent::notes::transcript_markdown(&old.title, old.agent.label(), &entries));
+        let thread = if talked {
+            let handoff = agent::notes::handoff(
+                old.agent.label(),
+                &old.title,
+                &entries,
+                &linked.to_string_lossy(),
+                agent::notes::HANDOFF_BUDGET,
+            );
+            Thread::continued(
                 agent,
                 old.place.clone(),
                 old.title.clone(),
                 entries,
                 handoff,
                 cx,
-            ),
+            )
+        } else {
             // Nothing was said yet: a fresh session of `agent`, nothing to keep.
-            None => Thread::start(agent, old.place.clone(), None, cx),
+            Thread::start(agent, old.place.clone(), None, cx)
         };
         thread.update(cx, |t, cx| {
             // Queued until the agent's session exists.
@@ -1311,13 +1258,118 @@ impl Daemon {
                 t.set_setting(*s, value, cx);
             }
         });
-        self.attach(&new, thread, cx);
-        self.save_transcript(&new, cx);
-        self.save_store();
-        // The inbox goes first: the device opens the session it holds.
-        self.sync_inbox(cx);
-        eprintln!("arakun server: {new} continues {id} with {}", agent.label());
-        Ok(new)
+        let new = store::new_id();
+        let path = self.store.transcript_path(&new);
+        let transcript = thread.read(cx).transcript(cx);
+        self.handing_over.insert(id.clone());
+        // The old session goes only once the new one is on disk; the files
+        // are written to the side, so a slow disk holds up nothing else.
+        cx.spawn(async move |this, cx| {
+            let (p, l) = (path.clone(), linked);
+            let written = cx
+                .background_spawn(crate::guard::task(async move {
+                    if let Some(markdown) = markdown {
+                        l.parent()
+                            .map_or(Ok(()), std::fs::create_dir_all)
+                            .and_then(|_| std::fs::write(&l, markdown))
+                            .map_err(|e| format!("could not write {}: {e}", l.display()))?;
+                    }
+                    write_transcript(&p, &transcript)
+                        .map_err(|e| format!("could not write {}: {e}", p.display()))
+                }))
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.handing_over.remove(&id);
+                // A prompt may have reached the old one meanwhile.
+                let written = written.and_then(|()| {
+                    this.can_continue(&id, agent.id(), cx)
+                        .map(|(old, _, _)| old)
+                });
+                let old = match written {
+                    Ok(old) => old,
+                    Err(e) => {
+                        thread.update(cx, |t, _| t.shutdown());
+                        let _ = std::fs::remove_file(&path);
+                        return this.transport.send(client, session_error(&id, &e));
+                    }
+                };
+                let at = this
+                    .store
+                    .sessions
+                    .iter()
+                    .position(|s| s.id == id)
+                    .unwrap_or(0);
+                this.drop_session(&id, cx);
+                let now = unix_now();
+                this.store.sessions.insert(
+                    at.min(this.store.sessions.len()),
+                    Record {
+                        id: new.clone(),
+                        title: old.title.clone(),
+                        agent,
+                        place: old.place.clone(),
+                        created: now,
+                        updated: now,
+                        added: old.added,
+                        removed: old.removed,
+                        meta: None,
+                        failed: false,
+                        status: Status::Idle,
+                    },
+                );
+                this.attach(&new, thread, cx);
+                this.save_store();
+                // The inbox goes first: the device opens the session it holds.
+                this.sync_inbox(cx);
+                eprintln!("arakun server: {new} continues {id} with {}", agent.label());
+                let msg = json!({ "type": "continued", "id": id, "session": new });
+                this.transport.send(client, msg.to_string());
+            });
+        })
+        .detach();
+    }
+
+    /// Whether session `id` can be handed to `agent` now: its record, the
+    /// agent, and the entries it has so far.
+    fn can_continue(
+        &self,
+        id: &str,
+        agent: &str,
+        cx: &App,
+    ) -> Result<(Record, AgentKind, Vec<Entry>), String> {
+        let agent = AgentKind::parse(agent).ok_or_else(|| unknown_agent(agent))?;
+        let old = self
+            .store
+            .session(id)
+            .ok_or("that session is gone")?
+            .clone();
+        self.admit(&old.place)?;
+        if old.agent == agent {
+            return Err(format!("it already runs {}", agent.label()));
+        }
+        if self.rewinds.contains_key(id) {
+            return Err("it is being rewound".into());
+        }
+        let entries = match self.thread(id) {
+            Some(thread) => {
+                let t = thread.read(cx);
+                if matches!(status_of(t), Status::Working | Status::NeedsInput) || t.in_background()
+                {
+                    return Err(
+                        "it is working; continue with another agent once the turn is done".into(),
+                    );
+                }
+                // The last turn's shell changes are not in its entries yet.
+                if t.shell_pending().is_some_and(|p| p.peek().is_none()) {
+                    return Err(
+                        "it is still recording its shell changes; try again in a moment".into(),
+                    );
+                }
+                t.entries().to_vec()
+            }
+            None => self.saved_entries(id)?,
+        };
+        Ok((old, agent, entries))
     }
 
     /// The entries saved for session `id`, whose agent is not running: none
@@ -2199,13 +2251,14 @@ impl Daemon {
                 session,
                 agent,
                 settings,
-            } => match self.continue_with(&session, &agent, &settings, cx) {
-                Ok(new) => self.transport.send(
-                    client,
-                    json!({ "type": "continued", "id": session, "session": new }).to_string(),
-                ),
-                Err(e) => self.transport.send(client, session_error(&session, &e)),
-            },
+            } => {
+                if self.handing_over.contains(&session) {
+                    let e = "it is being handed to another agent already";
+                    self.transport.send(client, session_error(&session, e));
+                } else {
+                    self.continue_with(client, session, &agent, &settings, cx);
+                }
+            }
             ClientMsg::Stage { session } => self.stage(client, session, cx),
             ClientMsg::Changes { session } => {
                 if self.store.session(&session).is_none() {

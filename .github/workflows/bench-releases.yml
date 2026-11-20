@@ -1,0 +1,100 @@
+name: Benchmark releases
+
+# On demand: is one release slower than another? Downloads the Linux build of
+# two releases, runs tools/bench/bench.py perf on one after the other on the
+# same runner (frame times, CPU and memory of a test Arakun on Xvfb) and
+# compares them. The comparison is the run's summary page, and the
+# bench-releases artifact has it with the raw results.
+#
+# Start it from the Actions tab, or:
+#   gh workflow run bench-releases.yml -f before=v0.10.0 -f after=v0.11.1
+#
+# The run fails when `after` is slower past the threshold. Xvfb draws on the
+# CPU and runners differ, so compare the two columns of one run, not numbers
+# from different runs. tools/bench/releases.sh does the work and runs locally too.
+
+on:
+  workflow_dispatch:
+    inputs:
+      before:
+        description: The release to compare with, such as v0.10.0 (empty for the one before `after`)
+        type: string
+      after:
+        description: The release to check, such as v0.11.1 or a nightly's tag (empty for the latest)
+        type: string
+      runs:
+        description: Runs of each release; the result is the median
+        type: number
+        default: 3
+      scenarios:
+        description: Scenarios, comma-separated, such as scroll,terminal (empty for all)
+        type: string
+      threshold:
+        description: Percent slower that fails the run
+        type: number
+        default: 10
+
+permissions:
+  contents: read
+
+jobs:
+  bench:
+    name: Benchmark
+    # 4 CPUs, as the Linux jobs in ci.yml: the app, Xvfb and the terminal
+    # scenario's shell run at once.
+    runs-on: depot-ubuntu-24.04-4
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # The benchmark and the keys the releases are signed with.
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            tools/bench
+            assets/*.pub
+
+      # What a release needs to run and draw without a screen: Xvfb, the X
+      # keyboard library it links, and Mesa's CPU Vulkan driver. minisign checks
+      # the releases' signatures.
+      - name: Xvfb, Vulkan and minisign
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends \
+            xvfb libxkbcommon-x11-0 libvulkan1 mesa-vulkan-drivers minisign
+
+      # The inputs go through the environment, never into the script's text.
+      - name: Benchmark both releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          BEFORE: ${{ inputs.before }}
+          AFTER: ${{ inputs.after }}
+          RUNS: ${{ inputs.runs }}
+          SCENARIOS: ${{ inputs.scenarios }}
+          THRESHOLD: ${{ inputs.threshold }}
+        run: |
+          args=(--runs "$RUNS" --threshold "$THRESHOLD" --out bench-releases)
+          [ -z "$SCENARIOS" ] || args+=(--only "$SCENARIOS")
+          # An empty BEFORE or AFTER lets the script pick the release.
+          tools/bench/releases.sh "${args[@]}" "$BEFORE" "$AFTER"
+
+      # Also after a failure: a slower release fails the step above, and that
+      # is when the table matters most.
+      - name: Summary
+        if: ${{ !cancelled() }}
+        run: |
+          if [ -f bench-releases/comparison.md ]; then
+            cat bench-releases/comparison.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "The benchmark stopped before it had a comparison; see the log." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ !cancelled() }}
+        with:
+          name: bench-releases
+          path: bench-releases
+          if-no-files-found: warn

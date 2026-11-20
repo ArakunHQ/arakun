@@ -130,7 +130,13 @@ fn load_in(
     let legacy = match &scope.legacy {
         Some(name) => match read(name)? {
             None if legacy_file.try_exists().map_err(|e| e.to_string())? => {
-                return Err("The old Teams cache exists, but its device keys could not be found. Restore the keyring entry and try again.".into());
+                // Its owner registered its device, and v1 never removes one.
+                // An account with no devices is not the owner, so it sets
+                // up beside the file and leaves it alone.
+                if !trusted_devices()?.is_empty() {
+                    return Err("The old Teams cache exists, but its device keys could not be found. Restore the keyring entry and try again.".into());
+                }
+                return new_device(scope, cached, write);
             }
             result => result,
         },
@@ -158,6 +164,16 @@ fn load_in(
             return Ok(local);
         }
     }
+    new_device(scope, cached, write)
+}
+
+/// A new device for `scope`, unless its cache exists: that one's keys are
+/// missing, and a new device could never open it.
+fn new_device(
+    scope: &Scope,
+    cached: bool,
+    write: impl FnOnce(&str, &str) -> Result<(), String>,
+) -> Result<Local, String> {
     if cached {
         return Err("The Teams cache exists, but its device keys are missing. Restore the keyring entry to open it.".into());
     }
@@ -971,6 +987,24 @@ mod tests {
     }
 
     #[test]
+    fn an_orphaned_legacy_cache_does_not_block_an_account_without_devices() {
+        let f = Fixture::new();
+        let old = f.legacy();
+        let bytes = std::fs::read(&old.path).unwrap();
+        f.ring.borrow_mut().clear();
+        // The owner, or an account the server can't vouch for, still has to
+        // restore the entry.
+        assert!(f.load(&f.scope(7), || Ok(vec![row(&old.device)])).is_err());
+        assert!(f.load(&f.scope(7), || Err("offline".into())).is_err());
+        assert!(f.ring.borrow().is_empty());
+        let bob = f.scope(8);
+        let b = f.load(&bob, || Ok(vec![])).unwrap();
+        assert_ne!(b.device.id(), old.device.id());
+        assert!(f.ring.borrow().contains_key(&bob.entry));
+        assert_eq!(std::fs::read(&old.path).unwrap(), bytes);
+    }
+
+    #[test]
     fn an_unreadable_or_orphaned_cache_stays_in_place() {
         let f = Fixture::new();
         let old = f.legacy();
@@ -979,7 +1013,7 @@ mod tests {
         assert!(f.load(&scope, || Ok(vec![row(&old.device)])).is_err());
         assert_eq!(std::fs::read(&old.path).unwrap(), b"unreadable");
         f.ring.borrow_mut().clear();
-        assert!(f.load(&scope, no_lookup).is_err());
+        assert!(f.load(&scope, || Ok(vec![row(&old.device)])).is_err());
         assert!(f.ring.borrow().is_empty());
         std::fs::rename(&old.path, &scope.file).unwrap();
         assert!(f.load(&scope, no_lookup).is_err());

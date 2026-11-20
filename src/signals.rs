@@ -4,6 +4,7 @@
 //! quitting hangs. Quitting also has a deadline of its own (`end_if_stuck`), so a
 //! single signal or a closed window can't leave arakun running without a window.
 
+use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
@@ -32,7 +33,9 @@ pub fn end_if_stuck() {
             // reads the pipe), so it is written elsewhere and not waited on for long.
             let (done, written) = std::sync::mpsc::channel();
             let _ = std::thread::Builder::new().spawn(move || {
-                eprintln!(
+                // eprintln! would panic on a write error such as a closed pipe.
+                let _ = writeln!(
+                    std::io::stderr(),
                     "arakun: quitting took more than {}s; stopping without finishing",
                     QUIT_DEADLINE.as_secs()
                 );

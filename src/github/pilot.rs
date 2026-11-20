@@ -143,28 +143,31 @@ pub fn read_config() -> Result<Option<Config>, String> {
     }
 }
 
-/// Why settings that don't parse can't be used, in the user's words.
+/// Why settings that don't parse can't be used, in the user's words. It
+/// names the part that is wrong, never its value: that may be a token.
 fn config_problem(bytes: &[u8]) -> String {
     let fix = "connect again with \u{201c}arakun-pilot settings\u{2026}\u{201d}";
     let Ok(v) = serde_json::from_slice::<serde_json::Value>(bytes) else {
         return format!("its settings file isn't valid JSON; {fix}");
     };
-    let url = v
-        .get("url")
-        .and_then(|u| u.as_str())
-        .unwrap_or_default()
-        .trim();
-    let token = v
-        .get("token")
-        .and_then(|t| t.as_str())
-        .unwrap_or_default()
-        .trim();
+    let text = |key: &str| v.get(key).and_then(|t| t.as_str()).map(str::trim);
+    let url = text("url").unwrap_or_default();
+    let token = text("token").unwrap_or_default();
+    let admin_ok = matches!(
+        v.get("admin_token"),
+        None | Some(serde_json::Value::Null | serde_json::Value::String(_))
+    );
+    let url = url.trim_end_matches('/');
     if url.is_empty() {
         format!("its settings have no address; {fix}")
     } else if token.is_empty() {
         format!("its settings have no token; {fix}")
-    } else {
+    } else if !admin_ok {
+        format!("its admin token isn't text; {fix}")
+    } else if !(url.starts_with("https://") || local_http(url)) {
         format!("its address must start with https:// (http:// only for localhost); {fix}")
+    } else {
+        format!("its settings can't be read; {fix}")
     }
 }
 
@@ -751,6 +754,7 @@ fn status_line(
     config: Option<&Config>,
     config_problem: Option<&str>,
     problem: Option<&str>,
+    board_failed: Option<&str>,
     last_read: Option<u64>,
     now: u64,
 ) -> Option<(String, bool)> {
@@ -762,6 +766,14 @@ fn status_line(
         .url
         .split_once("://")
         .map_or(cfg.url.as_str(), |(_, rest)| rest);
+    // The cards read, but the board didn't: still a problem to fix. A
+    // Worker with no board at all is fine and isn't passed here.
+    if let (None, Some(e)) = (problem, board_failed) {
+        return Some((
+            format!("Connected to {host}, but its board failed: {e}"),
+            true,
+        ));
+    }
     Some(match (problem, last_read) {
         (Some(e), _) => (format!("Can't reach {host}: {e}"), true),
         (None, Some(t)) => {
@@ -848,6 +860,10 @@ impl Pilot {
             self.config.as_ref(),
             self.config_problem.as_deref(),
             self.problem.as_deref(),
+            match &self.board_problem {
+                Some(super::board::BoardProblem::Failed(e)) => Some(e.as_str()),
+                _ => None,
+            },
             self.last_read,
             crate::model::unix_now(),
         )
@@ -1061,16 +1077,33 @@ mod tests {
     #[test]
     fn the_status_says_what_is_wrong_first() {
         let cfg = parse_config(br#"{"url": "https://p.dev", "token": "t"}"#).unwrap();
-        assert_eq!(status_line(None, None, None, None, 0), None);
-        let (off, bad) =
-            status_line(None, Some("its settings have no token"), None, None, 0).unwrap();
+        assert_eq!(status_line(None, None, None, None, None, 0), None);
+        let (off, bad) = status_line(
+            None,
+            Some("its settings have no token"),
+            None,
+            None,
+            None,
+            0,
+        )
+        .unwrap();
         assert!(bad && off.starts_with("pilot is off"));
-        let (down, bad) =
-            status_line(Some(&cfg), None, Some("could not reach"), Some(1), 100).unwrap();
+        let (down, bad) = status_line(
+            Some(&cfg),
+            None,
+            Some("could not reach"),
+            None,
+            Some(1),
+            100,
+        )
+        .unwrap();
         assert!(bad && down.starts_with("Can't reach p.dev"));
-        let (ok, bad) = status_line(Some(&cfg), None, None, Some(1000), 1000 + 125).unwrap();
+        let (ok, bad) = status_line(Some(&cfg), None, None, None, Some(1000), 1000 + 125).unwrap();
         assert!(!bad);
         assert_eq!(ok, "Connected to p.dev · read 2 min ago");
+        let (board, bad) =
+            status_line(Some(&cfg), None, None, Some("500"), Some(1000), 1000).unwrap();
+        assert!(bad && board.contains("board failed: 500"), "{board}");
     }
 
     #[test]
@@ -1079,6 +1112,13 @@ mod tests {
         assert!(config_problem(br#"{"url": "https://p.dev"}"#).contains("no token"));
         assert!(config_problem(br#"{"token": "t"}"#).contains("no address"));
         assert!(config_problem(br#"{"url": "http://p.dev", "token": "t"}"#).contains("https://"));
+        let wrong_type = br#"{"url": "https://p.dev", "token": "t", "admin_token": 123}"#;
+        let e = config_problem(wrong_type);
+        assert!(
+            e.contains("admin token isn't text") && !e.contains("123"),
+            "{e}"
+        );
+        assert!(!config_problem(br#"[1]"#).contains("https://"));
     }
 
     #[test]

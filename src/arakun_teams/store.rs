@@ -195,7 +195,17 @@ fn secret_service_entry(account: &str) -> std::io::Result<Option<String>> {
                 &attrs,
             ])
             .output()
-            .map_err(|e| io::Error::other(format!("Could not check Secret Service: {e}")))?;
+            .map_err(|e| {
+                // Without it a locked keyring and a first run look the same,
+                // and only the second may make a new device.
+                if e.kind() == io::ErrorKind::NotFound {
+                    io::Error::other(
+                        "Teams needs gdbus (from GLib) to check the keyring. Install it and try again.",
+                    )
+                } else {
+                    io::Error::other(format!("Could not check Secret Service: {e}"))
+                }
+            })?;
         if found.status.success() && found.stdout.trim_ascii() == b"(@ao [], @ao [])" {
             return Ok(None);
         }

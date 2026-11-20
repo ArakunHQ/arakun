@@ -891,8 +891,9 @@ the program the command runs (`bash cargo`, `bash git`), so you can see which to
 commands cost the tokens.
 
 Optional tools: `git` (Changes, worktrees, branches), `gh` (CI, GitHub tab), `bwrap`
-(headless agents on Linux), `secret-tool` from libsecret (stored logins on Linux), `tailscale`
-(phone over Tailscale), `cf` (Cloudflare tab).
+(headless agents on Linux), `secret-tool` from libsecret (stored logins on Linux), `gdbus`
+from GLib (`libglib2.0-bin` on Debian; Teams on Linux checks with it whether the keyring is
+locked or has no device yet), `tailscale` (phone over Tailscale), `cf` (Cloudflare tab).
 
 ## Build from source
 

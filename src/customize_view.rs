@@ -63,6 +63,10 @@ pub struct RailLook {
     pub can_arrange: bool,
 }
 
+/// Draws the Sidebar tab's Add and Selected parts: the sidebar and its
+/// editing are the window's, so the window hands this over.
+pub type ArrangeSlot = std::rc::Rc<dyn Fn(&mut Window, &mut App) -> Option<AnyElement>>;
+
 /// The widths the Sidebar tab offers.
 const RAIL_WIDTHS: [f32; 4] = [180., 200., 240., 280.];
 
@@ -122,6 +126,7 @@ pub struct CustomizeView {
     scroll: gpui::ScrollHandle,
     /// The window's sidebar, as last handed over.
     rail: Option<RailLook>,
+    arrange: Option<ArrangeSlot>,
     _subs: [Subscription; 4],
 }
 
@@ -171,6 +176,7 @@ impl CustomizeView {
             palette_writing: None,
             scroll: gpui::ScrollHandle::new(),
             rail: None,
+            arrange: None,
             _subs: [
                 share_sub,
                 name_sub,
@@ -191,6 +197,14 @@ impl CustomizeView {
             self.rail = Some(look);
             cx.notify();
         }
+    }
+
+    pub fn tab(&self) -> CustomizeTab {
+        self.tab
+    }
+
+    pub fn set_arrange(&mut self, slot: ArrangeSlot) {
+        self.arrange = Some(slot);
     }
 
     pub fn set_tab(&mut self, tab: CustomizeTab, cx: &mut Context<Self>) {
@@ -976,10 +990,11 @@ impl CustomizeView {
         ]
     }
 
-    fn render_sidebar(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+    fn render_sidebar(&self, window: &mut Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let Some(look) = self.rail else {
             return Vec::new();
         };
+        let arranged = self.arrange.clone().and_then(|slot| slot(window, cx));
         let style = look.style;
         fn choices<T: Copy + PartialEq + 'static>(
             id: &'static str,
@@ -1055,9 +1070,9 @@ impl CustomizeView {
             .flex()
             .flex_col()
             .gap(crate::ui::sp(8.))
-            .child(heading("Pieces", None))
+            .child(heading("Move pieces", None))
             .child(hint_label(
-                "Add, move and group what the sidebar holds. Right-click a group's title to fold, ungroup or remove it.",
+                "Drag pieces and groups into another order in the sidebar editor.",
             ))
             .child(
                 ui::button_with(
@@ -1088,7 +1103,8 @@ impl CustomizeView {
                 s.shortcuts = !s.shortcuts
             }))
             .into_any_element();
-        vec![
+        let mut parts: Vec<AnyElement> = arranged.into_iter().collect();
+        parts.extend([
             stacked(
                 "Start from",
                 look.preset.is_none().then_some("Arranged by you"),
@@ -1157,7 +1173,8 @@ impl CustomizeView {
                 ),
             ),
             switches,
-        ]
+        ]);
+        parts
     }
 
     /// The card at the foot of Colors and Shape: the colors in use, live, and
@@ -1279,11 +1296,11 @@ impl CustomizeView {
 }
 
 impl Render for CustomizeView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let parts = match self.tab {
             CustomizeTab::Colors => self.render_colors(cx),
             CustomizeTab::Shape => self.render_shape(cx),
-            CustomizeTab::Sidebar => self.render_sidebar(cx),
+            CustomizeTab::Sidebar => self.render_sidebar(window, cx),
         };
         // The sidebar is beside the panel already; the card shows colors.
         let preview = self.tab != CustomizeTab::Sidebar;

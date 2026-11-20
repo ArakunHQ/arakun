@@ -425,7 +425,12 @@ only sums up what is chosen. It opens without a project too.
 - **Sidebar.** Start from a preset (Switcher, Focused, Developer, Notion, Icons,
   Everything); it lays out the pieces and keeps the style you chose. Style (Card, Flush,
   Floating), Rows, Width, Side, what Ctrl+B does, Counters and Shortcuts change the whole
-  sidebar. Arrange pieces opens the editor that adds, moves and groups them, and
+  sidebar. While this tab is open the sidebar is being arranged: every segment shows
+  its outline and title, and a click on a piece or a title selects it instead of
+  opening it. The tab then shows its options (name, emoji, folding, Fixed or Scroll,
+  Ungroup, remove) and chips to add a group, a link, a command, a title, a separator,
+  a spacer or what the sidebar does not hold yet, into the selected segment. Done
+  closes the panel. Move pieces opens the editor to drag them into another order, and
   "Customize sidebar…" in the sidebar's right-click menu opens this tab. Reset sidebar
   goes back to the default layout and width. The layout is kept in `sidebar.json`.
 - **Design system.** The card at the foot of the panel opens the Design system tab:

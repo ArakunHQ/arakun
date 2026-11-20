@@ -21,6 +21,7 @@ use gpui::{
 
 mod active;
 pub(crate) mod agent_cli;
+mod arrange;
 mod automations;
 mod branches;
 mod browsers;
@@ -2542,6 +2543,14 @@ impl Shell {
                         CustomizeEvent::ArrangeSidebar => this.open_sidebar_builder(window, cx),
                     },
                 );
+            let shell = cx.entity().downgrade();
+            view.update(cx, |v, _| {
+                v.set_arrange(std::rc::Rc::new(move |window, cx| {
+                    shell
+                        .upgrade()
+                        .map(|s| s.update(cx, |s, cx| s.render_arrange_panel(window, cx)))
+                }))
+            });
             self.customize = Some((view, sub));
         }
         // It takes the workspace panel's place, so that place must be shown.

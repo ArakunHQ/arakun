@@ -73,6 +73,7 @@ mod posthog_view;
 mod pr_writer;
 mod prompts;
 mod redact;
+mod repeats;
 mod rotate;
 mod runs_view;
 mod schedule;

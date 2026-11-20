@@ -256,6 +256,11 @@ Usage:
   arakun rename <branch>       rename this environment's branch (not yet
                              pushed); its folder stays where it is
   arakun notify <message…>     send a desktop notification
+  arakun shrink [--] <command…>
+                             run a command and print a summary of its output
+                             (failures of a test run, a log's repeated lines
+                             collapsed, JSON's outline); the whole output goes
+                             to a file it names. Needs no running Arakun
   arakun notices [--unseen]    the notifications Arakun has shown, newest first
   arakun ls                    list projects, environments and their sessions
   arakun island [state]        show the Dynamic Island in a state, to try it:
@@ -542,6 +547,9 @@ fn cli(args: Vec<String>) -> Cli {
     }
     if first == "update" {
         return Cli::Exit(crate::update::cli(&args[1..]));
+    }
+    if first == "shrink" {
+        return Cli::Exit(crate::shrink::cli(&args[1..]));
     }
     if first == "fetch" || first == "crawl" {
         return Cli::Exit(crate::fetch::cli(&args[1..], first == "crawl"));

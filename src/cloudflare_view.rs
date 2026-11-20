@@ -546,8 +546,13 @@ impl CloudflareView {
     }
 
     fn open_button(&self, id: String, path: String, cx: &mut Context<Self>) -> Stateful<Div> {
-        icon_button(SharedString::from(id), "link-square02", 13.)
-            .on_click(cx.listener(move |this, _, _, cx| this.open(&path, cx)))
+        icon_button(
+            SharedString::from(id),
+            "link-square02",
+            13.,
+            "Open in Cloudflare",
+        )
+        .on_click(cx.listener(move |this, _, _, cx| this.open(&path, cx)))
     }
 
     fn layout(&self) -> Layout {

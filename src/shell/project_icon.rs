@@ -255,7 +255,7 @@ impl Render for IconEditor {
                 )),
             );
 
-        ui::modal_panel("project-icon", 540.)
+        ui::modal_panel("project-icon", 540., "Project icon")
             .track_focus(&self.focus)
             .on_key_down(cx.listener(|this, ev: &gpui::KeyDownEvent, _, cx| {
                 match ev.keystroke.key.as_str() {

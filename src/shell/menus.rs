@@ -783,42 +783,46 @@ impl Shell {
                         .flatten()
                 });
                 let description = o.description.filter(|_| describe);
-                ui::choice_row(("choice", s as usize * 1000 + i), o.id == current)
-                    .when(self.menu_focus(offset + i), |d| d.bg(theme::fill_hover()))
-                    .when(!enabled, |d| d.opacity(0.45).cursor_default())
-                    .child(
+                ui::choice_row(
+                    ("choice", s as usize * 1000 + i),
+                    o.name.clone(),
+                    o.id == current,
+                )
+                .when(self.menu_focus(offset + i), |d| d.bg(theme::fill_hover()))
+                .when(!enabled, |d| d.opacity(0.45).cursor_default())
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .child(div().truncate().child(o.name))
+                        .when_some(description, |d, text| {
+                            d.child(
+                                div()
+                                    .text_size(px(ui::TEXT_XS))
+                                    .text_color(theme::text_subtle())
+                                    .child(text),
+                            )
+                        }),
+                )
+                .when_some(note, |d, note| {
+                    d.child(
                         div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .child(div().truncate().child(o.name))
-                            .when_some(description, |d, text| {
-                                d.child(
-                                    div()
-                                        .text_size(px(ui::TEXT_XS))
-                                        .text_color(theme::text_subtle())
-                                        .child(text),
-                                )
-                            }),
+                            .flex_none()
+                            .max_w(px(130.))
+                            .truncate()
+                            .text_size(px(ui::TEXT_XS))
+                            .text_color(theme::text_subtle())
+                            .child(note),
                     )
-                    .when_some(note, |d, note| {
-                        d.child(
-                            div()
-                                .flex_none()
-                                .max_w(px(130.))
-                                .truncate()
-                                .text_size(px(ui::TEXT_XS))
-                                .text_color(theme::text_subtle())
-                                .child(note),
-                        )
-                    })
-                    .when(enabled, |d| {
-                        d.on_click(cx.listener(move |this, _, window, cx| {
-                            this.menu_run(key.clone(), window, cx)
-                        }))
-                    })
-                    .into_any_element()
+                })
+                .when(enabled, |d| {
+                    d.on_click(cx.listener(move |this, _, window, cx| {
+                        this.menu_run(key.clone(), window, cx)
+                    }))
+                })
+                .into_any_element()
             })
             .collect()
     }

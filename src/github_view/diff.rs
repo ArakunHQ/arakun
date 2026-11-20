@@ -629,13 +629,17 @@ impl GitHubView {
             let link = (!url.is_empty()).then(|| {
                 let url = url.clone();
                 match job {
-                    Some(_) => ui::icon_button(("gh-check-link", i), "link-square02", 13.)
-                        .tooltip(ui::tip("Open on GitHub"))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            cx.stop_propagation();
-                            this.open_url(url.clone(), cx)
-                        }))
-                        .into_any_element(),
+                    Some(_) => ui::icon_button(
+                        ("gh-check-link", i),
+                        "link-square02",
+                        13.,
+                        "Open on GitHub",
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.open_url(url.clone(), cx)
+                    }))
+                    .into_any_element(),
                     None => icon("link-square02", 13.)
                         .text_color(theme::text_faint())
                         .into_any_element(),

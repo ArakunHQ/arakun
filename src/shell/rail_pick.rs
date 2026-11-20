@@ -406,9 +406,7 @@ impl Shell {
         let can_close = envs().any(|e| !e.sessions.is_empty());
         let can_delete = envs().any(|e| !e.is_checkout);
         let action = |id: &'static str, icon_name: &'static str, tip: &'static str, on: bool| {
-            ui::icon_button(id, icon_name, 14.)
-                .tooltip(ui::tip(tip))
-                .when(!on, |d| d.opacity(0.4).cursor_default())
+            ui::icon_button(id, icon_name, 14., tip).when(!on, |d| d.opacity(0.4).cursor_default())
         };
         Some(
             div()
@@ -466,8 +464,7 @@ impl Shell {
                     }),
                 )
                 .child(
-                    ui::icon_button("pick-clear", "cancel01", 14.)
-                        .tooltip(ui::tip("Clear the selection (Esc)"))
+                    ui::icon_button("pick-clear", "cancel01", 14., "Clear the selection (Esc)")
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.drop_pick();
                             cx.notify();

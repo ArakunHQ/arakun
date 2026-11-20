@@ -465,9 +465,7 @@ impl Render for GalleryView {
             ]
             .into_iter()
             .enumerate()
-            .map(|(i, name)| {
-                ui::icon_button(("ds-ib", i), name, 14.).tooltip(ui::tip("Icon button"))
-            }),
+            .map(|(i, name)| ui::icon_button(("ds-ib", i), name, 14., "Icon button")),
         );
         let mut seg = ui::segmented();
         for (i, label) in ["7 days", "30 days", "90 days"].into_iter().enumerate() {
@@ -561,7 +559,7 @@ impl Render for GalleryView {
         let mut mode_menu = panel(300.).child(ui::menu_heading("Mode"));
         for (i, (name, desc)) in modes.into_iter().enumerate() {
             mode_menu = mode_menu.child(
-                ui::choice_row(("ds-radio", i), self.radio == i)
+                ui::choice_row(("ds-radio", i), name, self.radio == i)
                     .child(div().flex_1().flex().flex_col().child(name).child(ui::text(
                         Type::Caption,
                         theme::text_subtle(),

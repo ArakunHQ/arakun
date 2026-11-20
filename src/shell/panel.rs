@@ -111,20 +111,19 @@ impl Shell {
                     }),
             )
             .child(
-                icon_button("panel-search", "search01", 14.)
-                    .tooltip(ui::tip("Search sessions (Ctrl+K)"))
-                    .on_click(cx.listener(|this, _, window, cx| {
+                icon_button("panel-search", "search01", 14., "Search sessions (Ctrl+K)").on_click(
+                    cx.listener(|this, _, window, cx| {
                         this.panel_tab = PanelTab::Sessions;
                         this.env_menu_open = false;
                         let field = this.session_query.clone();
                         window.focus(&field.focus_handle(cx), cx);
                         field.update(cx, |f, cx| f.select_all_text(cx));
                         cx.notify();
-                    })),
+                    }),
+                ),
             )
             .child(
-                icon_button("panel-new", "add01", 14.)
-                    .tooltip(ui::tip("New session (Ctrl+T)"))
+                icon_button("panel-new", "add01", 14., "New session (Ctrl+T)")
                     .on_click(cx.listener(|this, _, window, cx| this.new_session(window, cx))),
             );
 
@@ -279,15 +278,12 @@ impl Shell {
                 )
             })
             .child(
-                icon_button("session-import", "download04", 12.)
-                    .tooltip(ui::tip("Import sessions"))
-                    .on_click(
-                        cx.listener(|this, _, window, cx| this.open_import_dialog(window, cx)),
-                    ),
+                icon_button("session-import", "download04", 12., "Import sessions").on_click(
+                    cx.listener(|this, _, window, cx| this.open_import_dialog(window, cx)),
+                ),
             )
             .child(
-                icon_button("session-filter", "filter", 12.)
-                    .tooltip(ui::tip("Filter by agent"))
+                icon_button("session-filter", "filter", 12., "Filter by agent")
                     .when(self.session_filter.is_some(), |d| {
                         d.bg(theme::fill_selected())
                     })

@@ -312,20 +312,28 @@ impl ServersView {
             .when(connected, |d| {
                 let id = server.id.clone();
                 d.child(
-                    ui::icon_button(("servers-add-place", ix), "folder01", 13.)
-                        .tooltip(ui::tip("Clone a repository or add a folder"))
-                        .on_click(
-                            cx.listener(move |this, _, window, cx| this.add_place(&id, window, cx)),
-                        ),
+                    ui::icon_button(
+                        ("servers-add-place", ix),
+                        "folder01",
+                        13.,
+                        "Clone a repository or add a folder",
+                    )
+                    .on_click(
+                        cx.listener(move |this, _, window, cx| this.add_place(&id, window, cx)),
+                    ),
                 )
             })
             .child(
-                ui::icon_button(("servers-forget", ix), "delete02", 13.)
-                    .tooltip(ui::tip("Forget this server"))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.confirm_forget = Some(forget_id.clone());
-                        cx.notify();
-                    })),
+                ui::icon_button(
+                    ("servers-forget", ix),
+                    "delete02",
+                    13.,
+                    "Forget this server",
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.confirm_forget = Some(forget_id.clone());
+                    cx.notify();
+                })),
             );
         let confirm = (self.confirm_forget.as_deref() == Some(server.id.as_str())).then(|| {
             let id = server.id.clone();

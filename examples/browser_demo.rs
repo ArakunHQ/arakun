@@ -191,7 +191,7 @@ impl Render for Demo {
                     .on_click(cx.listener(move |this, _, window, cx| this.switch(i, window, cx)))
             }))
             .child(
-                ui::icon_button("new-tab", "add01", 14.).on_click(
+                ui::icon_button("new-tab", "add01", 14., "New tab").on_click(
                     cx.listener(|this, _, window, cx| this.open(String::new(), window, cx)),
                 ),
             )

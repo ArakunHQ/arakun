@@ -506,8 +506,7 @@ impl GitHubView {
                             .child(ui::spinner("gh-busy", 13., theme::text_faint()))
                             .into_any_element()
                     } else {
-                        ui::icon_button("gh-menu", "more-horizontal", 15.)
-                            .tooltip(ui::tip("Refresh, mark read, notices"))
+                        ui::icon_button("gh-menu", "more-horizontal", 15., "Refresh, mark read, notices")
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(|this, ev: &gpui::MouseDownEvent, _, cx| {

@@ -80,7 +80,7 @@ impl Render for TelemetryDialog {
                 .flex_1()
                 .on_click(cx.listener(move |_, _, _, cx| cx.emit(TelemetryEvent::Answered(yes))))
         };
-        ui::modal_panel("telemetry", 440.)
+        ui::modal_panel("telemetry", 440., "Send crash reports and usage counts?")
             .track_focus(&self.focus)
             .on_key_down(cx.listener(|_, ev: &gpui::KeyDownEvent, _, cx| {
                 if ev.keystroke.key == "escape" {

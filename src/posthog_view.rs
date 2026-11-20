@@ -796,7 +796,7 @@ impl PostHogView {
                 || self.keys.as_ref().is_some_and(|k| k.contains(&p.api_token));
             let pick = p.clone();
             rows.push(
-                ui::choice_row((id, i), on)
+                ui::choice_row((id, i), p.name.clone(), on)
                     .child(div().flex_1().min_w_0().truncate().child(p.name.clone()))
                     .when(matched, |d| {
                         d.child(ui::badge("key in project", Tone::Accent))

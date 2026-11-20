@@ -346,6 +346,7 @@ impl MemoryView {
                                     SharedString::from(format!("mem-edit-{scope:?}")),
                                     "pencil-edit01",
                                     13.,
+                                    "Edit",
                                 )
                                 .on_click(cx.listener(
                                     move |_, _, _, cx| cx.emit(MemoryEvent::Edit(file.clone())),

@@ -307,12 +307,12 @@ impl GitHubView {
                         .child(note.text.clone()),
                 )
                 .child(
-                    ui::icon_button("gh-note-close", "cancel01", 12.).on_click(cx.listener(
-                        |this, _, _, cx| {
+                    ui::icon_button("gh-note-close", "cancel01", 12., "Dismiss").on_click(
+                        cx.listener(|this, _, _, cx| {
                             this.note = None;
                             cx.notify();
-                        },
-                    )),
+                        }),
+                    ),
                 )
                 .into_any_element(),
         )

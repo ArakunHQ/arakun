@@ -475,7 +475,7 @@ impl Render for CreateEnvDialog {
                 )
             });
 
-        ui::modal_panel("create-env", 420.)
+        ui::modal_panel("create-env", 420., "New environment")
             .child(ui::modal_header(
                 "New environment",
                 None,
@@ -712,7 +712,7 @@ impl Focusable for CommandDialog {
 
 impl Render for CommandDialog {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        ui::modal_panel("setup-script", 420.)
+        ui::modal_panel("setup-script", 420., self.title)
             .child(ui::modal_header(
                 self.title,
                 None,
@@ -1015,7 +1015,7 @@ impl Render for DeleteEnvDialog {
         }
 
         let switch_on = self.delete_branch;
-        ui::modal_panel("delete-env", 420.)
+        ui::modal_panel("delete-env", 420., "Delete environment?")
             .track_focus(&self.focus)
             .on_key_down(cx.listener(|this, ev: &gpui::KeyDownEvent, _, cx| {
                 match ev.keystroke.key.as_str() {

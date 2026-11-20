@@ -462,16 +462,20 @@ impl Shell {
                 ]
                 .map(|(id, name, enabled, go_back)| {
                     if enabled {
-                        icon_button(id, name, 14.)
-                            .tooltip(ui::tip(if go_back {
+                        icon_button(
+                            id,
+                            name,
+                            14.,
+                            if go_back {
                                 "Back (Alt+Left)"
                             } else {
                                 "Forward (Alt+Right)"
-                            }))
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.tab_history(go_back, window, cx)
-                            }))
-                            .into_any_element()
+                            },
+                        )
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.tab_history(go_back, window, cx)
+                        }))
+                        .into_any_element()
                     } else {
                         div()
                             .id(id)
@@ -487,8 +491,7 @@ impl Shell {
             )
             .when(self.has_projects(), |d| {
                 d.child(
-                    icon_button("rail-hide", "sidebar-left", 14.)
-                        .tooltip(ui::tip("Hide sidebar (Ctrl+B)"))
+                    icon_button("rail-hide", "sidebar-left", 14., "Hide sidebar (Ctrl+B)")
                         .on_click(cx.listener(|this, _, _, cx| this.toggle_rail(cx))),
                 )
             })
@@ -653,8 +656,7 @@ impl Shell {
                     }),
             )
             .child(
-                icon_button("rail-widen", "sidebar-left", 14.)
-                    .tooltip(ui::tip("Show sidebar (Ctrl+B)"))
+                icon_button("rail-widen", "sidebar-left", 14., "Show sidebar (Ctrl+B)")
                     .on_click(cx.listener(|this, _, _, cx| this.toggle_rail(cx))),
             )
     }

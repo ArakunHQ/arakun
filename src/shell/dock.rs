@@ -526,7 +526,7 @@ impl Shell {
             let id = tab.terminal.entity_id();
             let close_path = env_path.clone();
             tabs = tabs.child(
-                ui::tab(("term", i), active)
+                ui::tab(("term", i), title.clone(), active)
                     .w(px(DOCK_TAB_W))
                     .h(px(ui::DOCK_TAB_H))
                     .group(group.clone())
@@ -762,8 +762,7 @@ impl Shell {
                         .flex()
                         .gap(crate::ui::sp(2.))
                         .child(
-                            icon_button("term-add", "add01", 14.)
-                                .tooltip(ui::tip("New terminal (Ctrl+Shift+T)"))
+                            icon_button("term-add", "add01", 14., "New terminal (Ctrl+Shift+T)")
                                 .on_click(
                                     cx.listener(|this, _, window, cx| {
                                         this.new_terminal(window, cx)
@@ -771,8 +770,7 @@ impl Shell {
                                 ),
                         )
                         .child(
-                            icon_button("term-hide", "arrow-down01", 14.)
-                                .tooltip(ui::tip("Hide terminal (Ctrl+J)"))
+                            icon_button("term-hide", "arrow-down01", 14., "Hide terminal (Ctrl+J)")
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     this.set_dock(false, window, cx)
                                 })),

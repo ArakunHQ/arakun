@@ -945,8 +945,8 @@ impl ExtensionsView {
                                             SharedString::from(format!("skill-open-{source}-{i}")),
                                             "file01",
                                             14.,
+                                            "Open SKILL.md",
                                         )
-                                        .tooltip(ui::tip("Open SKILL.md"))
                                         .on_click(
                                             cx.listener(move |_, _, _, cx| {
                                                 cx.stop_propagation();

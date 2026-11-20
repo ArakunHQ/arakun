@@ -517,24 +517,22 @@ impl GitHubView {
                 )
             })
             .child(
-                ui::icon_button("gh-open-web", "link-square02", 14.)
-                    .tooltip(ui::tip("Open on GitHub (O)"))
+                ui::icon_button("gh-open-web", "link-square02", 14., "Open on GitHub (O)")
                     .on_click(cx.listener(|this, _, _, cx| this.open_on_github(cx))),
             )
             .when_some(url, |d, url| {
                 d.child(
-                    ui::icon_button("gh-copy-link", "link01", 14.)
-                        .tooltip(ui::tip("Copy link"))
-                        .on_click(cx.listener(move |this, _, _, cx| {
+                    ui::icon_button("gh-copy-link", "link01", 14., "Copy link").on_click(
+                        cx.listener(move |this, _, _, cx| {
                             cx.write_to_clipboard(ClipboardItem::new_string(url.clone()));
                             this.note = Some(Note::ok("Link copied."));
                             cx.notify();
-                        })),
+                        }),
+                    ),
                 )
             })
             .child(
-                ui::icon_button("gh-sheet-close", "cancel01", 14.)
-                    .tooltip(ui::tip("Close (Esc)"))
+                ui::icon_button("gh-sheet-close", "cancel01", 14., "Close (Esc)")
                     .on_click(cx.listener(|this, _, _, cx| this.close_sheet(cx))),
             )
             .into_any_element()

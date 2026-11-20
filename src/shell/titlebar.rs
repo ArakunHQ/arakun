@@ -277,90 +277,94 @@ impl Shell {
             }
             list = list.child(
                 slot.child(
-                    ui::tab(("tab", i), active)
-                        .group(group.clone())
-                        // The close button keeps its size; only the air beside it scales.
-                        .when(closable, |d| {
-                            d.pr(crate::ui::sp(4.) + px(ui::TAB_CLOSE_ROOM))
-                        })
-                        // The tab on screen in the other pane.
-                        .when(shown_beside, |d| {
-                            d.border_1()
-                                .border_color(theme::border_strong())
-                                .text_color(theme::text_muted())
-                        })
-                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                        // A middle click closes the tab, as in a browser.
-                        .when(closable, |d| {
-                            d.on_mouse_down(MouseButton::Middle, |_, _, cx| cx.stop_propagation())
-                                .on_mouse_up(
-                                    MouseButton::Middle,
-                                    cx.listener(move |this, _, window, cx| {
-                                        cx.stop_propagation();
-                                        this.close_tab(i, window, cx)
-                                    }),
-                                )
-                        })
-                        .on_mouse_down(
-                            MouseButton::Right,
-                            cx.listener(move |this, ev: &gpui::MouseDownEvent, _, cx| {
-                                cx.stop_propagation();
-                                this.tab_menu(i, ev.position, cx)
-                            }),
-                        )
-                        .child(
-                            div()
-                                .flex_none()
-                                .when(!active, |d| d.opacity(0.55))
-                                .child(tab_icon),
-                        )
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .truncate()
-                                .when(tab.preview, |d| d.italic())
-                                // A terminal's title is often `user@host:~/path`.
-                                .child(crate::redact::text(&tab.title).into_owned()),
-                        )
-                        .when(closable, |d| {
-                            d.child(
-                                div()
-                                    .id(("tab-close", i))
-                                    .absolute()
-                                    .right(px(4.))
-                                    .top(px(ui::TAB_CLOSE_TOP))
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .size(px(20.))
-                                    .rounded(crate::ui::rad(4.))
-                                    .invisible()
-                                    .group_hover(group.clone(), |s| s.visible())
-                                    .hover(|s| s.bg(theme::fill_selected()))
-                                    .child(icon("cancel01", 12.).text_color(theme::text_subtle()))
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        cx.stop_propagation();
-                                        this.close_tab(i, window, cx)
-                                    })),
+                    ui::tab(
+                        ("tab", i),
+                        crate::redact::text(&tab.title).into_owned(),
+                        active,
+                    )
+                    .group(group.clone())
+                    // The close button keeps its size; only the air beside it scales.
+                    .when(closable, |d| {
+                        d.pr(crate::ui::sp(4.) + px(ui::TAB_CLOSE_ROOM))
+                    })
+                    // The tab on screen in the other pane.
+                    .when(shown_beside, |d| {
+                        d.border_1()
+                            .border_color(theme::border_strong())
+                            .text_color(theme::text_muted())
+                    })
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    // A middle click closes the tab, as in a browser.
+                    .when(closable, |d| {
+                        d.on_mouse_down(MouseButton::Middle, |_, _, cx| cx.stop_propagation())
+                            .on_mouse_up(
+                                MouseButton::Middle,
+                                cx.listener(move |this, _, window, cx| {
+                                    cx.stop_propagation();
+                                    this.close_tab(i, window, cx)
+                                }),
                             )
-                        })
-                        .on_click(cx.listener(move |this, ev: &gpui::ClickEvent, window, cx| {
-                            this.select_tab(i, window, cx);
-                            // A double click keeps a preview tab.
-                            if ev.click_count() >= 2 {
-                                this.pin_preview(cx);
-                            }
-                        }))
-                        .on_drag(dragged, move |d, offset, _, cx| {
-                            shell.update(cx, |this, cx| this.start_tab_drag(d, offset, cx))
-                        })
-                        // Dropping a tab on another moves it there.
-                        .drag_over::<drag::DraggedTab>(|s, _, _, _| s.bg(theme::fill_selected()))
-                        .on_drop(cx.listener(move |this, d: &drag::DraggedTab, _, cx| {
-                            this.drop_tab_at(d.id, i, cx)
-                        }))
-                        .when(lifted == Some(tab.id), |d| d.opacity(0.4)),
+                    })
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(move |this, ev: &gpui::MouseDownEvent, _, cx| {
+                            cx.stop_propagation();
+                            this.tab_menu(i, ev.position, cx)
+                        }),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .when(!active, |d| d.opacity(0.55))
+                            .child(tab_icon),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .when(tab.preview, |d| d.italic())
+                            // A terminal's title is often `user@host:~/path`.
+                            .child(crate::redact::text(&tab.title).into_owned()),
+                    )
+                    .when(closable, |d| {
+                        d.child(
+                            div()
+                                .id(("tab-close", i))
+                                .absolute()
+                                .right(px(4.))
+                                .top(px(ui::TAB_CLOSE_TOP))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .size(px(20.))
+                                .rounded(crate::ui::rad(4.))
+                                .invisible()
+                                .group_hover(group.clone(), |s| s.visible())
+                                .hover(|s| s.bg(theme::fill_selected()))
+                                .child(icon("cancel01", 12.).text_color(theme::text_subtle()))
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    cx.stop_propagation();
+                                    this.close_tab(i, window, cx)
+                                })),
+                        )
+                    })
+                    .on_click(cx.listener(move |this, ev: &gpui::ClickEvent, window, cx| {
+                        this.select_tab(i, window, cx);
+                        // A double click keeps a preview tab.
+                        if ev.click_count() >= 2 {
+                            this.pin_preview(cx);
+                        }
+                    }))
+                    .on_drag(dragged, move |d, offset, _, cx| {
+                        shell.update(cx, |this, cx| this.start_tab_drag(d, offset, cx))
+                    })
+                    // Dropping a tab on another moves it there.
+                    .drag_over::<drag::DraggedTab>(|s, _, _, _| s.bg(theme::fill_selected()))
+                    .on_drop(cx.listener(move |this, d: &drag::DraggedTab, _, cx| {
+                        this.drop_tab_at(d.id, i, cx)
+                    }))
+                    .when(lifted == Some(tab.id), |d| d.opacity(0.4)),
                 ),
             );
         }
@@ -373,16 +377,19 @@ impl Shell {
                 .gap(crate::ui::sp(2.))
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .child(
-                    icon_button("tab-new-session", "add01", 14.)
-                        .tooltip(ui::tip("New session (Ctrl+T)"))
+                    icon_button("tab-new-session", "add01", 14., "New session (Ctrl+T)")
                         .on_click(cx.listener(|this, _, window, cx| this.new_session(window, cx))),
                 )
                 .child(
-                    icon_button("tab-new-browser", "globe", 14.)
-                        .tooltip(ui::tip("New browser tab (Ctrl+Shift+B)"))
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.open_browser_tab(String::new(), window, cx)
-                        })),
+                    icon_button(
+                        "tab-new-browser",
+                        "globe",
+                        14.,
+                        "New browser tab (Ctrl+Shift+B)",
+                    )
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.open_browser_tab(String::new(), window, cx)
+                    })),
                 )
                 .child(
                     icon_button(
@@ -393,12 +400,12 @@ impl Shell {
                             "layout-two-column"
                         },
                         14.,
+                        if in_other_pane.is_some() {
+                            "Close split"
+                        } else {
+                            "Split right (Ctrl+D)"
+                        },
                     )
-                    .tooltip(ui::tip(if in_other_pane.is_some() {
-                        "Close split"
-                    } else {
-                        "Split right (Ctrl+D)"
-                    }))
                     .on_click(cx.listener(|this, _, window, cx| {
                         if this.split_other().is_some() {
                             this.close_split(cx)

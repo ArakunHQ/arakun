@@ -409,9 +409,8 @@ only sums up what is chosen. It opens without a project too.
   sidebar, the workspace panel and the status line sit on the window itself, and the
   accent is kept for what needs you. Duplicate one to change its tint, background and
   accent; Arakun warns when text or the accent gets hard to read. Grays sets how bright
-  secondary text and borders are, and Diff colors how added and removed lines look. A
-  palette fits in one line (`arakun:palette/v1:…`): Export copies it and Import pastes
-  one. Reset colors goes back to Arakun Black, dark, and keeps your palettes. The mode,
+  secondary text and borders are, and Diff colors how added and removed lines look.
+  Reset colors goes back to Arakun Black, dark, and keeps your palettes. The mode,
   the choice and your palettes are kept in `palettes.json` next to the state.
 
   <img src="docs/screenshots/palettes.png" alt="The built-in palettes" width="520">
@@ -431,14 +430,18 @@ only sums up what is chosen. It opens without a project too.
   Ungroup, remove) and chips to add a group, a link, a command, a title, a separator,
   a spacer or what the sidebar does not hold yet, into the selected segment with a
   click. The pieces among them (not Group, Link, Command or Title, which ask for more
-  first) can also be dragged onto the sidebar where they should go. Pieces and segment titles drag into another
-  order on the sidebar itself. The panel's header has undo and redo for these changes,
-  and its footer copies the layout (Export) or uses one from the clipboard (Import).
-  An imported layout comes without its commands, which run on a click: add those with
-  Command…, where their text can be read.
-  Done closes the panel, and "Customize sidebar…" in the sidebar's right-click menu
-  opens this tab. Reset sidebar
-  goes back to the default layout and width. The layout is kept in `sidebar.json`.
+  first) can also be dragged onto the sidebar where they should go. Pieces and segment
+  titles drag into another order on the sidebar itself. The panel's header has undo
+  and redo for these changes. Done closes the panel, and "Customize sidebar…" in the
+  sidebar's right-click menu opens this tab. Reset sidebar goes back to the default
+  layout and width. The layout is kept in `sidebar.json`.
+- **Share a look.** Export… at the foot of the panel, on any tab, copies the colors,
+  the shape or the sidebar, the ones you tick, as one line (`arakun:look/v1:…`).
+  Import reads a look line and asks again which parts to use; the sidebar is off until
+  ticked, since it replaces the whole layout. A sidebar layout comes without its
+  commands, which run on a click: add those with Command…, where their text can be
+  read. Import also takes a palette line (`arakun:palette/v1:…`) or a sidebar layout
+  copied before looks existed.
 - **Design system.** The card at the foot of the panel opens the Design system tab:
   every color, type style and component, live, so a change can be judged on all of
   them at once.

@@ -385,6 +385,9 @@ impl Palette {
 
     /// One line that carries the palette, to share it:
     /// `arakun:palette/v1:265,32,7.5,ff7a59,Sunset`.
+    /// Only tests write this line now; a look carries the palette, and the
+    /// line is still read when pasted.
+    #[cfg(test)]
     pub fn share_code(&self) -> String {
         format!(
             "arakun:palette/v1:{},{},{},{:06x},{}",

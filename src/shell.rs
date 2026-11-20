@@ -2551,19 +2551,15 @@ impl Shell {
                             this.save(cx);
                         }
                         CustomizeEvent::UndoSidebar(redo) => this.undo_sidebar(*redo, cx),
-                        CustomizeEvent::ExportSidebar => {
-                            cx.write_to_clipboard(gpui::ClipboardItem::new_string(
-                                this.sidebar.to_json(),
-                            ));
-                            this.builder.flash = Some("Layout copied to the clipboard".into());
-                            cx.notify();
+                        CustomizeEvent::CopyLook { look, sidebar } => {
+                            let mut look = look.clone();
+                            if *sidebar {
+                                look.sidebar = serde_json::to_value(&this.sidebar).ok();
+                            }
+                            cx.write_to_clipboard(gpui::ClipboardItem::new_string(look.encode()));
                         }
-                        CustomizeEvent::ImportSidebar => {
-                            let text = cx
-                                .read_from_clipboard()
-                                .and_then(|c| c.text())
-                                .unwrap_or_default();
-                            match crate::sidebar::Sidebar::parse(text.as_bytes()) {
+                        CustomizeEvent::ImportLayout(layout) => {
+                            match crate::sidebar::Sidebar::parse(layout.to_string().as_bytes()) {
                                 Some(mut s) => {
                                     // A command pin runs on a click and shows only its
                                     // title, so one from a pasted layout is left out.
@@ -2571,18 +2567,17 @@ impl Shell {
                                     this.change_sidebar(cx, |cur| *cur = s);
                                     this.clear_builder_selection();
                                     this.builder.flash = Some(if dropped == 0 {
-                                        "Layout imported".into()
+                                        "Sidebar layout imported".into()
                                     } else {
                                         format!(
-                                            "Layout imported without its {dropped} command{}; add commands with Command…",
+                                            "Sidebar layout imported without its {dropped} command{}; add commands with Command…",
                                             if dropped == 1 { "" } else { "s" }
                                         )
                                         .into()
                                     });
                                 }
                                 None => {
-                                    this.builder.flash =
-                                        Some("The clipboard has no sidebar layout".into())
+                                    this.builder.flash = Some("That sidebar layout could not be read".into())
                                 }
                             }
                             cx.notify();

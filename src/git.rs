@@ -533,7 +533,7 @@ pub fn fetch(dir: &Path) -> Result<()> {
     Ok(())
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ChangeKind {
     Modified,
     Added,
@@ -542,7 +542,7 @@ pub enum ChangeKind {
     Untracked,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Change {
     pub path: String,
     pub kind: ChangeKind,
@@ -770,7 +770,7 @@ fn has_head(dir: &Path) -> Result<bool> {
 }
 
 /// Where the checked-out branch stands against its remote.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Sync {
     pub branch: Option<String>,
     /// Remote a push goes to: the upstream's, else `origin`, else the first one.
@@ -1068,7 +1068,7 @@ pub fn merge_into_main(main: &Path, branch: &str) -> Result<()> {
     Ok(())
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PullRequest {
     pub number: u64,
     pub url: String,
@@ -1264,14 +1264,14 @@ fn pushes_elsewhere(dir: &Path, remote: &str) -> bool {
 
 /// A commit a new pull request would bring: its subject and the rest of
 /// its message.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PrCommit {
     pub subject: String,
     pub body: String,
 }
 
 /// What the "Create pull request" dialog opens with.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PrPlan {
     /// The branch it would merge into.
     pub base: String,

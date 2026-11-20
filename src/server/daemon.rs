@@ -2637,8 +2637,49 @@ impl Daemon {
                 })
                 .detach();
             }
+            ClientMsg::Git {
+                reference,
+                place,
+                call,
+            } => self.git(client, reference, place, call, cx),
             ClientMsg::Ping => {}
         }
+    }
+
+    /// Runs git in one of the places for a device, off the main thread: a
+    /// push or a commit's hooks take as long as they take.
+    fn git(
+        &self,
+        client: ClientId,
+        reference: u64,
+        place: String,
+        call: crate::git_call::Call,
+        cx: &mut Context<Self>,
+    ) {
+        let dir = PathBuf::from(place);
+        // Git runs nowhere else: a device names one of the folders it offers.
+        if self.store.place(&dir).is_none() || self.deleting.contains(&dir) {
+            let why = "that folder is not one of this server's".to_string();
+            let reply = crate::git_call::reply(reference, Err(why));
+            self.transport.send(client, reply.to_string());
+            return;
+        }
+        cx.spawn(async move |this, cx| {
+            let done = cx
+                .background_executor()
+                .spawn(crate::guard::task(async move {
+                    call.run(&dir).map_err(|e| e.to_string())
+                }))
+                .await;
+            let reply = crate::git_call::reply(reference, done);
+            let _ = this.update(cx, |this, _| {
+                // A diff or a pull request's description can be past one frame.
+                for frame in wire::parts(reply.to_string()) {
+                    this.transport.send(client, frame);
+                }
+            });
+        })
+        .detach();
     }
 
     /// Runs `job` off the main thread (it waits on `claude`) and sends what it

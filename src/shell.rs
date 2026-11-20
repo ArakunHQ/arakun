@@ -1418,27 +1418,33 @@ impl Shell {
     }
 
     fn refresh_status(&mut self, env_path: &std::path::Path, cx: &mut Context<Self>) {
-        // A server's folder: its changes are on that machine.
-        if crate::model::Remote::is_path(env_path) {
-            return;
-        }
         if !self.git_reads.start(env_path, git_actions::GitRead::Status) {
             return;
         }
         let path = env_path.to_path_buf();
+        // A server's folder: the server reads its changes there.
+        let at = self.git_at(env_path);
         cx.spawn(async move |this, cx| {
-            let p = path.clone();
             let (changes, sync) = cx
-                .background_spawn(crate::guard::task(async move {
-                    (git::status(&p), git::sync(&p))
-                }))
+                .background_spawn(crate::guard::task(async move { at.status() }))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 let timed_out = changes.as_ref().err().or(sync.as_ref().err());
                 let timed_out = timed_out.filter(|e| git::timed_out(e));
                 let recovered = this.git_reads.status_ended(&path, timed_out.is_some());
+                // A server that cannot answer it says so in the panel, which
+                // would otherwise show no changes.
+                let older = changes
+                    .as_ref()
+                    .err()
+                    .is_some_and(|e| e.to_string() == crate::servers::git::OLDER);
                 if let Some(env) = this.find_env_mut(&path) {
-                    if let Some(e) = timed_out {
+                    if older {
+                        if env.git_error.is_none() {
+                            env.git_error = Some(crate::servers::git::OLDER.into());
+                            cx.notify();
+                        }
+                    } else if let Some(e) = timed_out {
                         env.git_error = Some(
                             format!(
                                 "{e}. Arakun looks again in {} minutes.",
@@ -1447,7 +1453,10 @@ impl Shell {
                             .into(),
                         );
                         cx.notify();
-                    } else if recovered && env.git_error.is_some() {
+                    } else if (recovered && env.git_error.is_some())
+                        || (changes.is_ok()
+                            && env.git_error.as_deref() == Some(crate::servers::git::OLDER))
+                    {
                         env.git_error = None;
                         cx.notify();
                     }
@@ -1573,10 +1582,10 @@ impl Shell {
         }
         self.fetching = true;
         let path = self.env().path.clone();
+        let at = self.git_at(&path);
         cx.spawn(async move |this, cx| {
-            let p = path.clone();
             let fetched = cx
-                .background_spawn(crate::guard::task(async move { git::fetch(&p) }))
+                .background_spawn(crate::guard::task(async move { at.fetch() }))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.fetching = false;

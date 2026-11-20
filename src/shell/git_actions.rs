@@ -116,10 +116,10 @@ impl Shell {
         }
         self.env_mut().pr_checked = Some((branch.clone().into(), Instant::now()));
         let path = path.to_path_buf();
+        let at = self.git_at(&path);
         cx.spawn(async move |this, cx| {
-            let p = path.clone();
             let pr = cx
-                .background_spawn(crate::guard::task(async move { git::pr_view(&p) }))
+                .background_spawn(crate::guard::task(async move { at.pr_view() }))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.git_reads.end(&path, GitRead::PullRequest);
@@ -179,13 +179,8 @@ impl Shell {
             return;
         };
         let path = env.path.clone();
-        let dir = path.clone();
-        self.run_git_op(
-            path,
-            GitOp::Push,
-            move || git::push(&dir, &remote, &branch),
-            cx,
-        );
+        let at = self.git_at(&path);
+        self.run_git_op(path, GitOp::Push, move || at.push(&remote, &branch), cx);
     }
 
     fn git_pull(&mut self, cx: &mut Context<Self>) {
@@ -193,8 +188,8 @@ impl Shell {
             return;
         }
         let path = self.env().path.clone();
-        let dir = path.clone();
-        self.run_git_op(path, GitOp::Pull, move || git::pull(&dir), cx);
+        let at = self.git_at(&path);
+        self.run_git_op(path, GitOp::Pull, move || at.pull(), cx);
     }
 
     /// Opens the branch's pull request, or the dialog that creates one. What
@@ -221,13 +216,14 @@ impl Shell {
             env.git_busy = Some(GitOp::PullRequest);
         }
         cx.notify();
+        let at = self.git_at(&path);
         cx.spawn_in(window, async move |this, cx| {
-            let (dir, r, b) = (path.clone(), remote.clone(), branch.clone());
+            let (r, b) = (remote.clone(), branch.clone());
             let plan = cx
                 .background_spawn(crate::guard::task_or_default(async move {
                     // Finding an agent's CLI reads the disk too.
                     let writer = crate::pr_writer::writer(agent, crate::env_name::installed);
-                    (git::pr_plan(&dir, &r, &b), writer)
+                    (at.pr_plan(&r, &b), writer)
                 }))
                 .await;
             let _ = this.update_in(cx, |this, window, cx| {
@@ -255,9 +251,9 @@ impl Shell {
         if self.modal.is_some() {
             return;
         }
-        let dir = path.clone();
+        let at = self.git_at(&path);
         let dialog = cx.new(|cx| {
-            PullRequestDialog::new(dir, remote, branch, needs_push, plan, writer, window, cx)
+            PullRequestDialog::new(at, remote, branch, needs_push, plan, writer, window, cx)
         });
         let sub = cx.subscribe_in(
             &dialog,
@@ -292,14 +288,14 @@ impl Shell {
 
     pub(super) fn toggle_stage(&mut self, change: git::Change, cx: &mut Context<Self>) {
         let path = self.env().path.clone();
-        let dir = path.clone();
+        let at = self.git_at(&path);
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_spawn(crate::guard::task(async move {
                     if change.fully_staged() {
-                        git::unstage(&dir, &change.path)
+                        at.unstage(&change.path)
                     } else {
-                        git::stage(&dir, &change.path)
+                        at.stage(&change.path)
                     }
                 }))
                 .await;
@@ -323,8 +319,8 @@ impl Shell {
         let branch = env.branch.clone();
         let files = env.changes.len();
         let staged = env.changes.iter().filter(|c| c.staged).count();
-        let dir = path.clone();
-        let dialog = cx.new(|cx| CommitDialog::new(dir, branch, files, staged, window, cx));
+        let at = self.git_at(&path);
+        let dialog = cx.new(|cx| CommitDialog::new(at, branch, files, staged, window, cx));
         let sub = cx.subscribe_in(
             &dialog,
             window,
@@ -361,7 +357,7 @@ impl Shell {
                 "This throws away every uncommitted change to the file, staged or not. It can't be undone."
             }
         };
-        let dir = path.clone();
+        let at = self.git_at(&path);
         let file = change.path.clone();
         let dialog = cx.new(|cx| {
             ConfirmDialog::new(
@@ -369,7 +365,7 @@ impl Shell {
                 body,
                 "Discard",
                 true,
-                move || git::discard(&dir, &change),
+                move || at.discard(&change),
                 window,
                 cx,
             )
@@ -393,7 +389,8 @@ impl Shell {
     fn open_merge(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let pi = self.active_project;
         let env = self.env();
-        if env.is_checkout {
+        // The main checkout is on the server: the server has no merge yet.
+        if env.is_checkout || env.remote.is_some() {
             return;
         }
         let Some(branch) = env.sync.branch.clone() else {
@@ -632,7 +629,7 @@ impl Shell {
                 )
         });
 
-        let can_merge = !env.is_checkout && s.branch.is_some();
+        let can_merge = !env.is_checkout && env.remote.is_none() && s.branch.is_some();
         let footer = div()
             .flex()
             .flex_none()

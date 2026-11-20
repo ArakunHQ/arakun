@@ -1059,8 +1059,12 @@ The link is good for two minutes and pairs one device. There are two ways to use
   servers' sessions too. A terminal in a server's environment is a shell in that folder
   on the server, and the project commands from Settings run there too. It keeps running
   while the connection is down and picks up where it was once it is back; one no app
-  follows for an hour is hung up. Git and the file tree stay with this machine's folders.
-  Fork, compact, rewind and `/stage` in a server's session run on the server, with its
+  follows for an hour is hung up. The Changes panel of a server's environment shows
+  that folder's changes and diffs, and stage, discard, commit, pull, push and the pull
+  request button run there, with the server's `git` and `gh` logins
+  (`ARAKUN_GITHUB=readonly` on the server keeps it from pushing or opening pull requests).
+  Merging into the main checkout and GitHub's form stay with this machine's folders, and
+  so does the file tree. Fork, compact, rewind and `/stage` in a server's session run on the server, with its
   agent and its git: a fork or a rewind opens as a new session there. "Continue with"
   hands a server's session to another of the agents on that server, in the same tab.
   In a server's environment, the model menu lists the models and reasoning levels that

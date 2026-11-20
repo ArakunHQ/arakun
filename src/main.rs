@@ -40,6 +40,7 @@ mod flags;
 mod frame_timer;
 mod gallery_view;
 mod git;
+mod git_call;
 mod git_dialogs;
 mod github;
 mod github_view;

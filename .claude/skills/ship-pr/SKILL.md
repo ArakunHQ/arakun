@@ -124,6 +124,7 @@ approves, and marking ready is what asks for the review.
 - The first pull request of a new contributor needs the CLA signed; only the
   person can do that.
 - CodeRabbit comments: fix each one and push, or reply with the reason you
-  won't. Never resolve its threads or post `@coderabbitai resolve` or `approve`
-  yourself.
+  won't. Once the push is up, resolve the threads it fixed (right away: an
+  approval with threads still open is dismissed). Leave the declined ones open
+  for the reviewer. Never post `@coderabbitai resolve` or `approve`.
 - Never merge, approve or self-review. A person does that.

@@ -137,6 +137,9 @@ pub struct ChannelState {
     history_round: u64,
     reading: bool,
     needs_history: bool,
+    /// This device's @bot questions that arrived past a gap. The range they
+    /// review is taken once history fills the gap, so it misses nothing.
+    bot_waiting: Vec<String>,
     /// Messages whose signature or sender device did not check out: dropped,
     /// as PROTOCOL.md says, and counted.
     pub hidden: usize,
@@ -1535,6 +1538,7 @@ impl Hub {
             history_round: 0,
             reading: false,
             needs_history: false,
+            bot_waiting: Vec::new(),
             hidden: 0,
             locked: Vec::new(),
             status: socket::Status::Connecting,
@@ -1743,6 +1747,12 @@ impl Hub {
             .sort_by_key(|m| (m.seq.is_none(), m.seq.unwrap_or(0), m.at));
         let team_id = c.team_id.clone();
         let channel_id = c.channel_id.clone();
+        c.bot_waiting.extend(asked);
+        let asked = if c.needs_history {
+            Vec::new()
+        } else {
+            std::mem::take(&mut c.bot_waiting)
+        };
         for id in asked {
             let project = self
                 .bot

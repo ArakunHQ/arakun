@@ -1713,7 +1713,9 @@ impl Thread {
     /// The session runs on `seat` from now on: saved with it (once a seat is
     /// saved, it stays) and counted as live there.
     fn take_seat(&mut self, seat: seats::Assignment, cx: &mut Context<Self>) {
-        self.lease = Some(seats::lease(&seat.seat));
+        // `assign` counted it live when it picked; a pin it kept, here.
+        let lease = seat.lease.unwrap_or_else(|| seats::lease(&seat.seat));
+        self.lease = Some(lease);
         if self.meta.seat.as_deref() != Some(seat.seat.as_str()) {
             self.meta.seat = Some(seat.seat);
             self.meta_changed(cx);

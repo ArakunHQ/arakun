@@ -415,7 +415,11 @@ after a week).
   only into that session's environment; there is no proxy. If every seat is near its
   limit, the session starts on the one with the most room and says so. The composer
   shows the seat of the session, and the Usage tab every seat's windows and live
-  sessions; each token's windows are read at most every 15 minutes. Seats can't work
+  sessions. Reading a token's windows sends that seat a one-token message, so Arakun
+  does it only while the Usage tab is on screen, for `arakun seat ls`, and when a new
+  session picks its seat (waiting at most 4 seconds), and at most every 15 minutes per
+  token. A seat whose token is refused is skipped, and a session saved on it moves to
+  another seat and says so. Seats can't work
   while `~/.claude/settings.json` sets `CLAUDE_CODE_OAUTH_TOKEN` in its `env` block,
   because Claude Code applies that over each session's environment; the Usage tab says
   so, and sessions start as before. Without a saved seat nothing changes.

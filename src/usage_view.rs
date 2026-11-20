@@ -8,7 +8,7 @@ use crate::ui::Typography as _;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
@@ -291,6 +291,9 @@ pub struct UsageView {
     projects: Vec<(PathBuf, String)>,
     focus: FocusHandle,
     scroll: ScrollHandle,
+    /// When the view was last drawn. Its own poll redraws it every [`POLL`]
+    /// while it is on screen, so an older time means it is not.
+    drawn: Option<Instant>,
     _poll: [Task<()>; 3],
 }
 
@@ -335,19 +338,32 @@ impl UsageView {
         });
         let plan_poll = cx.spawn(async move |this, cx| {
             loop {
-                let (seats, go, devin, access) = cx
+                // Reading a named seat sends it a message, which can start its
+                // 5-hour window: only while someone looks at them.
+                let Ok(shown) =
+                    this.update(cx, |v, _| v.drawn.is_some_and(|at| at.elapsed() < 2 * POLL))
+                else {
+                    break;
+                };
+                let (info, go, devin, access) = cx
                     .background_spawn(crate::guard::task_or_default(async move {
+                        let all = if shown {
+                            plan::seats_probing(&seats::Store::open().names())
+                        } else {
+                            plan::seats()
+                        };
                         (
-                            SeatsInfo::read(plan::seats()),
+                            SeatsInfo::read(all),
                             opencode_plan::refresh(),
                             devin_plan::refresh(),
                             claude_auth::access(),
                         )
                     }))
                     .await;
-                let plan = seats.seats.active().cloned();
+                let seats = &info.seats;
+                let plan = seats.active().cloned();
                 #[cfg(feature = "coderlabs")]
-                let borrowed = seats.seats.borrowed.clone();
+                let borrowed = seats.borrowed.clone();
                 if this
                     .update(cx, |v, cx| {
                         #[cfg(feature = "coderlabs")]
@@ -356,8 +372,8 @@ impl UsageView {
                         let changed = false;
                         // The phone's Claude card names the key or endpoint too.
                         let changed = changed || v.access != access;
-                        if v.seats != seats {
-                            v.seats = seats;
+                        if v.seats != info {
+                            v.seats = info;
                             cx.notify();
                         }
                         if changed || v.plan != plan || v.go != go || v.devin != devin {
@@ -436,6 +452,7 @@ impl UsageView {
             titles: HashMap::new(),
             projects: Vec::new(),
             focus: cx.focus_handle(),
+            drawn: None,
             scroll: ScrollHandle::new(),
             _poll: [poll, plan_poll, proxy_poll],
         }
@@ -1524,6 +1541,7 @@ impl gpui::Focusable for UsageView {
 
 impl Render for UsageView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.drawn = Some(Instant::now());
         let all: &[Record] = self.records.as_deref().unwrap_or_default();
         let filtered: Vec<Record>;
         let records = match self.agent_filter {

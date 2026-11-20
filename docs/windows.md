@@ -172,9 +172,11 @@ Manager (Windows Credentials, Generic Credentials).
   rounded corners (8 px at the default roundness). This comes from the code
   (`src/shell/titlebar.rs`) and has not been checked on real Windows.
 - **Private files:** on Linux and macOS, `notices.json` (it can hold agent replies),
-  `cliproxy-management-key` and `cliproxy-plan.json` are written owner-only (mode 0600,
-  and 0700 for a folder it creates). Windows has no such modes, so there they get the
-  default access rules of `%LOCALAPPDATA%\arakun\`.
+  `cliproxy-management-key`, `cliproxy-plan.json` and the Claude seats' tokens in
+  `seats\` are written owner-only (mode 0600, and 0700 for a folder it creates).
+  Windows has no such modes, so there they get the default access rules of
+  `%LOCALAPPDATA%\arakun\`. A seat's token signs in to that Claude subscription, so
+  check those rules before you add one.
   `github.json`, `github\drafts\` and `palettes.json` are not written owner-only on any
   platform. By default `%LOCALAPPDATA%` is in your profile, and only your account,
   `SYSTEM` and the Administrators can read it. To check who can read the folder and the

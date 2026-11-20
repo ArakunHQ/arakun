@@ -906,6 +906,7 @@ pub fn resolve(
                 program: devin_bin()?,
                 args: vec!["acp".into()],
                 env: Vec::new(),
+                unset: Vec::new(),
             },
         },
         // Nothing to start: it runs in arakun (`Connection::in_process`).

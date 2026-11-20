@@ -15,8 +15,9 @@ use std::collections::HashMap;
 use std::ffi::OsString;
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::time::Duration;
 
 use anyhow::{Result, anyhow, bail};
 
@@ -34,6 +35,10 @@ pub const TOKEN_VAR: &str = "CLAUDE_CODE_OAUTH_TOKEN";
 /// window. Windows are read every 15 minutes at most, so sessions started
 /// together would otherwise all land on the seat that looked emptiest.
 const LIVE_WEIGHT: i64 = 10;
+/// How long a session start waits for the seats' windows to be read before
+/// it picks on the last ones known. Reads that take longer still land in
+/// the cache for the next pick.
+const FRESH_WAIT: Duration = Duration::from_secs(4);
 
 /// The seat's name as people read it.
 pub fn label(id: &str) -> String {
@@ -113,6 +118,9 @@ impl Store {
     }
 }
 
+/// Names Windows keeps for devices: a file can't have one, with any suffix.
+const DEVICES: [&str; 4] = ["con", "prn", "aux", "nul"];
+
 /// A name is also a file name, on every platform: lower case letters,
 /// digits, `-` and `_`, at most 32. `own` and `borrowed` name the other seats.
 pub fn valid_name(name: &str) -> Result<()> {
@@ -126,6 +134,16 @@ pub fn valid_name(name: &str) -> Result<()> {
     }
     if name == OWN || name == BORROWED {
         bail!("\"{name}\" is taken: it names the sign-in or the borrowed token");
+    }
+    // `com1` to `com9` and `lpt1` to `lpt9` too. Refused everywhere, so a
+    // seat added on one system can be copied to another.
+    let device = DEVICES.contains(&name)
+        || ((name.starts_with("com") || name.starts_with("lpt"))
+            && name.len() == 4
+            && name.as_bytes()[3].is_ascii_digit()
+            && name.as_bytes()[3] != b'0');
+    if device {
+        bail!("\"{name}\" names a device on Windows; pick another name");
     }
     Ok(())
 }
@@ -160,18 +178,22 @@ impl Lease {
 
 impl Drop for Lease {
     fn drop(&mut self) {
-        if let Ok(mut live) = LIVE.lock() {
-            live.retain(|(id, _)| *id != self.id);
-        }
+        live_lock().retain(|(id, _)| *id != self.id);
     }
+}
+
+fn live_lock() -> MutexGuard<'static, Vec<(u64, String)>> {
+    LIVE.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// Counts a session as live on `seat` until the lease is dropped.
 pub fn lease(seat: &str) -> Lease {
+    lease_in(&mut live_lock(), seat)
+}
+
+fn lease_in(live: &mut Vec<(u64, String)>, seat: &str) -> Lease {
     let id = NEXT.fetch_add(1, Ordering::Relaxed);
-    if let Ok(mut live) = LIVE.lock() {
-        live.push((id, seat.to_string()));
-    }
+    live.push((id, seat.to_string()));
     Lease {
         id,
         seat: seat.to_string(),
@@ -180,11 +202,13 @@ pub fn lease(seat: &str) -> Lease {
 
 /// How many live sessions each seat has.
 pub fn live() -> HashMap<String, usize> {
+    counts(&live_lock())
+}
+
+fn counts(live: &[(u64, String)]) -> HashMap<String, usize> {
     let mut counts = HashMap::new();
-    if let Ok(live) = LIVE.lock() {
-        for (_, seat) in live.iter() {
-            *counts.entry(seat.clone()).or_insert(0) += 1;
-        }
+    for (_, seat) in live {
+        *counts.entry(seat.clone()).or_insert(0) += 1;
     }
     counts
 }
@@ -242,11 +266,13 @@ pub struct Candidate {
 }
 
 impl Candidate {
-    fn new(id: &str, usage: Option<&PlanUsage>, live: &HashMap<String, usize>) -> Self {
+    /// From the seat's last known windows, as they stand at `now`: one that
+    /// has started over since it was read is empty.
+    fn new(id: &str, usage: Option<&PlanUsage>, live: &HashMap<String, usize>, now: u64) -> Self {
         Candidate {
             id: id.to_string(),
-            five_hour: usage.and_then(PlanUsage::five_hour),
-            near: usage.is_some_and(PlanUsage::near_limit),
+            five_hour: usage.and_then(|u| u.five_hour_at(now)),
+            near: usage.is_some_and(|u| u.near_limit(now)),
             live: live.get(id).copied().unwrap_or(0),
         }
     }
@@ -285,34 +311,42 @@ pub fn pick(candidates: &[Candidate]) -> Option<Picked> {
 }
 
 /// The seats a session can start on now, in order: the sign-in, the borrowed
-/// token, then the named seats. A named seat whose token never answered is
-/// left out; one not read yet is in, as empty.
+/// token, then the named seats. A named seat whose token never answered, or
+/// was refused at its last read, is left out; one not read yet is in, as
+/// empty.
 fn candidates(
     seats: &Seats,
     own: bool,
     borrowed: bool,
     names: &[String],
     live: &HashMap<String, usize>,
+    now: u64,
 ) -> Vec<Candidate> {
     let mut out = Vec::new();
     if own {
-        out.push(Candidate::new(OWN, seats.own.as_ref(), live));
+        out.push(Candidate::new(OWN, seats.own.as_ref(), live, now));
     }
     if borrowed {
-        out.push(Candidate::new(BORROWED, seats.borrowed.as_ref(), live));
+        out.push(Candidate::new(BORROWED, seats.borrowed.as_ref(), live, now));
     }
     for name in names {
         let known = seats.named.iter().find(|s| s.name == *name);
-        if known.is_some_and(|s| s.usage.is_none() && s.error.is_some()) {
+        if known.is_some_and(|s| s.refused() || (s.usage.is_none() && s.error.is_some())) {
             continue;
         }
         out.push(Candidate::new(
             name,
             known.and_then(|s| s.usage.as_ref()),
             live,
+            now,
         ));
     }
     out
+}
+
+/// Whether the last read of named seat `id` was refused.
+fn refused(seats: &Seats, id: &str) -> bool {
+    seats.named.iter().any(|s| s.name == id && s.refused())
 }
 
 /// The seat a session runs on, and what that means for its environment.
@@ -322,6 +356,10 @@ pub struct Assignment {
     token: Option<String>,
     /// Something to tell the session: its seat is gone, or every seat is full.
     pub notice: Option<String>,
+    /// The session counts as live on the seat from the moment it is picked,
+    /// so a pick made at the same time sees it. Dropped with the assignment
+    /// if the session never starts.
+    pub lease: Option<Lease>,
 }
 
 // By hand, so a log of it never shows the token.
@@ -331,6 +369,7 @@ impl std::fmt::Debug for Assignment {
             .field("seat", &self.seat)
             .field("token", &self.token.as_ref().map(|_| "[token]"))
             .field("notice", &self.notice)
+            .field("lease", &self.lease.as_ref().map(|l| l.id))
             .finish()
     }
 }
@@ -347,11 +386,14 @@ impl Assignment {
 }
 
 /// The seat a Claude Code session starts on: `pinned`, the one saved with
-/// it, while that seat is still there; else the one [`pick`] finds. `None`
-/// leaves the session as it would be without seats: none are saved, or they
-/// can't work ([`blocked`]). Refreshes each seat's windows stale past
-/// [`plan::seats`]' bounds, so the pick is not made on hours-old usage; the
-/// resolver that calls this runs off the UI thread.
+/// it, while that seat is still there and its token was not refused; else
+/// the one [`pick`] finds. `None` leaves the session as it would be without
+/// seats: none are saved, or they can't work ([`blocked`]).
+///
+/// Only a pick reads windows, and only those of the seats it chooses between
+/// that are stale past [`plan::seats_probing`]'s bounds, waiting at most
+/// [`FRESH_WAIT`]. The resolver that calls this runs off the UI thread. The
+/// session is counted on its seat in the same step as the pick.
 pub fn assign(pinned: Option<&str>) -> Option<Assignment> {
     if blocked().is_some() {
         return None;
@@ -360,23 +402,72 @@ pub fn assign(pinned: Option<&str>) -> Option<Assignment> {
     let names = store.names();
     let own = plan::own_sign_in();
     let borrowed = plan::borrowed_seat_token();
-    decide(
+    let token = |id: &str| match id {
+        OWN => own.then_some(None),
+        BORROWED => borrowed.clone().map(Some),
+        name => store.token(name).map(Some),
+    };
+    let known = plan::known_seats();
+    let now = super::rpc::unix_now();
+    let keeps = keeps_pin(pinned, &known, token) || (pinned.is_none() && names.is_empty());
+    let seats = if keeps {
+        known
+    } else {
+        let choices: Vec<String> = candidates(
+            &known,
+            own,
+            borrowed.is_some(),
+            &names,
+            &HashMap::new(),
+            now,
+        )
+        .into_iter()
+        .map(|c| c.id)
+        .filter(|id| names.contains(id))
+        .collect();
+        fresh(choices, FRESH_WAIT).unwrap_or(known)
+    };
+    let mut live = live_lock();
+    let mut a = decide(
         pinned,
         &names,
         own,
         borrowed.is_some(),
-        &plan::seats(),
-        &live(),
-        |id| match id {
-            OWN => own.then_some(None),
-            BORROWED => borrowed.clone().map(Some),
-            name => store.token(name).map(Some),
-        },
-    )
+        &seats,
+        &counts(&live),
+        now,
+        token,
+    )?;
+    a.lease = Some(lease_in(&mut live, &a.seat));
+    Some(a)
+}
+
+/// The seats' windows with the stale ones in `probe` read again, or `None`
+/// when that takes longer than `wait`.
+fn fresh(probe: Vec<String>, wait: Duration) -> Option<Seats> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("seat-windows".into())
+        .spawn(move || {
+            let _ = tx.send(plan::seats_probing(&probe));
+        })
+        .ok()?;
+    rx.recv_timeout(wait).ok()
+}
+
+/// Whether a session saved on `pinned` stays there: the seat is still saved
+/// and its token was not refused at its last read.
+fn keeps_pin(
+    pinned: Option<&str>,
+    seats: &Seats,
+    token: impl Fn(&str) -> Option<Option<String>>,
+) -> bool {
+    pinned.is_some_and(|p| token(p).is_some() && !refused(seats, p))
 }
 
 /// [`assign`] without the files. `token` says whether a seat is there and
 /// its token: `Some(None)` for the sign-in.
+#[allow(clippy::too_many_arguments)]
 fn decide(
     pinned: Option<&str>,
     names: &[String],
@@ -384,29 +475,40 @@ fn decide(
     borrowed: bool,
     seats: &Seats,
     live: &HashMap<String, usize>,
+    now: u64,
     token: impl Fn(&str) -> Option<Option<String>>,
 ) -> Option<Assignment> {
     if let Some(seat) = pinned
+        && keeps_pin(pinned, seats, &token)
         && let Some(t) = token(seat)
     {
         return Some(Assignment {
             seat: seat.to_string(),
             token: t,
             notice: None,
+            lease: None,
         });
     }
     // Opt-in: without a named seat, a new session starts as it always did.
     if pinned.is_none() && names.is_empty() {
         return None;
     }
-    let picked = pick(&candidates(seats, own, borrowed, names, live))?;
+    let picked = pick(&candidates(seats, own, borrowed, names, live, now))?;
     let t = token(&picked.id)?;
     let on = label(&picked.id);
     let mut notice = pinned.map(|p| {
-        format!(
-            "Seat {} is gone, so this session now runs on {on}.",
-            label(p)
-        )
+        if refused(seats, p) {
+            format!(
+                "Seat {p}'s token was refused, so this session now runs on {on}. \
+                 Run `arakun seat rm {p}` and add it again with a new token from \
+                 `claude setup-token`."
+            )
+        } else {
+            format!(
+                "Seat {} is gone, so this session now runs on {on}.",
+                label(p)
+            )
+        }
     });
     if picked.crowded {
         let full = format!(
@@ -421,6 +523,7 @@ fn decide(
         seat: picked.id,
         token: t,
         notice,
+        lease: None,
     })
 }
 
@@ -447,7 +550,7 @@ pub fn cli(args: &[String]) -> i32 {
             .map(|usage| plan::remember_named(name, usage))
         }
         [cmd] if cmd == "ls" => {
-            let seats = plan::seats();
+            let seats = plan::seats_probing(&store.names());
             let rows = list(
                 &seats,
                 plan::own_sign_in(),
@@ -670,7 +773,6 @@ impl Drop for NoEcho {
 mod tests {
     use super::*;
     use crate::agent::plan::{NamedSeat, Window};
-    use std::path::Path;
 
     const SECRET: &str = "sk-ant-oat01-NOT-A-REAL-TOKEN-abc123";
 
@@ -778,7 +880,7 @@ mod tests {
         let names: Vec<String> = ["broken", "dead", "flaky", "fresh", "new"]
             .map(String::from)
             .into();
-        let c = candidates(&seats, true, false, &names, &HashMap::new());
+        let c = candidates(&seats, true, false, &names, &HashMap::new(), 0);
         let ids: Vec<&str> = c.iter().map(|c| c.id.as_str()).collect();
         // "broken" never worked; "flaky" failed once but kept its windows;
         // "new" was never read and counts as empty.
@@ -807,7 +909,17 @@ mod tests {
             ],
             ..Seats::default()
         };
-        let a = decide(None, &names, true, false, &seats, &HashMap::new(), tokens).unwrap();
+        let a = decide(
+            None,
+            &names,
+            true,
+            false,
+            &seats,
+            &HashMap::new(),
+            0,
+            tokens,
+        )
+        .unwrap();
         assert_eq!(a.seat, "b");
         assert_eq!(a.notice, None);
         let (set, unset) = a.env();
@@ -833,10 +945,10 @@ mod tests {
             ..Seats::default()
         };
         let live = HashMap::from([("b".to_string(), 0)]);
-        let a = decide(Some("a"), &names, true, false, &seats, &live, tokens).unwrap();
+        let a = decide(Some("a"), &names, true, false, &seats, &live, 0, tokens).unwrap();
         assert_eq!((a.seat.as_str(), a.notice.as_deref()), ("a", None));
         // The sign-in runs with no token at all, even one Arakun was started with.
-        let a = decide(Some(OWN), &names, true, false, &seats, &live, tokens).unwrap();
+        let a = decide(Some(OWN), &names, true, false, &seats, &live, 0, tokens).unwrap();
         assert_eq!(a.seat, OWN);
         assert_eq!(a.env(), (Vec::new(), vec![TOKEN_VAR.to_string()]));
     }
@@ -856,6 +968,7 @@ mod tests {
             false,
             &seats,
             &HashMap::new(),
+            0,
             tokens,
         )
         .unwrap();
@@ -866,9 +979,95 @@ mod tests {
     }
 
     #[test]
+    fn a_window_that_started_over_since_it_was_read_is_empty() {
+        let mut u = usage(95, 10);
+        u.windows[0].resets_at = Some(1_000);
+        let live = HashMap::new();
+        let before = Candidate::new("a", Some(&u), &live, 999);
+        assert_eq!((before.five_hour, before.near), (Some(95), true));
+        // Same cached usage, read after the reset: not near, and its 95% no
+        // longer counts against its room.
+        let after = Candidate::new("a", Some(&u), &live, 1_000);
+        assert_eq!((after.five_hour, after.near), (None, false));
+        assert_eq!(after.room(), 100);
+        // A weekly window near its limit still counts until it resets too.
+        let mut u = usage(10, 90);
+        u.windows[1].resets_at = Some(5_000);
+        assert!(Candidate::new("a", Some(&u), &live, 4_999).near);
+        assert!(!Candidate::new("a", Some(&u), &live, 5_000).near);
+    }
+
+    #[test]
+    fn a_session_on_a_refused_seat_moves_and_names_it() {
+        let names: Vec<String> = vec!["a".into(), "b".into()];
+        let seats = Seats {
+            own: Some(usage(50, 10)),
+            named: vec![
+                NamedSeat {
+                    error: Some(
+                        "HTTP 401: the token's answer carried no rate-limit headers".into(),
+                    ),
+                    ..named("a", Some(usage(0, 0)))
+                },
+                named("b", Some(usage(20, 10))),
+            ],
+            ..Seats::default()
+        };
+        // "a" looks emptiest from its last good read, but its token is dead.
+        let a = decide(
+            Some("a"),
+            &names,
+            true,
+            false,
+            &seats,
+            &HashMap::new(),
+            0,
+            tokens,
+        )
+        .unwrap();
+        assert_eq!(a.seat, "b");
+        let notice = a.notice.unwrap();
+        assert!(notice.contains("Seat a's token was refused"), "{notice}");
+        assert!(notice.contains("arakun seat rm a"), "{notice}");
+        // New sessions don't pick it either.
+        let a = decide(
+            None,
+            &names,
+            true,
+            false,
+            &seats,
+            &HashMap::new(),
+            0,
+            tokens,
+        )
+        .unwrap();
+        assert_eq!((a.seat.as_str(), a.notice), ("b", None));
+        // A seat that is only busy keeps its sessions.
+        let busy = Seats {
+            named: vec![NamedSeat {
+                error: Some("HTTP 429".into()),
+                ..named("a", Some(usage(0, 0)))
+            }],
+            ..seats
+        };
+        let a = decide(
+            Some("a"),
+            &names,
+            true,
+            false,
+            &busy,
+            &HashMap::new(),
+            0,
+            tokens,
+        )
+        .unwrap();
+        assert_eq!((a.seat.as_str(), a.notice), ("a", None));
+    }
+
+    #[test]
     fn without_named_seats_sessions_start_as_before() {
         let seats = Seats::default();
-        assert!(decide(None, &[], true, true, &seats, &HashMap::new(), tokens).is_none());
+        assert!(decide(None, &[], true, true, &seats, &HashMap::new(), 0, tokens).is_none());
     }
 
     #[test]
@@ -886,11 +1085,14 @@ mod tests {
 
     #[test]
     fn names_are_file_names_and_not_the_other_seats() {
-        for ok in ["work", "max-2", "a_b", "x"] {
+        for ok in [
+            "work", "max-2", "a_b", "x", "com", "com0", "com10", "console",
+        ] {
             assert!(valid_name(ok).is_ok(), "{ok}");
         }
         for bad in [
-            "", "own", "borrowed", "Work", "../x", "a/b", "a b", ".hidden", "-x", "é",
+            "", "own", "borrowed", "Work", "../x", "a/b", "a b", ".hidden", "-x", "é", "con",
+            "nul", "aux", "prn", "com1", "lpt9",
         ] {
             assert!(valid_name(bad).is_err(), "{bad}");
         }
@@ -914,6 +1116,7 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt as _;
+            use std::path::Path;
             let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
             assert_eq!(mode(&dir.join("work")), 0o600);
             assert_eq!(mode(&dir), 0o700);

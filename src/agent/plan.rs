@@ -113,6 +113,16 @@ pub struct NamedSeat {
     pub error: Option<String>,
 }
 
+impl NamedSeat {
+    /// The last read was turned away (401 or 403): the token was revoked or
+    /// has expired, and no session can run on it until it is added again.
+    pub fn refused(&self) -> bool {
+        self.error
+            .as_deref()
+            .is_some_and(|e| e.starts_with("HTTP 401") || e.starts_with("HTTP 403"))
+    }
+}
+
 impl Seats {
     /// The seat Claude Code runs on right now.
     pub fn active(&self) -> Option<&PlanUsage> {
@@ -154,6 +164,11 @@ impl Window {
                 .unwrap_or(&self.label)
                 .to_string()
         }
+    }
+
+    /// The window has started over by `now`, so what it said is past.
+    pub fn reset_by(&self, now: u64) -> bool {
+        self.resets_at.is_some_and(|at| at <= now)
     }
 
     /// Near or over the limit: worth drawing in red.
@@ -219,13 +234,22 @@ impl PlanUsage {
         self.windows.iter().find(|w| w.label == FIVE_HOUR)
     }
 
-    /// Near or over its 5-hour or weekly limit: a new session should go
-    /// elsewhere if it can.
-    pub fn near_limit(&self) -> bool {
+    /// How full the 5-hour window is at `now`: none once it has started over
+    /// since it was read.
+    pub fn five_hour_at(&self, now: u64) -> Option<u64> {
+        self.five_hour_window()
+            .filter(|w| !w.reset_by(now))
+            .map(|w| w.percent)
+    }
+
+    /// Near or over its 5-hour or weekly limit at `now`: a new session should
+    /// go elsewhere if it can. A window that has started over since it was
+    /// read is empty, whatever it said then.
+    pub fn near_limit(&self, now: u64) -> bool {
         [self.five_hour_window(), self.weekly()]
             .into_iter()
             .flatten()
-            .any(|w| w.active && w.hot())
+            .any(|w| w.active && w.hot() && !w.reset_by(now))
     }
 
     /// "Team · Max 5x" for the settings list; empty when nothing is known.
@@ -335,22 +359,36 @@ pub fn refresh() -> Option<PlanUsage> {
 /// Both seats, the sign-in at most every [`STALE`] seconds and the borrowed
 /// one every [`BORROWED_STALE`] (reading it costs a few tokens of that seat).
 /// A seat that fails to answer keeps the cache's windows, so one dead token
-/// never blanks the other.
+/// never blanks the other. Named seats keep their last windows: reading one
+/// sends it a message, which can start its 5-hour window, so only
+/// [`seats_probing`] does.
 pub fn seats() -> Seats {
+    seats_probing(&[])
+}
+
+/// [`seats`], and the named seats in `probe` whose windows are older than
+/// [`BORROWED_STALE`]: for the Usage tab while it is on screen, and for a
+/// session about to pick a seat.
+pub fn seats_probing(probe: &[String]) -> Seats {
     let at = now();
     let mut out = cached_seats().unwrap_or_default();
     let token = borrowed_token();
     let store = super::seats::Store::open();
     let names = store.names();
+    let probe: Vec<String> = probe
+        .iter()
+        .filter(|n| names.contains(n))
+        .cloned()
+        .collect();
     let own_due = out.own.is_none() || at.saturating_sub(out.at) >= STALE;
     let borrowed_due = token.is_some()
         && (out.borrowed.is_none() || at.saturating_sub(out.borrowed_at) >= BORROWED_STALE);
-    let named_due = !named_due(&out.named, &names, at).is_empty()
+    let named_due = !named_due(&out.named, &probe, at).is_empty()
         || out.named.iter().any(|s| !names.contains(&s.name));
     if !own_due && !borrowed_due && !named_due && (token.is_some() || out.borrowed.is_none()) {
         return remember_seats(out);
     }
-    let mut changed = refresh_named(&mut out.named, &names, at, |name| {
+    let mut changed = refresh_named(&mut out.named, &names, &probe, at, |name| {
         let token = store
             .token(name)
             .ok_or_else(|| anyhow!("the seat's token file is gone"))?;
@@ -396,18 +434,19 @@ fn named_due(named: &[NamedSeat], names: &[String], at: u64) -> Vec<String> {
 }
 
 /// Brings `named` in line with the seats saved now (`names`): drops the gone
-/// ones and reads the due ones, all at once, each with `fetch`. A read that
-/// fails keeps the seat's last windows. Whether anything changed.
+/// ones and reads the due ones among `probe`, all at once, each with `fetch`.
+/// A read that fails keeps the seat's last windows. Whether anything changed.
 fn refresh_named(
     named: &mut Vec<NamedSeat>,
     names: &[String],
+    probe: &[String],
     at: u64,
     fetch: impl Fn(&str) -> Result<PlanUsage> + Sync,
 ) -> bool {
     let before = named.len();
     named.retain(|s| names.contains(&s.name));
     let mut changed = named.len() != before;
-    let due = named_due(named, names, at);
+    let due = named_due(named, probe, at);
     let fetch = &fetch;
     let read: Vec<(String, Result<PlanUsage>)> = std::thread::scope(|scope| {
         let jobs: Vec<_> = due
@@ -1099,7 +1138,13 @@ mod tests {
         ];
         let names: Vec<String> = vec!["fresh".into(), "new".into()];
         let asked = std::sync::Mutex::new(Vec::new());
-        let changed = refresh_named(&mut named, &names, 1_000 + 60, |name| {
+        // Not asked to probe, nothing is read; the removed one is dropped.
+        let mut quiet = named.clone();
+        assert!(refresh_named(&mut quiet, &names, &[], 1_000, |_| {
+            panic!("probed unasked")
+        }));
+        assert_eq!(quiet.len(), 1);
+        let changed = refresh_named(&mut named, &names, &names, 1_000 + 60, |name| {
             asked.lock().unwrap().push(name.to_string());
             Ok(good.clone())
         });
@@ -1112,7 +1157,7 @@ mod tests {
         );
         // Past the staleness both are asked again; a failure keeps the windows.
         let later = 1_000 + 60 + BORROWED_STALE;
-        assert!(refresh_named(&mut named, &names, later, |name| {
+        assert!(refresh_named(&mut named, &names, &names, later, |name| {
             if name == "fresh" {
                 Err(anyhow!("HTTP 429"))
             } else {
@@ -1121,11 +1166,20 @@ mod tests {
         }));
         assert_eq!(named[0].usage.as_ref().unwrap().five_hour(), Some(25));
         assert_eq!(named[0].error.as_deref(), Some("HTTP 429"));
+        // Busy is not refused; only a 401 or 403 says the token is dead.
+        assert!(!named[0].refused());
+        let mut dead = named[0].clone();
+        dead.error = Some("HTTP 401: the token's answer carried no rate-limit headers".into());
+        assert!(dead.refused());
         assert_eq!(named[0].at, later);
         // Nothing due, nothing asked, nothing changed.
-        assert!(!refresh_named(&mut named, &names, later + 1, |_| {
-            panic!("asked too soon")
-        }));
+        assert!(!refresh_named(
+            &mut named,
+            &names,
+            &names,
+            later + 1,
+            |_| { panic!("asked too soon") }
+        ));
         // They survive the cache's JSON, with no token in it.
         let seats = Seats {
             named: named.clone(),
@@ -1142,12 +1196,12 @@ mod tests {
             "anthropic-ratelimit-unified-7d-utilization": ["0.85"]
         }));
         assert_eq!(p.five_hour(), Some(30));
-        assert!(p.near_limit());
+        assert!(p.near_limit(0));
         let p = parse_headers(&serde_json::json!({
             "anthropic-ratelimit-unified-5h-utilization": ["0.3"],
             "anthropic-ratelimit-unified-7d-utilization": ["0.1"]
         }));
-        assert!(!p.near_limit());
+        assert!(!p.near_limit(0));
         // The sign-in's endpoint names the weekly window differently.
         let own = parse_usage(
             &serde_json::json!({"limits": [
@@ -1158,7 +1212,7 @@ mod tests {
             "",
         );
         assert_eq!(own.weekly().map(|w| w.percent), Some(90));
-        assert!(own.near_limit());
+        assert!(own.near_limit(0));
         // A model's own weekly window says nothing about the others.
         let mut p = p;
         p.windows.push(Window {
@@ -1168,7 +1222,7 @@ mod tests {
             resets_at: None,
             active: true,
         });
-        assert!(!p.near_limit());
+        assert!(!p.near_limit(0));
     }
 
     #[test]

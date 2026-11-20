@@ -807,19 +807,36 @@ struct Seen {
 /// shows what was already waiting.
 fn news(
     seen: &mut Option<Seen>,
-    unread: &[Notification],
-    requested: Option<&HashSet<String>>,
+    unread: Option<&[Notification]>,
+    search: Option<&[(queue::Why, queue::Found)]>,
 ) -> Vec<Notification> {
+    let requested = search.map(|found| {
+        let rows = found
+            .iter()
+            .filter(|(why, _)| *why == queue::Why::ReviewRequested);
+        let count = rows.clone().count();
+        let keys: HashSet<_> = rows
+            .filter_map(|(why, f)| f.item(*why))
+            .map(|item| queue::key_of(&item))
+            .collect();
+        // Only a complete search can prove that a request ended.
+        if count < queue::SEARCH_LIMIT
+            && keys.len() == count
+            && let Some(s) = seen.as_mut()
+        {
+            s.reviews.retain(|key| keys.contains(key));
+        }
+        keys
+    });
+    // The search can retire requests even when the inbox read fails. Only
+    // a successful inbox read can establish the baseline or emit a notice.
+    let Some(unread) = unread else {
+        return Vec::new();
+    };
     let first = seen.is_none();
     let s = seen.get_or_insert_with(Seen::default);
-    if let Some(requested) = requested {
-        // A full search page (or a failed search) cannot prove a request ended.
-        if requested.len() < queue::SEARCH_LIMIT {
-            s.reviews.retain(|key| requested.contains(key));
-        }
-        if first {
-            s.reviews.extend(requested.iter().cloned());
-        }
+    if first && let Some(keys) = &requested {
+        s.reviews.extend(keys.iter().cloned());
     }
     let mut out = Vec::new();
     for n in unread {
@@ -830,7 +847,7 @@ fn news(
                     s.reviews.insert(key);
                     return false;
                 }
-                requested.is_some_and(|r| r.contains(&key)) && s.reviews.insert(key)
+                requested.as_ref().is_some_and(|r| r.contains(&key)) && s.reviews.insert(key)
             })
         } else {
             s.at.get(&n.id) != Some(&n.updated_at) && n.updated_at >= s.newest
@@ -1160,16 +1177,24 @@ impl GitHub {
                 this.found = queue::merge_found(std::mem::take(&mut this.found), found, &failed);
                 this.searched = true;
                 this.search_problem = search_problem;
-                match unread {
-                    Ok((raw, interval)) => {
+                let interval = unread.map(|(raw, interval)| {
+                    this.take_unread(raw);
+                    interval
+                });
+                let mut fresh = news(
+                    &mut this.seen,
+                    interval.as_ref().ok().map(|_| this.unread.as_slice()),
+                    (!failed.contains(&queue::Why::ReviewRequested))
+                        .then_some(this.found.as_slice()),
+                );
+                match interval {
+                    Ok(interval) => {
                         this.problem = None;
                         if interval.is_some() && interval != this.poll_interval {
                             this.poll_interval = interval;
                             this.wake_poll();
                         }
                         this.loaded = true;
-                        let fresh =
-                            this.take_unread(raw, !failed.contains(&queue::Why::ReviewRequested));
                         if let Some(all) = all.filter(|_| this.show_all) {
                             this.all = all;
                             this.all_loaded = true;
@@ -1177,7 +1202,6 @@ impl GitHub {
                         }
                         // A merged pull request's news is settled, not shown.
                         this.settle_all_merged(cx);
-                        let mut fresh = fresh;
                         fresh.retain(|n| this.unread.iter().any(|u| u.id == n.id));
                         if !fresh.is_empty() {
                             cx.emit(GitHubEvent::New(fresh));
@@ -1603,27 +1627,15 @@ impl GitHub {
         .detach();
     }
 
-    /// Keeps what a read brought, minus what was marked read meanwhile, and
-    /// returns the new ones.
-    fn take_unread(&mut self, raw: Vec<Notification>, reviews_ok: bool) -> Vec<Notification> {
+    /// Keeps what a read brought, minus what was marked read meanwhile.
+    fn take_unread(&mut self, raw: Vec<Notification>) {
         // GitHub no longer lists it, or it has new activity: the mark did its job.
         self.read_marks
             .retain(|id, at| raw.iter().any(|n| &n.id == id && &n.updated_at == at));
-        let list: Vec<Notification> = raw
+        self.unread = raw
             .into_iter()
             .filter(|n| n.unread && self.read_marks.get(&n.id) != Some(&n.updated_at))
             .collect();
-        let requested = reviews_ok.then(|| {
-            self.found
-                .iter()
-                .filter(|(why, _)| *why == queue::Why::ReviewRequested)
-                .filter_map(|(why, f)| f.item(*why))
-                .map(|item| queue::key_of(&item))
-                .collect()
-        });
-        let fresh = news(&mut self.seen, &list, requested.as_ref());
-        self.unread = list;
-        fresh
     }
 
     /// Shows as read, in the "All" list, what was marked read here.
@@ -2180,7 +2192,7 @@ mod tests {
     #[test]
     fn notifications_are_news_only_after_the_first_read() {
         let mut seen = None;
-        let news = |s: &mut Option<Seen>, unread: &[Notification]| news(s, unread, None);
+        let news = |s: &mut Option<Seen>, unread: &[Notification]| news(s, Some(unread), None);
         let a = note(
             "1",
             "PullRequest",
@@ -2217,11 +2229,25 @@ mod tests {
         assert_eq!(news(&mut seen, std::slice::from_ref(&b)), [b]);
     }
 
+    fn review_search(number: usize) -> (queue::Why, queue::Found) {
+        (
+            queue::Why::ReviewRequested,
+            queue::Found {
+                url: format!("https://github.com/o/r/pull/{number}"),
+                ..Default::default()
+            },
+        )
+    }
+
     #[test]
     fn review_notices_follow_pending_requests_not_thread_activity() {
         let mut seen = None;
-        let empty = HashSet::new();
-        news(&mut seen, &[], Some(&empty));
+        let news = |s: &mut Option<Seen>,
+                    unread: &[Notification],
+                    search: Option<&[(queue::Why, queue::Found)]>| {
+            news(s, Some(unread), search)
+        };
+        news(&mut seen, &[], Some(&[]));
         let mut notes: Vec<_> = (1..=4)
             .map(|n| {
                 note(
@@ -2234,20 +2260,49 @@ mod tests {
                 )
             })
             .collect();
-        let active: HashSet<_> = (1..=4).map(|n| format!("o/r#{n}")).collect();
+        let active: Vec<_> = (1..=4).map(review_search).collect();
         assert_eq!(news(&mut seen, &notes, Some(&active)), notes);
         for n in &mut notes {
             n.updated_at = "2026-11-14T11:00:00Z".into();
         }
         assert!(news(&mut seen, &[], None).is_empty());
         assert!(news(&mut seen, &notes, Some(&active)).is_empty());
-        let mut remaining = active.clone();
-        remaining.remove("o/r#1");
-        assert!(news(&mut seen, &notes, Some(&remaining)).is_empty());
+        assert!(news(&mut seen, &notes, Some(&active[1..])).is_empty());
         assert_eq!(news(&mut seen, &notes, Some(&active)), notes[..1]);
         notes[0].reason = "mention".into();
         notes[0].updated_at = "2026-11-14T12:00:00Z".into();
         assert_eq!(news(&mut seen, &notes, Some(&active)), notes[..1]);
+    }
+
+    #[test]
+    fn a_withdrawn_review_can_alert_again_after_an_unread_failure() {
+        let mut seen = None;
+        let active = [review_search(1)];
+        let notes = [note(
+            "1",
+            "PullRequest",
+            "review_requested",
+            Some("https://api.github.com/repos/o/r/pulls/1"),
+            "o/r",
+            "2026-11-14T10:00:00Z",
+        )];
+
+        assert!(news(&mut seen, None, Some(&active)).is_empty());
+        assert!(
+            seen.is_none(),
+            "a failed first inbox read is not a baseline"
+        );
+        assert!(news(&mut seen, Some(&notes), Some(&active)).is_empty());
+
+        let full: Vec<_> = (2..2 + queue::SEARCH_LIMIT).map(review_search).collect();
+        for uncertain in [None, Some(full.as_slice())] {
+            assert!(news(&mut seen, None, uncertain).is_empty());
+            assert!(news(&mut seen, Some(&notes), Some(&active)).is_empty());
+        }
+
+        assert!(news(&mut seen, None, Some(&[])).is_empty());
+        assert_eq!(news(&mut seen, Some(&notes), Some(&active)), notes);
+        assert!(news(&mut seen, Some(&notes), Some(&active)).is_empty());
     }
 
     /// Reads this machine's own inbox through gh; nothing is marked read.

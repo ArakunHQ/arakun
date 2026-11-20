@@ -45,6 +45,8 @@ enum Pane {
     NewTeam,
     /// The invites this user got.
     Invites,
+    /// A team this user asked to join, waiting for an admin.
+    Asked(String),
     /// This user's own devices.
     Devices,
 }
@@ -134,9 +136,13 @@ pub struct TeamsView {
     last_team: Option<String>,
     /// The field for a new channel shows in the channel list.
     adding_channel: bool,
-    /// Teams there were when "Create team" was pressed: the new one is the
-    /// one not among them, and its page opens once it arrives.
-    creating_from: Option<HashSet<String>>,
+    /// "Create team" was pressed: the team the server names for it
+    /// (`Hub::created`) opens once it arrives. Any other team arriving
+    /// meanwhile, say from an approved invite, is not it.
+    creating: bool,
+    /// The invite accepted on the Invites page, as (team, invite): once the
+    /// request is in, the sheet shows its wait instead of an empty list.
+    accepting: Option<(String, String)>,
     team_name: Entity<TextInput>,
     invite: Entity<TextInput>,
     channel_name: Entity<TextInput>,
@@ -221,7 +227,8 @@ impl TeamsView {
             team_menu: false,
             last_team: None,
             adding_channel: false,
-            creating_from: None,
+            creating: false,
+            accepting: None,
             team_name,
             invite,
             channel_name,
@@ -295,7 +302,20 @@ impl TeamsView {
             Pane::Team(t) | Pane::Invite(t) | Pane::Pending(t) => {
                 !hub.teams.iter().any(|r| r.team_id == *t)
             }
+            // Turned down, or let in (handled below).
+            Pane::Asked(t) => !hub.asked().iter().any(|(a, _)| a == t),
             _ => false,
+        };
+        // The request went in: show its wait. It failed: the invite stays.
+        let accepted = match &self.accepting {
+            Some((t, _)) if hub.asked().iter().any(|(a, _)| a == t) => Some(Some(t.clone())),
+            Some((_, invite)) if !hub.busy.contains(&format!("accept:{invite}")) => Some(None),
+            _ => None,
+        };
+        // An admin let this user in while they looked at the wait.
+        let let_in = match &self.pane {
+            Pane::Asked(t) if hub.teams.iter().any(|r| r.team_id == *t) => Some(t.clone()),
+            _ => None,
         };
         // A team still loading is not gone yet.
         let loading = match &self.pane {
@@ -304,12 +324,13 @@ impl TeamsView {
             }
             _ => false,
         };
-        let created = self.creating_from.as_ref().and_then(|before| {
-            hub.teams
-                .iter()
-                .find(|r| !before.contains(&r.team_id) && hub.team.contains_key(&r.team_id))
-                .map(|r| r.team_id.clone())
-        });
+        let created = hub
+            .created
+            .clone()
+            .filter(|t| self.creating && hub.team.contains_key(t));
+        // Refused before the server made anything: the name stays to fix.
+        let create_failed =
+            self.creating && hub.created.is_none() && !hub.busy.contains("create-team");
         let mut people: Vec<String> = Vec::new();
         people.extend(hub.me().map(|m| m.login.clone()));
         for t in hub.team.values() {
@@ -323,9 +344,26 @@ impl TeamsView {
         );
         people.extend(hub.inviters.values().cloned());
         people.extend(hub.sent.iter().map(|(_, l, _)| l.clone()));
-        if let Some(team) = created {
-            self.creating_from = None;
+        if let Some(accepted) = accepted {
+            self.accepting = None;
+            if let Some(t) = accepted
+                && self.pane == Pane::Invites
+            {
+                self.pane = Pane::Asked(t);
+            }
+        }
+        if let Some(t) = let_in {
+            let first = self.first_channel(&t, cx);
+            match first {
+                Some((t, c)) => self.open_channel(t, c, cx),
+                None => self.pane = Pane::Team(t),
+            }
+        } else if let Some(team) = created {
+            self.creating = false;
+            self.team_name.update(cx, |i, cx| i.set_text("", cx));
             self.pane = Pane::Team(team);
+        } else if create_failed {
+            self.creating = false;
         } else if gone && !loading {
             self.pane = Pane::None;
             self.side = None;
@@ -337,8 +375,18 @@ impl TeamsView {
                 let c = t.channels.first()?;
                 Some((r.team_id.clone(), c.id.clone()))
             });
+            // Every team loaded and none has a channel (its setup failed
+            // part way): its page, where an admin can make the first one.
+            let channelless = hub
+                .teams
+                .iter()
+                .all(|r| hub.team.contains_key(&r.team_id))
+                .then(|| hub.teams.first().map(|r| r.team_id.clone()))
+                .flatten();
             if let Some((t, c)) = first {
                 self.open_channel(t, c, cx);
+            } else if let Some(t) = channelless {
+                self.pane = Pane::Team(t);
             }
         }
         self.teams.update(cx, |t, cx| t.want_pictures(people, cx));
@@ -431,15 +479,8 @@ impl TeamsView {
         if name.is_empty() {
             return;
         }
-        self.team_name.update(cx, |i, cx| i.set_text("", cx));
-        let before = self
-            .hub
-            .read(cx)
-            .teams
-            .iter()
-            .map(|r| r.team_id.clone())
-            .collect();
-        self.creating_from = Some(before);
+        // The name stays in the field until the team opens, to fix on a refusal.
+        self.creating = true;
         self.hub.update(cx, |h, cx| h.create_team(name, cx));
         cx.notify();
     }
@@ -894,6 +935,7 @@ impl TeamsView {
             })
             .collect();
         let has_invites = !hub.invites.is_empty();
+        let asked = hub.asked();
         let mut panel = ui::menu_panel("teams-menu", 240.).p(ui::sp(5.));
         for (i, (id, name, first)) in teams.into_iter().enumerate() {
             let on = current.as_deref() == Some(id.as_str());
@@ -906,6 +948,18 @@ impl TeamsView {
                             None => Pane::Team(id.clone()),
                         };
                         this.show(pane, window, cx)
+                    })),
+            );
+        }
+        // Teams asked to join: their wait, until an admin lets this user in.
+        for (i, (id, name)) in asked.into_iter().enumerate() {
+            panel = panel.child(
+                ui::menu_item(("teams-menu-asked", i), "clock01", name, false, true)
+                    .when(self.pane == Pane::Asked(id.clone()), |d| {
+                        d.bg(theme::selection())
+                    })
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.show(Pane::Asked(id.clone()), window, cx)
                     })),
             );
         }
@@ -943,8 +997,7 @@ impl TeamsView {
 
     /// "Start a team".
     fn render_new_team(&self, cx: &mut Context<Self>) -> AnyElement {
-        let creating =
-            self.hub.read(cx).busy.contains("create-team") || self.creating_from.is_some();
+        let creating = self.hub.read(cx).busy.contains("create-team") || self.creating;
         Self::scrolling(
             "teams-new-page",
             Self::page()
@@ -1085,6 +1138,10 @@ impl TeamsView {
                                     !busy,
                                 )
                                 .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.accepting = Some((
+                                        accept.team_id.clone(),
+                                        accept.invite_id.clone(),
+                                    ));
                                     this.hub.update(cx, |h, cx| h.accept(&accept, cx));
                                 })),
                             ),
@@ -1210,6 +1267,8 @@ impl TeamsView {
         let problem = t.problem.clone();
         let name = t.detail.name.clone();
         let first = t.channels.first().map(|c| (c.id.clone(), c.name.clone()));
+        let can_add_channel = admin && !t.keyless;
+        let making = hub.busy.contains(&format!("channel:{team_id}"));
         let device_count: usize = devices.values().map(Vec::len).sum();
         let owners = members.iter().filter(|m| m.role == Role::Owner).count();
         let tid = team_id.to_string();
@@ -1359,6 +1418,37 @@ impl TeamsView {
                             this.show(Pane::Channel(t5.clone(), cid.clone()), window, cx)
                         })),
                     ),
+            );
+        } else if can_add_channel {
+            // A team whose first channel was not made: there is no channel
+            // column to add one from, so it starts here.
+            page = page.child(
+                Self::card().child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(ui::sp(8.))
+                        .p(ui::sp(12.))
+                        .child(
+                            ui::field()
+                                .flex_1()
+                                .child(icon("comment01", 14.).text_color(theme::text_subtle()))
+                                .child(div().flex_1().child(self.channel_name.clone())),
+                        )
+                        .child(
+                            ui::button(
+                                "teams-first-channel",
+                                if making {
+                                    "Making…"
+                                } else {
+                                    "Make the first channel"
+                                },
+                                ButtonKind::Primary,
+                                !making,
+                            )
+                            .on_click(cx.listener(|this, _, _, cx| this.create_channel(cx))),
+                        ),
+                ),
             );
         }
         Self::scrolling("teams-team-page", page)
@@ -1793,7 +1883,7 @@ impl TeamsView {
         list = list
             .child(div().h(px(ui::sp(8.).as_f32())))
             .child(Self::column_title("People"));
-        for login in people {
+        for (login, shown) in people {
             list = list.child(
                 div()
                     .flex()
@@ -1804,7 +1894,7 @@ impl TeamsView {
                     .ty(Type::Body)
                     .text_color(theme::text_muted())
                     .child(faces.avatar(&login, 20.))
-                    .child(div().flex_1().min_w_0().truncate().child(login)),
+                    .child(div().flex_1().min_w_0().truncate().child(shown)),
             );
         }
         div()
@@ -3019,12 +3109,23 @@ impl TeamsView {
                 .map(|r| r.name.clone())
                 .unwrap_or_default()
         };
-        // A device without the team key waits, whatever was picked.
-        let waiting_on = self
-            .selected_team()
-            .filter(|t| keyless(t))
-            .map(|t| (t.to_string(), name_of(t), admins_of(t)));
+        // A device without the team key waits instead of a channel it can't
+        // read. The team's pages stay: rejecting a request and leaving need
+        // no key, and Approve is off there until the key comes.
+        let waiting_on = match &self.pane {
+            Pane::Channel(t, _) => Some(t.as_str()),
+            _ => None,
+        }
+        .filter(|t| keyless(t))
+        .map(|t| (t.to_string(), name_of(t), admins_of(t)));
         let inviters = hub.inviters.clone();
+        let first_team = hub.teams.first().map(|r| r.team_id.clone());
+        let back_team = || {
+            self.last_team
+                .clone()
+                .filter(|t| !name_of(t).is_empty())
+                .or_else(|| first_team.clone())
+        };
 
         let (header_team, header_channel, body): (Option<String>, Option<String>, AnyElement) =
             match self.pane.clone() {
@@ -3052,16 +3153,25 @@ impl TeamsView {
                 Pane::Team(t) => (Some(t.clone()), None, self.render_team(&t, faces, cx)),
                 Pane::Invite(t) => (Some(t.clone()), None, self.render_invite(&t, faces, cx)),
                 Pane::Pending(t) => (Some(t.clone()), None, self.render_pending(&t, faces, cx)),
-                Pane::Devices => {
-                    let team = self
-                        .last_team
-                        .clone()
-                        .filter(|t| !name_of(t).is_empty())
-                        .or_else(|| self.hub.read(cx).teams.first().map(|r| r.team_id.clone()));
-                    (team, None, self.render_devices(cx))
+                Pane::Devices => (back_team(), None, self.render_devices(cx)),
+                // The header's menu is the way back to the team.
+                Pane::NewTeam => (back_team(), None, self.render_new_team(cx)),
+                Pane::Invites => (back_team(), None, self.render_invites(faces, cx)),
+                Pane::Asked(t) => {
+                    let name = asked
+                        .iter()
+                        .find(|(a, _)| *a == t)
+                        .map(|(_, n)| n.clone())
+                        .unwrap_or_default();
+                    let who: Vec<String> = inviters.get(&t).cloned().into_iter().collect();
+                    let subtitle =
+                        "You accepted the invite. One step is left, and it is not yours.";
+                    (
+                        back_team(),
+                        None,
+                        self.render_waiting(&name, subtitle, who, faces),
+                    )
                 }
-                Pane::NewTeam => (None, None, self.render_new_team(cx)),
-                Pane::Invites => (None, None, self.render_invites(faces, cx)),
                 Pane::None if no_teams && has_invites => {
                     (None, None, self.render_invites(faces, cx))
                 }

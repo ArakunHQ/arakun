@@ -135,7 +135,10 @@ mod imp {
     };
     use windows_sys::core::BOOL;
 
-    static TX: Mutex<Option<(oneshot::Sender<()>, fn())>> = Mutex::new(None);
+    /// Where the event goes, and what runs first on the handler's thread.
+    type Waiting = (oneshot::Sender<()>, fn());
+
+    static TX: Mutex<Option<Waiting>> = Mutex::new(None);
 
     /// Runs on a thread Windows starts for the event. Once the sender is taken, the
     /// next Ctrl+C falls through to the default handler, which ends arakun.

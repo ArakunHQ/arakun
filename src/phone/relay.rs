@@ -29,6 +29,7 @@ use std::time::{Duration, Instant};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
 use futures::channel::mpsc;
+use polling::{Event as PollEvent, Events, Poller};
 use serde_json::{Value, json};
 use tungstenite::{Message, WebSocket, stream::MaybeTlsStream};
 
@@ -66,8 +67,11 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 /// given up on after this long without a word back.
 const PING_EVERY: Duration = Duration::from_secs(30);
 const SILENCE_MAX: Duration = Duration::from_secs(90);
-/// How long a read waits before the loop looks at what there is to send.
+/// How long a read waits while claiming, before the deadline is looked at.
+/// Once claimed, the loop waits on the socket and on the shell instead.
 const READ_TICK: Duration = Duration::from_millis(20);
+/// The poller's key for the relay socket.
+const SOCKET: usize = 0;
 /// How often the stop flag and the commands are looked at between dials.
 const WAIT_TICK: Duration = Duration::from_millis(100);
 
@@ -135,6 +139,8 @@ pub struct RelayClient {
     page: String,
     channels: Channels,
     cmd: std_mpsc::Sender<Command>,
+    /// Wakes the connection thread when there is something to send.
+    poller: Arc<Poller>,
     stop: Arc<AtomicBool>,
 }
 
@@ -152,6 +158,7 @@ impl RelayClient {
         let (cmd, commands) = std_mpsc::channel();
         let channels: Channels = Arc::default();
         let stop = Arc::new(AtomicBool::new(false));
+        let poller = Arc::new(Poller::new().expect("a poller can be made"));
         let tickets = access.lock().unwrap().ticket_hashes();
         let link = Link {
             url: endpoint(base, &label),
@@ -165,6 +172,7 @@ impl RelayClient {
             status: None,
             channels: channels.clone(),
             peers: HashMap::new(),
+            poller: poller.clone(),
             stop: stop.clone(),
         };
         std::thread::Builder::new()
@@ -176,10 +184,17 @@ impl RelayClient {
                 page: page_url(base, &label),
                 channels,
                 cmd,
+                poller,
                 stop,
             },
             rx,
         )
+    }
+
+    /// Hands the connection thread a command and wakes it, so it goes out now.
+    fn tell(&self, cmd: Command) {
+        let _ = self.cmd.send(cmd);
+        let _ = self.poller.notify();
     }
 
     /// Where phones find this computer through the relay.
@@ -194,20 +209,20 @@ impl RelayClient {
 
     /// The relay admits phones with these ticket hashes from now on, and only these.
     pub fn set_tickets(&self, hashes: Vec<String>) {
-        let _ = self.cmd.send(Command::Tickets(hashes));
+        self.tell(Command::Tickets(hashes));
     }
 
     /// One phone may come in with the code whose SHA-256 is `hash` (hex), for `ttl`.
     pub fn open_pairing(&self, hash: String, ttl: Duration) {
-        let _ = self.cmd.send(Command::PairOpen { hash, ttl });
+        self.tell(Command::PairOpen { hash, ttl });
     }
 
     pub fn close_pairing(&self) {
-        let _ = self.cmd.send(Command::PairClose);
+        self.tell(Command::PairClose);
     }
 
     pub fn close_channel(&self, channel: u32, reason: &str) {
-        let _ = self.cmd.send(Command::CloseChannel {
+        self.tell(Command::CloseChannel {
             channel,
             reason: reason.to_string(),
         });
@@ -222,12 +237,12 @@ impl RelayClient {
 
     pub fn send(&self, id: ClientId, text: String) {
         if let Ok(channel) = u32::try_from(id) {
-            let _ = self.cmd.send(Command::Send { channel, text });
+            self.tell(Command::Send { channel, text });
         }
     }
 
     pub fn broadcast(&self, text: &str) {
-        let _ = self.cmd.send(Command::Broadcast(text.to_string()));
+        self.tell(Command::Broadcast(text.to_string()));
     }
 
     pub fn client_count(&self) -> usize {
@@ -267,6 +282,7 @@ impl RelayClient {
 impl Drop for RelayClient {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
+        let _ = self.poller.notify();
     }
 }
 
@@ -331,6 +347,7 @@ struct Link {
     channels: Channels,
     /// The phones on the open channels, as far as each has got.
     peers: HashMap<u32, Peer>,
+    poller: Arc<Poller>,
     stop: Arc<AtomicBool>,
 }
 
@@ -483,6 +500,8 @@ impl Link {
         }
         let stream =
             stream.ok_or_else(|| Ended::Retry(format!("Could not reach {host}:{port}")))?;
+        // Phones wait on small frames: send each at once, not with the next.
+        let _ = stream.set_nodelay(true);
         let _ = stream.set_read_timeout(Some(CONNECT_TIMEOUT));
         let _ = stream.set_write_timeout(Some(CONNECT_TIMEOUT));
         // A `ws://` address comes back as a plain stream in the same wrapper.
@@ -516,11 +535,8 @@ impl Link {
                 Ended::Retry("The handshake was cut short".into())
             }
         })?;
-        if let MaybeTlsStream::Plain(s) = ws.get_ref() {
+        if let Some(s) = tcp(&ws) {
             let _ = s.set_read_timeout(Some(READ_TICK));
-        }
-        if let MaybeTlsStream::Rustls(s) = ws.get_ref() {
-            let _ = s.get_ref().set_read_timeout(Some(READ_TICK));
         }
         Ok(ws)
     }
@@ -623,23 +639,53 @@ impl Link {
     }
 
     /// The claimed connection: frames in, commands out, pings in the silences.
+    /// Between them the thread sleeps until the socket has something to read
+    /// or the shell something to send, so neither waits on the other.
     fn talk(&mut self, ws: &mut Socket) -> Ended {
+        // A second handle on the same socket, to watch it and switch it to
+        // non-blocking reads while `ws` is borrowed.
+        let Some(stream) = tcp(ws).and_then(|s| s.try_clone().ok()) else {
+            return Ended::Retry("Could not watch the relay connection".into());
+        };
+        // SAFETY: the stream is registered with this poller only, and deleted
+        // before it is dropped at the end of this function.
+        if unsafe { self.poller.add(&stream, PollEvent::readable(SOCKET)) }.is_err() {
+            return Ended::Retry("Could not watch the relay connection".into());
+        }
+        let ended = self.talk_on(ws, &stream);
+        let _ = self.poller.delete(&stream);
+        ended
+    }
+
+    fn talk_on(&mut self, ws: &mut Socket, stream: &TcpStream) -> Ended {
+        let mut events = Events::new();
         let mut last_heard = Instant::now();
         let mut last_ping = Instant::now();
+        // The claim may have left frames read but not taken: look first.
+        let mut readable = true;
         loop {
             if self.stop.load(Ordering::Relaxed) {
                 return Ended::Stopped;
             }
-            match read(ws) {
-                Ok(Read::Frame(kind, channel, payload)) => {
-                    last_heard = Instant::now();
-                    if let Err(ended) = self.heard(ws, kind, channel, payload) {
-                        return ended;
+            // After a frame, more may sit in the TLS and WebSocket buffers
+            // where the poller cannot see them, so read until nothing is left.
+            let mut more = false;
+            if readable {
+                match read_now(ws, stream) {
+                    Ok(Read::Frame(kind, channel, payload)) => {
+                        last_heard = Instant::now();
+                        more = true;
+                        if let Err(ended) = self.heard(ws, kind, channel, payload) {
+                            return ended;
+                        }
                     }
+                    Ok(Read::Alive) => {
+                        last_heard = Instant::now();
+                        more = true;
+                    }
+                    Ok(Read::Nothing) => {}
+                    Err(ended) => return ended,
                 }
-                Ok(Read::Alive) => last_heard = Instant::now(),
-                Ok(Read::Nothing) => {}
-                Err(ended) => return ended,
             }
             if last_heard.elapsed() > SILENCE_MAX {
                 return Ended::Retry("The relay went quiet".into());
@@ -665,6 +711,29 @@ impl Link {
             if ws.flush().is_err() {
                 return Ended::Retry("Could not write to the relay".into());
             }
+            if more {
+                readable = true;
+                continue;
+            }
+            // Wake for the socket, the shell, or the next ping or silence check.
+            let due = PING_EVERY
+                .saturating_sub(last_ping.elapsed())
+                .min(SILENCE_MAX.saturating_sub(last_heard.elapsed()))
+                + Duration::from_millis(1);
+            events.clear();
+            if self
+                .poller
+                .modify(stream, PollEvent::readable(SOCKET))
+                .is_err()
+            {
+                return Ended::Retry("Could not watch the relay connection".into());
+            }
+            match self.poller.wait(&mut events, Some(due)) {
+                Ok(_) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(_) => return Ended::Retry("Could not watch the relay connection".into()),
+            }
+            readable = events.iter().any(|e| e.key == SOCKET && e.readable);
         }
     }
 
@@ -1174,6 +1243,26 @@ fn read(ws: &mut Socket) -> Result<Read, Ended> {
         }
         Err(e) => Err(Ended::Retry(format!("Lost the relay: {e}"))),
     }
+}
+
+/// The TCP stream under the WebSocket, TLS or not.
+fn tcp(ws: &Socket) -> Option<&TcpStream> {
+    match ws.get_ref() {
+        MaybeTlsStream::Plain(s) => Some(s),
+        MaybeTlsStream::Rustls(s) => Some(s.get_ref()),
+        _ => None,
+    }
+}
+
+/// A read that takes what has arrived and does not wait for more. Writes stay
+/// blocking, so a frame is never half sent.
+fn read_now(ws: &mut Socket, stream: &TcpStream) -> Result<Read, Ended> {
+    if stream.set_nonblocking(true).is_err() {
+        return Err(Ended::Retry("Could not read from the relay".into()));
+    }
+    let got = read(ws);
+    let _ = stream.set_nonblocking(false);
+    got
 }
 
 fn send_control(ws: &mut Socket, channel: u32, msg: &Value) -> Result<(), Ended> {

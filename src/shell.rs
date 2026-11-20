@@ -545,6 +545,9 @@ pub struct Shell {
     /// A few keys on the start screen, right after someone new finishes the
     /// setup, until they close them.
     setup_tips: bool,
+    /// Someone asked the setup to pair the phone before they had a project:
+    /// the Phone tab opens once the first one is added.
+    phone_after_project: bool,
 }
 
 struct InboxItem {
@@ -1062,6 +1065,7 @@ impl Shell {
             inbox_open: false,
             onboarding: None,
             setup_tips: false,
+            phone_after_project: false,
             alone: None,
             terminal_alone: None,
             inbox_shown: Cell::new(0),

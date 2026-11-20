@@ -19,6 +19,12 @@ const FACE_SCALE: f32 = 0.6;
 const FACE_W: f32 = 240.;
 /// The welcome's column.
 const WELCOME_W: f32 = 420.;
+/// The step bar holds each step's answer from this window width, and its
+/// own name from `BAR_TITLE_MIN_W`; below, they give way to the steps.
+const BAR_ANSWERS_MIN_W: f32 = 1280.;
+const BAR_TITLE_MIN_W: f32 = 1000.;
+/// The longest an answer in the step bar gets before it is cut.
+const BAR_ANSWER_MAX_W: f32 = 160.;
 /// Palettes and sidebar layouts per row on the Look step.
 const PALETTES_PER_ROW: usize = 4;
 const PRESETS_PER_ROW: usize = 3;
@@ -37,6 +43,9 @@ pub(super) struct Onboarding {
     pair_phone: bool,
     /// The crash reports switch on Connect.
     reports: bool,
+    /// The colors as picked here, kept so quick picks build on each other
+    /// while earlier ones are still being saved, and so drawing reads no file.
+    look: crate::palettes::Saved,
     /// Connect has shown, so its switch is the answer about reports.
     reports_seen: bool,
     /// The Project step's repository picker, made when the step first shows.
@@ -88,6 +97,7 @@ impl Shell {
             github: None,
             pair_phone: false,
             reports,
+            look: crate::palettes::load(),
             reports_seen: false,
             picker: None,
             face: cx.new(|cx| crate::ascii_face::AsciiFace::new(cx).scaled(FACE_SCALE)),
@@ -218,9 +228,13 @@ impl Shell {
     }
 
     /// A project was added. On the Project step that answers it, and the
-    /// setup goes on; added any other way, the setup has done its job.
+    /// setup goes on; added any other way, the setup has done its job. After
+    /// the setup, the first project opens the Phone tab it was asked for.
     pub(super) fn onboarding_project_added(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(o) = self.onboarding.as_ref() else {
+            if std::mem::take(&mut self.phone_after_project) {
+                self.open_phone_tab(window, cx);
+            }
             return;
         };
         if o.step() == Step::Project && o.at + 1 < o.steps.len() {
@@ -236,12 +250,15 @@ impl Shell {
         change: impl FnOnce(&mut crate::palettes::Saved),
         cx: &mut Context<Self>,
     ) {
-        let mut saved = crate::palettes::load();
-        let before = saved.clone();
-        change(&mut saved);
-        if saved == before {
+        let Some(o) = self.onboarding.as_mut() else {
+            return;
+        };
+        let before = o.look.clone();
+        change(&mut o.look);
+        if o.look == before {
             return;
         }
+        let saved = o.look.clone();
         crate::palettes::apply(&saved);
         let version = crate::palettes::next_version();
         cx.background_spawn(crate::guard::task(async move {
@@ -315,7 +332,10 @@ impl Shell {
             crate::telemetry::events::ONBOARDING_FINISHED,
             &[("outcome", outcome), ("step", o.step().label())],
         );
-        if o.reports_seen && crate::telemetry::should_ask() {
+        if o.reports_seen
+            && crate::telemetry::should_ask()
+            && crate::telemetry::env_override().is_none()
+        {
             set_reports(o.reports);
         }
         cx.background_spawn(crate::guard::task(async { onboarding::set_done() }))
@@ -332,6 +352,8 @@ impl Shell {
                 self.open_phone_tab(window, cx);
             }
         } else {
+            // Pairing needs a project; it waits for the first one.
+            self.phone_after_project = o.pair_phone;
             window.focus(&self.focus, cx);
         }
         self.ask_telemetry(window, cx);
@@ -421,11 +443,14 @@ impl Shell {
                 d.window_control_area(WindowControlArea::Drag)
             })
             .when_some(steps, |d, steps| {
-                d.child(
-                    ui::text(ui::Type::Label, theme::text(), "Set up Arakun")
-                        .font_weight(FontWeight::SEMIBOLD),
-                )
-                .child(stop(div().flex().child(steps)))
+                d.when(window.viewport_size().width >= px(BAR_TITLE_MIN_W), |d| {
+                    d.child(
+                        ui::text(ui::Type::Label, theme::text(), "Set up Arakun")
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .flex_none(),
+                    )
+                })
+                .child(stop(div().flex().min_w_0().overflow_hidden().child(steps)))
             })
             .child(div().flex_1())
             .child(stop(div().flex().child(leave)))
@@ -447,7 +472,13 @@ impl Shell {
 
     /// The steps in a row, each with the answer it recorded once done. A
     /// step already seen can be gone back to; ahead goes through Next.
-    fn onboarding_steps(&self, o: &Onboarding, cx: &mut Context<Self>) -> AnyElement {
+    fn onboarding_steps(
+        &self,
+        o: &Onboarding,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let answers = window.viewport_size().width >= px(BAR_ANSWERS_MIN_W);
         let mut row = div().flex().items_center().gap(ui::sp(4.));
         for (n, (i, step)) in o.questions().enumerate() {
             let (now, done) = (i == o.at, i < o.at);
@@ -477,11 +508,15 @@ impl Shell {
                     .text_color(theme::text_faint())
                     .child((n + 1).to_string())
             };
-            let value = done.then(|| self.onboarding_answer(step)).flatten();
+            let value = (done && answers)
+                .then(|| self.onboarding_answer(o, step))
+                .flatten();
             row = row.child(
                 div()
                     .id(("onboarding-to", i))
                     .flex()
+                    .flex_none()
+                    .whitespace_nowrap()
                     .items_center()
                     .gap(ui::sp(8.))
                     .h(px(ui::BUTTON_H))
@@ -509,7 +544,11 @@ impl Shell {
                     .child(mark)
                     .child(step.label())
                     .when_some(value, |d, v| {
-                        d.child(ui::text(ui::Type::Caption, theme::text_faint(), v))
+                        d.child(
+                            ui::text(ui::Type::Caption, theme::text_faint(), v)
+                                .max_w(px(BAR_ANSWER_MAX_W))
+                                .truncate(),
+                        )
                     }),
             );
         }
@@ -517,7 +556,7 @@ impl Shell {
     }
 
     /// What a step recorded, for the bar and the preview's label.
-    fn onboarding_answer(&self, step: Step) -> Option<SharedString> {
+    fn onboarding_answer(&self, o: &Onboarding, step: Step) -> Option<SharedString> {
         match step {
             Step::Welcome | Step::Connect => None,
             Step::Agents => Some(crate::model::default_agent().label().into()),
@@ -527,7 +566,7 @@ impl Shell {
                 "Later".into()
             }),
             Step::Look => {
-                let palette = crate::palettes::load().active().name;
+                let palette = o.look.active().name;
                 let palette = palette.trim_start_matches("Arakun ").to_string();
                 Some(match self.onboarding_preset() {
                     Some(p) => format!("{palette}, {}", p.label()).into(),
@@ -642,7 +681,7 @@ impl Shell {
                 Some((picker, _)) => picker.clone().into_any_element(),
                 None => div().into_any_element(),
             },
-            Step::Look => self.onboarding_look(cx),
+            Step::Look => self.onboarding_look(o, cx),
             Step::Connect => self.onboarding_connect(o, cx),
         };
         let wide = window.viewport_size().width >= px(PREVIEW_MIN_W);
@@ -679,7 +718,7 @@ impl Shell {
             .flex()
             .flex_col()
             .size_full()
-            .child(self.onboarding_bar(o, Some(self.onboarding_steps(o, cx)), window, cx))
+            .child(self.onboarding_bar(o, Some(self.onboarding_steps(o, window, cx)), window, cx))
             .child(sheet)
             .into_any_element()
     }
@@ -700,7 +739,7 @@ impl Shell {
                 Some(name) => format!("{name}, ready for a session").into(),
                 None => "no project yet".into(),
             },
-            Step::Look => self.onboarding_answer(Step::Look).unwrap_or_default(),
+            Step::Look => self.onboarding_answer(o, Step::Look).unwrap_or_default(),
             Step::Connect => match o.github {
                 Some(GitHub::Connected) => "GitHub joins the sidebar when you finish".into(),
                 _ => "nothing connected yet".into(),
@@ -1017,7 +1056,7 @@ impl Shell {
             .into_any_element()
     }
 
-    fn onboarding_look(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn onboarding_look(&self, o: &Onboarding, cx: &mut Context<Self>) -> AnyElement {
         let light = theme::is_light();
         let mode =
             |id: &'static str, label: &'static str, on: bool| {
@@ -1029,8 +1068,7 @@ impl Shell {
             .child(mode("onboarding-dark", "Dark", false))
             .child(mode("onboarding-light", "Light", true))
             .into_any_element();
-        let saved = crate::palettes::load();
-        let active = saved.active().id;
+        let active = o.look.active().id;
         let palettes: Vec<AnyElement> = theme::Palette::built_in()
             .into_iter()
             .enumerate()
@@ -1206,14 +1244,31 @@ impl Shell {
             }))
             .into_any_element()
         };
+        // An environment variable decides for the user: say so, and leave the
+        // switch where it is.
+        let forced = crate::telemetry::env_override();
+        let reports_says: SharedString = match (forced, o.reports) {
+            (Some(var), _) => format!("Off while {var} is set.").into(),
+            (None, true) => "On. They tell us what breaks and what gets used.".into(),
+            (None, false) => {
+                "Off until you turn them on. They tell us what breaks and what gets used.".into()
+            }
+        };
         let reports = div()
             .id("onboarding-reports")
             .flex()
-            .cursor_pointer()
-            .child(ui::switch(o.reports))
-            .on_click(cx.listener(|this, _, _, cx| this.onboarding_toggle_reports(cx)))
+            .child(ui::switch(o.reports && forced.is_none()))
+            .when(forced.is_some(), |d| d.opacity(0.5))
+            .when(forced.is_none(), |d| {
+                d.cursor_pointer()
+                    .on_click(cx.listener(|this, _, _, cx| this.onboarding_toggle_reports(cx)))
+            })
             .into_any_element();
-        let row = |id: &'static str, icon_name: &'static str, name, says, end: AnyElement| {
+        let row = |id: &'static str,
+                   icon_name: &'static str,
+                   name,
+                   says: SharedString,
+                   end: AnyElement| {
             let lead = ui::icon(icon_name, 16.).text_color(theme::text_muted());
             pick_row(id, lead.into_any_element(), name, says, false).child(end)
         };
@@ -1229,7 +1284,7 @@ impl Shell {
                         "onboarding-gh",
                         "github",
                         "GitHub",
-                        github_says,
+                        github_says.into(),
                         github,
                     ))
                     .child(row(
@@ -1240,14 +1295,15 @@ impl Shell {
                             "Follow sessions and answer agents from your phone. The Phone tab opens once you have a project."
                         } else {
                             "Follow sessions and answer agents from your phone"
-                        },
+                        }
+                        .into(),
                         phone,
                     ))
                     .child(row(
                         "onboarding-reports-row",
                         "shield-alert",
                         "Crash reports and usage counts",
-                        "Off until you turn them on. They tell us what breaks and what gets used.",
+                        reports_says,
                         reports,
                     )),
             )
@@ -1446,7 +1502,7 @@ fn keys_hint(keys: &[&str], what: &'static str) -> gpui::Div {
 }
 
 /// A name with a line under it, at the start of a row.
-fn titled(name: &'static str, says: &'static str) -> gpui::Div {
+fn titled(name: &'static str, says: impl Into<SharedString>) -> gpui::Div {
     div()
         .flex()
         .flex_col()
@@ -1468,7 +1524,7 @@ fn pick_row(
     id: impl Into<ElementId>,
     lead: AnyElement,
     name: &'static str,
-    says: &'static str,
+    says: impl Into<SharedString>,
     on: bool,
 ) -> gpui::Stateful<gpui::Div> {
     div()

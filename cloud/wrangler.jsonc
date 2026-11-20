@@ -1,0 +1,16 @@
+{
+  "name": "arakun-cloud-rehearsal",
+  "main": "src/cloud-beta.ts",
+  "compatibility_date": "2026-11-01",
+  "workers_dev": false,
+  "preview_urls": false,
+  "observability": { "enabled": false },
+  "containers": [{
+    "name": "arakun-budget-box",
+    "class_name": "BudgetMachine",
+    "scheduling_policy": "durable_object",
+    "images": { "budget": { "dockerfile": "./Dockerfile", "build_context": "./.wrangler/budget-image" } }
+  }],
+  "durable_objects": { "bindings": [{ "name": "BETA", "class_name": "BudgetMachine" }] },
+  "exports": { "BudgetMachine": { "type": "durable-object", "storage": "sqlite" } }
+}

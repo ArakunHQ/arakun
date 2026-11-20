@@ -2023,7 +2023,11 @@ impl Hub {
         let Some(c) = self.channels.get(key) else {
             return;
         };
-        if self.kept.mark_read(key, c.history.newest) {
+        // A channel read only through history has no live frame yet.
+        if self
+            .kept
+            .mark_read(key, c.history.newest.max(c.history.through))
+        {
             self.save(cx);
         }
     }

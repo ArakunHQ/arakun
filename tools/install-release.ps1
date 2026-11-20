@@ -4,7 +4,8 @@
 #
 # Puts arakun.exe, with arakun-helper.exe and the browser's CEF runtime next to it, in
 # %LOCALAPPDATA%\Programs\Arakun, adds that folder to the user PATH and adds a Start menu
-# shortcut. $env:ARAKUN_VERSION = "v0.1.0" pins a release.
+# shortcut. $env:ARAKUN_VERSION = "v0.1.0" pins a release; "nightly" takes the newest
+# nightly build of main.
 #
 # Works in Windows PowerShell 5.1 and PowerShell 7. Under `iex`, `exit` would close the
 # user's window, so errors throw instead. Everything runs from the call at the end, so a
@@ -24,6 +25,9 @@ function Install-Arakun {
         'RWRHh4aSkL+9oL41eNxaL791lQYzu/un+QvVqfckIj7839aB8lQBoxyn',
         'RWSxlRjKJX7FQmC0+on+hpDPmZ/ShKCW4KzyJhbnm0bAc6JGTI7KV+xg'
     )
+    # The key of the nightly builds (assets/nightly-key.pub). Accepted for a nightly
+    # version only, as the updater does, so it can never sign a release.
+    $nightlyKey = 'RWTZ1q5XZwa1CsB/oR68Esdai4A24ex+Ez5D/iWLMVCVJGTduA5jPa+y'
 
     # PROCESSOR_ARCHITEW6432 is set in a 32-bit PowerShell on 64-bit Windows.
     $arch = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
@@ -40,8 +44,27 @@ function Install-Arakun {
         $release = Invoke-RestMethod -UseBasicParsing -Uri "https://api.github.com/repos/$repo/releases/latest"
         $version = $release.tag_name
         if (-not $version) { throw "arakun: no release found at https://github.com/$repo/releases" }
+    } elseif ($version -eq 'nightly') {
+        # Pre-releases, which releases/latest skips. The number after `nightly.` is
+        # the time it was built.
+        $releases = Invoke-RestMethod -UseBasicParsing -Uri "https://api.github.com/repos/$repo/releases?per_page=30"
+        $version = @($releases.tag_name) |
+            Where-Object { $_ -match '^\d+\.\d+\.\d+-nightly\.\d+$' } |
+            Sort-Object { [long]($_ -split '\.')[-1] } |
+            Select-Object -Last 1
+        if (-not $version) { throw "arakun: no nightly build found at https://github.com/$repo/releases" }
+    } elseif ($version -match '-nightly\.') {
+        # Nightly tags have no v: 0.9.1-nightly.202611201136.
+        $version = $version.TrimStart('v')
     } elseif (-not $version.StartsWith('v')) {
         $version = "v$version"
+    }
+    $keys = $releaseKeys
+    $keyName = 'release key'
+    if ($version -match '-nightly\.') {
+        $keys = $releaseKeys + $nightlyKey
+        $keyName = 'release or nightly key'
+        Write-Host "arakun: $version is a nightly build: it can break, crash or lose a session; see https://github.com/$repo#nightly-builds"
     }
 
     $name = "arakun-$version-windows-x86_64"
@@ -73,12 +96,12 @@ function Install-Arakun {
                 $good = $false
                 # No 2>$null: with ErrorActionPreference Stop, Windows PowerShell
                 # 5.1 turns redirected stderr from a program into an error.
-                foreach ($key in $releaseKeys) {
+                foreach ($key in $keys) {
                     & $minisign.Source -V -q -P $key -m $sums -x $sig | Out-Null
                     if ($LASTEXITCODE -eq 0) { $good = $true; break }
                 }
-                if (-not $good) { throw "arakun: SHA256SUMS is not signed with Arakun's release key; nothing was installed" }
-                Write-Host "arakun: SHA256SUMS is signed with Arakun's release key"
+                if (-not $good) { throw "arakun: SHA256SUMS is not signed with Arakun's $keyName; nothing was installed" }
+                Write-Host "arakun: SHA256SUMS is signed with Arakun's $keyName"
             } else {
                 Write-Host "arakun: warning: the signature of SHA256SUMS was not checked; install minisign to check it"
             }

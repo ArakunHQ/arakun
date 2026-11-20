@@ -4,6 +4,7 @@
 #   curl -fsSL https://arakun.dev/install | sh
 #   curl -fsSL https://arakun.dev/install | sh -s -- --version v0.1.0
 #   curl -fsSL https://arakun.dev/install-server | sh
+#   curl -fsSL https://arakun.dev/install-server | sh -s -- --nightly
 #
 # macOS (Apple silicon): ~/Applications/Arakun.app, and ~/.local/bin/arakun linking into it.
 # Linux (x86_64, arm64): ~/.local/bin/arakun, and the browser's CEF runtime in
@@ -12,7 +13,9 @@
 #                        the window. arakun.dev/install-server serves this script
 #                        with `main "$@"` at the end changed to `main --server "$@"`,
 #                        so keep that line as it is.
-# ARAKUN_VERSION pins a release, like --version. Windows: tools/install-release.ps1.
+# --nightly:             the newest nightly build of main instead of the latest release.
+# ARAKUN_VERSION pins a release, like --version (`nightly` is --nightly).
+# Windows: tools/install-release.ps1.
 #
 # Everything runs from main at the end, so a download cut short runs nothing.
 set -eu
@@ -21,6 +24,9 @@ repo=arakunhq/arakun
 # The minisign keys SHA256SUMS may be signed with: the one release.yml uses
 # (assets/release-key.pub), and an offline backup (assets/release-key-backup.pub).
 release_keys="RWRHh4aSkL+9oL41eNxaL791lQYzu/un+QvVqfckIj7839aB8lQBoxyn RWSxlRjKJX7FQmC0+on+hpDPmZ/ShKCW4KzyJhbnm0bAc6JGTI7KV+xg"
+# The key of the nightly builds (assets/nightly-key.pub). Accepted for a nightly
+# version only, as the updater does, so it can never sign a release.
+nightly_key="RWTZ1q5XZwa1CsB/oR68Esdai4A24ex+Ez5D/iWLMVCVJGTduA5jPa+y"
 
 say() { printf 'arakun: %s\n' "$*"; }
 die() {
@@ -39,6 +45,22 @@ latest_tag() {
   printf '%s\n' "$tag"
 }
 
+# The tag of the newest nightly build, such as 0.9.1-nightly.202611201136. The
+# nightlies are pre-releases, which /releases/latest skips, so this asks the
+# API (60 calls an hour from one address). The number after `nightly.` is the
+# time it was built.
+latest_nightly() {
+  json=$(curl -fsSL -H 'Accept: application/vnd.github+json' \
+    "https://api.github.com/repos/$repo/releases?per_page=30") ||
+    die "could not list the releases on GitHub"
+  # One field per line, whether or not the JSON is pretty-printed.
+  tag=$(printf '%s\n' "$json" | tr ',' '\n' |
+    sed -n 's/^ *"tag_name": *"\([0-9]*\.[0-9]*\.[0-9]*-nightly\.[0-9]*\)" *$/\1/p' |
+    sort -t. -k4,4n | tail -n 1)
+  [ -n "$tag" ] || die "no nightly build found at https://github.com/$repo/releases"
+  printf '%s\n' "$tag"
+}
+
 # The checksum SHA256SUMS ($2) lists for the file $1, or nothing.
 listed() {
   awk -v f="$1" '$2 == f || $2 == "*" f { print $1 }' "$2"
@@ -52,8 +74,7 @@ signed_release() {
   }'
 }
 
-# Checks SHA256SUMS ($1) against its signature ($2) by one of the release
-# keys, with minisign, or with OpenSSL 3 where minisign is missing, using the
+# Checks SHA256SUMS ($1) against its signature ($2) by one of $keys, with minisign, or with OpenSSL 3 where minisign is missing, using the
 # directory $3 for its files. Returns 2 when there is neither, and 1 for any
 # other failure. Never pass a tool's own status through: minisign exits 2 on an
 # empty or broken signature, which would read as "no verifier" and install.
@@ -66,7 +87,7 @@ verify_sums() {
       *) return 2 ;;
     esac
   fi
-  for key in $release_keys; do
+  for key in $keys; do
     "verify_with_$tool" "$key" "$@" && return 0
   done
   return 1
@@ -126,10 +147,12 @@ main() {
         ;;
       --version=*) version=${1#--version=} ;;
       --server) server=1 ;;
+      --nightly) version=nightly ;;
       -h | --help)
         # Not read from $0: under `curl | sh` there is no file.
-        echo "usage: install-release.sh [--server] [--version vX.Y.Z]   (or ARAKUN_VERSION=vX.Y.Z)"
-        echo "  --server  install arakun-server (Linux), the server without the window"
+        echo "usage: install-release.sh [--server] [--nightly | --version vX.Y.Z]   (or ARAKUN_VERSION=vX.Y.Z)"
+        echo "  --server   install arakun-server (Linux), the server without the window"
+        echo "  --nightly  install the newest nightly build of main (it can break)"
         return 0
         ;;
       *) die "unknown option $1" ;;
@@ -173,11 +196,21 @@ main() {
   # must be signed, or whoever can edit releases could mark an unsigned one
   # as latest.
   pinned=$version
-  if [ -z "$version" ]; then
-    version=$(latest_tag)
-  else
-    case $version in v*) ;; *) version=v$version ;; esac
-  fi
+  case $version in
+    "") version=$(latest_tag) ;;
+    nightly) version=$(latest_nightly) ;;
+    # Nightly tags have no v: 0.9.1-nightly.202611201136.
+    *-nightly.*) version=${version#v} ;;
+    v*) ;;
+    *) version=v$version ;;
+  esac
+  keys=$release_keys key_name="release key"
+  case $version in
+    *-nightly.*)
+      keys="$keys $nightly_key" key_name="release or nightly key"
+      say "$version is a nightly build: it can break, crash or lose a session; see https://github.com/$repo#nightly-builds"
+      ;;
+  esac
 
   name=arakun-$version-$platform
   if [ -n "$server" ]; then name=arakun-server-$version-$platform; fi
@@ -201,9 +234,9 @@ main() {
     mkdir "$tmp/sig"
     verify_sums "$tmp/SHA256SUMS" "$tmp/SHA256SUMS.minisig" "$tmp/sig" && signature=0 || signature=$?
     case $signature in
-      0) say "SHA256SUMS is signed with Arakun's release key" ;;
+      0) say "SHA256SUMS is signed with Arakun's $key_name" ;;
       2) say "warning: the signature of SHA256SUMS was not checked; install minisign or OpenSSL 3 to check it" ;;
-      *) die "SHA256SUMS is not signed with Arakun's release key; nothing was installed" ;;
+      *) die "SHA256SUMS is not signed with Arakun's $key_name; nothing was installed" ;;
     esac
   else
     say "$version is from before releases were signed; only its checksums are checked"

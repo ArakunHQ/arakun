@@ -147,6 +147,12 @@ impl Store {
         self.dir.join("sessions").join(format!("{id}.json"))
     }
 
+    /// Where the whole conversation of session `id` is kept as markdown once
+    /// another agent continued it: the new agent is pointed there.
+    pub fn linked_path(&self, id: &str) -> PathBuf {
+        self.dir.join("linked").join(format!("{id}.md"))
+    }
+
     /// Where the photos that come with prompts are saved.
     pub fn uploads_dir(&self) -> PathBuf {
         self.dir.join("uploads")

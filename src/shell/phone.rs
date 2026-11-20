@@ -887,10 +887,11 @@ impl Shell {
             ClientMsg::Fork { .. }
             | ClientMsg::Compact { .. }
             | ClientMsg::Rewind { .. }
-            | ClientMsg::Stage { .. } => self.phone_send(
+            | ClientMsg::Stage { .. }
+            | ClientMsg::ContinueWith { .. } => self.phone_send(
                 client,
                 wire::error(
-                    "fork, compact, rewind or stage this computer's sessions in Arakun itself",
+                    "fork, compact, rewind, stage or hand over this computer's sessions in Arakun itself",
                 ),
             ),
             // What the app asks of a server for its terminals.

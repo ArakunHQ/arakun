@@ -1191,6 +1191,7 @@ impl TeamsView {
             return ui::loading("teams-team-loading", "Reading the team…").into_any_element();
         };
         let me = hub.me().map_or(0, |m| m.github_id);
+        let my_login = hub.me().map(|m| m.login.clone());
         let admin = t.role.is_admin();
         let role = t.role;
         let members = t.detail.members.clone();
@@ -1235,7 +1236,7 @@ impl TeamsView {
             rows = rows.child(
                 Self::person_row(
                     faces.avatar(&m.login, AVATAR),
-                    m.login.clone(),
+                    shown_login(&m.login, my_login.as_deref()),
                     format!("{role_word} · {held}"),
                     false,
                 )
@@ -1690,7 +1691,13 @@ impl TeamsView {
             .iter()
             .map(|c| (c.id.clone(), c.name.clone()))
             .collect();
-        let people: Vec<String> = t.detail.members.iter().map(|m| m.login.clone()).collect();
+        let my_login = hub.me().map(|m| m.login.as_str());
+        let people: Vec<(String, String)> = t
+            .detail
+            .members
+            .iter()
+            .map(|m| (m.login.clone(), shown_login(&m.login, my_login)))
+            .collect();
         let making = hub.busy.contains(&format!("channel:{team_id}"));
         let tid = team_id.to_string();
         let mut list =
@@ -1838,6 +1845,7 @@ impl TeamsView {
     ) -> AnyElement {
         let group: SharedString = format!("teams-msg-{index}").into();
         let id = m.id.clone();
+        let my_login = self.hub.read(cx).me().map(|m| m.login.clone());
         let lit = self.flash.as_deref() == Some(m.id.as_str())
             || self.reply_to.as_deref() == Some(m.id.as_str());
         let quote = m.body.reply_to.as_ref().map(|target| match quoted {
@@ -1853,9 +1861,13 @@ impl TeamsView {
                     .cursor_pointer()
                     .child(icon("arrow-turn-forward", 12.).text_color(theme::text_faint()))
                     .child(
-                        ui::text(Type::Caption, theme::text_subtle(), q.login.clone())
-                            .flex_none()
-                            .font_weight(FontWeight::MEDIUM),
+                        ui::text(
+                            Type::Caption,
+                            theme::text_subtle(),
+                            shown_login(&q.login, my_login.as_deref()),
+                        )
+                        .flex_none()
+                        .font_weight(FontWeight::MEDIUM),
                     )
                     .child(
                         div()
@@ -1950,8 +1962,12 @@ impl TeamsView {
                         .items_center()
                         .gap(ui::sp(8.))
                         .child(
-                            ui::text(Type::Body, theme::content(), m.login.clone())
-                                .font_weight(FontWeight::SEMIBOLD),
+                            ui::text(
+                                Type::Body,
+                                theme::content(),
+                                shown_login(&m.login, my_login.as_deref()),
+                            )
+                            .font_weight(FontWeight::SEMIBOLD),
                         )
                         .child(
                             ui::text(Type::Caption, theme::text_faint(), clock(m.at))
@@ -2025,7 +2041,9 @@ impl TeamsView {
     /// "Rik added a new device, rik-thinkpad", where it happened in the chat.
     fn render_notice(&self, i: usize, n: &Notice, cx: &mut Context<Self>) -> AnyElement {
         let id = n.device_id.clone();
-        let verified = self.hub.read(cx).verified(&n.device_id);
+        let hub = self.hub.read(cx);
+        let verified = hub.verified(&n.device_id);
+        let login = shown_login(&n.login, hub.me().map(|m| m.login.as_str()));
         div()
             .flex()
             .items_center()
@@ -2048,14 +2066,14 @@ impl TeamsView {
                     .flex_1()
                     .min_w_0()
                     .flex_wrap()
-                    .child(format!("{} added a new device,\u{a0}", n.login))
+                    .child(format!("{login} added a new device,\u{a0}"))
                     .child(
                         div()
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(theme::text())
                             .child(crate::redact::text(&n.device).into_owned()),
                     )
-                    .child(".\u{a0}It can read from here on."),
+                    .child("."),
             )
             .when(verified, |d| d.child(ui::badge("Checked", Tone::Success)))
             .child(
@@ -2080,6 +2098,7 @@ impl TeamsView {
         connected: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let my_login = self.hub.read(cx).me().map(|m| m.login.clone());
         let reply = self.reply_to.as_ref().and_then(|id| {
             let Pane::Channel(t, c) = &self.pane else {
                 return None;
@@ -2105,9 +2124,13 @@ impl TeamsView {
                 .child(icon("arrow-turn-forward", 12.).text_color(theme::text_subtle()))
                 .child(ui::text(Type::Caption, theme::text_subtle(), "Replying to").flex_none())
                 .child(
-                    ui::text(Type::Caption, theme::content(), r.login.clone())
-                        .flex_none()
-                        .font_weight(FontWeight::SEMIBOLD),
+                    ui::text(
+                        Type::Caption,
+                        theme::content(),
+                        shown_login(&r.login, my_login.as_deref()),
+                    )
+                    .flex_none()
+                    .font_weight(FontWeight::SEMIBOLD),
                 )
                 .child(
                     div()
@@ -3272,6 +3295,17 @@ fn render_qr(text: &str) -> gpui::Div {
         rows = rows.child(row);
     }
     rows
+}
+
+/// A login as the sheet shows it. The signed-in user's own one is masked in
+/// redacted mode, as on the Invites page: next to "You" it tells a screen
+/// share whose account this is. Other people's logins stay, the team is them.
+fn shown_login(login: &str, me: Option<&str>) -> String {
+    if me.is_some_and(|me| me.eq_ignore_ascii_case(login)) {
+        crate::redact::value(login)
+    } else {
+        login.to_string()
+    }
 }
 
 fn plural(n: usize, one: &str, many: &str) -> String {

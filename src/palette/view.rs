@@ -540,7 +540,7 @@ impl Palette {
                         Some(
                             div()
                                 .child(if rules::timeless_reminder(&self.query(cx)).is_some() {
-                                    "No time given, so it's kept as a to-do. Add “en 30 min” or “a las 5” to make it ring."
+                                    "No time given, so it's kept as a to-do. Add “in 30 min” or “at 5pm” to make it ring."
                                 } else {
                                     "Shows under To-do here; Enter on it ticks it off."
                                 })

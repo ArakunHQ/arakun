@@ -1129,10 +1129,10 @@ forward through tabs, `Ctrl+Cmd+F` toggles full screen, and `Cmd+H`, `Cmd+M` and
   before. A sentence such as "merge #64 when the checks pass and tell me" becomes an
   automation once you confirm it; one Arakun cannot read itself offers to have Claude
   read it, again only on `Enter`.
-  "recuérdame en 20 min revisar el PR", "remind me at 5pm to stretch" or
+  "remind me in 20 min to review the PR", "remind me at 5pm to stretch" or
   "timer 10 min" sets a reminder that rings on the island. One that comes due while
   Arakun is closed rings, marked as missed, the next time it opens. "to-do: …" (or a
-  reminder with no time) adds a to-do, and typing "to-do" or "pendiente" lists them,
+  reminder with no time) adds a to-do, and typing "to-do" lists them,
   `Enter` ticking one off. Pins are kept in `pins.json`, rules (reminders too) in
   `rules.json`, to-dos in `todos.json` and what you open in `palette-frecency.json`,
   next to the state file.

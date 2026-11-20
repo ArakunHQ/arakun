@@ -5,16 +5,8 @@
 
 use crate::github::pilot::{self, TaskRequest, TaskTarget};
 
-/// The words that start a task, lower case, longest first so "agente nube:"
-/// isn't read as "nube:" with "agente" in front. "cloud:" is the one the
-/// palette shows; the Spanish ones still work for those who learned them.
-const LEADS: &[&str] = &[
-    "agente de la nube:",
-    "mandar a la nube:",
-    "agente nube:",
-    "cloud:",
-    "nube:",
-];
+/// The word that starts a task, lower case.
+const LEAD: &str = "cloud:";
 
 /// The longest branch name suggested; the user can still type a longer one.
 const SLUG_MAX: usize = 40;
@@ -33,11 +25,9 @@ pub struct PilotSeed {
 /// lead on, so it can say what to type.
 pub fn parse(q: &str) -> Option<&str> {
     let t = q.trim_start();
-    LEADS.iter().find_map(|lead| {
-        let head = t.get(..lead.len())?;
-        head.eq_ignore_ascii_case(lead)
-            .then(|| t[lead.len()..].trim())
-    })
+    let head = t.get(..LEAD.len())?;
+    head.eq_ignore_ascii_case(LEAD)
+        .then(|| t[LEAD.len()..].trim())
 }
 
 /// The task the card is for: only when arakun-pilot is set up.
@@ -188,21 +178,11 @@ mod tests {
         assert_eq!(parse("cloud: fix the title"), Some("fix the title"));
         assert_eq!(parse("Cloud:fix"), Some("fix"));
         assert_eq!(parse("cloud"), None);
-        // The Spanish leads from before still work.
-        assert_eq!(parse("nube: arregla el título"), Some("arregla el título"));
-        assert_eq!(parse("Mandar a la nube: algo"), Some("algo"));
-        assert_eq!(parse("Nube:arregla"), Some("arregla"));
-        assert_eq!(
-            parse("agente nube: sube la versión"),
-            Some("sube la versión")
-        );
-        assert_eq!(parse("Agente de la nube: algo"), Some("algo"));
+        assert_eq!(parse("CLOUD: bump the version"), Some("bump the version"));
         // The lead alone shows the card, which says what to type.
         assert_eq!(parse("cloud:"), Some(""));
-        assert_eq!(parse("nube:"), Some(""));
-        assert_eq!(parse("nube"), None);
-        assert_eq!(parse("la nube: algo"), None);
-        assert_eq!(parse("¿qué es la nube?"), None);
+        assert_eq!(parse("the cloud: something"), None);
+        assert_eq!(parse("what is the cloud?"), None);
     }
 
     #[test]
@@ -210,29 +190,29 @@ mod tests {
         let seed = PilotSeed::default();
         assert_eq!(card_task("cloud: x", Some(&seed)), Some("x"));
         assert_eq!(card_task("cloud: x", None), None);
-        assert_eq!(card_task("arregla x", Some(&seed)), None);
+        assert_eq!(card_task("fix x", Some(&seed)), None);
     }
 
     #[test]
     fn titles_are_one_short_line() {
-        assert_eq!(title("  arregla el tab\nmás detalle"), "arregla el tab");
-        let long = "haz que la paleta recuerde lo que abriste a esta hora y lo ponga arriba de todo lo demás";
+        assert_eq!(title("  fix the tab\nmore detail"), "fix the tab");
+        let long = "make the palette remember what you opened at this hour and put it above everything else";
         let t = title(long);
         assert!(t.ends_with('…') && t.chars().count() <= 72, "{t}");
         assert!(long.starts_with(t.trim_end_matches('…')));
         assert_eq!(short("feat(github): add a tab", 12), "feat(github…");
-        assert_eq!(short(" corto ", 12), "corto");
+        assert_eq!(short(" short ", 12), "short");
     }
 
     #[test]
     fn branches_are_named_after_the_task() {
         assert_eq!(
-            suggest_branch("Arregla el título de la pestaña"),
-            "pilot/arregla-el-titulo-de-la-pestana"
+            suggest_branch("Fix the résumé page for the café"),
+            "pilot/fix-the-resume-page-for-the-cafe"
         );
-        assert_eq!(suggest_branch("¿¡ !?"), "pilot/task");
+        assert_eq!(suggest_branch("?! … !?"), "pilot/task");
         let long = suggest_branch(
-            "agrega una opción para que las notificaciones de github suenen distinto",
+            "add an option so that github notifications make a different sound from the rest",
         );
         assert!(long.len() <= "pilot/".len() + SLUG_MAX, "{long}");
         assert!(!long.ends_with('-'));
@@ -245,18 +225,18 @@ mod tests {
             pull: Some((112, "feat: x".into())),
             admin: true,
         };
-        let r = request("  arregla el tab  ", &seed, true, "pilot/arregla-el-tab").unwrap();
+        let r = request("  fix the tab  ", &seed, true, "pilot/fix-the-tab").unwrap();
         assert_eq!(r.target, TaskTarget::Pull(112));
         assert_eq!(
             (r.title.as_str(), r.prompt.as_str()),
-            ("arregla el tab", "arregla el tab")
+            ("fix the tab", "fix the tab")
         );
         // Switched to a new branch, or no pull request picked.
-        let r = request("arregla", &seed, false, " pilot/arregla ").unwrap();
+        let r = request("fix", &seed, false, " pilot/fix ").unwrap();
         assert_eq!(
             r.target,
             TaskTarget::Branch {
-                name: "pilot/arregla".into(),
+                name: "pilot/fix".into(),
                 base: "main".into()
             }
         );
@@ -265,18 +245,18 @@ mod tests {
             admin: true,
         };
         assert!(matches!(
-            request("arregla", &alone, true, "pilot/a").unwrap().target,
+            request("fix", &alone, true, "pilot/a").unwrap().target,
             TaskTarget::Branch { .. }
         ));
         // What stops it.
         assert!(request("  ", &seed, true, "x").is_err());
-        assert!(request("arregla", &alone, true, "mal nombre").is_err());
+        assert!(request("fix", &alone, true, "bad name").is_err());
         let no_admin = PilotSeed {
             admin: false,
             ..seed
         };
         assert_eq!(
-            request("arregla", &no_admin, true, "x").unwrap_err(),
+            request("fix", &no_admin, true, "x").unwrap_err(),
             pilot::NO_ADMIN
         );
         assert!(sent_note("t_42").contains("(t_42)"));
@@ -289,7 +269,7 @@ mod tests {
         assert_eq!(branch_problem("fix/a.b"), None);
         for bad in [
             "",
-            "con espacio",
+            "with space",
             "a..b",
             "-x",
             "x/",

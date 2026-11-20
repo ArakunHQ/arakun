@@ -579,7 +579,7 @@ mod tests {
     #[test]
     fn the_request_is_small_and_streams() {
         let ctx = Context {
-            question: "¿por qué falló el CI de phone-local?".into(),
+            question: "why did CI fail on phone-local?".into(),
             project: "app".into(),
             branch: "phone-local".into(),
             memories: vec![(
@@ -612,7 +612,7 @@ mod tests {
 
     #[test]
     fn the_rule_request_asks_for_the_schema() {
-        let b = rule_body("mergea #64 cuando pasen", &["Sidebar redesign".into()]);
+        let b = rule_body("merge #64 when checks pass", &["Sidebar redesign".into()]);
         assert_eq!(b["output_config"]["format"]["type"], "json_schema");
         assert_eq!(
             b["output_config"]["format"]["schema"]["additionalProperties"],
@@ -629,9 +629,9 @@ mod tests {
     #[test]
     fn stream_events_are_read() {
         let t = parse_event(
-            r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Falló"}}"#,
+            r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Failed"}}"#,
         );
-        assert!(matches!(t, Some(Event::Text(ref s)) if s == "Falló"));
+        assert!(matches!(t, Some(Event::Text(ref s)) if s == "Failed"));
         let d = parse_event(
             r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":9,"output_tokens":40}}"#,
         );

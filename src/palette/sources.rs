@@ -404,14 +404,14 @@ mod tests {
             items: vec![
                 mem(
                     1,
-                    "Island: matar island-host por pid tras instalar",
+                    "Island: kill island-host by pid after install",
                     "pkill -f no",
                     10,
                 ),
                 mem(
                     2,
-                    "cargo fmt --all formatea lienzo",
-                    "usa cargo fmt sin --all",
+                    "cargo fmt --all formats canvas",
+                    "use cargo fmt without --all",
                     20,
                 ),
             ],
@@ -420,14 +420,14 @@ mod tests {
         let global = Store {
             items: vec![mem(
                 3,
-                "Instalar con tools/install.sh",
+                "Install with tools/install.sh",
                 "sh tools/install.sh",
                 30,
             )],
             ..Default::default()
         };
         let stores = vec![(Scope::Project, project), (Scope::Global, global)];
-        let hits = memory_hits(&stores, "instalar", 10);
+        let hits = memory_hits(&stores, "install", 10);
         assert_eq!(hits.len(), 2);
         assert!(
             hits.iter()

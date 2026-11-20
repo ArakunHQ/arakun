@@ -126,69 +126,6 @@ pub fn last_error() -> Option<String> {
 
 // ---- what is said ---------------------------------------------------------------
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Lang {
-    Es,
-    En,
-}
-
-impl Lang {
-    fn code(self) -> &'static str {
-        match self {
-            Lang::Es => "es",
-            Lang::En => "en",
-        }
-    }
-}
-
-/// Spanish or English, from accents and the commonest short words.
-pub fn guess_lang(text: &str) -> Lang {
-    if text
-        .chars()
-        .any(|c| matches!(c, '¿' | '¡' | 'ñ' | 'Ñ' | 'á' | 'é' | 'í' | 'ó' | 'ú'))
-    {
-        return Lang::Es;
-    }
-    const ES: &[&str] = &[
-        "que",
-        "de",
-        "el",
-        "la",
-        "los",
-        "las",
-        "para",
-        "con",
-        "una",
-        "un",
-        "es",
-        "por",
-        "en",
-        "y",
-        "o",
-        "del",
-        "se",
-        "lo",
-        "quieres",
-        "prefieres",
-        "usar",
-        "cual",
-    ];
-    const EN: &[&str] = &[
-        "the", "to", "you", "do", "which", "what", "should", "is", "of", "and", "or", "for",
-        "with", "want", "prefer", "use", "in",
-    ];
-    let (mut es, mut en) = (0, 0);
-    for w in text
-        .split(|c: char| !c.is_alphabetic())
-        .filter(|w| !w.is_empty())
-    {
-        let w = w.to_lowercase();
-        es += usize::from(ES.contains(&w.as_str()));
-        en += usize::from(EN.contains(&w.as_str()));
-    }
-    if es > en { Lang::Es } else { Lang::En }
-}
-
 /// Markdown and links out of `text`, so the voice says words, not symbols.
 pub fn speakable(text: &str) -> String {
     let text = strip_links(text);
@@ -228,16 +165,12 @@ fn strip_links(text: &str) -> String {
 }
 
 /// Small numbers as words: the fast ElevenLabs models read digits unreliably.
-fn number(n: usize, lang: Lang) -> String {
-    const ES: [&str; 10] = [
-        "uno", "dos", "tres", "cuatro", "cinco", "seis", "siete", "ocho", "nueve", "diez",
-    ];
-    const EN: [&str; 10] = [
+fn number(n: usize) -> String {
+    const WORDS: [&str; 10] = [
         "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
     ];
-    let words = if lang == Lang::Es { ES } else { EN };
     match n {
-        1..=10 => words[n - 1].to_string(),
+        1..=10 => WORDS[n - 1].to_string(),
         _ => n.to_string(),
     }
 }
@@ -252,49 +185,34 @@ fn sentence(s: &str) -> String {
 }
 
 /// What arakun says for a questionnaire from the session titled `session`.
-pub fn question_text(session: &str, questions: &[Question]) -> (String, Lang) {
-    let all: Vec<&str> = questions
-        .iter()
-        .flat_map(|q| {
-            std::iter::once(q.question.as_str()).chain(q.options.iter().map(String::as_str))
-        })
-        .collect();
-    let lang = guess_lang(&all.join(" "));
+pub fn question_text(session: &str, questions: &[Question]) -> String {
     let session = speakable(session);
     let n = questions.len();
-    let mut out = match (lang, n, session.is_empty()) {
-        (Lang::Es, 1, true) => "Tengo una pregunta.".to_string(),
-        (Lang::Es, 1, false) => format!("Tengo una pregunta en {session}."),
-        (Lang::Es, _, true) => format!("Tengo {} preguntas.", number(n, lang)),
-        (Lang::Es, _, false) => format!("Tengo {} preguntas en {session}.", number(n, lang)),
-        (Lang::En, 1, true) => "I have a question.".to_string(),
-        (Lang::En, 1, false) => format!("I have a question in {session}."),
-        (Lang::En, _, true) => format!("I have {} questions.", number(n, lang)),
-        (Lang::En, _, false) => format!("I have {} questions in {session}.", number(n, lang)),
-    };
-    let (question, option, multi) = match lang {
-        Lang::Es => ("Pregunta", "Opción", "Puedes elegir varias."),
-        Lang::En => ("Question", "Option", "You can pick more than one."),
+    let mut out = match (n, session.is_empty()) {
+        (1, true) => "I have a question.".to_string(),
+        (1, false) => format!("I have a question in {session}."),
+        (_, true) => format!("I have {} questions.", number(n)),
+        (_, false) => format!("I have {} questions in {session}.", number(n)),
     };
     for (i, q) in questions.iter().enumerate() {
         if n > 1 {
-            out.push_str(&format!(" {question} {}.", number(i + 1, lang)));
+            out.push_str(&format!(" Question {}.", number(i + 1)));
         }
         out.push(' ');
         out.push_str(&sentence(&speakable(&q.question)));
         if q.multi {
             out.push(' ');
-            out.push_str(multi);
+            out.push_str("You can pick more than one.");
         }
         for (j, o) in q.options.iter().enumerate() {
             out.push_str(&format!(
-                " {option} {}: {}",
-                number(j + 1, lang),
+                " Option {}: {}",
+                number(j + 1),
                 sentence(&speakable(o))
             ));
         }
     }
-    (truncate(out.trim(), MAX_CHARS), lang)
+    truncate(out.trim(), MAX_CHARS)
 }
 
 fn truncate(s: &str, max: usize) -> String {
@@ -308,16 +226,8 @@ fn truncate(s: &str, max: usize) -> String {
 }
 
 /// What the "Test voice" button says.
-pub fn sample(lang: Lang) -> &'static str {
-    match lang {
-        Lang::Es => {
-            "Hola. Así te voy a leer las preguntas en Arakun. Opción uno: sí. Opción dos: no."
-        }
-        Lang::En => {
-            "Hi. This is how Arakun reads questions to you. Option one: yes. Option two: no."
-        }
-    }
-}
+pub const SAMPLE: &str =
+    "Hi. This is how Arakun reads questions to you. Option one: yes. Option two: no.";
 
 // ---- ElevenLabs -----------------------------------------------------------------
 
@@ -333,13 +243,7 @@ fn temp_path(ext: &str) -> PathBuf {
 }
 
 /// `text` spoken with `voice_id`, as a WAV file in the temp directory.
-pub fn fetch(
-    api_key: &str,
-    voice_id: &str,
-    tone: Tone,
-    text: &str,
-    lang: Lang,
-) -> Result<PathBuf, String> {
+pub fn fetch(api_key: &str, voice_id: &str, tone: Tone, text: &str) -> Result<PathBuf, String> {
     let voice_id = voice_id.trim();
     if !valid_voice_id(voice_id) {
         return Err("Set the voice ID in Settings › Voice (the letters and digits ElevenLabs shows for a voice).".into());
@@ -353,7 +257,7 @@ pub fn fetch(
     let body = json!({
         "text": text,
         "model_id": MODEL,
-        "language_code": lang.code(),
+        // No language_code: the question is read in the language the agent wrote it in.
         "voice_settings": {
             "stability": tone.stability(),
             "similarity_boost": 0.75,
@@ -453,7 +357,7 @@ fn wav(pcm: &[u8], rate: u32) -> Vec<u8> {
 // ---- one voice at a time --------------------------------------------------------
 
 enum Source {
-    Text(String, Lang),
+    Text(String),
     File(PathBuf),
 }
 
@@ -486,10 +390,10 @@ fn queue() -> &'static (Mutex<Queue>, Condvar) {
 }
 
 /// Says `text` after whatever is being said; `key` is what [`cancel`] takes.
-pub fn speak(key: impl Into<String>, text: String, lang: Lang) {
+pub fn speak(key: impl Into<String>, text: String) {
     push(Job {
         key: key.into(),
-        source: Source::Text(text, lang),
+        source: Source::Text(text),
     });
 }
 
@@ -549,7 +453,7 @@ fn run() {
         };
         let wav = match job.source {
             Source::File(path) => Ok(path),
-            Source::Text(text, lang) => synthesize(&text, lang),
+            Source::Text(text) => synthesize(&text),
         };
         match wav {
             Ok(path) => {
@@ -567,10 +471,10 @@ fn run() {
     }
 }
 
-fn synthesize(text: &str, lang: Lang) -> Result<PathBuf, String> {
+fn synthesize(text: &str) -> Result<PathBuf, String> {
     let key = api_key().ok_or("Add your ElevenLabs API key in Settings › Voice.")?;
     let settings = settings();
-    let path = fetch(&key, &settings.voice_id, settings.tone, text, lang)?;
+    let path = fetch(&key, &settings.voice_id, settings.tone, text)?;
     *lock(last_error_slot()) = None;
     Ok(path)
 }
@@ -647,45 +551,30 @@ mod tests {
     }
 
     #[test]
-    fn language_comes_from_the_text() {
-        assert_eq!(guess_lang("¿Qué librería prefieres?"), Lang::Es);
-        assert_eq!(
-            guess_lang("Cual libreria quieres para las fechas"),
-            Lang::Es
-        );
-        assert_eq!(
-            guess_lang("Which library should we use for dates?"),
-            Lang::En
-        );
-    }
-
-    #[test]
     fn one_question_reads_its_options_in_order() {
-        let (text, lang) = question_text(
-            "Integrar voz",
+        let text = question_text(
+            "Add voice",
             &[q(
-                "¿Qué librería usamos para fechas?",
+                "Which library do we use for dates?",
                 &["date-fns", "dayjs"],
                 false,
             )],
         );
-        assert_eq!(lang, Lang::Es);
         assert_eq!(
             text,
-            "Tengo una pregunta en Integrar voz. ¿Qué librería usamos para fechas? Opción uno: date-fns. Opción dos: dayjs."
+            "I have a question in Add voice. Which library do we use for dates? Option one: date-fns. Option two: dayjs."
         );
     }
 
     #[test]
     fn several_questions_are_numbered() {
-        let (text, lang) = question_text(
+        let text = question_text(
             "",
             &[
                 q("Which features do you want?", &["Auth", "Login"], true),
                 q("Which database?", &["Postgres"], false),
             ],
         );
-        assert_eq!(lang, Lang::En);
         assert_eq!(
             text,
             "I have two questions. Question one. Which features do you want? You can pick more than one. \
@@ -695,10 +584,10 @@ mod tests {
 
     #[test]
     fn long_questionnaires_stop_at_a_word() {
-        let long = "palabra ".repeat(400);
-        let (text, _) = question_text("x", &[q(&long, &[], false)]);
+        let long = "word ".repeat(400);
+        let text = question_text("x", &[q(&long, &[], false)]);
         assert!(text.chars().count() <= MAX_CHARS);
-        assert!(text.ends_with("palabra"));
+        assert!(text.ends_with("word"));
     }
 
     #[test]

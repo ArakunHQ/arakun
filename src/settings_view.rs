@@ -19,7 +19,7 @@ use crate::env_name;
 use crate::input::{InputEvent, TextInput};
 use crate::theme;
 use crate::ui::{self, ButtonKind, icon};
-use crate::voice::{self, Lang, Tone};
+use crate::voice::{self, Tone};
 
 pub enum SettingsEvent {
     Dismissed,
@@ -707,7 +707,7 @@ impl SettingsDialog {
         cx.notify();
     }
 
-    fn test_voice(&mut self, lang: Lang, cx: &mut Context<Self>) {
+    fn test_voice(&mut self, cx: &mut Context<Self>) {
         if self.voice_busy {
             return;
         }
@@ -722,7 +722,7 @@ impl SettingsDialog {
                 .background_spawn(crate::guard::task(async move {
                     let key = voice::api_key()
                         .ok_or_else(|| "Save your ElevenLabs API key first.".to_string())?;
-                    voice::fetch(&key, &id, tone, voice::sample(lang), lang)
+                    voice::fetch(&key, &id, tone, voice::SAMPLE)
                 }))
                 .await;
             let _ = this.update(cx, |this, cx| {
@@ -1815,24 +1815,13 @@ impl SettingsDialog {
             })
             .child(
                 ui::button(
-                    "set-voice-test-es",
-                    "Español",
+                    "set-voice-test",
+                    "Test voice",
                     ButtonKind::Outline,
                     can_test,
                 )
                 .when(can_test, |b| {
-                    b.on_click(cx.listener(|this, _, _, cx| this.test_voice(Lang::Es, cx)))
-                }),
-            )
-            .child(
-                ui::button(
-                    "set-voice-test-en",
-                    "English",
-                    ButtonKind::Outline,
-                    can_test,
-                )
-                .when(can_test, |b| {
-                    b.on_click(cx.listener(|this, _, _, cx| this.test_voice(Lang::En, cx)))
+                    b.on_click(cx.listener(|this, _, _, cx| this.test_voice(cx)))
                 }),
             );
 

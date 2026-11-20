@@ -498,8 +498,9 @@ after a week).
   for gets a Teams tab in the sidebar; any other account sees "Signed in as @you" in
   Settings and nothing else. Sign out removes the session from the keyring and asks
   the server to end it; if the server can't be reached, the session there stays valid
-  until it expires (90 days without renewal, 180 days after sign-in at most). `ARAKUN_TEAMS_URL` points Arakun at another Teams server, such as
-  one run with `wrangler dev` (see [teams/README.md](teams/README.md)); the default is
+  until it expires (90 days without renewal, 180 days after sign-in at most).
+  `ARAKUN_TEAMS_URL` points Arakun at another Teams server, such as one run with
+  `wrangler dev` (see [teams/README.md](teams/README.md)); the default is
   `https://teams.arakun.dev`, and plain `http://` works only for `localhost`,
   `127.0.0.1` and `[::1]`.
 

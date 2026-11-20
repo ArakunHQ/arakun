@@ -521,6 +521,7 @@ fn main() {
                         }
                     }
                     ThreadEvent::Changed
+                    | ThreadEvent::CommandsChanged
                     | ThreadEvent::Forked(_)
                     | ThreadEvent::Rewound { .. }
                     | ThreadEvent::RewindChanged { .. }

@@ -498,6 +498,8 @@ pub enum ThreadEvent {
     Reset,
     /// Metadata changed: modes, models, config, queue, usage, commands.
     Changed,
+    /// The agent's slash commands changed (also a [`ThreadEvent::Changed`]).
+    CommandsChanged,
     StatusChanged,
     TitleChanged,
     NeedsPermission,
@@ -1310,6 +1312,13 @@ impl Thread {
     /// Slash commands the agent advertised.
     pub fn commands(&self) -> &[Choice] {
         &self.commands
+    }
+
+    /// The slash commands of a server's session, as the server sent them:
+    /// a viewer has no agent of its own to advertise them.
+    pub fn set_remote_commands(&mut self, commands: Vec<Choice>, cx: &mut Context<Self>) {
+        self.commands = commands;
+        self.meta_changed(cx);
     }
 
     pub fn usage(&self) -> &Usage {
@@ -3424,6 +3433,7 @@ impl Thread {
             }
             "available_commands_update" => {
                 self.commands = parse_choices(u.get("availableCommands"), "name");
+                cx.emit(ThreadEvent::CommandsChanged);
                 self.meta_changed(cx);
             }
             "current_mode_update" => {

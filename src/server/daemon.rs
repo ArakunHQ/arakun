@@ -1867,6 +1867,14 @@ impl Daemon {
             }
         };
         match ev {
+            // Rare, and the list may be long: it goes once, not with every state.
+            ThreadEvent::CommandsChanged => {
+                if let Some(thread) = self.thread(id) {
+                    let msg = wire::commands_message(id, thread.read(cx).commands());
+                    self.send_watchers(id, msg);
+                }
+                return;
+            }
             ThreadEvent::EntriesChanged { from } => {
                 let e = self.dirty.entry(id.to_string()).or_insert(*from);
                 *e = (*e).min(*from);
@@ -2010,9 +2018,12 @@ impl Daemon {
                     status: record.status,
                     place: &place,
                 };
+                let mut commands = None;
                 let reply = match self.live.get(&session) {
                     Some(live) => {
                         let t = live.thread.read(cx);
+                        commands = (!t.commands().is_empty())
+                            .then(|| wire::commands_message(&session, t.commands()));
                         wire::session_live(&head, t, status_of(t), &self.scope(t.cwd()))
                     }
                     None => self.with_entries(&session, cx, |all, cwd| {
@@ -2032,6 +2043,9 @@ impl Daemon {
                     }
                 }
                 self.transport.send(client, reply);
+                if let Some(commands) = commands {
+                    self.transport.send(client, commands);
+                }
             }
             ClientMsg::Close { session: None } => self.stop_watching(client, cx),
             ClientMsg::Close {

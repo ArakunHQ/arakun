@@ -540,7 +540,7 @@ fn main() {
                     })
                     .detach();
                 }
-                ThreadEvent::Changed => {}
+                ThreadEvent::Changed | ThreadEvent::CommandsChanged => {}
             }
         })
         .detach();

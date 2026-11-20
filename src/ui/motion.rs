@@ -2,9 +2,11 @@
 //! so dialogs, menus and tooltips arrive the same way.
 //!
 //! gpui draws a oneshot animation at its end when the app reduces motion, and
-//! `follow_system` sets that from the system's own setting, so nothing here
-//! needs its own check.
+//! `apply` sets that from the user's choice and the system's own setting, so
+//! nothing here needs its own check. Drawings that run their own timers check
+//! `cx.reduce_motion()`.
 
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::time::Duration;
 
 use gpui::{
@@ -85,17 +87,102 @@ pub fn enter<E: IntoElement + Styled + 'static>(
     })
 }
 
-/// Reduces motion when the system asks for it (macOS's Reduce motion,
-/// GNOME's Animations switch). Read once, at start.
+/// Whether Arakun reduces motion: as the system says, or always, or never.
+/// Settings › Appearance, `reduce_motion` in the state file.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Reduce {
+    #[default]
+    System,
+    On,
+    Off,
+}
+
+impl Reduce {
+    pub const ALL: [Reduce; 3] = [Reduce::System, Reduce::On, Reduce::Off];
+
+    /// How the state file names it; the default is empty, so files from
+    /// before this setting read as System.
+    pub fn id(self) -> &'static str {
+        match self {
+            Reduce::System => "",
+            Reduce::On => "on",
+            Reduce::Off => "off",
+        }
+    }
+
+    pub fn from_id(id: &str) -> Self {
+        match id {
+            "on" => Reduce::On,
+            "off" => Reduce::Off,
+            _ => Reduce::System,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Reduce::System => "System",
+            Reduce::On => "On",
+            Reduce::Off => "Off",
+        }
+    }
+
+    fn reduces(self, system: bool) -> bool {
+        match self {
+            Reduce::System => system,
+            Reduce::On => true,
+            Reduce::Off => false,
+        }
+    }
+}
+
+static CHOICE: AtomicU8 = AtomicU8::new(0);
+static SYSTEM: AtomicBool = AtomicBool::new(false);
+
+pub fn choice() -> Reduce {
+    match CHOICE.load(Ordering::Relaxed) {
+        1 => Reduce::On,
+        2 => Reduce::Off,
+        _ => Reduce::System,
+    }
+}
+
+/// Sets the choice without telling gpui; `apply` does that once there is an
+/// app. For the state file, read before the first window.
+pub fn restore(r: Reduce) {
+    CHOICE.store(r as u8, Ordering::Relaxed);
+}
+
+/// Sets the choice and moves the whole app to it.
+pub fn set_choice(r: Reduce, cx: &mut App) {
+    restore(r);
+    apply(cx);
+}
+
+/// Whether motion is reduced now: the choice, and the system's setting when
+/// the choice is System.
+fn reduced() -> bool {
+    choice().reduces(SYSTEM.load(Ordering::Relaxed))
+}
+
+/// Hands `reduced` to gpui, which stills its own animations and redraws
+/// every window, so the drawings with timers of their own (the mascot, the
+/// ASCII face) see `cx.reduce_motion()` change too.
+pub fn apply(cx: &mut App) {
+    cx.set_reduce_motion(reduced());
+}
+
+/// Reads the system's setting (macOS's Reduce motion, GNOME's Animations
+/// switch, Windows' "Animation effects") off the UI thread and applies it.
+/// Called at start and whenever the main window comes to the front, so a
+/// change made in the system's settings shows on return.
 pub fn follow_system(cx: &mut App) {
     cx.spawn(async move |cx| {
         let reduce = cx
             .background_executor()
             .spawn(async { system_reduces_motion() })
             .await;
-        if reduce {
-            cx.update(|cx| cx.set_reduce_motion(true));
-        }
+        SYSTEM.store(reduce, Ordering::Relaxed);
+        cx.update(apply);
     })
     .detach();
 }
@@ -117,7 +204,24 @@ fn system_reduces_motion() -> bool {
         )
         .is_some_and(|out| out == "false")
     }
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            SPI_GETCLIENTAREAANIMATION, SystemParametersInfoW,
+        };
+        let mut on: i32 = 1;
+        // SAFETY: SPI_GETCLIENTAREAANIMATION writes one BOOL to the pointer.
+        let ok = unsafe {
+            SystemParametersInfoW(
+                SPI_GETCLIENTAREAANIMATION,
+                0,
+                (&mut on as *mut i32).cast(),
+                0,
+            )
+        };
+        ok != 0 && on == 0
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
     {
         false
     }
@@ -139,6 +243,18 @@ pub(super) fn read(program: &str, args: &[&str]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_choice_overrides_the_system_and_round_trips() {
+        for r in Reduce::ALL {
+            assert_eq!(Reduce::from_id(r.id()), r);
+        }
+        assert_eq!(Reduce::from_id("something newer"), Reduce::System);
+        assert!(Reduce::System.reduces(true));
+        assert!(!Reduce::System.reduces(false));
+        assert!(Reduce::On.reduces(false));
+        assert!(!Reduce::Off.reduces(true));
+    }
 
     #[test]
     fn the_snap_spring_gives_a_little_but_settles_fast() {

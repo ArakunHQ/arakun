@@ -85,8 +85,19 @@ pub fn set_animated(on: bool) {
     ANIMATED.store(on, Ordering::Relaxed);
 }
 
+/// gpui's reduce motion, as the last drawing rendered saw it. A global, not
+/// read from `App`, as `animated` is asked where there is none. Changing it
+/// redraws every window, so this follows within a frame.
+static REDUCED: AtomicBool = AtomicBool::new(false);
+
+pub(crate) fn note_reduced(on: bool) {
+    REDUCED.store(on, Ordering::Relaxed);
+}
+
+/// The ASCII face reads this too. Reduced motion holds both still, as if the
+/// arcade were off.
 pub(crate) fn animated() -> bool {
-    ANIMATED.load(Ordering::Relaxed)
+    ANIMATED.load(Ordering::Relaxed) && !REDUCED.load(Ordering::Relaxed)
 }
 
 static DANCING: AtomicBool = AtomicBool::new(false);
@@ -1733,6 +1744,7 @@ fn paint(frame: &Frame, bounds: Bounds<Pixels>, fur: Hsla, window: &mut Window) 
 
 impl Render for Mascot {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        note_reduced(cx.reduce_motion());
         let now = self.now();
         let dt = self.last_frame.map_or(1. / 60., |l| (now - l).min(0.05)) as f32;
         self.last_frame = Some(now);

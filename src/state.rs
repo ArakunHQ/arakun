@@ -63,6 +63,9 @@ pub struct State {
     /// The Dynamic Island was turned off in Settings (`island`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub island_off: bool,
+    /// `ui::motion::Reduce` id; empty follows the system.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub reduce_motion: String,
     /// Closing the window hides it instead of quitting (`background`, Linux).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub background: bool,
@@ -903,6 +906,7 @@ pub fn snapshot_with(
         ui_zoom: layout.ui_zoom,
         last_agent: crate::model::default_agent().id().to_string(),
         island_off: !crate::island::enabled(),
+        reduce_motion: crate::ui::motion::choice().id().to_string(),
         background: crate::background::enabled(),
         window: layout.window,
     };
@@ -917,6 +921,7 @@ pub fn restore(state: State) -> (Vec<Project>, usize, Layout, TabStrip) {
     let last_agent = state.last_agent.clone();
     crate::island::set_enabled(!state.island_off);
     crate::background::set_enabled(state.background);
+    crate::ui::motion::restore(crate::ui::motion::Reduce::from_id(&state.reduce_motion));
     let projects: Vec<Project> = state
         .projects
         .into_iter()

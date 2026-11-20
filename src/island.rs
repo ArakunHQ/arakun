@@ -492,6 +492,10 @@ pub struct Feed {
     pub today: Option<SharedString>,
     /// The session the user is looking at in a focused window: no alerts for it.
     pub viewing: Option<SharedString>,
+    /// Whether the app reduces motion, by its setting or the system's. None
+    /// with no app connected (or an older one): the island follows the system.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reduce_motion: Option<bool>,
 }
 
 /// Most relevant first: needs input, errors, working, then recently finished,
@@ -1214,6 +1218,8 @@ fn wedge(island: Rounded, card: Rounded, r: f32) -> Option<[(f32, f32); 3]> {
 pub struct Island {
     start: Instant,
     last: Option<Instant>,
+    /// Motion is reduced: working dots hold still. Read at each render.
+    still: bool,
     /// When the last frames were painted, for `arakun island fps`.
     frames: std::collections::VecDeque<Instant>,
     phase: Phase,
@@ -1300,6 +1306,7 @@ impl Island {
         let view = View::Compact(Phase::Sleeping);
         let (w, h) = view.size(edge);
         let mut island = Island {
+            still: false,
             start: Instant::now(),
             frames: Default::default(),
             last: None,
@@ -1774,6 +1781,16 @@ impl Island {
         }
     }
 
+    /// A working agent's dot breathing, `phase` radians behind the others.
+    /// Steady when motion is reduced.
+    fn pulse(&self, t: f32, phase: f32) -> f32 {
+        if self.still {
+            1.
+        } else {
+            0.75 + 0.25 * (t * TAU / 1.6 + phase).sin()
+        }
+    }
+
     fn compact(&self, phase: Phase, t: f32) -> gpui::AnyElement {
         let right = match phase {
             Phase::Sleeping | Phase::Idle => div().into_any_element(),
@@ -1790,7 +1807,7 @@ impl Island {
                     .gap(px(DOT_GAP))
                     .children(dots.into_iter().enumerate().map(|(i, s)| {
                         let pulse = match s {
-                            Status::Working => 0.75 + 0.25 * (t * TAU / 1.6 + i as f32).sin(),
+                            Status::Working => self.pulse(t, i as f32),
                             _ => 1.,
                         };
                         div()
@@ -2098,7 +2115,7 @@ impl Island {
             .enumerate()
             .map(|(i, a)| {
                 let pulse = match a.status {
-                    Status::Working => 0.75 + 0.25 * (t * TAU / 1.6).sin(),
+                    Status::Working => self.pulse(t, 0.),
                     _ => 1.,
                 };
                 let key = a.key.clone();
@@ -2856,7 +2873,8 @@ impl Render for Island {
             self.region = Some(region);
         }
         // Frames only while the shape moves or something pulses.
-        let pulsing = self.feed.rows.iter().any(|r| r.status == Status::Working);
+        self.still = cx.reduce_motion();
+        let pulsing = !self.still && self.feed.rows.iter().any(|r| r.status == Status::Working);
         let animated = match self.view {
             View::Compact(Phase::Speaking | Phase::Listening) | View::Call => true,
             View::Compact(_) | View::Recording if self.recording.is_some() => true,

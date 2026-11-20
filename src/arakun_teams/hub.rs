@@ -35,6 +35,11 @@ const DEVICES_AGAIN: Duration = Duration::from_secs(5);
 /// What a device code starts with, so a paste of something else is told apart.
 const CODE_PREFIX: &str = "arakun-device";
 const MAX_ENVELOPES: usize = 500;
+/// The Worker's limits on a socket frame and on a message's `ct`, decoded.
+/// It refuses a frame over the first without reading the message's ID, so
+/// such a message could never be marked failed: both are checked first.
+const MAX_FRAME: usize = 96 * 1024;
+const MAX_MESSAGE_CT: usize = 64 * 1024;
 
 /// Where this device stands with the server.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1689,9 +1694,9 @@ impl Hub {
             return false;
         };
         let ckey = channel_key(team_id, channel_id);
-        let Some(c) = self.channels.get_mut(&ckey) else {
+        if !self.channels.contains_key(&ckey) {
             return false;
-        };
+        }
         let id = crypto::ulid();
         let body = Body::text(text, reply_to);
         let wire: WireMessage = crypto::seal_message(
@@ -1704,6 +1709,17 @@ impl Hub {
             &body,
         );
         let frame = serde_json::json!({ "type": "send", "message": wire }).to_string();
+        if !fits(&frame, &wire) {
+            self.error = Some(format!(
+                "This message is too long to send. A message holds about {} KB of text.",
+                MAX_MESSAGE_CT / 1024
+            ));
+            cx.notify();
+            return false;
+        }
+        let Some(c) = self.channels.get_mut(&ckey) else {
+            return false;
+        };
         let me = self.me.clone();
         c.messages.push(Msg {
             id: id.clone(),
@@ -1730,12 +1746,21 @@ impl Hub {
         let Some(c) = self.channels.get_mut(&ckey) else {
             return;
         };
-        let Some(i) = c.messages.iter().position(|m| m.id == id) else {
+        let Some(m) = c.messages.iter().find(|m| m.id == id).cloned() else {
             return;
         };
-        let m = c.messages.remove(i);
-        self.send(team_id, channel_id, m.body.text, m.body.reply_to, cx);
+        // The failed one stays when the new one can't go either.
+        if self.send(team_id, channel_id, m.body.text, m.body.reply_to, cx)
+            && let Some(c) = self.channels.get_mut(&ckey)
+        {
+            c.messages.retain(|m| m.id != id);
+        }
     }
+}
+
+/// Whether the Worker takes this frame. Over either limit it would refuse it.
+fn fits(frame: &str, wire: &WireMessage) -> bool {
+    frame.len() <= MAX_FRAME && crypto::unb64(&wire.ct).is_some_and(|ct| ct.len() <= MAX_MESSAGE_CT)
 }
 
 fn now() -> u64 {
@@ -2208,6 +2233,24 @@ mod tests {
         assert!(read_device_code("arakun-device.x.y.z").is_none());
         assert!(read_device_code(&code.replace("arakun-device", "other")).is_none());
         assert!(read_device_code(&format!("{code}.more")).is_none());
+    }
+
+    #[test]
+    fn a_message_over_the_workers_limits_does_not_fit() {
+        let me = Device::generate();
+        let seal = |text: &str| {
+            let body = Body::text(text, None);
+            let wire = crypto::seal_message("T", "C", &crypto::ulid(), 1, &[1; 32], &me, &body);
+            let frame = serde_json::json!({ "type": "send", "message": wire }).to_string();
+            (frame, wire)
+        };
+        let (frame, wire) = seal("hello");
+        assert!(fits(&frame, &wire));
+        let (frame, wire) = seal(&"x".repeat(MAX_MESSAGE_CT));
+        assert!(frame.len() <= MAX_FRAME);
+        assert!(!fits(&frame, &wire));
+        let (_, small) = seal("hello");
+        assert!(!fits(&"x".repeat(MAX_FRAME + 1), &small));
     }
 
     #[test]

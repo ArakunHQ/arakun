@@ -9,6 +9,12 @@
 //! that a few string searches read. When it answers with its bot check, the
 //! same page is asked of Browser Run's real browser instead.
 //!
+//! `web_fetch` takes an optional `query`. With it, the page is cut down to
+//! its title, its headings and the paragraphs, list items and table rows that
+//! contain the query's words, so a fact in a long page costs a few hundred
+//! tokens instead of the whole page. It stays optional: on a small page the
+//! outline can weigh more than the page.
+//!
 //! Lab mode: with `ARAKUN_WEB_URL` set (like `http://lab.internal/web`), both
 //! tools ask the lab's Worker instead, with GETs that answer JSON:
 //!
@@ -217,6 +223,14 @@ pub fn fetch(args: &Value) -> Result<String, String> {
         "text" => false,
         other => return Err(format!("format is markdown or text, not {other}")),
     };
+    let query = args["query"]
+        .as_str()
+        .map(str::trim)
+        .filter(|q| !q.is_empty());
+    // Matching needs the headings and table rows, so a query reads Markdown
+    // and turns the result into text at the end.
+    let want_text = !markdown;
+    let markdown = markdown || query.is_some();
     let list = blocklist();
     check(&url, &list)?;
     let (last, content, note) = if let Some(base) = lab() {
@@ -263,13 +277,301 @@ pub fn fetch(args: &Value) -> Result<String, String> {
         out.push_str(&n);
         out.push('\n');
     }
-    out.push('\n');
-    out.push_str(if content.is_empty() {
-        "(the page has no text)"
-    } else {
-        content
-    });
+    if content.is_empty() {
+        out.push_str("\n(the page has no text)");
+        return Ok(out);
+    }
+    match query {
+        Some(q) => {
+            let part = focus(content, q);
+            out.push_str(&if want_text {
+                markdown_to_text(&part)
+            } else {
+                part
+            });
+        }
+        None => {
+            out.push('\n');
+            out.push_str(content);
+        }
+    }
     Ok(out)
+}
+
+/// Headings the outline lists at most.
+const OUTLINE_MAX: usize = 60;
+/// Matching paragraphs, items or rows shown at most.
+const PARTS_MAX: usize = 40;
+/// A block with more lines than this that is not a list is read line by line
+/// (a table turned to text, a long run of lines), with its first line kept as
+/// the header.
+const BLOCK_LINES: usize = 3;
+
+const STOPWORDS: &[&str] = &[
+    "a", "an", "and", "are", "as", "at", "be", "by", "can", "do", "does", "for", "from", "how",
+    "i", "in", "is", "it", "of", "on", "or", "the", "this", "to", "was", "what", "when", "where",
+    "which", "who", "why", "with",
+];
+
+/// The words of a query that are worth matching, lower case.
+fn terms(query: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for w in query.split(|c: char| !(c.is_alphanumeric() || "._-/+#".contains(c))) {
+        let w = w
+            .trim_matches(|c: char| !c.is_alphanumeric())
+            .to_lowercase();
+        if !w.is_empty() && !STOPWORDS.contains(&w.as_str()) && !out.contains(&w) {
+            out.push(w);
+        }
+    }
+    if out.is_empty() {
+        // A query of only small words still means something.
+        out = query
+            .split_whitespace()
+            .map(str::to_lowercase)
+            .filter(|w| !w.is_empty())
+            .collect();
+    }
+    out
+}
+
+fn heading(line: &str) -> Option<(usize, &str)> {
+    let level = line.bytes().take_while(|b| *b == b'#').count();
+    let rest = &line[level..];
+    ((1..=6).contains(&level) && rest.starts_with(' ')).then(|| (level, rest.trim()))
+}
+
+fn list_item(line: &str) -> bool {
+    let l = line.trim_start();
+    l.starts_with("- ")
+        || l.starts_with("* ")
+        || l.starts_with("+ ")
+        || l.split_once(". ")
+            .is_some_and(|(n, _)| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// One piece of a block that can match alone, with the lines shown above it
+/// when it does (a table's header).
+struct Part {
+    section: usize,
+    header: Option<String>,
+    text: String,
+}
+
+/// The page cut down to what matches `query`: its title, its headings, and
+/// the paragraphs, list items and table rows that hold the most of the
+/// query's words, in page order under their headings.
+fn focus(page: &str, query: &str) -> String {
+    let terms = terms(query);
+    // Each section is the heading path above it; 0 is the text before the first.
+    let mut sections: Vec<(usize, String)> = vec![(0, String::new())];
+    let mut path: Vec<(usize, String)> = Vec::new();
+    let mut parts: Vec<Part> = Vec::new();
+    let mut block: Vec<&str> = Vec::new();
+    let mut fence = false;
+    let flush = |block: &mut Vec<&str>, parts: &mut Vec<Part>, section: usize| {
+        if block.is_empty() {
+            return;
+        }
+        let lines = std::mem::take(block);
+        let table = lines.iter().all(|l| l.trim_start().starts_with('|'));
+        let fenced = lines[0].trim_start().starts_with("```");
+        if fenced || (!table && lines.len() <= BLOCK_LINES) {
+            parts.push(Part {
+                section,
+                header: None,
+                text: lines.join("\n"),
+            });
+        } else if lines.iter().any(|l| list_item(l)) && !table {
+            // Items, each with the lines indented under it.
+            let mut item: Vec<&str> = Vec::new();
+            for l in lines {
+                if list_item(l) && !item.is_empty() {
+                    parts.push(Part {
+                        section,
+                        header: None,
+                        text: std::mem::take(&mut item).join("\n"),
+                    });
+                }
+                item.push(l);
+            }
+            parts.push(Part {
+                section,
+                header: None,
+                text: item.join("\n"),
+            });
+        } else {
+            let separator =
+                |l: &str| l.trim_start().starts_with('|') && l.chars().all(|c| "|-: ".contains(c));
+            let head = if table && lines.len() > 1 && separator(lines[1]) {
+                2
+            } else {
+                1
+            };
+            let header = lines[..head].join("\n");
+            for l in &lines[head..] {
+                parts.push(Part {
+                    section,
+                    header: Some(header.clone()),
+                    text: (*l).to_string(),
+                });
+            }
+        }
+    };
+    for line in page.lines() {
+        if line.trim_start().starts_with("```") {
+            if !fence {
+                flush(&mut block, &mut parts, sections.len() - 1);
+            }
+            fence = !fence;
+            block.push(line);
+            if !fence {
+                flush(&mut block, &mut parts, sections.len() - 1);
+            }
+            continue;
+        }
+        if fence {
+            block.push(line);
+            continue;
+        }
+        if let Some((level, text)) = heading(line) {
+            flush(&mut block, &mut parts, sections.len() - 1);
+            path.retain(|(l, _)| *l < level);
+            path.push((level, text.to_string()));
+            let joined = path
+                .iter()
+                .map(|(_, t)| t.as_str())
+                .collect::<Vec<_>>()
+                .join(" > ");
+            sections.push((level, joined));
+            continue;
+        }
+        if line.trim().is_empty() {
+            flush(&mut block, &mut parts, sections.len() - 1);
+        } else {
+            block.push(line);
+        }
+    }
+    flush(&mut block, &mut parts, sections.len() - 1);
+
+    let mut out = String::new();
+    if let Some((_, title)) = sections.get(1) {
+        out.push_str(&format!("Title: {title}\n"));
+    }
+    if sections.len() > 1 {
+        out.push_str("\nOutline:\n");
+        for (level, path) in sections.iter().skip(1).take(OUTLINE_MAX) {
+            let name = path.rsplit(" > ").next().unwrap_or(path);
+            out.push_str(&format!("{}- {name}\n", "  ".repeat(level - 1)));
+        }
+        if sections.len() - 1 > OUTLINE_MAX {
+            out.push_str(&format!(
+                "- ({} more headings)\n",
+                sections.len() - 1 - OUTLINE_MAX
+            ));
+        }
+    }
+
+    // Each part is matched with its heading path and its table header, so a
+    // section or a column named for the query counts. A word found in few
+    // parts weighs more than one found everywhere: in a table of versions,
+    // "1.142" picks the row and "version" barely counts.
+    let texts: Vec<String> = parts
+        .iter()
+        .map(|p| {
+            format!(
+                "{}\n{}\n{}",
+                sections[p.section].1,
+                p.header.as_deref().unwrap_or(""),
+                p.text
+            )
+            .to_lowercase()
+        })
+        .collect();
+    let weights: Vec<f64> = terms
+        .iter()
+        .map(|t| {
+            let df = texts.iter().filter(|x| x.contains(t.as_str())).count();
+            if df == 0 { 0.0 } else { 1.0 / df as f64 }
+        })
+        .collect();
+    let scores: Vec<f64> = texts
+        .iter()
+        .map(|x| {
+            terms
+                .iter()
+                .zip(&weights)
+                .filter(|(t, _)| x.contains(t.as_str()))
+                .map(|(_, w)| w)
+                .sum()
+        })
+        .collect();
+    let best = scores.iter().copied().fold(0.0, f64::max);
+    if best == 0.0 {
+        out.push_str(&format!(
+            "\nNothing on the page matches \"{query}\". Fetch it without a query to read it all.\n"
+        ));
+        return out;
+    }
+    // Parts close to the best one; the rest only share its common words.
+    let mut keep: Vec<usize> = (0..parts.len())
+        .filter(|&i| scores[i] >= best / 2.0)
+        .collect();
+    let found = keep.len();
+    if found > PARTS_MAX {
+        let mut ranked = keep.clone();
+        ranked.sort_by(|&a, &b| scores[b].total_cmp(&scores[a]));
+        ranked.truncate(PARTS_MAX);
+        ranked.sort_unstable();
+        keep = ranked;
+    }
+    out.push_str(&format!(
+        "\nParts that match \"{query}\" ({found} of {}). Fetch without a query for the whole page.\n",
+        parts.len()
+    ));
+    let mut shown_section = usize::MAX;
+    let mut shown_header: Option<&str> = None;
+    for &i in &keep {
+        let p = &parts[i];
+        // Right under a heading, the part needs no blank line of its own.
+        let mut fresh = false;
+        if p.section != shown_section {
+            shown_section = p.section;
+            shown_header = None;
+            let (level, path) = &sections[p.section];
+            out.push('\n');
+            if *level > 0 {
+                out.push_str(&format!("{} {path}\n", "#".repeat(*level)));
+                fresh = true;
+            }
+        }
+        match &p.header {
+            Some(h) if shown_header == Some(h.as_str()) => {}
+            Some(h) => {
+                if !fresh && !out.ends_with("\n\n") {
+                    out.push('\n');
+                }
+                out.push_str(h);
+                out.push('\n');
+                shown_header = Some(h.as_str());
+            }
+            None => {
+                if !fresh && !out.ends_with("\n\n") {
+                    out.push('\n');
+                }
+                shown_header = None;
+            }
+        }
+        out.push_str(&p.text);
+        out.push('\n');
+    }
+    if found > keep.len() {
+        out.push_str(&format!(
+            "\n({} more matching parts not shown; use more specific words.)\n",
+            found - keep.len()
+        ));
+    }
+    out
 }
 
 /// A page with a plain GET: the final URL and its text.
@@ -816,6 +1118,59 @@ mod tests {
         assert_eq!(
             markdown_to_text("# Hi\nSee [the **docs**](https://x.y/z) and ![img](a.png)."),
             "Hi\nSee the docs and img."
+        );
+    }
+
+    #[test]
+    fn a_query_keeps_only_the_matching_rows_under_their_header() {
+        let mut page = String::from(
+            "# Releases\n\nAll versions of the tool.\n\n## Table\n\n| Version | Date |\n|---|---|\n",
+        );
+        for n in 0..200 {
+            page.push_str(&format!("| 1.{n} | 2026-01-{:02} |\n", n % 28 + 1));
+        }
+        page.push_str("\n## License\n\nMIT.\n");
+        let out = focus(&page, "when was version 1.142 released?");
+        assert_eq!(
+            out,
+            "Title: Releases\n\nOutline:\n- Releases\n  - Table\n  - License\n\n\
+             Parts that match \"when was version 1.142 released?\" (1 of 202). \
+             Fetch without a query for the whole page.\n\n\
+             ## Releases > Table\n| Version | Date |\n|---|---|\n| 1.142 | 2026-01-03 |\n"
+        );
+        assert!(out.len() * 10 < page.len());
+    }
+
+    #[test]
+    fn a_matching_heading_brings_its_text_and_misses_say_so() {
+        let page = "# Bun docs\n\nIntro text.\n\n## Install\n\nRun the script:\n\n```sh\n# not a heading\ncurl -fsSL https://bun.sh/install | bash\n```\n\n- macOS\n- Linux\n\n## Test runner\n\nbun test runs tests.\n";
+        let out = focus(page, "install");
+        assert!(out.contains("## Bun docs > Install\nRun the script:\n\n```sh\n# not a heading"));
+        assert!(out.contains("- macOS\n\n- Linux\n") || out.contains("- macOS\n- Linux\n"));
+        assert!(!out.contains("bun test runs"));
+        assert!(!out.contains("Intro text"));
+        assert!(!out.contains("  - not a heading"));
+        let miss = focus(page, "windows");
+        assert!(miss.contains("Nothing on the page matches \"windows\""));
+        assert!(miss.contains("  - Test runner"));
+        assert_eq!(
+            terms("What is the Bun 1.4 release date?"),
+            ["bun", "1.4", "release", "date"]
+        );
+        assert_eq!(terms("the"), ["the"]);
+    }
+
+    #[test]
+    fn rows_of_a_table_turned_to_text_match_alone() {
+        // The plain GET's converter leaves a blank line between rows, so each
+        // row stands alone, without the header.
+        let html = "<h1>Prices</h1><table><tr><th>Plan</th><th>Price</th></tr><tr><td>Free</td><td>0</td></tr><tr><td>Pro</td><td>20</td></tr><tr><td>Team</td><td>50</td></tr></table>";
+        let out = focus(&html_to_text(html, true), "pro");
+        assert!(
+            out.ends_with(
+                "(1 of 4). Fetch without a query for the whole page.\n\n# Prices\nPro 20\n"
+            ),
+            "{out}"
         );
     }
 }

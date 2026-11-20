@@ -870,8 +870,8 @@ fn tool_specs() -> Value {
         ),
         f(
             "web_fetch",
-            "Read a web page; returns its final URL and its content as Markdown (or plain text). Use it instead of curl or `arakun fetch` in bash.",
-            json!({"url": s("The http(s) URL."), "format": {"type": "string", "enum": ["markdown", "text"], "description": "Default markdown."}}),
+            "Read a web page; returns its final URL and its content as Markdown (or plain text). With query, returns only the title, the headings and the parts that match: use it to find one fact in a long page (a big table, docs, a changelog). Use it instead of curl or `arakun fetch` in bash.",
+            json!({"url": s("The http(s) URL."), "format": {"type": "string", "enum": ["markdown", "text"], "description": "Default markdown."}, "query": s("Optional words to look for, like `bun 1.4 release date`. Leave it out to read the whole page.")}),
             &["url"],
         ),
         f(

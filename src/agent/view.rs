@@ -476,6 +476,8 @@ impl ThreadView {
                 self.sync_ask(window, cx)
             }
             ThreadEvent::RewindChanged { entry } => self.remeasure_entry(*entry),
+            // A background subagent keeps the timers ticking after the turn.
+            ThreadEvent::SubagentsChanged { .. } => self.sync_tick(window, cx),
             _ => {}
         }
         self.sync_mascot(cx);

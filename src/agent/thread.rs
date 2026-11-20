@@ -1298,6 +1298,21 @@ impl Thread {
         )
     }
 
+    /// Starts a call's clock when it first runs and drops it when it ends.
+    fn clock_tool(&mut self, id: &str, status: ToolStatus) {
+        match status {
+            ToolStatus::Completed | ToolStatus::Failed => {
+                self.tool_started.remove(id);
+            }
+            _ if !self.replaying => {
+                self.tool_started
+                    .entry(id.to_string())
+                    .or_insert_with(Instant::now);
+            }
+            _ => {}
+        }
+    }
+
     /// How long a running tool call has been going.
     pub fn tool_elapsed(&self, id: &str) -> Option<Duration> {
         self.tool_started.get(id).map(Instant::elapsed)
@@ -3821,11 +3836,8 @@ impl Thread {
         if let Some(status) = u["status"].as_str() {
             t.status = parse_tool_status(status);
         }
-        if matches!(t.status, ToolStatus::Completed | ToolStatus::Failed) {
-            self.tool_started.remove(&id);
-        } else if !self.replaying {
-            self.tool_started.entry(id).or_insert_with(Instant::now);
-        }
+        let status = t.status;
+        self.clock_tool(&id, status);
         let Some(Entry::Tool(t)) = self.entries.get_mut(ix) else {
             return;
         };

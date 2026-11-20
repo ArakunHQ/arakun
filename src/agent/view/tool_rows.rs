@@ -142,8 +142,9 @@ pub(super) fn wait_limit(t: &ToolCall) -> Option<Wait> {
         .get("command")
         .and_then(|c| c.as_str())
         .and_then(sleep_secs)
+        .and_then(|secs| Duration::try_from_secs_f64(secs).ok())
     {
-        return Some(Wait::Sleep(Duration::from_secs_f64(secs)));
+        return Some(Wait::Sleep(secs));
     }
     let ms = input.get("timeout").and_then(|v| v.as_u64())?;
     (ms > 0).then(|| Wait::Timeout(Duration::from_millis(ms)))
@@ -848,6 +849,12 @@ mod tests {
             Some(Wait::Timeout(Duration::from_secs(600)))
         );
         assert_eq!(wait_limit(&command("cargo test", None)), None);
+        // Too long for a Duration: falls back to the timeout instead of panicking.
+        assert_eq!(
+            wait_limit(&command("sleep 1e308d", Some(60_000))),
+            Some(Wait::Timeout(Duration::from_secs(60)))
+        );
+        assert_eq!(wait_limit(&command("sleep 1e308d", None)), None);
         let mut read = command("sleep 30", None);
         read.kind = "read".into();
         assert_eq!(wait_limit(&read), None);

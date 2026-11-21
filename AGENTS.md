@@ -59,9 +59,10 @@ Every commit message and pull request title follows
   **Human approval** status is a merge gate, not part of this wait: it only resolves once
   a person approves, and marking ready is what asks for the review. cubic, the review
   bot, reviews drafts too, so its review is often done before the checks. The
-  reviewers are asked only once the pull request is ready, cubic has finished and
-  every cubic comment is resolved or answered, and not at all if cubic approved and
-  every review thread is resolved. A pull request from outside the team
+  Reviewers workflow asks the reviewers only once the pull request is ready, cubic has
+  finished and every cubic comment is resolved or answered, and not at all if cubic
+  approved and every review thread is resolved. A maintainer who runs it by hand skips
+  the wait for cubic and for its comments. A pull request from outside the team
   always needs a person: the workflow dismisses cubic's approval of it.
 - Answer every cubic comment: fix it and push, or reply with the reason you won't.
   Resolve a thread on GitHub once the pushed commit fixes it; leave the ones you

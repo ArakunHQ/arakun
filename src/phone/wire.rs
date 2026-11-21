@@ -27,8 +27,8 @@ use serde_json::{Value, json};
 use crate::account::{self, Limits, UsageMode};
 use crate::agent::plan::PlanUsage;
 use crate::agent::{
-    AskUserRequest, Choice, Entry, PermissionRequest, Setting, SettingOption, Thread, ToolContent,
-    ToolStatus, Usage, attach, diff, fmt_cost,
+    AskUserRequest, Choice, Entry, PermissionRequest, Setting, SettingOption, SubagentRecord,
+    Thread, ToolContent, ToolStatus, Usage, attach, diff, fmt_cost,
 };
 use crate::model::Status;
 
@@ -960,6 +960,19 @@ pub fn transcript_message(
     parts(msg.to_string())
 }
 
+/// `subagents`: the subagents a session ran as child sessions, each with its
+/// whole transcript. Those live in the server's thread alone, not among the
+/// session's entries, so the app following the session gets them here. Sent
+/// whole, in `part`s when it is too much for a frame.
+pub fn subagents_message(id: &str, subagents: &[SubagentRecord]) -> Vec<String> {
+    parts(json!({ "type": "subagents", "id": id, "subagents": subagents }).to_string())
+}
+
+/// The subagents of a `subagents` message, or why they could not be read.
+pub fn read_subagents(msg: &Value) -> Result<Vec<SubagentRecord>, String> {
+    serde_json::from_value(msg["subagents"].clone()).map_err(|e| e.to_string())
+}
+
 /// `msg` as the messages to send for it: itself when it fits a frame, else
 /// `part`s in order, each a piece of its bytes.
 pub fn parts(msg: String) -> Vec<String> {
@@ -1523,5 +1536,50 @@ mod tests {
         assert_eq!(parts.take(third), None);
         let last: Value = serde_json::from_str(frames.last().unwrap()).unwrap();
         assert_eq!(parts.take(last), None);
+    }
+
+    #[test]
+    fn subagents_travel_whole_with_their_transcripts() {
+        use crate::agent::SubagentState;
+        let record = |id: &str, text: &str| SubagentRecord {
+            id: id.into(),
+            name: "Explore".into(),
+            task: "Find the bug".into(),
+            state: SubagentState::Running,
+            started: 7,
+            ended: None,
+            host: None,
+            entries: vec![said(text)],
+        };
+        // One small and one too big for a frame: it all comes in parts.
+        let sent = vec![
+            record("a", "found it"),
+            record("b", &"x".repeat(200 * 1024)),
+        ];
+        let frames = subagents_message("s1", &sent);
+        assert!(frames.len() > 1);
+        let mut parts = Parts::default();
+        let whole = frames
+            .iter()
+            .find_map(|f| parts.take(serde_json::from_str(f).unwrap()))
+            .unwrap();
+        assert_eq!(
+            (whole["type"].as_str(), whole["id"].as_str()),
+            (Some("subagents"), Some("s1"))
+        );
+        let back = read_subagents(&whole).unwrap();
+        assert_eq!(back.len(), 2);
+        assert_eq!(
+            (back[0].id.as_str(), back[0].state),
+            ("a", SubagentState::Running)
+        );
+        assert!(matches!(&back[0].entries[..], [Entry::Agent { text }] if text == "found it"));
+        assert_eq!(
+            serde_json::to_value(&back[1].entries).unwrap(),
+            serde_json::to_value(&sent[1].entries).unwrap()
+        );
+
+        // A message without them is not read as none.
+        assert!(read_subagents(&json!({ "type": "subagents", "id": "s1" })).is_err());
     }
 }

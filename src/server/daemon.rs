@@ -103,6 +103,9 @@ struct Live {
     dirty: bool,
     saved: Instant,
     _events: Subscription,
+    /// The threads of its subagents, followed so a change in one reaches the
+    /// apps that show the session.
+    children: HashMap<gpui::EntityId, Subscription>,
 }
 
 /// A terminal a device opened (`pty`), and the devices that follow it.
@@ -169,6 +172,11 @@ pub struct Daemon {
     dirty: HashMap<String, usize>,
     /// Sessions whose status, permission or usage changed since the last flush.
     state_dirty: Vec<String>,
+    /// Sessions whose subagents changed since the last flush.
+    subagents_dirty: HashSet<String>,
+    /// Apps that read whole transcripts, as one following a server does.
+    /// Only they are sent `subagents`; a phone does not show them.
+    readers: HashSet<ClientId>,
     inbox_dirty: bool,
     flush: Option<Task<()>>,
     last_inbox: String,
@@ -787,6 +795,8 @@ impl Daemon {
             handing_over: HashSet::new(),
             dirty: HashMap::new(),
             state_dirty: Vec::new(),
+            subagents_dirty: HashSet::new(),
+            readers: HashSet::new(),
             inbox_dirty: false,
             flush: None,
             last_inbox: String::new(),
@@ -925,8 +935,69 @@ impl Daemon {
                 dirty: false,
                 saved: Instant::now(),
                 _events: events,
+                children: HashMap::new(),
             },
         );
+        // A session read back from its transcript has its subagents already.
+        self.follow_subagents(id, cx);
+    }
+
+    /// Follows the threads of session `id`'s subagents not followed yet.
+    fn follow_subagents(&mut self, id: &str, cx: &mut Context<Self>) {
+        let Some(live) = self.live.get(id) else {
+            return;
+        };
+        let children: Vec<Entity<Thread>> = live
+            .thread
+            .read(cx)
+            .subagents()
+            .iter()
+            .filter(|s| !s.mirrored && !live.children.contains_key(&s.thread.entity_id()))
+            .map(|s| s.thread.clone())
+            .collect();
+        for child in children {
+            let sid = id.to_string();
+            let sub = cx.subscribe(&child, move |this, _, ev: &ThreadEvent, cx| {
+                if matches!(
+                    ev,
+                    ThreadEvent::EntriesChanged { .. }
+                        | ThreadEvent::Reset
+                        | ThreadEvent::StatusChanged
+                ) {
+                    this.subagents_changed(&sid, cx);
+                }
+            });
+            if let Some(live) = self.live.get_mut(id) {
+                live.children.insert(child.entity_id(), sub);
+            }
+        }
+    }
+
+    /// Notes that session `id`'s subagents are to be sent again, if an app
+    /// that shows them watches it.
+    fn subagents_changed(&mut self, id: &str, cx: &mut Context<Self>) {
+        if self.stopping || !self.read_by_app(id) {
+            return;
+        }
+        self.subagents_dirty.insert(id.to_string());
+        self.schedule_flush(cx);
+    }
+
+    fn read_by_app(&self, id: &str) -> bool {
+        self.watching
+            .iter()
+            .any(|(c, w)| self.readers.contains(c) && w.iter().any(|w| w == id))
+    }
+
+    /// The `subagents` message of session `id`: from its thread, or its saved transcript.
+    fn subagents_message(&self, id: &str, cx: &App) -> Vec<String> {
+        let records = match self.live.get(id) {
+            Some(live) => live.thread.read(cx).subagent_records(cx),
+            None => Thread::read_transcript(&self.store.transcript_path(id))
+                .map(|t| t.subagents)
+                .unwrap_or_default(),
+        };
+        wire::subagents_message(id, &records)
     }
 
     /// The session's thread, its agent started again if it had been let go.
@@ -1070,6 +1141,8 @@ impl Daemon {
                 self.save_store();
             }
             ThreadEvent::SubagentsChanged { .. } => {
+                self.follow_subagents(id, cx);
+                self.subagents_changed(id, cx);
                 // The background work is done: keep what it did, and let the agent go.
                 if !thread.read(cx).in_background() {
                     self.save_transcript(id, cx);
@@ -1909,6 +1982,7 @@ impl Daemon {
         self.flush = None;
         let dirty: Vec<(String, usize)> = self.dirty.drain().collect();
         let states: Vec<String> = std::mem::take(&mut self.state_dirty);
+        let subagents = std::mem::take(&mut self.subagents_dirty);
         if std::mem::take(&mut self.inbox_dirty) {
             self.sync_inbox(cx);
         }
@@ -1927,6 +2001,16 @@ impl Daemon {
             let t = thread.read(cx);
             let msg = wire::state_message(&id, t, status_of(t));
             self.send_watchers(&id, msg);
+        }
+        for id in subagents {
+            let frames = self.subagents_message(&id, cx);
+            for (client, watched) in &self.watching {
+                if self.readers.contains(client) && watched.contains(&id) {
+                    for frame in &frames {
+                        self.transport.send(*client, frame.clone());
+                    }
+                }
+            }
         }
     }
 
@@ -1972,6 +2056,7 @@ impl Daemon {
             Incoming::Disconnected(id) => {
                 self.stop_watching(id, cx);
                 self.hidden.remove(&id);
+                self.readers.remove(&id);
                 self.asked.retain(|_, c| *c != id);
                 self.rewinds.retain(|_, r| r.client != id);
                 // Its terminals keep running, for when it comes back.
@@ -2369,6 +2454,13 @@ impl Daemon {
                 });
                 for frame in frames {
                     self.transport.send(client, frame);
+                }
+                // Reading from the start: on opening it, and after a reconnect.
+                if from == 0 {
+                    self.readers.insert(client);
+                    for frame in self.subagents_message(&session, cx) {
+                        self.transport.send(client, frame);
+                    }
                 }
             }
             ClientMsg::TermOpen {

@@ -24,8 +24,8 @@ use serde_json::{Value, json};
 
 use super::{Modal, Shell};
 use crate::agent::{
-    AgentKind, Entry, RemoteAction, SessionMeta, Setting, SettingOption, Thread, ThreadStatus,
-    Transcript, Usage,
+    AgentKind, Entry, RemoteAction, SessionMeta, Setting, SettingOption, SubagentRecord, Thread,
+    ThreadStatus, Transcript, Usage,
 };
 use crate::dialogs::{DeleteEnvDialog, DialogEvent};
 use crate::extensions_view::ServerTarget;
@@ -72,6 +72,9 @@ struct Following {
     env_path: PathBuf,
     /// Its entries so far, whole, as the server's transcript holds them.
     entries: Vec<Entry>,
+    /// Its subagents that ran as child sessions, as the server last sent them.
+    /// Their transcripts are not among the entries.
+    subagents: Vec<SubagentRecord>,
     agent: AgentKind,
     cwd: PathBuf,
     title: String,
@@ -687,7 +690,7 @@ fn transcript_of(f: &Following) -> Transcript {
         resume: false,
         queue: f.queue.prompts.clone(),
         handoff: None,
-        subagents: Vec::new(),
+        subagents: f.subagents.clone(),
     }
 }
 
@@ -1371,6 +1374,7 @@ impl Shell {
             session: id.to_string(),
             env_path: env_path.to_path_buf(),
             entries: Vec::new(),
+            subagents: Vec::new(),
             agent,
             cwd: PathBuf::from(&remote.place),
             title,
@@ -3119,6 +3123,17 @@ impl Shell {
                     });
                 }
             }
+            "subagents" => {
+                let Some(f) = following else { return };
+                let Ok(subagents) = wire::read_subagents(msg) else {
+                    return;
+                };
+                f.subagents = subagents;
+                if let Some(thread) = thread_of(&self.projects, &f.env_path, &f.session) {
+                    let (status, transcript) = (thread_status(f.status), transcript_of(f));
+                    thread.update(cx, |t, cx| t.show_transcript(transcript, status, cx));
+                }
+            }
             "rewind_plan" => {
                 let Some(thread) = self.server_thread(id, &text(msg, "id")) else {
                     return;
@@ -3634,6 +3649,7 @@ mod tests {
             session: session.into(),
             env_path: PathBuf::new(),
             entries: Vec::new(),
+            subagents: Vec::new(),
             agent: AgentKind::Claude,
             cwd: PathBuf::new(),
             title: String::new(),
@@ -3646,6 +3662,29 @@ mod tests {
             by,
             queue: RemoteQueue::default(),
         }
+    }
+
+    #[test]
+    fn the_viewer_gets_the_subagents_the_server_sent() {
+        use crate::agent::SubagentState;
+        let mut f = following("s1", "a", Vec::new());
+        assert!(transcript_of(&f).subagents.is_empty());
+        f.subagents = vec![SubagentRecord {
+            id: "child".into(),
+            name: "Explore".into(),
+            task: String::new(),
+            state: SubagentState::Completed,
+            started: 1,
+            ended: Some(2),
+            host: None,
+            entries: Vec::new(),
+        }];
+        let ids: Vec<String> = transcript_of(&f)
+            .subagents
+            .into_iter()
+            .map(|s| s.id)
+            .collect();
+        assert_eq!(ids, ["child"]);
     }
 
     #[test]

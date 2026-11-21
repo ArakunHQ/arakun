@@ -245,7 +245,7 @@ reviews:
         This is the phone's end-to-end encryption and wire format. A change to the encryption, keys or framing here needs the same change in the phone (`phone/*.js`) and new test vectors (`phone/test/vectors`). A new or changed message kind or field needs `phone/*.js` to handle or ignore it, and no vector: the vectors cover encryption, labels and framing, not messages. Review crypto carefully: nonce reuse, key handling, constant-time comparison, and anything that logs secrets.
     - path: "phone/**"
       instructions: |
-        The phone web app talks to the Rust side in `core/src/phone` through the relay. A change to the encryption or framing must match `core/src/phone` and the test vectors; a change to a message must match `core/src/phone`. Never log keys, tokens or message contents. The app embeds these files, so a change here ships with the desktop build. `sw.js` caches nothing on purpose; flag a change that starts caching the page.
+        The phone web app talks to the Rust side in `core/src/phone` through the relay. A change to the encryption, keys or framing must match `core/src/phone` and the test vectors; a change to a message must match `core/src/phone`. Never log keys, tokens or message contents. The app embeds these files, so a change here ships with the desktop build. `sw.js` caches nothing on purpose; flag a change that starts caching the page.
     - path: "relay/**"
       instructions: |
         The relay is a Cloudflare Worker that forwards encrypted frames between the desktop and the phone. It must never see plaintext or keys. Check limits and input validation on every frame, authentication on admin routes, and Durable Object state that can grow without a bound. A new route or limit needs a test in `relay/test`.

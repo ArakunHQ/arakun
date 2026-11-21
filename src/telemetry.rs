@@ -143,11 +143,7 @@ fn saved() -> &'static Mutex<Option<Option<Consent>>> {
 
 /// The user's answer, or None while they have not given one.
 pub fn consent() -> Option<Consent> {
-    *lock(saved()).get_or_insert_with(|| {
-        std::fs::read(consent_file())
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
-    })
+    *lock(saved()).get_or_insert_with(|| crate::durable::load_json(consent_file()))
 }
 
 /// Whether to ask on this launch: never asked, and nothing else decides it.

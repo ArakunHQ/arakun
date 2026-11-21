@@ -600,7 +600,7 @@ impl Shell {
         let title: SharedString = format!("Fix CI #{}", run.number).into();
         // The tab stays on the run; the fix shows in its timeline and opens from there.
         let Some(id) =
-            self.start_session_in(env_path, Agent::Droid, title, prompt, false, window, cx)
+            self.start_session_in(env_path, AgentKind::Droid, title, prompt, false, window, cx)
         else {
             return;
         };

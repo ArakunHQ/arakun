@@ -297,6 +297,21 @@ fn numbers_after(line: &str, head: &str) -> Vec<f32> {
     out
 }
 
+/// A placeholder drawn in a faint gray: on this line, or on the next line
+/// with code when rustfmt splits the pair. A placeholder is text someone has
+/// to read, so it needs WCAG's 4.5:1; faint (3:1) is for disabled text and
+/// icons.
+fn faint_placeholder(line: &str, next: &str) -> Option<String> {
+    let line = &code_only(line);
+    let faint = |c: &str| c.contains("theme::text_faint()") || c.contains("theme::mix(");
+    // Only an expression still open at the end of the line goes on to the
+    // next one: after `;` or a closing brace, the next line is code of its
+    // own. An opening brace (`= if focused {`) carries on into the block.
+    let open = !line.trim_end().ends_with([';', '}']);
+    (line.contains("placeholder") && (faint(line) || open && faint(&code_only(next))))
+        .then(|| "placeholder in a faint gray: use theme::text_subtle".into())
+}
+
 /// What is wrong with a line, if anything.
 fn problems(line: &str) -> Vec<String> {
     let mut found = Vec::new();
@@ -374,6 +389,9 @@ fn views_use_the_design_system() {
             for p in problems(line) {
                 report.push(format!("{rel}:{}: {p}", n + 1));
             }
+            if let Some(p) = faint_placeholder(line, next_code(&lines[n + 1..])) {
+                report.push(format!("{rel}:{}: {p}", n + 1));
+            }
             if scaled {
                 for p in unscaled(line, next_code(&lines[n + 1..])) {
                     report.push(format!("{rel}:{}: {p}", n + 1));
@@ -386,6 +404,41 @@ fn views_use_the_design_system() {
         "{} hand-written styles:\n{}",
         report.len(),
         report.join("\n")
+    );
+}
+
+#[test]
+fn the_lint_catches_a_faint_placeholder() {
+    assert!(faint_placeholder("(input.placeholder.clone(), theme::mix(0.35))", "").is_some());
+    assert!(faint_placeholder("(field.placeholder.clone(), theme::text_faint())", "").is_some());
+    // Split over two lines, as rustfmt does with a long pair.
+    assert!(
+        faint_placeholder("    field.placeholder.clone(),", "    theme::text_faint(),").is_some()
+    );
+    assert!(faint_placeholder("(input.placeholder.clone(), theme::text_subtle())", "").is_none());
+    assert!(
+        faint_placeholder(
+            "    input.placeholder.clone(),",
+            "    theme::text_subtle(),"
+        )
+        .is_none()
+    );
+    assert!(faint_placeholder("// placeholder theme::mix(0.35)", "").is_none());
+    // The color inside a block the placeholder line opens.
+    assert!(
+        faint_placeholder(
+            "let placeholder_color = if focused {",
+            "    theme::text_faint()"
+        )
+        .is_some()
+    );
+    // A statement of its own, followed by another one.
+    assert!(
+        faint_placeholder(
+            "let placeholder_color = theme::text_subtle();",
+            "let icon_color = theme::text_faint();"
+        )
+        .is_none()
     );
 }
 

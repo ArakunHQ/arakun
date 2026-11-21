@@ -64,6 +64,11 @@ pub enum Call {
         branch: String,
         max_diff: usize,
     },
+    /// What a model writes a commit message from: a [`CommitSource`].
+    CommitSource {
+        all: bool,
+        max_diff: usize,
+    },
 }
 
 /// The changes in a folder and where its branch stands.
@@ -102,6 +107,18 @@ pub struct PrSource {
     pub diff: String,
     pub cut: bool,
     pub template: Option<String>,
+}
+
+/// What a model reads to write a commit message (`pr_writer::commit`).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommitSource {
+    /// `git diff --stat` of what the commit takes, new files listed too.
+    pub stat: String,
+    /// The diff, cut at `max_diff` characters.
+    pub diff: String,
+    pub cut: bool,
+    /// The last commits' subjects, newest first: the style to follow.
+    pub recent: Vec<String>,
 }
 
 impl Call {
@@ -163,6 +180,7 @@ impl Call {
                 branch,
                 max_diff,
             } => json!(pr_source(dir, &remote, &base, &branch, max_diff)),
+            Call::CommitSource { all, max_diff } => json!(commit_source(dir, all, max_diff)?),
         })
     }
 
@@ -174,7 +192,9 @@ impl Call {
                 crate::platform::GIT_LONG
             }
             // Several reads, each with its own limit.
-            Call::PrPlan { .. } | Call::PrSource { .. } => crate::platform::GIT_REMOTE * 3,
+            Call::PrPlan { .. } | Call::PrSource { .. } | Call::CommitSource { .. } => {
+                crate::platform::GIT_REMOTE * 3
+            }
             _ => crate::platform::GIT_REMOTE,
         }
     }
@@ -279,6 +299,21 @@ pub fn pr_source(dir: &Path, remote: &str, base: &str, branch: &str, max_diff: u
         template: git::pr_template(dir, remote),
     }
 }
+
+/// Reads what a model writes the message of a commit from: all changes, or
+/// only the staged ones.
+pub fn commit_source(dir: &Path, all: bool, max_diff: usize) -> Result<CommitSource> {
+    let (stat, diff, cut) = git::commit_diff(dir, all, max_diff)?;
+    Ok(CommitSource {
+        stat,
+        diff,
+        cut,
+        recent: git::recent_subjects(dir, RECENT),
+    })
+}
+
+/// How many earlier subjects show a model the repository's style.
+const RECENT: usize = 12;
 
 /// The server's answer to request `reference`. A git that ran out of time
 /// says so, so the app waits before it asks again, as it does with its own.

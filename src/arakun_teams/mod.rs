@@ -94,6 +94,18 @@ pub struct Teams {
     pictures: HashMap<String, Picture>,
     pictures_busy: bool,
     _task: Option<Task<()>>,
+    /// Asks `/me` again after it failed for a reason other than a 401, such as
+    /// starting offline, so the Teams tab can still show in this run.
+    retry: Option<Task<()>>,
+    retry_after: Duration,
+}
+
+/// The first wait before asking `/me` again; it doubles up to `LAST_RETRY`.
+const FIRST_RETRY: Duration = Duration::from_secs(15);
+const LAST_RETRY: Duration = Duration::from_secs(10 * 60);
+
+fn next_retry(after: Duration) -> Duration {
+    (after * 2).min(LAST_RETRY)
 }
 
 impl Teams {
@@ -109,6 +121,8 @@ impl Teams {
             pictures: HashMap::new(),
             pictures_busy: false,
             _task: None,
+            retry: None,
+            retry_after: FIRST_RETRY,
         };
         let base = match base {
             Ok(base) => base,
@@ -228,6 +242,7 @@ impl Teams {
             Ok(me) => {
                 self.me = Some(me);
                 self.error = None;
+                self.stop_retrying();
             }
             // The server ended the session (it expired, or was signed out
             // elsewhere): forget it here too.
@@ -235,11 +250,29 @@ impl Teams {
                 self.session = None;
                 self.me = None;
                 self.error = Some("The Teams session ended. Sign in again.".into());
+                self.stop_retrying();
                 cx.background_spawn(async move { keyring::clear(&session_account()) })
                     .detach();
             }
-            Err(e) => self.error = Some(format!("Teams: {e}").into()),
+            Err(e) => {
+                self.error = Some(format!("Teams: {e}").into());
+                self.retry_later(cx);
+            }
         }
+    }
+
+    fn retry_later(&mut self, cx: &mut Context<Self>) {
+        let wait = self.retry_after;
+        self.retry_after = next_retry(wait);
+        self.retry = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(wait).await;
+            let _ = this.update(cx, |this, cx| this.refresh_if_unknown(cx));
+        }));
+    }
+
+    fn stop_retrying(&mut self) {
+        self.retry = None;
+        self.retry_after = FIRST_RETRY;
     }
 
     /// Starts GitHub's device flow: shows a code, opens GitHub's page for it,
@@ -314,19 +347,19 @@ impl Teams {
         self.error = None;
         self.phase = Phase::Idle;
         self._task = None;
+        self.stop_retrying();
         cx.notify();
         if fixture().is_some() {
             return;
         }
         let base = self.base.clone().ok();
         cx.background_spawn(async move {
-            if let Some(base) = base
-                && let Err(e) = api::logout(&base, &session)
-                && e != ApiError::Unauthorized
-            {
-                eprintln!("arakun: Teams sign-out: {e}");
-            }
-            keyring::clear(&session_account());
+            end_session(
+                &session,
+                base.as_deref(),
+                || keyring::clear(&session_account()),
+                api::logout,
+            );
         })
         .detach();
     }
@@ -422,6 +455,24 @@ impl Teams {
     }
 }
 
+/// Forgets the session here before asking the server to end it. The server
+/// call can take up to 20 s: quitting during it must not leave the session
+/// stored, and a sign-in right after must not be cleared by it.
+fn end_session(
+    session: &str,
+    base: Option<&str>,
+    clear: impl FnOnce(),
+    logout: impl FnOnce(&str, &str) -> Result<(), ApiError>,
+) {
+    clear();
+    if let Some(base) = base
+        && let Err(e) = logout(base, session)
+        && e != ApiError::Unauthorized
+    {
+        eprintln!("arakun: Teams sign-out: {e}");
+    }
+}
+
 /// The device flow from the first request to a saved session. The GitHub
 /// token lives only inside it, and is dropped once the server has it.
 async fn device_flow(
@@ -447,6 +498,7 @@ async fn device_flow(
     .map_err(|e| Ended::Failed(e.to_string()))?;
 
     let mut interval = code.interval.max(1);
+    let mut dropped = 0;
     let token = loop {
         cx.background_executor()
             .timer(Duration::from_secs(interval))
@@ -455,10 +507,20 @@ async fn device_flow(
             return Err(Ended::Expired);
         }
         let device = code.device_code.clone();
-        let answer = cx
+        let answer = match cx
             .background_spawn(async move { api::poll_token(&device) })
             .await
-            .map_err(|e| Ended::Failed(format!("GitHub: {e}")))?;
+        {
+            Ok(answer) => {
+                dropped = 0;
+                answer
+            }
+            Err(e) if poll_again(&e, dropped) => {
+                dropped += 1;
+                continue;
+            }
+            Err(e) => return Err(Ended::Failed(format!("GitHub: {e}"))),
+        };
         match api::next_poll(&answer, interval) {
             Poll::Wait(secs) => interval = secs,
             Poll::Token(token) => break token,
@@ -492,6 +554,15 @@ enum Ended {
 
 const EXPIRED: &str = "The code ran out before it was entered on GitHub. Try again.";
 const DENIED: &str = "The sign-in was turned down on GitHub.";
+
+/// Polls in a row that may get no answer before the sign-in gives up.
+const POLL_DROPS: u32 = 3;
+
+/// The user may be halfway through approving on GitHub, so a poll that got no
+/// answer is tried again at the next interval, a few times in a row at most.
+fn poll_again(e: &ApiError, dropped: u32) -> bool {
+    matches!(e, ApiError::Network(_)) && dropped < POLL_DROPS
+}
 
 /// The server's sessions are 32 random bytes in base64url.
 fn session_ok(s: &str) -> bool {
@@ -581,5 +652,56 @@ mod tests {
         assert!(!session_ok("short"));
         assert!(!session_ok("has spaces in it, which no session has"));
         assert!(!session_ok("Qm9vbXNoYWthbGFrYS1ib29tc2hha2FsYWthLWJvb20\n"));
+    }
+
+    #[test]
+    fn a_poll_without_an_answer_is_tried_again_a_few_times() {
+        let offline = ApiError::Network("timed out".into());
+        assert!(poll_again(&offline, 0));
+        assert!(poll_again(&offline, POLL_DROPS - 1));
+        assert!(!poll_again(&offline, POLL_DROPS));
+        assert!(!poll_again(&ApiError::Status(500, "down".into()), 0));
+        assert!(!poll_again(&ApiError::Unreadable, 0));
+    }
+
+    #[test]
+    fn me_is_asked_again_less_and_less_often() {
+        let mut after = FIRST_RETRY;
+        let mut waits = Vec::new();
+        for _ in 0..8 {
+            waits.push(after.as_secs());
+            after = next_retry(after);
+        }
+        assert_eq!(waits, [15, 30, 60, 120, 240, 480, 600, 600]);
+    }
+
+    #[test]
+    fn sign_out_forgets_the_session_before_asking_the_server() {
+        let steps = std::cell::RefCell::new(Vec::new());
+        end_session(
+            "the-session",
+            Some("https://teams.example"),
+            || steps.borrow_mut().push("clear".to_string()),
+            |base, session| {
+                steps.borrow_mut().push(format!("logout {base} {session}"));
+                Err(ApiError::Network("offline".into()))
+            },
+        );
+        assert_eq!(
+            steps.into_inner(),
+            ["clear", "logout https://teams.example the-session"]
+        );
+    }
+
+    #[test]
+    fn sign_out_without_a_server_still_forgets_the_session() {
+        let mut cleared = false;
+        end_session(
+            "the-session",
+            None,
+            || cleared = true,
+            |_, _| panic!("no server to ask"),
+        );
+        assert!(cleared);
     }
 }

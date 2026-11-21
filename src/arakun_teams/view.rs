@@ -2351,7 +2351,7 @@ impl TeamsView {
                                     .text_color(theme::text_faint())
                                     .tooltip(ui::tip("@bot comes in the next version"))
                                     .child(div().opacity(0.6).child(crate::shell::agent_icon(
-                                        crate::model::Agent::Claude,
+                                        crate::agent::AgentKind::Claude,
                                         12.,
                                     )))
                                     .child("@bot"),

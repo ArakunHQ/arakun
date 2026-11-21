@@ -114,15 +114,13 @@ pub struct Store {
 
 impl Store {
     pub fn read_from(file: &Path) -> Store {
-        std::fs::read(file)
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or_default()
+        crate::durable::load_json(file).unwrap_or_default()
     }
 
     pub fn write_to(&self, file: &Path) -> Result<(), String> {
         let json = serde_json::to_vec_pretty(self).map_err(|e| e.to_string())?;
-        write_private(file, &json).map_err(|e| format!("Couldn't save the PostHog sign-in: {e}"))
+        crate::durable::write_private(file, &json)
+            .map_err(|e| format!("Couldn't save the PostHog sign-in: {e}"))
     }
 
     /// Adds `s`, or replaces the session of the same user and region.
@@ -177,39 +175,6 @@ pub fn remove_session(id: &str) -> Result<(), String> {
     let mut store = Store::read_from(&store_file());
     store.remove(id);
     store.write_to(&store_file())
-}
-
-/// Writes `bytes` so only this user can read them: 0600 in a 0700 directory
-/// on Unix (Windows keeps app data under the user's profile already).
-fn write_private(file: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    use std::io::Write as _;
-    if let Some(d) = file.parent() {
-        std::fs::create_dir_all(d)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            let _ = std::fs::set_permissions(d, std::fs::Permissions::from_mode(0o700));
-        }
-    }
-    let tmp = file.with_extension("tmp");
-    let mut opts = std::fs::OpenOptions::new();
-    opts.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        opts.mode(0o600);
-    }
-    let mut f = opts.open(&tmp)?;
-    f.write_all(bytes)?;
-    f.sync_all()?;
-    drop(f);
-    std::fs::rename(&tmp, file)
-}
-
-pub(crate) fn write_json(file: &Path, v: &impl Serialize) {
-    if let Ok(json) = serde_json::to_vec(v) {
-        let _ = crate::durable::write(file, &json);
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -621,7 +586,7 @@ fn directory_file() -> PathBuf {
 }
 
 pub fn cached_directory() -> Option<Directory> {
-    serde_json::from_slice(&std::fs::read(directory_file()).ok()?).ok()
+    crate::durable::load_json(directory_file())
 }
 
 /// One session's projects, and what it couldn't read.
@@ -745,7 +710,7 @@ pub fn load_directory(sessions: &[Session]) -> Directory {
             }
         }
     }
-    write_json(&directory_file(), &dir);
+    crate::durable::cache_json(&directory_file(), &dir);
     dir
 }
 
@@ -771,10 +736,7 @@ fn root_key(root: &Path) -> String {
 }
 
 pub fn links_from(file: &Path) -> HashMap<String, Link> {
-    std::fs::read(file)
-        .ok()
-        .and_then(|b| serde_json::from_slice(&b).ok())
-        .unwrap_or_default()
+    crate::durable::load_json(file).unwrap_or_default()
 }
 
 pub fn link_of(root: &Path) -> Option<Link> {
@@ -789,7 +751,9 @@ pub fn set_link(root: &Path, link: Option<Link>) {
         Some(l) => links.insert(root_key(root), l),
         None => links.remove(&root_key(root)),
     };
-    write_json(&file, &links);
+    if let Err(e) = crate::durable::save_json(&file, &links) {
+        eprintln!("arakun: could not save the PostHog project links: {e}");
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -896,7 +860,7 @@ fn overview_file(p: &Project) -> PathBuf {
 
 /// What the last read of `p` found, to show at once.
 pub fn cached(p: &Project) -> Option<Overview> {
-    serde_json::from_slice(&std::fs::read(overview_file(p)).ok()?).ok()
+    crate::durable::load_json(overview_file(p))
 }
 
 fn hogql(s: &Session, project: u64, q: &str) -> Result<Vec<Value>, ApiError> {
@@ -1100,7 +1064,7 @@ pub fn load_overview(
         Ok(v) => o.flags = parse_flags(v),
         Err(e) => problem("Feature flags", e),
     }
-    write_json(&overview_file(p), &o);
+    crate::durable::cache_json(&overview_file(p), &o);
     Ok(o)
 }
 

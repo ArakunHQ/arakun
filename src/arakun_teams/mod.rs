@@ -6,6 +6,10 @@
 //! and keeps only the session the server answers with, in the system keyring.
 
 pub mod api;
+pub mod crypto;
+pub mod hub;
+pub mod socket;
+pub mod store;
 pub mod view;
 
 use std::time::{Duration, Instant};
@@ -15,7 +19,10 @@ use gpui::{AppContext as _, AsyncApp, Context, SharedString, Task, WeakEntity};
 use crate::platform::keyring;
 use api::{ApiError, Me, Poll};
 
-const KEYRING_ACCOUNT: &str = "teams-session";
+/// The session's keyring account (see `store::account`).
+fn session_account() -> String {
+    store::account("teams-session")
+}
 
 /// Where the sign-in stands.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -117,6 +124,22 @@ impl Teams {
         self.me.as_ref()
     }
 
+    /// The server and the session to call it with, once signed in to an
+    /// account that has Teams.
+    pub fn signed(&self) -> Option<(String, String, Me)> {
+        let me = self.me.clone().filter(|m| m.has(api::TEAMS_FLAG))?;
+        Some((self.base.clone().ok()?, self.session.clone()?, me))
+    }
+
+    /// The server ended the session in the middle of Teams' work: forget it,
+    /// as a 401 to `/me` would.
+    pub fn session_ended(&mut self, cx: &mut Context<Self>) {
+        if self.session.is_some() {
+            self.apply_me(Err(ApiError::Unauthorized), cx);
+            cx.notify();
+        }
+    }
+
     /// Whether the Teams tab shows: the server set the `teams` flag on this account.
     pub fn enabled(&self) -> bool {
         self.me.as_ref().is_some_and(|m| m.has(api::TEAMS_FLAG))
@@ -163,7 +186,7 @@ impl Teams {
                 self.me = None;
                 self.error = Some("The Teams session ended. Sign in again.".into());
                 self.stop_retrying();
-                cx.background_spawn(async move { keyring::clear(KEYRING_ACCOUNT) })
+                cx.background_spawn(async move { keyring::clear(&session_account()) })
                     .detach();
             }
             Err(e) => {
@@ -256,7 +279,7 @@ impl Teams {
             end_session(
                 &session,
                 base.as_deref(),
-                || keyring::clear(KEYRING_ACCOUNT),
+                || keyring::clear(&session_account()),
                 api::logout,
             );
         })
@@ -347,7 +370,7 @@ async fn device_flow(
         let signed = api::sign_in(&base, &token).map_err(|e| format!("Teams: {e}"));
         drop(token);
         let signed = signed?;
-        let saved = keyring::store(KEYRING_ACCOUNT, "arakun: Teams session", &signed.session);
+        let saved = keyring::store(&session_account(), "arakun: Teams session", &signed.session);
         Ok((signed, saved))
     })
     .await
@@ -375,13 +398,13 @@ fn load_session() -> Option<String> {
     if fixture().is_some() {
         return Some("fixture-session-0000000000".into());
     }
-    keyring::lookup(KEYRING_ACCOUNT).filter(|s| session_ok(s))
+    keyring::lookup(&session_account()).filter(|s| session_ok(s))
 }
 
 /// `ARAKUN_TEAMS_FIXTURE=<me.json>` stands in for the session and `GET /me`,
 /// to look at the UI offline (in `arakun dev`, say). The file holds what
 /// `/me` would answer.
-fn fixture() -> Option<std::path::PathBuf> {
+pub(crate) fn fixture() -> Option<std::path::PathBuf> {
     std::env::var_os("ARAKUN_TEAMS_FIXTURE").map(Into::into)
 }
 

@@ -7,6 +7,8 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+use super::crypto::{Envelope, Sealed, WireMessage};
+
 /// Arakun's OAuth App. Public: the device flow has no client secret, and the
 /// server checks with GitHub that this app issued the token.
 pub const CLIENT_ID: &str = "Ov23lipgmMeATCa5aTr3";
@@ -229,15 +231,375 @@ pub fn logout(base: &str, session: &str) -> Result<(), ApiError> {
     }
 }
 
+// ---- teams (teams/PROTOCOL.md) ------------------------------------------------
+
+/// A device as `GET /users/<id>/devices` and the pending list show it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeviceRow {
+    pub device_id: String,
+    pub sig_pub: String,
+    pub enc_pub: String,
+    pub name: String,
+    pub created_at: u64,
+    pub endorsed_by: Option<String>,
+    #[serde(default)]
+    pub endorsement_sig: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct Endorsement {
+    pub by: String,
+    pub sig: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Role {
+    Owner,
+    Admin,
+    Member,
+}
+
+impl Role {
+    pub fn is_admin(self) -> bool {
+        matches!(self, Role::Owner | Role::Admin)
+    }
+
+    pub fn word(self) -> &'static str {
+        match self {
+            Role::Owner => "owner",
+            Role::Admin => "admin",
+            Role::Member => "member",
+        }
+    }
+}
+
+/// One of the caller's teams, as `GET /teams` lists it.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct TeamRow {
+    pub team_id: String,
+    pub name: String,
+    pub role: Role,
+    pub epoch: u64,
+    pub rotation_pending: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct MemberRow {
+    pub github_id: u64,
+    pub login: String,
+    pub role: Role,
+    pub joined_at: u64,
+    pub first_key_epoch: Option<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct ChannelRow {
+    pub channel_id: String,
+    pub name_ct: Sealed,
+    pub created_at: u64,
+}
+
+/// `GET /teams/<team_id>`.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct TeamDetail {
+    pub team_id: String,
+    pub name: String,
+    pub epoch: u64,
+    #[serde(default)]
+    pub keyed_epoch: Option<u64>,
+    /// Absent on Workers that cannot guard a historical grant at write time.
+    pub roster_epoch: Option<u64>,
+    pub rotation_pending: bool,
+    pub members: Vec<MemberRow>,
+    pub channels: Vec<ChannelRow>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct InviteRow {
+    pub invite_id: String,
+    pub team_id: String,
+    pub team_name: String,
+    pub invited_by_login: Option<String>,
+    pub created_at: u64,
+    pub expires_at: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct PendingRow {
+    pub request_id: String,
+    pub github_id: u64,
+    pub login: String,
+    pub requested_at: u64,
+    pub devices: Vec<DeviceRow>,
+}
+
+/// A stored message, from history or the channel's socket.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct Stored {
+    pub seq: u64,
+    pub at: u64,
+    pub message: WireMessage,
+}
+
+/// One teams call: the session, and the device it is made from when the
+/// server needs to know (`X-Arakun-Device`).
+pub struct Call<'a> {
+    pub base: &'a str,
+    pub session: &'a str,
+    pub device: Option<&'a str>,
+}
+
+/// A history page holds up to 200 messages of up to 64 KiB each.
+const HISTORY_LIMIT: u64 = 32 * 1024 * 1024;
+const SMALL_LIMIT: u64 = 1024 * 1024;
+
+impl Call<'_> {
+    fn send(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<serde_json::Value>,
+        limit: u64,
+    ) -> Result<(u16, String), ApiError> {
+        let mut req = ureq::http::Request::builder()
+            .method(method)
+            .uri(format!("{}{path}", self.base))
+            .header("Authorization", format!("Bearer {}", self.session));
+        if let Some(device) = self.device {
+            req = req.header(DEVICE_HEADER, device);
+        }
+        let sent = match body {
+            Some(body) => req
+                .header("Content-Type", "application/json")
+                .body(body.to_string())
+                .map_err(|e| ApiError::Network(e.to_string()))
+                .and_then(|r| {
+                    server(self.base)
+                        .run(r)
+                        .map_err(|e| ApiError::Network(e.to_string()))
+                }),
+            None => req
+                .body(())
+                .map_err(|e| ApiError::Network(e.to_string()))
+                .and_then(|r| {
+                    server(self.base)
+                        .run(r)
+                        .map_err(|e| ApiError::Network(e.to_string()))
+                }),
+        };
+        read(sent, limit)
+    }
+
+    fn get<T: serde::de::DeserializeOwned>(&self, path: &str) -> Result<T, ApiError> {
+        let (status, body) = self.send("GET", path, None, SMALL_LIMIT)?;
+        json(status, &body)
+    }
+
+    fn post<T: serde::de::DeserializeOwned>(
+        &self,
+        method: &str,
+        path: &str,
+        body: serde_json::Value,
+    ) -> Result<T, ApiError> {
+        let (status, text) = self.send(method, path, Some(body), SMALL_LIMIT)?;
+        // 201 Created answers the same JSON as a 200.
+        json(if status == 201 { 200 } else { status }, &text)
+    }
+
+    /// `POST /devices`: the device's ID, for a new device or one known already.
+    pub fn register_device(
+        &self,
+        sig_pub: &str,
+        enc_pub: &str,
+        name: &str,
+        endorsement: Option<Endorsement>,
+    ) -> Result<String, ApiError> {
+        #[derive(Deserialize)]
+        struct Registered {
+            device_id: String,
+        }
+        let body = serde_json::json!({
+            "sig_pub": sig_pub, "enc_pub": enc_pub, "name": name, "endorsement": endorsement,
+        });
+        self.post::<Registered>("POST", "/devices", body)
+            .map(|r| r.device_id)
+    }
+
+    pub fn devices(&self, github_id: u64) -> Result<Vec<DeviceRow>, ApiError> {
+        self.get(&format!("/users/{github_id}/devices"))
+    }
+
+    pub fn create_team(&self, name: &str) -> Result<String, ApiError> {
+        #[derive(Deserialize)]
+        struct Created {
+            team_id: String,
+        }
+        self.post::<Created>("POST", "/teams", serde_json::json!({ "name": name }))
+            .map(|c| c.team_id)
+    }
+
+    pub fn teams(&self) -> Result<Vec<TeamRow>, ApiError> {
+        self.get("/teams")
+    }
+
+    pub fn team(&self, team_id: &str) -> Result<TeamDetail, ApiError> {
+        self.get(&format!("/teams/{team_id}"))
+    }
+
+    pub fn invite(&self, team_id: &str, login: &str) -> Result<(), ApiError> {
+        let body = serde_json::json!({ "github_login": login });
+        self.post::<serde_json::Value>("POST", &format!("/teams/{team_id}/invites"), body)
+            .map(|_| ())
+    }
+
+    pub fn invites(&self) -> Result<Vec<InviteRow>, ApiError> {
+        self.get("/invites")
+    }
+
+    pub fn accept(&self, invite_id: &str) -> Result<(), ApiError> {
+        let path = format!("/invites/{invite_id}/accept");
+        self.post::<serde_json::Value>("POST", &path, serde_json::json!({}))
+            .map(|_| ())
+    }
+
+    pub fn pending(&self, team_id: &str) -> Result<Vec<PendingRow>, ApiError> {
+        self.get(&format!("/teams/{team_id}/pending"))
+    }
+
+    /// `devices` and `keyed_epoch` are what the admin reviewed, so a device
+    /// added or a rotation ended since then answers `409`, not `400`.
+    pub fn approve(
+        &self,
+        team_id: &str,
+        github_id: u64,
+        request_id: &str,
+        devices: &[String],
+        keyed_epoch: Option<u64>,
+        envelopes: &[Envelope],
+    ) -> Result<(), ApiError> {
+        let path = format!("/teams/{team_id}/pending/{github_id}/approve");
+        let body = approval(request_id, devices, keyed_epoch, envelopes);
+        self.post::<serde_json::Value>("POST", &path, body)
+            .map(|_| ())
+    }
+
+    pub fn reject(&self, team_id: &str, github_id: u64, request_id: &str) -> Result<(), ApiError> {
+        let path = format!("/teams/{team_id}/pending/{github_id}/reject");
+        let reviewed = serde_json::json!({ "request_id": request_id });
+        let (status, body) = self.send("POST", &path, Some(reviewed), SMALL_LIMIT)?;
+        nothing(status, &body)
+    }
+
+    /// `PUT /teams/<id>/envelopes`: whether a rotation is still pending after.
+    pub fn put_envelopes(
+        &self,
+        team_id: &str,
+        keyed_epoch: u64,
+        roster_epoch: u64,
+        envelopes: &[Envelope],
+    ) -> Result<bool, ApiError> {
+        #[derive(Deserialize)]
+        struct Put {
+            rotation_pending: bool,
+        }
+        let path = format!("/teams/{team_id}/envelopes");
+        let body = serde_json::json!({ "keyed_epoch": keyed_epoch, "roster_epoch": roster_epoch, "envelopes": envelopes });
+        self.post::<Put>("PUT", &path, body)
+            .map(|p| p.rotation_pending)
+    }
+
+    pub fn envelopes(&self, team_id: &str) -> Result<Vec<Envelope>, ApiError> {
+        self.get(&format!("/teams/{team_id}/envelopes"))
+    }
+
+    pub fn remove_member(&self, team_id: &str, github_id: u64) -> Result<(), ApiError> {
+        let path = format!("/teams/{team_id}/members/{github_id}");
+        let (status, body) = self.send("DELETE", &path, None, SMALL_LIMIT)?;
+        nothing(status, &body)
+    }
+
+    pub fn create_channel(
+        &self,
+        team_id: &str,
+        channel_id: &str,
+        name_ct: &Sealed,
+    ) -> Result<(), ApiError> {
+        let body = serde_json::json!({ "channel_id": channel_id, "name_ct": name_ct });
+        self.post::<serde_json::Value>("POST", &format!("/teams/{team_id}/channels"), body)
+            .map(|_| ())
+    }
+
+    /// `PUT /teams/<id>/channels/<id>`: the channel's name, sealed again.
+    pub fn rename_channel(
+        &self,
+        team_id: &str,
+        channel_id: &str,
+        name_ct: &Sealed,
+    ) -> Result<(), ApiError> {
+        let body = serde_json::json!({ "name_ct": name_ct });
+        let path = format!("/teams/{team_id}/channels/{channel_id}");
+        self.post::<serde_json::Value>("PUT", &path, body)
+            .map(|_| ())
+    }
+
+    /// Up to 200 messages after `after`, oldest first.
+    pub fn history(
+        &self,
+        team_id: &str,
+        channel_id: &str,
+        after: u64,
+    ) -> Result<Vec<Stored>, ApiError> {
+        let path =
+            format!("/teams/{team_id}/channels/{channel_id}/messages?after={after}&limit=200");
+        let (status, body) = self.send("GET", &path, None, HISTORY_LIMIT)?;
+        json(status, &body)
+    }
+}
+
+/// The header that says which of the user's devices makes a call.
+pub const DEVICE_HEADER: &str = "X-Arakun-Device";
+
+/// The channel's socket, at the server's address with `ws` for `http`.
+pub fn socket_url(base: &str, team_id: &str, channel_id: &str) -> String {
+    let ws = if let Some(rest) = base.strip_prefix("https://") {
+        format!("wss://{rest}")
+    } else if let Some(rest) = base.strip_prefix("http://") {
+        format!("ws://{rest}")
+    } else {
+        base.to_string()
+    };
+    format!("{ws}/teams/{team_id}/channels/{channel_id}/ws")
+}
+
+/// An answer that carries nothing but its status.
+fn nothing(status: u16, body: &str) -> Result<(), ApiError> {
+    match status {
+        200..=299 => Ok(()),
+        401 => Err(ApiError::Unauthorized),
+        s => Err(ApiError::Status(s, server_error(body))),
+    }
+}
+
 fn answer(
     sent: Result<ureq::http::Response<ureq::Body>, ureq::Error>,
 ) -> Result<(u16, String), ApiError> {
-    let mut res = sent.map_err(|e| ApiError::Network(e.to_string()))?;
+    read(
+        sent.map_err(|e| ApiError::Network(e.to_string())),
+        64 * 1024,
+    )
+}
+
+fn read(
+    sent: Result<ureq::http::Response<ureq::Body>, ApiError>,
+    limit: u64,
+) -> Result<(u16, String), ApiError> {
+    let mut res = sent?;
     let status = res.status().as_u16();
     let body = res
         .body_mut()
         .with_config()
-        .limit(64 * 1024)
+        .limit(limit)
         .read_to_string()
         .unwrap_or_default();
     Ok((status, body))
@@ -270,6 +632,25 @@ fn github_error(body: &str) -> String {
                 .map(str::to_string)
         })
         .unwrap_or_default()
+}
+
+/// The body of an approval. A Worker without the team's `keyed_epoch` gave
+/// the client none to send back, so it is left out then.
+fn approval(
+    request_id: &str,
+    devices: &[String],
+    keyed_epoch: Option<u64>,
+    envelopes: &[Envelope],
+) -> serde_json::Value {
+    let mut body = serde_json::json!({
+        "request_id": request_id,
+        "devices": devices,
+        "envelopes": envelopes,
+    });
+    if let Some(epoch) = keyed_epoch {
+        body["keyed_epoch"] = epoch.into();
+    }
+    body
 }
 
 fn agent() -> &'static ureq::Agent {
@@ -414,6 +795,18 @@ mod tests {
             Err(ApiError::Status(429, "too many sign-ins".into()))
         );
         assert_eq!(json::<Me>(200, "<html>"), Err(ApiError::Unreadable));
+    }
+
+    #[test]
+    fn an_approval_names_what_the_admin_reviewed() {
+        let devices = ["d1".to_string(), "d2".to_string()];
+        let body = approval("r", &devices, Some(4), &[]);
+        assert_eq!(body["request_id"], "r");
+        assert_eq!(body["devices"], serde_json::json!(["d1", "d2"]));
+        assert_eq!(body["keyed_epoch"], 4);
+        assert_eq!(body["envelopes"], serde_json::json!([]));
+        let older = approval("r", &devices, None, &[]);
+        assert!(older.get("keyed_epoch").is_none());
     }
 
     #[test]

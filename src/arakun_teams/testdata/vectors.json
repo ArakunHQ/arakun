@@ -1,0 +1,85 @@
+{
+  "about": "Made by vectors.mjs with WebCrypto; crypto.rs's tests read it.",
+  "github_id": 9001,
+  "team_id": "01JD0000000000000000000000",
+  "channel_id": "01JD0000000000000000000001",
+  "epoch": 3,
+  "team_key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+  "sender": {
+    "sig_pkcs8": "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgoVNJevAyRx-OwcIsJTxm_EiPX41TCBhYCbmpPg7Q2LGhRANCAAQk6p_Fp-Ljn0HRWOaP-pdSvQPiM2zT5WBFODKGdLlNojC97p-OGiXbd_VmmhxX--35YsKNx_9FU_cymzG2aEtk",
+    "enc_d": "89eJVk583Sp88z9cYdeCCWqwZxqMrUQ-nalGpmJmf2k",
+    "sig_pub": "BCTqn8Wn4uOfQdFY5o_6l1K9A-IzbNPlYEU4MoZ0uU2iML3un44aJdt39WaaHFf77fliwo3H_0VT9zKbMbZoS2Q",
+    "enc_pub": "BCOC1vtN8YI-PCo21juuxVD8KsbmP5HV3tHqjmMKazHAyVtmrIOj5teh4A_OWSYe21rm26ueL7HA-QDKpPY3KlQ",
+    "device_id": "5aGHOa1mWiRjRcHwVBGPDw"
+  },
+  "recipient": {
+    "sig_pkcs8": "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgUlhcpg8A0ZCWdUJYuESTQK-AZC_-TmH4mrWrlFBXmrahRANCAARRp96JZtDZYzj1_jWE-XAf7AOF8nFP1w3qfAqZExpBuOH0N_oF05GMU8dZxYpDB6_BEVDJsPPZaGKnRbduqXHQ",
+    "enc_d": "HAVA4NBtVuut2j1nFMBf7wL7HDSw2Sy6r3tZloPPFpI",
+    "sig_pub": "BFGn3olm0NljOPX-NYT5cB_sA4XycU_XDep8CpkTGkG44fQ3-gXTkYxTx1nFikMHr8ERUMmw89loYqdFt26pcdA",
+    "enc_pub": "BGBLTf6ZvNCsu8Sfx4yEsIDVpaMIQjXraoEtG9iLp2Vl0OY_lsp0ad78NVTDOptPENZUECcBRudzHcgWIQ7LzpU",
+    "device_id": "yExR7tq5SCrBfKOYa3So7A"
+  },
+  "endorsement": {
+    "text": "arakun-teams/v1/device|9001|BFGn3olm0NljOPX-NYT5cB_sA4XycU_XDep8CpkTGkG44fQ3-gXTkYxTx1nFikMHr8ERUMmw89loYqdFt26pcdA|BGBLTf6ZvNCsu8Sfx4yEsIDVpaMIQjXraoEtG9iLp2Vl0OY_lsp0ad78NVTDOptPENZUECcBRudzHcgWIQ7LzpU",
+    "sig": "Pyd4AXc9G7IsncyRUuGUiEM3abnnRyD_tMkNjoqDxzy_61biZjceZR7IC0cCMwKzyrk1DlukgGAP46Wlsl0Gpw"
+  },
+  "envelope": {
+    "v": 1,
+    "team_id": "01JD0000000000000000000000",
+    "epoch": 3,
+    "device_id": "yExR7tq5SCrBfKOYa3So7A",
+    "from": "5aGHOa1mWiRjRcHwVBGPDw",
+    "eph_pub": "BJqu6QLGkKOYaap2jfOBxuho-m8SJ0_9Etyouc1t8WO5oeYkj3juUT0R5dlF_2-gHTEM33U0XvBPaK2-RdrjjyU",
+    "nonce": "cFiI-OFOloHoGWiq",
+    "ct": "V7fvI7sI_m4Ca1fumEn3LNg33MV_63Td-TFo7HpiRz6QXcZ5suxpjbbBZs1P8vZu",
+    "sig": "ldTP_cKjvGujRa5bOnfQmn4g5QUO_9qb6vW39w9XtEx-MM6kjE0cQUptPaLGzbbOHYNV5ktDCj443C36MMPaQg"
+  },
+  "message": {
+    "body": "{\"kind\":\"text\",\"text\":\"hello, team\",\"reply_to\":null,\"mentions\":[],\"bot\":null,\"decision\":null}",
+    "wire": {
+      "id": "01JD0000000000000000000002",
+      "device_id": "5aGHOa1mWiRjRcHwVBGPDw",
+      "epoch": 3,
+      "nonce": "oKGio6Slpqeoqaqr",
+      "ct": "nToXRCuvIIVAEeKrc1js_ATJIWSwjWAE-WJK6VOLAWSzG2XTjVA2TTPlW7xmWLmXMncqZEC9fxA1N2Qw11K_6-mQpw1f0cbampeTdKPsqN-uYtjNqq-7QIAAUvbM86Gfe0aZiV8TWEg_WAfVVA",
+      "sig": "7-LPWStQWIri2UY0rF7X8VnIjsMb8wSpS1_XOEwxuanD_MRnFT-piKs5L85PG_PtHSKEId-tmYTPBHC1_re3dw"
+    }
+  },
+  "channel_name": {
+    "name": "general",
+    "sealed": {
+      "v": 1,
+      "epoch": 3,
+      "nonce": "oKGio6Slpqeoqaqr",
+      "ct": "gX0SSDeqbmU0jeBaKXocqK3bej--rzY"
+    }
+  },
+  "rust": {
+    "endorsement": {
+      "text": "arakun-teams/v1/device|9001|AAAA|BBBB",
+      "sig": "OzUJSZqdAx7Q0DG6AGRAY2njyg-hALHvhMjSik86RAFvk3S6-ADWSVzuhjonW8gU49QWFdROZU3y-cBEG1IH7w"
+    },
+    "envelope": {
+      "v": 1,
+      "team_id": "01JD0000000000000000000000",
+      "epoch": 3,
+      "device_id": "5aGHOa1mWiRjRcHwVBGPDw",
+      "from": "yExR7tq5SCrBfKOYa3So7A",
+      "eph_pub": "BBnEo9ZKh-PShCFQt1yJN0Rs5qH8E0VDQW3CefUlmCj--d69U5Rdx4Z_vDI29NgzXaWcAeohoWg-GEhqTY4PxhY",
+      "nonce": "Dy-xcZlbPuJlk2Q9",
+      "ct": "8q75t_g94WKJxAU9AWMr3u9HJlRcNj045S9Vpl6FP9G2xmQQJcaLOtOaT-wHVcdt",
+      "sig": "hi6D7lhNnj3nGNqWmLiTPOXp8ENVphDzgnWHR59Mk2EDwu0BOmlTXvl53urb4uoGb3mwVViSN1p_KtUu5xLn_g"
+    },
+    "message": {
+      "body": "{\"kind\":\"text\",\"text\":\"hello back, from Rust\",\"reply_to\":null,\"mentions\":[],\"bot\":null,\"decision\":null}",
+      "wire": {
+        "id": "01JD0000000000000000000003",
+        "device_id": "yExR7tq5SCrBfKOYa3So7A",
+        "epoch": 3,
+        "nonce": "Dudt_sqza6Wrfmqy",
+        "ct": "tCEgVjDp8GNBD7RMSIcydoA5BGe6BnwFbkAIdixpCz-BqeS2Gw1iROvdIc2PZjaVXol-TbgZwm6e6ZAcF5jmN8Bn2bjzNa2fT6Suj03Gs6q4ZqCr4uPnFQQfVtQp9UwvZtqo20bipt2KD8gt__hayDU88jzYYug",
+        "sig": "7A-T2HNm1C_rC5F2MDYjbF5eHBt6qWNMMuLOQmdY1vOJFlEhFPXoKQv0ZMsC0EiqMU95g_RKnd5MX5NhaACHTQ"
+      }
+    }
+  }
+}

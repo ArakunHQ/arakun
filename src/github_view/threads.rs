@@ -342,7 +342,13 @@ impl GitHubView {
         cx: &Context<Self>,
     ) -> gpui::Div {
         let mut comments = div().flex().flex_col().gap(crate::ui::sp(12.));
-        for (i, c) in t.comments.iter().enumerate() {
+        let newest_first = self.github.read(cx).newest_first();
+        // Reversed here, not in the thread: its first comment is the one to reply to.
+        let mut ordered: Vec<_> = t.comments.iter().enumerate().collect();
+        if newest_first {
+            ordered.reverse();
+        }
+        for (i, c) in ordered {
             comments = comments.child(
                 div()
                     .flex()

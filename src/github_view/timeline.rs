@@ -303,9 +303,9 @@ fn hunk_lines(hunk: &str) -> Vec<AnyElement> {
 /// The timeline of one version of an item, worked out once: the list asks
 /// for its rows one at a time as they come on screen.
 pub(super) struct Timeline {
-    /// The item, its version, who looks, whether a draft shows last, and
-    /// where its threads stand.
-    key: (String, String, String, bool, u64),
+    /// The item, its version, who looks, whether there is a draft, where its
+    /// threads stand, and whether the newest shows first.
+    key: (String, String, String, bool, u64, bool),
     author: String,
     opened_at: u64,
     body: String,
@@ -337,9 +337,14 @@ struct Part {
 }
 
 /// The rows: the opening post, the events (a review, then each of its
-/// threads), then the draft review.
-fn rows(events: &[Event], draft: bool) -> Vec<Row> {
+/// threads), then the draft review. Newest first, the events come in reverse
+/// and the draft, the newest of all, right under the opening post. A review
+/// keeps its threads under it either way.
+fn rows(events: &[Event], draft: bool, newest_first: bool) -> Vec<Row> {
     let mut rows = vec![Row::Open];
+    if draft && newest_first {
+        rows.push(Row::Draft);
+    }
     for range in pr::group_pushes(events) {
         let event = range.start;
         rows.push(Row::Event(range));
@@ -352,7 +357,7 @@ fn rows(events: &[Event], draft: bool) -> Vec<Row> {
             }));
         }
     }
-    if draft {
+    if draft && !newest_first {
         rows.push(Row::Draft);
     }
     rows
@@ -576,6 +581,7 @@ impl GitHubView {
             self.draft.is_some(),
             // Resolving a thread doesn't always move the item's date.
             details.threads_mark(),
+            g.newest_first(),
         );
         if self.timeline.as_ref().is_some_and(|t| t.key == key) {
             return;
@@ -604,7 +610,11 @@ impl GitHubView {
                 "opened this issue",
             ),
         };
-        let rows = rows(&events, key.3);
+        let mut events = events;
+        if key.5 {
+            events.reverse();
+        }
+        let rows = rows(&events, key.3, key.5);
         let same_item = self.timeline.as_ref().is_some_and(|t| t.key.0 == key.0);
         let old_rows = self.timeline.as_ref().map_or(0, |t| t.rows.len());
         let t = Timeline {
@@ -656,6 +666,22 @@ impl GitHubView {
             .into_any_element()
     }
 
+    /// Oldest or newest first, for the conversation and its threads.
+    fn order_toggle(&self, newest_first: bool, cx: &mut Context<Self>) -> gpui::Div {
+        ui::toggle_group(
+            "gh-order",
+            &[(false, "Oldest first"), (true, "Newest first")],
+            newest_first,
+            |seg, on| {
+                seg.on_click(cx.listener(move |this, _, _, cx| {
+                    this.github.update(cx, |g, cx| g.set_newest_first(on, cx));
+                    this.timeline_list.scroll_to(gpui::ListOffset::default());
+                    cx.notify();
+                }))
+            },
+        )
+    }
+
     fn timeline_row(
         &self,
         t: &Timeline,
@@ -695,7 +721,22 @@ impl GitHubView {
                 div()
                     .flex()
                     .flex_col()
-                    .child(header(&you(&t.author), t.noun, t.opened_at, Vec::new()))
+                    .child(
+                        div()
+                            .flex()
+                            .items_start()
+                            .gap(crate::ui::sp(8.))
+                            .child(
+                                header(&you(&t.author), t.noun, t.opened_at, Vec::new())
+                                    .flex_1()
+                                    .min_w_0(),
+                            )
+                            .child(
+                                div()
+                                    .pt(crate::ui::sp(2.))
+                                    .child(self.order_toggle(t.key.5, cx)),
+                            ),
+                    )
                     .child(if t.body.trim().is_empty() {
                         card()
                             .child(ui::text(Type::Body, theme::text_faint(), "No description."))
@@ -731,7 +772,8 @@ impl GitHubView {
                     } else {
                         Vec::new()
                     };
-                    let last = run.last().map_or(0, |c| c.at);
+                    // The run is in reverse when the newest shows first.
+                    let last = run.iter().map(|c| c.at).max().unwrap_or(0);
                     let mut list = div()
                         .flex()
                         .flex_col()
@@ -1016,6 +1058,41 @@ impl GitHubView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn comment(at: u64) -> Event {
+        Event {
+            at,
+            author: "rik".into(),
+            body: String::new(),
+            kind: EventKind::Comment { url: String::new() },
+        }
+    }
+
+    fn shape(rows: &[Row]) -> Vec<String> {
+        rows.iter()
+            .map(|r| match r {
+                Row::Open => "open".to_string(),
+                Row::Event(r) => format!("{}..{}", r.start, r.end),
+                Row::Thread { event, n, .. } => format!("t{event}.{n}"),
+                Row::Draft => "draft".to_string(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_draft_sits_next_to_the_newest_event() {
+        let events = vec![comment(1), comment(2)];
+        assert_eq!(
+            shape(&rows(&events, true, false)),
+            ["open", "0..1", "1..2", "draft"]
+        );
+        // Newest first, the opening post stays on top and the draft comes under it.
+        assert_eq!(
+            shape(&rows(&events, true, true)),
+            ["open", "draft", "0..1", "1..2"]
+        );
+        assert_eq!(shape(&rows(&events, false, true)), ["open", "0..1", "1..2"]);
+    }
 
     #[test]
     fn long_bodies_fold() {

@@ -3023,9 +3023,9 @@ impl TeamsView {
         // One of your own devices shows your login: mask it in redacted mode.
         let login = shown_login(&login, hub.me().map(|m| m.login.as_str()));
         let name = crate::redact::text(&device.name).into_owned();
-        let numbers = hub
-            .sig_pub()
-            .and_then(|mine| super::crypto::compare_numbers(mine, &device.sig_pub));
+        let numbers = hub.public_keys().and_then(|mine| {
+            super::crypto::compare_numbers(mine, (&device.sig_pub, &device.enc_pub))
+        });
         let verified = hub.verified(device_id);
         let mismatch = self.mismatch.as_deref() == Some(device_id) || hub.mismatched(device_id);
         let title = format!("Compare {name}");
@@ -3084,11 +3084,6 @@ impl TeamsView {
                 ),
             ))
             .child(grid)
-            .child(div().flex().justify_center().child(render_qr(&numbers.concat())))
-            .child(Self::note(
-                "view",
-                "Or point the other device's camera at this.",
-            ))
             .children(if verified {
                 Some(
                     div()
@@ -3588,32 +3583,6 @@ fn device_line(d: &DeviceRow) -> gpui::Div {
             )
             .font_family(theme::FONT_MONO),
         )
-}
-
-/// A QR code of `text` on white, as large as the panel's design.
-fn render_qr(text: &str) -> gpui::Div {
-    const SIDE: f32 = 132.;
-    let Ok(code) = qrcode::QrCode::new(text.as_bytes()) else {
-        return div();
-    };
-    let width = code.width();
-    let colors = code.to_colors();
-    let cell = (SIDE / width as f32).floor();
-    let mut rows = div()
-        .flex()
-        .flex_col()
-        .p(ui::sp(8.))
-        .rounded(ui::rad(ui::RADIUS_SM))
-        .bg(gpui::white());
-    for y in 0..width {
-        let mut row = div().flex();
-        for x in 0..width {
-            let dark = colors[y * width + x] == qrcode::Color::Dark;
-            row = row.child(div().size(px(cell)).when(dark, |d| d.bg(gpui::black())));
-        }
-        rows = rows.child(row);
-    }
-    rows
 }
 
 /// A login as the sheet shows it. The signed-in user's own one is masked in

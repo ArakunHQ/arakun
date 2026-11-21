@@ -81,14 +81,12 @@ fn cache_file(cwd: &Path) -> std::path::PathBuf {
 
 /// What the last `load` found in `cwd`, to show while a new one runs.
 pub fn cached(cwd: &Path) -> Option<Extensions> {
-    serde_json::from_slice(&std::fs::read(cache_file(cwd)).ok()?).ok()
+    crate::durable::load_json(cache_file(cwd))
 }
 
 fn save(cwd: &Path, x: &Extensions) {
     let file = cache_file(cwd);
-    if let Ok(json) = serde_json::to_vec(x) {
-        let _ = crate::durable::write(&file, &json);
-    }
+    crate::durable::cache_json(&file, x);
 }
 
 /// Runs `first` (if any) and then the three lists, in order, on one process.

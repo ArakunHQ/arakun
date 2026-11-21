@@ -49,7 +49,7 @@ fn cache_file() -> PathBuf {
 
 /// The catalog as last read, to show at once.
 pub fn cached_plugins() -> Option<Vec<PluginEntry>> {
-    serde_json::from_slice(&std::fs::read(cache_file()).ok()?).ok()
+    crate::durable::load_json(cache_file())
 }
 
 /// Blocking: every plugin the marketplaces offer, most installed first.
@@ -63,9 +63,7 @@ pub fn plugins(cwd: &Path) -> Result<Vec<PluginEntry>> {
     )?;
     let v: Value = serde_json::from_str(&out).context("reading claude plugin list")?;
     let list = parse_plugins(&v, &manifests());
-    if let Ok(json) = serde_json::to_vec(&list) {
-        let _ = crate::durable::write(&cache_file(), &json);
-    }
+    crate::durable::cache_json(&cache_file(), &list);
     Ok(list)
 }
 
@@ -412,10 +410,7 @@ pub fn cached_official() -> Option<(Vec<RegistryServer>, bool)> {
         .ok()?
         .elapsed()
         .is_ok_and(|e| e < Duration::from_secs(24 * 3600));
-    Some((
-        serde_json::from_slice(&std::fs::read(file).ok()?).ok()?,
-        fresh,
-    ))
+    Some((crate::durable::load_json(file)?, fresh))
 }
 
 /// Blocking, a second or two: every server the known companies publish, one
@@ -450,9 +445,7 @@ pub fn official_servers() -> Result<Vec<RegistryServer>> {
             .then_with(|| a.title.to_lowercase().cmp(&b.title.to_lowercase()))
     });
     found.dedup_by(|a, b| a.name == b.name);
-    if let Ok(json) = serde_json::to_vec(&found) {
-        let _ = crate::durable::write(&official_file(), &json);
-    }
+    crate::durable::cache_json(&official_file(), &found);
     Ok(found)
 }
 

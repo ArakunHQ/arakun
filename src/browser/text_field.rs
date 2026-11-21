@@ -491,7 +491,7 @@ impl Element for TextLine {
         let focused = field.focus.is_focused(window);
         let style = window.text_style();
         let (text, color): (SharedString, Hsla) = if field.content.is_empty() {
-            (field.placeholder.clone(), theme::mix(0.35))
+            (field.placeholder.clone(), theme::text_subtle())
         } else {
             (
                 field.content.clone().into(),

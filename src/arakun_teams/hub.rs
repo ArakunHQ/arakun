@@ -36,6 +36,11 @@ const DEVICES_AGAIN: Duration = Duration::from_secs(5);
 /// What a device code starts with, so a paste of something else is told apart.
 const CODE_PREFIX: &str = "arakun-device";
 const MAX_ENVELOPES: usize = 500;
+/// The Worker's limits on a socket frame and on a message's `ct`, decoded.
+/// It refuses a frame over the first without reading the message's ID, so
+/// such a message could never be marked failed: both are checked first.
+const MAX_FRAME: usize = 96 * 1024;
+const MAX_MESSAGE_CT: usize = 64 * 1024;
 
 /// Where this device stands with the server.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -266,7 +271,7 @@ pub struct Hub {
     setup: HashMap<String, String>,
     next_link: u64,
     _events: Task<()>,
-    save_task: Option<Shared<Task<()>>>,
+    save_task: Option<Shared<Task<Result<(), String>>>>,
     _poll: Option<Task<()>>,
     _tick: Option<Task<()>>,
 }
@@ -337,9 +342,11 @@ impl Hub {
         self.net.as_ref().map(|n| n.local.device.id())
     }
 
-    /// This device's public signing key, for comparing devices.
-    pub fn sig_pub(&self) -> Option<&str> {
-        self.net.as_ref().map(|n| n.local.device.sig_pub())
+    /// This device's public keys, `(sig_pub, enc_pub)`, for comparing devices.
+    pub fn public_keys(&self) -> Option<(&str, &str)> {
+        self.net
+            .as_ref()
+            .map(|n| (n.local.device.sig_pub(), n.local.device.enc_pub()))
     }
 
     /// The user checked this device's compare numbers with its owner.
@@ -357,7 +364,9 @@ impl Hub {
         if !yes {
             self.doubts.fetch_add(1, Ordering::SeqCst);
         }
-        if self.kept.set_verified(device_id, yes) {
+        // "They don't" saves even when nothing changed, so pressing it again
+        // retries a save that failed.
+        if self.kept.set_verified(device_id, yes) || !yes {
             self.save(cx);
         }
         cx.notify();
@@ -496,17 +505,31 @@ impl Hub {
     }
 
     fn save(&mut self, cx: &mut Context<Self>) {
-        if let Some(sealer) = self.sealer.clone() {
-            let kept = self.kept.clone();
-            let prior = self.save_task.take();
-            let ticket = sealer.ticket();
-            self.save_task = Some(
-                cx.background_spawn(store::after_save(prior, move || {
-                    sealer.write(ticket, &kept)
-                }))
-                .shared(),
-            );
-        }
+        let Some(sealer) = self.sealer.clone() else {
+            return;
+        };
+        let kept = self.kept.clone();
+        let prior = self.save_task.take();
+        let task = cx
+            .background_spawn(store::after_save(prior, move || sealer.write(&kept)))
+            .shared();
+        self.save_task = Some(task.clone());
+        // What only this device knows, such as a request to join, would be
+        // gone after a restart: say so rather than only log it.
+        let generation = self.generation;
+        cx.spawn(async move |this, cx| {
+            if let Err(e) = task.await {
+                let _ = this.update(cx, |hub, cx| {
+                    if hub.generation == generation {
+                        hub.error = Some(format!(
+                            "Could not save this device's Teams records: {e}. The next change tries again."
+                        ));
+                        cx.notify();
+                    }
+                });
+            }
+        })
+        .detach();
     }
 
     fn github_id(&self) -> u64 {
@@ -789,6 +812,7 @@ impl Hub {
             changed |= self.kept.put_key(team_id, *epoch, key);
         }
         changed |= self.kept.observe_grants(&read.detail);
+        changed |= self.kept.observe_skips(&read.detail);
         // New devices of members seen before; the first look at a member
         // only learns what they have.
         let mine = self.device_id().unwrap_or_default().to_string();
@@ -1068,11 +1092,26 @@ impl Hub {
         let busy = format!("rotate:{team_id}:{version}");
         let doubted = doubted(&self.kept, t);
         if !doubted.is_empty() {
-            let who = doubted.join(", @");
+            // A failed comparison is the user's call to undo; a chain that
+            // doesn't check out is not.
+            let compared: Vec<&str> = doubted
+                .iter()
+                .filter(|l| !t.untrusted.contains(l))
+                .map(String::as_str)
+                .collect();
+            let problem = if compared.is_empty() {
+                format!(
+                    "The team needs a new key, but a device of @{} does not check out, so none was made.",
+                    doubted.join(", @")
+                )
+            } else {
+                format!(
+                    "The team needs a new key, but a device of @{} did not match when you compared it, so none was made. Compare it again, or remove them.",
+                    compared.join(", @")
+                )
+            };
             if let Some(t) = self.team.get_mut(team_id) {
-                t.problem = Some(format!(
-                    "The team needs a new key, but a device of @{who} does not check out, so none was made."
-                ));
+                t.problem = Some(problem);
             }
             return;
         }
@@ -1268,7 +1307,8 @@ impl Hub {
             return;
         };
         let team_epoch = t.detail.epoch;
-        let keyed_epoch = t.detail.keyed_epoch.unwrap_or(team_epoch);
+        let reviewed_epoch = t.detail.keyed_epoch;
+        let keyed_epoch = reviewed_epoch.unwrap_or(team_epoch);
         let Some(p) = t
             .pending
             .iter()
@@ -1290,7 +1330,9 @@ impl Hub {
             return;
         }
         self.save(cx);
-        let keys = contiguous_tail(&self.kept.keys(team_id));
+        let keys = contiguous_tail(&self.kept.keys(team_id), |older, newer| {
+            self.kept.skipped_between(team_id, older, newer)
+        });
         if keys.is_empty() {
             self.error = Some("This device holds no key of the team yet.".into());
             cx.notify();
@@ -1306,6 +1348,9 @@ impl Hub {
         let login = p.login.clone();
         let doubts = self.doubts.clone();
         let planned = doubts.load(Ordering::SeqCst);
+        // The same snapshot the keys are sealed for, so a change since
+        // answers 409 and the admin looks again.
+        let reviewed: Vec<String> = p.devices.iter().map(|d| d.device_id.clone()).collect();
         self.run(
             cx,
             {
@@ -1318,8 +1363,14 @@ impl Hub {
                     let (newest, older) = parts.split_first().expect("keys is not empty");
                     let mut given = seal_all(net, &team_id, newest, &trusted)?;
                     still_trusted(&doubts, planned)?;
-                    net.call()
-                        .approve(&team_id, github_id, &p.request_id, &given)?;
+                    net.call().approve(
+                        &team_id,
+                        github_id,
+                        &p.request_id,
+                        &reviewed,
+                        reviewed_epoch,
+                        &given,
+                    )?;
                     for part in older {
                         let batch = seal_all(net, &team_id, part, &trusted)?;
                         if let Err(e) = still_trusted(&doubts, planned).and_then(|()| {
@@ -1353,6 +1404,10 @@ impl Hub {
                                 "Approved @{login}, but their oldest team keys could not be given: {e}"
                             ));
                         }
+                    }
+                    Err(ApiError::Status(409, e)) => {
+                        hub.error = Some(format!("Could not approve @{login}: {e}"));
+                        hub.load_team(&team_id, cx);
                     }
                     Err(e) => hub.error = Some(format!("Could not approve: {e}")),
                 }
@@ -1407,9 +1462,17 @@ impl Hub {
         (epoch == t.detail.epoch && !t.detail.rotation_pending).then_some((epoch, key))
     }
 
+    /// Why [`Self::sending_key`] gave nothing.
+    fn no_sending_key(&self, team_id: &str) -> String {
+        self.team
+            .get(team_id)
+            .map_or(NO_KEY, |t| no_key_reason(&t.detail))
+            .into()
+    }
+
     pub fn create_channel(&mut self, team_id: &str, name: String, cx: &mut Context<Self>) {
         let Some((epoch, key)) = self.sending_key(team_id) else {
-            self.error = Some("This device does not hold the team's current key yet.".into());
+            self.error = Some(self.no_sending_key(team_id));
             cx.notify();
             return;
         };
@@ -1800,7 +1863,7 @@ impl Hub {
         cx: &mut Context<Self>,
     ) -> bool {
         let Some((epoch, key)) = self.sending_key(team_id) else {
-            self.error = Some("This device does not hold the team's current key yet.".into());
+            self.error = Some(self.no_sending_key(team_id));
             self.load_team(team_id, cx);
             cx.notify();
             return false;
@@ -1809,9 +1872,9 @@ impl Hub {
             return false;
         };
         let ckey = channel_key(team_id, channel_id);
-        let Some(c) = self.channels.get_mut(&ckey) else {
+        if !self.channels.contains_key(&ckey) {
             return false;
-        };
+        }
         let id = crypto::ulid();
         let wire: WireMessage = crypto::seal_message(
             team_id,
@@ -1823,9 +1886,20 @@ impl Hub {
             &body,
         );
         let frame = serde_json::json!({ "type": "send", "message": wire }).to_string();
+        if !fits(&frame, &wire) {
+            self.error = Some(format!(
+                "This message is too long to send. A message holds about {} KB of text.",
+                MAX_MESSAGE_CT / 1024
+            ));
+            cx.notify();
+            return false;
+        }
         if body.kind == "text" && body.mentions.iter().any(|m| m == "bot") {
             self.bot.asked.insert(id.clone(), self.bot.project.clone());
         }
+        let Some(c) = self.channels.get_mut(&ckey) else {
+            return false;
+        };
         let me = self.me.clone();
         c.messages.push(Msg {
             id: id.clone(),
@@ -1869,6 +1943,23 @@ impl Hub {
             self.bot.asked.remove(id);
         }
     }
+}
+
+const NO_KEY: &str = "This device does not hold the team's current key yet.";
+
+/// A pending rotation is its own wait: the server would still take the old
+/// key, but a removed member holds it, so nothing new is sealed with it.
+fn no_key_reason(detail: &TeamDetail) -> &'static str {
+    if detail.rotation_pending && detail.keyed_epoch.is_some_and(|k| k > 0) {
+        "Someone left this team, so it needs a new key before anyone can send. An admin's Arakun makes it the next time it opens the team."
+    } else {
+        NO_KEY
+    }
+}
+
+/// Whether the Worker takes this frame. Over either limit it would refuse it.
+fn fits(frame: &str, wire: &WireMessage) -> bool {
+    frame.len() <= MAX_FRAME && crypto::unb64(&wire.ct).is_some_and(|ct| ct.len() <= MAX_MESSAGE_CT)
 }
 
 fn now() -> u64 {
@@ -2043,12 +2134,19 @@ fn stale_names(detail: &TeamDetail, read: &[ChannelInfo], epoch: u64) -> Vec<(St
         .collect()
 }
 
-/// The keys from the newest back to the first gap: a skipped epoch has no
-/// envelopes, and an approval must cover every epoch from its first.
-fn contiguous_tail(keys: &[(u64, TeamKey)]) -> Vec<(u64, TeamKey)> {
+/// The keys from the newest back to the first gap, since an approval must
+/// cover every keyed epoch from its first. A gap of epochs `skipped(older,
+/// newer)` knows were skipped is no gap: they have no key to give.
+fn contiguous_tail(
+    keys: &[(u64, TeamKey)],
+    skipped: impl Fn(u64, u64) -> bool,
+) -> Vec<(u64, TeamKey)> {
     let mut out: Vec<(u64, TeamKey)> = Vec::new();
     for (epoch, key) in keys.iter().rev() {
-        if out.last().is_some_and(|(e, _)| *e != epoch + 1) {
+        if out
+            .last()
+            .is_some_and(|(e, _)| *e != epoch + 1 && !skipped(*epoch, *e))
+        {
             break;
         }
         out.push((*epoch, *key));
@@ -2371,11 +2469,73 @@ mod tests {
     }
 
     #[test]
+    fn a_pending_rotation_is_not_a_missing_key() {
+        let mut t = delivery_team(vec![], 4).detail;
+        assert_eq!(no_key_reason(&t), NO_KEY);
+        t.epoch = 5;
+        t.rotation_pending = true;
+        assert!(no_key_reason(&t).starts_with("Someone left this team"));
+        // A new team waits for its first key, not for a rotation.
+        t.keyed_epoch = Some(0);
+        assert_eq!(no_key_reason(&t), NO_KEY);
+    }
+
+    #[test]
+    fn a_message_over_the_workers_limits_does_not_fit() {
+        let me = Device::generate();
+        let seal = |text: &str| {
+            let body = Body::text(text, None);
+            let wire = crypto::seal_message("T", "C", &crypto::ulid(), 1, &[1; 32], &me, &body);
+            let frame = serde_json::json!({ "type": "send", "message": wire }).to_string();
+            (frame, wire)
+        };
+        let (frame, wire) = seal("hello");
+        assert!(fits(&frame, &wire));
+        let (frame, wire) = seal(&"x".repeat(MAX_MESSAGE_CT));
+        assert!(frame.len() <= MAX_FRAME);
+        assert!(!fits(&frame, &wire));
+        let (_, small) = seal("hello");
+        assert!(!fits(&"x".repeat(MAX_FRAME + 1), &small));
+    }
+
+    #[test]
     fn approvals_give_keys_back_to_the_first_gap() {
         let k = |e: u64| (e, [e as u8; 32]);
-        assert_eq!(contiguous_tail(&[k(1), k(2), k(3)]), vec![k(1), k(2), k(3)]);
-        assert_eq!(contiguous_tail(&[k(1), k(2), k(4), k(5)]), vec![k(4), k(5)]);
-        assert!(contiguous_tail(&[]).is_empty());
+        let none = |_: u64, _: u64| false;
+        assert_eq!(
+            contiguous_tail(&[k(1), k(2), k(3)], none),
+            vec![k(1), k(2), k(3)]
+        );
+        assert_eq!(
+            contiguous_tail(&[k(1), k(2), k(4), k(5)], none),
+            vec![k(4), k(5)]
+        );
+        assert!(contiguous_tail(&[], none).is_empty());
+    }
+
+    #[test]
+    fn approvals_go_past_an_epoch_seen_skipped() {
+        let k = |e: u64| (e, [e as u8; 32]);
+        let mut t = delivery_team(vec![], 1).detail;
+        let mut kept = Kept::default();
+        // Two removals before a rotation: epoch 3 is current, 2 never keyed.
+        t.epoch = 3;
+        t.rotation_pending = true;
+        assert!(kept.observe_skips(&t));
+        assert!(!kept.observe_skips(&t));
+        let skipped = |older, newer| kept.skipped_between("T", older, newer);
+        let held = [k(1), k(3), k(4)];
+        assert_eq!(contiguous_tail(&held, skipped), held.to_vec());
+        // A key this device lacks is still a gap.
+        let held = [k(1), k(2), k(4), k(5)];
+        assert_eq!(contiguous_tail(&held, skipped), vec![k(4), k(5)]);
+        // Epoch 3 may still get a key: only 2 is known to be skipped.
+        assert!(!kept.skipped_between("T", 1, 4));
+        // A pending rotation right after the keyed epoch skips nothing.
+        let mut next = delivery_team(vec![], 4).detail;
+        next.epoch = 5;
+        next.rotation_pending = true;
+        assert!(!kept.observe_skips(&next));
     }
 
     #[test]
@@ -2501,7 +2661,7 @@ mod tests {
         t.detail.members[0].first_key_epoch = Some(3);
         let mut kept = Kept::default();
         let held = [(1, [1; 32]), (3, [3; 32]), (4, [4; 32])];
-        let approved = seal_all(&net, "T", &contiguous_tail(&held), &[old]).unwrap();
+        let approved = seal_all(&net, "T", &contiguous_tail(&held, |_, _| false), &[old]).unwrap();
         kept.admitted("T", 21, 4, &approved);
         kept.observe_grants(&t.detail);
         assert!(!kept.needs_delivery("T", 21, 10, root.id(), 3));
@@ -2684,9 +2844,23 @@ mod tests {
             .unwrap();
         let theirs = trusted_devices(mb.github_id, &p.devices);
         assert_eq!(theirs.len(), 1);
-        let envelopes = seal_all(&a, &team, &contiguous_tail(&[(1, key)]), &theirs).unwrap();
+        let envelopes = seal_all(
+            &a,
+            &team,
+            &contiguous_tail(&[(1, key)], |_, _| false),
+            &theirs,
+        )
+        .unwrap();
+        let reviewed: Vec<String> = p.devices.iter().map(|d| d.device_id.clone()).collect();
         a.call()
-            .approve(&team, mb.github_id, &p.request_id, &envelopes)
+            .approve(
+                &team,
+                mb.github_id,
+                &p.request_id,
+                &reviewed,
+                Some(1),
+                &envelopes,
+            )
             .unwrap();
 
         // B reads the team as load_team does: the key, checked, and the channel.

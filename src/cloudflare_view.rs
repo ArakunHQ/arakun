@@ -18,12 +18,12 @@ use gpui::{
     Subscription, Task, Window, canvas, div, px, relative,
 };
 
+use crate::agent::AgentKind;
 use crate::cloudflare::{
     self, Ask, Cert, Day, DnsRecord, Insight, Issue, LoadError, Mcp, Snapshot, Subject, Tunnel,
     Worker, Zone, bytes, count,
 };
 use crate::input::{InputEvent, TextInput};
-use crate::model::Agent;
 use crate::theme;
 use crate::ui::{self, ButtonKind, icon, icon_button};
 
@@ -79,7 +79,7 @@ pub enum CloudflareEvent {
     /// that deploys `ask.workers` when there is one.
     Ask(Ask),
     /// Add Cloudflare's MCP server to the agent (if missing) and sign in to it.
-    ConnectMcp(Agent, Mcp),
+    ConnectMcp(AgentKind, Mcp),
     /// Share `localhost:port` with a Quick Tunnel only `emails` can open.
     Share { port: u16, emails: Vec<String> },
     /// Run `cf auth login` (installing `cf` first when `install`).
@@ -171,7 +171,7 @@ pub struct CloudflareView {
     /// The projects on this machine; their wrangler configs name D1 databases.
     roots: Vec<PathBuf>,
     /// The agent new sessions start with: it gets Investigate and the MCP server.
-    agent: Agent,
+    agent: AgentKind,
     /// Zones whose full DNS list is open.
     dns_open: HashSet<String>,
     /// Kinds of issue whose group is open on the Overview.
@@ -267,18 +267,9 @@ impl CloudflareView {
             }
         });
         // Signed in before: keep the account warm in the background.
-        let warm = cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(WARM_FIRST).await;
-            loop {
-                let alive = this.update(cx, |this, cx| {
-                    if this.snap.is_some() {
-                        this.refresh_if_stale(cx);
-                    }
-                });
-                if alive.is_err() {
-                    break;
-                }
-                cx.background_executor().timer(WARM).await;
+        let warm = crate::poll::poll_every(cx, WARM_FIRST, WARM, |this, cx| {
+            if this.snap.is_some() {
+                this.refresh_if_stale(cx);
             }
         });
         Self {
@@ -289,7 +280,7 @@ impl CloudflareView {
             loading: false,
             analytics_pending: false,
             roots: Vec::new(),
-            agent: Agent::Claude,
+            agent: AgentKind::Claude,
             dns_open: HashSet::new(),
             groups_open: HashSet::new(),
             fix_confirm: None,
@@ -308,7 +299,7 @@ impl CloudflareView {
             chart: cx.new(|_| overview::chart()),
             // Wide until measured, as most windows are.
             width: Rc::new(Cell::new(1200.)),
-            mcp: cloudflare::mcp_configured(Agent::Claude),
+            mcp: cloudflare::mcp_configured(AgentKind::Claude),
             mcp_watch: 0,
             mcp_task: None,
             cloudflared: crate::agent::which("cloudflared").is_some(),
@@ -343,7 +334,7 @@ impl CloudflareView {
     }
 
     /// Follows the agent picked for new sessions, and asks it about the MCP server.
-    pub fn set_agent(&mut self, agent: Agent, cx: &mut Context<Self>) {
+    pub fn set_agent(&mut self, agent: AgentKind, cx: &mut Context<Self>) {
         if self.agent != agent {
             self.agent = agent;
             self.mcp = cloudflare::mcp_configured(agent);
@@ -555,13 +546,13 @@ impl CloudflareView {
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
         let tip = match self.agent {
-            Agent::Claude => "Starts a Claude Code session with what Arakun sees",
-            Agent::Droid => "Starts a Droid session with what Arakun sees",
-            Agent::OpenCode => "Starts an OpenCode session with what Arakun sees",
-            Agent::Codex => "Starts a Codex session with what Arakun sees",
-            Agent::Devin => "Starts a Devin session with what Arakun sees",
-            Agent::Cursor => "Starts a Cursor session with what Arakun sees",
-            Agent::WorkersAi => "Starts a Workers AI session with what Arakun sees",
+            AgentKind::Claude => "Starts a Claude Code session with what Arakun sees",
+            AgentKind::Droid => "Starts a Droid session with what Arakun sees",
+            AgentKind::OpenCode => "Starts an OpenCode session with what Arakun sees",
+            AgentKind::Codex => "Starts a Codex session with what Arakun sees",
+            AgentKind::Devin => "Starts a Devin session with what Arakun sees",
+            AgentKind::Cursor => "Starts a Cursor session with what Arakun sees",
+            AgentKind::WorkersAi => "Starts a Workers AI session with what Arakun sees",
         };
         ui::button_with(
             SharedString::from(id),
@@ -675,13 +666,13 @@ impl CloudflareView {
             )
         };
         card(match self.agent {
-            Agent::Claude => "Cloudflare MCP for Claude Code",
-            Agent::Droid => "Cloudflare MCP for Droid",
-            Agent::OpenCode => "Cloudflare MCP for OpenCode",
-            Agent::Codex => "Cloudflare MCP for Codex",
-            Agent::Devin => "Cloudflare MCP for Devin",
-            Agent::Cursor => "Cloudflare MCP for Cursor",
-            Agent::WorkersAi => "Cloudflare MCP",
+            AgentKind::Claude => "Cloudflare MCP for Claude Code",
+            AgentKind::Droid => "Cloudflare MCP for Droid",
+            AgentKind::OpenCode => "Cloudflare MCP for OpenCode",
+            AgentKind::Codex => "Cloudflare MCP for Codex",
+            AgentKind::Devin => "Cloudflare MCP for Devin",
+            AgentKind::Cursor => "Cloudflare MCP for Cursor",
+            AgentKind::WorkersAi => "Cloudflare MCP",
         })
         .child(
             div()
@@ -701,7 +692,7 @@ impl CloudflareView {
                             .child(format!("Connected: Investigate uses it in {name}")),
                     );
             }
-            let how = if self.agent == Agent::Claude {
+            let how = if self.agent == AgentKind::Claude {
                 "Opens Claude Code: pick cloudflare in /mcp and approve in the browser."
             } else {
                 "Opens a terminal; approve access when the browser asks."
@@ -2097,7 +2088,10 @@ impl CloudflareView {
                     // Workers AI has no MCP client; Arakun cannot connect Devin's
                     // or Cursor's yet.
                     .when(
-                        !matches!(self.agent, Agent::WorkersAi | Agent::Devin | Agent::Cursor),
+                        !matches!(
+                            self.agent,
+                            AgentKind::WorkersAi | AgentKind::Devin | AgentKind::Cursor
+                        ),
                         |d| d.child(self.render_mcp(cx)),
                     )
                     .child(self.render_share(cx)),
@@ -2288,15 +2282,15 @@ fn access_denied(problem: &str) -> bool {
 }
 
 /// The agent's short name, for button labels.
-fn agent_name(agent: Agent) -> &'static str {
+fn agent_name(agent: AgentKind) -> &'static str {
     match agent {
-        Agent::Claude => "Claude",
-        Agent::Droid => "Droid",
-        Agent::OpenCode => "OpenCode",
-        Agent::Codex => "Codex",
-        Agent::Devin => "Devin",
-        Agent::Cursor => "Cursor",
-        Agent::WorkersAi => "Workers AI",
+        AgentKind::Claude => "Claude",
+        AgentKind::Droid => "Droid",
+        AgentKind::OpenCode => "OpenCode",
+        AgentKind::Codex => "Codex",
+        AgentKind::Devin => "Devin",
+        AgentKind::Cursor => "Cursor",
+        AgentKind::WorkersAi => "Workers AI",
     }
 }
 

@@ -14,7 +14,7 @@ use super::super::bot::{self, Answer, BotMeta, Range, RangeError, Run, RunState,
 use super::super::decisions::{self, Acceptance};
 use super::super::hub::{Delivery, Msg};
 use super::{AVATAR, Pane, TeamsView, clock};
-use crate::model::Agent;
+use crate::agent::AgentKind as Agent;
 use crate::theme;
 use crate::ui::{self, ButtonKind, Type, Typography as _, icon};
 

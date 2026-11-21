@@ -735,14 +735,7 @@ impl Daemon {
                 }
             }
         }));
-        tasks.push(cx.spawn(async move |this, cx| {
-            loop {
-                cx.background_executor().timer(TICK).await;
-                if this.update(cx, |this, cx| this.tick(cx)).is_err() {
-                    break;
-                }
-            }
-        }));
+        tasks.push(crate::poll::poll_every(cx, TICK, TICK, Self::tick));
         if let Some(signal) = crate::signals::first_signal() {
             tasks.push(cx.spawn(async move |this, cx| {
                 if signal.await.is_ok() {

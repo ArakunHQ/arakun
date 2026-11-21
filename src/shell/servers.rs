@@ -163,7 +163,7 @@ pub(super) struct ServersLink {
     /// Phones that asked for the options of a server's folder, by server,
     /// place and agent, with the environment and agent they asked about:
     /// the server's answer goes to them too.
-    phone_options: HashMap<OptionsKey, Vec<(ClientId, PathBuf, model::Agent)>>,
+    phone_options: HashMap<OptionsKey, Vec<(ClientId, PathBuf, AgentKind)>>,
     /// The environments servers were asked to delete, by server and place,
     /// until each answers, with the Delete environment dialog that waits on it.
     deleting: Vec<(String, String, gpui::EntityId)>,
@@ -255,7 +255,7 @@ pub(super) struct FirstPrompt {
     pub env: PathBuf,
     /// As the user wrote it, without the note to the agent.
     pub text: String,
-    pub agent: crate::agent::AgentKind,
+    pub agent: AgentKind,
     /// The rename note that went with it, kept for the next prompt if it did not go.
     pub note: Option<String>,
     /// The folder it was written in, when another: kept with it if it did not go.
@@ -569,6 +569,7 @@ fn offered_picks(
 /// what the environment picked (`draft`).
 fn draft_on_server(
     offered: &SettingList,
+    agent: AgentKind,
     draft: &[(Setting, String)],
     s: Setting,
 ) -> Option<(String, Vec<SettingOption>)> {
@@ -579,9 +580,11 @@ fn draft_on_server(
             .map(|(_, v)| v)
     };
     let picked = |s: Setting| draft.iter().find(|(d, _)| *d == s).map(|(_, v)| v);
-    // The reasoning levels offered are those of the model the server would
-    // start on; another model picked here may have others.
-    if s == Setting::Effort
+    // OpenCode's and Codex's reasoning levels are per model: the ones offered
+    // are those of the model the server would start on. Claude's are the same
+    // for every model, as the server sends them.
+    if matches!(agent, AgentKind::OpenCode | AgentKind::Codex)
+        && s == Setting::Effort
         && let Some(model) = picked(Setting::Model)
         && on_offer(Setting::Model)
             .is_some_and(|(current, o)| current != model && o.iter().any(|c| c.id == *model))
@@ -682,8 +685,8 @@ fn thread_of(projects: &[Project], env_path: &Path, id: &str) -> Option<Entity<T
         .map(|l| l.thread.clone())
 }
 
-fn agent_of(name: &str) -> model::Agent {
-    model::Agent::from_key(AgentKind::parse(name).unwrap_or(AgentKind::Claude).id())
+fn agent_of(name: &str) -> AgentKind {
+    AgentKind::parse(name).unwrap_or(AgentKind::Claude)
 }
 
 /// A link is good for two minutes; a pairing still under way a little after
@@ -1208,7 +1211,7 @@ impl Shell {
                         let main = !place.repo.is_empty() && place.repo == place.path;
                         let branch = (!place.branch.is_empty()).then(|| place.branch.clone());
                         let mut env = Environment::new(env_path.clone(), branch, main);
-                        env.agent = model::Agent::from_key(&place.agent);
+                        env.agent = AgentKind::from_id(&place.agent);
                         env.remote = Some(remote.clone());
                         env
                     });
@@ -1269,7 +1272,7 @@ impl Shell {
         let Some(s) = self.session_mut(env_path, id) else {
             return;
         };
-        let (agent, title, status) = (s.agent.kind(), s.title.to_string(), s.status);
+        let (agent, title, status) = (s.agent, s.title.to_string(), s.status);
         let thread = Thread::viewer(empty_transcript(agent, &title), thread_status(status), cx);
         thread.update(cx, |t, _| t.set_remote());
         let known = self
@@ -1323,7 +1326,7 @@ impl Shell {
         let session = self
             .find_env(env_path)
             .and_then(|e| e.sessions.iter().find(|s| s.id.as_ref() == id))
-            .map(|s| (s.agent.kind(), s.title.to_string(), s.status));
+            .map(|s| (s.agent, s.title.to_string(), s.status));
         let Some((agent, title, status)) = session else {
             return;
         };
@@ -1436,7 +1439,7 @@ impl Shell {
         &mut self,
         env_path: &Path,
         id: &str,
-        agent: model::Agent,
+        agent: AgentKind,
         cx: &mut Context<Self>,
     ) {
         let Some(env) = self.find_env(env_path) else {
@@ -1462,10 +1465,10 @@ impl Shell {
         // there, after the old one is gone.
         let offered = self.servers.as_ref().and_then(|link| {
             link.options
-                .get(&(remote.server.clone(), remote.place.clone(), agent.kind()))
+                .get(&(remote.server.clone(), remote.place.clone(), agent))
         });
         let settings = offered_picks(&settings, offered);
-        let msg = json!({ "type": "continue_with", "agent": agent.key(), "settings": settings });
+        let msg = json!({ "type": "continue_with", "agent": agent.id(), "settings": settings });
         self.servers_send(&remote.server, id, msg, cx);
     }
 
@@ -1591,7 +1594,7 @@ impl Shell {
     pub(super) fn servers_start(
         &mut self,
         env_path: &Path,
-        agent: model::Agent,
+        agent: AgentKind,
         text: &str,
         settings: &[(String, String)],
         by: Asker,
@@ -1628,13 +1631,13 @@ impl Shell {
         }
         // A pick the server does not offer (one from this machine's
         // catalog) would only fail there: it starts on its own instead.
-        let offered =
-            link.options
-                .get(&(remote.server.clone(), remote.place.clone(), agent.kind()));
+        let offered = link
+            .options
+            .get(&(remote.server.clone(), remote.place.clone(), agent));
         let settings = offered_picks(settings, offered);
         let reference = link.starts.sent(&remote.server, by);
         let mut start = json!({
-            "type": "start", "env": remote.place, "agent": agent.key(), "text": text,
+            "type": "start", "env": remote.place, "agent": agent.id(), "text": text,
             "settings": settings, "ref": reference,
         });
         // Left out otherwise: a server from before it reads none the same.
@@ -1661,9 +1664,9 @@ impl Shell {
         else {
             return;
         };
-        for agent in model::Agent::ALL {
+        for agent in AgentKind::ALL {
             conn.client
-                .send(&json!({ "type": "options", "env": remote.place, "agent": agent.key() }));
+                .send(&json!({ "type": "options", "env": remote.place, "agent": agent.id() }));
         }
         if let Some(id) = session {
             conn.client
@@ -1677,7 +1680,7 @@ impl Shell {
         &mut self,
         client: ClientId,
         env_path: &Path,
-        agent: model::Agent,
+        agent: AgentKind,
     ) {
         let Some(remote) = self.find_env(env_path).and_then(|e| e.remote.clone()) else {
             return;
@@ -1692,7 +1695,7 @@ impl Shell {
         }
         self.servers_ask_settings(env_path, None);
         if let Some(link) = &mut self.servers {
-            let key = (remote.server, remote.place, agent.kind());
+            let key = (remote.server, remote.place, agent);
             let waiting = link.phone_options.entry(key).or_default();
             if !waiting
                 .iter()
@@ -1710,17 +1713,22 @@ impl Shell {
     pub(super) fn server_draft_choices(
         &self,
         env: &Environment,
-        agent: model::Agent,
+        agent: AgentKind,
         s: Setting,
     ) -> Option<(String, Vec<SettingOption>)> {
         let remote = env.remote.as_ref()?;
-        let key = (remote.server.clone(), remote.place.clone(), agent.kind());
+        let key = (remote.server.clone(), remote.place.clone(), agent);
         let offered = self.servers.as_ref()?.options.get(&key)?;
-        draft_on_server(offered, super::sessions::agent_draft(env, agent), s)
+        draft_on_server(offered, agent, super::sessions::agent_draft(env, agent), s)
     }
 
     /// Where git runs for the environment at `env_path`: in its folder here,
     /// or on the server that has it.
+    ///
+    /// A server reached over plain http gets its git too: its diffs and commit
+    /// messages cross the network in the clear, but so does everything else on
+    /// that link, sessions and token included. Refusing git alone would not
+    /// protect the code, and the README says so.
     pub(super) fn git_at(&self, env_path: &Path) -> servers::git::GitAt {
         use servers::git::{GitAt, ServerGit};
         let Some(remote) = self.find_env(env_path).and_then(|e| e.remote.as_ref()) else {
@@ -3293,8 +3301,9 @@ mod tests {
             (Setting::Model, offer("m1", &["m1", "m2"])),
             (Setting::Effort, offer("low", &["low", "high"])),
         ];
-        let current =
-            |draft: &[(Setting, String)], s| draft_on_server(&offered, draft, s).map(|(c, _)| c);
+        let current = |draft: &[(Setting, String)], s| {
+            draft_on_server(&offered, AgentKind::Codex, draft, s).map(|(c, _)| c)
+        };
         assert_eq!(current(&[], Setting::Model).as_deref(), Some("m1"));
         assert_eq!(current(&[], Setting::Mode), None);
         let picked = [
@@ -3309,6 +3318,9 @@ mod tests {
         let other = [(Setting::Model, "m2".to_string())];
         assert_eq!(current(&other, Setting::Model).as_deref(), Some("m2"));
         assert_eq!(current(&other, Setting::Effort), None);
+        // Claude's levels are the same for every model, so they stay.
+        let claude = draft_on_server(&offered, AgentKind::Claude, &other, Setting::Effort);
+        assert_eq!(claude.map(|(c, _)| c).as_deref(), Some("low"));
     }
 
     #[test]

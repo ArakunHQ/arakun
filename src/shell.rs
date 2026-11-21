@@ -84,6 +84,7 @@ use titlebar::*;
 
 use crate::account::Account;
 use crate::account_view::{self, AccountDialog, AccountDialogEvent};
+use crate::agent::AgentKind;
 use crate::attach_picker::{AttachEvent, AttachPicker};
 use crate::branches_view::BranchesView;
 use crate::ci::{self, Ci};
@@ -102,7 +103,7 @@ use crate::highlight;
 use crate::input::{InputEvent, TextInput};
 use crate::memory_view::{MemoryEvent, MemoryView};
 use crate::model::{
-    self, Agent, Document, Environment, Project, Status, Tab, TabKind, TermTab, pretty_path,
+    self, Document, Environment, Project, Status, Tab, TabKind, TermTab, pretty_path,
 };
 use crate::picker::{FolderPicker, PickerEvent};
 use crate::posthog_view::PostHogView;
@@ -198,6 +199,8 @@ enum Modal {
     TeamsSignIn(Entity<crate::arakun_teams::sign_in::SignInDialog>),
     /// A session or a project, from the + on the rail's Projects heading.
     New(Entity<new_dialog::NewDialog>),
+    /// Connecting arakun-pilot, or changing its settings.
+    Pilot(Entity<crate::github_view::connect::PilotDialog>),
 }
 
 #[derive(Clone, Copy)]
@@ -250,17 +253,17 @@ enum MenuKey {
     /// A setting's choice for an agent: (agent, setting, choice id, can be
     /// picked). Another agent's model switches to it; its other settings are
     /// only remembered while a session runs, and switch on the New session tab.
-    Choice(Agent, crate::agent::Setting, String, bool),
+    Choice(AgentKind, crate::agent::Setting, String, bool),
     /// The reasoning row of the model menu; ← and → step through its levels.
-    Effort(Agent),
+    Effort(AgentKind),
     /// Fast mode, with whether it is on now.
-    Fast(Agent, bool),
+    Fast(AgentKind, bool),
     /// Back to the agent's default model, reasoning and fast mode.
-    Reset(Agent),
+    Reset(AgentKind),
     /// Switches the composer to the agent, with the settings it remembers.
-    Agent(Agent),
+    Agent(AgentKind),
     /// Shows or hides a provider in the rail's usage card.
-    Rail(crate::agent::AgentKind),
+    Rail(AgentKind),
     OpenUsage,
 }
 
@@ -436,7 +439,7 @@ pub struct Shell {
     /// Automations made from a sentence in the palette (`rules.json`).
     rules: crate::palette::rules::Rules,
     session_query: Entity<TextInput>,
-    session_filter: Option<Agent>,
+    session_filter: Option<AgentKind>,
     /// The sessions list shows the ones settled after a merge too.
     show_settled: bool,
     _session_query: Subscription,
@@ -449,7 +452,7 @@ pub struct Shell {
     tasks_view: Entity<TasksView>,
     /// A task waiting for its project to be picked, and the agent to work on it.
     #[cfg(feature = "coderlabs")]
-    task_start: Option<(String, Agent)>,
+    task_start: Option<(String, AgentKind)>,
     #[cfg(feature = "coderlabs")]
     _tasks: [Subscription; 3],
     ci: Entity<Ci>,
@@ -518,7 +521,7 @@ pub struct Shell {
     /// A one-line note under the composer (a prompt was saved, ...), until the next key.
     composer_flash: Option<SharedString>,
     /// The agent whose models the model menu shows; `None` is the composer's.
-    menu_agent: Option<Agent>,
+    menu_agent: Option<AgentKind>,
     /// The row the arrow keys are on, in `menu_keys` order.
     menu_cursor: Option<usize>,
     /// The model list's scroll, kept on the row the keys are on.
@@ -547,6 +550,12 @@ pub struct Shell {
     clear_armed: bool,
     /// The setup, while it shows in the window's place (`shell::onboarding`).
     onboarding: Option<onboarding::Onboarding>,
+    /// A few keys on the start screen, right after someone new finishes the
+    /// setup, until they close them.
+    setup_tips: bool,
+    /// Someone asked the setup to pair the phone before they had a project:
+    /// the Phone tab opens once the first one is added.
+    phone_after_project: bool,
 }
 
 struct InboxItem {
@@ -690,6 +699,7 @@ impl Shell {
             let active = window.is_window_active();
             if active {
                 this.refresh_visible(cx);
+                crate::ui::contrast::follow_system(cx);
             }
             #[cfg(feature = "coderlabs")]
             this.coderspace
@@ -715,18 +725,19 @@ impl Shell {
         }));
         theme::set_diff_palette(layout.diff_palette);
         theme::set_glass(layout.glass);
+        theme::set_contrast(layout.contrast);
         theme::set_grays(layout.grays);
         crate::palettes::apply_saved();
-        account_view::set_rail_shows(crate::agent::AgentKind::Claude, layout.rail_usage[0]);
-        account_view::set_rail_shows(crate::agent::AgentKind::Droid, layout.rail_usage[1]);
-        account_view::set_rail_shows(crate::agent::AgentKind::OpenCode, layout.rail_usage[2]);
-        account_view::set_rail_shows(crate::agent::AgentKind::Devin, layout.rail_usage[3]);
+        account_view::set_rail_shows(AgentKind::Claude, layout.rail_usage[0]);
+        account_view::set_rail_shows(AgentKind::Droid, layout.rail_usage[1]);
+        account_view::set_rail_shows(AgentKind::OpenCode, layout.rail_usage[2]);
+        account_view::set_rail_shows(AgentKind::Devin, layout.rail_usage[3]);
         crate::ui::set_type_scale(layout.type_scale);
         if layout.ui_zoom != crate::ui_zoom::pct() {
             crate::ui_zoom::set_pct(layout.ui_zoom);
             window.bounds_changed(cx);
         }
-        if layout.glass {
+        if theme::glass() {
             window.set_background_appearance(theme::window_background());
         }
         let account = cx.new(Account::new);
@@ -813,8 +824,7 @@ impl Shell {
             |this, _, ev: &crate::usage_view::UsageEvent, window, cx| match ev {
                 crate::usage_view::UsageEvent::OpenAccount => this.open_account(window, cx),
                 crate::usage_view::UsageEvent::ClaudeSignIn => {
-                    if let Some(cmd) = crate::agent::login_command(crate::agent::AgentKind::Claude)
-                    {
+                    if let Some(cmd) = crate::agent::login_command(AgentKind::Claude) {
                         this.spawn_terminal_command(Some(cmd), true, window, cx);
                     }
                 }
@@ -1082,6 +1092,8 @@ impl Shell {
             notices: RefCell::new(crate::notices::load()),
             inbox_open: false,
             onboarding: None,
+            setup_tips: false,
+            phone_after_project: false,
             alone: None,
             terminal_alone: None,
             inbox_shown: Cell::new(0),
@@ -1404,14 +1416,15 @@ impl Shell {
             subagents_w: self.subagents_w,
             arcade: self.arcade,
             diff_palette: theme::diff_palette(),
-            glass: theme::glass(),
+            glass: theme::glass_chosen(),
+            contrast: theme::contrast_setting(),
             grays: theme::grays(),
             type_scale: crate::ui::type_scale(),
             rail_usage: [
-                account_view::rail_shows(crate::agent::AgentKind::Claude),
-                account_view::rail_shows(crate::agent::AgentKind::Droid),
-                account_view::rail_shows(crate::agent::AgentKind::OpenCode),
-                account_view::rail_shows(crate::agent::AgentKind::Devin),
+                account_view::rail_shows(AgentKind::Claude),
+                account_view::rail_shows(AgentKind::Droid),
+                account_view::rail_shows(AgentKind::OpenCode),
+                account_view::rail_shows(AgentKind::Devin),
             ],
             ui_zoom: crate::ui_zoom::pct(),
             window: self.window_state.clone(),
@@ -1740,8 +1753,9 @@ impl Shell {
         window.focus(&self.composer_focus, cx);
         self.ensure_terminal(window, cx);
         self.sync_poll(window, cx);
-        // A project is what the setup was for, however it was added.
-        self.finish_onboarding(window, cx);
+        // The setup goes on to its next step, or ends when the project
+        // came some other way.
+        self.onboarding_project_added(window, cx);
         cx.notify();
     }
 
@@ -2773,49 +2787,49 @@ impl Shell {
                 }
                 SettingsEvent::ClaudeSignIn => {
                     this.close_modal(window, cx);
-                    this.sign_in(crate::agent::AgentKind::Claude, window, cx);
+                    this.sign_in(AgentKind::Claude, window, cx);
                 }
                 SettingsEvent::ClaudeSignOut => {
                     this.close_modal(window, cx);
-                    this.sign_out(crate::agent::AgentKind::Claude, window, cx);
+                    this.sign_out(AgentKind::Claude, window, cx);
                 }
                 SettingsEvent::CodexSignIn => {
                     this.close_modal(window, cx);
-                    this.sign_in(crate::agent::AgentKind::Codex, window, cx);
+                    this.sign_in(AgentKind::Codex, window, cx);
                 }
                 SettingsEvent::CodexSignOut => {
                     this.close_modal(window, cx);
-                    this.sign_out(crate::agent::AgentKind::Codex, window, cx);
+                    this.sign_out(AgentKind::Codex, window, cx);
                 }
                 SettingsEvent::DevinSignIn => {
                     this.close_modal(window, cx);
-                    this.sign_in(crate::agent::AgentKind::Devin, window, cx);
+                    this.sign_in(AgentKind::Devin, window, cx);
                 }
                 SettingsEvent::DevinSignOut => {
                     this.close_modal(window, cx);
-                    this.sign_out(crate::agent::AgentKind::Devin, window, cx);
+                    this.sign_out(AgentKind::Devin, window, cx);
                 }
                 SettingsEvent::CursorSignIn => {
                     this.close_modal(window, cx);
-                    this.sign_in(crate::agent::AgentKind::Cursor, window, cx);
+                    this.sign_in(AgentKind::Cursor, window, cx);
                 }
                 SettingsEvent::CursorSignOut => {
                     this.close_modal(window, cx);
-                    this.sign_out(crate::agent::AgentKind::Cursor, window, cx);
+                    this.sign_out(AgentKind::Cursor, window, cx);
                 }
                 SettingsEvent::OpenCodeSignIn => {
                     this.close_modal(window, cx);
-                    this.sign_in(crate::agent::AgentKind::OpenCode, window, cx);
+                    this.sign_in(AgentKind::OpenCode, window, cx);
                 }
                 SettingsEvent::OpenCodeGoSignIn => {
                     this.close_modal(window, cx);
                     let cmd = crate::agent::opencode_go_login_command();
-                    let kind = crate::agent::AgentKind::OpenCode;
+                    let kind = AgentKind::OpenCode;
                     this.run_account_command("Sign in to OpenCode Go", kind, cmd, window, cx);
                 }
                 SettingsEvent::OpenCodeSignOut => {
                     this.close_modal(window, cx);
-                    this.sign_out(crate::agent::AgentKind::OpenCode, window, cx);
+                    this.sign_out(AgentKind::OpenCode, window, cx);
                 }
                 #[cfg(feature = "coderlabs")]
                 SettingsEvent::DisconnectCoderSpace => {
@@ -2906,19 +2920,20 @@ impl Shell {
                             this.save(cx);
                             cx.refresh_windows();
                         }
+                        CustomizeEvent::Contrast(c) => {
+                            theme::set_contrast(*c);
+                            // `apply` can't update this window while the
+                            // callback holds it, so set it here.
+                            window.set_background_appearance(theme::window_background());
+                            this.save(cx);
+                            crate::ui::contrast::apply(cx);
+                        }
                         CustomizeEvent::SidebarStyle(style) => {
                             let style = *style;
                             this.change_sidebar(cx, |s| s.style = style);
                         }
                         CustomizeEvent::SidebarPreset(p) => {
-                            // A preset lays out the pieces; the look stays as chosen.
-                            let p = *p;
-                            this.change_sidebar(cx, |s| {
-                                let style = s.style;
-                                *s = p.layout();
-                                s.style = style;
-                            });
-                            this.clear_builder_selection();
+                            this.apply_sidebar_preset(*p, cx);
                         }
                         CustomizeEvent::RailWidth(w) => {
                             this.rail_w = *w;
@@ -3492,7 +3507,8 @@ impl Shell {
     /// A new session in project `pi`: the New session tab of its main
     /// checkout, ready to type in at once. The first prompt sent there makes
     /// the worktree, so nobody waits on git before writing. On a server the
-    /// worktree is made first, as a prompt queued for it would be lost.
+    /// worktree is made first, as a prompt queued for it would be lost, and
+    /// so when environments are spread and a server's turn is next.
     pub(super) fn draft_new_session(
         &mut self,
         pi: usize,
@@ -3509,9 +3525,20 @@ impl Shell {
             .get(project.active_env)
             .is_some_and(|e| e.remote.is_some())
             || project.is_remote();
-        let checkout = project.environments.iter().position(|e| e.is_checkout);
+        let checkout = project
+            .environments
+            .iter()
+            .position(|e| e.is_checkout && e.remote.is_none());
+        // Spread across machines, the balancer says where it goes, not the
+        // open environment: a prompt written in the draft would stay on this
+        // computer, so a server's pick is made at once there.
+        let here = match self.spread_target(pi) {
+            Some(Some(_)) => false,
+            Some(None) => true,
+            None => !on_server,
+        };
         match checkout {
-            Some(ei) if !on_server => {
+            Some(ei) if here => {
                 self.select_env(pi, ei, window, cx);
                 self.show_new_session_tab(window, cx);
             }
@@ -3987,6 +4014,7 @@ impl Render for Shell {
             Modal::Session(v) => (v.clone().into_any_element(), v.entity_id().as_u64()),
             Modal::Telemetry(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),
             Modal::TeamsSignIn(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),
+            Modal::Pilot(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),
             Modal::New(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),
         });
         let viewport_h = window.viewport_size().height.as_f32();
@@ -4421,15 +4449,17 @@ fn plural(n: usize, word: &str) -> String {
     }
 }
 
-pub(crate) fn agent_icon(agent: Agent, size: f32) -> AnyElement {
+pub(crate) fn agent_icon(agent: AgentKind, size: f32) -> AnyElement {
     match agent {
-        Agent::Claude => img("providers/claude.svg")
+        AgentKind::Claude => img("providers/claude.svg")
             .size(px(size))
             .flex_none()
             .into_any_element(),
-        Agent::Droid => ui::factory_logo(size).into_any_element(),
-        Agent::OpenCode => ui::opencode_logo(size).into_any_element(),
-        Agent::Codex | Agent::Devin | Agent::Cursor | Agent::WorkersAi => agent.kind().icon(size),
+        AgentKind::Droid => ui::factory_logo(size).into_any_element(),
+        AgentKind::OpenCode => ui::opencode_logo(size).into_any_element(),
+        AgentKind::Codex | AgentKind::Devin | AgentKind::Cursor | AgentKind::WorkersAi => {
+            agent.icon(size)
+        }
     }
 }
 

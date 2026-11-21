@@ -665,8 +665,28 @@ after a week).
   the team. Removing someone rotates the key for the remaining members, not messages
   already seen. Hover a message and press the reply arrow to answer it: the quote
   shows above your message, and clicking it scrolls to the original. **Esc** drops the
-  reply. Messages whose signature does not check out are hidden and counted.
-  **Decisions**, the **+** of the composer and **@bot** are not there yet.
+  reply. Messages whose signature does not check out are hidden and counted. The **+**
+  of the composer (files) is not there yet.
+
+  **@bot** reviews a discussion and proposes a decision. Reply to the first message
+  it should read and write `@bot` (or press the composer's **@bot**): the messages
+  from that one down to yours light up, and a line over the composer says how many it
+  will read. A plain `@bot`, with no reply, reads only your message. It runs on your
+  own Claude Code (the `claude` CLI and its login), on your machine, read-only: it may
+  read the open project's code and docs and search the web, and nothing else. To
+  answer, Claude Code sends the messages and the code it reads to its model service
+  (Anthropic, or the one you set it up with), as any Claude Code session does; the
+  Teams server still sees only sealed messages. A long range is summed up in parts
+  first, and the answer says so. The answer judges each
+  idea (Works, Works with conditions, Won't work) with numbered citations that jump to
+  the message, lists what it verified in code, docs or on the web, what it assumed and
+  what it could not check, and ends with a **Proposed decision**. **Accept decision**
+  tells the team; **Reject** marks it on this device only, and the team is not told; **Ask for more detail**
+  starts a reply to it. While it runs, the chat shows its progress and **Stop**; if
+  it fails, **Try again**. Once someone accepts, the channel says "Decided." and who
+  accepted it. **Decisions**, at the top of a channel, lists what the team accepted,
+  with who accepted it and when, the messages it came from (click to jump there) and
+  what @bot checked; search it, or show only yours.
 
   **Encrypted**, at the top of a channel, says what the server sees and what it
   can't. When a member adds a device, the chat says "@them added a new device" where

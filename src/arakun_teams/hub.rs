@@ -156,6 +156,9 @@ pub struct ChannelState {
     history_round: u64,
     reading: bool,
     needs_history: bool,
+    /// This device's @bot questions that arrived past a gap. The range they
+    /// review is taken once history fills the gap, so it misses nothing.
+    bot_waiting: Vec<String>,
     /// Messages whose signature or sender device did not check out: dropped,
     /// as PROTOCOL.md says, and counted.
     pub hidden: usize,
@@ -268,6 +271,8 @@ pub struct Hub {
     pub inviters: HashMap<String, String>,
     /// Teams an admin let this user into during this run: their chat says so.
     pub joined: HashSet<String>,
+    /// @bot's runs and what this user did with its answers, on this device.
+    pub bot: super::bot::Bots,
     /// The team the last "Start a team" made, once the server named it, even
     /// when setting it up failed after: the Team tab opens that one.
     pub created: Option<String>,
@@ -360,6 +365,7 @@ impl Hub {
             my_devices: Vec::new(),
             error: None,
             busy: HashSet::new(),
+            bot: super::bot::Bots::default(),
             events: tx,
             generation: 0,
             roster_version: 0,
@@ -448,6 +454,7 @@ impl Hub {
         self.sent.clear();
         self.inviters.clear();
         self.joined.clear();
+        self.bot.clear();
         self.created = None;
         self._poll = None;
         self._tick = None;
@@ -1689,6 +1696,7 @@ impl Hub {
             history_round: 0,
             reading: false,
             needs_history: false,
+            bot_waiting: Vec::new(),
             hidden: 0,
             locked: Vec::new(),
             status: socket::Status::Connecting,
@@ -1870,6 +1878,8 @@ impl Hub {
             return;
         };
         let mut unknown_seen = false;
+        // This device's @bot questions the server just stored: the bot runs now.
+        let mut asked = Vec::new();
         for s in stored {
             if c.seen_ids.contains(&s.message.id) {
                 continue;
@@ -1900,7 +1910,12 @@ impl Hub {
                 c.hidden += 1;
                 continue;
             };
-            c.outbox.remove(&s.message.id);
+            if c.outbox.remove(&s.message.id).is_some()
+                && body.kind == "text"
+                && body.mentions.iter().any(|m| m == "bot")
+            {
+                asked.push(s.message.id.clone());
+            }
             c.seen_ids.insert(s.message.id.clone());
             let msg = Msg {
                 id: s.message.id.clone(),
@@ -1920,6 +1935,21 @@ impl Hub {
         c.messages
             .sort_by_key(|m| (m.seq.is_none(), m.seq.unwrap_or(0), m.at));
         let team_id = c.team_id.clone();
+        let channel_id = c.channel_id.clone();
+        c.bot_waiting.extend(asked);
+        let asked = if c.needs_history {
+            Vec::new()
+        } else {
+            std::mem::take(&mut c.bot_waiting)
+        };
+        for id in asked {
+            let project = self
+                .bot
+                .asked
+                .remove(&id)
+                .unwrap_or_else(|| self.bot.project.clone());
+            self.start_bot(&team_id, &channel_id, &id, project, cx);
+        }
         if unknown_seen
             && self
                 .team
@@ -1933,13 +1963,29 @@ impl Hub {
         }
     }
 
-    /// Sends a text message, replying to `reply_to` when given.
+    /// Sends a text message, replying to `reply_to` when given. One that
+    /// mentions @bot runs it once the server has stored it.
     pub fn send(
         &mut self,
         team_id: &str,
         channel_id: &str,
         text: String,
         reply_to: Option<String>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let mut body = Body::text(text, reply_to);
+        if super::bot::mentions_bot(&body.text) {
+            body.mentions = vec!["bot".into()];
+        }
+        self.send_body(team_id, channel_id, body, cx)
+    }
+
+    /// Seals and sends any message body.
+    pub fn send_body(
+        &mut self,
+        team_id: &str,
+        channel_id: &str,
+        body: Body,
         cx: &mut Context<Self>,
     ) -> bool {
         let Some((epoch, key)) = self.sending_key(team_id) else {
@@ -1956,7 +2002,6 @@ impl Hub {
             return false;
         }
         let id = crypto::ulid();
-        let body = Body::text(text, reply_to);
         let wire: WireMessage = crypto::seal_message(
             team_id,
             channel_id,
@@ -1974,6 +2019,9 @@ impl Hub {
             ));
             cx.notify();
             return false;
+        }
+        if body.kind == "text" && body.mentions.iter().any(|m| m == "bot") {
+            self.bot.asked.insert(id.clone(), self.bot.project.clone());
         }
         let Some(c) = self.channels.get_mut(&ckey) else {
             return false;
@@ -2004,14 +2052,21 @@ impl Hub {
         let Some(c) = self.channels.get_mut(&ckey) else {
             return;
         };
-        let Some(m) = c.messages.iter().find(|m| m.id == id).cloned() else {
+        let Some(body) = c
+            .messages
+            .iter()
+            .find(|m| m.id == id)
+            .map(|m| m.body.clone())
+        else {
             return;
         };
-        // The failed one stays when the new one can't go either.
-        if self.send(team_id, channel_id, m.body.text, m.body.reply_to, cx)
+        // Dropped only once the copy is queued: if it can't be (no key yet),
+        // the failed one stays with its Send again, a bot answer included.
+        if self.send_body(team_id, channel_id, body, cx)
             && let Some(c) = self.channels.get_mut(&ckey)
         {
             c.messages.retain(|m| m.id != id);
+            self.bot.asked.remove(id);
         }
     }
 }

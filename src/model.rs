@@ -91,6 +91,8 @@ pub enum TabKind {
     Canvas,
     /// MCP servers, plugins, skills and permissions of the agents (`extensions_view`).
     Extensions,
+    /// Arakun Teams, for accounts the Teams server lets in (`arakun_teams::view`).
+    Teams,
     /// What the team hub holds, to read with time (`team_view`).
     #[cfg(feature = "team")]
     Team,

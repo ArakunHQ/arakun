@@ -68,6 +68,7 @@ pub enum SettingsEvent {
     RestartToUpdate,
     OpenAccount,
     OpenExtensions,
+    OpenTeams,
     #[cfg(feature = "coderlabs")]
     OpenTasks,
     #[cfg(feature = "coderlabs")]
@@ -120,6 +121,7 @@ enum Section {
     Branches,
     Voice,
     Privacy,
+    Account,
     #[cfg(feature = "coderlabs")]
     CoderSpace,
     Shortcuts,
@@ -140,6 +142,7 @@ impl Section {
         Section::Branches,
         Section::Voice,
         Section::Privacy,
+        Section::Account,
         #[cfg(feature = "coderlabs")]
         Section::CoderSpace,
         Section::Shortcuts,
@@ -180,6 +183,7 @@ impl Section {
             Section::Branches => "Branches",
             Section::Voice => "Voice",
             Section::Privacy => "Privacy",
+            Section::Account => "Account",
             #[cfg(feature = "coderlabs")]
             Section::CoderSpace => "CoderSpace",
             Section::Shortcuts => "Keyboard shortcuts",
@@ -201,6 +205,7 @@ impl Section {
             Section::Branches => "git-branch",
             Section::Voice => "volume-high",
             Section::Privacy => "shield-alert",
+            Section::Account => "user",
             #[cfg(feature = "coderlabs")]
             Section::CoderSpace => "check-list",
             Section::Shortcuts => "keyboard",
@@ -228,6 +233,9 @@ impl Section {
             Section::Voice => "Droid's questions, read aloud with an ElevenLabs voice.",
             Section::Privacy => {
                 "What shows on screen, and what Arakun sends to its PostHog under a random id."
+            }
+            Section::Account => {
+                "An optional sign-in with GitHub, for what Arakun is still trying out with some people, such as Teams. Agents never need it."
             }
             #[cfg(feature = "coderlabs")]
             Section::CoderSpace => "Your pending tasks, inside Arakun.",
@@ -271,6 +279,7 @@ impl Section {
             Section::Privacy => {
                 "telemetry analytics usage counts crash reports privacy posthog data redacted redact hide streamer stream demo screen share sharing incognito"
             }
+            Section::Account => "github sign in sign out login logout teams pilot device code",
             #[cfg(feature = "coderlabs")]
             Section::CoderSpace => "tasks sign in sign out email",
             Section::Shortcuts => "keys keyboard bindings hotkeys",
@@ -322,6 +331,11 @@ static LAST_SECTION: AtomicU8 = AtomicU8::new(0);
 /// Makes the next dialog open on General, where the link setting is.
 pub fn start_on_general() {
     start_on(Section::General);
+}
+
+/// Makes the next dialog open on Account, where Teams is signed in to.
+pub fn start_on_account() {
+    start_on(Section::Account);
 }
 
 /// Makes the next dialog open on Branches, where the environment cleanup is.
@@ -417,6 +431,8 @@ pub struct SettingsDialog {
     arcade: bool,
     /// Whether a Factory API key is connected, for Droid's dot in the list.
     droid: bool,
+    /// The Teams sign-in, for the Account section.
+    teams: Entity<crate::arakun_teams::Teams>,
     /// Who is signed in to CoderSpace, if anyone.
     #[cfg(feature = "coderlabs")]
     coderspace: Option<String>,
@@ -467,7 +483,7 @@ pub struct SettingsDialog {
     setup_input: Entity<TextInput>,
     check_input: Entity<TextInput>,
     base_input: Entity<TextInput>,
-    _subs: [Subscription; 7],
+    _subs: [Subscription; 8],
 }
 
 impl EventEmitter<SettingsEvent> for SettingsDialog {}
@@ -477,6 +493,7 @@ impl SettingsDialog {
     pub fn new(
         arcade: bool,
         droid: bool,
+        teams: Entity<crate::arakun_teams::Teams>,
         look: crate::customize_view::Summary,
         #[cfg(feature = "coderlabs")] coderspace: Option<String>,
         views_on: Vec<crate::sidebar::View>,
@@ -597,9 +614,13 @@ impl SettingsDialog {
         })
         .detach();
 
+        teams.update(cx, |t, cx| t.refresh_if_unknown(cx));
+        let teams_sub = cx.observe(&teams, |_, _, cx| cx.notify());
+
         Self {
             arcade,
             droid,
+            teams,
             #[cfg(feature = "coderlabs")]
             coderspace,
             claude: None,
@@ -631,7 +652,7 @@ impl SettingsDialog {
             confirm_nightly: false,
             pane_scroll: gpui::ScrollHandle::new(),
             _subs: [
-                sub, key_sub, voice_sub, namer_sub, setup_sub, check_sub, base_sub,
+                sub, key_sub, voice_sub, namer_sub, teams_sub, setup_sub, check_sub, base_sub,
             ],
         }
     }
@@ -1447,6 +1468,7 @@ impl SettingsDialog {
                 )])
             }
             Section::Voice => self.render_voice(cx),
+            Section::Account => self.render_account(cx),
             #[cfg(feature = "coderlabs")]
             Section::CoderSpace => {
                 let signed_in = self.coderspace.is_some();
@@ -1503,6 +1525,147 @@ impl SettingsDialog {
             .child(head)
             .child(body)
             .into_any_element()
+    }
+
+    /// The Account section: the GitHub sign-in that Teams uses.
+    fn render_account(&self, cx: &mut Context<Self>) -> AnyElement {
+        use crate::arakun_teams::{Phase, api::TEAMS_FLAG};
+        let teams = self.teams.read(cx);
+        let (ready, signed_in, enabled) = (teams.ready(), teams.signed_in(), teams.enabled());
+        let me = teams.me().cloned();
+        let phase = teams.phase().clone();
+        let error = teams.error().cloned();
+        let mut rows = Vec::new();
+        if !ready {
+            rows.push(
+                row(
+                    "Checking…",
+                    "Checking the session with the Teams server.",
+                    div().into_any_element(),
+                )
+                .into_any_element(),
+            );
+        } else if signed_in {
+            let title = match &me {
+                Some(m) => format!("Signed in as @{}", crate::redact::value(&m.login)),
+                None => "Signed in".to_string(),
+            };
+            let hint = match &me {
+                Some(m) if m.has(TEAMS_FLAG) => {
+                    "With GitHub. Teams is on for this account. The session is kept in the system keyring."
+                }
+                Some(_) => {
+                    "With GitHub. Nothing Arakun is trying out is on for this account yet. The session is kept in the system keyring."
+                }
+                None => {
+                    "With GitHub. The Teams server has not said yet what is on for this account."
+                }
+            };
+            rows.push(
+                row(
+                    title,
+                    hint,
+                    ui::button("set-teams-out", "Sign out", ButtonKind::Danger, true)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.teams.update(cx, |t, cx| t.sign_out(cx));
+                        }))
+                        .into_any_element(),
+                )
+                .into_any_element(),
+            );
+            if enabled {
+                rows.push(
+                    row(
+                        "Teams",
+                        "Your team's place in Arakun. Channels come in a later version.",
+                        ui::button("set-teams-open", "Open Teams", ButtonKind::Outline, true)
+                            .on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::OpenTeams)))
+                            .into_any_element(),
+                    )
+                    .into_any_element(),
+                );
+            }
+        } else if let Phase::Waiting {
+            user_code,
+            verification_uri,
+        } = phase
+        {
+            let code_chip = div()
+                .flex_none()
+                .px(crate::ui::sp(10.))
+                .py(crate::ui::sp(4.))
+                .rounded(crate::ui::rad(ui::RADIUS))
+                .border_1()
+                .border_color(theme::border())
+                .bg(theme::fill_raised())
+                .font_family(theme::FONT_MONO)
+                .text_size(px(ui::TEXT_LG))
+                .text_color(theme::text())
+                .child(crate::redact::value(&user_code));
+            let copy = user_code.to_string();
+            let open = verification_uri.to_string();
+            rows.push(
+                stacked_row(
+                    "Enter this code on GitHub",
+                    format!(
+                        "{verification_uri} opened in your browser. Arakun waits until you approve there."
+                    ),
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(crate::ui::sp(6.))
+                        .child(code_chip)
+                        .child(
+                            ui::button_with("set-teams-copy", Some("copy01"), "Copy", ButtonKind::Ghost, true)
+                                .on_click(move |_, _, cx| {
+                                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(copy.clone()))
+                                }),
+                        )
+                        .child(
+                            ui::button_with("set-teams-page", Some("link-square02"), "Open page", ButtonKind::Ghost, true)
+                                .on_click(move |_, _, cx| cx.open_url(&open)),
+                        )
+                        .child(
+                            ui::button("set-teams-cancel", "Cancel", ButtonKind::Outline, true)
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.teams.update(cx, |t, cx| t.cancel(cx));
+                                })),
+                        )
+                        .into_any_element(),
+                )
+                .into_any_element(),
+            );
+        } else {
+            let (label, idle) = match phase {
+                Phase::Starting => ("Asking GitHub…", false),
+                Phase::Finishing => ("Signing in…", false),
+                _ => ("Sign in with GitHub", true),
+            };
+            rows.push(
+                row(
+                    "Not signed in",
+                    "Sign in to use what Arakun is trying out with some people, such as Teams. GitHub shares only your user name and ID: no repositories, no email.",
+                    ui::button_with("set-teams-in", Some("github"), label, ButtonKind::Outline, idle)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.teams.update(cx, |t, cx| t.sign_in(cx));
+                        }))
+                        .into_any_element(),
+                )
+                .into_any_element(),
+            );
+        }
+        if let Some(e) = error {
+            rows.push(
+                div()
+                    .px(crate::ui::sp(14.))
+                    .py(crate::ui::sp(10.))
+                    .text_size(px(ui::TEXT_SM))
+                    .text_color(theme::error())
+                    .child(e)
+                    .into_any_element(),
+            );
+        }
+        stack(vec![titled("GitHub", rows)])
     }
 
     /// The Updates card: the automatic switch, and the version with what
@@ -2482,6 +2645,8 @@ mod tests {
         assert!(found("stream").contains(&Section::Privacy));
         assert!(!found("crash").contains(&Section::General));
         assert!(found("factory").contains(&Section::Droid));
+        assert!(found("github").contains(&Section::Account));
+        assert!(found("teams").contains(&Section::Account));
         assert!(found("ctrl+w").contains(&Section::Shortcuts));
         assert!(found("zoom").contains(&Section::Appearance));
         assert!(found("check command").contains(&Section::Project));

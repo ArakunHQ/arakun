@@ -1537,13 +1537,9 @@ pub(crate) fn civil_from_days(days: i64) -> (i64, i64, i64) {
 }
 
 /// A secret in the desktop keyring: the Secret Service (through `secret-tool`) on Linux,
-/// the Credential Manager on Windows. `account` tells arakun's secrets apart.
+/// the Keychain on macOS, the Credential Manager on Windows. `account` tells arakun's
+/// secrets apart.
 pub mod keyring {
-    #[cfg(not(windows))]
-    use std::io::Write as _;
-    #[cfg(not(windows))]
-    use std::process::{Command, Stdio};
-
     pub fn lookup(account: &str) -> Option<String> {
         lookup_in("arakun", account)
     }
@@ -1552,18 +1548,16 @@ pub mod keyring {
     pub fn lookup_in(service: &str, account: &str) -> Option<String> {
         #[cfg(windows)]
         let secret = win::read(&target_name(service, account));
-        #[cfg(not(windows))]
-        let secret = {
-            let out = Command::new("secret-tool")
-                .args(["lookup", "service", service, "account", account])
-                .stderr(Stdio::null())
-                .output()
-                .ok()?;
-            out.status
-                .success()
-                .then(|| String::from_utf8(out.stdout).ok())
-                .flatten()
+        // Only arakun's own items come from the Keychain: reading another app's item
+        // would ask the user to allow it.
+        #[cfg(target_os = "macos")]
+        let secret = if service == "arakun" {
+            mac::read(account)
+        } else {
+            secret_tool::lookup(service, account)
         };
+        #[cfg(not(any(windows, target_os = "macos")))]
+        let secret = secret_tool::lookup(service, account);
         secret
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
@@ -1585,8 +1579,40 @@ pub mod keyring {
     pub fn store(account: &str, label: &str, secret: &str) -> Result<(), String> {
         #[cfg(windows)]
         return win::write(&target_name("arakun", account), label, secret);
-        #[cfg(not(windows))]
-        {
+        #[cfg(target_os = "macos")]
+        return mac::write(account, label, secret);
+        #[cfg(not(any(windows, target_os = "macos")))]
+        secret_tool::store(account, label, secret)
+    }
+
+    pub fn clear(account: &str) {
+        #[cfg(windows)]
+        win::delete(&target_name("arakun", account));
+        #[cfg(target_os = "macos")]
+        mac::delete(account);
+        #[cfg(not(any(windows, target_os = "macos")))]
+        secret_tool::clear(account);
+    }
+
+    #[cfg(not(windows))]
+    mod secret_tool {
+        use std::process::{Command, Stdio};
+
+        pub fn lookup(service: &str, account: &str) -> Option<String> {
+            let out = Command::new("secret-tool")
+                .args(["lookup", "service", service, "account", account])
+                .stderr(Stdio::null())
+                .output()
+                .ok()?;
+            out.status
+                .success()
+                .then(|| String::from_utf8(out.stdout).ok())
+                .flatten()
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        pub fn store(account: &str, label: &str, secret: &str) -> Result<(), String> {
+            use std::io::Write as _;
             let mut child = Command::new("secret-tool")
                 .args([
                     "store",
@@ -1614,17 +1640,171 @@ pub mod keyring {
                 Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
             }
         }
+
+        #[cfg(not(target_os = "macos"))]
+        pub fn clear(account: &str) {
+            let _ = Command::new("secret-tool")
+                .args(["clear", "service", "arakun", "account", account])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        }
     }
 
-    pub fn clear(account: &str) {
-        #[cfg(windows)]
-        win::delete(&target_name("arakun", account));
-        #[cfg(not(windows))]
-        let _ = Command::new("secret-tool")
-            .args(["clear", "service", "arakun", "account", account])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
+    /// Generic passwords in the default keychain, service "arakun". The Security API,
+    /// rather than `security add-generic-password -w <secret>`, keeps the secret out of
+    /// the process list.
+    #[cfg(target_os = "macos")]
+    mod mac {
+        use std::ffi::c_void;
+        use std::ptr::{null, null_mut};
+
+        const SERVICE: &[u8] = b"arakun";
+        /// errSecItemNotFound.
+        const ITEM_NOT_FOUND: i32 = -25300;
+
+        #[link(name = "Security", kind = "framework")]
+        unsafe extern "C" {
+            fn SecKeychainFindGenericPassword(
+                keychain: *const c_void,
+                service_len: u32,
+                service: *const u8,
+                account_len: u32,
+                account: *const u8,
+                len: *mut u32,
+                data: *mut *mut c_void,
+                item: *mut *mut c_void,
+            ) -> i32;
+            fn SecKeychainItemFreeContent(attrs: *const c_void, data: *mut c_void) -> i32;
+            fn SecKeychainAddGenericPassword(
+                keychain: *const c_void,
+                service_len: u32,
+                service: *const u8,
+                account_len: u32,
+                account: *const u8,
+                len: u32,
+                data: *const u8,
+                item: *mut *mut c_void,
+            ) -> i32;
+            fn SecKeychainItemModifyAttributesAndData(
+                item: *mut c_void,
+                attrs: *const c_void,
+                len: u32,
+                data: *const c_void,
+            ) -> i32;
+            fn SecKeychainItemDelete(item: *mut c_void) -> i32;
+        }
+
+        #[link(name = "CoreFoundation", kind = "framework")]
+        unsafe extern "C" {
+            fn CFRelease(cf: *const c_void);
+        }
+
+        /// A keychain item reference, released when dropped.
+        struct Item(*mut c_void);
+
+        impl Drop for Item {
+            fn drop(&mut self) {
+                // SAFETY: `find` makes an Item only from a non-null reference the
+                // keychain handed over, and nothing else releases it.
+                unsafe { CFRelease(self.0) }
+            }
+        }
+
+        /// The item filed under `account`, or the status the keychain answered.
+        fn find(account: &str) -> Result<Option<Item>, i32> {
+            let mut item = null_mut();
+            // SAFETY: the byte buffers live through the call. Null length and data ask
+            // for the item reference only.
+            let status = unsafe {
+                SecKeychainFindGenericPassword(
+                    null(),
+                    SERVICE.len() as u32,
+                    SERVICE.as_ptr(),
+                    account.len() as u32,
+                    account.as_ptr(),
+                    null_mut(),
+                    null_mut(),
+                    &mut item,
+                )
+            };
+            match status {
+                0 if !item.is_null() => Ok(Some(Item(item))),
+                0 | ITEM_NOT_FOUND => Ok(None),
+                s => Err(s),
+            }
+        }
+
+        pub fn read(account: &str) -> Option<String> {
+            let (mut len, mut data) = (0u32, null_mut());
+            // SAFETY: the buffers live through the call. On success the keychain owns
+            // `len` bytes at `data`, which are copied, then released.
+            unsafe {
+                let status = SecKeychainFindGenericPassword(
+                    null(),
+                    SERVICE.len() as u32,
+                    SERVICE.as_ptr(),
+                    account.len() as u32,
+                    account.as_ptr(),
+                    &mut len,
+                    &mut data,
+                    null_mut(),
+                );
+                if status != 0 || data.is_null() {
+                    return None;
+                }
+                let bytes = std::slice::from_raw_parts(data.cast::<u8>(), len as usize).to_vec();
+                SecKeychainItemFreeContent(null(), data);
+                String::from_utf8(bytes).ok()
+            }
+        }
+
+        /// Keychain Access names a generic password after its service, so `_label`
+        /// has nowhere to go.
+        pub fn write(account: &str, _label: &str, secret: &str) -> Result<(), String> {
+            let status = match find(account) {
+                // SAFETY: `item` is a live reference and `secret` outlives the call.
+                // Null attributes change the data only.
+                Ok(Some(item)) => unsafe {
+                    SecKeychainItemModifyAttributesAndData(
+                        item.0,
+                        null(),
+                        secret.len() as u32,
+                        secret.as_ptr().cast(),
+                    )
+                },
+                // SAFETY: the byte buffers live through the call. Null selects the
+                // default keychain and asks for no item back.
+                Ok(None) => unsafe {
+                    SecKeychainAddGenericPassword(
+                        null(),
+                        SERVICE.len() as u32,
+                        SERVICE.as_ptr(),
+                        account.len() as u32,
+                        account.as_ptr(),
+                        secret.len() as u32,
+                        secret.as_ptr(),
+                        null_mut(),
+                    )
+                },
+                Err(status) => status,
+            };
+            if status == 0 {
+                Ok(())
+            } else {
+                Err(format!("Keychain: error {status}"))
+            }
+        }
+
+        pub fn delete(account: &str) {
+            if let Ok(Some(item)) = find(account) {
+                // SAFETY: `item` is a live reference. Deleting the keychain item leaves
+                // releasing the reference to Drop.
+                unsafe {
+                    SecKeychainItemDelete(item.0);
+                }
+            }
+        }
     }
 
     #[cfg(windows)]

@@ -3,6 +3,7 @@ mod account;
 mod account_view;
 mod agent;
 mod app_menu;
+mod arakun_teams;
 mod ascii_face;
 mod assets;
 mod attach_picker;

@@ -18,10 +18,11 @@ name: the tab selects it as soon as it appears. A prompt that says the scene
 is a copy of a built-in one means the file already holds that starter; edit
 it in place.
 
-Read `reference.md` (next to this file) for every function before writing.
-`iso/billing.rhai` (a coin meter), `iso/cpu.rhai` (a circuit board) and
-`iso/ec2.rhai` (a guided tour with captions, drawn-on labels and a spotlight)
-are complete examples; copy their structure.
+Read `reference.md` (next to this file, also printed by `arakun iso docs`)
+for every function before writing. `arakun iso example billing` (a coin
+meter), `example cpu` (a circuit board) and `example ec2` (a guided tour with
+captions, drawn-on labels and a spotlight) print complete scenes that ship
+with Arakun in any project; copy their structure.
 
 ## How to work
 

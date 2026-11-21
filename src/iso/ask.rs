@@ -56,7 +56,7 @@ pub fn prompt(ask: &Ask) -> String {
         Ask::New { path, words } => {
             let path = path.display();
             format!(
-                "{words}\n\nUse the arakun-iso skill. Write this as a new scene in {path}. \
+                "{words}\n\nUse the arakun-iso skill, or read `arakun iso docs` if you don't have it. Write this as a new scene in {path}. \
                  Check it with `arakun iso check {path}` and look at it with \
                  `arakun iso render {path}` before you finish."
             )
@@ -69,7 +69,7 @@ pub fn prompt(ask: &Ask) -> String {
         } => {
             let path = path.display();
             let mut p = format!(
-                "{words}\n\nUse the arakun-iso skill. Change the scene in {path} in place and \
+                "{words}\n\nUse the arakun-iso skill, or read `arakun iso docs` if you don't have it. Change the scene in {path} in place and \
                  keep its file name. Check it with `arakun iso check {path}` and look at it \
                  with `arakun iso render {path}` before you finish."
             );
@@ -147,6 +147,7 @@ mod tests {
         assert!(p.contains("arakun-iso skill"));
         assert!(p.contains("new scene in iso/rack.rhai"));
         assert!(p.contains("arakun iso check iso/rack.rhai"));
+        assert!(p.contains("arakun iso docs"));
     }
 
     #[test]

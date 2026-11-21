@@ -439,6 +439,8 @@ after a week).
   on screen. A starter is copied into `iso/` first. The tab shows each save as the
   agent writes it. Export PNG, Export SVG and Export animated SVG save the scene in
   the look on screen: a 1600 px wide frame, one frame, or the whole loop.
+  Agents in any project read the guide with `arakun iso docs` and the shipped scenes
+  with `arakun iso example [name]`.
 - **Automations.** Scheduled shell commands or agent prompts per project.
 
 ### Make it yours

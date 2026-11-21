@@ -26,6 +26,12 @@ arakun iso anim <scene.rhai> [--fps N] [--px P] [--look paper|arakun] [--out FIL
     T writes instead the exact frame at T in the loop's view, to compare
 arakun iso check <scene.rhai>
     runs the whole loop: errors, empty frames, the loop seam, time per frame
+arakun iso docs
+    the guide to writing scenes and every function, for agents without the
+    arakun-iso skill
+arakun iso example [name]
+    a complete scene that ships with Arakun (billing, cpu, ec2, raccoon), or
+    their names
 ";
 
 struct Opts {
@@ -426,6 +432,30 @@ fn same_frame(a: &[super::Item], b: &[super::Item]) -> bool {
         })
 }
 
+/// The guide to writing scenes: the arakun-iso skill and its reference, for
+/// agents in projects that don't have the skill.
+pub fn docs() -> String {
+    format!(
+        "{}\n\n{}",
+        include_str!("../../.claude/skills/arakun-iso/SKILL.md"),
+        include_str!("../../.claude/skills/arakun-iso/reference.md")
+    )
+}
+
+/// A starter's source by file stem (`cpu`), or the list of them.
+pub fn example(name: Option<&str>) -> Result<String, String> {
+    let stem = |f: &str| f.trim_end_matches(".rhai").to_string();
+    let Some(name) = name else {
+        let names: Vec<String> = super::starters::ALL.iter().map(|s| stem(s.file)).collect();
+        return Ok(names.join("\n"));
+    };
+    super::starters::ALL
+        .iter()
+        .find(|s| stem(s.file) == stem(name))
+        .map(|s| s.source.to_string())
+        .ok_or_else(|| format!("no example {name}; `arakun iso example` lists them"))
+}
+
 /// Runs `arakun iso …`; the exit code.
 pub fn run(args: &[String], cwd: &Path) -> i32 {
     let Some((cmd, rest)) = args.split_first() else {
@@ -436,6 +466,26 @@ pub fn run(args: &[String], cwd: &Path) -> i32 {
     if cmd == "help" || help(cmd) || rest.iter().any(help) {
         print!("{USAGE}");
         return 0;
+    }
+    // These read no scene file, so they skip the option parsing.
+    match cmd.as_str() {
+        "docs" => {
+            print!("{}", docs());
+            return 0;
+        }
+        "example" => {
+            return match example(rest.first().map(String::as_str)) {
+                Ok(out) => {
+                    println!("{out}");
+                    0
+                }
+                Err(e) => {
+                    eprintln!("arakun iso: {e}");
+                    1
+                }
+            };
+        }
+        _ => {}
     }
     let result = parse(rest, cwd).and_then(|o| match cmd.as_str() {
         "render" => render(&o),
@@ -453,5 +503,28 @@ pub fn run(args: &[String], cwd: &Path) -> i32 {
             eprintln!("arakun iso: {e}");
             1
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn docs_hold_the_guide_and_the_reference() {
+        let d = docs();
+        assert!(d.contains("# Isometric scenes in Arakun"));
+        assert!(d.contains("scene(#{"));
+    }
+
+    #[test]
+    fn example_lists_and_prints_starters() {
+        let list = example(None).unwrap();
+        for name in ["billing", "cpu", "ec2", "raccoon"] {
+            assert!(list.contains(name), "{name}");
+        }
+        assert!(example(Some("cpu")).unwrap().contains("name: \"CPU\""));
+        assert!(example(Some("cpu.rhai")).is_ok());
+        assert!(example(Some("nope")).is_err());
     }
 }

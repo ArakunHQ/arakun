@@ -298,8 +298,8 @@ Behavior:
 - [ ] **Step 2: Run** `cargo test --locked --no-default-features iso_view`. It should fail to compile.
 - [ ] **Step 3: Implement the view changes, the shell subscription and the docs.**
 - [ ] **Step 4: Run the tests.** `cargo test --locked --no-default-features iso_view`
-  should pass. Then run `cargo test --locked --no-default-features design_lint words_lint`,
-  which should also pass.
+  should pass. Then run `cargo test --locked --no-default-features design_lint` and
+  `cargo test --locked --no-default-features words_lint`, which should also pass.
 - [ ] **Step 5: Check it in the app** with the `ui-change` skill (`arakun dev`).
   Open the Isometric tab, take a screenshot of the toolbar, then open the
   prompt row and take a screenshot of that. Send "a small server rack", and

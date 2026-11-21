@@ -246,7 +246,10 @@ pub struct IsoView {
 
 /// The open prompt row: whether it changes the scene on screen, and its input.
 struct Asking {
-    change: bool,
+    /// For Change, the scene on screen when the row opened (its file, or
+    /// its name when it has none): picking another scene meanwhile must
+    /// not move the request to it.
+    change: Option<(Option<PathBuf>, String)>,
     input: Entity<TextInput>,
     _sub: Subscription,
 }
@@ -311,10 +314,9 @@ impl IsoView {
     /// Lists the scenes of `root`'s `iso/` folder ahead of the built-in ones.
     pub fn set_root(&mut self, root: PathBuf, cx: &mut Context<Self>) {
         if self.root.as_ref() != Some(&root) {
-            self.pending = std::mem::take(&mut self.pending)
-                .into_iter()
-                .filter_map(|p| pending_after_root_change(Some(p), self.root.as_deref(), &root))
-                .collect();
+            // Requests belong to the environment they were made in.
+            self.pending.clear();
+            self.asking = None;
             self.root = Some(root);
             self.reload();
             cx.notify();
@@ -345,22 +347,17 @@ impl IsoView {
         self.extents = entries.iter().map(Entry::extent).collect();
         // Stay on the scene that was showing, found by file or by name.
         self.scene = current
-            .and_then(|(path, name)| {
-                entries.iter().position(|e| match (&path, e.path()) {
-                    (Some(p), Some(q)) => p == q,
-                    _ => e.name() == name,
-                })
-            })
+            .and_then(|(path, name)| find_entry(&entries, path.as_deref(), &name))
             .unwrap_or(0);
-        // A scene asked for has appeared: show it, once.
-        let asked = entries.iter().enumerate().find_map(|(i, e)| {
-            let path = e.path()?;
-            self.pending.iter().position(|p| p == path).map(|k| (i, k))
-        });
+        // Scenes asked for have appeared: show the first, once.
+        let paths: Vec<Option<&Path>> = entries
+            .iter()
+            .map(|e| e.path().map(PathBuf::as_path))
+            .collect();
+        let asked = take_arrived(&mut self.pending, &paths);
         self.entries = entries;
         self.generation += 1;
-        if let Some((i, k)) = asked {
-            self.pending.remove(k);
+        if let Some(i) = asked {
             self.select(i);
         }
     }
@@ -387,6 +384,10 @@ impl IsoView {
             _ => {}
         });
         window.focus(&input.focus_handle(cx), cx);
+        let change = change
+            .then(|| self.entries.get(self.scene))
+            .flatten()
+            .map(|e| (e.path().cloned(), e.name()));
         self.asking = Some(Asking {
             change,
             input,
@@ -398,7 +399,7 @@ impl IsoView {
 
     /// Works out the file, then asks the shell for a session that writes it.
     fn send_ask(&mut self, words: String, cx: &mut Context<Self>) {
-        let change = self.asking.as_ref().is_some_and(|a| a.change);
+        let change = self.asking.as_ref().and_then(|a| a.change.clone());
         match self.ask_for(words, change) {
             Ok(ask) => {
                 self.asking = None;
@@ -413,12 +414,16 @@ impl IsoView {
         cx.notify();
     }
 
-    fn ask_for(&mut self, words: String, change: bool) -> Result<Ask, String> {
+    fn ask_for(
+        &mut self,
+        words: String,
+        change: Option<(Option<PathBuf>, String)>,
+    ) -> Result<Ask, String> {
         let root = self.root.clone().ok_or("No environment is open")?;
         let dir = root.join("iso");
         let rel = |p: &Path| p.strip_prefix(&root).unwrap_or(p).to_path_buf();
         let mkdir = || std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()));
-        if !change {
+        let Some((path, name)) = change else {
             mkdir()?;
             let path = ask::free_path_except(&dir, &ask::slug(&words), &self.pending);
             self.pending.push(path.clone());
@@ -426,8 +431,10 @@ impl IsoView {
                 path: rel(&path),
                 words,
             });
-        }
-        match self.entries.get(self.scene) {
+        };
+        let index = find_entry(&self.entries, path.as_deref(), &name)
+            .ok_or("That scene is gone; pick it again")?;
+        match self.entries.get(index) {
             Some(Entry::Script(s)) => Ok(Ask::Change {
                 path: rel(&s.path),
                 words,
@@ -1198,16 +1205,16 @@ impl Job {
         };
         // Measured again rather than taken from the tab, whose fallback box
         // would let a scene that draws nothing export a blank file.
-        let ext = iso::export::extent(&frame, self.seconds)?;
+        // The file may have changed since the click: its own length counts.
+        let seconds = script.as_ref().map_or(self.seconds, |s| s.meta.seconds);
+        let ext = iso::export::extent(&frame, seconds)?;
         let pal = &self.palette;
         match self.kind {
             Kind::Png => iso::export::png(&frame, ext, self.t, self.tau, pal, 1600),
             Kind::Svg => iso::export::svg(&self.name, &frame, ext, self.t, self.tau, pal)
                 .map(String::into_bytes),
-            Kind::Loop => {
-                iso::export::loop_svg(&self.name, &frame, ext, self.seconds, pal, 240., 0.1)
-                    .map(String::into_bytes)
-            }
+            Kind::Loop => iso::export::loop_svg(&self.name, &frame, ext, seconds, pal, 240., 0.1)
+                .map(String::into_bytes),
         }
     }
 }
@@ -1258,13 +1265,25 @@ fn order(scripts: Vec<Entry>, starters: Vec<Entry>, builtins: Vec<Entry>) -> Vec
     out
 }
 
-/// A scene asked for in one environment is not looked for in another.
-fn pending_after_root_change(
-    pending: Option<PathBuf>,
-    old: Option<&Path>,
-    new: &Path,
-) -> Option<PathBuf> {
-    pending.filter(|_| old == Some(new))
+/// The pending paths that `paths` (the new list's files, in order) holds
+/// are done: all of them leave `pending`, and the index of the first one in
+/// the list comes back to be shown.
+fn take_arrived(pending: &mut Vec<PathBuf>, paths: &[Option<&Path>]) -> Option<usize> {
+    let arrived = |p: &PathBuf| paths.contains(&Some(p.as_path()));
+    let first = paths
+        .iter()
+        .position(|q| q.is_some_and(|q| pending.iter().any(|p| p == q)));
+    pending.retain(|p| !arrived(p));
+    first
+}
+
+/// The entry with this file, or for a scene with no file, this name.
+fn find_entry(entries: &[Entry], path: Option<&Path>, name: &str) -> Option<usize> {
+    entries.iter().position(|e| match (path, e.path()) {
+        (Some(p), Some(q)) => p == q,
+        (Some(_), None) => false,
+        (None, _) => e.name() == name,
+    })
 }
 
 #[cfg(test)]
@@ -1316,6 +1335,50 @@ mod tests {
             assert!(Rc::ptr_eq(s, &c.1));
             assert_eq!(e.extent(), *ext);
         }
+    }
+
+    #[test]
+    fn take_arrived_clears_every_arrived_path() {
+        let mut pending = vec![
+            PathBuf::from("/r/iso/a.rhai"),
+            PathBuf::from("/r/iso/b.rhai"),
+            PathBuf::from("/r/iso/c.rhai"),
+        ];
+        let paths = [
+            Some(Path::new("/r/iso/x.rhai")),
+            Some(Path::new("/r/iso/b.rhai")),
+            None,
+            Some(Path::new("/r/iso/a.rhai")),
+        ];
+        assert_eq!(take_arrived(&mut pending, &paths), Some(1));
+        assert_eq!(pending, [PathBuf::from("/r/iso/c.rhai")]);
+        assert_eq!(take_arrived(&mut pending, &paths), None);
+    }
+
+    #[test]
+    fn find_entry_prefers_the_file() {
+        let entries = vec![broken("x/a.rhai"), broken("y/a.rhai")];
+        assert_eq!(
+            find_entry(&entries, Some(Path::new("y/a.rhai")), "a"),
+            Some(1)
+        );
+        assert_eq!(find_entry(&entries, None, "a"), Some(0));
+        assert_eq!(find_entry(&entries, Some(Path::new("z/a.rhai")), "a"), None);
+    }
+
+    #[test]
+    fn loop_export_takes_the_length_from_the_script() {
+        let job = Job {
+            kind: Kind::Loop,
+            source: Source::Starter(&starters::ALL[1]),
+            name: "CPU".into(),
+            seconds: 1.,
+            palette: Look::Paper.palette(),
+            t: 0.,
+            tau: 0.,
+        };
+        let svg = String::from_utf8(job.run().unwrap()).unwrap();
+        assert!(svg.contains("dur=\"5s\""), "the CPU loop is 5 s long");
     }
 
     #[test]
@@ -1375,18 +1438,5 @@ mod tests {
             assert!(job.run().is_err());
         }
         let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn set_root_clears_pending() {
-        let p = Some(PathBuf::from("/r1/iso/x.rhai"));
-        assert_eq!(
-            pending_after_root_change(p.clone(), Some(Path::new("/r1")), Path::new("/r2")),
-            None
-        );
-        assert_eq!(
-            pending_after_root_change(p.clone(), Some(Path::new("/r1")), Path::new("/r1")),
-            p
-        );
     }
 }

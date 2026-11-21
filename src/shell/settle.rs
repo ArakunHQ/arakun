@@ -92,8 +92,15 @@ impl Shell {
                         for (path, branch) in &envs {
                             let mut mine: Vec<Merged> =
                                 settle::of_branch(&merged, branch).cloned().collect();
-                            if mine.is_empty() && full {
-                                mine = settle::merged_of_branch(path, branch);
+                            // Even with one of the branch's merges in the list,
+                            // another may be missing: add what the branch query
+                            // finds that the list did not have.
+                            if full {
+                                for m in settle::merged_of_branch(path, branch) {
+                                    if !mine.iter().any(|k| k.url == m.url) {
+                                        mine.push(m);
+                                    }
+                                }
                             }
                             found.extend(mine.into_iter().map(|m| (path.clone(), m)));
                         }

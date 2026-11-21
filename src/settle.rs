@@ -90,7 +90,8 @@ impl Merged {
 
 /// The most merged pull requests read per repository: far more than one
 /// person merges in [`RECENT_SECS`]. A list this long may have left some out,
-/// so the branches it doesn't name are asked one by one ([`merged_of_branch`]).
+/// even one of two merges from the same branch, so every branch is then asked
+/// one by one ([`merged_of_branch`]).
 pub const MERGED_PER_REPO: usize = 300;
 /// The most merged pull requests read per branch: a branch can be merged
 /// more than once.
@@ -120,7 +121,7 @@ pub fn recent_merged(dir: &Path, now: u64) -> Vec<Merged> {
 }
 
 /// The user's newest merged pull requests from `branch`, asked in `dir`: for
-/// when [`recent_merged`] came back full. Empty when there are none or gh
+/// when [`recent_merged`] came back full, added to what it found. Empty when there are none or gh
 /// can't say.
 pub fn merged_of_branch(dir: &Path, branch: &str) -> Vec<Merged> {
     gh_merged(

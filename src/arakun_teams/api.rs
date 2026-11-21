@@ -374,11 +374,19 @@ impl Call<'_> {
                 .header("Content-Type", "application/json")
                 .body(body.to_string())
                 .map_err(|e| ApiError::Network(e.to_string()))
-                .and_then(|r| agent().run(r).map_err(|e| ApiError::Network(e.to_string()))),
+                .and_then(|r| {
+                    server(&self.base)
+                        .run(r)
+                        .map_err(|e| ApiError::Network(e.to_string()))
+                }),
             None => req
                 .body(())
                 .map_err(|e| ApiError::Network(e.to_string()))
-                .and_then(|r| agent().run(r).map_err(|e| ApiError::Network(e.to_string()))),
+                .and_then(|r| {
+                    server(&self.base)
+                        .run(r)
+                        .map_err(|e| ApiError::Network(e.to_string()))
+                }),
         };
         read(sent, limit)
     }

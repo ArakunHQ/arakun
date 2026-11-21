@@ -295,7 +295,7 @@ install_claude() {
     bash "$tmp/claude-install.sh" >/dev/null || true
   if [ -x "$bindir/claude" ]; then
     say "installed Claude Code in $bindir; sign in with 'claude' before the first session"
-    uninstall="$uninstall ~/.local/bin/claude ~/.local/share/claude"
+    uninstall="$uninstall ~/.local/bin/claude \"${XDG_DATA_HOME:-$HOME/.local/share}/claude\""
   else
     say "warning: could not install Claude Code; run this, then sign in with 'claude':"
     printf '\n  %s\n\n' "$claude_cmd"

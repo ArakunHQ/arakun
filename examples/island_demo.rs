@@ -1,4 +1,4 @@
-//! Arakun's Dynamic Island (`src/island.rs`) with made-up agents: cycles
+//! Arakun's Dynamic Island (`core/src/island.rs`) with made-up agents: cycles
 //! through its states every 4 s; hover it to list the agents.
 //!
 //!   cargo run --example island_demo [-- sleeping|working|speaking|listening|alert|list|alerts]
@@ -9,22 +9,11 @@
 //! ("Later") after a few seconds, so the drip and the melt can be filmed with
 //! ARAKUN_ISLAND_PASSTHROUGH=1. ISLAND_DEMO_SCREEN=n opens it on the nth screen
 //! (Linux). ARAKUN_ISLAND_EDGE=notch or =pill draws it around a camera cutout
-//! the screen doesn't have (see `src/island/edge.rs`).
+//! the screen doesn't have (see `core/src/island/edge.rs`).
 //! Once clicked the island takes keys: 1-5 jump to a state, 6 pins the list,
 //! space goes to the next, p pauses.
 
-// Where it can't run, island.rs allows dead code itself; a second allow trips clippy.
-#[path = "../src/frame_timer.rs"]
-mod frame_timer;
-#[cfg_attr(any(target_os = "linux", target_os = "macos"), allow(dead_code))]
-#[path = "../src/island.rs"]
-mod island;
-#[allow(dead_code)]
-#[path = "../src/mascot.rs"]
-mod mascot;
-#[allow(dead_code)]
-#[path = "../src/theme.rs"]
-mod theme;
+use arakun_core::island;
 
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 fn main() {

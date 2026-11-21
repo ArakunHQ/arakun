@@ -582,11 +582,12 @@ system. The choice is kept in `state.json` as `reduce_motion`.
   opening it. The tab then shows its options (name, emoji, folding, Fixed or Scroll,
   Ungroup, remove) and chips to add a group, a link, a command, a title, a separator,
   a spacer or what the sidebar does not hold yet, into the selected segment with a
-  click. The pieces among them (not Group, Link, Command or Title, which ask for more
+  click (with nothing selected, into the segment that holds the most views), and selects what it added. The pieces among them (not Group, Link, Command or Title, which ask for more
   first) can also be dragged onto the sidebar where they should go. Pieces and segment
   titles drag into another order on the sidebar itself. The panel's header has undo
-  and redo for these changes. Done closes the panel, and "Customize sidebar…" in the
-  sidebar's right-click menu opens this tab. Reset sidebar goes back to the default
+  and redo for these changes; what is typed into one field is one step. Done closes the panel, and "Customize sidebar…" in the
+  sidebar's right-click menu opens this tab. After that menu hides a piece, ungroups
+  or removes a segment, a note at the foot of the sidebar says so for ten seconds, with an Undo button; it stays while the pointer is on it. Reset sidebar goes back to the default
   layout and width. The layout is kept in `sidebar.json`.
 - **Share a look.** Export… at the foot of the panel, on any tab, copies the colors,
   the shape or the sidebar, the ones you tick, as one line (`arakun:look/v1:…`).
@@ -1349,11 +1350,13 @@ forward through tabs, `Ctrl+Cmd+F` toggles full screen, and `Cmd+H`, `Cmd+M` and
   recalls earlier prompts; paste or drop images to attach them. While the agent works,
   `Enter` queues the message, `Ctrl+Enter` stops the turn and sends it now, and `Esc`
   stops the turn. A queued message has a button to send it now too
-- In the composer's agent and model menu: `↑` / `↓` move through the right column,
-  `←` / `→` move between agents (on the Reasoning row they step the level), `Enter`
-  picks and `Esc` closes. Picking a model of the agent in use or a reasoning level
-  keeps the menu open, so you can set the reasoning next. In a running session, only a model pick, a click on an
-  agent row or Continue with hands the session to another agent; reasoning and fast
+- In the composer's agent and model menu: the strip of agent icons at the bottom shows
+  an agent's models and reasoning, and a dot marks the agent in use. `↑` / `↓` move
+  through the models and the rows below them, `←` / `→` move between agents (on the
+  Reasoning row they step the level), `Enter` picks and `Esc` closes. Picking a model
+  of the agent in use or a reasoning level keeps the menu open, so you can set the
+  reasoning next. In a running session, only picking one of another agent's models or
+  Continue with hands the session to another agent; reasoning and fast
   mode for another agent are kept for when you switch to it. Picking a different
   model for that agent clears the reasoning level kept for it, so pick the level
   again after the model

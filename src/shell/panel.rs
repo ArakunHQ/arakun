@@ -10,8 +10,8 @@ impl Shell {
             style: self.sidebar.style,
             width: self.rail_w,
             preset: self.sidebar_preset(),
-            can_undo: !self.builder.undo.is_empty(),
-            can_redo: !self.builder.redo.is_empty(),
+            can_undo: self.builder.history.can_undo(),
+            can_redo: self.builder.history.can_redo(),
             note: self.builder.flash.clone(),
             summary: {
                 let pieces = self

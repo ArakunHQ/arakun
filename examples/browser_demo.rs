@@ -3,31 +3,7 @@
 //! Alt+1..9 switch tabs, Ctrl+T opens a blank tab, Ctrl+W closes the active one, Ctrl+Q
 //! quits (shutting CEF down cleanly).
 
-#[path = "../src/assets.rs"]
-mod assets;
-#[path = "../src/browser/mod.rs"]
-mod browser;
-#[path = "../src/durable.rs"]
-#[allow(dead_code)]
-mod durable;
-// The new-tab page's raccoon.
-#[path = "../src/frame_timer.rs"]
-mod frame_timer;
-#[allow(dead_code)]
-#[path = "../src/mascot.rs"]
-mod mascot;
-#[allow(dead_code)]
-#[path = "../src/platform.rs"]
-mod platform;
-#[allow(dead_code)]
-#[path = "../src/redact.rs"]
-mod redact;
-#[path = "../src/theme.rs"]
-#[allow(dead_code)]
-mod theme;
-#[path = "../src/ui.rs"]
-#[allow(dead_code)]
-mod ui;
+use arakun_core::{assets, browser, theme, ui};
 
 use browser::{BrowserEvent, BrowserView};
 use gpui::{

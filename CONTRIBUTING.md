@@ -102,12 +102,12 @@ and the other platforms can be left to CI on your draft pull request; fix what i
 finds there. These are the commands CI runs:
 
 ```sh
-# the app (with CEF set up, you can leave out --no-default-features)
+# the app and core/ (with CEF set up, you can leave out --no-default-features)
 tools/rustfmt.sh --check
 cargo clippy --locked --all-targets --no-default-features -- -D warnings
 cargo test --locked --no-default-features
 
-# server/ changed, or a file src/server.rs builds on (see the list in server/src/main.rs)
+# server/ or core/ changed
 cargo clippy --locked -p arakun-server -- -D warnings
 
 # Cargo.toml, Cargo.lock or deny.toml changed (cargo install --locked cargo-deny)
@@ -126,12 +126,20 @@ zizmor .github
 
 Some notes:
 
+- The code the app shares with `arakun-server` and the examples is the `arakun-core`
+  library in `core/`: agents, the phone, the server, the terminal, the browser, and the
+  platform, theme and UI kit they draw with. The app (`src/`), `arakun-server` and the
+  examples are thin binaries over it. The app names its modules as its own
+  (`use arakun_core::{agent, ...}` in `src/main.rs`), so `crate::agent` works in both.
+  What the binaries answer differently (the memory prompt, the control socket), core
+  asks through `core/src/host.rs`. A core item the app uses has to be `pub`. A
+  dependency more than one package uses goes in `[workspace.dependencies]` in the
+  root `Cargo.toml`.
 - `arakun-server` (in `server/`) is the app's server built for a machine with no
-  display: a package of its own that includes the app's source files, against GPUI
-  without Wayland and X11. Its tests are the app's (`src/server/`), so `cargo test`
-  covers them. CI also builds it alone and fails if the binary needs a desktop library
-  (`tools/check-server-libs.sh`). A dependency it needs is listed in both `Cargo.toml`
-  files, with the same version.
+  display: a package of its own, against GPUI without Wayland and X11. Its code and
+  tests are in `core/` (`core/src/server/`), so `cargo test` covers them. CI also
+  builds it alone and fails if the binary needs a desktop library
+  (`tools/check-server-libs.sh`).
 
 - The code is formatted with rustfmt's default settings. `tools/rustfmt.sh` formats
   it; it runs `cargo fmt`, which on its own stops at the private modules this
@@ -157,7 +165,7 @@ Some notes:
   sign-in and so on), so CI skips them. Run one with `cargo test <name> -- --ignored` if
   you work on that part.
 - The phone tests check the phone's encryption against vectors the Rust side writes. If
-  you change the format in `src/phone`, update both sides.
+  you change the format in `core/src/phone`, update both sides.
 
 ### Git hooks
 
@@ -172,7 +180,7 @@ lefthook install
 
 - **On commit:** clippy if Rust files changed, the relay's types if `relay/` changed,
   the teams Worker's types if `teams/` changed, and the phone tests if `phone/` or
-  `src/phone/` changed. They check the files on disk, not only what you staged.
+  `core/src/phone/` changed. They check the files on disk, not only what you staged.
 - **On push:** `cargo test`, the relay tests and the teams tests, if the commits you
   push change those parts.
 - **On the commit message:** the Conventional Commits check (see

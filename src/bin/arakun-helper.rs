@@ -1,5 +1,5 @@
 //! Windows: the program CEF starts for its renderer, GPU and utility processes
-//! (`browser_subprocess_path`, set in src/browser/runtime.rs). arakun.exe is a console
+//! (`browser_subprocess_path`, set in core/src/browser/runtime.rs). arakun.exe is a console
 //! program, so every child CEF started from it got a console window of its own that
 //! flashed on screen; this one is a GUI program and gets none. It does what
 //! `browser::handle_subprocess` does: the app's CEF handlers only act in the browser process.

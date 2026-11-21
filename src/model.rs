@@ -31,13 +31,7 @@ pub fn set_default_agent(agent: AgentKind) {
     LAST_AGENT.store(i as u8, std::sync::atomic::Ordering::Relaxed);
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Status {
-    Idle,
-    Working,
-    NeedsInput,
-    Error,
-}
+pub use arakun_core::model::{Status, unix_now};
 
 #[derive(Clone)]
 pub enum TabKind {
@@ -348,12 +342,6 @@ impl Session {
             self.status
         }
     }
-}
-
-pub fn unix_now() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs())
 }
 
 /// "now", "5m", "3h", "2d" for the session list.

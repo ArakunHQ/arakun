@@ -175,7 +175,7 @@ jobs:
         run: cargo clippy --locked --all-targets --no-default-features --config "$CI_CARGO_CONFIG" -- -D warnings
 
   # The default `browser` feature needs CEF, so the other jobs leave it out. This one
-  # prepares CEF as the README does on Linux, so src/browser/ and arakun-helper compile.
+  # prepares CEF as the README does on Linux, so core/src/browser/ and arakun-helper compile.
   clippy-browser:
     name: Clippy (Linux, browser)
     needs: changes
@@ -286,7 +286,7 @@ jobs:
         run: cargo test --locked --no-default-features --config "$CI_CARGO_CONFIG"
 
   # arakun-server (server/) is the app's server for a machine with no display:
-  # the same source files, against GPUI without Wayland and X11. It is a package
+  # the same code (core/), against GPUI without Wayland and X11. It is a package
   # of its own, which the jobs above leave out, and it is only worth having if it
   # really needs no desktop library. So this job installs none of them, builds it
   # alone, as someone setting up a server would, and reads what the binary needs.

@@ -1,4 +1,4 @@
-// phone/e2e.js against the vectors src/phone/e2e.rs wrote (vectors/e2e.json):
+// phone/e2e.js against the vectors core/src/phone/e2e.rs wrote (vectors/e2e.json):
 // the phone must trust the computer's hello, derive the same keys, open the
 // computer's frames and seal its own to the very same bytes. Run with
 // `node --test phone/test/` (Node 20+, WebCrypto built in).
@@ -75,7 +75,7 @@ test("a frame out of order or changed does not open", async () => {
 });
 
 test("a whole handshake with a computer played here agrees on the keys", async () => {
-  // The computer: an identity and its answer, as src/phone/e2e.rs makes them.
+  // The computer: an identity and its answer, as core/src/phone/e2e.rs makes them.
   const identity = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, false, ["sign"]);
   const pub = new Uint8Array(await crypto.subtle.exportKey("raw", identity.publicKey));
   const label = await E2E.labelOf(pub);

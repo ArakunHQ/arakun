@@ -10,7 +10,7 @@ fn main() {
     }
     // libcef.dll (~200 MB) is only needed once a browser tab opens. Delay-loading it keeps
     // it out of startup, and lets the `arakun <command>` copy in %LOCALAPPDATA%\arakun\bin,
-    // which has no CEF next to it, start at all. src/browser/loader.rs loads it by path.
+    // which has no CEF next to it, start at all. core/src/browser/loader.rs loads it by path.
     let msvc = std::env::var("CARGO_CFG_TARGET_ENV").is_ok_and(|e| e == "msvc");
     if msvc && browser {
         println!("cargo::rustc-link-arg=/DELAYLOAD:libcef.dll");
@@ -60,7 +60,7 @@ fn embed_icon() {
     result.manifest_optional().unwrap();
 }
 
-/// Copies the CEF runtime next to arakun.exe, where src/browser/loader.rs looks for it.
+/// Copies the CEF runtime next to arakun.exe, where core/src/browser/loader.rs looks for it.
 /// cef-dll-sys does this too, but it takes the folder three levels above its OUT_DIR,
 /// and since Cargo 1.100 build scripts run in `build/<package>/<hash>/out`, one level
 /// deeper, so its copy lands in `target/<profile>/build`. The parent of the nearest

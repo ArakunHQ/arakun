@@ -5,7 +5,7 @@
 
 use super::sidebar_builder::{BuilderSel, DraggedPiece, DraggedSection, PinAsk};
 use super::*;
-use crate::sidebar::{Item, Mode, Piece};
+use crate::sidebar::{Item, Piece};
 use gpui::{BorderStyle, Bounds, Corners, Edges, Hsla, Pixels, Point, canvas, quad};
 
 impl Shell {
@@ -383,17 +383,9 @@ impl Shell {
                 }),
             ),
         );
-        let target = match self.builder.sel {
-            Some(BuilderSel::Section(s)) | Some(BuilderSel::Item((s, _))) => {
-                self.sidebar.sections.get(s).map(|sec| sec.title.clone())
-            }
-            None => self
-                .sidebar
-                .sections
-                .iter()
-                .find(|s| s.mode == Mode::Scroll)
-                .map(|s| s.title.clone()),
-        };
+        let target = self
+            .add_target()
+            .map(|s| self.sidebar.sections[s].title.clone());
         let add = div()
             .flex()
             .flex_col()

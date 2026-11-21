@@ -5,7 +5,7 @@
 #
 # APP is replaced if it exists. --strip drops the debug info from the copy (symbols stay
 # for backtraces). --framework copies "Chromium Embedded Framework.framework" into
-# Contents/Frameworks, where src/browser/loader.rs looks for CEF first; leave it out for a
+# Contents/Frameworks, where core/src/browser/loader.rs looks for CEF first; leave it out for a
 # build without the browser. tools/install.sh and the release workflow both use this, so a
 # local install and a release download are the same bundle.
 set -eu

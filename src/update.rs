@@ -861,7 +861,7 @@ const LIBCEF: &str = if cfg!(windows) {
 };
 
 /// Where this install's runtime is: on Linux a `cef` folder next to the binary,
-/// as in a release archive, else the data folder's (where src/browser/loader.rs
+/// as in a release archive, else the data folder's (where core/src/browser/loader.rs
 /// looks, and tools/install.sh puts it); on Windows the binary's own folder.
 fn installed_runtime(exe_dir: &Path, app_dir: &Path) -> PathBuf {
     if cfg!(windows) {

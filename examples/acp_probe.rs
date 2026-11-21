@@ -17,81 +17,7 @@
 //! they finish; the probe waits for them and for the agent's own follow-up.
 //! Set ARAKUN_ACP_TRACE=1 to dump the raw JSON-RPC traffic on stderr.
 
-#[path = "../src/agent/mod.rs"]
-mod agent;
-#[allow(dead_code)]
-#[path = "../src/headless/broker.rs"]
-mod broker;
-#[path = "../src/durable.rs"]
-mod durable;
-#[path = "../src/fetch.rs"]
-#[allow(dead_code)]
-mod fetch;
-#[path = "../src/guard.rs"]
-mod guard;
-#[path = "../src/rotate.rs"]
-mod rotate;
-#[allow(dead_code)]
-#[path = "../src/headless/sandbox.rs"]
-mod sandbox;
-#[allow(dead_code)]
-mod headless {
-    // The agent's sandbox and broker; the session store they need is the app's, which examples don't run.
-    pub(crate) use crate::{broker, sandbox};
-    pub fn root() -> std::path::PathBuf {
-        crate::platform::app_dir().join("headless")
-    }
-}
-mod memory {
-    pub fn prompt_for(_: &std::path::Path) -> String {
-        String::new()
-    }
-    pub fn root() -> std::path::PathBuf {
-        crate::platform::app_dir().join("memory")
-    }
-}
-// Examples run no control socket; a sandboxed session there gets no `arakun`.
-mod control {
-    pub fn sandbox_socket_path() -> std::path::PathBuf {
-        crate::platform::app_dir().join("sandbox/control.sock")
-    }
-    pub fn shim_dir() -> Option<std::path::PathBuf> {
-        None
-    }
-}
-#[path = "../src/assets.rs"]
-mod assets;
-#[path = "../src/caret.rs"]
-mod caret;
-#[path = "../src/frame_timer.rs"]
-mod frame_timer;
-#[allow(dead_code)]
-#[path = "../src/highlight.rs"]
-mod highlight;
-#[allow(dead_code)]
-#[path = "../src/input.rs"]
-mod input;
-#[allow(dead_code)]
-#[path = "../src/mascot.rs"]
-mod mascot;
-#[allow(dead_code)]
-#[path = "../src/platform.rs"]
-mod platform;
-#[allow(dead_code)]
-#[path = "../src/redact.rs"]
-mod redact;
-#[allow(dead_code)]
-#[path = "../src/schedule.rs"]
-mod schedule;
-#[allow(dead_code)]
-#[path = "../src/theme.rs"]
-mod theme;
-#[allow(dead_code)]
-#[path = "../src/ui.rs"]
-mod ui;
-#[path = "../src/zoom.rs"]
-#[allow(dead_code)]
-mod zoom;
+use arakun_core::agent;
 
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
@@ -221,7 +147,7 @@ impl Printer {
                 Entry::Plan { entries } => {
                     let sig = entries
                         .iter()
-                        .map(|p| format!("{}:{}", p.status, p.content))
+                        .map(|p| format!("{:?}:{}", p.status, p.content))
                         .collect::<Vec<_>>()
                         .join(" | ");
                     if self.tools[i] != sig {

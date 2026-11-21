@@ -4,6 +4,8 @@
 //! (`shell::arrange`). Every change applies to the rail at once and saves
 //! (`crate::sidebar`).
 
+use std::time::{Duration, Instant};
+
 use gpui::Point;
 
 use super::rail_blocks::url_title;
@@ -49,11 +51,33 @@ pub(super) struct Builder {
     pub sel: Option<BuilderSel>,
     pub inputs: Option<BuilderInputs>,
     pub prompt: Option<BuilderPrompt>,
-    pub undo: Vec<Sidebar>,
-    pub redo: Vec<Sidebar>,
+    pub history: History,
     pub flash: Option<SharedString>,
     /// The item or segment being dragged, to dim where it was.
     pub lifted: Option<BuilderSel>,
+    /// What a right-click on the rail just took out, for the rail to say
+    /// so and offer the way back, and the undo step that took it out, which
+    /// tells one such note from the next.
+    pub removed: Option<(SharedString, u64)>,
+    /// The pointer is on that note: it stays, so Undo is not taken away
+    /// from under a click.
+    removed_hovered: bool,
+    /// When that note goes, unless the pointer holds it.
+    removed_until: Option<Instant>,
+}
+
+/// How long the rail offers to undo what a right-click took out.
+const REMOVED_NOTE: Duration = Duration::from_secs(10);
+/// How long it stays, at least, once the pointer that was on it has left.
+const REMOVED_NOTE_LEFT: Duration = Duration::from_secs(2);
+
+/// How long the note still stays at `now`: `None` when its time is up.
+/// Under the pointer it is looked at again later, as leaving sets `until`.
+fn note_stays(hovered: bool, until: Instant, now: Instant) -> Option<Duration> {
+    if hovered {
+        return Some(REMOVED_NOTE_LEFT);
+    }
+    Some(until.saturating_duration_since(now)).filter(|left| !left.is_zero())
 }
 
 /// A piece lifted from the palette (`from: None`) or from its place.
@@ -110,6 +134,83 @@ impl Render for DraggedSection {
 
 const UNDO_KEEP: usize = 100;
 
+/// A text field of the options, to tell typing in one from typing in the
+/// next.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Field {
+    Name,
+    Emoji,
+    /// A pin's URL, command or path, or a title's text.
+    Target,
+}
+
+/// The layouts to go back and forward to.
+#[derive(Default)]
+pub(super) struct History {
+    undo: Vec<Sidebar>,
+    redo: Vec<Sidebar>,
+    /// Text is being typed into a field: its first key made the undo step,
+    /// the keys after it join that step.
+    typing: Option<Field>,
+    recorded: u64,
+}
+
+impl History {
+    pub(super) fn can_undo(&self) -> bool {
+        !self.undo.is_empty()
+    }
+
+    pub(super) fn can_redo(&self) -> bool {
+        !self.redo.is_empty()
+    }
+
+    /// How many steps were recorded, as a mark to tell whether a change
+    /// made one. Not the length of `undo`, which stops growing when full.
+    fn steps(&self) -> u64 {
+        self.recorded
+    }
+
+    /// A change was made to `before`: one step to undo.
+    fn record(&mut self, before: Sidebar) {
+        self.undo.push(before);
+        if self.undo.len() > UNDO_KEEP {
+            self.undo.remove(0);
+        }
+        self.redo.clear();
+        self.typing = None;
+        self.recorded += 1;
+    }
+
+    /// A key was typed into `field` of `before`. A whole burst of typing
+    /// in one field is one step, not one per key; the next field starts
+    /// another.
+    fn record_typed(&mut self, before: Sidebar, field: Field) {
+        if self.typing != Some(field) {
+            self.record(before);
+            self.typing = Some(field);
+        }
+    }
+
+    /// The fields were left: what is typed next is a step of its own.
+    fn settle(&mut self) {
+        self.typing = None;
+    }
+
+    /// The layout one step back (or forward again), `current` kept for the
+    /// way back. `None` when there is no step.
+    fn step(&mut self, redo: bool, current: &Sidebar) -> Option<Sidebar> {
+        let (from, to) = if redo {
+            (&mut self.redo, &mut self.undo)
+        } else {
+            (&mut self.undo, &mut self.redo)
+        };
+        let next = from.pop()?;
+        to.push(current.clone());
+        self.typing = None;
+        Some(next)
+    }
+}
+
 /// A titled block of the side columns.
 fn panel_title(text: &str) -> gpui::Div {
     div()
@@ -137,11 +238,9 @@ impl Shell {
         let before = self.sidebar.clone();
         f(&mut self.sidebar);
         if self.sidebar != before {
-            self.builder.undo.push(before);
-            if self.builder.undo.len() > UNDO_KEEP {
-                self.builder.undo.remove(0);
-            }
-            self.builder.redo.clear();
+            self.builder.history.record(before);
+            // Undo no longer brings back what the rail's note is about.
+            self.builder.removed = None;
             self.sidebar.save();
         }
         // A selection can point past what is left.
@@ -172,13 +271,9 @@ impl Shell {
     }
 
     pub(super) fn undo_sidebar(&mut self, redo: bool, cx: &mut Context<Self>) {
-        let (from, to) = if redo {
-            (&mut self.builder.redo, &mut self.builder.undo)
-        } else {
-            (&mut self.builder.undo, &mut self.builder.redo)
-        };
-        if let Some(prev) = from.pop() {
-            to.push(std::mem::replace(&mut self.sidebar, prev));
+        if let Some(prev) = self.builder.history.step(redo, &self.sidebar) {
+            self.sidebar = prev;
+            self.builder.removed = None;
             self.sidebar.save();
             self.builder.sel = None;
             self.builder.inputs = None;
@@ -186,14 +281,77 @@ impl Shell {
         }
     }
 
+    /// A change made by a right-click on the rail, outside Customize, that
+    /// takes something out. Undo lives in Customize, out of sight from here,
+    /// so the rail says what went and offers it back for a while.
+    pub(super) fn remove_from_rail(
+        &mut self,
+        what: impl FnOnce(&Sidebar) -> Option<String>,
+        cx: &mut Context<Self>,
+        f: impl FnOnce(&mut Sidebar),
+    ) {
+        let what = what(&self.sidebar);
+        let before = self.builder.history.steps();
+        self.change_sidebar(cx, f);
+        let (Some(what), true) = (what, self.builder.history.steps() != before) else {
+            return;
+        };
+        // The step is this note's alone: `change_sidebar` cleared the note
+        // before, so a count kept in it would start over every time.
+        let id = self.builder.history.steps();
+        self.builder.removed = Some((what.into(), id));
+        self.builder.removed_hovered = false;
+        self.builder.removed_until = Some(Instant::now() + REMOVED_NOTE);
+        cx.spawn(async move |this, cx| {
+            let mut wait = REMOVED_NOTE;
+            loop {
+                cx.background_executor().timer(wait).await;
+                let stays = this.update(cx, |this, cx| {
+                    let b = &mut this.builder;
+                    if b.removed.as_ref().is_none_or(|(_, i)| *i != id) {
+                        return None;
+                    }
+                    let until = b.removed_until.unwrap_or_else(Instant::now);
+                    let stays = note_stays(b.removed_hovered, until, Instant::now());
+                    if stays.is_none() {
+                        b.removed = None;
+                        cx.notify();
+                    }
+                    stays
+                });
+                match stays {
+                    Ok(Some(left)) => wait = left,
+                    _ => break,
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// The pointer came onto the rail's note or left it. Once it has left,
+    /// the note stays a little longer, however long it was held.
+    pub(super) fn hover_removed_note(&mut self, hovered: bool) {
+        self.builder.removed_hovered = hovered;
+        if !hovered {
+            let least = Instant::now() + REMOVED_NOTE_LEFT;
+            self.builder.removed_until = self.builder.removed_until.max(Some(least));
+        }
+    }
+
     pub(super) fn select_builder(
         &mut self,
         sel: BuilderSel,
-        window: &mut Window,
+        _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.select(sel, cx)
+    }
+
+    /// Selects a piece or a segment and makes the fields for it.
+    fn select(&mut self, sel: BuilderSel, cx: &mut Context<Self>) {
         self.builder.sel = Some(sel);
         self.builder.prompt = None;
+        self.builder.history.settle();
         let (name, emoji, target) = match sel {
             BuilderSel::Item(p) => {
                 let Some(item) = self.sidebar.get(p) else {
@@ -246,7 +404,7 @@ impl Shell {
             cx.subscribe(&name_input, move |this, input, ev: &InputEvent, cx| {
                 if matches!(ev, InputEvent::Changed) {
                     let text = input.read(cx).text().to_string();
-                    this.quiet_edit(cx, |s| match sel {
+                    this.typed_edit(Field::Name, cx, |s| match sel {
                         BuilderSel::Item(p) => {
                             if let Some(i) = s.get_mut(p) {
                                 i.label = Some(text).filter(|t| !t.trim().is_empty());
@@ -263,7 +421,7 @@ impl Shell {
             cx.subscribe(&emoji_input, move |this, input, ev: &InputEvent, cx| {
                 if let (InputEvent::Changed, BuilderSel::Item(p)) = (ev, sel) {
                     let text = input.read(cx).text().trim().to_string();
-                    this.quiet_edit(cx, |s| {
+                    this.typed_edit(Field::Emoji, cx, |s| {
                         if let Some(i) = s.get_mut(p) {
                             i.emoji = Some(text).filter(|t| !t.is_empty());
                         }
@@ -275,7 +433,7 @@ impl Shell {
             subs.push(cx.subscribe(t, move |this, input, ev: &InputEvent, cx| {
                 if matches!(ev, InputEvent::Changed) {
                     let text = input.read(cx).text().to_string();
-                    this.quiet_edit(cx, |s| {
+                    this.typed_edit(Field::Target, cx, |s| {
                         if let Some(i) = s.get_mut(p) {
                             match &mut i.piece {
                                 Piece::Pin {
@@ -301,7 +459,6 @@ impl Shell {
                 }
             }));
         }
-        let _ = window;
         self.builder.inputs = Some(BuilderInputs {
             sel,
             name: name_input,
@@ -312,7 +469,20 @@ impl Shell {
         cx.notify();
     }
 
-    /// A change typed in a field: saved, but not one undo step per key.
+    /// A change typed in a field: saved at every key, and one undo step for
+    /// the whole burst of typing.
+    fn typed_edit(&mut self, field: Field, cx: &mut Context<Self>, f: impl FnOnce(&mut Sidebar)) {
+        let before = self.sidebar.clone();
+        f(&mut self.sidebar);
+        if self.sidebar != before {
+            self.builder.history.record_typed(before, field);
+            self.sidebar.save();
+        }
+        cx.notify();
+    }
+
+    /// A change that is using the sidebar, not editing it (folding a
+    /// segment): saved, but not a step to undo.
     pub(super) fn quiet_edit(&mut self, cx: &mut Context<Self>, f: impl FnOnce(&mut Sidebar)) {
         f(&mut self.sidebar);
         self.sidebar.save();
@@ -368,30 +538,35 @@ impl Shell {
         cx.notify();
     }
 
-    /// A click on a palette piece: at the end of the selected segment, else
-    /// of the first scrolling one.
+    /// The segment a click on a palette piece adds to: the selected one, or
+    /// the one that holds the selected piece, else the sidebar's own choice
+    /// (`Sidebar::home`). `None` when the sidebar has no segment.
+    pub(super) fn add_target(&self) -> Option<usize> {
+        match self.builder.sel {
+            Some(BuilderSel::Section(s)) | Some(BuilderSel::Item((s, _))) => Some(s),
+            None => self.sidebar.home(),
+        }
+        .filter(|s| *s < self.sidebar.sections.len())
+    }
+
+    /// A click on a palette piece: at the end of `add_target`, and selected,
+    /// so a new link or command can be named right away.
     pub(super) fn add_piece(&mut self, piece: Piece, cx: &mut Context<Self>) {
-        let target = match self.builder.sel {
-            Some(BuilderSel::Section(s)) => Some(s),
-            Some(BuilderSel::Item((s, _))) => Some(s),
-            None => self
-                .sidebar
-                .sections
-                .iter()
-                .position(|s| s.mode == Mode::Scroll)
-                .or(Some(0)),
-        };
-        let Some(s) = target.filter(|s| *s < self.sidebar.sections.len()) else {
+        let Some(s) = self.add_target() else {
             self.change_sidebar(cx, |sb| {
                 let at = sb.add_section(0);
                 sb.insert(Item::new(piece), (at, 0));
             });
+            self.select(BuilderSel::Item((0, 0)), cx);
             return;
         };
         let end = self.sidebar.sections[s].items.len();
         self.change_sidebar(cx, |sb| {
             sb.insert(Item::new(piece), (s, end));
         });
+        // Last in its segment, also when it moved there from the same one.
+        let last = self.sidebar.sections[s].items.len().saturating_sub(1);
+        self.select(BuilderSel::Item((s, last)), cx);
     }
 
     /// The tab on screen as a pin, when it is a page or a file.
@@ -422,6 +597,7 @@ impl Shell {
         self.builder.sel = None;
         self.builder.inputs = None;
         self.builder.prompt = None;
+        self.builder.history.settle();
     }
 
     pub(super) fn drop_piece(&mut self, d: &DraggedPiece, to: ItemPath, cx: &mut Context<Self>) {
@@ -572,7 +748,10 @@ impl Shell {
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.change_sidebar(cx, |s| {
                         s.remove(p);
-                    })
+                    });
+                    // The next piece slides into this place; the fields
+                    // still hold what was typed for the one that went.
+                    this.clear_builder_selection();
                 })),
             ),
         )
@@ -699,7 +878,8 @@ impl Shell {
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.change_sidebar(cx, |s| {
                                 s.ungroup_section(si);
-                            })
+                            });
+                            this.clear_builder_selection();
                         })),
                     ),
                 )
@@ -716,9 +896,102 @@ impl Shell {
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.change_sidebar(cx, |s| {
                             s.remove_section(si);
-                        })
+                        });
+                        this.clear_builder_selection();
                     })),
                 ),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn titled(title: &str) -> Sidebar {
+        let mut s = Sidebar::default();
+        s.sections[0].title = title.into();
+        s
+    }
+
+    #[test]
+    fn a_burst_of_typing_is_one_step_to_undo() {
+        let mut h = History::default();
+        assert!(!h.can_undo() && !h.can_redo());
+        // "Top" is renamed one key at a time.
+        h.record_typed(titled("Top"), Field::Name);
+        h.record_typed(titled("T"), Field::Name);
+        h.record_typed(titled("To"), Field::Name);
+        let back = h.step(false, &titled("Tools")).expect("one step");
+        assert_eq!(back.sections[0].title, "Top");
+        assert!(!h.can_undo(), "the keys in between are not steps");
+        let again = h.step(true, &back).expect("redo");
+        assert_eq!(again.sections[0].title, "Tools");
+    }
+
+    #[test]
+    fn typing_after_leaving_the_field_is_its_own_step() {
+        let mut h = History::default();
+        h.record_typed(titled("A"), Field::Name);
+        h.settle();
+        h.record_typed(titled("B"), Field::Name);
+        // A change that is not typed ends the burst too.
+        h.record(titled("C"));
+        h.record_typed(titled("D"), Field::Name);
+        let titles: Vec<_> = std::iter::from_fn(|| h.step(false, &titled("now")))
+            .map(|s| s.sections[0].title.clone())
+            .collect();
+        assert_eq!(titles, ["D", "C", "B", "A"]);
+    }
+
+    #[test]
+    fn typing_in_another_field_is_its_own_step() {
+        let mut h = History::default();
+        h.record_typed(titled("A"), Field::Name);
+        h.record_typed(titled("B"), Field::Emoji);
+        h.record_typed(titled("C"), Field::Emoji);
+        // Back in the first field, a step again.
+        h.record_typed(titled("D"), Field::Name);
+        let titles: Vec<_> = std::iter::from_fn(|| h.step(false, &titled("now")))
+            .map(|s| s.sections[0].title.clone())
+            .collect();
+        assert_eq!(titles, ["D", "B", "A"]);
+    }
+
+    #[test]
+    fn the_note_stays_under_the_pointer_and_a_while_after() {
+        let now = Instant::now();
+        let secs = Duration::from_secs;
+        // Its time is up, but the pointer is on it.
+        assert_eq!(
+            note_stays(true, now, now + secs(5)),
+            Some(REMOVED_NOTE_LEFT)
+        );
+        // Left alone, until its time.
+        assert_eq!(note_stays(false, now + secs(3), now), Some(secs(3)));
+        assert_eq!(note_stays(false, now, now), None);
+        assert_eq!(note_stays(false, now, now + secs(1)), None);
+    }
+
+    #[test]
+    fn every_recorded_change_is_a_step_of_its_own() {
+        // What tells one note on the rail from the next.
+        let mut h = History::default();
+        h.record(titled("A"));
+        let first = h.steps();
+        h.step(false, &titled("B"));
+        h.record(titled("C"));
+        assert_ne!(h.steps(), first);
+    }
+
+    #[test]
+    fn a_new_change_drops_what_could_be_redone() {
+        let mut h = History::default();
+        h.record(titled("A"));
+        h.step(false, &titled("B"));
+        assert!(h.can_redo());
+        h.record(titled("A"));
+        assert!(!h.can_redo());
+        assert!(h.step(true, &titled("C")).is_none());
     }
 }

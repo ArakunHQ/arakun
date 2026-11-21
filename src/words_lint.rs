@@ -38,18 +38,18 @@ const ALLOWED_PHRASES: &[&str] = &[
 const EXEMPT: &[&str] = &[
     "src/words_lint.rs",
     // What every agent is told about the app.
-    "src/agent/launch.rs",
+    "core/src/agent/launch.rs",
     // Prompts to agents and the GitHub API, in GitHub's words.
     "src/github/mod.rs",
     "src/github/pr.rs",
     // Hooks and events of other apps, in their words.
     "src/island_host/external.rs",
     "src/island_host/desktop.rs",
-    "src/agent/native.rs",
-    "src/agent/rpc.rs",
-    "src/agent/workers_ai.rs",
+    "core/src/agent/native.rs",
+    "core/src/agent/rpc.rs",
+    "core/src/agent/workers_ai.rs",
     // The OS's own notifications.
-    "src/platform.rs",
+    "core/src/platform.rs",
     // Cloudflare's notifications.
     "src/cloudflare_view.rs",
 ];
@@ -134,6 +134,7 @@ fn the_interface_says_one_word_per_thing() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut files = Vec::new();
     sources(&root.join("src"), &mut files);
+    sources(&root.join("core/src"), &mut files);
     files.sort();
     let mut report = Vec::new();
     for file in files {

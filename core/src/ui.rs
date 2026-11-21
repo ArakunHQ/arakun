@@ -1,0 +1,1007 @@
+//! Small building blocks shared by the shell: icons, icon buttons, pixel art.
+
+use gpui::prelude::FluentBuilder as _;
+use gpui::{
+    AnimationExt as _, AnyView, App, AppContext as _, Bounds, Context, ElementId, Hsla,
+    InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Render, Role, SharedString,
+    StatefulInteractiveElement as _, Styled, Svg, Toggled, Window, canvas, div, fill, point, px,
+    size, svg,
+};
+
+use crate::theme;
+
+/// The color of tree guides: content at 14% mixed into the background, opaque
+/// so the spine and its curve do not darken where they overlap.
+pub fn tree_color() -> Hsla {
+    let (bg, fg) = (theme::background().l, theme::content().l);
+    gpui::hsla(0., 0., bg + (fg - bg) * 0.14, 1.)
+}
+
+/// An item under a parent: a spine down the left that curves into the row,
+/// meeting it `mid` px from its top. `gap` is the space to the next item, which
+/// the spine crosses; the last item's spine stops at its curve.
+pub fn tree_item(last: bool, mid: f32, gap: f32, row: gpui::AnyElement) -> gpui::AnyElement {
+    let c = tree_color();
+    let top = mid - 8.;
+    div()
+        .relative()
+        .min_w_0()
+        .pl(sp(20.))
+        .child(
+            div()
+                .absolute()
+                .left(px(6.))
+                .top_0()
+                .w(px(1.))
+                .bg(c)
+                .map(|d| {
+                    if last {
+                        d.h(px(top + 1.))
+                    } else {
+                        d.bottom(px(-gap))
+                    }
+                }),
+        )
+        .child(
+            div()
+                .absolute()
+                .left(px(6.))
+                .top(px(top))
+                .size(px(8.))
+                .border_l_1()
+                .border_b_1()
+                .border_color(c)
+                .rounded_bl(rad(8.)),
+        )
+        .child(row)
+        .into_any_element()
+}
+
+mod chart;
+pub mod contrast;
+mod kit;
+pub mod motion;
+
+pub use chart::{AreaChart, Format, Series, sparkline};
+pub use kit::*;
+
+pub fn icon(name: &str, size: f32) -> Svg {
+    svg()
+        .path(SharedString::from(format!("icons/{name}.svg")))
+        .size(px(size))
+        .flex_none()
+}
+
+/// Factory's mark for Droid, tinted like the text around it.
+pub fn factory_logo(size: f32) -> Svg {
+    svg()
+        .path("providers/factory.svg")
+        .size(px(size))
+        .flex_none()
+        .text_color(theme::content())
+}
+
+/// OpenCode's mark (from the ACP registry), tinted like the text around it.
+pub fn opencode_logo(size: f32) -> Svg {
+    svg()
+        .path("providers/opencode.svg")
+        .size(px(size))
+        .flex_none()
+        .text_color(theme::content())
+}
+
+/// Codex's mark (from the ACP registry), tinted like the text around it.
+pub fn codex_logo(size: f32) -> Svg {
+    svg()
+        .path("providers/codex.svg")
+        .size(px(size))
+        .flex_none()
+        .text_color(theme::content())
+}
+
+/// Devin's mark (Cognition's), tinted like the text around it.
+pub fn devin_logo(size: f32) -> Svg {
+    svg()
+        .path("providers/devin.svg")
+        .size(px(size))
+        .flex_none()
+        .text_color(theme::content())
+}
+
+/// Cursor's mark (the cube, from Simple Icons), tinted like the text around it.
+pub fn cursor_logo(size: f32) -> Svg {
+    svg()
+        .path("providers/cursor.svg")
+        .size(px(size))
+        .flex_none()
+        .text_color(theme::content())
+}
+
+/// What a hovered icon-only button shows: one line in a small dark card.
+struct Tip(SharedString);
+
+impl Render for Tip {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let tip = div()
+            .px(sp(8.))
+            .py(sp(4.))
+            .rounded(rad(RADIUS_SM))
+            .bg(theme::dialog())
+            .border_1()
+            .border_color(theme::border())
+            .shadow_lg()
+            .text_size(px(TEXT_XS))
+            .text_color(theme::content())
+            .child(self.0.clone());
+        motion::enter(tip, "tip-in", motion::From::Above, 3., motion::FAST)
+    }
+}
+
+/// A tab of a tab strip: as wide as its title between 112 and 224, `TAB_H`
+/// tall, filled when active. `label` is what screen readers call it; callers
+/// still draw the icon, the title and a close
+/// button (`right(px(4.))`, `TAB_CLOSE_TOP`). The dock's shorter tabs set
+/// their own width and height on top.
+pub fn tab(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    active: bool,
+) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .role(Role::Tab)
+        .aria_label(label)
+        .aria_selected(active)
+        .relative()
+        .flex()
+        .items_center()
+        .flex_shrink(1.)
+        .min_w(px(112.))
+        .max_w(px(224.))
+        .h(px(TAB_H))
+        .px(sp(8.))
+        .gap(sp(6.))
+        // Strips sit in a window card's top bar: parallel to its corner.
+        .rounded(nested(RADIUS_XL, (BAR_H - TAB_H) / 2.))
+        .text_size(px(TEXT_MD))
+        .cursor_pointer()
+        .when(active, |d| {
+            d.bg(theme::selection()).text_color(theme::content())
+        })
+        .when(!active, |d| {
+            d.text_color(theme::text_subtle())
+                .hover(|s| s.bg(theme::hover()).text_color(theme::content()))
+        })
+}
+
+/// How far a tab (or a chip as tall as one) sits from the edges of a bar:
+/// the same on the sides as above and below, so it is framed evenly.
+pub const BAR_INSET: f32 = (BAR_H - TAB_H) / 2.;
+/// The same for an icon button at the end of a bar.
+pub const ICON_INSET: f32 = (BAR_H - ICON_BUTTON) / 2.;
+/// The same for the dock's header, where chips, tabs and icon buttons are
+/// all `DOCK_TAB_H` tall, so one inset frames them all.
+pub const DOCK_INSET: f32 = (DOCK_BAR_H - DOCK_TAB_H) / 2.;
+
+/// `BAR_INSET` as padding. It does not follow the Spacing setting: the bar
+/// and the tab have fixed heights, so a scaled side would no longer match
+/// the top. The design lint allows only these unscaled paddings.
+pub fn bar_inset() -> Pixels {
+    px(BAR_INSET)
+}
+
+/// `ICON_INSET` as padding, unscaled for the same reason as `bar_inset`.
+pub fn icon_inset() -> Pixels {
+    px(ICON_INSET)
+}
+
+/// `DOCK_INSET` as padding, unscaled for the same reason as `bar_inset`.
+pub fn dock_inset() -> Pixels {
+    px(DOCK_INSET)
+}
+
+/// Where a tab's 20 px close button sits, centered on the tab.
+pub const TAB_CLOSE_TOP: f32 = (TAB_H - 20.) / 2.;
+/// What a tab keeps clear at its end for that button and its offset. Fixed,
+/// like the button: a tab adds scaled air to it, so a long title never runs
+/// under the button at a tight Spacing.
+pub const TAB_CLOSE_ROOM: f32 = 20. + 4.;
+
+/// Builds the tooltip closure for `.tooltip()`: tip("New session").
+/// Shortcuts in it ("New session (Ctrl+T)") show as macOS writes them there.
+pub fn tip(label: &'static str) -> impl Fn(&mut Window, &mut App) -> AnyView {
+    let label = SharedString::from(crate::platform::shortcut_label(label));
+    move |_, cx| {
+        let label = label.clone();
+        cx.new(|_| Tip(label)).into()
+    }
+}
+
+/// `tip` for a label made at run time (a project's name).
+pub fn tip_text(label: impl Into<SharedString>) -> impl Fn(&mut Window, &mut App) -> AnyView {
+    let label = label.into();
+    move |_, cx| {
+        let label = label.clone();
+        cx.new(|_| Tip(label)).into()
+    }
+}
+
+/// Gives a control its role and the name screen readers say. Plain text
+/// children never reach them, so a control without a name is just "button".
+/// A shortcut at the end of the name ("New session (Ctrl+T)") is split off
+/// and announced as the control's shortcut instead.
+pub fn labelled(
+    d: gpui::Stateful<gpui::Div>,
+    role: Role,
+    label: impl Into<SharedString>,
+) -> gpui::Stateful<gpui::Div> {
+    let label = label.into();
+    let (name, keys) = split_shortcut(&label);
+    let d = d.role(role);
+    match keys {
+        Some(keys) => d
+            .aria_label(SharedString::from(name.to_string()))
+            .aria_keyshortcuts(SharedString::from(crate::platform::shortcut_label(keys))),
+        None => d.aria_label(label),
+    }
+}
+
+/// The on or off state of a switch or radio, as screen readers take it.
+pub fn toggled(on: bool) -> Toggled {
+    if on { Toggled::True } else { Toggled::False }
+}
+
+/// "New session (Ctrl+T)" → ("New session", Some("Ctrl+T")). Only a
+/// parenthesis that holds a shortcut counts: "Plan (beta)" stays whole.
+fn split_shortcut(label: &str) -> (&str, Option<&str>) {
+    const KEYS: &[&str] = &["Esc", "Enter", "Tab", "Space", "Delete", "Backspace"];
+    let Some(rest) = label.strip_suffix(')') else {
+        return (label, None);
+    };
+    let Some(open) = rest.rfind(" (") else {
+        return (label, None);
+    };
+    let keys = &rest[open + 2..];
+    let is_key = |k: &str| k.chars().count() == 1 || KEYS.contains(&k) || k.contains('+');
+    if keys.is_empty() || keys.contains(' ') || !is_key(keys) {
+        return (label, None);
+    }
+    (&rest[..open], Some(keys))
+}
+
+/// How wide the focus ring is around a control reached with Tab.
+pub const FOCUS_RING_W: f32 = 2.;
+
+/// Makes a control a tab stop. Reached with Tab, it shows the focus ring,
+/// and Enter or Space run its `on_click` (gpui sends those as a click). The
+/// ring is an inset shadow: it takes no room, so nothing moves when it shows,
+/// and gpui would paint an outer one under a see-through control.
+///
+/// A mouse press leaves focus where it was: clicking a button in a toolbar
+/// must not take the keyboard from the terminal or the composer.
+pub fn focusable(d: gpui::Stateful<gpui::Div>) -> gpui::Stateful<gpui::Div> {
+    d.tab_index(0)
+        .focus_visible(|s| s.shadow(focus_ring()))
+        .on_mouse_down(gpui::MouseButton::Left, |_, window, _| {
+            window.prevent_default()
+        })
+        // gpui clicks on the release, but a dialog's own Enter (confirm)
+        // listens to the press: keep it from reaching the dialog, or Enter on
+        // Cancel would confirm. gpui has noted the press before this runs.
+        .on_key_down(|ev, _, cx| {
+            let k = &ev.keystroke;
+            if (k.key == "enter" || k.key == "space") && !k.modifiers.modified() {
+                cx.stop_propagation();
+            }
+        })
+}
+
+fn focus_ring() -> Vec<gpui::BoxShadow> {
+    vec![gpui::BoxShadow {
+        color: theme::focus_ring(),
+        offset: point(px(0.), px(0.)),
+        blur_radius: px(0.),
+        spread_radius: px(FOCUS_RING_W),
+        inset: true,
+    }]
+}
+
+/// Icon button: 24×24, rounded-md, content/50 → hover content on content/10.
+/// `label` names it twice: in the tooltip, and to screen readers, which never
+/// see the tooltip. A trailing shortcut ("Hide sidebar (Ctrl+B)") shows in
+/// the tooltip and is announced as the button's shortcut.
+pub fn icon_button(
+    id: impl Into<ElementId>,
+    name: &str,
+    icon_size: f32,
+    label: impl Into<SharedString>,
+) -> gpui::Stateful<gpui::Div> {
+    let label = label.into();
+    let tooltip = tip_text(crate::platform::shortcut_label(&label));
+    div()
+        .id(id)
+        .map(|d| labelled(d, Role::Button, label))
+        .tooltip(tooltip)
+        .flex()
+        .flex_none()
+        .items_center()
+        .justify_center()
+        .size(px(ICON_BUTTON))
+        .rounded(rad(RADIUS))
+        .cursor_pointer()
+        .map(focusable)
+        .group("icon-button")
+        .hover(|s| s.bg(theme::fill_selected()))
+        .child(hover_icon(
+            name,
+            icon_size,
+            theme::text_subtle(),
+            theme::content(),
+            "icon-button",
+        ))
+}
+
+/// SVGs don't inherit text color in GPUI, so hover tinting goes through a group.
+pub fn hover_icon(name: &str, size: f32, color: Hsla, hover: Hsla, group: &'static str) -> Svg {
+    icon(name, size)
+        .text_color(color)
+        .group_hover(group, move |s| s.text_color(hover))
+}
+
+pub const MOON: &[&str] = &[
+    "..####..", ".###....", "###.....", "###.....", "###.....", "###.....", ".###....", "..####..",
+];
+pub const PLANET: &[&str] = &[
+    "......##", "..####.#", ".#####.#", ".####.#.", ".#.###..", "#.####..", "..##....", "........",
+];
+pub const COMET: &[&str] = &[
+    "#.......", ".#..#...", "..#..#..", "...#.##.", "....####", "...#####", "....####", ".....##.",
+];
+pub const STAR: &[&str] = &[
+    "...##...", "...##...", "..####..", "########", ".######.", "..####..", ".##..##.", ".#....#.",
+];
+pub const CONSTELLATION: &[&str] = &[
+    "........", "##.....#", "##....#.", "..#..#..", "...##...", "...##...", "........", "........",
+];
+
+/// Drawings a project icon can start from in the icon editor.
+pub const PROJECT_ART: [&[&str]; 5] = [MOON, PLANET, COMET, STAR, CONSTELLATION];
+
+/// An 8×8 drawing as a bitmap: bit `y * 8 + x` is the pixel at column `x`,
+/// row `y`. Project icons are stored this way.
+pub fn rows_to_bits(rows: &[&str]) -> u64 {
+    let mut bits = 0;
+    for (y, row) in rows.iter().take(8).enumerate() {
+        for (x, b) in row.bytes().take(8).enumerate() {
+            if b == b'#' {
+                bits |= 1 << (y * 8 + x);
+            }
+        }
+    }
+    bits
+}
+
+/// A project's icon, one `unit` square per lit pixel of its 8×8 bitmap.
+pub fn project_icon(bits: u64, unit: f32, color: Hsla) -> impl IntoElement {
+    canvas(
+        |_, _, _| {},
+        move |bounds: Bounds<Pixels>, _, window: &mut Window, _: &mut App| {
+            paint_bits(bits, bounds.origin, unit, color, window);
+        },
+    )
+    .w(px(8. * unit))
+    .h(px(8. * unit))
+    .flex_none()
+}
+
+pub fn paint_bits(
+    bits: u64,
+    origin: gpui::Point<Pixels>,
+    unit: f32,
+    color: Hsla,
+    window: &mut Window,
+) {
+    for y in 0..8 {
+        let row = (bits >> (y * 8)) & 0xff;
+        let mut x = 0;
+        while x < 8 {
+            if row & (1 << x) == 0 {
+                x += 1;
+                continue;
+            }
+            let mut run = 1;
+            while x + run < 8 && row & (1 << (x + run)) != 0 {
+                run += 1;
+            }
+            window.paint_quad(fill(
+                Bounds::new(
+                    point(
+                        origin.x + px(x as f32 * unit),
+                        origin.y + px(y as f32 * unit),
+                    ),
+                    size(px(run as f32 * unit), px(unit)),
+                ),
+                color,
+            ));
+            x += run;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The layout scale every view draws from, so controls of one kind match.
+//
+// Spacing steps: 2, 4, 6, 8, 12, 16, 24 (and 32+ for page-level room).
+// Radii follow the rule of 4: 4 for chips and badges, 8 for controls,
+// 12 for cards and menus, 16 for the window's floating cards.
+// Text: 11 meta, 12 controls, 13 body, 14 reading text, 16/20 titles.
+
+/// How round corners are, 0 (square) to 2 (twice the default), in
+/// hundredths. Set from Settings › Appearance.
+static RADIUS_SCALE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(100);
+/// How much room padding and gaps take, 0.6 to 1.6, in hundredths.
+static SPACE_SCALE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(100);
+
+/// Room between the window's floating cards (rail, main area, panel) and
+/// around them, in pixels.
+static WINDOW_GAP: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(8);
+
+pub fn window_gap() -> f32 {
+    WINDOW_GAP.load(std::sync::atomic::Ordering::Relaxed) as f32
+}
+
+/// The window gap as a length: the space at the window's edges and between its
+/// cards. It is its own setting, so Spacing does not scale it.
+pub fn window_gap_px() -> Pixels {
+    px(window_gap())
+}
+
+pub fn set_window_gap(g: f32) {
+    WINDOW_GAP.store(
+        g.clamp(0., 20.).round() as u32,
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
+
+pub fn radius_scale() -> f32 {
+    RADIUS_SCALE.load(std::sync::atomic::Ordering::Relaxed) as f32 / 100.
+}
+
+pub fn space_scale() -> f32 {
+    SPACE_SCALE.load(std::sync::atomic::Ordering::Relaxed) as f32 / 100.
+}
+
+pub fn set_radius_scale(s: f32) {
+    RADIUS_SCALE.store(
+        (s.clamp(0., 2.) * 100.).round() as u32,
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
+
+pub fn set_space_scale(s: f32) {
+    SPACE_SCALE.store(
+        (s.clamp(0.6, 1.6) * 100.).round() as u32,
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
+
+/// A corner radius, given at the default roundness: every `rounded` goes
+/// through here so one setting makes the whole app sharper or rounder.
+pub fn rad(r: f32) -> Pixels {
+    px((r * radius_scale()).max(0.))
+}
+
+/// The radius for something set `inset` pixels inside a container rounded
+/// at `outer`, so both corners stay parallel (concentric) instead of the
+/// inner one looking square. Never below `RADIUS_SM`, so it still reads as
+/// rounded.
+pub fn nested(outer: f32, inset: f32) -> Pixels {
+    let scale = radius_scale();
+    px((outer * scale - inset).max(RADIUS_SM * scale).max(0.))
+}
+
+/// Padding or a gap, given at the default spacing: every one goes through
+/// here so one setting makes the whole app tighter or roomier. Rounded to
+/// whole pixels so text and borders stay crisp.
+pub fn sp(n: f32) -> Pixels {
+    let s = space_scale();
+    // At the default, exactly what the view asked for.
+    if s == 1. { px(n) } else { px((n * s).round()) }
+}
+
+pub const RADIUS_SM: f32 = 4.;
+pub const RADIUS: f32 = 8.;
+pub const RADIUS_LG: f32 = 12.;
+pub const RADIUS_XL: f32 = 16.;
+
+pub const TEXT_XS: f32 = 11.;
+pub const TEXT_SM: f32 = 12.;
+pub const TEXT_MD: f32 = 13.;
+pub const TEXT_LG: f32 = 14.;
+pub const TEXT_TITLE: f32 = 20.;
+
+/// Square icon-only buttons in toolbars, headers and rows.
+pub const ICON_BUTTON: f32 = 24.;
+/// Pills, chips and segmented controls.
+pub const CONTROL_H: f32 = 26.;
+/// Text buttons.
+pub const BUTTON_H: f32 = 28.;
+/// Rows of menus and pickers.
+pub const MENU_ROW_H: f32 = 30.;
+/// Text fields in pages and dialogs.
+pub const INPUT_H: f32 = 32.;
+/// The window's top bars: title bar, rail and panel headers.
+pub const BAR_H: f32 = 40.;
+/// Bars inside a view: browser toolbar, dock header, find bar.
+pub const TOOLBAR_H: f32 = 36.;
+/// A tab in the main area's tab strip.
+pub const TAB_H: f32 = 30.;
+/// The dock card's header, which is also its collapsed height: the status
+/// chips live in it.
+pub const DOCK_BAR_H: f32 = 32.;
+/// The dock's terminal tabs and status chips: shorter than the main tab
+/// bar's, so they fit its header.
+pub const DOCK_TAB_H: f32 = 24.;
+
+/// Room around a full-page view (Tasks, Runs, Memory…).
+pub const PAGE_PAD: f32 = 24.;
+
+/// A window-level card: the sheet in the middle, the terminal, and the rail
+/// or panel when they are set to sit in a card. Rounds and clips its
+/// contents, with no border: it stands apart from the window by its tone.
+/// Menus and popovers render deferred at the root, so the clip never cuts
+/// them. The caller adds size and `bg`.
+pub fn card() -> gpui::Div {
+    div().rounded(rad(RADIUS_XL)).overflow_hidden()
+}
+
+/// Keeps a press inside a card from reaching the window root, whose handler
+/// moves the window. Not on Windows: a press on a drag area there arrives as a
+/// non-client click on HTCAPTION, and gpui cancels the native move whenever a
+/// handler stops it, so the title bar could never move the window.
+pub fn stop_window_move<E: gpui::InteractiveElement>(e: E) -> E {
+    if cfg!(windows) {
+        e
+    } else {
+        e.on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+    }
+}
+
+/// What a press on a drag area does: moves the window, and on macOS a double
+/// click zooms or minimizes it, whichever the user picked in System Settings.
+pub fn drag_window(ev: &gpui::MouseDownEvent, window: &mut Window) {
+    if cfg!(target_os = "macos") && ev.click_count == 2 {
+        window.titlebar_double_click();
+    } else {
+        window.start_window_move();
+    }
+}
+
+/// Where the macOS traffic lights end, from the window's left edge, plus a gap:
+/// what the top bar keeps clear. Zero elsewhere and in full screen, where macOS
+/// hides them.
+pub fn traffic_lights_inset(window: &Window) -> Pixels {
+    if cfg!(target_os = "macos") && !window.is_fullscreen() {
+        px(TRAFFIC_LIGHTS_W)
+    } else {
+        px(0.)
+    }
+}
+
+/// The lights start at `TRAFFIC_LIGHTS` and take 52pt.
+const TRAFFIC_LIGHTS_W: f32 = 80.;
+
+/// The close button's top-left corner, centred on the 40pt top bar that sits
+/// inside the window's 8pt margin.
+pub const TRAFFIC_LIGHTS: (f32, f32) = (16., 22.);
+
+/// A bordered box for a text input; the caller adds a leading icon and the input.
+pub fn field() -> gpui::Div {
+    div()
+        .flex()
+        .items_center()
+        .gap(sp(8.))
+        .h(px(INPUT_H))
+        .px(sp(10.))
+        .rounded(rad(RADIUS))
+        .border_1()
+        .border_color(theme::border_strong())
+        .bg(theme::background())
+        .text_size(px(TEXT_MD))
+        .line_height(px(20.))
+        .overflow_hidden()
+}
+
+/// A page's heading: title and the line under it, as Tasks, Runs and Memory show.
+pub fn page_title(title: impl Into<SharedString>, subtitle: Option<gpui::AnyElement>) -> gpui::Div {
+    div()
+        .flex()
+        .flex_col()
+        .min_w_0()
+        .gap(sp(4.))
+        .child(
+            div()
+                .text_size(px(TEXT_TITLE))
+                .line_height(px(26.))
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .text_color(theme::content())
+                .truncate()
+                .child(title.into()),
+        )
+        .when_some(subtitle, |d, s| {
+            d.child(
+                div()
+                    .text_size(px(TEXT_MD))
+                    .line_height(px(18.))
+                    .text_color(theme::text_subtle())
+                    .child(s),
+            )
+        })
+}
+
+/// One option of a segmented control (Due date | Status | Project, Graph | List).
+pub fn segment(
+    id: impl Into<ElementId>,
+    leading: Option<&str>,
+    label: impl Into<SharedString>,
+    on: bool,
+) -> gpui::Stateful<gpui::Div> {
+    let label = label.into();
+    div()
+        .id(id)
+        // One of a few that exclude each other: a radio button.
+        .map(|d| labelled(d, Role::RadioButton, label.clone()))
+        .aria_toggled(toggled(on))
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(sp(6.))
+        .h(px(BUTTON_H - 2. * (SEGMENT_PAD + 1.)))
+        .px(sp(8.))
+        .rounded(rad(RADIUS_SM))
+        .text_size(px(TEXT_SM))
+        .font_weight(gpui::FontWeight::MEDIUM)
+        .cursor_pointer()
+        .map(focusable)
+        .when(on, |d| {
+            d.bg(theme::fill_selected()).text_color(theme::content())
+        })
+        .when(!on, |d| {
+            d.text_color(theme::text_subtle())
+                .hover(|s| s.text_color(theme::content()))
+        })
+        .when_some(leading, |d, name| {
+            d.child(icon(name, 12.).text_color(if on {
+                theme::content()
+            } else {
+                theme::text_subtle()
+            }))
+        })
+        .child(label)
+}
+
+/// How far a `segment` sits inside its track's border: with the 1 px border
+/// that is 4, so a RADIUS_SM segment nests concentric in a RADIUS track.
+const SEGMENT_PAD: f32 = 3.;
+
+/// The track around `segment`s: as tall as a `button`, so they line up in a toolbar.
+pub fn segmented() -> gpui::Div {
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(sp(2.))
+        .h(px(BUTTON_H))
+        .p(sp(SEGMENT_PAD))
+        .rounded(rad(RADIUS))
+        .bg(theme::fill_raised())
+        .border_1()
+        .border_color(theme::border())
+}
+// ---------------------------------------------------------------------------
+// Dialogs and menus.
+
+/// The key context of a dialog's panel: Tab stays inside it while it is open.
+pub const MODAL_CONTEXT: &str = "Modal";
+
+/// Panel of a centered dialog: `rounded-2xl border-content/7 shadow-2xl`.
+///
+/// It never outgrows the window: the part meant to give way on short windows
+/// (a list or a scrolling body) needs `min_h_0()` so flexbox can shrink it.
+/// `title` is what screen readers call the dialog: the title of its header.
+pub fn modal_panel(
+    id: impl Into<ElementId>,
+    width: f32,
+    title: impl Into<SharedString>,
+) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .role(Role::Dialog)
+        .aria_label(title)
+        .key_context(MODAL_CONTEXT)
+        .occlude()
+        .flex()
+        .flex_col()
+        .w(px(width))
+        .max_w_full()
+        .max_h_full()
+        .rounded(rad(16.))
+        .border_1()
+        .border_color(theme::border_subtle())
+        .bg(theme::dialog())
+        .shadow_2xl()
+        .overflow_hidden()
+}
+
+/// Header row: title, optional description, and the slot for a close button.
+pub fn modal_header(
+    title: impl Into<SharedString>,
+    description: Option<SharedString>,
+    close: impl IntoElement,
+) -> gpui::Div {
+    div()
+        .flex()
+        .flex_none()
+        .items_start()
+        .gap(sp(8.))
+        .px(sp(16.))
+        .pt(sp(12.))
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_w_0()
+                .pt(sp(2.))
+                .child(div().ty(Type::Subtitle).child(title.into()))
+                .when_some(description, |d, desc| {
+                    d.child(
+                        div()
+                            .mt(px(2.))
+                            .text_size(px(TEXT_SM))
+                            .line_height(px(17.))
+                            .text_color(theme::text_subtle())
+                            .child(desc),
+                    )
+                }),
+        )
+        .child(close)
+}
+
+/// The dialog's `X`: 28×28, content/45 → content on hover.
+pub fn close_button(id: impl Into<ElementId>) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .role(Role::Button)
+        .aria_label("Close")
+        .group("dialog-close")
+        .flex()
+        .flex_none()
+        .items_center()
+        .justify_center()
+        .size(px(28.))
+        .rounded(rad(8.))
+        .cursor_pointer()
+        .map(focusable)
+        .hover(|s| s.bg(theme::fill_hover()))
+        .child(hover_icon(
+            "cancel01",
+            14.,
+            theme::text_subtle(),
+            theme::content(),
+            "dialog-close",
+        ))
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ButtonKind {
+    Primary,
+    Ghost,
+    /// Ghost with a border, for secondary actions in toolbars and pages.
+    Outline,
+    Danger,
+}
+
+/// Dialog buttons: `px-3 py-1.5 text-[12px] rounded-md`.
+pub fn button(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    kind: ButtonKind,
+    enabled: bool,
+) -> gpui::Stateful<gpui::Div> {
+    button_with(id, None, label, kind, enabled)
+}
+
+/// `button` with an icon before its label.
+pub fn button_with(
+    id: impl Into<ElementId>,
+    leading: Option<&str>,
+    label: impl Into<SharedString>,
+    kind: ButtonKind,
+    enabled: bool,
+) -> gpui::Stateful<gpui::Div> {
+    let lead = leading.map(|name| {
+        let color = match kind {
+            ButtonKind::Primary => theme::background(),
+            ButtonKind::Danger => theme::error().into(),
+            _ => theme::text_muted(),
+        };
+        icon(name, 14.).text_color(color).into_any_element()
+    });
+    button_lead(id, lead, label, kind, enabled)
+}
+
+/// `button` with any element before its label, such as a color dot.
+pub fn button_lead(
+    id: impl Into<ElementId>,
+    leading: Option<gpui::AnyElement>,
+    label: impl Into<SharedString>,
+    kind: ButtonKind,
+    enabled: bool,
+) -> gpui::Stateful<gpui::Div> {
+    let label = label.into();
+    let base = div()
+        .id(id)
+        .role(Role::Button)
+        .aria_label(label.clone())
+        .flex()
+        .flex_none()
+        .items_center()
+        .justify_center()
+        .gap(sp(6.))
+        .h(px(BUTTON_H))
+        .px(sp(if leading.is_some() { 10. } else { 12. }))
+        .rounded(rad(RADIUS))
+        .text_size(px(TEXT_SM))
+        .font_weight(gpui::FontWeight::MEDIUM)
+        .when(enabled, |d| d.cursor_pointer().map(focusable))
+        .when(!enabled, |d| d.opacity(0.4))
+        .when_some(leading, |d, lead| d.child(lead))
+        .child(div().min_w_0().truncate().child(label));
+    match kind {
+        ButtonKind::Primary => base
+            .bg(theme::content())
+            .text_color(theme::background())
+            .when(enabled, |d| d.hover(|s| s.bg(theme::mix(0.8)))),
+        ButtonKind::Ghost => base
+            .text_color(theme::content())
+            .when(enabled, |d| d.hover(|s| s.bg(theme::fill_hover()))),
+        ButtonKind::Outline => base
+            .border_1()
+            .border_color(theme::border_strong())
+            .text_color(theme::text_muted())
+            .when(enabled, |d| {
+                d.hover(|s| s.bg(theme::fill_hover()).text_color(theme::content()))
+            }),
+        ButtonKind::Danger => base
+            .bg(Hsla::from(theme::error()).opacity(0.2))
+            .text_color(theme::error())
+            .when(enabled, |d| {
+                d.hover(|s| s.bg(Hsla::from(theme::error()).opacity(0.3)))
+            }),
+    }
+}
+
+/// Floating menu surface, like the environment menu.
+pub fn menu_panel(id: impl Into<ElementId>, width: f32) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .role(Role::Menu)
+        .occlude()
+        .w(px(width))
+        .p(sp(4.))
+        .flex()
+        .flex_col()
+        .gap(sp(1.))
+        .bg(theme::dialog())
+        .border_1()
+        .border_color(theme::border())
+        .rounded(rad(MENU_RADIUS))
+        .shadow_xl()
+}
+
+/// A menu's corner, and how far its items sit inside it (padding and
+/// border): items round to `nested(MENU_RADIUS, MENU_INSET)`.
+pub const MENU_RADIUS: f32 = RADIUS_LG;
+const MENU_INSET: f32 = 5.;
+
+/// The corner of a row inside a menu: parallel to the menu's.
+pub fn menu_row_radius() -> Pixels {
+    nested(MENU_RADIUS, MENU_INSET)
+}
+
+pub fn menu_item(
+    id: impl Into<ElementId>,
+    icon_name: &str,
+    label: impl Into<SharedString>,
+    danger: bool,
+    enabled: bool,
+) -> gpui::Stateful<gpui::Div> {
+    let color: Hsla = if danger {
+        theme::error().into()
+    } else {
+        theme::text_muted()
+    };
+    let label = label.into();
+    div()
+        .id(id)
+        .map(|d| labelled(d, Role::MenuItem, label.clone()))
+        .flex()
+        .items_center()
+        .gap(sp(8.))
+        .h(px(MENU_ROW_H))
+        .px(sp(8.))
+        .rounded(menu_row_radius())
+        .text_size(px(TEXT_MD))
+        .text_color(color)
+        .when(enabled, |d| {
+            d.cursor_pointer()
+                .map(focusable)
+                .hover(|s| s.bg(theme::selection_hover()))
+        })
+        .when(!enabled, |d| d.opacity(0.4))
+        .child(icon(icon_name, 14.).text_color(color))
+        .child(div().flex_1().min_w_0().truncate().child(label))
+}
+
+/// Small spinning loader for busy buttons and rows.
+pub fn spinner(id: impl Into<ElementId>, size: f32, color: Hsla) -> impl IntoElement {
+    icon("loading03", size).text_color(color).with_animation(
+        id,
+        // Synced, so spinners side by side turn together.
+        gpui::Animation::new(std::time::Duration::from_millis(900)).repeat_synced(),
+        |svg, t| svg.with_transformation(gpui::Transformation::rotate(gpui::percentage(t))),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// At the default scales every size is exactly what the view asked for,
+    /// so the app looks as it did before the scales existed.
+    #[test]
+    fn defaults_leave_sizes_alone() {
+        assert_eq!(radius_scale(), 1.);
+        assert_eq!(space_scale(), 1.);
+        assert_eq!(window_gap(), 8.);
+        let mut n = 0.;
+        while n <= 64. {
+            assert_eq!(sp(n), px(n), "sp({n})");
+            assert_eq!(rad(n), px(n), "rad({n})");
+            n += 0.5;
+        }
+        for r in [RADIUS_SM, RADIUS, RADIUS_LG, RADIUS_XL, 2.5, 3.5] {
+            assert_eq!(rad(r), px(r));
+        }
+    }
+
+    #[test]
+    fn a_trailing_shortcut_is_split_from_the_name() {
+        assert_eq!(
+            split_shortcut("New session (Ctrl+T)"),
+            ("New session", Some("Ctrl+T"))
+        );
+        assert_eq!(split_shortcut("Close (Esc)"), ("Close", Some("Esc")));
+        assert_eq!(
+            split_shortcut("Open on GitHub (O)"),
+            ("Open on GitHub", Some("O"))
+        );
+        assert_eq!(split_shortcut("Plan (beta)"), ("Plan (beta)", None));
+        assert_eq!(
+            split_shortcut("Refresh, mark read"),
+            ("Refresh, mark read", None)
+        );
+        assert_eq!(split_shortcut("A (two words)"), ("A (two words)", None));
+        assert_eq!(split_shortcut("()"), ("()", None));
+    }
+
+    #[test]
+    fn nested_corners_stay_parallel_to_the_outer_one() {
+        // At the default roundness (other tests never change it).
+        assert_eq!(nested(RADIUS_XL, 8.), px(8.));
+        assert_eq!(nested(RADIUS_XL, 5.), px(11.));
+        // Deep inside a small container it still reads as rounded.
+        assert_eq!(nested(RADIUS, 12.), px(RADIUS_SM));
+    }
+}

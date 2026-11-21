@@ -7,16 +7,16 @@
 
 "area: app":
   - changed-files:
-      - any-glob-to-any-file: ["src/**", "examples/**", "server/**", "assets/**", "build.rs", "Cargo.toml"]
+      - any-glob-to-any-file: ["src/**", "core/**", "examples/**", "server/**", "assets/**", "build.rs", "Cargo.toml"]
 "area: browser":
   - changed-files:
-      - any-glob-to-any-file: ["src/browser/**", "src/bin/arakun-helper*", "tools/install-cef.sh"]
+      - any-glob-to-any-file: ["core/src/browser/**", "src/bin/arakun-helper*", "tools/install-cef.sh"]
 "area: relay":
   - changed-files:
       - any-glob-to-any-file: ["relay/**"]
 "area: phone":
   - changed-files:
-      - any-glob-to-any-file: ["phone/**", "src/phone/**"]
+      - any-glob-to-any-file: ["phone/**", "core/src/phone/**"]
 "area: iso":
   - changed-files:
       - any-glob-to-any-file: ["iso/**", "src/iso/**", "src/iso_view.rs", "tools/iso-*"]

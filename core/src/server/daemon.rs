@@ -194,6 +194,9 @@ pub struct Daemon {
     writer: Writer,
     /// The saved transcript a device read last, for the pages after the first.
     last_read: agent::saved::LastRead,
+    /// The slash commands a session's agent said it has, kept when its thread
+    /// is retired: a folder's skills must not replace them after that.
+    said_commands: HashMap<String, Vec<agent::Choice>>,
     code: Rc<Cell<i32>>,
     stopping: bool,
     /// The local socket, until the server stops.
@@ -808,6 +811,7 @@ impl Daemon {
             notified: HashMap::new(),
             writer: parts.writer,
             last_read: Default::default(),
+            said_commands: HashMap::new(),
             code: parts.code,
             stopping: false,
             listening: Some(parts.listening),
@@ -1585,15 +1589,30 @@ impl Daemon {
         let Some(live) = self.live.remove(id) else {
             return;
         };
-        let meta = live.thread.read(cx).meta();
+        let t = live.thread.read(cx);
+        let meta = t.meta();
+        if t.commands_known() {
+            self.said_commands
+                .insert(id.to_string(), t.commands().to_vec());
+        }
         if let Some(s) = self.store.session_mut(id) {
             s.meta = Some(meta);
         }
         live.thread.update(cx, |t, _| t.shutdown());
     }
 
-    /// Runs `f` over a session's entries and directory: the live thread's, or
-    /// the transcript's when its agent is not running.
+    /// The slash commands session `id`'s agent said it has: its live thread's,
+    /// or the last ones said before it was retired. None while no agent has.
+    fn known_commands<'a>(&'a self, id: &str, cx: &'a App) -> Option<&'a [agent::Choice]> {
+        let live = self
+            .live
+            .get(id)
+            .map(|l| l.thread.read(cx))
+            .filter(|t| t.commands_known())
+            .map(|t| t.commands());
+        live.or_else(|| self.said_commands.get(id).map(Vec::as_slice))
+    }
+
     /// A session whose agent is not running (yet) has said no commands, so the
     /// app's `/` popup gets the skills of its folder, as it shows for a local
     /// one. The agent's own list replaces them once it runs.
@@ -1613,11 +1632,7 @@ impl Daemon {
                 .await;
             let _ = this.update(cx, |this, cx| {
                 // The agent's own list went out meanwhile; this one is older.
-                let known = this
-                    .live
-                    .get(&session)
-                    .is_some_and(|l| l.thread.read(cx).commands_known());
-                if !known {
+                if this.known_commands(&session, cx).is_none() {
                     let msg = wire::commands_message(&session, &skills);
                     this.transport.send(client, msg);
                 }
@@ -1626,6 +1641,8 @@ impl Daemon {
         .detach();
     }
 
+    /// Runs `f` over a session's entries and directory: the live thread's, or
+    /// the transcript's when its agent is not running.
     fn with_entries<R>(&self, id: &str, cx: &App, f: impl FnOnce(&[Entry], &Path) -> R) -> R {
         match self.live.get(id) {
             Some(live) => {
@@ -2140,14 +2157,13 @@ impl Daemon {
                     status: record.status,
                     place: &place,
                 };
-                let mut commands = None;
+                // Empty but known still goes: the app may hold an older list.
+                let commands = self
+                    .known_commands(&session, cx)
+                    .map(|c| wire::commands_message(&session, c));
                 let reply = match self.live.get(&session) {
                     Some(live) => {
                         let t = live.thread.read(cx);
-                        // Empty but known still goes: the app may hold an older list.
-                        commands = t
-                            .commands_known()
-                            .then(|| wire::commands_message(&session, t.commands()));
                         wire::session_live(&head, t, status_of(t), &self.scope(t.cwd()))
                     }
                     None => self.with_entries(&session, cx, |all, cwd| {
@@ -3050,6 +3066,7 @@ impl Daemon {
                 watched.retain(|w| *w != id);
             }
             self.notified.remove(&id);
+            self.said_commands.remove(&id);
             self.writer.forget(self.store.transcript_path(&id));
             self.store.remove_session(&id);
         }
@@ -3760,6 +3777,7 @@ impl Daemon {
             watched.retain(|w| w != id);
         }
         self.notified.remove(id);
+        self.said_commands.remove(id);
         self.asked.remove(id);
         self.rewinds.remove(id);
         // A save still on its way, or one kept because it failed, would bring

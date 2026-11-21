@@ -40,8 +40,6 @@ pub fn pixmap(
 }
 
 /// [`pixmap`], encoded as PNG.
-// TEMP: the Isometric tab calls this in a later commit.
-#[allow(dead_code)]
 pub fn png(
     frame: FrameFn,
     ext: Rect,
@@ -90,8 +88,6 @@ pub fn samples(
 
 /// The whole loop as one animated SVG, sampled `fps` times a second; no
 /// point strays more than `px` px from the exact frame.
-// TEMP: the Isometric tab calls this in a later commit.
-#[allow(dead_code)]
 pub fn loop_svg(
     name: &str,
     frame: FrameFn,

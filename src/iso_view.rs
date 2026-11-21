@@ -219,6 +219,7 @@ pub struct IsoView {
     pending: Vec<PathBuf>,
     /// Why the last request could not be sent.
     ask_error: Option<String>,
+    exporting: Exporting,
     _watch: gpui::Task<()>,
 }
 
@@ -278,6 +279,7 @@ impl IsoView {
             asking: None,
             pending: Vec::new(),
             ask_error: None,
+            exporting: Exporting::Idle,
             _watch: watch,
         };
         view.reload();
@@ -500,6 +502,62 @@ impl IsoView {
             self.playing = false;
             self.last_frame = None;
         }
+    }
+
+    /// Asks where to save, then writes the export on a background thread.
+    fn export(&mut self, kind: Kind, cx: &mut Context<Self>) {
+        if matches!(self.exporting, Exporting::Busy(_)) {
+            return;
+        }
+        let Some(entry) = self.entries.get(self.scene) else {
+            return;
+        };
+        let source = match entry {
+            Entry::Builtin(s) => Source::Builtin(s),
+            Entry::Starter(st, _) => Source::Starter(st),
+            Entry::Script(s) => Source::File(s.path.clone()),
+            Entry::Broken { .. } => return,
+        };
+        let mut palette = self.look.palette();
+        palette.soft = entry.soft();
+        let job = Job {
+            kind,
+            source,
+            name: entry.name(),
+            seconds: entry.seconds(),
+            extent: self.extents[self.scene],
+            palette,
+            t: self.t,
+            tau: self.tau,
+        };
+        let dir = self.root.clone().unwrap_or_else(crate::platform::home);
+        let rx = cx.prompt_for_new_path(&dir, Some(&export_name(&job.name, kind)));
+        cx.spawn(async move |this, cx| {
+            let Some(path) = rx.await.ok().and_then(|r| r.ok()).flatten() else {
+                return;
+            };
+            let _ = this.update(cx, |v, cx| {
+                v.exporting = Exporting::Busy(kind);
+                cx.notify();
+            });
+            let result = cx
+                .background_spawn(async move {
+                    let bytes = job.run()?;
+                    std::fs::write(&path, bytes).map_err(|e| format!("{}: {e}", path.display()))
+                })
+                .await;
+            let _ = this.update(cx, |v, cx| {
+                v.exporting = match result {
+                    Ok(()) => Exporting::Idle,
+                    Err(e) => Exporting::Failed(e, Instant::now()),
+                };
+                cx.notify();
+            });
+            // Comes back to clear the error once its time is up.
+            cx.background_executor().timer(Duration::from_secs(4)).await;
+            let _ = this.update(cx, |_, cx| cx.notify());
+        })
+        .detach();
     }
 
     fn copy_svg(&mut self, cx: &mut Context<Self>) {
@@ -768,6 +826,34 @@ impl Render for IsoView {
                 .child(div().flex_1().min_w_0().child(a.input.clone()))
         });
         let ask_error = self.ask_error.clone();
+        if let Exporting::Failed(_, at) = &self.exporting
+            && at.elapsed().as_secs_f32() > 4.
+        {
+            self.exporting = Exporting::Idle;
+        }
+        let exportable = !matches!(entry, Entry::Broken { .. });
+        let busy = matches!(self.exporting, Exporting::Busy(_));
+        let export_failed = match &self.exporting {
+            Exporting::Failed(e, _) => Some(e.clone()),
+            _ => None,
+        };
+        let exports = [Kind::Png, Kind::Svg, Kind::Loop].map(|kind| {
+            let label = match &self.exporting {
+                Exporting::Busy(k) if *k == kind => "Exporting…",
+                _ => kind.label(),
+            };
+            let enabled = exportable && !busy;
+            ui::button_with(
+                ("iso-export", kind as usize),
+                Some("download04"),
+                label,
+                ButtonKind::Outline,
+                enabled,
+            )
+            .when(enabled, |b| {
+                b.on_click(cx.listener(move |this, _, _, cx| this.export(kind, cx)))
+            })
+        });
 
         // ---- timeline ------------------------------------------------------------
         let slot = self.timeline.clone();
@@ -980,6 +1066,17 @@ impl Render for IsoView {
                     .flex_wrap()
                     .items_center()
                     .gap(crate::ui::sp(10.))
+                    .children(exports)
+                    .when_some(export_failed, |d, e| {
+                        d.child(ui::text(Type::Caption, theme::error().into(), e))
+                    }),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap(crate::ui::sp(10.))
                     // More scenes than fit the line scroll sideways.
                     .child(
                         div()
@@ -1019,6 +1116,89 @@ impl Render for IsoView {
             .child(stage)
             .child(controls)
     }
+}
+
+/// The three exports of a scene.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    Png,
+    Svg,
+    Loop,
+}
+
+/// The file name a save dialog suggests for an export of `scene`.
+fn export_name(scene: &str, kind: Kind) -> String {
+    let slug = ask::slug(scene);
+    match kind {
+        Kind::Png => format!("{slug}.png"),
+        Kind::Svg => format!("{slug}.svg"),
+        Kind::Loop => format!("{slug}-loop.svg"),
+    }
+}
+
+impl Kind {
+    fn label(self) -> &'static str {
+        match self {
+            Kind::Png => "Export PNG",
+            Kind::Svg => "Export SVG",
+            Kind::Loop => "Export animated SVG",
+        }
+    }
+}
+
+/// Where an export reads its scene from, sent to a background thread: a
+/// compiled script stays on the UI thread, so it is compiled again there.
+enum Source {
+    Builtin(&'static scenes::Scene),
+    Starter(&'static Starter),
+    File(PathBuf),
+}
+
+/// Everything an export needs, owned so it can leave the UI thread.
+struct Job {
+    kind: Kind,
+    source: Source,
+    name: String,
+    seconds: f32,
+    extent: Rect,
+    palette: Palette,
+    t: f32,
+    tau: f32,
+}
+
+impl Job {
+    /// The file's bytes. PNG is 1600 px wide; the loop is sampled 240 times
+    /// a second and strays at most 0.1 px, as `arakun iso anim` does.
+    fn run(self) -> Result<Vec<u8>, String> {
+        let script = match &self.source {
+            Source::Builtin(_) => None,
+            Source::Starter(st) => Some(starters::load(st)?),
+            Source::File(path) => Some(ScriptScene::load(path)?),
+        };
+        let frame = |t: f32, tau: f32| match (&self.source, &script) {
+            (_, Some(s)) => s.frame_at(t, tau),
+            (Source::Builtin(b), None) => Ok((b.build)(t)),
+            _ => Err("no scene".into()),
+        };
+        let (ext, pal) = (self.extent, &self.palette);
+        match self.kind {
+            Kind::Png => iso::export::png(&frame, ext, self.t, self.tau, pal, 1600),
+            Kind::Svg => iso::export::svg(&self.name, &frame, ext, self.t, self.tau, pal)
+                .map(String::into_bytes),
+            Kind::Loop => {
+                iso::export::loop_svg(&self.name, &frame, ext, self.seconds, pal, 240., 0.1)
+                    .map(String::into_bytes)
+            }
+        }
+    }
+}
+
+/// The state of the export buttons.
+enum Exporting {
+    Idle,
+    Busy(Kind),
+    /// Why the last export failed, shown in place of the labels for a while.
+    Failed(String, Instant),
 }
 
 /// Project scripts, then starters, then the Rust scenes; a later scene
@@ -1065,6 +1245,46 @@ mod tests {
         .map(Entry::name)
         .collect();
         assert_eq!(names, ["a", "b"]);
+    }
+
+    #[test]
+    fn export_names() {
+        assert_eq!(
+            export_name("EC2 instances", Kind::Loop),
+            "ec2-instances-loop.svg"
+        );
+        assert_eq!(export_name("CPU", Kind::Png), "cpu.png");
+        assert_eq!(export_name("CPU", Kind::Svg), "cpu.svg");
+    }
+
+    #[test]
+    fn export_job_writes_each_kind() {
+        let st = &starters::ALL[1];
+        let scene = starters::load(st).unwrap();
+        let extent = Entry::Starter(st, scene).extent();
+        let job = |kind| Job {
+            kind,
+            source: Source::Starter(st),
+            name: "CPU".into(),
+            seconds: 5.,
+            extent,
+            palette: Look::Paper.palette(),
+            t: 0.3,
+            tau: 1.5,
+        };
+        assert_eq!(&job(Kind::Png).run().unwrap()[..4], b"\x89PNG");
+        assert!(
+            String::from_utf8(job(Kind::Svg).run().unwrap())
+                .unwrap()
+                .contains("<path")
+        );
+        let anim = String::from_utf8(job(Kind::Loop).run().unwrap()).unwrap();
+        assert!(anim.contains("<animate"));
+        let rust = Job {
+            source: Source::Builtin(&scenes::ALL[0]),
+            ..job(Kind::Svg)
+        };
+        assert!(rust.run().is_ok());
     }
 
     #[test]

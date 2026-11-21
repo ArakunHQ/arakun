@@ -286,6 +286,14 @@ pub fn removable(dir: &Path) -> bool {
     pr_of(dir).is_some_and(|pr| pr.done() && head_in(dir, &pr.head))
 }
 
+/// Removes the environment at `dir` once `removable` said it can go. The pull
+/// request lookup can be slow, and `git worktree remove` deletes an ignored
+/// file created since without a word, so look for one again first.
+pub fn remove_clean_worktree(repo: &Path, dir: &Path) -> anyhow::Result<()> {
+    anyhow::ensure!(!ignored_files_kept(dir), "the environment has local files");
+    crate::git::remove_clean_worktree(repo, dir)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -442,5 +450,32 @@ mod tests {
         std::fs::write(dir.join(".env"), "TOKEN=1").unwrap();
         assert!(ignored_files_kept(&dir));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_ignored_file_made_late_keeps_the_worktree() {
+        let root = std::env::temp_dir().join(format!("arakun-cleanup-late-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (repo, env) = (root.join("repo"), root.join("env"));
+        std::fs::create_dir_all(&repo).unwrap();
+        let git = |args: &[&str]| {
+            let out = crate::git::git(&repo).args(args).output().unwrap();
+            assert!(out.status.success(), "git {args:?}");
+        };
+        git(&["init", "-q", "-b", "main"]);
+        git(&["config", "user.email", "t@example.com"]);
+        git(&["config", "user.name", "t"]);
+        std::fs::write(repo.join(".gitignore"), ".env\n").unwrap();
+        git(&["add", ".gitignore"]);
+        git(&["commit", "-q", "-m", "one"]);
+        git(&["worktree", "add", "-q", "-b", "env", env.to_str().unwrap()]);
+        // Written after the environment was found removable.
+        std::fs::write(env.join(".env"), "TOKEN=1").unwrap();
+        assert!(remove_clean_worktree(&repo, &env).is_err());
+        assert!(env.join(".env").exists());
+        std::fs::remove_file(env.join(".env")).unwrap();
+        remove_clean_worktree(&repo, &env).unwrap();
+        assert!(!env.exists());
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

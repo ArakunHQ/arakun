@@ -346,8 +346,9 @@ that keeps one on purpose goes on its allow-list.
   changes, CodeQL), which can queue for a long time. Don't wait for the **Human approval**
   status either: for a pull request from outside the team it is required, but it only
   resolves after a person approves, and marking ready is what asks for the review. It
-  stays a merge gate, not a pre-ready one. When cubic finishes, people are asked to review
-  unless cubic approved and every review thread is resolved. A pull request from
+  stays a merge gate, not a pre-ready one. People are asked to review only once the pull
+  request is ready, cubic has finished and you have resolved or answered every cubic
+  comment, and not at all if cubic approved and every review thread is resolved. A pull request from
   outside the team always needs a
   maintainer's approval: a workflow dismisses cubic's, and the **Human approval**
   status waits for a person.

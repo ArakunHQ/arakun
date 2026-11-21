@@ -633,6 +633,9 @@ impl Shell {
                 d.child(
                     div()
                         .id("model-fast")
+                        .role(gpui::Role::Switch)
+                        .aria_label(Setting::Fast.label())
+                        .aria_toggled(crate::ui::toggled(on))
                         .flex()
                         .items_center()
                         .gap(crate::ui::sp(8.))
@@ -682,6 +685,9 @@ impl Shell {
                     };
                     div()
                         .id(("model-agent", agent as usize))
+                        .role(gpui::Role::Tab)
+                        .aria_label(agent.label())
+                        .aria_selected(agent == shown)
                         .relative()
                         .flex()
                         .flex_1()
@@ -765,6 +771,9 @@ impl Shell {
                 let on = o.id == now;
                 div()
                     .id(("model-effort-zero", i))
+                    .role(gpui::Role::MenuItemRadio)
+                    .aria_label(SharedString::from(o.name.clone()))
+                    .aria_toggled(crate::ui::toggled(on))
                     .flex_none()
                     .px(crate::ui::sp(6.))
                     .py(crate::ui::sp(1.))
@@ -800,6 +809,9 @@ impl Shell {
                 let on = lit.is_some_and(|l| i <= l);
                 div()
                     .id(("model-effort", i))
+                    .role(gpui::Role::MenuItemRadio)
+                    .aria_label(SharedString::from(o.name.clone()))
+                    .aria_toggled(crate::ui::toggled(o.id == now))
                     .flex_1()
                     .h(px(18.))
                     .flex()

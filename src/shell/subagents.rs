@@ -334,8 +334,7 @@ impl Shell {
             .map(|d| match &opened {
                 Some((_, name, state, _)) => d
                     .child(
-                        icon_button("subagent-back", "arrow-left01", 14.)
-                            .tooltip(ui::tip("Back to the session"))
+                        icon_button("subagent-back", "arrow-left01", 14., "Back to the session")
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.subagent_view = None;
                                 cx.notify();
@@ -371,8 +370,7 @@ impl Shell {
                     ),
             })
             .child(
-                icon_button("subagents-close", "cancel01", 14.)
-                    .tooltip(ui::tip("Close session panel"))
+                icon_button("subagents-close", "cancel01", 14., "Close session panel")
                     .on_click(cx.listener(|this, _, _, cx| this.toggle_subagents(cx))),
             );
 

@@ -224,7 +224,7 @@ impl Render for PilotDialog {
                 cx.emit(PilotDialogEvent::Dismissed)
             }
         });
-        ui::modal_panel("pilot-connect", 460.)
+        ui::modal_panel("pilot-connect", 460., title)
             .child(ui::modal_header(
                 title,
                 Some(sub.into()),

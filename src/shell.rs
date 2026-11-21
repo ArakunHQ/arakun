@@ -4209,7 +4209,7 @@ impl Render for Shell {
                     }),
             )
             .when(chrome && has_projects, |d| {
-                d.child(self.render_dock(viewport_h, cx))
+                d.child(self.render_dock(viewport_h, window, cx))
             })
             .when_some(self.render_session_drop_menu(cx), |d, m| d.child(m))
             .when_some(context_menu, |d, (at, above, menu)| {

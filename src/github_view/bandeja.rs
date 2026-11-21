@@ -506,8 +506,7 @@ impl GitHubView {
                             .child(ui::spinner("gh-busy", 13., theme::text_faint()))
                             .into_any_element()
                     } else {
-                        ui::icon_button("gh-menu", "more-horizontal", 15.)
-                            .tooltip(ui::tip("Refresh, mark read, notices"))
+                        ui::icon_button("gh-menu", "more-horizontal", 15., "Refresh, mark read, notices")
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(|this, ev: &gpui::MouseDownEvent, _, cx| {
@@ -521,6 +520,23 @@ impl GitHubView {
                                     cx.notify();
                                 }),
                             )
+                            // Enter or Space only fires clicks, without a
+                            // pointer: open under the button, where a mouse
+                            // press on its middle would. A mouse click was
+                            // already handled on the press.
+                            .on_click(cx.listener(|this, ev: &gpui::ClickEvent, _, cx| {
+                                if !ev.is_keyboard() {
+                                    return;
+                                }
+                                let half = ui::ICON_BUTTON / 2.;
+                                this.menu_at = if this.menu_at.is_some() {
+                                    None
+                                } else {
+                                    Some(ev.position() + gpui::point(px(half - 240.), px(14. - half)))
+                                };
+                                this.confirm_all = None;
+                                cx.notify();
+                            }))
                             .into_any_element()
                     }),
             )

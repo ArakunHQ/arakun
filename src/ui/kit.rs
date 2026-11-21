@@ -10,8 +10,8 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, ElementId, FontWeight, Hsla, InteractiveElement as _, IntoElement,
-    ParentElement as _, SharedString, StatefulInteractiveElement as _, Styled, StyledImage as _,
-    div, px, relative,
+    ParentElement as _, Role, SharedString, StatefulInteractiveElement as _, Styled,
+    StyledImage as _, div, px, relative,
 };
 
 use super::{MENU_ROW_H, RADIUS, RADIUS_LG, RADIUS_SM, icon};
@@ -291,8 +291,13 @@ pub fn chip(
     content: impl Into<SharedString>,
     on: bool,
 ) -> gpui::Stateful<gpui::Div> {
+    let content = content.into();
     div()
         .id(id)
+        // A toggle button: screen readers say "pressed" when it is on.
+        .role(Role::Button)
+        .aria_label(content.clone())
+        .aria_toggled(crate::ui::toggled(on))
         .flex()
         .flex_none()
         .items_center()
@@ -314,7 +319,7 @@ pub fn chip(
                 .text_color(theme::text_muted())
                 .hover(|s| s.bg(theme::fill_hover()).text_color(theme::text()))
         })
-        .child(content.into())
+        .child(content)
 }
 
 /// A key of a shortcut: `kbd("Ctrl")`, `kbd("K")`.
@@ -424,6 +429,9 @@ pub fn toggle_group<T: Copy + PartialEq + 'static>(
         let on = *value == current;
         let seg = div()
             .id((id, i))
+            .role(Role::RadioButton)
+            .aria_label(*label)
+            .aria_toggled(crate::ui::toggled(on))
             .px(crate::ui::sp(8.))
             .h(px(20.))
             .flex()
@@ -463,10 +471,18 @@ pub fn menu_divider() -> gpui::Div {
         .bg(theme::border_subtle())
 }
 
-/// A pickable row with a radio dot; the caller adds the name and any note.
-pub fn choice_row(id: impl Into<ElementId>, selected: bool) -> gpui::Stateful<gpui::Div> {
+/// A pickable row with a radio dot for a menu; the caller adds the name and
+/// any note. `name` is what screen readers call it.
+pub fn choice_row(
+    id: impl Into<ElementId>,
+    name: impl Into<SharedString>,
+    selected: bool,
+) -> gpui::Stateful<gpui::Div> {
     div()
         .id(id)
+        .role(Role::MenuItemRadio)
+        .aria_label(name)
+        .aria_toggled(crate::ui::toggled(selected))
         .flex()
         .items_center()
         .gap(crate::ui::sp(10.))
@@ -490,8 +506,13 @@ pub fn submenu_row(
     value: impl Into<SharedString>,
     open: bool,
 ) -> gpui::Stateful<gpui::Div> {
+    let value = value.into();
     div()
         .id(id)
+        .role(Role::MenuItem)
+        .aria_label(SharedString::from(name.to_string()))
+        .aria_value(value.clone())
+        .aria_expanded(open)
         .flex()
         .items_center()
         .gap(crate::ui::sp(8.))
@@ -512,7 +533,7 @@ pub fn submenu_row(
                 .truncate()
                 .ty(Type::Label)
                 .text_color(theme::text_subtle())
-                .child(value.into()),
+                .child(value),
         )
         .child(icon("arrow-right01", 12.).text_color(theme::text_faint()))
 }
@@ -521,6 +542,9 @@ pub fn submenu_row(
 pub fn switch_row(id: impl Into<ElementId>, name: &str, on: bool) -> gpui::Stateful<gpui::Div> {
     div()
         .id(id)
+        .role(Role::Switch)
+        .aria_label(SharedString::from(name.to_string()))
+        .aria_toggled(crate::ui::toggled(on))
         .flex()
         .items_center()
         .gap(crate::ui::sp(8.))
@@ -718,8 +742,7 @@ pub fn refresh_control(
                 .child(super::spinner(id, 13., theme::mix(0.5)))
                 .into_any_element()
         } else {
-            super::icon_button(id, "refresh01", 13.)
-                .tooltip(super::tip("Refresh"))
+            super::icon_button(id, "refresh01", 13., "Refresh")
                 .on_click(on_refresh)
                 .into_any_element()
         })
@@ -949,8 +972,12 @@ pub fn outline_tab(
     count: Option<String>,
     on: bool,
 ) -> gpui::Stateful<gpui::Div> {
+    let label = label.into();
     div()
         .id(id)
+        .role(Role::Tab)
+        .aria_label(label.clone())
+        .aria_selected(on)
         .flex()
         .flex_none()
         .items_center()
@@ -972,7 +999,7 @@ pub fn outline_tab(
                 .text_color(theme::text_muted())
                 .hover(|s| s.bg(theme::fill_hover()).text_color(theme::text()))
         })
-        .child(label.into())
+        .child(label)
         .when_some(count, |d, c| {
             d.child(
                 div()
@@ -1299,8 +1326,12 @@ pub fn palette_tab(
     } else {
         theme::text_subtle()
     };
+    let label = label.into();
     div()
         .id(id)
+        .role(Role::Tab)
+        .aria_label(label.clone())
+        .aria_selected(on)
         .flex()
         .flex_none()
         .items_center()
@@ -1314,7 +1345,7 @@ pub fn palette_tab(
         .when(on, |d| d.bg(theme::fill_hover()))
         .when(!on, |d| d.hover(|s| s.text_color(theme::text_muted())))
         .when_some(icon_name, |d, n| d.child(icon(n, 14.).text_color(color)))
-        .child(label.into())
+        .child(label)
         .when_some(count.filter(|n| *n > 0), |d, n| {
             d.child(
                 div()
@@ -1957,8 +1988,11 @@ pub fn bulk_button(
     label: impl Into<SharedString>,
     primary: bool,
 ) -> gpui::Stateful<gpui::Div> {
+    let label = label.into();
     div()
         .id(id)
+        .role(Role::Button)
+        .aria_label(label.clone())
         .flex()
         .flex_none()
         .items_center()
@@ -1984,7 +2018,7 @@ pub fn bulk_button(
                 theme::text_subtle()
             }))
         })
-        .child(label.into())
+        .child(label)
 }
 
 /// A pinned thing as a chip in the palette's Pinned row, with its number.
@@ -1996,8 +2030,14 @@ pub fn pin_chip(
     number: usize,
     selected: bool,
 ) -> gpui::Stateful<gpui::Div> {
+    let label = label.into();
     div()
         .id(id)
+        .role(Role::Button)
+        .aria_label(label.clone())
+        // Only the highlighted one says so; the rest would all be "not
+        // selected", which is noise.
+        .when(selected, |d| d.aria_selected(true))
         .flex()
         .flex_none()
         .items_center()
@@ -2020,7 +2060,7 @@ pub fn pin_chip(
         .hover(|s| s.bg(theme::fill_hover()))
         .max_w(px(260.))
         .child(icon(icon_name, 14.).text_color(tint.color()))
-        .child(div().min_w_0().truncate().child(label.into()))
+        .child(div().min_w_0().truncate().child(label))
         .child(
             div()
                 .flex_none()

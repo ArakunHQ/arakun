@@ -1538,7 +1538,7 @@ impl ExtensionsView {
                             .child(by_line(by, verified)),
                     )
                     .child(
-                        ui::icon_button("ext-detail-close", "cancel01", 14.)
+                        ui::icon_button("ext-detail-close", "cancel01", 14., "Close")
                             .on_click(cx.listener(|this, _, _, cx| this.close_detail(cx))),
                     ),
             );

@@ -1509,7 +1509,12 @@ impl CloudflareView {
                                     .child(name.clone()),
                             )
                             .child(state)
-                            .child(self.open_button(format!("cf-email-{name}"), path, cx)),
+                            .child(self.open_button(
+                                format!("cf-email-{name}"),
+                                path,
+                                &format!("email routing for {name}"),
+                                cx,
+                            )),
                     )
                     .when(z.email_rules.is_empty(), |d| d.child(quiet("No rules.")))
                     .child(rows),

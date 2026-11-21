@@ -3,8 +3,9 @@
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnimationExt as _, AnyView, App, AppContext as _, Bounds, Context, ElementId, Hsla,
-    InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Render, SharedString, Styled,
-    Svg, Window, canvas, div, fill, point, px, size, svg,
+    InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Render, Role, SharedString,
+    StatefulInteractiveElement as _, Styled, Svg, Toggled, Window, canvas, div, fill, point, px,
+    size, svg,
 };
 
 use crate::theme;
@@ -144,12 +145,20 @@ impl Render for Tip {
 }
 
 /// A tab of a tab strip: as wide as its title between 112 and 224, `TAB_H`
-/// tall, filled when active. Callers add the icon, the title and a close
+/// tall, filled when active. `label` is what screen readers call it; callers
+/// still draw the icon, the title and a close
 /// button (`right(px(4.))`, `TAB_CLOSE_TOP`). The dock's shorter tabs set
 /// their own width and height on top.
-pub fn tab(id: impl Into<ElementId>, active: bool) -> gpui::Stateful<gpui::Div> {
+pub fn tab(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    active: bool,
+) -> gpui::Stateful<gpui::Div> {
     div()
         .id(id)
+        .role(Role::Tab)
+        .aria_label(label)
+        .aria_selected(active)
         .relative()
         .flex()
         .items_center()
@@ -224,6 +233,49 @@ pub fn tip_text(label: impl Into<SharedString>) -> impl Fn(&mut Window, &mut App
     }
 }
 
+/// Gives a control its role and the name screen readers say. Plain text
+/// children never reach them, so a control without a name is just "button".
+/// A shortcut at the end of the name ("New session (Ctrl+T)") is split off
+/// and announced as the control's shortcut instead.
+pub fn labelled(
+    d: gpui::Stateful<gpui::Div>,
+    role: Role,
+    label: impl Into<SharedString>,
+) -> gpui::Stateful<gpui::Div> {
+    let label = label.into();
+    let (name, keys) = split_shortcut(&label);
+    let d = d.role(role);
+    match keys {
+        Some(keys) => d
+            .aria_label(SharedString::from(name.to_string()))
+            .aria_keyshortcuts(SharedString::from(crate::platform::shortcut_label(keys))),
+        None => d.aria_label(label),
+    }
+}
+
+/// The on or off state of a switch or radio, as screen readers take it.
+pub fn toggled(on: bool) -> Toggled {
+    if on { Toggled::True } else { Toggled::False }
+}
+
+/// "New session (Ctrl+T)" → ("New session", Some("Ctrl+T")). Only a
+/// parenthesis that holds a shortcut counts: "Plan (beta)" stays whole.
+fn split_shortcut(label: &str) -> (&str, Option<&str>) {
+    const KEYS: &[&str] = &["Esc", "Enter", "Tab", "Space", "Delete", "Backspace"];
+    let Some(rest) = label.strip_suffix(')') else {
+        return (label, None);
+    };
+    let Some(open) = rest.rfind(" (") else {
+        return (label, None);
+    };
+    let keys = &rest[open + 2..];
+    let is_key = |k: &str| k.chars().count() == 1 || KEYS.contains(&k) || k.contains('+');
+    if keys.is_empty() || keys.contains(' ') || !is_key(keys) {
+        return (label, None);
+    }
+    (&rest[..open], Some(keys))
+}
+
 /// How wide the focus ring is around a control reached with Tab.
 pub const FOCUS_RING_W: f32 = 2.;
 
@@ -262,13 +314,21 @@ fn focus_ring() -> Vec<gpui::BoxShadow> {
 }
 
 /// Icon button: 24×24, rounded-md, content/50 → hover content on content/10.
+/// `label` names it twice: in the tooltip, and to screen readers, which never
+/// see the tooltip. A trailing shortcut ("Hide sidebar (Ctrl+B)") shows in
+/// the tooltip and is announced as the button's shortcut.
 pub fn icon_button(
     id: impl Into<ElementId>,
     name: &str,
     icon_size: f32,
+    label: impl Into<SharedString>,
 ) -> gpui::Stateful<gpui::Div> {
+    let label = label.into();
+    let tooltip = tip_text(crate::platform::shortcut_label(&label));
     div()
         .id(id)
+        .map(|d| labelled(d, Role::Button, label))
+        .tooltip(tooltip)
         .flex()
         .flex_none()
         .items_center()
@@ -593,8 +653,12 @@ pub fn segment(
     label: impl Into<SharedString>,
     on: bool,
 ) -> gpui::Stateful<gpui::Div> {
+    let label = label.into();
     div()
         .id(id)
+        // One of a few that exclude each other: a radio button.
+        .map(|d| labelled(d, Role::RadioButton, label.clone()))
+        .aria_toggled(toggled(on))
         .flex()
         .flex_none()
         .items_center()
@@ -620,7 +684,7 @@ pub fn segment(
                 theme::text_subtle()
             }))
         })
-        .child(label.into())
+        .child(label)
 }
 
 /// How far a `segment` sits inside its track's border: with the 1 px border
@@ -651,9 +715,16 @@ pub const MODAL_CONTEXT: &str = "Modal";
 ///
 /// It never outgrows the window: the part meant to give way on short windows
 /// (a list or a scrolling body) needs `min_h_0()` so flexbox can shrink it.
-pub fn modal_panel(id: impl Into<ElementId>, width: f32) -> gpui::Stateful<gpui::Div> {
+/// `title` is what screen readers call the dialog: the title of its header.
+pub fn modal_panel(
+    id: impl Into<ElementId>,
+    width: f32,
+    title: impl Into<SharedString>,
+) -> gpui::Stateful<gpui::Div> {
     div()
         .id(id)
+        .role(Role::Dialog)
+        .aria_label(title)
         .key_context(MODAL_CONTEXT)
         .occlude()
         .flex()
@@ -708,6 +779,8 @@ pub fn modal_header(
 pub fn close_button(id: impl Into<ElementId>) -> gpui::Stateful<gpui::Div> {
     div()
         .id(id)
+        .role(Role::Button)
+        .aria_label("Close")
         .group("dialog-close")
         .flex()
         .flex_none()
@@ -773,8 +846,11 @@ pub fn button_lead(
     kind: ButtonKind,
     enabled: bool,
 ) -> gpui::Stateful<gpui::Div> {
+    let label = label.into();
     let base = div()
         .id(id)
+        .role(Role::Button)
+        .aria_label(label.clone())
         .flex()
         .flex_none()
         .items_center()
@@ -788,7 +864,7 @@ pub fn button_lead(
         .when(enabled, |d| d.cursor_pointer().map(focusable))
         .when(!enabled, |d| d.opacity(0.4))
         .when_some(leading, |d, lead| d.child(lead))
-        .child(div().min_w_0().truncate().child(label.into()));
+        .child(div().min_w_0().truncate().child(label));
     match kind {
         ButtonKind::Primary => base
             .bg(theme::content())
@@ -817,6 +893,7 @@ pub fn button_lead(
 pub fn menu_panel(id: impl Into<ElementId>, width: f32) -> gpui::Stateful<gpui::Div> {
     div()
         .id(id)
+        .role(Role::Menu)
         .occlude()
         .w(px(width))
         .p(sp(4.))
@@ -852,8 +929,10 @@ pub fn menu_item(
     } else {
         theme::text_muted()
     };
+    let label = label.into();
     div()
         .id(id)
+        .map(|d| labelled(d, Role::MenuItem, label.clone()))
         .flex()
         .items_center()
         .gap(sp(8.))
@@ -869,7 +948,7 @@ pub fn menu_item(
         })
         .when(!enabled, |d| d.opacity(0.4))
         .child(icon(icon_name, 14.).text_color(color))
-        .child(div().flex_1().min_w_0().truncate().child(label.into()))
+        .child(div().flex_1().min_w_0().truncate().child(label))
 }
 
 /// Small spinning loader for busy buttons and rows.
@@ -902,6 +981,26 @@ mod tests {
         for r in [RADIUS_SM, RADIUS, RADIUS_LG, RADIUS_XL, 2.5, 3.5] {
             assert_eq!(rad(r), px(r));
         }
+    }
+
+    #[test]
+    fn a_trailing_shortcut_is_split_from_the_name() {
+        assert_eq!(
+            split_shortcut("New session (Ctrl+T)"),
+            ("New session", Some("Ctrl+T"))
+        );
+        assert_eq!(split_shortcut("Close (Esc)"), ("Close", Some("Esc")));
+        assert_eq!(
+            split_shortcut("Open on GitHub (O)"),
+            ("Open on GitHub", Some("O"))
+        );
+        assert_eq!(split_shortcut("Plan (beta)"), ("Plan (beta)", None));
+        assert_eq!(
+            split_shortcut("Refresh, mark read"),
+            ("Refresh, mark read", None)
+        );
+        assert_eq!(split_shortcut("A (two words)"), ("A (two words)", None));
+        assert_eq!(split_shortcut("()"), ("()", None));
     }
 
     #[test]

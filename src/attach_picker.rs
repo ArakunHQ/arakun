@@ -930,7 +930,7 @@ impl Render for AttachPicker {
         };
         let can_attach = !self.chosen.is_empty() || cursor_on_file;
 
-        ui::modal_panel("attach-picker", 780.)
+        ui::modal_panel("attach-picker", 780., "Attach files")
             .child(ui::modal_header(
                 "Attach files",
                 Some("Images travel with your prompt; other files are added as @ mentions.".into()),

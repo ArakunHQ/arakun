@@ -680,6 +680,7 @@ impl Shell {
                                 .px(crate::ui::sp(4.))
                                 .when_some(effort_tip(&o.id), |d, tip| d.tooltip(ui::tip(tip)))
                                 .when(!enabled, |d| d.opacity(0.45).cursor_default())
+                                .when_some(o.disabled.clone(), |d, why| d.aria_description(why))
                                 .when(enabled, |d| {
                                     d.on_click(cx.listener(move |this, _, window, cx| {
                                         this.menu_run(key.clone(), window, cx)
@@ -796,42 +797,62 @@ impl Shell {
                         .flatten()
                 });
                 let description = o.description.filter(|_| describe);
-                ui::choice_row(("choice", s as usize * 1000 + i), o.id == current)
-                    .when(self.menu_focus(offset + i), |d| d.bg(theme::fill_hover()))
-                    .when(!enabled, |d| d.opacity(0.45).cursor_default())
-                    .child(
+                // Plain children don't reach screen readers, so the row says
+                // what it shows next to its name: the description and the
+                // note, which for an unavailable choice is the reason.
+                let mut spoken: Vec<&str> = Vec::new();
+                for text in [description.as_deref(), note.as_deref()]
+                    .into_iter()
+                    .flatten()
+                {
+                    if !spoken.contains(&text) {
+                        spoken.push(text);
+                    }
+                }
+                let spoken = (!spoken.is_empty()).then(|| spoken.join(". "));
+                ui::choice_row(
+                    ("choice", s as usize * 1000 + i),
+                    o.name.clone(),
+                    o.id == current,
+                )
+                .when(self.menu_focus(offset + i), |d| d.bg(theme::fill_hover()))
+                .when(!enabled, |d| d.opacity(0.45).cursor_default())
+                // gpui has no disabled state to give screen readers; the
+                // reason, part of the note, says the choice is out of reach.
+                .when_some(spoken, |d, text| d.aria_description(text))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .child(div().truncate().child(o.name))
+                        .when_some(description, |d, text| {
+                            d.child(
+                                div()
+                                    .text_size(px(ui::TEXT_XS))
+                                    .text_color(theme::text_subtle())
+                                    .child(text),
+                            )
+                        }),
+                )
+                .when_some(note, |d, note| {
+                    d.child(
                         div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .child(div().truncate().child(o.name))
-                            .when_some(description, |d, text| {
-                                d.child(
-                                    div()
-                                        .text_size(px(ui::TEXT_XS))
-                                        .text_color(theme::text_subtle())
-                                        .child(text),
-                                )
-                            }),
+                            .flex_none()
+                            .max_w(px(130.))
+                            .truncate()
+                            .text_size(px(ui::TEXT_XS))
+                            .text_color(theme::text_subtle())
+                            .child(note),
                     )
-                    .when_some(note, |d, note| {
-                        d.child(
-                            div()
-                                .flex_none()
-                                .max_w(px(130.))
-                                .truncate()
-                                .text_size(px(ui::TEXT_XS))
-                                .text_color(theme::text_subtle())
-                                .child(note),
-                        )
-                    })
-                    .when(enabled, |d| {
-                        d.on_click(cx.listener(move |this, _, window, cx| {
-                            this.menu_run(key.clone(), window, cx)
-                        }))
-                    })
-                    .into_any_element()
+                })
+                .when(enabled, |d| {
+                    d.on_click(cx.listener(move |this, _, window, cx| {
+                        this.menu_run(key.clone(), window, cx)
+                    }))
+                })
+                .into_any_element()
             })
             .collect()
     }

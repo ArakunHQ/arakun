@@ -709,15 +709,10 @@ impl DoopView {
         for (i, s) in self.sessions.iter().enumerate() {
             let on = self.current.as_ref() == Some(&s.id);
             let id = s.id.clone();
+            let who = crate::redact::value(&s.who());
             panel = panel.child(
-                ui::choice_row(("doop-menu-row", i), on)
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .child(crate::redact::value(&s.who())),
-                    )
+                ui::choice_row(("doop-menu-row", i), who.clone(), on)
+                    .child(div().flex_1().min_w_0().truncate().child(who))
                     .child(ui::text(
                         Type::Caption,
                         theme::text_faint(),
@@ -753,17 +748,25 @@ impl DoopView {
         for (i, (c, added)) in self.canvases().into_iter().enumerate() {
             let on = self.picked.as_ref() == Some(&c.id);
             let (pick, remove) = (c.id.clone(), c.id.clone());
+            let label = canvas_label(&c);
+            let remove_label = format!("Remove {label}");
             rows = rows.child(
-                ui::choice_row(("doop-canvas", i), on)
-                    .child(div().flex_1().min_w_0().truncate().child(canvas_label(&c)))
+                ui::choice_row(("doop-canvas", i), label.clone(), on)
+                    .child(div().flex_1().min_w_0().truncate().child(label))
                     .when(added, |d| {
                         d.child(
-                            ui::icon_button(("doop-canvas-remove", i), "cancel01", 12.).on_click(
-                                cx.listener(move |this, _, _, cx| {
+                            ui::icon_button(
+                                ("doop-canvas-remove", i),
+                                "cancel01",
+                                12.,
+                                remove_label,
+                            )
+                            .on_click(cx.listener(
+                                move |this, _, _, cx| {
                                     cx.stop_propagation();
                                     this.remove_canvas(remove.clone(), cx);
-                                }),
-                            ),
+                                },
+                            )),
                         )
                     })
                     .on_click(cx.listener(move |this, _, _, cx| this.pick(pick.clone(), cx))),

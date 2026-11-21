@@ -132,7 +132,7 @@ impl Render for UpdateDialog {
                 .into_any_element()
         };
         let message: Option<SharedString> = self.policy.message.clone().map(Into::into);
-        ui::modal_panel("update-policy", 420.)
+        ui::modal_panel("update-policy", 420., title)
             .track_focus(&self.focus)
             .on_key_down(cx.listener(move |_, ev: &gpui::KeyDownEvent, _, cx| {
                 if ev.keystroke.key == "escape" && !forced {

@@ -281,7 +281,7 @@ impl Render for CommitDialog {
                     .on_click(cx.listener(move |this, _, _, cx| this.submit(all, cx)))
             };
 
-        ui::modal_panel("commit", 440.)
+        ui::modal_panel("commit", 440., "Commit changes")
             .child(ui::modal_header(
                 "Commit changes",
                 Some(format!("{what} on {}", self.branch).into()),
@@ -885,7 +885,7 @@ impl Render for PullRequestDialog {
         } else {
             "Create pull request"
         };
-        ui::modal_panel("pull-request", 520.)
+        ui::modal_panel("pull-request", 520., "Create pull request")
             .child(ui::modal_header(
                 "Create pull request",
                 Some(about.into()),
@@ -1113,7 +1113,7 @@ impl Render for ConfirmDialog {
         } else {
             theme::background()
         };
-        ui::modal_panel("git-confirm", 420.)
+        ui::modal_panel("git-confirm", 420., self.title.clone())
             .track_focus(&self.focus)
             .on_key_down(cx.listener(|this, ev: &gpui::KeyDownEvent, _, cx| {
                 match ev.keystroke.key.as_str() {

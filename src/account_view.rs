@@ -347,7 +347,7 @@ impl Render for AccountDialog {
             );
         }
 
-        ui::modal_panel("account", 460.)
+        ui::modal_panel("account", 460., "Factory account")
             .child(ui::modal_header(
                 "Factory account",
                 Some(description),

@@ -1761,9 +1761,9 @@ impl SettingsDialog {
             .into_any_element();
         let zoom = {
             let pct = crate::ui_zoom::pct();
-            let step = |id: &'static str, icon: &'static str, steps: i32| {
+            let step = |id: &'static str, icon: &'static str, label: &'static str, steps: i32| {
                 let to = crate::ui_zoom::next(pct, steps);
-                ui::icon_button(id, icon, 13.)
+                ui::icon_button(id, icon, 13., label)
                     .when(to != pct, |b| {
                         b.on_click(cx.listener(move |_, _, _, cx| {
                             cx.emit(SettingsEvent::Zoom(to));
@@ -1780,7 +1780,7 @@ impl SettingsDialog {
                     .flex_none()
                     .items_center()
                     .gap(crate::ui::sp(6.))
-                    .child(step("set-zoom-out", "minus-sign", -1))
+                    .child(step("set-zoom-out", "minus-sign", "Zoom out", -1))
                     .child(
                         div()
                             .w(px(44.))
@@ -1788,7 +1788,7 @@ impl SettingsDialog {
                             .text_size(px(ui::TEXT_SM))
                             .child(format!("{pct}%")),
                     )
-                    .child(step("set-zoom-in", "add01", 1))
+                    .child(step("set-zoom-in", "add01", "Zoom in", 1))
                     .child(
                         ui::button("set-zoom-reset", "Reset", ButtonKind::Ghost, pct != 100).on_click(
                             cx.listener(move |_, _, _, cx| {
@@ -2400,7 +2400,7 @@ impl Render for SettingsDialog {
             self.render_pane(cx)
         };
 
-        ui::modal_panel("settings", DIALOG_W)
+        ui::modal_panel("settings", DIALOG_W, "Settings")
             .child(ui::modal_header(
                 "Settings",
                 Some("Changes save as you make them.".into()),

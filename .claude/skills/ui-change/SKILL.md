@@ -26,6 +26,11 @@ Design system tab (Settings → Design system → Open) shows every token and
 component. A new reusable component goes in `ui`, and shows up in
 `src/gallery_view.rs`.
 
+Screen readers only see what has a role and a label. The kit's controls set
+both (`icon_button` takes its label, which is also its tooltip). A clickable
+`div` of your own needs `.role(Role::…)` and `.aria_label(…)`, or
+`ui::labelled(d, Role::Button, "Name (Ctrl+K)")`.
+
 `src/design_lint.rs` fails `cargo test` on hand-written text colors, faint
 borders and fills from `theme::mix(..)`, literal `.text_size(px(N))` and font
 names. Run it alone while you work:

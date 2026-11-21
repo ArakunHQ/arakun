@@ -101,12 +101,12 @@ impl Shell {
             .child(key(&["Ctrl", "Shift", "N"], "new environment"))
             .child(div().flex_1())
             .child(
-                icon_button("setup-tips-close", "cancel01", 12.)
-                    .tooltip(ui::tip("Close"))
-                    .on_click(cx.listener(|this, _, _, cx| {
+                icon_button("setup-tips-close", "cancel01", 12., "Close").on_click(cx.listener(
+                    |this, _, _, cx| {
                         this.setup_tips = false;
                         cx.notify();
-                    })),
+                    },
+                )),
             )
     }
 
@@ -194,9 +194,13 @@ impl Shell {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let back = icon_button("alone-back", "arrow-left01", 14.)
-            .tooltip(ui::tip("Back to the welcome screen"))
-            .on_click(cx.listener(|this, _, _, cx| this.show_alone(None, cx)));
+        let back = icon_button(
+            "alone-back",
+            "arrow-left01",
+            14.,
+            "Back to the welcome screen",
+        )
+        .on_click(cx.listener(|this, _, _, cx| this.show_alone(None, cx)));
         let view = match alone {
             Alone::GitHub => self.github_view.clone().into_any_element(),
             Alone::Servers => self.servers_view.clone().into_any_element(),
@@ -216,12 +220,16 @@ impl Shell {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let back = icon_button("terminal-alone-back", "arrow-left01", 14.)
-            .tooltip(ui::tip("Close the terminal and go back"))
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.terminal_alone = None;
-                cx.notify();
-            }));
+        let back = icon_button(
+            "terminal-alone-back",
+            "arrow-left01",
+            14.,
+            "Close the terminal and go back",
+        )
+        .on_click(cx.listener(|this, _, _, cx| {
+            this.terminal_alone = None;
+            cx.notify();
+        }));
         self.render_alone(
             "terminal-alone",
             back,

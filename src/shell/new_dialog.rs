@@ -276,7 +276,7 @@ impl Render for NewDialog {
             .iter()
             .map(|p| self.project_row(p, cx).into_any_element())
             .collect();
-        ui::modal_panel("new-dialog", 480.)
+        ui::modal_panel("new-dialog", 480., "New")
             .track_focus(&self.focus)
             .on_key_down(cx.listener(move |this, ev: &gpui::KeyDownEvent, _, cx| {
                 match ev.keystroke.key.as_str() {

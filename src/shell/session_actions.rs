@@ -75,7 +75,7 @@ impl Focusable for RenameDialog {
 impl Render for RenameDialog {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let ready = !self.title(cx).is_empty();
-        ui::modal_panel("rename-session", 420.)
+        ui::modal_panel("rename-session", 420., "Rename session")
             .child(ui::modal_header(
                 "Rename session",
                 None,
@@ -181,7 +181,7 @@ impl Render for RemoveDialog {
             AgentKind::Cursor => "Cursor keeps its own copy of the session.",
             AgentKind::WorkersAi => "arakun keeps the messages the model saw until then.",
         };
-        ui::modal_panel("remove-session", 420.)
+        ui::modal_panel("remove-session", 420., "Remove session from Arakun?")
             .track_focus(&self.focus)
             .on_key_down(cx.listener(|_, ev: &gpui::KeyDownEvent, _, cx| match ev.keystroke.key.as_str() {
                 "escape" => cx.emit(SessionDialogEvent::Dismissed),
@@ -404,7 +404,7 @@ impl Render for ImportDialog {
                 }))
                 .into_any_element()
         };
-        ui::modal_panel("import-sessions", 480.)
+        ui::modal_panel("import-sessions", 480., "Import sessions")
             .track_focus(&self.focus)
             .on_key_down(cx.listener(|this, ev: &gpui::KeyDownEvent, _, cx| {
                 match ev.keystroke.key.as_str() {

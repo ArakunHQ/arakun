@@ -872,7 +872,7 @@ impl BranchesView {
                     .child(ui::tag(status.label(), status_color(status)))
                     .child(div().flex_1())
                     .child(
-                        icon_button("branch-close", "cancel01", 12.)
+                        icon_button("branch-close", "cancel01", 12., "Close")
                             .on_click(cx.listener(|this, _, _, cx| this.select(None, cx))),
                     ),
             )

@@ -826,7 +826,17 @@ fn caret_quad(
 
 impl Render for TextInput {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Hidden text stays hidden from screen readers too.
+        let hidden = self.secret || (self.redacted && crate::redact::on());
         div()
+            // The view is the field, so its entity keeps the id unique.
+            .id("text-input")
+            .role(gpui::Role::TextInput)
+            .when(!self.placeholder.is_empty(), |d| {
+                d.aria_label(self.placeholder.clone())
+                    .aria_placeholder(self.placeholder.clone())
+            })
+            .when(!hidden, |d| d.aria_value(self.content.clone()))
             .flex()
             .flex_1()
             .min_w_0()

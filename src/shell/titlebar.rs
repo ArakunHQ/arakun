@@ -8,6 +8,7 @@ impl Shell {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        let a11y = window.is_a11y_active();
         // The tabs take what they need and the centred title what is left.
         let mut strip = div()
             .flex()
@@ -121,6 +122,7 @@ impl Shell {
         // window buttons.
         let mut list = div()
             .id("tab-list")
+            .role(gpui::Role::TabList)
             .flex()
             .items_center()
             .min_w_0()
@@ -278,9 +280,11 @@ impl Shell {
                         .child(crate::redact::text(&label).into_owned()),
                 );
             }
+            let title = crate::redact::text(&tab.title).into_owned();
+            let close_label = format!("Close {title}");
             list = list.child(
                 slot.child(
-                    ui::tab(("tab", i), active)
+                    ui::tab(("tab", i), title, active)
                         .group(group.clone())
                         // The close button keeps its size; only the air beside it scales.
                         .when(closable, |d| {
@@ -330,6 +334,9 @@ impl Shell {
                             d.child(
                                 div()
                                     .id(("tab-close", i))
+                                    .map(|d| {
+                                        ui::labelled(d, gpui::Role::Button, close_label.clone())
+                                    })
                                     .absolute()
                                     .right(px(4.))
                                     .top(px(ui::TAB_CLOSE_TOP))
@@ -338,8 +345,11 @@ impl Shell {
                                     .justify_center()
                                     .size(px(20.))
                                     .rounded(crate::ui::rad(4.))
-                                    .invisible()
-                                    .group_hover(group.clone(), |s| s.visible())
+                                    // Hidden elements register no click listeners,
+                                    // so keep it pressable for a screen reader.
+                                    .when(!a11y, |d| {
+                                        d.invisible().group_hover(group.clone(), |s| s.visible())
+                                    })
                                     .hover(|s| s.bg(theme::fill_selected()))
                                     .child(icon("cancel01", 12.).text_color(theme::text_subtle()))
                                     .on_click(cx.listener(move |this, _, window, cx| {
@@ -376,16 +386,19 @@ impl Shell {
                 .gap(crate::ui::sp(2.))
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .child(
-                    icon_button("tab-new-session", "add01", 14.)
-                        .tooltip(ui::tip("New session (Ctrl+T)"))
+                    icon_button("tab-new-session", "add01", 14., "New session (Ctrl+T)")
                         .on_click(cx.listener(|this, _, window, cx| this.new_session(window, cx))),
                 )
                 .child(
-                    icon_button("tab-new-browser", "globe", 14.)
-                        .tooltip(ui::tip("New browser tab (Ctrl+Shift+B)"))
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.open_browser_tab(String::new(), window, cx)
-                        })),
+                    icon_button(
+                        "tab-new-browser",
+                        "globe",
+                        14.,
+                        "New browser tab (Ctrl+Shift+B)",
+                    )
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.open_browser_tab(String::new(), window, cx)
+                    })),
                 )
                 .child(
                     icon_button(
@@ -396,12 +409,12 @@ impl Shell {
                             "layout-two-column"
                         },
                         14.,
+                        if in_other_pane.is_some() {
+                            "Close split"
+                        } else {
+                            "Split right (Ctrl+D)"
+                        },
                     )
-                    .tooltip(ui::tip(if in_other_pane.is_some() {
-                        "Close split"
-                    } else {
-                        "Split right (Ctrl+D)"
-                    }))
                     .on_click(cx.listener(|this, _, window, cx| {
                         if this.split_other().is_some() {
                             this.close_split(cx)

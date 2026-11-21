@@ -431,8 +431,7 @@ fn filter_chip(id: usize, f: &PropFilter, cx: &mut Context<EventsTab>) -> AnyEle
         .text_color(theme::text())
         .child(format!("{} = {}", f.key, f.value))
         .child(
-            ui::icon_button(("ph-ev-chip-x", id), "cancel01", 12.)
-                .tooltip(ui::tip("Remove"))
+            ui::icon_button(("ph-ev-chip-x", id), "cancel01", 12., "Remove")
                 .on_click(cx.listener(move |this, _, _, cx| this.remove_prop(id, cx))),
         )
         .into_any_element()

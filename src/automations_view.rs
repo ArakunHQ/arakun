@@ -481,16 +481,20 @@ impl AutomationsDialog {
                 )
             })
             .child(
-                icon_button(("auto-run", i), "play", 14.)
+                icon_button(("auto-run", i), "play", 14., "Run now")
+                    .aria_label(format!("Run {} now", a.name))
                     .on_click(cx.listener(move |_, _, _, cx| cx.emit(AutomationsEvent::Run(i)))),
             )
             .child(
-                icon_button(("auto-edit", i), "pencil-edit02", 14.).on_click(
-                    cx.listener(move |this, _, window, cx| this.edit(Some(i), window, cx)),
-                ),
+                icon_button(("auto-edit", i), "pencil-edit02", 14., "Edit")
+                    .aria_label(format!("Edit {}", a.name))
+                    .on_click(
+                        cx.listener(move |this, _, window, cx| this.edit(Some(i), window, cx)),
+                    ),
             )
             .child(
-                icon_button(("auto-delete", i), "delete02", 14.)
+                icon_button(("auto-delete", i), "delete02", 14., "Delete")
+                    .aria_label(format!("Delete {}", a.name))
                     .on_click(cx.listener(move |_, _, _, cx| cx.emit(AutomationsEvent::Delete(i)))),
             )
             .when(scheduled, |d| {
@@ -835,7 +839,7 @@ impl Render for AutomationsDialog {
                         .on_click(cx.listener(|this, _, window, cx| this.edit(None, window, cx))),
                 )
             });
-        ui::modal_panel("automations", 560.)
+        ui::modal_panel("automations", 560., title.clone())
             .track_focus(&self.focus)
             .on_key_down(cx.listener(|this, ev: &gpui::KeyDownEvent, window, cx| {
                 // The text fields handle their own Escape (`InputEvent::Cancel`).

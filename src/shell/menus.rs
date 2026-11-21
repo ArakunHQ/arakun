@@ -812,6 +812,8 @@ impl Shell {
                     .role(gpui::Role::MenuItemRadio)
                     .aria_label(SharedString::from(o.name.clone()))
                     .aria_toggled(crate::ui::toggled(o.id == now))
+                    // A dimmed bar only shows the reason in its tooltip.
+                    .when_some(o.disabled.clone(), |d, why| d.aria_description(why))
                     .flex_1()
                     .h(px(18.))
                     .flex()

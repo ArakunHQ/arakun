@@ -99,6 +99,8 @@ reviews:
       - "src/stored.rs"
       - "core/src/durable.rs"
       - "src/update.rs"
+      # The public keys the updater checks releases and nightlies against.
+      - "assets/*.pub"
       - "core/src/server/**"
       - "core/src/server.rs"
 
@@ -112,7 +114,10 @@ reviews:
       - "Cargo.lock"
       - "relay/package-lock.json"
       - "teams/package-lock.json"
-      - "assets/**"
+      # Images and fonts only: assets/*.pub are the release signing keys.
+      - "assets/**/*.png"
+      - "assets/**/*.svg"
+      - "assets/**/*.ttf"
       - "docs/screenshots/**"
       - "phone/*.png"
       # Written by `WRITE_VECTORS=1 cargo test phone::e2e::vectors`; the phone

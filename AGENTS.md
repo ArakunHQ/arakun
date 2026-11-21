@@ -60,7 +60,8 @@ Every commit message and pull request title follows
   a person approves, and marking ready is what asks for the review. cubic, the review
   bot, reviews drafts too, so its review is often done before the checks. Once the
   pull request is ready and cubic has finished, the reviewers are asked unless cubic
-  approved and every review thread is resolved.
+  approved and every review thread is resolved. A pull request from outside the team
+  always needs a person: the workflow dismisses cubic's approval of it.
 - Answer every cubic comment: fix it and push, or reply with the reason you won't.
   Resolve a thread on GitHub once the pushed commit fixes it; leave the ones you
   declined open for the reviewer. Never resolve a thread you didn't fix to get cubic's

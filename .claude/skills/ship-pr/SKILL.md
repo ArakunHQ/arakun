@@ -30,7 +30,7 @@ one row (`Cargo.lock` needs the Rust checks and cargo-deny).
 
 | Changed | Run |
 | --- | --- |
-| any path outside `relay/` that the last row does not list (`src/`, `examples/`, `assets/`, `Cargo.*`, `tools/rustfmt.sh`, `lefthook.yml`, `.coderabbit.yaml`, a `.md` inside a folder such as `examples/`...) | rustfmt, clippy, tests |
+| any path outside `relay/` that the last row does not list (`src/`, `examples/`, `assets/`, `Cargo.*`, `tools/rustfmt.sh`, `lefthook.yml`, `cubic.yaml`, a `.md` inside a folder such as `examples/`...) | rustfmt, clippy, tests |
 | `phone/` | rustfmt, clippy, tests, relay, phone |
 | `relay/` | relay, phone |
 | `.github/workflows/ci.yml`, `.github/actions/` | everything: rustfmt, clippy, tests, relay, phone |
@@ -118,13 +118,15 @@ part of the wait either: it is a merge gate that only resolves after a person
 approves, and marking ready is what asks for the review.
 
 - Exit 1 (a check failed): use the `triage-ci` skill, push the fix, wait again.
-- Exit 0: `gh pr ready`. CodeRabbit reviews drafts too, so its review is often
-  done before the checks; marking ready asks for the reviewers, so never
-  before the required checks pass.
+- Exit 0: `gh pr ready`. cubic, the review bot, reviews drafts too, so its
+  review is often done before the checks; marking ready asks for the
+  reviewers, so never before the required checks pass.
 - The first pull request of a new contributor needs the CLA signed; only the
   person can do that.
-- CodeRabbit comments: fix each one and push, or reply with the reason you
+- cubic comments: fix each one and push, or reply with the reason you
   won't. Once the push is up, resolve the threads it fixed (right away: an
   approval with threads still open is dismissed). Leave the declined ones open
-  for the reviewer. Never post `@coderabbitai resolve` or `approve`.
+  for the reviewer. Never resolve a thread you didn't fix to get cubic's
+  approval. cubic may push its own fixes to the branch: `git pull --rebase`
+  before you push.
 - Never merge, approve or self-review. A person does that.

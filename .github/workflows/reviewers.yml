@@ -1,22 +1,23 @@
 name: Reviewers
 
-# Requests reviewers once CodeRabbit has finished reviewing a pull request and
-# has not approved it. A CodeRabbit approval is enough to merge a routine
-# change from the team, so nobody is asked then, unless a review thread is
-# still open: the main ruleset requires every thread resolved, and authors
-# resolve only the threads they fixed (CONTRIBUTING.md), so someone has to
-# be asked or the pull request sits blocked. CodeRabbit's approval is
+# Requests reviewers once cubic, the review bot, has finished reviewing a pull
+# request and has not approved it. A cubic approval is enough to merge a
+# routine change from the team, so nobody is asked then, unless a review
+# thread is still open: the main ruleset requires every thread resolved, and
+# authors resolve only the threads they fixed (CONTRIBUTING.md), so someone
+# has to be asked or the pull request sits blocked. cubic's approval is
 # dismissed then: nothing runs this again when a thread is resolved, so the
-# author could resolve the rest afterwards and merge on it. An author who
-# resolves CodeRabbit's threads before it approves keeps the approval.
+# author could resolve the rest afterwards and merge on it.
+# An author who resolves cubic's threads before it approves keeps the
+# approval: cubic checks again once its last blocking thread is resolved.
 # It replaces CODEOWNERS, so
 # the main ruleset no longer has to require a code owner's approval: any
 # approval from someone with write access counts.
 #
-# CodeRabbit may not approve a pull request from outside the team: this
-# workflow dismisses such an approval and asks a person. That rule lives here,
-# not in .coderabbit.yaml, because CodeRabbit's approval overrides can only
-# match members of a team, not everyone outside it.
+# cubic may not approve a pull request from outside the team: this workflow
+# dismisses such an approval and asks a person. cubic.yaml tells cubic not to
+# approve external contributors too, but that is cubic's idea of who is
+# outside; the rule that counts lives here, with the TEAM list.
 #
 # The dismissal comes after the approval, so it can't stop a merge in
 # between. For an outside pull request the "Human approval" commit status
@@ -37,23 +38,25 @@ name: Reviewers
 # is not in the hunk, is missed; request the reviewer by hand then.
 #
 # When it runs:
-# - check_run: CodeRabbit's "CodeRabbit" check run on the head commit
-#   completed, so its review is done (or skipped, or rate limited).
+# - check_run: cubic's "cubic · AI code reviewer" check run on the head
+#   commit completed, so its review is done. cubic runs it on every push and
+#   completes it also when it reviewed nothing: a merge commit, or a review
+#   it cancelled.
 # - workflow_run: the "Review submitted" workflow ran, so a review was
-#   submitted or dismissed. This catches an approval CodeRabbit gives after
-#   its check run, such as once the author resolves its threads, and the
-#   approval of an outside pull request. (It used to watch CodeRabbit's
-#   summary comment, but CodeRabbit edits that comment many times, and each
-#   edit cancelled the run before it.) Reviews this workflow dismisses don't
-#   start it again: GitHub starts no workflow for events of its own token.
-# - pull_request_target ready_for_review: a draft went ready. CodeRabbit
-#   reviews drafts, so its verdict often predates this event; without it the
-#   review would finish while the pull request was a draft, this workflow
-#   would skip it, and nobody would ever be asked. If CodeRabbit has not
-#   finished by now, its own check run starts this workflow when it does.
-# - workflow_dispatch: by hand, for a pull request CodeRabbit never reviewed.
-#   It doesn't wait for CodeRabbit.
-# Drafts get no reviewers, but CodeRabbit does review them.
+#   submitted or dismissed. This catches an approval cubic gives after its
+#   check run, such as once the author resolves or disputes its last blocking
+#   thread, and the approval of an outside pull request. Reviews this workflow
+#   dismisses don't start it again: GitHub starts no workflow for events of
+#   its own token.
+# - pull_request_target ready_for_review: a draft went ready. cubic reviews
+#   drafts (check_drafts in cubic.yaml), so its verdict often predates this
+#   event; without it the review would finish while the pull request was a
+#   draft, this workflow would skip it, and nobody would ever be asked. If
+#   cubic has not finished by now, its own check run starts this workflow
+#   when it does.
+# - workflow_dispatch: by hand, for a pull request cubic never reviewed.
+#   It doesn't wait for cubic.
+# Drafts get no reviewers, but cubic does review them.
 #
 # These events run this file from the default branch with a write token, even
 # for pull requests from forks. That is safe only because no job checks out or
@@ -88,7 +91,7 @@ jobs:
   request:
     name: Request reviewers
     # On the job, not the workflow: a run whose job is skipped (any check run
-    # but CodeRabbit's) must not cancel one that is working. Keyed by the pull
+    # but cubic's) must not cancel one that is working. Keyed by the pull
     # request for every event, so a check_run run and a workflow_run run
     # don't both request the same reviewer at once (GitHub answers one of
     # them with HTTP 422). A run handles the pull request's current head, not
@@ -96,8 +99,8 @@ jobs:
     # cancels a run does the cancelled run's work. The events list no pull
     # request when the branch is on a fork; the head commit is the key then.
     # A run by hand has a group of its own: it is often for a pull request
-    # CodeRabbit never reviewed, and a run started by a review event would
-    # cancel it, then stop because CodeRabbit's check run is missing. The
+    # cubic never reviewed, and a run started by a review event would
+    # cancel it, then stop because cubic's check run is missing. The
     # steps accept a dismissal or review request the other run already made.
     concurrency:
       group: >-
@@ -113,8 +116,8 @@ jobs:
       github.event_name == 'workflow_run' ||
       github.event_name == 'pull_request_target' ||
       (github.event_name == 'check_run' &&
-      github.event.check_run.app.slug == 'coderabbitai' &&
-      github.event.check_run.name == 'CodeRabbit') }}
+      github.event.check_run.app.slug == 'cubic-dev-ai' &&
+      github.event.check_run.name == 'cubic · AI code reviewer') }}
     runs-on: depot-ubuntu-24.04
     # It waits at most APPROVAL_WAIT per pull request; a hung API call must
     # not hold the runner for the default six hours.
@@ -133,9 +136,17 @@ jobs:
             ${{ inputs.pr || github.event.check_run.pull_requests[0].number ||
             github.event.workflow_run.pull_requests[0].number ||
             github.event.pull_request.number }}
-          CODERABBIT: coderabbitai[bot]
-          # How long to wait, after CodeRabbit's check run completes, for its
-          # approval of a team pull request. It can come about a minute later.
+          # cubic's bot, and the app and name of its check run. The name is
+          # also in the job's `if`; keep the two in step.
+          REVIEW_BOT: cubic-dev-ai[bot]
+          REVIEW_BOT_APP: cubic-dev-ai
+          REVIEW_BOT_CHECK: cubic · AI code reviewer
+          # How long to wait, after cubic's check run completes, for its
+          # approval of a team pull request; the approval can come a little
+          # later. cubic never requests changes, and a clean push it won't
+          # approve gets no review at all, so every pull request it doesn't
+          # approve waits this long before a person is asked. An approval
+          # after the wait still starts this workflow (workflow_run).
           APPROVAL_WAIT: 120
           # Every pull request: from the team, the first of these who is not
           # the author; from outside, the one with the fewest open requests.
@@ -185,11 +196,14 @@ jobs:
 
           in_team() { grep -qxF "$1" <<<"${TEAM// /$'\n'}"; }
 
-          # CodeRabbit's verdict on the head commit: APPROVED, CHANGES_REQUESTED
-          # or nothing. COMMENTED doesn't change a reviewer's verdict on GitHub.
-          coderabbit_verdict() {
+          # cubic's verdict on the head commit: APPROVED, CHANGES_REQUESTED
+          # or nothing. COMMENTED doesn't change a reviewer's verdict on
+          # GitHub. cubic puts its findings in a COMMENTED review and
+          # approves in a separate one, so in practice this is APPROVED or
+          # nothing.
+          bot_verdict() {
             gh api "repos/$GH_REPO/pulls/$1/reviews" --paginate --jq \
-              '.[] | select(.user.login == env.CODERABBIT and .commit_id == env.HEAD) | .state' |
+              '.[] | select(.user.login == env.REVIEW_BOT and .commit_id == env.HEAD) | .state' |
               grep -xE 'APPROVED|CHANGES_REQUESTED' | tail -n 1 || true
           }
 
@@ -208,11 +222,11 @@ jobs:
               awk '{ open += $1 } END { print open + 0 }'
           }
 
-          # Every CodeRabbit approval, older commits' too: one of those can
-          # still count toward the ruleset.
-          coderabbit_approvals() {
+          # Every cubic approval, older commits' too: one of those can still
+          # count toward the ruleset.
+          bot_approvals() {
             gh api "repos/$GH_REPO/pulls/$1/reviews" --paginate \
-              --jq '.[] | select(.user.login == env.CODERABBIT and .state == "APPROVED") | .id'
+              --jq '.[] | select(.user.login == env.REVIEW_BOT and .state == "APPROVED") | .id'
           }
 
           # The pull request, the message, then the approvals to dismiss
@@ -224,7 +238,7 @@ jobs:
             if [ ${#ids[@]} -eq 0 ]; then
               # An assignment, not `mapfile < <(...)`: a failed lookup must
               # fail the step, not look like no approvals.
-              listed=$(coderabbit_approvals "$pr")
+              listed=$(bot_approvals "$pr")
               [ -z "$listed" ] || mapfile -t ids <<<"$listed"
             fi
             for id in "${ids[@]}"; do
@@ -232,10 +246,10 @@ jobs:
               if ! gh api -X PUT "repos/$GH_REPO/pulls/$pr/reviews/$id/dismissals" --silent \
                 -f event=DISMISS -f message="$message" &&
                 [ "$(gh api "repos/$GH_REPO/pulls/$pr/reviews/$id" --jq .state)" != DISMISSED ]; then
-                echo "::error::Couldn't dismiss CodeRabbit's approval $id on #$pr."
+                echo "::error::Couldn't dismiss cubic's approval $id on #$pr."
                 exit 1
               fi
-              echo "Dismissed CodeRabbit's approval $id: $message"
+              echo "Dismissed cubic's approval $id: $message"
             done
           }
 
@@ -254,20 +268,24 @@ jobs:
 
             if [ "$EVENT" != workflow_dispatch ]; then
               local check status completed
-              check=$(gh api "repos/$GH_REPO/commits/$HEAD/check-runs?check_name=CodeRabbit" \
-                --jq '[.check_runs[] | select(.app.slug == "coderabbitai")][0] // {} | [.status // "missing", .completed_at // ""] | @tsv')
+              # -f with GET goes in the query string, encoded: the name has
+              # spaces and a middle dot.
+              check=$(gh api -X GET "repos/$GH_REPO/commits/$HEAD/check-runs" -f check_name="$REVIEW_BOT_CHECK" \
+                --jq '[.check_runs[] | select(.app.slug == env.REVIEW_BOT_APP)][0] // {} | [.status // "missing", .completed_at // ""] | @tsv')
               read -r status completed <<<"$check"
               if [ "$status" != completed ]; then
-                echo "CodeRabbit hasn't finished reviewing $HEAD ($status)."
+                echo "cubic hasn't finished reviewing $HEAD ($status)."
                 echo "::endgroup::"
                 return
               fi
-              # CodeRabbit can approve a little after its check run ends. An
+              # Any conclusion counts: a cancelled review or a skipped merge
+              # commit leaves no verdict, and a person is asked.
+              # cubic can approve a little after its check run ends. An
               # outside pull request needn't wait: its approval is dismissed.
               if in_team "$author"; then
                 local deadline
                 deadline=$(($(date -d "$completed" +%s) + APPROVAL_WAIT))
-                while [ -z "$(coderabbit_verdict "$pr")" ] && [ "$(date +%s)" -lt "$deadline" ]; do
+                while [ -z "$(bot_verdict "$pr")" ] && [ "$(date +%s)" -lt "$deadline" ]; do
                   sleep 15
                 done
               fi
@@ -275,17 +293,18 @@ jobs:
 
             if ! in_team "$author"; then
               dismiss_approvals "$pr" \
-                "A pull request from outside the team needs a person's approval. CodeRabbit's comments still apply."
+                "A pull request from outside the team needs a person's approval. cubic's comments still apply."
             fi
             # Any approval, not only the head's: a newer head may get no
-            # verdict at all (CodeRabbit rate limited), and an older approval
-            # can still count. Taken before the threads are read, so only
-            # these are dismissed: an approval that comes later starts a run
-            # of its own, which judges it.
+            # verdict at all (cubic won't approve it, skipped it as a merge
+            # commit or cancelled its review), and an older approval can
+            # still count. Taken before the threads are read, so only these
+            # are dismissed: an approval that comes later starts a run of its
+            # own, which judges it.
             local approvals=() listed
             if in_team "$author"; then
               # A failed lookup fails the step (see dismiss_approvals).
-              listed=$(coderabbit_approvals "$pr")
+              listed=$(bot_approvals "$pr")
               [ -z "$listed" ] || mapfile -t approvals <<<"$listed"
             fi
             if [ ${#approvals[@]} -gt 0 ]; then
@@ -293,21 +312,21 @@ jobs:
               # A failed lookup fails the step (see dismiss_approvals).
               open=$(open_threads "$pr")
               # Nothing runs this again when a thread is resolved, so the
-              # author could resolve them afterwards and merge on
-              # CodeRabbit's approval.
+              # author could resolve them afterwards and merge on cubic's
+              # approval.
               if [ "$open" -gt 0 ]; then
                 echo "$open review threads are open."
                 dismiss_approvals "$pr" \
-                  "Review threads are still open; a person resolves them and approves. CodeRabbit's comments still apply." \
+                  "Review threads are still open; a person resolves them and approves. cubic's comments still apply." \
                   "${approvals[@]}"
-              elif [ "$(coderabbit_verdict "$pr")" = APPROVED ]; then
-                echo "CodeRabbit approved $HEAD and every thread is resolved; no reviewer needed."
+              elif [ "$(bot_verdict "$pr")" = APPROVED ]; then
+                echo "cubic approved $HEAD and every thread is resolved; no reviewer needed."
                 echo "::endgroup::"
                 return
               else
                 # Only an older commit's approval: it would still count.
                 dismiss_approvals "$pr" \
-                  "CodeRabbit has not approved the latest commit, so a person has to approve. CodeRabbit's comments still apply." \
+                  "cubic has not approved the latest commit, so a person has to approve. cubic's comments still apply." \
                   "${approvals[@]}"
               fi
             fi

@@ -222,7 +222,7 @@ impl GitHubView {
             .map(|e| format!("pilot is off: {e}"))
             .or_else(|| {
                 p.problem()
-                    .map(|e| format!("Couldn't reach your agent: {e}"))
+                    .map(|e| format!("Couldn't read your agent: {e}"))
             });
         let sent = self.pilot_sent.as_ref().map(|(t, _)| t.clone());
         if items.is_empty() && problem.is_none() && sent.is_none() {

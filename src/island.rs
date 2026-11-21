@@ -121,6 +121,8 @@ const BODY_LH: f32 = 17.;
 const BODY_LINES: usize = 4;
 /// The fillets' radius where the card hangs from the island, at full join.
 const NECK_R: f32 = 12.;
+/// Long after a card's drip or melt has settled: where reduced motion draws it.
+const SETTLED: f32 = 10.;
 /// How long a card takes to melt back in; the next one drips after.
 const MELT_FOR: f32 = 0.9;
 /// How long a confirmation card is up before a click on "Approve" counts.
@@ -492,6 +494,10 @@ pub struct Feed {
     pub today: Option<SharedString>,
     /// The session the user is looking at in a focused window: no alerts for it.
     pub viewing: Option<SharedString>,
+    /// Whether the app reduces motion, by its setting or the system's. None
+    /// with no app connected (or an older one): the island follows the system.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reduce_motion: Option<bool>,
 }
 
 /// Most relevant first: needs input, errors, working, then recently finished,
@@ -1214,6 +1220,8 @@ fn wedge(island: Rounded, card: Rounded, r: f32) -> Option<[(f32, f32); 3]> {
 pub struct Island {
     start: Instant,
     last: Option<Instant>,
+    /// Motion is reduced: working dots hold still. Read at each render.
+    still: bool,
     /// When the last frames were painted, for `arakun island fps`.
     frames: std::collections::VecDeque<Instant>,
     phase: Phase,
@@ -1300,6 +1308,7 @@ impl Island {
         let view = View::Compact(Phase::Sleeping);
         let (w, h) = view.size(edge);
         let mut island = Island {
+            still: false,
             start: Instant::now(),
             frames: Default::default(),
             last: None,
@@ -1716,8 +1725,15 @@ impl Island {
             self.from = ((self.w.x - tw).abs() + (self.h.x - th).abs()).max(1.);
             self.progress = 0.;
         }
-        self.w.step(tw, dt);
-        self.h.step(th, dt);
+        if self.still {
+            // The old view would fade inside the snapped shape; drop it, even mid-fade.
+            self.prev = None;
+            self.w = Spring { x: tw, v: 0. };
+            self.h = Spring { x: th, v: 0. };
+        } else {
+            self.w.step(tw, dt);
+            self.h.step(th, dt);
+        }
         let left = (self.w.x - tw).abs() + (self.h.x - th).abs();
         // Never back down: the overshoot must not dim the content again.
         self.progress = self.progress.max(1. - left / self.from);
@@ -1774,6 +1790,16 @@ impl Island {
         }
     }
 
+    /// A working agent's dot breathing, `phase` radians behind the others.
+    /// Steady when motion is reduced.
+    fn pulse(&self, t: f32, phase: f32) -> f32 {
+        if self.still {
+            1.
+        } else {
+            0.75 + 0.25 * (t * TAU / 1.6 + phase).sin()
+        }
+    }
+
     fn compact(&self, phase: Phase, t: f32) -> gpui::AnyElement {
         let right = match phase {
             Phase::Sleeping | Phase::Idle => div().into_any_element(),
@@ -1790,7 +1816,7 @@ impl Island {
                     .gap(px(DOT_GAP))
                     .children(dots.into_iter().enumerate().map(|(i, s)| {
                         let pulse = match s {
-                            Status::Working => 0.75 + 0.25 * (t * TAU / 1.6 + i as f32).sin(),
+                            Status::Working => self.pulse(t, i as f32),
                             _ => 1.,
                         };
                         div()
@@ -2098,7 +2124,7 @@ impl Island {
             .enumerate()
             .map(|(i, a)| {
                 let pulse = match a.status {
-                    Status::Working => 0.75 + 0.25 * (t * TAU / 1.6).sin(),
+                    Status::Working => self.pulse(t, 0.),
                     _ => 1.,
                 };
                 let key = a.key.clone();
@@ -2740,6 +2766,7 @@ impl Render for Island {
         while self.frames.len() > 400 {
             self.frames.pop_front();
         }
+        self.still = cx.reduce_motion();
         let moving = self.step(dt);
         if let Some(c) = &mut self.call {
             let live = c.levels.get(c.phase == Phase::Listening);
@@ -2786,18 +2813,20 @@ impl Render for Island {
         }
         let card = self.card.as_ref().and_then(|c| {
             let l = c.layout.as_ref()?;
-            let g = card_geom(
-                l.w,
-                l.h,
-                w,
-                h,
-                c.born.elapsed().as_secs_f32(),
-                c.gone.map(|at| at.elapsed().as_secs_f32()),
-            );
+            // Held still, a card is out or in at once: no drip, wobble or melt.
+            let since = |at: Instant| {
+                if self.still {
+                    SETTLED
+                } else {
+                    at.elapsed().as_secs_f32()
+                }
+            };
+            let g = card_geom(l.w, l.h, w, h, since(c.born), c.gone.map(since));
             Some((c, l, g))
         });
         let bounced = self
             .melted
+            .filter(|_| !self.still)
             .map_or(0., |at| bounce(at.elapsed().as_secs_f32()));
         let ih = h + bounced;
         let island = Rounded {
@@ -2856,7 +2885,7 @@ impl Render for Island {
             self.region = Some(region);
         }
         // Frames only while the shape moves or something pulses.
-        let pulsing = self.feed.rows.iter().any(|r| r.status == Status::Working);
+        let pulsing = !self.still && self.feed.rows.iter().any(|r| r.status == Status::Working);
         let animated = match self.view {
             View::Compact(Phase::Speaking | Phase::Listening) | View::Call => true,
             View::Compact(_) | View::Recording if self.recording.is_some() => true,
@@ -3296,6 +3325,16 @@ mod tests {
         assert_eq!(g.join, 0.);
         let g = card_geom(w, h, iw, ih, 3., None);
         assert!((g.top - ih - CARD_GAP).abs() < 0.1 && (g.h - h).abs() < 0.1 && g.alpha == 1.);
+    }
+
+    #[test]
+    fn a_still_card_is_drawn_settled_out_or_in() {
+        let (w, h, iw, ih) = (440., 150., 240., 32.);
+        let g = card_geom(w, h, iw, ih, SETTLED, None);
+        assert!((g.top - ih - CARD_GAP).abs() < 0.01 && (g.h - h).abs() < 0.01);
+        assert!(g.alpha == 1. && g.join == 0. && g.bulge.abs() < 0.01);
+        let g = card_geom(w, h, iw, ih, SETTLED, Some(SETTLED));
+        assert!(g.join == 0. && g.alpha == 0. && g.top + g.h < ih);
     }
 
     #[test]

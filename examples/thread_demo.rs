@@ -42,6 +42,18 @@ mod memory {
     pub fn prompt_for(_: &std::path::Path) -> String {
         String::new()
     }
+    pub fn root() -> std::path::PathBuf {
+        crate::platform::app_dir().join("memory")
+    }
+}
+// Examples run no control socket; a sandboxed session there gets no `arakun`.
+mod control {
+    pub fn sandbox_socket_path() -> std::path::PathBuf {
+        crate::platform::app_dir().join("sandbox/control.sock")
+    }
+    pub fn shim_dir() -> Option<std::path::PathBuf> {
+        None
+    }
 }
 #[path = "../src/assets.rs"]
 mod assets;
@@ -163,6 +175,7 @@ impl Demo {
                     created: 0,
                     updated: 0,
                     pr: None,
+                    seat: None,
                 });
                 Thread::start(args.kind, args.cwd.clone(), resume, cx)
             }

@@ -13,7 +13,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::{Notification, Problem};
-use crate::git;
 
 // ---------------------------------------------------------------------------
 // References
@@ -350,6 +349,8 @@ pub struct Pull {
     pub base_ref_name: String,
     pub head_ref_name: String,
     pub head_ref_oid: String,
+    /// The branch lives in a fork, not in the pull request's repository.
+    pub is_cross_repository: bool,
     /// `MERGEABLE`, `CONFLICTING` or `UNKNOWN` (GitHub is still working it out).
     pub mergeable: String,
     /// `CLEAN`, `BLOCKED`, `BEHIND`, `DIRTY`, `DRAFT`, `UNSTABLE`, `HAS_HOOKS` or `UNKNOWN`.
@@ -383,6 +384,16 @@ pub struct Pull {
 }
 
 impl Pull {
+    /// The branch an agent works on locally. A fork's branch gets a name of
+    /// its own: it is often `main`, which would be the clone's own main.
+    pub fn local_branch(&self) -> String {
+        if self.is_cross_repository {
+            format!("pr-{}", self.number)
+        } else {
+            self.head_ref_name.clone()
+        }
+    }
+
     pub fn open(&self) -> bool {
         self.state == "OPEN"
     }
@@ -437,8 +448,8 @@ fn same_login(a: &str, b: &str) -> bool {
 // ---------------------------------------------------------------------------
 // Reading
 
-const PULL_FIELDS: &str = "number,title,body,state,isDraft,author,baseRefName,headRefName,headRefOid,mergeable,\
-mergeStateStatus,reviewDecision,additions,deletions,changedFiles,createdAt,updatedAt,closedAt,mergedAt,url,labels,assignees,\
+const PULL_FIELDS: &str = "number,title,body,state,isDraft,author,baseRefName,headRefName,headRefOid,isCrossRepository,\
+mergeable,mergeStateStatus,reviewDecision,additions,deletions,changedFiles,createdAt,updatedAt,closedAt,mergedAt,url,labels,assignees,\
 reviewRequests,latestReviews,reviews,comments,commits,statusCheckRollup,files";
 const ISSUE_FIELDS: &str =
     "number,title,body,state,author,labels,assignees,comments,createdAt,updatedAt,closedAt,url";
@@ -629,7 +640,7 @@ fn open_thread_ids(answer: &Value) -> (Vec<String>, Option<String>) {
 /// can't hold up the next check.
 pub fn resolve_open_threads(host: &str, item: &ItemRef) -> Result<usize, Problem> {
     resolve_open_threads_with(host, item, super::read_only(), |args| {
-        super::gh_out_within(args, GH_TIMEOUT)
+        super::gh_run(&std::env::temp_dir(), args, None, GH_TIMEOUT)
     })
 }
 
@@ -1164,17 +1175,10 @@ pub fn rerunnable(sum: &ChecksSummary, repo: &str, host: &str) -> Vec<u64> {
 /// that hangs would keep the log on "Loading", or every other write waiting.
 const CHECK_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
 
-/// [`gh_run`], killing `gh` after `timeout`.
-fn gh_run_within(cmd: &Cmd, timeout: std::time::Duration) -> Result<Vec<u8>, Problem> {
-    let mut gh = git::gh(&std::env::temp_dir());
-    gh.args(&cmd.args);
-    let input = cmd.stdin.as_ref().map(|t| t.as_bytes());
-    let out = crate::headless::sandbox::run_with_timeout(gh, input, timeout)
-        .map_err(|e| Problem::Other(format!("could not run gh: {e}")))?;
-    if !out.status.success() {
-        return Err(super::problem(&out.stderr, out.status));
-    }
-    Ok(out.stdout)
+/// Runs `cmd` away from any checkout, killing `gh` after `timeout`.
+fn gh_run(cmd: &Cmd, timeout: std::time::Duration) -> Result<Vec<u8>, Problem> {
+    let stdin = cmd.stdin.as_deref().map(str::as_bytes);
+    super::gh_run(&std::env::temp_dir(), &cmd.args, stdin, timeout)
 }
 
 /// Log lines kept of a failing job: the end is where it failed.
@@ -1186,7 +1190,12 @@ pub fn check_log(item: &ItemRef, job: u64) -> Result<Vec<crate::ci::LogLine>, Pr
         return Err(invalid("Not a repository name."));
     }
     let path = format!("repos/{}/actions/jobs/{job}/logs", item.repo);
-    let out = super::gh_out_within(&["api", "--allow-escape-sequences", &path], CHECK_WAIT)?;
+    let out = super::gh_run(
+        &std::env::temp_dir(),
+        &["api", "--allow-escape-sequences", &path],
+        None,
+        CHECK_WAIT,
+    )?;
     let lines = crate::ci::parse_log(&String::from_utf8_lossy(&out));
     let mut end = crate::ci::failure_excerpt(&lines);
     if end.len() > CHECK_LOG_LINES {
@@ -1220,7 +1229,7 @@ pub fn rerun_failed(item: &ItemRef, runs: &[u64]) -> Result<(), Problem> {
     }
     rerun_each(runs, |run| {
         act_with(super::read_only(), rerun_cmd(item, run), |cmd| {
-            gh_run_within(cmd, CHECK_WAIT)
+            gh_run(cmd, CHECK_WAIT)
         })
         .map(|_| ())
     })
@@ -1305,14 +1314,38 @@ the job id ends each check's address).\n\n{checkout}\n\n\
 Find the cause and fix it in this checkout. Run the same command locally to confirm it passes, then summarize \
 what changed. Don't push.",
         repo = item.repo,
-        checkout = checkout_step(item, &pull.head_ref_name),
+        checkout = checkout_step(item, &pull.local_branch()),
     ));
     p
 }
 
-/// How an agent gets onto a pull request's branch before working on it. The
-/// project open is often on another branch (main, most of the time), so the
-/// agent switches when it safely can instead of giving up.
+/// The pull request an agent works on, for the shell to start it in the
+/// environment on its branch.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PullTarget {
+    pub repo: String,
+    pub number: u64,
+    /// The local branch: [`Pull::local_branch`].
+    pub branch: String,
+    /// The branch is in `repo` itself, so the local one can follow it.
+    pub track: bool,
+}
+
+impl PullTarget {
+    pub fn of(item: &ItemRef, pull: &Pull) -> Self {
+        Self {
+            repo: item.repo.clone(),
+            number: item.number,
+            branch: pull.local_branch(),
+            track: !pull.is_cross_repository,
+        }
+    }
+}
+
+/// How an agent gets onto a pull request's branch before working on it. Arakun
+/// starts it in the environment on `branch`, so this mostly brings in the
+/// latest commits. When it couldn't (no project of that repository), the
+/// agent switches only when that leaves every other worktree alone.
 fn checkout_step(item: &ItemRef, branch: &str) -> String {
     format!(
         "This checkout may be another repository or another branch: check with `git remote -v` and \
@@ -1320,9 +1353,10 @@ fn checkout_step(item: &ItemRef, branch: &str) -> String {
 {repo} (in a fork checkout that is often `upstream`, not `origin`) wherever `<remote>` appears below. Fetch the \
 pull request's current head with `git fetch <remote> refs/pull/{number}/head` (it works for branches in forks \
 too); if that fails, say so and stop. If it isn't on `{branch}`, switch to it when the working tree is clean (`git switch -c {branch} FETCH_HEAD` \
-if it doesn't exist here), else say so and stop. Then run `git merge --ff-only FETCH_HEAD` so the branch has the \
-pull request's latest commits; if that fails, the local branch has diverged from the pull request: say so and \
-stop.",
+if it doesn't exist here), else say so and stop. If git says `{branch}` is checked out in another worktree, \
+don't touch that worktree or use `--ignore-other-worktrees`: say where it is and stop. Then run \
+`git merge --ff-only FETCH_HEAD` so the branch has the pull request's latest commits; if that fails, the local \
+branch has diverged from the pull request: say so and stop.",
         repo = item.repo,
         number = item.number,
     )
@@ -1337,7 +1371,7 @@ pub fn has_conflicts(pull: &Pull) -> bool {
 /// into the pull request's branch and settle the conflicts, without pushing.
 pub fn conflicts_prompt(item: &ItemRef, title: &str, pull: &Pull) -> String {
     let url = item.url();
-    let (base, branch) = (&pull.base_ref_name, &pull.head_ref_name);
+    let (base, branch) = (&pull.base_ref_name, &pull.local_branch());
     format!(
         "The pull request \"{title}\" ({label}) conflicts with its base branch `{base}`.\nURL: {url}\n\n\
 {checkout}\n\n\
@@ -1430,7 +1464,7 @@ For each thread, check the comment against the code. Fix it in this checkout whe
 or not worth it, don't change the code and give the reason. Build and run the tests that cover what you changed.\n\n\
 Then list every thread by its number with what you did, or the reason you didn't, in a sentence I can post as \
 the reply. Don't commit, push, reply to or resolve anything on GitHub: I do that myself.",
-        checkout = checkout_step(item, branch),
+        checkout = checkout_step(item, &pull.local_branch()),
     ));
     p
 }
@@ -2612,24 +2646,6 @@ fn state_cmd(item: &ItemRef, verb: &str) -> Cmd {
     }
 }
 
-fn gh_run(cmd: &Cmd) -> Result<Vec<u8>, Problem> {
-    let mut gh = git::gh(&std::env::temp_dir());
-    gh.args(&cmd.args);
-    // gh may give up before it reads all of stdin; what it wrote says why.
-    let input = cmd.stdin.as_deref().map(str::as_bytes);
-    let out = crate::platform::output_within(&mut gh, input, crate::platform::GIT_REMOTE).map_err(
-        |e| match e.kind() {
-            std::io::ErrorKind::NotFound => Problem::NoGh,
-            std::io::ErrorKind::TimedOut => Problem::Other(e.to_string()),
-            _ => Problem::Other(format!("could not run gh: {e}")),
-        },
-    )?;
-    if !out.status.success() {
-        return Err(super::problem(&out.stderr, out.status));
-    }
-    Ok(out.stdout)
-}
-
 /// Runs an action unless this Arakun is read-only, and returns what gh printed.
 /// The refusal comes before anything else, so a read-only Arakun never starts gh.
 fn act_with(
@@ -2644,7 +2660,9 @@ fn act_with(
 }
 
 fn act(cmd: Result<Cmd, Problem>) -> Result<String, Problem> {
-    act_with(super::read_only(), cmd, gh_run)
+    act_with(super::read_only(), cmd, |cmd| {
+        gh_run(cmd, crate::platform::GIT_REMOTE)
+    })
 }
 
 /// Comments on the conversation; returns the comment's address.
@@ -2904,7 +2922,8 @@ pub fn review_prompt(item: &ItemRef, title: &str) -> String {
 First note the commit you are reviewing: `gh pr view {url} --json headRefOid --jq .headRefOid`. \
 Then read it with `gh`: the description, the full diff, the existing reviews and comments, and the checks \
 (`gh pr view {url} --comments`, `gh pr diff {url}`, `gh api repos/{repo}/pulls/{n}/comments`, `gh pr checks {url}`). \
-Use the URL: this checkout may be another repository.\n\n\
+Use the URL: this checkout may be another repository. Don't switch this checkout to another branch \
+(no `git switch` or `gh pr checkout`): other sessions may be working in it.\n\n\
 Verify what it claims against the code where you can: read the files around the change, and build or run the tests \
 if this checkout is that repository. Say what you checked and what you could not check.\n\n\
 Then save the review as a draft, its text on stdin:\n\n\
@@ -5667,6 +5686,30 @@ mod tests {
         assert!(prompt.ends_with("Don't push."), "{prompt}");
         p.state = "CLOSED".into();
         assert!(!has_conflicts(&p));
+    }
+
+    #[test]
+    fn a_forks_branch_gets_a_local_name_of_its_own() {
+        let mut p = pull();
+        let it = item(ItemKind::Pull);
+        let on = PullTarget::of(&it, &p);
+        assert_eq!((on.branch.as_str(), on.track), ("fix/tab-name", true));
+        // A fork's `main` must not land on the clone's own main.
+        p.is_cross_repository = true;
+        p.head_ref_name = "main".into();
+        let on = PullTarget::of(&it, &p);
+        assert_eq!((on.branch.as_str(), on.track), ("pr-41", false));
+        let prompt = comments_prompt(&it, "Keep the tab name", &p, &open_threads(&p));
+        assert!(prompt.contains("branch `main` at"), "{prompt}");
+        assert!(
+            prompt.contains("`git switch -c pr-41 FETCH_HEAD`"),
+            "{prompt}"
+        );
+        // Another environment's branch stays where it is.
+        assert!(
+            prompt.contains("checked out in another worktree"),
+            "{prompt}"
+        );
     }
 
     #[test]

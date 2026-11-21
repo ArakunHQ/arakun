@@ -533,7 +533,7 @@ pub fn fetch(dir: &Path) -> Result<()> {
     Ok(())
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ChangeKind {
     Modified,
     Added,
@@ -542,7 +542,7 @@ pub enum ChangeKind {
     Untracked,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Change {
     pub path: String,
     pub kind: ChangeKind,
@@ -699,6 +699,87 @@ pub fn diff(dir: &Path, path: &str, untracked: bool) -> Result<String> {
     stdout(git(dir).args(["diff", "--no-color", diff_base(dir)?, "--", path]))
 }
 
+/// What a commit would hold, for a model to describe: `git diff --stat` and
+/// the diff (cut at `cap` characters, and whether it was). With `all`, every
+/// uncommitted change, new files too, as "Commit all" takes them; else only
+/// what is staged.
+pub fn commit_diff(dir: &Path, all: bool, cap: usize) -> Result<(String, String, bool)> {
+    let base = diff_base(dir)?;
+    let range: &[&str] = if all { &[base] } else { &["--cached", base] };
+    let args = |extra: &[&'static str]| {
+        let mut a = vec!["diff", "--no-color"];
+        a.extend_from_slice(extra);
+        a.extend_from_slice(range);
+        a.push("--");
+        a
+    };
+    let mut stat = read(dir, &args(&["--stat=200"]))?;
+    let mut diff = read(dir, &args(&[]))?;
+    // Counted in characters, as `cut_at_line` cuts.
+    let mut chars = diff.chars().count();
+    let mut skipped = false;
+    if all {
+        let new = read(dir, &["ls-files", "--others", "--exclude-standard", "-z"])?;
+        for path in new.split('\0').filter(|p| !p.is_empty()) {
+            stat.push_str(&format!(" {path} (new file)\n"));
+            // The diffs stop once past the cap; the list goes on, cut below.
+            if chars > cap {
+                skipped = true;
+                continue;
+            }
+            // A file of more than 4 bytes per character of the cap has a diff
+            // past it: skip it rather than hold all of it in memory.
+            if std::fs::metadata(dir.join(path)).is_ok_and(|m| m.len() > 4 * cap as u64) {
+                skipped = true;
+                continue;
+            }
+            let more = self::diff(dir, path, true)?;
+            chars += more.chars().count();
+            diff.push_str(&more);
+        }
+    }
+    let (diff, cut) = cut_at_line(diff, cap);
+    Ok((cap_stat(stat, STAT_LINES), diff, cut || skipped))
+}
+
+/// How many lines of the list of files a model reads: a folder of
+/// dependencies nobody ignored would otherwise list tens of thousands.
+const STAT_LINES: usize = 300;
+
+/// `stat` cut to `keep` lines, with a line that says how many files were
+/// left out. Git's summary line ("3 files changed, …") is no file: a file's
+/// line has a ` | ` or is a new file's, whatever its path says.
+fn cap_stat(stat: String, keep: usize) -> String {
+    let mut lines = stat.lines();
+    let mut kept: String = lines
+        .by_ref()
+        .take(keep)
+        .map(|l| format!("{l}\n"))
+        .collect();
+    let more = lines
+        .filter(|l| l.contains(" | ") || l.ends_with(" (new file)"))
+        .count();
+    if more > 0 {
+        kept.push_str(&format!(" … and {more} more files\n"));
+    }
+    kept
+}
+
+/// The subjects of the last `n` commits on HEAD, newest first: the style a
+/// new commit message follows. Empty before the first commit.
+pub fn recent_subjects(dir: &Path, n: usize) -> Vec<String> {
+    let count = format!("-{n}");
+    read(dir, &["log", &count, "--format=%s", "--no-merges"])
+        .map(|out| {
+            out.lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .map(String::from)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 // ---------------------------------------------------------------------------
 // Workflow: remotes, commit, push/pull, staging, merge, pull requests.
 
@@ -770,7 +851,7 @@ fn has_head(dir: &Path) -> Result<bool> {
 }
 
 /// Where the checked-out branch stands against its remote.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Sync {
     pub branch: Option<String>,
     /// Remote a push goes to: the upstream's, else `origin`, else the first one.
@@ -1068,7 +1149,7 @@ pub fn merge_into_main(main: &Path, branch: &str) -> Result<()> {
     Ok(())
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PullRequest {
     pub number: u64,
     pub url: String,
@@ -1130,6 +1211,94 @@ pub fn add_branch_worktree(repo: &Path, path: &Path, branch: &str) -> Result<()>
         git(repo).args(["worktree", "add"]).arg(path).arg(branch),
         GIT_LONG,
     )?;
+    Ok(())
+}
+
+/// `owner/name` in a remote's address (`git@host:owner/name.git`,
+/// `https://host/owner/name`, `ssh://git@host/owner/name.git`).
+fn remote_slug(url: &str) -> Option<String> {
+    let url = url.trim().trim_end_matches('/');
+    let path = match url.split_once("://") {
+        Some((_, rest)) => rest.split_once('/')?.1,
+        None => url.split_once(':')?.1,
+    };
+    let path = path.trim_end_matches(".git");
+    let mut parts = path.rsplitn(3, '/');
+    let (name, owner) = (parts.next()?, parts.next()?);
+    (!name.is_empty() && !owner.is_empty()).then(|| format!("{owner}/{name}"))
+}
+
+/// The remote of the repository at `dir` that points at `slug` (`owner/name`
+/// on GitHub): `origin` in a clone, often `upstream` in a fork's.
+pub fn remote_for(dir: &Path, slug: &str) -> Option<String> {
+    let text = read(dir, &["remote", "-v"]).ok()?;
+    text.lines().find_map(|line| {
+        let mut cols = line.split_whitespace();
+        let (name, url) = (cols.next()?, cols.next()?);
+        // A push address can name another repository than the one fetched.
+        if cols.next() != Some("(fetch)") {
+            return None;
+        }
+        remote_slug(url)
+            .filter(|s| s.eq_ignore_ascii_case(slug))
+            .map(|_| name.to_string())
+    })
+}
+
+/// A worktree at `path` on a pull request's `branch`. A local branch of that
+/// name is checked out as it is; otherwise the branch is made from the pull
+/// request's head on `remote` (`refs/pull/<number>/head`, which holds a
+/// fork's branch too). `track` sets it to follow `<remote>/<branch>`, for a
+/// branch that lives in that repository.
+pub fn add_pull_worktree(
+    repo: &Path,
+    path: &Path,
+    remote: &str,
+    number: u64,
+    branch: &str,
+    track: bool,
+) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("could not create {}", parent.display()))?;
+    }
+    let local = format!("refs/heads/{branch}");
+    if succeeds(
+        git(repo).args(["show-ref", "--verify", "--quiet", &local]),
+        GIT_LOCAL,
+    ) {
+        run_loud(
+            git(repo).args(["worktree", "add"]).arg(path).arg(branch),
+            GIT_LONG,
+        )?;
+        return Ok(());
+    }
+    // Straight into the branch, not through FETCH_HEAD: another fetch in this
+    // repository could replace that before the worktree is made.
+    run_loud(
+        git(repo).args([
+            "fetch",
+            "--quiet",
+            remote,
+            &format!("refs/pull/{number}/head:{local}"),
+        ]),
+        GIT_REMOTE,
+    )?;
+    run_loud(
+        git(repo).args(["worktree", "add"]).arg(path).arg(branch),
+        GIT_LONG,
+    )?;
+    if track {
+        // Without it `git push` has nowhere to go; the worktree works either way.
+        let _ = output(
+            git(repo).args(["fetch", "--quiet", remote, branch]),
+            GIT_REMOTE,
+        );
+        let _ = output(
+            git(path).args(["branch", "--set-upstream-to", &format!("{remote}/{branch}")]),
+            GIT_LOCAL,
+        );
+    }
     Ok(())
 }
 
@@ -1264,14 +1433,14 @@ fn pushes_elsewhere(dir: &Path, remote: &str) -> bool {
 
 /// A commit a new pull request would bring: its subject and the rest of
 /// its message.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PrCommit {
     pub subject: String,
     pub body: String,
 }
 
 /// What the "Create pull request" dialog opens with.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PrPlan {
     /// The branch it would merge into.
     pub base: String,
@@ -1711,6 +1880,69 @@ test: cover the resize\u{1f}\u{1e}\n";
     }
 
     #[test]
+    fn a_long_list_of_files_is_cut_and_says_by_how_many() {
+        let stat = " a | 1 +\n b | 2 +-\n 2 files changed, 2 insertions(+)\n c (new file)\n d (new file)\n";
+        assert_eq!(
+            super::cap_stat(stat.into(), 2),
+            " a | 1 +\n b | 2 +-\n … and 2 more files\n"
+        );
+        // Cut after git's summary line: that line is no file.
+        assert_eq!(
+            super::cap_stat(stat.into(), 1),
+            " a | 1 +\n … and 3 more files\n"
+        );
+        assert_eq!(super::cap_stat(stat.into(), 10), stat);
+        // A path that says "changed" is still a file.
+        let stat = " a | 1 +\n 1 file changed, 1 insertion(+)\n what changed/b (new file)\n";
+        assert_eq!(
+            super::cap_stat(stat.into(), 1),
+            " a | 1 +\n … and 1 more files\n"
+        );
+    }
+
+    #[test]
+    fn a_commit_diff_takes_the_staged_or_every_change() {
+        let dir = repo();
+        std::fs::write(dir.join("staged.txt"), "kept\n").unwrap();
+        std::fs::write(dir.join("new.txt"), "fresh\n").unwrap();
+        super::stage(&dir, "staged.txt").unwrap();
+
+        let (stat, diff, cut) = super::commit_diff(&dir, false, 10_000).unwrap();
+        assert!(
+            stat.contains("staged.txt") && !stat.contains("new.txt"),
+            "{stat}"
+        );
+        assert!(diff.contains("+kept") && !diff.contains("+fresh"), "{diff}");
+        assert!(!cut);
+
+        let (stat, diff, _) = super::commit_diff(&dir, true, 10_000).unwrap();
+        assert!(stat.contains("new.txt (new file)"), "{stat}");
+        assert!(diff.contains("+kept") && diff.contains("+fresh"), "{diff}");
+
+        // Past the cap, the files are still all listed.
+        let (stat, _, cut) = super::commit_diff(&dir, true, 10).unwrap();
+        assert!(cut && stat.contains("new.txt"), "{stat}");
+
+        // Under the cap in characters but over it in bytes: new files still
+        // come in, and nothing is cut.
+        std::fs::write(dir.join("staged.txt"), "é".repeat(400)).unwrap();
+        super::stage(&dir, "staged.txt").unwrap();
+        let (_, diff, cut) = super::commit_diff(&dir, true, 700).unwrap();
+        assert!(diff.contains("+fresh") && !cut, "{diff}");
+
+        // A new file too large for the cap is listed, not read, and the diff
+        // says it is cut.
+        std::fs::write(dir.join("big.txt"), "x".repeat(5_000)).unwrap();
+        let (stat, diff, cut) = super::commit_diff(&dir, true, 1_000).unwrap();
+        assert!(stat.contains("big.txt (new file)"), "{stat}");
+        assert!(!diff.contains("xxxx") && cut, "{diff}");
+
+        assert_eq!(super::recent_subjects(&dir, 5), vec!["x".to_string()]);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn stage_only_works_from_a_folder_inside_the_repository() {
         let dir = repo();
         let sub = dir.join("sub");
@@ -1965,6 +2197,104 @@ test: cover the resize\u{1f}\u{1e}\n";
                 .unwrap()
                 .success();
             assert!(!alive, "the grandchild still runs");
+        }
+    }
+
+    #[test]
+    fn a_remote_names_its_repository() {
+        for url in [
+            "git@github.com:ArakunHQ/arakun.git",
+            "https://github.com/ArakunHQ/arakun",
+            "https://github.com/ArakunHQ/arakun.git/",
+            "ssh://git@github.com/ArakunHQ/arakun.git",
+        ] {
+            assert_eq!(
+                super::remote_slug(url).as_deref(),
+                Some("ArakunHQ/arakun"),
+                "{url}"
+            );
+        }
+        assert_eq!(super::remote_slug("/tmp/repo"), None);
+    }
+
+    #[test]
+    fn a_remote_is_found_by_where_it_fetches() {
+        let dir = repo();
+        let git = |args: &[&str]| {
+            assert!(
+                super::git(&dir).args(args).status().unwrap().success(),
+                "{args:?}"
+            )
+        };
+        git(&["remote", "add", "origin", "git@github.com:up/r.git"]);
+        git(&[
+            "remote",
+            "set-url",
+            "--push",
+            "origin",
+            "git@github.com:me/r.git",
+        ]);
+        git(&["remote", "add", "mine", "https://github.com/me/r"]);
+        assert_eq!(super::remote_for(&dir, "UP/r").as_deref(), Some("origin"));
+        // origin pushes to me/r but fetches up/r: its pull requests aren't there.
+        assert_eq!(super::remote_for(&dir, "me/r").as_deref(), Some("mine"));
+        assert_eq!(super::remote_for(&dir, "other/r"), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_pull_request_gets_a_worktree_on_its_branch() {
+        let dir = repo();
+        let remote = dir.with_extension("remote");
+        let git = |args: &[&str]| {
+            super::unpinned(&mut Command::new("git"))
+                .args(args)
+                .status()
+                .unwrap()
+                .success()
+        };
+        let (d, r) = (dir.to_str().unwrap(), remote.to_str().unwrap());
+        assert!(git(&["init", "-q", "--bare", "-b", "main", r]));
+        assert!(git(&["-C", d, "remote", "add", "origin", r]));
+        // GitHub keeps each pull request's head under refs/pull, a fork's too.
+        assert!(git(&[
+            "-C",
+            d,
+            "push",
+            "-q",
+            "origin",
+            "HEAD:refs/heads/feature",
+            "HEAD:refs/pull/7/head",
+        ]));
+        let rev = |dir: &std::path::Path, r: &str| {
+            super::stdout(super::git(dir).args(["rev-parse", r])).unwrap()
+        };
+        // No local branch: made from the pull request's head, following origin.
+        let tree = dir.with_extension("feature");
+        super::add_pull_worktree(&dir, &tree, "origin", 7, "feature", true).unwrap();
+        assert_eq!(rev(&tree, "HEAD"), rev(&dir, "HEAD"));
+        assert_eq!(
+            super::read(&tree, &["branch", "--show-current"])
+                .unwrap()
+                .trim(),
+            "feature"
+        );
+        assert_eq!(rev(&tree, "@{u}"), rev(&dir, "refs/remotes/origin/feature"));
+        // A fork's branch under its own name: nothing to follow.
+        let fork = dir.with_extension("fork");
+        super::add_pull_worktree(&dir, &fork, "origin", 7, "pr-7", false).unwrap();
+        assert!(
+            super::git(&fork)
+                .args(["rev-parse", "@{u}"])
+                .output()
+                .is_ok_and(|o| !o.status.success())
+        );
+        // A local branch is checked out as it is.
+        let taken = dir.with_extension("taken");
+        super::add_pull_worktree(&dir, &taken, "origin", 8, "taken", true).unwrap();
+        assert_eq!(rev(&taken, "HEAD"), rev(&dir, "refs/heads/taken"));
+        for p in [&dir, &remote, &tree, &fork, &taken] {
+            let _ = std::fs::remove_dir_all(p);
         }
     }
 

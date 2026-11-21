@@ -9,9 +9,7 @@ impl Shell {
         crate::customize_view::RailLook {
             style: self.sidebar.style,
             width: self.rail_w,
-            preset: crate::sidebar::Preset::ALL
-                .into_iter()
-                .find(|p| p.layout().sections == self.sidebar.sections),
+            preset: self.sidebar_preset(),
             can_undo: !self.builder.undo.is_empty(),
             can_redo: !self.builder.redo.is_empty(),
             note: self.builder.flash.clone(),
@@ -289,13 +287,14 @@ impl Shell {
                     })
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.session_filter = match this.session_filter {
-                            None => Some(Agent::Droid),
-                            Some(Agent::Droid) => Some(Agent::Claude),
-                            Some(Agent::Claude) => Some(Agent::OpenCode),
-                            Some(Agent::OpenCode) => Some(Agent::Codex),
-                            Some(Agent::Codex) => Some(Agent::Devin),
-                            Some(Agent::Devin) => Some(Agent::WorkersAi),
-                            Some(Agent::WorkersAi) => None,
+                            None => Some(AgentKind::Droid),
+                            Some(AgentKind::Droid) => Some(AgentKind::Claude),
+                            Some(AgentKind::Claude) => Some(AgentKind::OpenCode),
+                            Some(AgentKind::OpenCode) => Some(AgentKind::Codex),
+                            Some(AgentKind::Codex) => Some(AgentKind::Devin),
+                            Some(AgentKind::Devin) => Some(AgentKind::Cursor),
+                            Some(AgentKind::Cursor) => Some(AgentKind::WorkersAi),
+                            Some(AgentKind::WorkersAi) => None,
                         };
                         cx.notify();
                     })),

@@ -1,7 +1,7 @@
 //! Finding (and, for Claude and Codex, installing) the entry point of each agent:
 //! ACP adapters for Claude and Codex, Factory's native `stream-jsonrpc` for Droid
-//! unless `ARAKUN_DROID_ACP=1`, and the ACP servers OpenCode and Devin have
-//! themselves (`opencode acp`, `devin acp`).
+//! unless `ARAKUN_DROID_ACP=1`, and the ACP servers OpenCode, Devin and Cursor
+//! have themselves (`opencode acp`, `devin acp`, `cursor-agent acp`).
 
 use std::ffi::OsString;
 use std::io::Write as _;
@@ -24,6 +24,9 @@ pub struct LaunchSpec {
     pub program: PathBuf,
     pub args: Vec<String>,
     pub env: Vec<(String, OsString)>,
+    /// Variables of Arakun's own environment the agent must not get (a
+    /// Claude seat token, for a session on the sign-in).
+    pub unset: Vec<String>,
 }
 
 impl LaunchSpec {
@@ -99,67 +102,37 @@ fn is_executable(path: &Path) -> bool {
     crate::platform::is_executable(path)
 }
 
-/// The interactive sign-in for `kind`, to run in a terminal: Claude Code's
-/// `/login` (the user's `claude`, else the binary bundled with the adapter's
-/// SDK; both share `~/.claude`), plain `droid`, which asks to sign in,
-/// `opencode auth login`, which asks for a provider and its key,
-/// `codex login`, which signs in with ChatGPT in the browser, or
-/// `devin auth login`, which signs in to Devin in the browser.
+/// The CLI the user installed for `kind`, the one that signs in and out:
+/// for Claude the user's `claude`, else the binary bundled with the adapter's
+/// SDK (both share `~/.claude`); for Workers AI, OpenCode.
+pub fn cli_bin(kind: AgentKind) -> Option<PathBuf> {
+    match kind {
+        AgentKind::Claude => claude_cli(),
+        AgentKind::Droid => droid_bin().ok(),
+        AgentKind::OpenCode | AgentKind::WorkersAi => opencode_bin().ok(),
+        AgentKind::Codex => codex_cli(),
+        AgentKind::Devin => devin_bin().ok(),
+        AgentKind::Cursor => cursor_bin().ok(),
+    }
+}
+
+/// The interactive sign-in for `kind`, to run in a terminal: [`cli_bin`]
+/// with the agent's [`AgentSpec::login`](super::kind::AgentSpec::login).
 pub fn login_command(kind: AgentKind) -> Option<Vec<String>> {
-    match kind {
-        AgentKind::Claude => {
-            let bin = claude_cli()?;
-            Some(vec![bin.display().to_string(), "/login".into()])
-        }
-        AgentKind::Droid => {
-            let bin = droid_bin().ok()?;
-            Some(vec![bin.display().to_string()])
-        }
-        AgentKind::OpenCode | AgentKind::WorkersAi => {
-            let bin = opencode_bin().ok()?;
-            Some(vec![
-                bin.display().to_string(),
-                "auth".into(),
-                "login".into(),
-            ])
-        }
-        AgentKind::Codex => {
-            let bin = codex_cli()?;
-            Some(vec![bin.display().to_string(), "login".into()])
-        }
-        AgentKind::Devin => Some(devin_auth_command(&devin_bin().ok()?, "login")),
-    }
+    let args = kind.spec().login?;
+    Some(command_line(&cli_bin(kind)?, args))
 }
 
-/// The interactive sign-out for `kind`, to run in a terminal: Claude's `/logout`,
-/// `opencode auth logout`, which asks which provider, `codex logout` or
-/// `devin auth logout`. Droid's
-/// CLI is signed out from Factory's side.
+/// The interactive sign-out for `kind`, to run in a terminal, if its CLI has one.
 pub fn logout_command(kind: AgentKind) -> Option<Vec<String>> {
-    match kind {
-        AgentKind::Claude => {
-            let bin = claude_cli()?;
-            Some(vec![bin.display().to_string(), "/logout".into()])
-        }
-        AgentKind::Droid | AgentKind::WorkersAi => None,
-        AgentKind::OpenCode => {
-            let bin = opencode_bin().ok()?;
-            Some(vec![
-                bin.display().to_string(),
-                "auth".into(),
-                "logout".into(),
-            ])
-        }
-        AgentKind::Codex => {
-            let bin = codex_cli()?;
-            Some(vec![bin.display().to_string(), "logout".into()])
-        }
-        AgentKind::Devin => Some(devin_auth_command(&devin_bin().ok()?, "logout")),
-    }
+    let args = kind.spec().logout?;
+    Some(command_line(&cli_bin(kind)?, args))
 }
 
-fn devin_auth_command(bin: &Path, action: &str) -> Vec<String> {
-    vec![bin.display().to_string(), "auth".into(), action.into()]
+fn command_line(bin: &Path, args: &[&str]) -> Vec<String> {
+    std::iter::once(bin.display().to_string())
+        .chain(args.iter().map(|a| a.to_string()))
+        .collect()
 }
 
 /// The user's `claude`, else the binary bundled with the adapter's SDK; both share `~/.claude`.
@@ -206,8 +179,7 @@ pub fn codex_sign_in() -> Option<&'static str> {
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
         .unwrap_or_else(|| home().join(".codex"));
-    let v: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(dir.join("auth.json")).ok()?).ok()?;
+    let v: serde_json::Value = crate::durable::load_json(dir.join("auth.json"))?;
     codex_auth_label(&v)
 }
 
@@ -333,6 +305,7 @@ fn from_override(var: &str) -> Option<Result<LaunchSpec>> {
                 program,
                 args,
                 env: Vec::new(),
+                unset: Vec::new(),
             }),
     )
 }
@@ -370,6 +343,7 @@ pub fn resolve_droid_native(cwd: Option<&Path>) -> Result<LaunchSpec> {
         .chain(droid_hint_args(cwd))
         .collect(),
         env: vec![("PATH".into(), child_path_env())],
+        unset: Vec::new(),
     })
 }
 
@@ -427,6 +401,11 @@ const HINT: &str = "You are running inside arakun, a desktop app where the user 
          loaded in a real browser on Cloudflare (Browser Run), so sites that block curl still answer; \
          `arakun crawl [--limit N] [--depth N] <url>` reads a whole site the same way. Prefer them to curl \
          for reading the web; at most one fetch every 10 s.\n\
+         - `arakun shrink -- <command>` runs a command and prints a summary of its output: the \
+         failures and result line of a test run, a log's repeated lines collapsed, JSON's outline, \
+         a table's header and a few rows. It saves the whole output to a file and prints its path, \
+         so read that when you need more. Use it for test runs, builds and logs that print a lot, \
+         rather than cutting them with `| tail`.\n\
          - `arakun rename <branch>` renames this environment's branch, before it is pushed, when the \
          work turns out to be something its name doesn't say.\n\
          - `arakun notify <message>` sends the user a desktop notification.\n\
@@ -512,6 +491,74 @@ pub fn devin_env_key() -> Option<&'static str> {
     std::env::var_os(VAR)
         .is_some_and(|v| !v.is_empty())
         .then_some(VAR)
+}
+
+/// The user's `cursor-agent`. Arakun does not install it: Cursor's installer
+/// also keeps it up to date. The installer links the same binary as `agent`
+/// too, but that name is too common to trust. `ARAKUN_CURSOR_BIN` picks
+/// another binary.
+pub fn cursor_bin() -> Result<PathBuf> {
+    let name = std::env::var("ARAKUN_CURSOR_BIN").unwrap_or_else(|_| "cursor-agent".into());
+    which(&name).ok_or_else(|| {
+        anyhow!(
+            "`{name}` was not found on PATH or in ~/.local/bin. Install the Cursor CLI first ({}).",
+            AgentKind::Cursor.install_url()
+        )
+    })
+}
+
+/// Whether `cursor-agent login` has signed in: its `auth.json` exists and
+/// does not say it was signed out. `cursor-agent logout` keeps the file and
+/// marks it, and on macOS the tokens may sit in the keychain with only the
+/// mark in the file. Only that mark is kept from the file; the tokens are
+/// never looked at.
+pub fn cursor_signed_in() -> bool {
+    let path = cursor_auth_file(
+        std::env::consts::OS,
+        std::env::var_os("XDG_CONFIG_HOME"),
+        std::env::var_os("APPDATA"),
+        &home(),
+    );
+    std::fs::read(path).is_ok_and(|b| cursor_auth_signed_in(&b))
+}
+
+fn cursor_auth_signed_in(bytes: &[u8]) -> bool {
+    #[derive(serde::Deserialize)]
+    struct Mark {
+        #[serde(default, rename = "signedOut")]
+        signed_out: bool,
+    }
+    serde_json::from_slice::<Mark>(bytes).is_ok_and(|m| !m.signed_out)
+}
+
+/// Where the Cursor CLI keeps its sign-in, the way it finds the file itself:
+/// `%APPDATA%\Cursor` on Windows, `~/.cursor` on macOS, and
+/// `$XDG_CONFIG_HOME/cursor` (else `~/.config/cursor`) elsewhere.
+fn cursor_auth_file(
+    os: &str,
+    xdg_config: Option<OsString>,
+    appdata: Option<OsString>,
+    home: &Path,
+) -> PathBuf {
+    let set = |v: Option<OsString>| v.filter(|v| !v.is_empty()).map(PathBuf::from);
+    let dir = match os {
+        "windows" => set(appdata)
+            .unwrap_or_else(|| home.join("AppData").join("Roaming"))
+            .join("Cursor"),
+        "macos" => home.join(".cursor"),
+        _ => set(xdg_config)
+            .unwrap_or_else(|| home.join(".config"))
+            .join("cursor"),
+    };
+    dir.join("auth.json")
+}
+
+/// The variable with Cursor's API key when the environment has one. Names it,
+/// never reads the key out.
+pub fn cursor_env_key() -> Option<&'static str> {
+    ["CURSOR_API_KEY", "CURSOR_AUTH_TOKEN"]
+        .into_iter()
+        .find(|var| std::env::var_os(var).is_some_and(|v| !v.is_empty()))
 }
 
 /// The providers OpenCode keeps credentials for (`opencode auth login`), by
@@ -680,10 +727,7 @@ impl AdapterInstall {
 
     /// The variable that starts another adapter instead.
     pub fn override_var(&self) -> &'static str {
-        match self.kind {
-            AgentKind::Codex => "ARAKUN_CODEX_ACP",
-            _ => "ARAKUN_CLAUDE_ACP",
-        }
+        self.kind.spec().override_var.unwrap_or_default()
     }
 }
 
@@ -738,23 +782,13 @@ fn shell_quote(arg: &str) -> String {
 /// What has to be installed before `kind` can start, if anything: only the
 /// Claude and Codex adapters, and only when no override replaces them.
 pub fn adapter_install(kind: AgentKind) -> Option<AdapterInstall> {
-    let (var, bin, package, dir) = match kind {
-        AgentKind::Claude => (
-            "ARAKUN_CLAUDE_ACP",
-            claude_adapter_bin(),
-            CLAUDE_ACP_PACKAGE,
-            agents_dir(),
-        ),
-        AgentKind::Codex => (
-            "ARAKUN_CODEX_ACP",
-            codex_adapter_bin(),
-            CODEX_ACP_PACKAGE,
-            codex_dir(),
-        ),
-        AgentKind::Droid | AgentKind::OpenCode | AgentKind::Devin | AgentKind::WorkersAi => {
-            return None;
-        }
+    let spec = kind.spec();
+    let package = spec.adapter?;
+    let (bin, dir) = match kind {
+        AgentKind::Codex => (codex_adapter_bin(), codex_dir()),
+        _ => (claude_adapter_bin(), agents_dir()),
     };
+    let var = spec.override_var?;
     if names_program(std::env::var(var).ok().as_deref()) || is_executable(&bin) {
         return None;
     }
@@ -765,7 +799,8 @@ pub fn adapter_install(kind: AgentKind) -> Option<AdapterInstall> {
 /// Claude or Codex adapter is installed with npm into [`agents_dir`]; without it,
 /// the error is an [`AdapterInstall`] that says what would be. `progress` gets a
 /// short status line. `ARAKUN_DROID`, `ARAKUN_CLAUDE_ACP`, `ARAKUN_OPENCODE_ACP`,
-/// `ARAKUN_CODEX_ACP` and `ARAKUN_DEVIN_ACP` replace the command.
+/// `ARAKUN_CODEX_ACP`, `ARAKUN_DEVIN_ACP` and `ARAKUN_CURSOR_ACP` replace the
+/// command.
 pub fn resolve(
     kind: AgentKind,
     cwd: Option<&Path>,
@@ -782,8 +817,10 @@ pub fn resolve(
             needed.dir.display()
         ));
     }
+    // The command the user put in the agent's variable replaces the usual one.
+    let custom = kind.spec().override_var.and_then(from_override);
     let mut spec = match kind {
-        AgentKind::Droid => match from_override("ARAKUN_DROID") {
+        AgentKind::Droid => match custom {
             Some(spec) => spec?,
             None => LaunchSpec {
                 program: droid_bin()?,
@@ -793,9 +830,10 @@ pub fn resolve(
                     .chain(droid_hint_args(cwd))
                     .collect(),
                 env: Vec::new(),
+                unset: Vec::new(),
             },
         },
-        AgentKind::Claude => match from_override("ARAKUN_CLAUDE_ACP") {
+        AgentKind::Claude => match custom {
             Some(spec) => spec?,
             None => {
                 let bin = claude_adapter_bin();
@@ -835,23 +873,25 @@ pub fn resolve(
                     program: bin,
                     args: Vec::new(),
                     env,
+                    unset: Vec::new(),
                 }
             }
         },
         AgentKind::OpenCode => {
-            let mut spec = match from_override("ARAKUN_OPENCODE_ACP") {
+            let mut spec = match custom {
                 Some(spec) => spec?,
                 None => LaunchSpec {
                     program: opencode_bin()?,
                     args: vec!["acp".into()],
                     env: Vec::new(),
+                    unset: Vec::new(),
                 },
             };
             spec.env.extend(opencode_hint_env(cwd));
             spec
         }
         AgentKind::Codex => {
-            let mut spec = match from_override("ARAKUN_CODEX_ACP") {
+            let mut spec = match custom {
                 Some(spec) => spec?,
                 None => {
                     let bin = codex_adapter_bin();
@@ -874,6 +914,7 @@ pub fn resolve(
                         program: bin,
                         args: Vec::new(),
                         env: Vec::new(),
+                        unset: Vec::new(),
                     }
                 }
             };
@@ -891,12 +932,25 @@ pub fn resolve(
         }
         // Devin takes no system prompt over ACP or its command line, so it gets
         // no arakun hint; it reads the project's AGENTS.md itself.
-        AgentKind::Devin => match from_override("ARAKUN_DEVIN_ACP") {
+        AgentKind::Devin => match custom {
             Some(spec) => spec?,
             None => LaunchSpec {
                 program: devin_bin()?,
                 args: vec!["acp".into()],
                 env: Vec::new(),
+                unset: Vec::new(),
+            },
+        },
+        // Cursor takes no system prompt over ACP either; it reads AGENTS.md
+        // itself. Arakun never calls `authenticate`: signed in, Cursor takes
+        // `session/new` without it, and signed out it would open a browser.
+        AgentKind::Cursor => match custom {
+            Some(spec) => spec?,
+            None => LaunchSpec {
+                program: cursor_bin()?,
+                args: vec!["acp".into()],
+                env: Vec::new(),
+                unset: Vec::new(),
             },
         },
         // Nothing to start: it runs in arakun (`Connection::in_process`).
@@ -904,6 +958,7 @@ pub fn resolve(
             program: PathBuf::from("arakun"),
             args: Vec::new(),
             env: Vec::new(),
+            unset: Vec::new(),
         },
     };
     spec.env.push(("PATH".into(), child_path_env()));
@@ -1121,6 +1176,7 @@ mod tests {
             AgentKind::Droid,
             AgentKind::OpenCode,
             AgentKind::Devin,
+            AgentKind::Cursor,
             AgentKind::WorkersAi,
         ] {
             assert_eq!(adapter_install(kind), None);
@@ -1234,13 +1290,59 @@ mod tests {
     #[test]
     fn devin_signs_in_and_out_with_its_auth_command() {
         let bin = Path::new("/home/u/.local/bin/devin");
+        let spec = AgentKind::Devin.spec();
         assert_eq!(
-            devin_auth_command(bin, "login"),
+            command_line(bin, spec.login.unwrap()),
             ["/home/u/.local/bin/devin", "auth", "login"]
         );
         assert_eq!(
-            devin_auth_command(bin, "logout"),
+            command_line(bin, spec.logout.unwrap()),
             ["/home/u/.local/bin/devin", "auth", "logout"]
         );
+    }
+
+    #[test]
+    fn plain_droid_signs_in_and_nothing_signs_it_out() {
+        let spec = AgentKind::Droid.spec();
+        assert_eq!(
+            command_line(Path::new("droid"), spec.login.unwrap()),
+            ["droid"]
+        );
+        assert!(spec.logout.is_none());
+    }
+
+    #[test]
+    fn cursor_auth_file_is_where_the_cli_looks() {
+        let home = Path::new("/home/u");
+        assert_eq!(
+            cursor_auth_file("linux", None, None, home),
+            Path::new("/home/u/.config/cursor/auth.json")
+        );
+        assert_eq!(
+            cursor_auth_file("linux", Some("/cfg".into()), None, home),
+            Path::new("/cfg/cursor/auth.json")
+        );
+        assert_eq!(
+            cursor_auth_file("linux", Some("".into()), None, home),
+            Path::new("/home/u/.config/cursor/auth.json")
+        );
+        assert_eq!(
+            cursor_auth_file("macos", Some("/cfg".into()), None, home),
+            Path::new("/home/u/.cursor/auth.json")
+        );
+        assert_eq!(
+            cursor_auth_file("windows", None, Some("/appdata".into()), home),
+            Path::new("/appdata/Cursor/auth.json")
+        );
+    }
+
+    #[test]
+    fn cursor_is_signed_out_when_its_auth_file_says_so() {
+        assert!(cursor_auth_signed_in(
+            br#"{"accessToken":"x","refreshToken":"y"}"#
+        ));
+        assert!(cursor_auth_signed_in(br#"{"storedIn":"os-secret-store"}"#));
+        assert!(!cursor_auth_signed_in(br#"{"signedOut":true}"#));
+        assert!(!cursor_auth_signed_in(b"not json"));
     }
 }

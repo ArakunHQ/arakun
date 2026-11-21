@@ -477,7 +477,8 @@ impl GitHubView {
             }
             pr::fix_checks_prompt(&item, &title, p, &failed)
         };
-        self.ask(format!("Fix checks: {title}"), prompt, cx);
+        let on = self.target(&item, cx);
+        self.ask(format!("Fix checks: {title}"), prompt, on, cx);
     }
 
     /// The line over the checks when some failed: how many, and what to do

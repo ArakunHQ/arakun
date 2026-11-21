@@ -124,20 +124,11 @@ pub struct Book {
 
 impl Book {
     pub fn load() -> Self {
-        std::fs::read(book_path())
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or_default()
+        crate::durable::load_json(book_path()).unwrap_or_default()
     }
 
     pub fn store(&self) {
-        let path = book_path();
-        if let Some(dir) = path.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
-        if let Ok(bytes) = serde_json::to_vec(self)
-            && let Err(e) = crate::durable::write(&path, &bytes)
-        {
+        if let Err(e) = crate::durable::save_json(&book_path(), self) {
             eprintln!("arakun: could not keep the settled merges: {e}");
         }
     }

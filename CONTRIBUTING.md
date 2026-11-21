@@ -78,7 +78,8 @@ You only need the `browser` feature (and CEF) if you work on `src/browser` or
 a while and later ones are quick.
 
 The phone relay in [`relay/`](relay) is a separate TypeScript project. It needs Node 24
-or newer; see [relay/README.md](relay/README.md).
+or newer; see [relay/README.md](relay/README.md). So is the teams Worker in
+[`teams/`](teams); see [teams/README.md](teams/README.md).
 
 ### Features you can ignore
 
@@ -89,9 +90,9 @@ off, and do not add code behind them.
 
 CI runs the checks below that a pull request can affect. A change to docs, `iso/` or
 `tools/` (apart from `tools/rustfmt.sh` and the layout audit) alone skips the Rust
-jobs, the relay job runs only when `relay/`, `phone/` or CI itself changes, and
-cargo-deny runs only when `Cargo.toml`, `Cargo.lock` or `deny.toml` changes, and
-zizmor runs only when `.github/` changes.
+jobs, the relay job runs only when `relay/`, `phone/` or CI itself changes, the teams
+job only when `teams/` or CI itself changes, cargo-deny runs only when `Cargo.toml`,
+`Cargo.lock` or `deny.toml` changes, and zizmor runs only when `.github/` changes.
 
 CI is the gate, not your machine. Before you push, run the quick checks for what you
 changed: `tools/rustfmt.sh --check` and clippy for Rust, and the tests of the modules
@@ -115,6 +116,9 @@ cargo deny check
 # relay/ or phone/ changed
 (cd relay && npm ci && npx tsc --noEmit && npx vitest run)
 (cd phone && node --test "test/*.test.mjs")
+
+# teams/ changed
+(cd teams && npm ci && npx tsc --noEmit && npx vitest run)
 
 # .github/ changed (brew install zizmor, or pipx install zizmor)
 zizmor .github
@@ -167,10 +171,10 @@ lefthook install
 ```
 
 - **On commit:** clippy if Rust files changed, the relay's types if `relay/` changed,
-  and the phone tests if `phone/` or `src/phone/` changed. They check the files on
-  disk, not only what you staged.
-- **On push:** `cargo test` and the relay tests, if the commits you push change those
-  parts.
+  the teams Worker's types if `teams/` changed, and the phone tests if `phone/` or
+  `src/phone/` changed. They check the files on disk, not only what you staged.
+- **On push:** `cargo test`, the relay tests and the teams tests, if the commits you
+  push change those parts.
 - **On the commit message:** the Conventional Commits check (see
   [Pull requests](#pull-requests)).
 
@@ -178,6 +182,37 @@ Skip the hooks for one command with `LEFTHOOK=0 git commit ...`, or one job with
 `LEFTHOOK_EXCLUDE=clippy git commit ...`. To leave the full test suite to CI, push with
 `LEFTHOOK_EXCLUDE=cargo-test git push`. Put your own changes in `lefthook-local.yml`,
 which git ignores. Turn the hooks off with `lefthook uninstall`.
+
+### Benchmarks
+
+[`tools/bench/bench.py`](tools/bench/bench.py) measures Arakun. CI doesn't run it on
+pull requests. Run it when a change could make the app slower, and put the `compare`
+table in the pull request.
+
+```sh
+cargo build --release --locked --no-default-features
+tools/bench/bench.py perf --out target/bench/after.json     # frame times, CPU, memory
+tools/bench/bench.py compare target/bench/before.json target/bench/after.json --markdown
+tools/bench/bench.py agent --tasks fix-bug --model haiku    # Claude Code on a task, in Arakun
+```
+
+`perf` plays scenarios (palette, sidebar, zoom, scrolling, a terminal flood) in a test
+Arakun (`arakun dev`, Linux and macOS) and reads the time GPUI took for each frame.
+`agent` gives Claude Code the coding tasks in `tools/bench/tasks/`, in Arakun and, with
+`--runner arakun,claude`, as bare `claude -p`, and scores each run with tests the
+agent never saw. It uses your Claude account or API key, so it costs money. The
+[`bench` skill](.claude/skills/bench/SKILL.md) has the details.
+
+To compare two releases, start the **Benchmark releases** workflow from the Actions
+tab, or with `gh`. It downloads both Linux builds, runs `perf` on one after the other
+on the same runner and puts the `compare` table on the run's summary page. The run
+fails when the newer release is slower past the threshold.
+
+```sh
+gh workflow run bench-releases.yml -f before=v0.10.0 -f after=v0.11.1
+gh workflow run bench-releases.yml            # the latest release against the one before
+tools/bench/releases.sh v0.10.0 v0.11.1       # the same on your own Linux machine
+```
 
 ## Writing code
 
@@ -279,7 +314,7 @@ that keeps one on purpose goes on its allow-list.
     in behavior), `perf`, `test`, `build` (Cargo, dependencies, tools), `ci`, `chore`
     or `revert` (`revert: <the title of the change you undo>`).
   - **scope** (optional): the part of Arakun it touches, usually the module or folder:
-    `terminal`, `agent`, `browser`, `phone`, `relay`, `iso`, `windows`...
+    `terminal`, `agent`, `browser`, `phone`, `relay`, `teams`, `iso`, `windows`...
   - **description:** imperative and lower case, with no period at the end, for example
     `fix(terminal): keep the tab name on resize` or
     `feat(phone): answer permission prompts`.

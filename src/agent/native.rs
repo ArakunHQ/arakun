@@ -1307,6 +1307,7 @@ impl Thread {
                             created: now,
                             updated: now,
                             pr: None,
+                            seat: None,
                         }));
                     }
                 }
@@ -1488,6 +1489,7 @@ impl Thread {
                         created: now,
                         updated: now,
                         pr: None,
+                        seat: None,
                     },
                     prompt: plan.map(|p| p.text).unwrap_or_default(),
                 });
@@ -2039,6 +2041,11 @@ impl Thread {
                         Some("queued") => ToolStatus::Pending,
                         _ => ToolStatus::InProgress,
                     };
+                    if t.status == ToolStatus::InProgress {
+                        self.tool_started
+                            .entry(id.clone())
+                            .or_insert_with(std::time::Instant::now);
+                    }
                     self.entries_changed(ix, cx);
                 }
             }
@@ -2048,6 +2055,7 @@ impl Thread {
                     && let Some(Entry::Tool(t)) = self.entries.get_mut(ix)
                 {
                     finish_tool(t, &n["content"], n["isError"].as_bool().unwrap_or(false));
+                    self.tool_started.remove(&id);
                     self.fill_replaced(ix);
                     self.entries_changed(ix, cx);
                 }
@@ -2368,6 +2376,10 @@ impl Thread {
 
     /// After a permission or question is answered: back to work if nothing else waits.
     pub(super) fn after_input(&mut self, tool_call_id: &str, cx: &mut Context<Self>) {
+        // The call's timer counts from the answer, not while it waited on the user.
+        if let Some(started) = self.tool_started.get_mut(tool_call_id) {
+            *started = std::time::Instant::now();
+        }
         if let Some(&ix) = self.tool_index.get(tool_call_id) {
             self.entries_changed(ix, cx);
         }

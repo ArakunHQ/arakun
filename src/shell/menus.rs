@@ -181,7 +181,7 @@ impl Shell {
         use crate::agent::Setting;
         let current = |s| self.setting_choices(s, cx).map(|(c, _)| c);
         match self.composer_agent() {
-            model::Agent::Claude => {
+            AgentKind::Claude => {
                 let label = self.setting_value_label(Setting::Mode, cx)?;
                 Some((
                     label,
@@ -189,11 +189,11 @@ impl Shell {
                 ))
             }
             // Build or Plan; what Build may do without asking is OpenCode's own config.
-            model::Agent::OpenCode => self
+            AgentKind::OpenCode => self
                 .setting_value_label(Setting::Mode, cx)
                 .map(|l| (l, false)),
             // Codex's sandbox and approval preset; full access never asks.
-            model::Agent::Codex => {
+            AgentKind::Codex => {
                 let label = self.setting_value_label(Setting::Mode, cx)?;
                 Some((
                     label,
@@ -201,13 +201,18 @@ impl Shell {
                 ))
             }
             // Devin's mode: Code, Smart, Ask, Plan or Bypass; bypass never asks.
-            model::Agent::Devin => {
+            AgentKind::Devin => {
                 let label = self.setting_value_label(Setting::Mode, cx)?;
                 Some((label, current(Setting::Mode).as_deref() == Some("bypass")))
             }
+            // Cursor's mode: Agent, Plan or Ask. None of them skips asking.
+            AgentKind::Cursor => {
+                let label = self.setting_value_label(Setting::Mode, cx)?;
+                Some((label, false))
+            }
             // It asks before commands and edits; `arakun agent new` sessions don't.
-            model::Agent::WorkersAi => None,
-            model::Agent::Droid => {
+            AgentKind::WorkersAi => None,
+            AgentKind::Droid => {
                 let Some(autonomy) = self.setting_value_label(Setting::Autonomy, cx) else {
                     // Droid over ACP: its modes carry the autonomy.
                     return self
@@ -233,15 +238,15 @@ impl Shell {
     // ---- what the composer and rail menus can do, for clicks and keys ---------
 
     /// The agent whose models the model menu shows.
-    fn menu_agent(&self) -> model::Agent {
+    fn menu_agent(&self) -> AgentKind {
         self.menu_agent.unwrap_or_else(|| self.composer_agent())
     }
 
     /// The agents the model menu offers: all of them, unless the session can't
     /// be handed over.
-    fn menu_agents(&self) -> Vec<model::Agent> {
+    fn menu_agents(&self) -> Vec<AgentKind> {
         if self.can_switch_agent() {
-            model::Agent::ALL.to_vec()
+            AgentKind::ALL.to_vec()
         } else {
             vec![self.composer_agent()]
         }
@@ -254,7 +259,7 @@ impl Shell {
         let Some(menu) = &self.menu else {
             return Vec::new();
         };
-        let choices = |agent: model::Agent, s: Setting| -> Vec<MenuKey> {
+        let choices = |agent: AgentKind, s: Setting| -> Vec<MenuKey> {
             self.agent_choices(agent, s, cx)
                 .map(|(_, options)| {
                     options
@@ -288,7 +293,7 @@ impl Shell {
                     .flat_map(|s| choices(agent, s))
                     .collect()
             }
-            MenuTarget::RailUsage => AgentKind::ALL
+            MenuTarget::RailUsage => AgentKind::WITH_PLAN
                 .into_iter()
                 .map(MenuKey::Rail)
                 .chain([MenuKey::OpenUsage])
@@ -342,7 +347,7 @@ impl Shell {
     /// The next (or previous) reasoning level of `agent`, without wrapping.
     fn step_effort(
         &mut self,
-        agent: model::Agent,
+        agent: AgentKind,
         up: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -469,12 +474,13 @@ impl Shell {
     fn permission_sections(&self, cx: &App) -> Vec<crate::agent::Setting> {
         use crate::agent::Setting;
         match self.composer_agent() {
-            model::Agent::Claude
-            | model::Agent::OpenCode
-            | model::Agent::Codex
-            | model::Agent::Devin => vec![Setting::Mode],
-            model::Agent::WorkersAi => Vec::new(),
-            model::Agent::Droid => [Setting::Mode, Setting::Autonomy]
+            AgentKind::Claude
+            | AgentKind::OpenCode
+            | AgentKind::Codex
+            | AgentKind::Devin
+            | AgentKind::Cursor => vec![Setting::Mode],
+            AgentKind::WorkersAi => Vec::new(),
+            AgentKind::Droid => [Setting::Mode, Setting::Autonomy]
                 .into_iter()
                 .filter(|s| self.setting_choices(*s, cx).is_some())
                 .collect(),
@@ -486,17 +492,24 @@ impl Shell {
         use crate::agent::AgentKind;
         ui::menu_panel("rail-usage-menu", 220.)
             .child(ui::menu_heading("Show in sidebar"))
-            .children(AgentKind::ALL.into_iter().enumerate().map(|(i, agent)| {
-                ui::switch_row(
-                    ("rail-usage-opt", i),
-                    agent.label(),
-                    account_view::rail_shows(agent),
-                )
-                .when(self.menu_focus(i), |d| d.bg(theme::fill_hover()))
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.menu_run(MenuKey::Rail(agent), window, cx)
-                }))
-            }))
+            .children(
+                AgentKind::WITH_PLAN
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, agent)| {
+                        ui::switch_row(
+                            ("rail-usage-opt", i),
+                            agent.label(),
+                            account_view::rail_shows(agent),
+                        )
+                        .when(self.menu_focus(i), |d| d.bg(theme::fill_hover()))
+                        .on_click(cx.listener(
+                            move |this, _, window, cx| {
+                                this.menu_run(MenuKey::Rail(agent), window, cx)
+                            },
+                        ))
+                    }),
+            )
             .child(ui::menu_divider())
             .child(
                 ui::menu_item(
@@ -506,7 +519,7 @@ impl Shell {
                     false,
                     true,
                 )
-                .when(self.menu_focus(AgentKind::ALL.len()), |d| {
+                .when(self.menu_focus(AgentKind::WITH_PLAN.len()), |d| {
                     d.bg(theme::fill_hover())
                 })
                 .on_click(
@@ -763,7 +776,7 @@ impl Shell {
     /// start in the keyboard's order.
     fn choice_rows(
         &self,
-        agent: model::Agent,
+        agent: AgentKind,
         s: crate::agent::Setting,
         describe: bool,
         offset: usize,
@@ -1290,11 +1303,7 @@ fn effort_tip(id: &str) -> Option<&'static str> {
 /// open to compare levels, and so does a model of the agent in use: the
 /// reasoning row sits below the models and may change with them, so it comes
 /// next. Another agent's model switches the agent or hands the session over.
-fn closes_on_pick(
-    s: crate::agent::Setting,
-    agent: model::Agent,
-    composer_agent: model::Agent,
-) -> bool {
+fn closes_on_pick(s: crate::agent::Setting, agent: AgentKind, composer_agent: AgentKind) -> bool {
     use crate::agent::Setting;
     match s {
         Setting::Effort => false,
@@ -1310,7 +1319,7 @@ mod tests {
 
     #[test]
     fn model_menu_stays_open_for_the_same_agent() {
-        let (claude, codex) = (model::Agent::Claude, model::Agent::Codex);
+        let (claude, codex) = (AgentKind::Claude, AgentKind::Codex);
         assert!(!closes_on_pick(Setting::Model, claude, claude));
         assert!(closes_on_pick(Setting::Model, codex, claude));
         assert!(!closes_on_pick(Setting::Effort, claude, claude));

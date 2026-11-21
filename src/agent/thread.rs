@@ -2,9 +2,10 @@
 //! ACP; Droid speaks its native `stream-jsonrpc` (see `native.rs`) unless
 //! `ARAKUN_DROID_ACP=1` keeps it on ACP too.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::{Component, Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result, anyhow};
@@ -22,6 +23,7 @@ use super::launch;
 use super::ledger;
 use super::loops::{self, Stuck};
 use super::rpc::{Connection, Dialect, Incoming, RpcError, unix_now, uuid_v4};
+use super::seats;
 use super::shell_diff::{self, ShellChange, Snapshot};
 
 // Children of this module so they can reach the private state of `Thread`.
@@ -119,6 +121,10 @@ pub struct SessionMeta {
     /// The GitHub pull request the session opened or last pushed to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pr: Option<String>,
+    /// Claude Code: the seat (`seats`) the session runs on, kept for its
+    /// whole life so a resumed session goes on with the same account.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seat: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -498,6 +504,8 @@ pub enum ThreadEvent {
     Reset,
     /// Metadata changed: modes, models, config, queue, usage, commands.
     Changed,
+    /// The agent's slash commands changed (also a [`ThreadEvent::Changed`]).
+    CommandsChanged,
     StatusChanged,
     TitleChanged,
     NeedsPermission,
@@ -543,7 +551,17 @@ pub enum RemoteAction {
         text: String,
         now: bool,
     },
+    /// Stops the running turn; the queue there pauses, as it does here.
     Cancel,
+    /// Takes the queued prompt `text`, seen at `index`, out of the queue:
+    /// `now` sends it once the running turn stopped, otherwise it is dropped.
+    Unqueue {
+        index: usize,
+        text: String,
+        now: bool,
+    },
+    /// Lets the paused queue go again.
+    ResumeQueue,
     /// The option picked for the permission asked.
     Permission(String),
     Answer(Vec<String>),
@@ -619,6 +637,9 @@ struct Caps {
 pub struct Thread {
     kind: AgentKind,
     backend: Backend,
+    /// The sandbox the agent runs in, when its project has one; its `fs/*`
+    /// requests follow the same rules.
+    sandbox: Option<Arc<super::sandbox::Session>>,
     /// The session runs on a server: this thread shows it, and what the user
     /// does goes out as [`ThreadEvent::Remote`].
     remote: bool,
@@ -633,6 +654,8 @@ pub struct Thread {
     replaced: HashMap<(String, PathBuf), Option<String>>,
     last_message_id: Option<String>,
     conn: Option<Rc<Connection>>,
+    /// The seat the running agent process is on, counted as live there.
+    lease: Option<seats::Lease>,
     session_id: Option<String>,
     agent_title: Option<String>,
     caps: Caps,
@@ -647,6 +670,8 @@ pub struct Thread {
     models: Option<(String, Vec<Choice>)>,
     config: Vec<ConfigOption>,
     commands: Vec<Choice>,
+    /// The agent said which commands it has, even if none: an empty list is then the real one.
+    commands_known: bool,
     permissions: VecDeque<PermissionRequest>,
     queue: Vec<String>,
     queue_paused: bool,
@@ -655,10 +680,16 @@ pub struct Thread {
     urgent: usize,
     usage: Usage,
     turn_started: Option<Instant>,
+    /// When each running tool call was first seen, for its timer. Not saved:
+    /// a call replayed from a transcript has no clock worth showing.
+    tool_started: HashMap<String, Instant>,
     /// Session tokens when the turn started, to stamp the turn with what it used.
     turn_tokens: u64,
     /// Session usage when the turn started, for the usage log.
     turn_usage: Usage,
+    /// What each tool's results used in the turn, when the agent says
+    /// (arakun's Workers AI loop), for the usage log.
+    turn_tools: BTreeMap<String, ledger::ToolUse>,
     /// The last cost Claude Code reported in this process; it counts from the
     /// agent's start, or from the saved total when it resumes a session.
     cost_seen: Option<f64>,
@@ -1100,6 +1131,7 @@ impl Thread {
             created: now,
             updated: now,
             pr: None,
+            seat: None,
         });
         let backend = if kind == AgentKind::Droid && launch::droid_native() {
             Backend::Native
@@ -1122,16 +1154,19 @@ impl Thread {
             replaced: HashMap::new(),
             last_message_id: None,
             conn: None,
+            lease: None,
             agent_title: None,
             caps: Caps::default(),
             auth_hint: None,
             needs_login: false,
             needs_install: None,
+            sandbox: None,
             install_approved: false,
             modes: None,
             models: None,
             config: Vec::new(),
             commands: Vec::new(),
+            commands_known: false,
             permissions: VecDeque::new(),
             queue: Vec::new(),
             queue_paused: false,
@@ -1142,8 +1177,10 @@ impl Thread {
                 ..Usage::default()
             },
             turn_started: None,
+            tool_started: HashMap::new(),
             turn_tokens: 0,
             turn_usage: Usage::default(),
+            turn_tools: BTreeMap::new(),
             cost_seen: None,
             cost_base: 0.,
             fork_point: None,
@@ -1271,6 +1308,26 @@ impl Thread {
         )
     }
 
+    /// Starts a call's clock when it first runs and drops it when it ends.
+    fn clock_tool(&mut self, id: &str, status: ToolStatus) {
+        match status {
+            ToolStatus::Completed | ToolStatus::Failed => {
+                self.tool_started.remove(id);
+            }
+            _ if !self.replaying => {
+                self.tool_started
+                    .entry(id.to_string())
+                    .or_insert_with(Instant::now);
+            }
+            _ => {}
+        }
+    }
+
+    /// How long a running tool call has been going.
+    pub fn tool_elapsed(&self, id: &str) -> Option<Duration> {
+        self.tool_started.get(id).map(Instant::elapsed)
+    }
+
     /// How long the running turn has been going.
     pub fn turn_elapsed(&self) -> Option<Duration> {
         self.turn_started.map(|t| t.elapsed())
@@ -1310,6 +1367,19 @@ impl Thread {
     /// Slash commands the agent advertised.
     pub fn commands(&self) -> &[Choice] {
         &self.commands
+    }
+
+    /// Whether the agent has said which slash commands it has yet.
+    pub fn commands_known(&self) -> bool {
+        self.commands_known
+    }
+
+    /// The slash commands of a server's session, as the server sent them:
+    /// a viewer has no agent of its own to advertise them.
+    pub fn set_remote_commands(&mut self, commands: Vec<Choice>, cx: &mut Context<Self>) {
+        self.commands = commands;
+        self.commands_known = true;
+        self.meta_changed(cx);
     }
 
     pub fn usage(&self) -> &Usage {
@@ -1483,6 +1553,7 @@ impl Thread {
         self._pump = None;
         self._connect = None;
         self.conn = None;
+        self.lease = None;
     }
 
     // ---- persistence -----------------------------------------------------
@@ -1635,6 +1706,7 @@ impl Thread {
 
     fn connect(&mut self, cx: &mut Context<Self>) {
         self.conn = None;
+        self.lease = None;
         self._pump = None;
         self._setup = None;
         self._prompt = None;
@@ -1649,15 +1721,40 @@ impl Thread {
         let native = self.backend == Backend::Native;
         let cwd = self.cwd.clone();
         let install = self.take_install_approval();
+        let pinned = self.meta.seat.clone();
         self._connect = Some(cx.spawn(async move |this, cx| {
             let (progress_tx, mut progress_rx) = fmpsc::unbounded::<String>();
             let resolve = cx.background_executor().spawn(async move {
                 if native {
-                    return launch::resolve_droid_native(Some(&cwd));
+                    return launch::resolve_droid_native(Some(&cwd)).map(|s| (s, None, None));
                 }
-                launch::resolve(kind, Some(&cwd), install, &|line| {
+                let mut spec = launch::resolve(kind, Some(&cwd), install, &|line| {
                     let _ = progress_tx.unbounded_send(line);
-                })
+                })?;
+                // Each Claude Code session on a seat of its own, in its own
+                // environment only; see `seats`.
+                let seat = (kind == AgentKind::Claude)
+                    .then(|| seats::assign(pinned.as_deref()))
+                    .flatten();
+                if let Some(seat) = &seat {
+                    let (set, unset) = seat.env();
+                    spec.env.extend(set);
+                    spec.unset.extend(unset);
+                }
+                if !super::sandbox::wanted(&cwd).map_err(|e| {
+                    anyhow!("{e}. The sandbox won't start an agent in a Git folder it can't trust.")
+                })? {
+                    return Ok((spec, seat, None));
+                }
+                // Its tools would run in arakun itself, outside any sandbox.
+                if kind == AgentKind::WorkersAi {
+                    anyhow::bail!(
+                        "Workers AI runs its tools inside arakun, which has no sandbox for them yet. Turn off Sandbox agents in Settings › Project to use it here."
+                    );
+                }
+                let sandbox = super::sandbox::Session::new(kind, &cwd)?;
+                let spec = sandbox.wrap(spec);
+                Ok((spec, seat, Some(Arc::new(sandbox))))
             });
             let progress = {
                 let this = this.clone();
@@ -1673,13 +1770,39 @@ impl Thread {
             let spec = resolve.await;
             progress.await;
             let _ = this.update(cx, |t, cx| match spec {
-                Ok(spec) => t.launch(spec, cx),
+                Ok((spec, seat, sandbox)) => {
+                    if let Some(seat) = seat {
+                        t.take_seat(seat, cx);
+                    }
+                    t.sandbox = sandbox;
+                    t.launch(spec, cx)
+                }
                 Err(e) => {
                     t.needs_install = e.downcast_ref::<launch::AdapterInstall>().cloned();
                     t.fail(FailedAt::Resolve, format!("{e:#}"), cx)
                 }
             });
         }));
+    }
+
+    /// The session runs on `seat` from now on: saved with it (once a seat is
+    /// saved, it stays) and counted as live there.
+    fn take_seat(&mut self, seat: seats::Assignment, cx: &mut Context<Self>) {
+        // `assign` counted it live when it picked; a pin it kept, here.
+        let lease = seat.lease.unwrap_or_else(|| seats::lease(&seat.seat));
+        self.lease = Some(lease);
+        if self.meta.seat.as_deref() != Some(seat.seat.as_str()) {
+            self.meta.seat = Some(seat.seat);
+            self.meta_changed(cx);
+        }
+        if let Some(text) = seat.notice {
+            self.notice(text, false, cx);
+        }
+    }
+
+    /// The seat the agent process runs on, while it runs.
+    pub fn seat(&self) -> Option<&str> {
+        self.lease.as_ref().map(seats::Lease::seat)
     }
 
     /// Spawns on the main thread on purpose: PR_SET_PDEATHSIG fires when the
@@ -1696,7 +1819,10 @@ impl Thread {
         };
         let (conn, mut rx) = match spawned {
             Ok(c) => c,
-            Err(e) => return self.fail(FailedAt::Spawn, format!("{e:#}"), cx),
+            Err(e) => {
+                self.lease = None;
+                return self.fail(FailedAt::Spawn, format!("{e:#}"), cx);
+            }
         };
         let conn = Rc::new(conn);
         self.conn = Some(conn.clone());
@@ -1854,14 +1980,19 @@ impl Thread {
                 if fresh && t.kind == AgentKind::OpenCode {
                     super::catalog::remember_opencode_options(&v["configOptions"]);
                 }
-                if fresh && matches!(t.kind, AgentKind::Codex | AgentKind::Devin) {
+                if fresh
+                    && matches!(
+                        t.kind,
+                        AgentKind::Codex | AgentKind::Devin | AgentKind::Cursor
+                    )
+                {
                     let raw = v["configOptions"].clone();
                     let kind = t.kind;
                     cx.background_spawn(crate::guard::task(async move {
-                        if kind == AgentKind::Codex {
-                            super::catalog::remember_codex_options(&raw)
-                        } else {
-                            super::catalog::remember_devin_options(&raw)
+                        match kind {
+                            AgentKind::Codex => super::catalog::remember_codex_options(&raw),
+                            AgentKind::Devin => super::catalog::remember_devin_options(&raw),
+                            _ => super::catalog::remember_cursor_options(&raw),
                         }
                     }))
                     .detach();
@@ -2028,6 +2159,24 @@ impl Thread {
         self.remote
     }
 
+    /// The server's queue for its session, as its `state` says it: shown as
+    /// this session's own, while the server keeps and sends it.
+    pub fn set_remote_queue(
+        &mut self,
+        queue: Vec<String>,
+        paused: bool,
+        sending_now: usize,
+        cx: &mut Context<Self>,
+    ) {
+        if self.queue == queue && self.queue_paused == paused && self.urgent == sending_now {
+            return;
+        }
+        self.urgent = sending_now.min(queue.len());
+        self.queue = queue;
+        self.queue_paused = paused && !self.queue.is_empty();
+        self.meta_changed(cx);
+    }
+
     /// What the user did did not reach the server: the questionnaire can be
     /// answered again, and a rewind asked for is off.
     pub fn remote_undelivered(&mut self, cx: &mut Context<Self>) {
@@ -2192,6 +2341,7 @@ impl Thread {
         }
         self.turn_tokens = self.usage.total_tokens();
         self.turn_usage = self.usage.clone();
+        self.turn_tools.clear();
         self.last_prompt = Some(text.clone());
         self.last_message_id = None;
         self.cancelling = false;
@@ -2346,6 +2496,7 @@ impl Thread {
         self.auto_turn = true;
         self.turn_started = Some(Instant::now());
         self.turn_usage = self.usage.clone();
+        self.turn_tools.clear();
         self.set_status(ThreadStatus::Working, cx);
     }
 
@@ -2534,6 +2685,13 @@ impl Thread {
     /// lists the turn by model in `_meta.quota.model_usage`, subagents and
     /// compaction included, which the flat `usage` leaves out.
     fn add_turn_tokens(&mut self, v: &Value) {
+        if let Some(tools) = v["_meta"]["arakun"]["tools"].as_object() {
+            for (k, u) in tools {
+                if let Ok(u) = serde_json::from_value::<ledger::ToolUse>(u.clone()) {
+                    self.turn_tools.entry(k.clone()).or_default().add(u);
+                }
+            }
+        }
         let rows: Vec<&Value> = v["_meta"]["quota"]["model_usage"]
             .as_array()
             .map(|a| {
@@ -2613,6 +2771,7 @@ impl Thread {
                 .unwrap_or(0)
                 .saturating_sub(before.credits.unwrap_or(0)),
             ms: elapsed_ms.unwrap_or(0),
+            tools: std::mem::take(&mut self.turn_tools),
         };
         self.turn_usage = self.usage.clone();
         if turn.is_empty() {
@@ -2631,6 +2790,7 @@ impl Thread {
             self.add_turn_tokens(v);
         }
         self.settle_turn(cx);
+        self.tool_started.clear();
         let cancelled = std::mem::take(&mut self.cancelling);
         let stop_reason = match result {
             Ok(v) => {
@@ -2813,6 +2973,28 @@ impl Thread {
         cx.notify();
     }
 
+    /// Sends the queued prompt `text` now, or drops it. `index` is where it was
+    /// seen: on a server the queue may have moved since, so one moved is looked
+    /// for by its text, and one that went already is left alone.
+    pub fn unqueue(&mut self, index: usize, text: &str, now: bool, cx: &mut Context<Self>) {
+        if self.remote {
+            cx.emit(ThreadEvent::Remote(RemoteAction::Unqueue {
+                index,
+                text: text.to_string(),
+                now,
+            }));
+            return;
+        }
+        let Some(ix) = queued_at(&self.queue, index, text) else {
+            return;
+        };
+        if now {
+            self.send_now(ix, cx);
+        } else {
+            self.remove_queued(ix, cx);
+        }
+    }
+
     pub fn remove_queued(&mut self, ix: usize, cx: &mut Context<Self>) {
         if ix < self.queue.len() {
             self.queue.remove(ix);
@@ -2862,6 +3044,11 @@ impl Thread {
         self.check_offered
     }
 
+    /// The sandbox the agent runs in, so what runs for it can run there too.
+    pub fn sandbox(&self) -> Option<Arc<super::sandbox::Session>> {
+        self.sandbox.clone()
+    }
+
     /// Offers `command` as the project's check, once per session.
     pub fn offer_check(&mut self, command: String, cx: &mut Context<Self>) {
         if self.check_offered {
@@ -2881,6 +3068,10 @@ impl Thread {
     }
 
     pub fn resume_queue(&mut self, cx: &mut Context<Self>) {
+        if self.remote {
+            cx.emit(ThreadEvent::Remote(RemoteAction::ResumeQueue));
+            return;
+        }
         self.queue_paused = false;
         self.meta_changed(cx);
         self.drain_queue(cx);
@@ -3187,10 +3378,12 @@ impl Thread {
                 stderr_tail,
             } => {
                 self.conn = None;
+                self.lease = None;
                 self.permissions.clear();
                 self.native.questions.clear();
                 self._prompt = None;
                 self.turn_started = None;
+                self.tool_started.clear();
                 (self.prompting, self.held, self.auto_turn) = (false, false, false);
                 self.stop_subagents(cx);
                 let tail: Vec<&str> = stderr_tail.lines().rev().take(6).collect();
@@ -3330,12 +3523,13 @@ impl Thread {
             // Off the main thread: a big file, or one on a slow disk, would freeze the window.
             "fs/read_text_file" => {
                 let cwd = self.cwd.clone();
+                let sandbox = self.sandbox.clone();
                 let conn = Rc::downgrade(&conn);
                 cx.spawn(async move |_, cx| {
                     let read = cx
-                        .background_spawn(crate::guard::task(
-                            async move { read_file(&cwd, &params) },
-                        ))
+                        .background_spawn(crate::guard::task(async move {
+                            read_file(&cwd, sandbox.as_deref(), &params)
+                        }))
                         .await;
                     // The agent may have gone in the meantime.
                     let Some(conn) = conn.upgrade() else {
@@ -3348,10 +3542,33 @@ impl Thread {
                 })
                 .detach();
             }
-            "fs/write_text_file" => match self.write_file(&params) {
-                Ok(()) => conn.respond(id, json!({})),
-                Err(e) => conn.respond_error(id, -32002, &format!("{e:#}")),
-            },
+            // Checked here, written off the main thread: a sandboxed write starts a
+            // process, and a big file on a slow disk would freeze the window too.
+            "fs/write_text_file" => {
+                let checked = self.writable_path(&params);
+                let sandbox = self.sandbox.clone();
+                let content = params["content"].as_str().unwrap_or("").to_string();
+                let conn = Rc::downgrade(&conn);
+                cx.spawn(async move |_, cx| {
+                    let written = match checked {
+                        Ok(path) => {
+                            cx.background_spawn(crate::guard::task(async move {
+                                write_text(&path, sandbox.as_deref(), &content)
+                            }))
+                            .await
+                        }
+                        Err(e) => Err(e),
+                    };
+                    let Some(conn) = conn.upgrade() else {
+                        return;
+                    };
+                    match written {
+                        Ok(()) => conn.respond(id, json!({})),
+                        Err(e) => conn.respond_error(id, -32002, &format!("{e:#}")),
+                    }
+                })
+                .detach();
+            }
             _ => conn.respond_error(id, -32601, &format!("method not found: {method}")),
         }
     }
@@ -3365,13 +3582,16 @@ impl Thread {
             .map(|c| (c.id.clone(), c.thread.clone()))
     }
 
-    fn write_file(&self, params: &Value) -> Result<()> {
+    /// Where the agent's `fs/write_text_file` goes, if it may write there.
+    fn writable_path(&self, params: &Value) -> Result<PathBuf> {
         let path = confine(&self.cwd, params["path"].as_str().unwrap_or(""))?;
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
+        if self.sandbox.as_ref().is_some_and(|s| !s.may_write(&path)) {
+            return Err(anyhow!(
+                "the sandbox does not let the agent write {}",
+                path.display()
+            ));
         }
-        std::fs::write(&path, params["content"].as_str().unwrap_or(""))
-            .with_context(|| format!("writing {}", path.display()))
+        Ok(path)
     }
 
     // ---- session/update --------------------------------------------------
@@ -3424,6 +3644,8 @@ impl Thread {
             }
             "available_commands_update" => {
                 self.commands = parse_choices(u.get("availableCommands"), "name");
+                self.commands_known = true;
+                cx.emit(ThreadEvent::CommandsChanged);
                 self.meta_changed(cx);
             }
             "current_mode_update" => {
@@ -3668,6 +3890,11 @@ impl Thread {
         if let Some(status) = u["status"].as_str() {
             t.status = parse_tool_status(status);
         }
+        let status = t.status;
+        self.clock_tool(&id, status);
+        let Some(Entry::Tool(t)) = self.entries.get_mut(ix) else {
+            return;
+        };
         if let Some(content) = u.get("content").filter(|c| c.is_array()) {
             t.content = parse_tool_content(content);
             recount(t);
@@ -3795,32 +4022,73 @@ fn confine(cwd: &Path, raw: &str) -> Result<PathBuf> {
     Ok(real)
 }
 
+/// Writes the agent's `fs/write_text_file`. Runs off the main thread.
+fn write_text(path: &Path, sandbox: Option<&super::sandbox::Session>, content: &str) -> Result<()> {
+    // Written from inside: checked paths can still be swapped for links.
+    if let Some(s) = sandbox {
+        return s.write(path, content.as_bytes());
+    }
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(path, content).with_context(|| format!("writing {}", path.display()))
+}
+
 /// Most of a file the agent gets in one answer. A bigger file would freeze the
 /// window while the reply is built, and the agent can read it in parts.
 const READ_MAX: usize = 8 << 20;
 
 /// Answers the agent's `fs/read_text_file`: the whole file, or `limit` lines
 /// from `line` (1-based). Runs off the main thread.
-fn read_file(cwd: &Path, params: &Value) -> Result<String> {
+fn read_file(
+    cwd: &Path,
+    sandbox: Option<&super::sandbox::Session>,
+    params: &Value,
+) -> Result<String> {
     let path = confine(cwd, params["path"].as_str().unwrap_or(""))?;
+    if sandbox.is_some_and(|s| !s.may_read(&path)) {
+        return Err(anyhow!("{} is hidden from the sandbox", path.display()));
+    }
     let line = params["line"].as_u64().map(|l| l.max(1) as usize);
     let limit = params["limit"].as_u64().map(|l| l as usize);
-    read_text(&path, line, limit)
+    match sandbox {
+        // Read from inside: checked paths can still be swapped for links.
+        Some(s) => {
+            let bytes = s.read(&path, SANDBOX_READ_MAX)?;
+            let len = bytes.len() as u64;
+            read_lines(std::io::Cursor::new(bytes), len, &path, line, limit)
+        }
+        None => read_text(&path, line, limit),
+    }
 }
 
+/// Most of a file read through a sandbox, which can't stream it.
+const SANDBOX_READ_MAX: usize = 8 * READ_MAX;
+
 fn read_text(path: &Path, line: Option<usize>, limit: Option<usize>) -> Result<String> {
-    use std::io::BufRead as _;
     let meta = std::fs::metadata(path).with_context(|| format!("reading {}", path.display()))?;
     // Reading a FIFO or a device could wait or go on for good.
     if !meta.is_file() {
         return Err(anyhow!("{} is not a regular file", path.display()));
     }
+    let file = std::fs::File::open(path).with_context(|| format!("reading {}", path.display()))?;
+    read_lines(std::io::BufReader::new(file), meta.len(), path, line, limit)
+}
+
+/// `limit` lines from `line` of `r`, whose size is `len`.
+fn read_lines(
+    mut r: impl std::io::BufRead,
+    len: u64,
+    path: &Path,
+    line: Option<usize>,
+    limit: Option<usize>,
+) -> Result<String> {
     let mb = |n: u64| n.div_ceil(1 << 20);
     let too_big = || match (line, limit) {
         (None, None) => anyhow!(
             "{} is {} MB, more than the {} MB arakun reads at once. Read it in parts with `line` and `limit`.",
             path.display(),
-            mb(meta.len()),
+            mb(len),
             mb(READ_MAX as u64)
         ),
         _ => anyhow!(
@@ -3829,11 +4097,9 @@ fn read_text(path: &Path, line: Option<usize>, limit: Option<usize>) -> Result<S
             mb(READ_MAX as u64)
         ),
     };
-    if line.is_none() && limit.is_none() && meta.len() > READ_MAX as u64 {
+    if line.is_none() && limit.is_none() && len > READ_MAX as u64 {
         return Err(too_big());
     }
-    let file = std::fs::File::open(path).with_context(|| format!("reading {}", path.display()))?;
-    let mut r = std::io::BufReader::new(file);
     let read = |e| anyhow::Error::new(e).context(format!("reading {}", path.display()));
     // Lines before `line` are skipped without keeping them.
     let mut skipped = 0;
@@ -4095,6 +4361,15 @@ fn take_next(queue: &mut Vec<String>, urgent: &mut usize, paused: bool) -> Optio
     Some(queue.remove(0))
 }
 
+/// Where `text` is in `queue`: at `index` while it is still there, else at its
+/// first place. None once it went.
+fn queued_at(queue: &[String], index: usize, text: &str) -> Option<usize> {
+    if queue.get(index).is_some_and(|q| q == text) {
+        return Some(index);
+    }
+    queue.iter().position(|q| q == text)
+}
+
 /// Files the finished edits in `entries` touched, and those their turns'
 /// shell commands changed, absolute (relative ones are in `cwd`), in
 /// first-touched order.
@@ -4191,6 +4466,29 @@ mod tests {
         t.push_terminal_output(&format!("{}\n", "x".repeat(3 * super::TERMINAL_KEEP)));
         assert!(t.terminal_output.len() >= super::TERMINAL_KEEP);
         assert!(t.terminal_output.ends_with("x\n"));
+    }
+
+    #[test]
+    fn a_sessions_seat_is_saved_with_it_and_kept_on_resume() {
+        let mut t = Thread::new(AgentKind::Claude, "/p".into(), None);
+        assert_eq!(t.meta().seat, None);
+        t.meta.seat = Some("work".into());
+        // Saved in the session list and the transcript, and read back.
+        let json = serde_json::to_string(&t.meta()).unwrap();
+        let meta: SessionMeta = serde_json::from_str(&json).unwrap();
+        assert_eq!(meta.seat.as_deref(), Some("work"));
+        // A resumed or restarted session starts from that meta, so `connect`
+        // asks `seats::assign` for the same seat.
+        let resumed = Thread::new(AgentKind::Claude, "/p".into(), Some(meta));
+        assert_eq!(resumed.meta.seat.as_deref(), Some("work"));
+        // Not live until its process runs.
+        assert_eq!(resumed.seat(), None);
+        // Sessions saved before seats existed have none.
+        let old =
+            r#"{"agent":"claude","session_id":"s","title":"t","cwd":"/p","created":1,"updated":2}"#;
+        let old: SessionMeta = serde_json::from_str(old).unwrap();
+        assert_eq!(old.seat, None);
+        assert!(!serde_json::to_string(&old).unwrap().contains("seat"));
     }
 
     #[test]
@@ -4559,9 +4857,9 @@ mod tests {
         assert_eq!(read(Some(9), None), "");
         assert_eq!(read(None, Some(0)), "");
         let params = json!({"path": "a.txt", "line": 0, "limit": 1});
-        assert_eq!(read_file(&dir, &params).unwrap(), "one\n");
+        assert_eq!(read_file(&dir, None, &params).unwrap(), "one\n");
         let outside = json!({"path": "../elsewhere.txt"});
-        assert!(read_file(&dir, &outside).is_err());
+        assert!(read_file(&dir, None, &outside).is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -4659,5 +4957,16 @@ mod tests {
             take_next(&mut queue, &mut urgent, false).as_deref(),
             Some("waiting")
         );
+    }
+
+    #[test]
+    fn a_queued_prompt_is_found_after_the_queue_moved() {
+        let queue = q(&["a", "b", "c"]);
+        assert_eq!(queued_at(&queue, 1, "b"), Some(1));
+        // The one in front went before the click got there.
+        assert_eq!(queued_at(&queue[1..], 1, "b"), Some(0));
+        // Gone already: nothing else is taken in its place.
+        assert_eq!(queued_at(&queue, 1, "d"), None);
+        assert_eq!(queued_at(&[], 0, "a"), None);
     }
 }

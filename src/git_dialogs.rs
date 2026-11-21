@@ -1,8 +1,6 @@
 //! Dialogs of the Changes panel: writing a commit, and confirming a destructive or
 //! far-reaching git action (discarding a file, merging into the main checkout).
 
-use std::path::PathBuf;
-
 use anyhow::Result;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
@@ -13,7 +11,9 @@ use gpui::{
 
 use crate::agent::AgentKind;
 use crate::git;
+use crate::git_call::NewPr;
 use crate::input::{InputEvent, TextInput};
+use crate::servers::git::GitAt;
 use crate::theme;
 use crate::ui::{self, ButtonKind, icon};
 
@@ -40,13 +40,23 @@ fn error_box(e: SharedString) -> impl IntoElement {
 // ---------------------------------------------------------------------------
 
 pub struct CommitDialog {
-    dir: PathBuf,
+    at: GitAt,
     branch: SharedString,
     files: usize,
     staged: usize,
     input: Entity<TextInput>,
     /// Some(all) while a commit runs.
     busy: Option<bool>,
+    /// The agent that writes the message; None until it is found, and when
+    /// none can.
+    writer: Option<AgentKind>,
+    /// While the agent writes.
+    writing: bool,
+    /// Stops the agent when the dialog closes before it answers.
+    stop: crate::pr_writer::StopOnDrop,
+    /// What the agent wrote when the user had typed a message meanwhile:
+    /// theirs stays in the box.
+    kept: Option<SharedString>,
     error: Option<SharedString>,
     _sub: Subscription,
 }
@@ -55,14 +65,28 @@ impl EventEmitter<GitDialogEvent> for CommitDialog {}
 
 impl CommitDialog {
     pub fn new(
-        dir: PathBuf,
+        at: GitAt,
         branch: SharedString,
         files: usize,
         staged: usize,
+        session: AgentKind,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let input = cx.new(|cx| TextInput::new("Describe what changed", cx));
+        // Finding an agent's CLI reads the disk: off the main thread.
+        cx.spawn(async move |this, cx| {
+            let writer = cx
+                .background_spawn(async move {
+                    crate::pr_writer::writer(session, crate::env_name::installed)
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.writer = writer;
+                cx.notify();
+            });
+        })
+        .detach();
         let sub = cx.subscribe_in(&input, window, |this: &mut Self, _, ev, _, cx| match ev {
             InputEvent::Submit => {
                 let all = this.staged == 0;
@@ -81,15 +105,106 @@ impl CommitDialog {
         });
         window.focus(&input.focus_handle(cx), cx);
         Self {
-            dir,
+            at,
             branch,
             files,
             staged,
             input,
             busy: None,
+            writer: None,
+            writing: false,
+            stop: Default::default(),
+            kept: None,
             error: None,
             _sub: sub,
         }
+    }
+
+    /// Whether a commit now takes every change: nothing is staged.
+    fn takes_all(&self) -> bool {
+        self.staged == 0
+    }
+
+    /// "Write with <agent>": the agent reads what the commit takes (the
+    /// staged changes, or all of them) and writes the message into the box,
+    /// where the user reads and edits it before committing.
+    fn write_with_ai(&mut self, cx: &mut Context<Self>) {
+        let Some(agent) = self.writer else { return };
+        if self.writing || self.busy.is_some() {
+            return;
+        }
+        self.writing = true;
+        self.error = None;
+        self.kept = None;
+        cx.notify();
+        let (at, all, stop) = (self.at.clone(), self.takes_all(), self.stop.flag());
+        let typed = self.input.read(cx).text().to_string();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_spawn(crate::guard::task(async move {
+                    let source = crate::pr_writer::commit::read(&at, all)?;
+                    crate::pr_writer::commit::write(agent, &source, &stop)
+                }))
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.writing = false;
+                match result {
+                    // A message typed meanwhile is the user's; what the agent
+                    // wrote shows under it, to copy from.
+                    Ok(message) if this.input.read(cx).text() != typed => {
+                        this.kept = Some(
+                            format!("Kept your message. {} wrote: {message}", agent.label()).into(),
+                        )
+                    }
+                    Ok(message) => this.input.update(cx, |i, cx| i.set_text(message, cx)),
+                    Err(e) => {
+                        this.error =
+                            Some(format!("{} couldn't write it: {e}", agent.label()).into())
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// The button beside the message's label.
+    fn write_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let can = self.writer.is_some() && !self.writing && self.busy.is_none();
+        // Its name says where the diff goes before the click sends it.
+        let label: SharedString = match (self.writing, self.writer) {
+            (true, _) => "Writing…".into(),
+            (false, Some(agent)) => format!("Write with {}", agent.label()).into(),
+            (false, None) => "Write with AI".into(),
+        };
+        let what = if self.takes_all() {
+            "every change"
+        } else {
+            "the staged changes"
+        };
+        let tip = match self.writer {
+            Some(agent) => format!(
+                "Sends the diff of {what} to {}, which writes the message",
+                agent.label()
+            ),
+            None => "Needs this environment's agent, or the one picked for naming branches, \
+                     to be installed"
+                .to_string(),
+        };
+        ui::button_with(
+            "commit-write",
+            (!self.writing).then_some("sparkles"),
+            label,
+            ButtonKind::Outline,
+            can,
+        )
+        .when(self.writing, |d| {
+            d.child(ui::spinner("commit-writing", 12., theme::content()))
+        })
+        .tooltip(ui::tip_text(tip))
+        .when(can, |d| {
+            d.on_click(cx.listener(|this, _, _, cx| this.write_with_ai(cx)))
+        })
     }
 
     fn message(&self, cx: &App) -> String {
@@ -98,18 +213,16 @@ impl CommitDialog {
 
     fn submit(&mut self, all: bool, cx: &mut Context<Self>) {
         let message = self.message(cx);
-        if self.busy.is_some() || message.is_empty() {
+        if self.busy.is_some() || self.writing || message.is_empty() {
             return;
         }
         self.busy = Some(all);
         self.error = None;
         cx.notify();
-        let dir = self.dir.clone();
+        let at = self.at.clone();
         cx.spawn(async move |this, cx| {
             let result = cx
-                .background_spawn(crate::guard::task(async move {
-                    git::commit(&dir, &message, all)
-                }))
+                .background_spawn(crate::guard::task(async move { at.commit(&message, all) }))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.busy = None;
@@ -134,7 +247,7 @@ impl Focusable for CommitDialog {
 
 impl Render for CommitDialog {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let ready = !self.message(cx).is_empty() && self.busy.is_none();
+        let ready = !self.message(cx).is_empty() && self.busy.is_none() && !self.writing;
         let has_staged = self.staged > 0;
         let files = if self.files == 1 {
             "1 file".to_string()
@@ -191,9 +304,17 @@ impl Render for CommitDialog {
                             .gap(crate::ui::sp(6.))
                             .child(
                                 div()
-                                    .text_size(px(ui::TEXT_SM))
-                                    .text_color(theme::text_muted())
-                                    .child("Message"),
+                                    .flex()
+                                    .items_center()
+                                    .gap(crate::ui::sp(8.))
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .text_size(px(ui::TEXT_SM))
+                                            .text_color(theme::text_muted())
+                                            .child("Message"),
+                                    )
+                                    .child(self.write_button(cx)),
                             )
                             .child(
                                 div()
@@ -210,6 +331,9 @@ impl Render for CommitDialog {
                                     .child(self.input.clone()),
                             ),
                     )
+                    .when_some(self.kept.clone(), |d, kept| {
+                        d.child(ui::text(ui::Type::Caption, theme::text_muted(), kept))
+                    })
                     .when_some(self.error.clone(), |d, e| d.child(error_box(e)))
                     .child(
                         div()
@@ -270,7 +394,7 @@ pub enum PullRequestEvent {
 /// Opening a pull request for the checked-out branch: the title and where it
 /// merges, with the description GitHub's own form would start with.
 pub struct PullRequestDialog {
-    dir: PathBuf,
+    at: GitAt,
     remote: String,
     branch: String,
     /// The branch has commits GitHub doesn't: they are pushed first.
@@ -281,6 +405,8 @@ pub struct PullRequestDialog {
     writer: Option<AgentKind>,
     /// The agent is writing.
     writing: bool,
+    /// Stops the agent when the dialog closes before it answers.
+    stop: crate::pr_writer::StopOnDrop,
     title: Entity<TextInput>,
     base: Entity<TextInput>,
     draft: bool,
@@ -288,6 +414,12 @@ pub struct PullRequestDialog {
     busy: Option<bool>,
     /// The base whose commits are being read for the description.
     planning: Option<String>,
+    /// The base whose commits could not be read: the server could not be
+    /// asked, which says nothing about whether it has that branch.
+    unread: Option<String>,
+    /// Counts the plan reads: only the latest one may change the dialog,
+    /// whichever finishes last.
+    plans: u64,
     error: Option<SharedString>,
     _subs: Vec<Subscription>,
 }
@@ -296,7 +428,7 @@ impl EventEmitter<PullRequestEvent> for PullRequestDialog {}
 
 impl PullRequestDialog {
     pub fn new(
-        dir: PathBuf,
+        at: GitAt,
         remote: String,
         branch: String,
         needs_push: bool,
@@ -350,7 +482,7 @@ impl PullRequestDialog {
         ];
         window.focus(&title.focus_handle(cx), cx);
         Self {
-            dir,
+            at,
             remote,
             branch,
             needs_push,
@@ -358,11 +490,14 @@ impl PullRequestDialog {
             plan,
             writer,
             writing: false,
+            stop: Default::default(),
             title,
             base,
             draft: true,
             busy: None,
             planning: None,
+            unread: None,
+            plans: 0,
             error: None,
             _subs: subs,
         }
@@ -373,6 +508,10 @@ impl PullRequestDialog {
     /// the pull requests below too. A title the user changed stays.
     fn refresh_plan(&mut self, cx: &mut Context<Self>) {
         let base = self.base.read(cx).text().trim().to_string();
+        // A read still out is for a base no longer typed.
+        self.plans += 1;
+        let read = self.plans;
+        self.unread = None;
         if base.is_empty() || base == self.plan.base {
             self.planning = None;
             // Back on the base read last: what the agent wrote for another
@@ -381,20 +520,34 @@ impl PullRequestDialog {
             return;
         }
         self.planning = Some(base.clone());
-        let (dir, remote, branch) = (self.dir.clone(), self.remote.clone(), self.branch.clone());
+        let (at, remote, branch) = (self.at.clone(), self.remote.clone(), self.branch.clone());
         cx.spawn(async move |this, cx| {
             let onto = base.clone();
             let plan = cx
-                .background_spawn(crate::guard::task_or_default(async move {
-                    git::pr_plan_onto(&dir, &remote, &branch, &onto)
+                .background_spawn(crate::guard::task(async move {
+                    at.pr_plan_onto(&remote, &branch, &onto)
                 }))
                 .await;
             let _ = this.update(cx, |this, cx| {
-                if this.planning.as_deref() == Some(base.as_str()) {
-                    this.planning = None;
+                if this.plans != read {
+                    return;
                 }
-                // Typed on since, or no such branch: the plan shown stays.
-                let (Some(plan), true) = (plan, this.base.read(cx).text().trim() == base) else {
+                this.planning = None;
+                if this.base.read(cx).text().trim() != base {
+                    return;
+                }
+                let plan = match plan {
+                    Ok(plan) => plan,
+                    // Not "no such branch": the server could not be asked.
+                    Err(e) => {
+                        this.unread = Some(base);
+                        this.error = Some(e.to_string().into());
+                        cx.notify();
+                        return;
+                    }
+                };
+                // No such branch: the plan shown stays.
+                let Some(plan) = plan else {
                     return;
                 };
                 if this.title.read(cx).text() == this.plan.title {
@@ -427,13 +580,26 @@ impl PullRequestDialog {
             cx.notify();
             return;
         }
+        if !web && self.unread.as_deref() == Some(base.as_str()) {
+            self.error = Some(
+                format!("Reading the commits for {base} again. Try again in a moment.").into(),
+            );
+            self.refresh_plan(cx);
+            cx.notify();
+            return;
+        }
         // No plan for this base: this clone doesn't have the branch (not
         // fetched, or misspelled), so the description shown is another
         // base's. GitHub's own form reads it there.
         if !web && base != self.plan.base {
+            let or = if self.at.on_server() {
+                "Fetch it there"
+            } else {
+                "Fetch it, or open GitHub's form"
+            };
             self.error = Some(
                 format!(
-                    "This clone has no {}/{base} to read the commits from. Fetch it, or open GitHub's form.",
+                    "This clone has no {}/{base} to read the commits from. {or}.",
                     self.remote
                 )
                 .into(),
@@ -457,43 +623,18 @@ impl PullRequestDialog {
         self.busy = Some(web);
         self.error = None;
         cx.notify();
-        let (dir, remote, branch) = (self.dir.clone(), self.remote.clone(), self.branch.clone());
-        let (draft, body) = (self.draft, self.desc.body.clone());
+        let at = self.at.clone();
+        let pr = NewPr {
+            remote: self.remote.clone(),
+            branch: self.branch.clone(),
+            base,
+            title,
+            body: self.desc.body.clone(),
+            draft: self.draft,
+        };
         cx.spawn(async move |this, cx| {
             let result = cx
-                .background_spawn(crate::guard::task(async move {
-                    // The push state below is the checkout's: of another
-                    // branch it would say nothing about this one.
-                    let on = git::current_branch(&dir);
-                    if on.as_deref() != Some(branch.as_str()) {
-                        anyhow::bail!(
-                            "The folder is on {} now. Check out {branch} to create its pull request.",
-                            on.as_deref().unwrap_or("no branch")
-                        );
-                    }
-                    // Read again: a commit made while the dialog was open
-                    // would stay behind, and gh pushes nothing with --head.
-                    // Not knowing is no reason to skip the push.
-                    let Some(needs_push) = git::needs_push(&dir, &remote) else {
-                        anyhow::bail!(
-                            "Couldn't read the branch's state, so nothing was pushed or created."
-                        );
-                    };
-                    if needs_push {
-                        // A read-only Arakun sends nothing, the branch included.
-                        if crate::github::read_only() {
-                            anyhow::bail!("{}", crate::github::pr::READ_ONLY);
-                        }
-                        git::push(&dir, &remote, &branch)?;
-                    }
-                    // After the push: on a fork the head names its owner.
-                    let head = git::pr_head(&dir, &remote, &branch);
-                    if web {
-                        git::pr_create_web(&dir, &head, &base, &title).map(|()| None)
-                    } else {
-                        git::pr_create(&dir, &head, &base, &title, &body, draft).map(Some)
-                    }
-                }))
+                .background_spawn(crate::guard::task(async move { at.create_pr(pr, web) }))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.busy = None;
@@ -574,19 +715,20 @@ impl PullRequestDialog {
         self.writing = true;
         self.error = None;
         cx.notify();
-        let (dir, remote, branch) = (self.dir.clone(), self.remote.clone(), self.branch.clone());
+        let (at, remote, branch) = (self.at.clone(), self.remote.clone(), self.branch.clone());
+        let stop = self.stop.flag();
         // Both fields stay editable while it writes.
         let (for_base, old_title) = (base.clone(), self.title.read(cx).text().to_string());
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_spawn(crate::guard::task(async move {
-                    let input = crate::pr_writer::read(&dir, &remote, &base, &branch);
+                    let input = crate::pr_writer::read(&at, &remote, &base, &branch)?;
                     if input.commits.is_empty() && input.diff.trim().is_empty() {
                         anyhow::bail!(
                             "Nothing to write from: git found no commits on {branch} that {remote}/{base} doesn't have."
                         );
                     }
-                    crate::pr_writer::write(agent, &input)
+                    crate::pr_writer::write(agent, &input, &stop)
                 }))
                 .await;
             let _ = this.update(cx, |this, cx| {
@@ -642,7 +784,8 @@ impl PullRequestDialog {
                 "Sends the branch's commits and diff to {}, which writes the title and description",
                 agent.label()
             ),
-            None => "Needs Claude Code: as this environment's agent, or picked for naming branches"
+            None => "Needs this environment's agent, or the one picked for naming branches, \
+                     to be installed"
                 .to_string(),
         };
         ui::button_with(
@@ -686,6 +829,22 @@ impl Render for PullRequestDialog {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         use ui::Typography as _;
         let free = self.busy.is_none();
+        // GitHub's form opens in this computer's browser, and a server's
+        // branch is not here for it to read.
+        let web = (!self.at.on_server()).then(|| {
+            ui::button(
+                "pull-request-web",
+                if self.busy == Some(true) {
+                    "Opening…"
+                } else {
+                    "Open GitHub's form"
+                },
+                ButtonKind::Ghost,
+                // Nothing opens while the agent writes.
+                free && !self.writing,
+            )
+            .on_click(cx.listener(|this, _, _, cx| this.submit(true, cx)))
+        });
         let ready = free
             && !self.writing
             && !self.title.read(cx).text().trim().is_empty()
@@ -778,7 +937,11 @@ impl Render for PullRequestDialog {
                             .child(ui::text(
                                 ui::Type::Caption,
                                 theme::text_faint(),
-                                "Edit it on GitHub afterwards, or open GitHub's form to write it first.",
+                                if self.at.on_server() {
+                                    "Edit it on GitHub afterwards."
+                                } else {
+                                    "Edit it on GitHub afterwards, or open GitHub's form to write it first."
+                                },
                             )),
                     )
                     .child(
@@ -798,20 +961,7 @@ impl Render for PullRequestDialog {
                             .flex_wrap()
                             .justify_end()
                             .gap(crate::ui::sp(8.))
-                            .child(
-                                ui::button(
-                                    "pull-request-web",
-                                    if self.busy == Some(true) {
-                                        "Opening…"
-                                    } else {
-                                        "Open GitHub's form"
-                                    },
-                                    ButtonKind::Ghost,
-                                    // Nothing opens while the agent writes.
-                                    free && !self.writing,
-                                )
-                                .on_click(cx.listener(|this, _, _, cx| this.submit(true, cx))),
-                            )
+                            .children(web)
                             .child(div().flex_1())
                             .child(
                                 ui::button("pull-request-cancel", "Cancel", ButtonKind::Ghost, free)

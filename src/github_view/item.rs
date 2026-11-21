@@ -380,6 +380,7 @@ impl GitHubView {
                             this.ask(
                                 crate::github::ask_title(&ask),
                                 crate::github::ask_prompt(&ask),
+                                None,
                                 cx,
                             );
                         })),

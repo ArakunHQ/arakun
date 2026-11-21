@@ -5,10 +5,11 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::agent::AgentKind;
 use crate::agent::{SessionMeta, Setting};
 use crate::model::{
-    Agent, Automation, Environment, Project, Session, Snippet, Split, SplitDir, Status, Tab,
-    TabKind, TabStrip,
+    Automation, Environment, Project, Session, Snippet, Split, SplitDir, Status, Tab, TabKind,
+    TabStrip,
 };
 
 #[derive(Serialize, Deserialize, Default)]
@@ -29,7 +30,7 @@ pub struct State {
     pub rail_w: f32,
     #[serde(default = "panel_w")]
     pub panel_w: f32,
-    /// The Subagents panel, beside the chat.
+    /// The Session panel (pull request and subagents), beside the chat.
     #[serde(default)]
     pub subagents_open: bool,
     #[serde(default = "subagents_w")]
@@ -41,6 +42,9 @@ pub struct State {
     pub diff_palette: String,
     #[serde(default)]
     pub glass: bool,
+    /// `theme::Contrast` id; empty follows the system.
+    #[serde(default)]
+    pub contrast: String,
     /// `theme::Grays` id; empty is the default ramp.
     #[serde(default)]
     pub grays: String,
@@ -59,6 +63,9 @@ pub struct State {
     /// The Dynamic Island was turned off in Settings (`island`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub island_off: bool,
+    /// `ui::motion::Reduce` id; empty follows the system.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub reduce_motion: String,
     /// Closing the window hides it instead of quitting (`background`, Linux).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub background: bool,
@@ -263,6 +270,7 @@ pub struct Layout {
     pub arcade: bool,
     pub diff_palette: crate::theme::DiffPalette,
     pub glass: bool,
+    pub contrast: crate::theme::Contrast,
     pub grays: crate::theme::Grays,
     pub type_scale: crate::ui::TypeScale,
     /// Whether the rail's usage card shows Claude, Droid, OpenCode and Devin.
@@ -291,6 +299,9 @@ pub struct ProjectState {
     pub check: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub check_declined: bool,
+    /// Its agents run in a sandbox.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub sandbox: bool,
     /// The branch new environments start from; None for origin's default branch.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base: Option<String>,
@@ -340,6 +351,9 @@ pub struct EnvState {
     /// Devin settings for the next session, as (key, value).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub devin_settings: Vec<(String, String)>,
+    /// Cursor settings for the next session, as (key, value).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cursor_settings: Vec<(String, String)>,
     /// Workers AI settings for the next session, as (key, value).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub workers_ai_settings: Vec<(String, String)>,
@@ -552,8 +566,8 @@ pub fn sweep_orphans(listed: std::collections::HashSet<String>) {
         (data_dir().join("linked"), "md"),
     ];
     let seen = sweep(&dirs, seen, &listed, crate::model::unix_now());
-    if let Ok(bytes) = serde_json::to_vec(&seen) {
-        let _ = crate::durable::write(&seen_path, &bytes);
+    if let Err(e) = crate::durable::save_json(&seen_path, &seen) {
+        eprintln!("arakun: could not save the sessions seen listed: {e}");
     }
 }
 
@@ -757,6 +771,7 @@ pub fn snapshot_with(
                 setup: p.setup.clone(),
                 check: p.check.clone(),
                 check_declined: p.check_declined,
+                sandbox: p.sandbox,
                 base: p.base.clone(),
                 notes: p.notes.clone(),
                 monos: p.monos.clone(),
@@ -779,7 +794,7 @@ pub fn snapshot_with(
                         placeholder: e.placeholder.clone(),
                         follow_branch: e.follow_branch,
                         used: e.used,
-                        agent: Some(e.agent.key().into()),
+                        agent: Some(e.agent.id().into()),
                         settings: e
                             .draft_settings
                             .iter()
@@ -805,6 +820,11 @@ pub fn snapshot_with(
                             .iter()
                             .map(|(s, v)| (s.key().to_string(), v.clone()))
                             .collect(),
+                        cursor_settings: e
+                            .cursor_settings
+                            .iter()
+                            .map(|(s, v)| (s.key().to_string(), v.clone()))
+                            .collect(),
                         workers_ai_settings: e
                             .workers_ai_settings
                             .iter()
@@ -817,7 +837,7 @@ pub fn snapshot_with(
                             .map(|s| SessionState {
                                 id: s.id.to_string(),
                                 title: s.title.to_string(),
-                                agent: s.agent.key().into(),
+                                agent: s.agent.id().into(),
                                 updated: s.updated,
                                 added: s.added,
                                 removed: s.removed,
@@ -870,6 +890,7 @@ pub fn snapshot_with(
         arcade: layout.arcade,
         diff_palette: layout.diff_palette.id().to_string(),
         glass: layout.glass,
+        contrast: layout.contrast.id().to_string(),
         grays: layout.grays.id().to_string(),
         type_scale: layout.type_scale.id().to_string(),
         rail_hidden: [
@@ -883,8 +904,9 @@ pub fn snapshot_with(
         .map(|(k, _)| k.to_string())
         .collect(),
         ui_zoom: layout.ui_zoom,
-        last_agent: crate::model::default_agent().key().to_string(),
+        last_agent: crate::model::default_agent().id().to_string(),
         island_off: !crate::island::enabled(),
+        reduce_motion: crate::ui::motion::choice().id().to_string(),
         background: crate::background::enabled(),
         window: layout.window,
     };
@@ -899,6 +921,7 @@ pub fn restore(state: State) -> (Vec<Project>, usize, Layout, TabStrip) {
     let last_agent = state.last_agent.clone();
     crate::island::set_enabled(!state.island_off);
     crate::background::set_enabled(state.background);
+    crate::ui::motion::restore(crate::ui::motion::Reduce::from_id(&state.reduce_motion));
     let projects: Vec<Project> = state
         .projects
         .into_iter()
@@ -917,7 +940,7 @@ pub fn restore(state: State) -> (Vec<Project>, usize, Layout, TabStrip) {
                     }
                     env.set_branch(e.branch);
                     if let Some(agent) = e.agent {
-                        env.agent = Agent::from_key(&agent);
+                        env.agent = AgentKind::from_id(&agent);
                     }
                     env.draft_settings = e
                         .settings
@@ -944,6 +967,11 @@ pub fn restore(state: State) -> (Vec<Project>, usize, Layout, TabStrip) {
                         .into_iter()
                         .filter_map(|(k, v)| Setting::from_key(&k).map(|s| (s, v)))
                         .collect();
+                    env.cursor_settings = e
+                        .cursor_settings
+                        .into_iter()
+                        .filter_map(|(k, v)| Setting::from_key(&k).map(|s| (s, v)))
+                        .collect();
                     env.workers_ai_settings = e
                         .workers_ai_settings
                         .into_iter()
@@ -958,7 +986,7 @@ pub fn restore(state: State) -> (Vec<Project>, usize, Layout, TabStrip) {
                             let mut session = Session::new(
                                 s.id.into(),
                                 s.title.into(),
-                                Agent::from_key(&s.agent),
+                                AgentKind::from_id(&s.agent),
                             );
                             session.updated = s.updated;
                             session.added = s.added;
@@ -1050,6 +1078,7 @@ pub fn restore(state: State) -> (Vec<Project>, usize, Layout, TabStrip) {
                 setup: p.setup,
                 check: p.check,
                 check_declined: p.check_declined,
+                sandbox: p.sandbox,
                 base: p.base,
                 notes: p.notes,
                 monos: p.monos,
@@ -1090,6 +1119,7 @@ pub fn restore(state: State) -> (Vec<Project>, usize, Layout, TabStrip) {
         arcade: state.arcade,
         diff_palette: crate::theme::DiffPalette::from_id(&state.diff_palette),
         glass: state.glass,
+        contrast: crate::theme::Contrast::from_id(&state.contrast),
         grays: crate::theme::Grays::from_id(&state.grays),
         type_scale: crate::ui::TypeScale::from_id(&state.type_scale),
         rail_usage: ["claude", "droid", "opencode", "devin"]
@@ -1110,7 +1140,7 @@ pub fn restore(state: State) -> (Vec<Project>, usize, Layout, TabStrip) {
         .max_by_key(|s| s.updated)
         .map(|s| s.agent);
     match (last_agent.is_empty(), latest) {
-        (false, _) => crate::model::set_default_agent(Agent::from_key(&last_agent)),
+        (false, _) => crate::model::set_default_agent(AgentKind::from_id(&last_agent)),
         (true, Some(agent)) => crate::model::set_default_agent(agent),
         (true, None) => {}
     }
@@ -1129,6 +1159,7 @@ pub fn new_project(path: &Path) -> Project {
         setup: None,
         check: None,
         check_declined: false,
+        sandbox: false,
         base: None,
         notes: Vec::new(),
         monos: Vec::new(),
@@ -1345,6 +1376,7 @@ mod tests {
             arcade: false,
             diff_palette: crate::theme::DiffPalette::Default,
             glass: false,
+            contrast: crate::theme::Contrast::System,
             grays: crate::theme::Grays::Crisp,
             type_scale: crate::ui::TypeScale::Compact,
             rail_usage: [true, true, true, true],
@@ -1379,6 +1411,7 @@ mod tests {
             arcade: false,
             diff_palette: crate::theme::DiffPalette::Default,
             glass: false,
+            contrast: crate::theme::Contrast::System,
             grays: crate::theme::Grays::Crisp,
             type_scale: crate::ui::TypeScale::Compact,
             rail_usage: [true, true, true, true],
@@ -1412,6 +1445,7 @@ mod tests {
             arcade: false,
             diff_palette: crate::theme::DiffPalette::Default,
             glass: false,
+            contrast: crate::theme::Contrast::System,
             grays: crate::theme::Grays::Soft,
             type_scale: crate::ui::TypeScale::Comfortable,
             rail_usage: [true, false, true, false],
@@ -1448,6 +1482,7 @@ mod tests {
             arcade: false,
             diff_palette: crate::theme::DiffPalette::Default,
             glass: false,
+            contrast: crate::theme::Contrast::System,
             grays: crate::theme::Grays::Crisp,
             type_scale: crate::ui::TypeScale::Compact,
             rail_usage: [true, true, true, true],
@@ -1481,6 +1516,7 @@ mod tests {
             arcade: false,
             diff_palette: crate::theme::DiffPalette::Default,
             glass: false,
+            contrast: crate::theme::Contrast::System,
             grays: crate::theme::Grays::Crisp,
             type_scale: crate::ui::TypeScale::Compact,
             rail_usage: [true, true, true, true],
@@ -1518,6 +1554,7 @@ mod tests {
             arcade: false,
             diff_palette: crate::theme::DiffPalette::Default,
             glass: false,
+            contrast: crate::theme::Contrast::System,
             grays: crate::theme::Grays::Crisp,
             type_scale: crate::ui::TypeScale::Compact,
             rail_usage: [true, true, true, true],
@@ -1541,7 +1578,7 @@ mod tests {
     fn split_survives_a_restart() {
         let mut project = new_project(Path::new("/tmp/arakun-split-test"));
         let env = &mut project.environments[0];
-        env.sessions = vec![Session::new("s1".into(), "One".into(), Agent::Droid)];
+        env.sessions = vec![Session::new("s1".into(), "One".into(), AgentKind::Droid)];
         let here = env.path.clone();
         let mut strip = TabStrip {
             tabs: vec![
@@ -1549,7 +1586,7 @@ mod tests {
                     &here,
                     "One",
                     TabKind::Session {
-                        agent: Agent::Droid,
+                        agent: AgentKind::Droid,
                         id: "s1".into(),
                     },
                 ),
@@ -1584,6 +1621,7 @@ mod tests {
             arcade: false,
             diff_palette: crate::theme::DiffPalette::Default,
             glass: false,
+            contrast: crate::theme::Contrast::System,
             grays: crate::theme::Grays::Crisp,
             type_scale: crate::ui::TypeScale::Compact,
             rail_usage: [true, true, true, true],

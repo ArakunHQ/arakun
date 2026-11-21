@@ -21,6 +21,9 @@ pub struct Explorer {
     pub expanded: HashSet<PathBuf>,
     pub loading: HashSet<PathBuf>,
     pub selected: Option<PathBuf>,
+    /// Why the tree could not be listed, shown in its place: a server's
+    /// folder while the server is away, or one too old to list it.
+    pub failed: Option<SharedString>,
 }
 
 pub struct Row {
@@ -37,6 +40,7 @@ impl Explorer {
             expanded: HashSet::new(),
             loading: HashSet::new(),
             selected: None,
+            failed: None,
         }
     }
 
@@ -148,6 +152,12 @@ pub fn file_kind(path: &Path) -> FileKind {
 
 /// Lines of a text file for the read-only viewer.
 pub fn read_lines(path: &Path) -> Result<Vec<SharedString>, String> {
+    read_text(path).map(|text| lines_of(&text))
+}
+
+/// The text of a file the viewer can show: not too large, not binary. A
+/// server sends this for a file of its own (`read_file`).
+pub fn read_text(path: &Path) -> Result<String, String> {
     let meta = std::fs::metadata(path).map_err(|e| e.to_string())?;
     if meta.len() > MAX_VIEW_BYTES {
         return Err(format!(
@@ -159,12 +169,37 @@ pub fn read_lines(path: &Path) -> Result<Vec<SharedString>, String> {
     if bytes.iter().take(8192).any(|&b| b == 0) {
         return Err("Binary file".into());
     }
-    let text = String::from_utf8_lossy(&bytes);
-    let text = text.strip_suffix('\n').unwrap_or(&text);
-    Ok(text
-        .split('\n')
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// `text` as the viewer's lines: tabs as spaces, no line ends.
+pub fn lines_of(text: &str) -> Vec<SharedString> {
+    let text = text.strip_suffix('\n').unwrap_or(text);
+    text.split('\n')
         .map(|l| SharedString::from(l.trim_end_matches('\r').replace('\t', "    ")))
-        .collect())
+        .collect()
+}
+
+/// `rel` under `root`, when it stays there: no absolute path, no `..`. What a
+/// device names in a server's folder is read this way, so it cannot name
+/// anything outside it.
+pub fn inside(root: &Path, rel: &str) -> Option<PathBuf> {
+    use std::path::Component;
+    let rel = Path::new(rel);
+    rel.components()
+        .all(|c| matches!(c, Component::Normal(_) | Component::CurDir))
+        .then(|| root.join(rel))
+}
+
+/// `path` relative to `root`, with `/` between its parts whatever the
+/// platform: how a file in a server's folder is named to the server.
+pub fn relative(root: &Path, path: &Path) -> Option<String> {
+    let rel = path.strip_prefix(root).ok()?;
+    let parts: Vec<String> = rel
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect();
+    Some(parts.join("/"))
 }
 
 #[cfg(test)]
@@ -181,5 +216,31 @@ mod tests {
         assert_eq!(file_kind(Path::new("datos.csv")), FileKind::Sheet);
         assert_eq!(file_kind(Path::new("src/main.rs")), FileKind::Text);
         assert_eq!(file_kind(Path::new("Makefile")), FileKind::Text);
+    }
+
+    #[test]
+    fn a_relative_path_stays_inside_its_folder() {
+        let root = Path::new("/srv/notes");
+        assert_eq!(inside(root, "src/main.rs"), Some(root.join("src/main.rs")));
+        assert_eq!(inside(root, ""), Some(root.to_path_buf()));
+        assert_eq!(inside(root, "./a"), Some(root.join("./a")));
+        assert_eq!(inside(root, "../etc/passwd"), None);
+        assert_eq!(inside(root, "src/../../x"), None);
+        assert_eq!(inside(root, "/etc/passwd"), None);
+    }
+
+    #[test]
+    fn a_path_is_named_relative_to_its_folder_with_slashes() {
+        let root = Path::new("arakun-server://s1/srv/notes");
+        let file = root.join("src").join("main.rs");
+        assert_eq!(relative(root, &file).as_deref(), Some("src/main.rs"));
+        assert_eq!(relative(root, root).as_deref(), Some(""));
+        assert_eq!(relative(root, Path::new("/elsewhere")), None);
+    }
+
+    #[test]
+    fn text_becomes_lines_without_their_ends() {
+        let lines = lines_of("a\tb\r\nc\n");
+        assert_eq!(lines, vec![SharedString::from("a    b"), "c".into()]);
     }
 }

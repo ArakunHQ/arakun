@@ -153,10 +153,10 @@ impl Shell {
     }
 
     /// Why the composer's agent can't take a prompt right now, if it can't.
-    pub(super) fn agent_out_of_limits(&self, agent: model::Agent, cx: &App) -> Option<String> {
+    pub(super) fn agent_out_of_limits(&self, agent: AgentKind, cx: &App) -> Option<String> {
         let now = crate::account::unix_now();
         match agent {
-            model::Agent::Claude => {
+            AgentKind::Claude => {
                 let plan = plan::latest()?;
                 let full = plan.windows.iter().find(|w| w.active && w.percent >= 100)?;
                 let reset = full
@@ -168,7 +168,7 @@ impl Shell {
                     full.label.to_lowercase()
                 ))
             }
-            model::Agent::Droid => {
+            AgentKind::Droid => {
                 let account = self.account.read(cx);
                 let limits = account.limits()?;
                 (limits.mode(now) == UsageMode::Blocked)
@@ -176,11 +176,13 @@ impl Shell {
             }
             // A full Go plan doesn't stop OpenCode: other providers, or Go's
             // extra usage, may still take the prompt; the provider says so if not.
-            // Codex says so itself when its ChatGPT limits run out, and so does Devin.
-            model::Agent::OpenCode
-            | model::Agent::Codex
-            | model::Agent::Devin
-            | model::Agent::WorkersAi => None,
+            // Codex says so itself when its ChatGPT limits run out, and so do
+            // Devin and Cursor.
+            AgentKind::OpenCode
+            | AgentKind::Codex
+            | AgentKind::Devin
+            | AgentKind::Cursor
+            | AgentKind::WorkersAi => None,
         }
     }
 }

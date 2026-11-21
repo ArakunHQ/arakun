@@ -237,6 +237,7 @@ mod tests {
             }],
             today: Some("$2.87".into()),
             viewing: None,
+            reduce_motion: Some(true),
         };
         let all = [
             ToIsland::Hello { pid: 42 },

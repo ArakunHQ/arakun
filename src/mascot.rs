@@ -85,8 +85,19 @@ pub fn set_animated(on: bool) {
     ANIMATED.store(on, Ordering::Relaxed);
 }
 
+/// gpui's reduce motion, as the last drawing rendered saw it. A global, not
+/// read from `App`, as `animated` is asked where there is none. Changing it
+/// redraws every window, so this follows within a frame.
+static REDUCED: AtomicBool = AtomicBool::new(false);
+
+pub(crate) fn note_reduced(on: bool) {
+    REDUCED.store(on, Ordering::Relaxed);
+}
+
+/// The ASCII face reads this too. Reduced motion holds both still, as if the
+/// arcade were off.
 pub(crate) fn animated() -> bool {
-    ANIMATED.load(Ordering::Relaxed)
+    ANIMATED.load(Ordering::Relaxed) && !REDUCED.load(Ordering::Relaxed)
 }
 
 static DANCING: AtomicBool = AtomicBool::new(false);
@@ -908,6 +919,10 @@ impl Mascot {
         let mut p = Pose::default();
         if !animated() {
             self.act = None;
+            // A move begun before motion was reduced ends now: no hiding below
+            // the ledge, which nothing would wake up to undo.
+            self.perch = self.perch_want;
+            self.hide_until = 0.;
             p.blink = false;
             if self.state == State::Sleeping {
                 p.eye[1] = 0.13;
@@ -1265,11 +1280,37 @@ impl Mascot {
             || now >= self.next_event()
     }
 
+    fn snap(&mut self, p: &Pose) {
+        let rest = |s: &mut Spring, t: f32| {
+            s.x = t;
+            s.v = 0.;
+        };
+        for (s, &t) in self.head.iter_mut().zip(&p.head) {
+            rest(s, t);
+        }
+        for i in 0..2 {
+            rest(&mut self.ears[i][0], p.ears[i][0]);
+            rest(&mut self.ears[i][1], p.ears[i][1]);
+            rest(&mut self.gaze[i], p.look[i]);
+        }
+        for (s, &t) in self.eye.iter_mut().zip(&p.eye) {
+            rest(s, t);
+        }
+        rest(&mut self.nose, p.nose);
+    }
+
     fn step(&mut self, now: f64, dt: f32) -> Frame {
         self.pointer_dirty = false;
         let p = self.plan(now);
-        let sub = (dt / 0.006).ceil().max(1.) as usize;
-        let h = dt / sub as f32;
+        // Held still, every spring sits on its target, so no kick (a key, an
+        // ear flick) can swing it.
+        let sub = if animated() {
+            (dt / 0.006).ceil().max(1.) as usize
+        } else {
+            self.snap(&p);
+            0
+        };
+        let h = dt / sub.max(1) as f32;
         for _ in 0..sub {
             for (s, &t) in self.head.iter_mut().zip(&p.head) {
                 s.step(t, h);
@@ -1733,6 +1774,7 @@ fn paint(frame: &Frame, bounds: Bounds<Pixels>, fur: Hsla, window: &mut Window) 
 
 impl Render for Mascot {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        note_reduced(cx.reduce_motion());
         let now = self.now();
         let dt = self.last_frame.map_or(1. / 60., |l| (now - l).min(0.05)) as f32;
         self.last_frame = Some(now);

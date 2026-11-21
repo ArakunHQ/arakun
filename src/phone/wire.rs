@@ -27,7 +27,7 @@ use serde_json::{Value, json};
 use crate::account::{self, Limits, UsageMode};
 use crate::agent::plan::PlanUsage;
 use crate::agent::{
-    AskUserRequest, Entry, PermissionRequest, Setting, SettingOption, Thread, ToolContent,
+    AskUserRequest, Choice, Entry, PermissionRequest, Setting, SettingOption, Thread, ToolContent,
     ToolStatus, Usage, attach, diff, fmt_cost,
 };
 use crate::model::Status;
@@ -73,6 +73,11 @@ pub fn ack(seq: u64) -> String {
 
 pub fn error(message: &str) -> String {
     json!({ "type": "error", "message": message }).to_string()
+}
+
+/// The answer to a page's `ping`, so it knows the computer is still there.
+pub fn pong() -> String {
+    json!({ "type": "pong" }).to_string()
 }
 
 /// The entries from `from` on, as the phone shows them.
@@ -702,8 +707,45 @@ pub fn state_message(id: &str, t: &Thread, status: Status) -> String {
         "elapsed_ms": t.turn_elapsed().map(|d| d.as_millis() as u64),
         "title": t.title(),
         "changes": change_totals(t.entries()),
+        "queue": t.queued(),
+        "queue_paused": t.queue_paused(),
+        "sending_now": t.sending_now(),
     })
     .to_string()
+}
+
+/// The longest description a slash command carries: the popup shows one line.
+const CLIP_COMMAND_DETAIL: usize = 160;
+
+/// `commands`: the slash commands a watched session's agent offers, for the
+/// composer of an app that shows the session. Phones ignore it.
+pub fn commands_message(id: &str, commands: &[Choice]) -> String {
+    let list: Vec<Value> = commands
+        .iter()
+        .map(|c| {
+            json!({
+                "name": c.name,
+                "description": c.description.as_deref().map(|d| head(d, CLIP_COMMAND_DETAIL)),
+            })
+        })
+        .collect();
+    json!({ "type": "commands", "id": id, "commands": list }).to_string()
+}
+
+/// The commands of a [`commands_message`].
+pub fn read_commands(v: &Value) -> Vec<Choice> {
+    v.as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|c| {
+            let name = c["name"].as_str().filter(|n| !n.is_empty())?.to_string();
+            Some(Choice {
+                id: name.clone(),
+                name,
+                description: c["description"].as_str().map(str::to_string),
+            })
+        })
+        .collect()
 }
 
 /// What the list a session is in says about it, for a `session` message.
@@ -736,15 +778,24 @@ pub fn session_live(head: &SessionHead, t: &Thread, status: Status, scope: &Scop
     msg["usage"] = usage(t.usage());
     msg["elapsed_ms"] = json!(t.turn_elapsed().map(|d| d.as_millis() as u64));
     msg["status"] = json!(self::status(status));
+    msg["queue"] = json!(t.queued());
+    msg["queue_paused"] = json!(t.queue_paused());
+    msg["sending_now"] = json!(t.sending_now());
     if !t.title().is_empty() {
         msg["title"] = json!(t.title());
     }
     msg.to_string()
 }
 
-/// `session`: one that is not running, from its transcript's entries.
-pub fn session_saved(head: &SessionHead, all: &[Entry], scope: &Scope) -> String {
-    session_head(head, all, scope).to_string()
+/// `session`: one that is not running, from its transcript's entries and
+/// the follow-ups that waited in it. Its thread holds those paused once it
+/// is back, so they show paused.
+pub fn session_saved(head: &SessionHead, all: &[Entry], queue: &[String], scope: &Scope) -> String {
+    let mut msg = session_head(head, all, scope);
+    msg["queue"] = json!(queue);
+    msg["queue_paused"] = json!(!queue.is_empty());
+    msg["sending_now"] = json!(0);
+    msg.to_string()
 }
 
 /// What a waiting session asks, for its line in the inbox.
@@ -971,6 +1022,35 @@ impl Parts {
 mod tests {
     use super::*;
     use crate::agent::{ToolCall, ToolStatus};
+
+    #[test]
+    fn commands_read_back_with_long_descriptions_clipped() {
+        let long = "x".repeat(CLIP_COMMAND_DETAIL + 50);
+        let sent = [
+            Choice {
+                id: "ship-pr".into(),
+                name: "ship-pr".into(),
+                description: Some(long.clone()),
+            },
+            Choice {
+                id: "compact".into(),
+                name: "compact".into(),
+                description: None,
+            },
+        ];
+        let msg: Value = serde_json::from_str(&commands_message("s1", &sent)).unwrap();
+        assert_eq!(msg["type"], "commands");
+        assert_eq!(msg["id"], "s1");
+        let got = read_commands(&msg["commands"]);
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[0].id, "ship-pr");
+        assert_eq!(got[0].name, "ship-pr");
+        let detail = got[0].description.as_deref().unwrap();
+        assert!(detail.ends_with('…') && detail.chars().count() == CLIP_COMMAND_DETAIL + 1);
+        assert_eq!(got[1].description, None);
+        // A nameless entry is left out.
+        assert!(read_commands(&json!([{"description": "d"}])).is_empty());
+    }
 
     #[test]
     fn settings_read_back_as_they_were_written() {

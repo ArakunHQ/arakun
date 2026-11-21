@@ -32,14 +32,17 @@ pub enum SettingsEvent {
     CodexSignOut,
     DevinSignIn,
     DevinSignOut,
+    CursorSignIn,
+    CursorSignOut,
     OpenUsage,
     /// Close Settings and open the Customize panel.
     OpenCustomize,
-    RailUsage(crate::agent::AgentKind, bool),
+    RailUsage(AgentKind, bool),
     Arcade(bool),
     Island(bool),
     /// The whole UI's zoom, in percent.
     Zoom(u32),
+    ReduceMotion(crate::ui::motion::Reduce),
     /// An extension view turned on or off in the sidebar.
     SidebarView(crate::sidebar::View, bool),
     /// A project's setup script (`check` false) or check command; `None` clears it.
@@ -47,6 +50,11 @@ pub enum SettingsEvent {
         project: std::path::PathBuf,
         check: bool,
         command: Option<String>,
+    },
+    /// A project's agents run sandboxed, or not.
+    ProjectSandbox {
+        project: std::path::PathBuf,
+        on: bool,
     },
     /// The branch a project's new environments start from; `None` for origin's default.
     ProjectBase {
@@ -73,6 +81,7 @@ pub struct ProjectSettings {
     pub setup: Option<String>,
     pub check: Option<String>,
     pub base: Option<String>,
+    pub sandbox: bool,
     /// The project lives on a server: its commands are not saved here.
     pub remote: bool,
 }
@@ -119,6 +128,7 @@ enum Section {
     Droid,
     OpenCode,
     Devin,
+    Cursor,
 }
 
 impl Section {
@@ -138,6 +148,7 @@ impl Section {
         Section::Droid,
         Section::OpenCode,
         Section::Devin,
+        Section::Cursor,
     ];
 
     fn group(self) -> Group {
@@ -149,13 +160,14 @@ impl Section {
     }
 
     /// The agent a section is about; the list shows its logo.
-    fn agent(self) -> Option<crate::agent::AgentKind> {
+    fn agent(self) -> Option<AgentKind> {
         match self {
             Section::Claude => Some(AgentKind::Claude),
             Section::Codex => Some(AgentKind::Codex),
             Section::Droid => Some(AgentKind::Droid),
             Section::OpenCode => Some(AgentKind::OpenCode),
             Section::Devin => Some(AgentKind::Devin),
+            Section::Cursor => Some(AgentKind::Cursor),
             _ => None,
         }
     }
@@ -176,6 +188,7 @@ impl Section {
             Section::Droid => "Droid",
             Section::OpenCode => "OpenCode",
             Section::Devin => "Devin",
+            Section::Cursor => "Cursor",
         }
     }
 
@@ -195,7 +208,8 @@ impl Section {
             | Section::Codex
             | Section::Droid
             | Section::OpenCode
-            | Section::Devin => "bot",
+            | Section::Devin
+            | Section::Cursor => "bot",
         }
     }
 
@@ -205,7 +219,9 @@ impl Section {
             Section::Appearance => {
                 "Zoom here. Colors, shape and the sidebar are edited beside the app, not in this dialog."
             }
-            Section::Project => "The open project's commands and base branch, on this computer.",
+            Section::Project => {
+                "The open project's commands, base branch and sandbox, on this computer."
+            }
             Section::Branches => {
                 "A new environment starts on a random branch name; an agent can rename it after the task. A merged pull request is archived."
             }
@@ -221,6 +237,7 @@ impl Section {
             Section::Droid => "Your Factory plan, and what Droid loads in the visible environment.",
             Section::OpenCode => "The providers OpenCode signs in to, OpenCode Go among them.",
             Section::Devin => "Devin's sign-in: your Devin account or a Windsurf API key.",
+            Section::Cursor => "Cursor's sign-in: your Cursor account or a Cursor API key.",
         }
     }
 
@@ -236,11 +253,12 @@ impl Section {
                 "raccoon mascot animation motion new session dynamic island notch top bar agents alerts background close hide tray sidebar usage card plans browser web page drive click type scripts"
             }
             Section::Appearance => {
-                "theme palette color scheme colors accent tint corners radius rounded round sharp spacing gap padding compact roomy density window custom share night graphite midnight forest rose diff colors colorblind high contrast glass blur transparent translucent grays gray text size font scale design system mode dark light zoom bigger smaller"
+                "theme palette color scheme colors accent tint corners radius rounded round sharp spacing gap padding compact roomy density window custom share night graphite midnight forest rose diff colors colorblind high contrast glass blur transparent translucent grays gray text size font scale design system mode dark light zoom bigger smaller reduce motion animation accessibility still"
             }
             Section::Project => {
                 "setup script install new environment worktree check command test lint build verify \
-                 base branch start from origin main default"
+                 base branch start from origin main default sandbox seatbelt bubblewrap isolate \
+                 security secrets"
             }
             Section::Branches => {
                 "branch name naming environment worktree rename model haiku agent merge merged \
@@ -265,6 +283,7 @@ impl Section {
             }
             Section::OpenCode => "opencode go zen provider api key models sign in logout",
             Section::Devin => "devin cognition windsurf api key sign in logout",
+            Section::Cursor => "cursor cursor-agent api key sign in logout",
         }
     }
 
@@ -415,6 +434,10 @@ pub struct SettingsDialog {
     devin: bool,
     /// The variable with Devin's API key, when the environment has one.
     devin_env: Option<&'static str>,
+    /// Whether `cursor-agent login` has signed in.
+    cursor: bool,
+    /// The variable with Cursor's API key, when the environment has one.
+    cursor_env: Option<&'static str>,
     input: Entity<TextInput>,
     section: Section,
     voice: voice::Settings,
@@ -586,6 +609,8 @@ impl SettingsDialog {
             codex_env: crate::agent::codex_env_key(),
             devin: crate::agent::devin_signed_in(),
             devin_env: crate::agent::devin_env_key(),
+            cursor: crate::agent::cursor_signed_in(),
+            cursor_env: crate::agent::cursor_env_key(),
             input,
             section,
             voice,
@@ -868,6 +893,16 @@ impl SettingsDialog {
         }
     }
 
+    /// Cursor's own sign-in comes first; a key only in the environment is named
+    /// by its variable, never shown.
+    fn cursor_status(&self) -> String {
+        match (self.cursor, self.cursor_env) {
+            (true, _) => "Signed in".into(),
+            (false, Some(var)) => format!("API key · {var}"),
+            (false, None) => "Not signed in".into(),
+        }
+    }
+
     /// Whether an agent's section gets the green dot: it can run, through a
     /// sign-in or a key. `false` for the other sections.
     fn signed_in(&self, s: Section) -> bool {
@@ -877,6 +912,7 @@ impl SettingsDialog {
             Section::Droid => self.droid,
             Section::OpenCode => !self.opencode.is_empty(),
             Section::Devin => self.devin || self.devin_env.is_some(),
+            Section::Cursor => self.cursor || self.cursor_env.is_some(),
             _ => false,
         }
     }
@@ -1000,7 +1036,7 @@ impl SettingsDialog {
                     .into_any_element(),
                 ];
                 let mut chips = div().flex().flex_wrap().items_center().gap(crate::ui::sp(6.));
-                for (i, agent) in crate::agent::AgentKind::ALL.into_iter().enumerate() {
+                for (i, agent) in AgentKind::WITH_PLAN.into_iter().enumerate() {
                     let on = crate::account_view::rail_shows(agent);
                     chips = chips.child(
                         ui::chip(("set-rail-usage", i), agent.label(), on).on_click(cx.listener(move |_, _, _, cx| {
@@ -1080,7 +1116,7 @@ impl SettingsDialog {
                 ])
             }
             Section::Appearance => self.render_appearance(cx),
-            Section::Project => self.render_project(),
+            Section::Project => self.render_project(cx),
             Section::Branches => {
                 let current = self.namer.choice;
                 let mut choices = ui::segmented();
@@ -1299,6 +1335,35 @@ impl SettingsDialog {
                         )
                         .into_any_element(),
                         no_sign_in_row(AgentKind::Devin),
+                    ],
+                )])
+            }
+            Section::Cursor => {
+                let signed_in = self.cursor;
+                stack(vec![titled(
+                    "Account",
+                    vec![
+                        row(
+                            self.cursor_status(),
+                            if signed_in {
+                                "The same sign-in the cursor-agent CLI uses. Arakun only checks that it is there."
+                            } else if self.cursor_env.is_some() {
+                                "Sessions use the API key in the environment. Sign in to use your Cursor account instead."
+                            } else {
+                                "Runs cursor-agent login in a terminal; approve the sign-in in the browser. CURSOR_API_KEY works too."
+                            },
+                            if signed_in {
+                                ui::button("set-cursor-out", "Sign out", ButtonKind::Danger, true)
+                                    .on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::CursorSignOut)))
+                                    .into_any_element()
+                            } else {
+                                ui::button("set-cursor-in", "Sign in", ButtonKind::Outline, true)
+                                    .on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::CursorSignIn)))
+                                    .into_any_element()
+                            },
+                        )
+                        .into_any_element(),
+                        no_sign_in_row(AgentKind::Cursor),
                     ],
                 )])
             }
@@ -1738,6 +1803,31 @@ impl SettingsDialog {
             )
             .into_any_element()
         };
+        let motion = {
+            use crate::ui::motion::{self, Reduce};
+            let chosen = motion::choice();
+            let mut seg = ui::segmented();
+            for r in Reduce::ALL {
+                seg = seg.child(
+                    ui::segment(
+                        ("set-reduce-motion", r as usize),
+                        None,
+                        r.label(),
+                        r == chosen,
+                    )
+                    .on_click(cx.listener(move |_, _, _, cx| {
+                        cx.emit(SettingsEvent::ReduceMotion(r));
+                        cx.notify();
+                    })),
+                );
+            }
+            row(
+                "Reduce motion",
+                "Holds the mascot, spinners and the island's working dots still, and shows menus and dialogs without sliding them in. System follows your computer's setting.",
+                seg.into_any_element(),
+            )
+            .into_any_element()
+        };
         stack(vec![
             group(vec![
                 row("Colors", "", value(self.look.colors.clone())).into_any_element(),
@@ -1745,12 +1835,12 @@ impl SettingsDialog {
                 row("Sidebar", "", value(self.look.sidebar.clone())).into_any_element(),
             ]),
             open,
-            titled("Window", vec![zoom]),
+            titled("Window", vec![zoom, motion]),
         ])
     }
 
     /// The open project's setup script, check and base branch, saved as they are typed.
-    fn render_project(&self) -> AnyElement {
+    fn render_project(&self, cx: &mut Context<Self>) -> AnyElement {
         let Some(project) = &self.project else {
             return group(vec![
                 row(
@@ -1795,6 +1885,39 @@ impl SettingsDialog {
                     field(self.base_input.clone(), 420.).into_any_element(),
                 )
                 .into_any_element(),
+                // Windows has no sandbox to put them in.
+                if cfg!(windows) {
+                    row(
+                        "Sandbox agents",
+                        "Windows has no agent sandbox yet. On macOS and Linux this runs the agents of a project in a sandbox.",
+                        div().into_any_element(),
+                    )
+                    .into_any_element()
+                } else {
+                row(
+                    "Sandbox agents",
+                    if cfg!(target_os = "macos") {
+                        "Agents of this project run in a Seatbelt sandbox. They can write only the environment, its Git folder (not its config or hooks), build caches and temporary folders, and can't read other tools' logins or files that look like secrets. They keep the network and the keychain. Applies to sessions started afterwards."
+                    } else {
+                        "Agents of this project run in a bubblewrap sandbox. They can write only the environment, its Git folder (not its config or hooks), build caches and temporary folders, and can't read other tools' logins or files that look like secrets. They keep the network. Applies to sessions started afterwards."
+                    },
+                    switch(project.sandbox).into_any_element(),
+                )
+                .id("set-project-sandbox")
+                .cursor_pointer()
+                .on_click(cx.listener(|this, _, _, cx| {
+                    let Some(p) = this.project.as_mut().filter(|p| !p.remote) else {
+                        return;
+                    };
+                    p.sandbox = !p.sandbox;
+                    cx.emit(SettingsEvent::ProjectSandbox {
+                        project: p.path.clone(),
+                        on: p.sandbox,
+                    });
+                    cx.notify();
+                }))
+                .into_any_element()
+                },
             ],
         )])
     }

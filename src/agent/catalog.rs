@@ -107,7 +107,7 @@ fn parse_models(raw: &Value) -> Vec<ModelInfo> {
 }
 
 fn read_cache() -> Option<(Vec<ModelInfo>, u64)> {
-    let v: Value = serde_json::from_slice(&std::fs::read(cache_path()).ok()?).ok()?;
+    let v: Value = crate::durable::load_json(cache_path())?;
     Some((
         parse_models(&v["models"]),
         v["fetched"].as_u64().unwrap_or(0),
@@ -115,11 +115,9 @@ fn read_cache() -> Option<(Vec<ModelInfo>, u64)> {
 }
 
 fn write_cache(models: &Value) -> std::io::Result<()> {
-    crate::durable::write(
+    crate::durable::save_json(
         &cache_path(),
-        json!({"fetched": unix_now(), "models": models})
-            .to_string()
-            .as_bytes(),
+        &json!({"fetched": unix_now(), "models": models}),
     )
 }
 
@@ -262,11 +260,9 @@ pub fn remember_claude_options(raw: &Value) {
     if same(&claude_options(), &fresh) {
         return;
     }
-    let _ = crate::durable::write(
+    crate::durable::cache_json(
         &claude_cache_path(),
-        json!({"fetched": unix_now(), "options": raw})
-            .to_string()
-            .as_bytes(),
+        &json!({"fetched": unix_now(), "options": raw}),
     );
     *CLAUDE.lock().unwrap() = Some(Arc::new(fresh));
 }
@@ -435,11 +431,9 @@ fn write_opencode(cache: &OpenCodeCache) {
         .iter()
         .map(|(s, v)| json!([s.key(), v]))
         .collect();
-    let _ = crate::durable::write(
+    crate::durable::cache_json(
         &opencode_cache_path(),
-        json!({"fetched": unix_now(), "options": cache.raw, "picked": picked})
-            .to_string()
-            .as_bytes(),
+        &json!({"fetched": unix_now(), "options": cache.raw, "picked": picked}),
     );
 }
 
@@ -504,7 +498,7 @@ pub fn refresh_opencode() {
     }
 }
 
-// ---- Codex's and Devin's options -------------------------------------------
+// ---- Codex's, Devin's and Cursor's options --------------------------------
 
 /// An agent's config options as a fresh session starts with them, kept as raw
 /// JSON and parsed, and on disk in `file` next to Droid's cache.
@@ -558,11 +552,9 @@ impl RawOptions {
             true
         });
         if changed {
-            let _ = crate::durable::write(
+            crate::durable::cache_json(
                 &self.path(),
-                json!({"fetched": unix_now(), "options": raw})
-                    .to_string()
-                    .as_bytes(),
+                &json!({"fetched": unix_now(), "options": raw}),
             );
         }
     }
@@ -633,6 +625,35 @@ fn devin_stale(options: &[ConfigOption], signed_in: bool) -> bool {
             && options
                 .iter()
                 .any(|o| o.category.as_deref() == Some("model") && o.options.is_empty())
+}
+
+/// Cursor's config options (mode and model) as a fresh session starts with
+/// them. Signed out, Cursor starts no session, so nothing is read then.
+static CURSOR: RawOptions = RawOptions::new("cursor-options.json");
+
+/// The options a fresh Cursor session starts with; empty until one has run.
+pub fn cursor_options() -> Arc<Vec<ConfigOption>> {
+    CURSOR.options()
+}
+
+/// Keeps what a fresh Cursor session reported, when it changed. Blocking; run
+/// it off the main thread.
+pub fn remember_cursor_options(raw: &Value) {
+    CURSOR.remember(raw)
+}
+
+/// Asks Cursor for its options when none are cached and it is signed in. A
+/// session that never gets a prompt, so it costs no tokens. Blocking; run it
+/// off the main thread.
+pub fn refresh_cursor() {
+    let signed_in = launch::cursor_signed_in() || launch::cursor_env_key().is_some();
+    if !cursor_options().is_empty() || !signed_in || launch::cursor_bin().is_err() {
+        return;
+    }
+    match fetch_options(AgentKind::Cursor) {
+        Ok((_, raw)) => remember_cursor_options(&raw),
+        Err(e) => eprintln!("arakun: cursor options: {e:#}"),
+    }
 }
 
 // ---- The agents' own sessions ---------------------------------------------

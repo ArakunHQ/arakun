@@ -60,6 +60,8 @@ pub fn tree_item(last: bool, mid: f32, gap: f32, row: gpui::AnyElement) -> gpui:
 // Explicit paths: the examples include this file by `#[path]` from elsewhere.
 #[path = "ui/chart.rs"]
 mod chart;
+#[path = "ui/contrast.rs"]
+pub mod contrast;
 #[path = "ui/kit.rs"]
 mod kit;
 #[path = "ui/motion.rs"]
@@ -108,6 +110,15 @@ pub fn codex_logo(size: f32) -> Svg {
 pub fn devin_logo(size: f32) -> Svg {
     svg()
         .path("providers/devin.svg")
+        .size(px(size))
+        .flex_none()
+        .text_color(theme::content())
+}
+
+/// Cursor's mark (the cube, from Simple Icons), tinted like the text around it.
+pub fn cursor_logo(size: f32) -> Svg {
+    svg()
+        .path("providers/cursor.svg")
         .size(px(size))
         .flex_none()
         .text_color(theme::content())

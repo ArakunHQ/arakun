@@ -96,7 +96,7 @@ pub fn install(cx: &mut App) {
                 MenuItem::action("Customize…", shell::OpenCustomize),
                 MenuItem::action("Customize Sidebar…", shell::CustomizeSidebar),
                 MenuItem::action("Toggle Workspace Panel", shell::TogglePanel),
-                MenuItem::action("Toggle Subagents Panel", shell::ToggleSubagents),
+                MenuItem::action("Toggle Session Panel", shell::ToggleSubagents),
                 MenuItem::action("Toggle Terminal", shell::ToggleDock),
                 MenuItem::separator(),
                 MenuItem::action("Zoom In", shell::ZoomIn),

@@ -73,16 +73,54 @@ let relay = null; // { label } when this host is a relay
 let link = null;
 let retry = 500;
 let retryTimer = 0; // the next attempt while the computer is not there
+// The newest local attempt. One that Retry overtook while it waited on `/me`
+// must not open a second socket or call the current one lost.
+let attempt = 0;
+let attemptAbort = null;
+
+// A socket of the computer's own is pinged this often and given up on after
+// this long without a word, or when it does not open in time. A dead network
+// can leave it looking open for minutes, and closing it can take as long, so
+// the page lets go of it and tries again at once.
+const LOCAL_PING_MS = 15_000;
+const LOCAL_SILENT_MS = 40_000;
+const LOCAL_OPEN_MS = 15_000;
 
 function openLocal() {
   const proto = location.protocol === "https:" ? "wss" : "ws";
   const ws = new WebSocket(`${proto}://${location.host}/ws?t=${encodeURIComponent(token)}`);
+  // Wall-clock time: a phone that slept counts the time it slept.
+  let heard = Date.now();
+  let pinger = 0;
+  const quiet = () => {
+    clearInterval(pinger);
+    clearTimeout(opening);
+  };
+  const dead = () => {
+    quiet();
+    ws.onclose = null;
+    ws.close();
+    if (link && link.ws === ws) lost();
+  };
+  const opening = setTimeout(dead, LOCAL_OPEN_MS);
+  ws.addEventListener("open", () => {
+    clearTimeout(opening);
+    pinger = setInterval(() => {
+      if (Date.now() - heard > LOCAL_SILENT_MS) return dead();
+      if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "ping" }));
+    }, LOCAL_PING_MS);
+  });
+  ws.addEventListener("message", () => {
+    heard = Date.now();
+  });
+  ws.addEventListener("close", quiet);
   return {
     ws,
     send(obj) {
       if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
     },
     close() {
+      quiet();
       ws.onclose = null;
       ws.close();
     },
@@ -169,9 +207,16 @@ async function connect() {
     render();
     return;
   }
+  const mine = ++attempt;
+  if (attemptAbort) attemptAbort.abort();
+  const abort = new AbortController();
+  attemptAbort = abort;
+  // A computer that went away without a word would leave this hanging.
+  const timer = setTimeout(() => abort.abort(), LOCAL_OPEN_MS);
   let ok;
   try {
-    const res = await api("/me");
+    const res = await api("/me", { signal: abort.signal });
+    if (mine !== attempt) return;
     if (res.status === 403) {
       forgetToken();
       state.pairError = "This phone is no longer paired. Pair it again from Arakun.";
@@ -180,16 +225,27 @@ async function connect() {
       return;
     }
     ok = res.ok;
-    if (ok) tookMe(await res.json());
+    if (ok) {
+      const me = await res.json();
+      if (mine !== attempt) return;
+      tookMe(me);
+    }
   } catch (e) {
     ok = false;
+  } finally {
+    clearTimeout(timer);
   }
+  if (mine !== attempt) return;
+  attemptAbort = null;
   if (!ok) return lost();
   link = openLocal();
-  link.ws.onopen = linked;
-  link.ws.onmessage = (ev) => handle(JSON.parse(ev.data));
-  link.ws.onclose = lost;
-  link.ws.onerror = () => link.ws.close();
+  const ws = link.ws;
+  ws.onopen = linked;
+  ws.onmessage = (ev) => handle(JSON.parse(ev.data));
+  ws.onclose = lost;
+  // Its own socket: one closed by Retry can still report an error after
+  // `link` has moved on to the next.
+  ws.onerror = () => ws.close();
 }
 
 // The computer is there and knows us: pick up where the screen was.
@@ -220,9 +276,19 @@ function lost() {
   retry = Math.min(retry * 2, 8000);
 }
 
-// Back on screen, back online or asked to: an attempt that was waiting goes now.
+// Back on screen or back online: an attempt that was waiting goes now.
 function reconnectNow() {
   if (!retryTimer) return;
+  retry = 500;
+  connect();
+}
+
+// The Retry button: start over now, also when an attempt is still under way
+// and nothing is waiting to go.
+function retryNow() {
+  if (link) link.close();
+  link = null;
+  state.connected = false;
   retry = 500;
   connect();
 }
@@ -362,6 +428,9 @@ if (window.visualViewport) {
 
 function handle(msg) {
   switch (msg.type) {
+    case "pong":
+      // Only says the computer is there (openLocal).
+      break;
     case "inbox":
       state.host = msg.host;
       state.inbox = msg.sessions;
@@ -430,6 +499,9 @@ function handle(msg) {
       settlePending();
       break;
     }
+    // The agent's slash commands, for the desktop composer; the phone has none.
+    case "commands":
+      break;
     case "state": {
       const s = state.session;
       if (!s || s.id !== msg.id) return;
@@ -572,8 +644,12 @@ function md(src) {
       const code = [];
       i++;
       while (i < lines.length && !/^\s*```/.test(lines[i])) code.push(lines[i++]);
+      const closed = i < lines.length;
       i++;
-      out += `<pre><code>${esc(code.join("\n"))}</code></pre>`;
+      // Charts and mermaid blocks are drawn (diagrams.js), once their fence has
+      // closed: a block still streaming in would redraw on every word.
+      const drawn = closed && window.Diagrams ? Diagrams.render(fence[1], code.join("\n")) : null;
+      out += drawn || `<pre><code>${esc(code.join("\n"))}</code></pre>`;
       continue;
     }
     const h = line.match(/^(#{1,6})\s+(.*)/);
@@ -775,20 +851,42 @@ document.addEventListener("click", (ev) => {
 
 // A table over everything, at full width, scrolling both ways; the phone can turn.
 function openTable(table) {
-  if (!table) return;
+  if (table) openView("Table", table.cloneNode(true));
+}
+
+// The same full-screen view for tables and drawings: `node` under a bar with
+// `title` and a close button.
+function openView(title, node) {
   let view = document.getElementById("tableview");
   if (!view) {
     view = document.createElement("div");
     view.id = "tableview";
     document.body.appendChild(view);
   }
-  view.innerHTML = `<div class="tvbar"><span>Table</span><button type="button" class="iconbtn" aria-label="Close">${ICONS.close}</button></div><div class="tvbody"></div>`;
-  view.querySelector(".tvbody").appendChild(table.cloneNode(true));
+  view.innerHTML = `<div class="tvbar"><span>${esc(title)}</span><button type="button" class="iconbtn" aria-label="Close">${ICONS.close}</button></div><div class="tvbody"></div>`;
+  view.querySelector(".tvbody").appendChild(node);
   view.querySelector("button").addEventListener("click", () => {
     view.hidden = true;
     view.replaceChildren();
   });
   view.hidden = false;
+}
+
+// A drawing's footer: "Code" swaps the drawing for its source and back,
+// "Open" shows the drawing full screen.
+function diagramTapped(target, card) {
+  const code = target.closest(".dgcode");
+  if (code) {
+    const on = card.classList.toggle("showcode");
+    code.setAttribute("aria-pressed", String(on));
+    code.querySelector("span").textContent = on ? code.dataset.back : "Code";
+    // The entry changed height with no picture or details to tell the list.
+    let n = card;
+    while (n && n.idx == null) n = n.parentElement;
+    if (n) list.measure(n.idx, n);
+    return;
+  }
+  if (target.closest(".dgopen")) openView(card.dataset.title || "Diagram", card.querySelector(".dgview").cloneNode(true));
 }
 
 async function openPic(img) {
@@ -852,6 +950,12 @@ function estimate(e) {
     case "notice":
     case "compacted":
       return 28;
+    case "agent": {
+      // A drawing is much taller than the lines of its source.
+      const drawn = (e.text || "").match(/^\s*```(chart|mermaid)\b[\s\S]*?^\s*```/gim) || [];
+      const rest = len - drawn.reduce((a, b) => a + b.length, 0);
+      return 30 + 21 * Math.ceil(rest / 42) + 330 * drawn.length;
+    }
     case "user": {
       const pics = e.images ? (e.images.length === 1 ? 228 : 128 * Math.ceil(e.images.length / 2)) : 0;
       const pastes = e.pastes ? 34 * e.pastes.length : 0;
@@ -1276,7 +1380,7 @@ function renderOffline() {
     state.pcOffline ? "" : '<button class="btn outline small" id="retry">Retry</button>'
   }</div>`;
   const b = document.getElementById("retry");
-  if (b) b.addEventListener("click", reconnectNow);
+  if (b) b.addEventListener("click", retryNow);
 }
 
 function renderPair() {
@@ -1891,6 +1995,7 @@ const AGENTS = [
   ["opencode", "OpenCode"],
   ["codex", "Codex"],
   ["devin", "Devin"],
+  ["cursor", "Cursor"],
 ];
 
 // The New session form starts on the place used last, with the agent that place picks.
@@ -2304,6 +2409,8 @@ function renderSession() {
     if (ev.target.closest(".tchip")) openChanges();
     const tx = ev.target.closest(".tablex");
     if (tx) openTable(tx.closest(".tablewrap").querySelector("table"));
+    const card = ev.target.closest(".diagram");
+    if (card) diagramTapped(ev.target, card);
   });
   list.mount(log);
   state.unseen = 0;

@@ -14,6 +14,7 @@ use gpui::{
 
 use crate::input::{InputEvent, TextInput};
 use crate::model::Status;
+use crate::servers::balance::{Balance, Preference};
 use crate::theme;
 use crate::ui::{self, ButtonKind, Tone, Type, Typography as _, icon};
 
@@ -30,6 +31,13 @@ pub enum ServersEvent {
     Clone { server: String, url: String },
     /// Open one of a server's sessions in its project.
     Open { server: String, session: String },
+    /// Spread new environments across the machines, or not.
+    Spread(bool),
+    /// How much a server, or this computer for `None`, is wanted for new environments.
+    Prefer {
+        server: Option<String>,
+        preference: Preference,
+    },
 }
 
 /// How the connection to a server stands.
@@ -102,6 +110,8 @@ pub struct ServersState {
     pub adding: HashSet<String>,
     /// What went wrong last, until something else happens.
     pub error: Option<String>,
+    /// Where new environments go.
+    pub balance: Balance,
 }
 
 /// What the side beside the list shows.
@@ -437,6 +447,96 @@ impl ServersView {
             .into_any_element()
     }
 
+    // ---- where new environments go ----------------------------------------
+
+    /// The switch that spreads new environments, and each machine's preference.
+    fn render_balance(&self, cx: &mut Context<Self>) -> AnyElement {
+        let balance = &self.state.balance;
+        let spread = balance.spread;
+        let machine = |ix: usize,
+                       server: Option<String>,
+                       name: String,
+                       busy: Option<usize>,
+                       cx: &mut Context<Self>| {
+            let current = balance.of(server.as_deref());
+            let choices = Preference::ALL.iter().enumerate().map(|(i, &p)| {
+                let server = server.clone();
+                ui::segment(
+                    ("servers-prefer", ix * 3 + i),
+                    None,
+                    p.label(),
+                    p == current,
+                )
+                .on_click(cx.listener(move |_, _, _, cx| {
+                    cx.emit(ServersEvent::Prefer {
+                        server: server.clone(),
+                        preference: p,
+                    });
+                }))
+            });
+            div()
+                .flex()
+                .items_center()
+                .gap(ui::sp(8.))
+                .min_h(px(ui::MENU_ROW_H))
+                .px(ui::sp(8.))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .ty(Type::Body)
+                        .text_color(theme::text())
+                        .child(crate::redact::text(&name).into_owned()),
+                )
+                .children(busy.map(|n| {
+                    ui::text(Type::Caption, theme::text_faint(), format!("{n} at work")).flex_none()
+                }))
+                .child(ui::segmented().children(choices))
+        };
+        let mut rows = vec![machine(0, None, "This computer".into(), None, cx).into_any_element()];
+        for (ix, s) in self.state.servers.iter().enumerate() {
+            let busy = (s.reach == Reach::Connected).then(|| {
+                s.sessions
+                    .iter()
+                    .filter(|x| x.status == Status::Working)
+                    .count()
+            });
+            rows.push(
+                machine(ix + 1, Some(s.id.clone()), s.name.clone(), busy, cx).into_any_element(),
+            );
+        }
+        div()
+            .flex()
+            .flex_col()
+            .gap(ui::sp(4.))
+            .w_full()
+            .max_w(px(480.))
+            .px(ui::sp(16.))
+            .pb(ui::sp(24.))
+            .child(Self::label("New environments"))
+            .child(
+                ui::switch_row("servers-spread", "Spread across machines", spread).on_click(
+                    cx.listener(move |_, _, _, cx| cx.emit(ServersEvent::Spread(!spread))),
+                ),
+            )
+            .child(
+                ui::text(
+                    Type::Caption,
+                    theme::text_faint(),
+                    if spread {
+                        "A new environment goes to a connected machine that has the project: a preferred one first, then the one with the fewest sessions at work. An avoided machine gets one only when no other can. A first prompt stays on the machine it was written on."
+                    } else {
+                        "A new environment is made on the open environment's machine."
+                    },
+                )
+                .px(ui::sp(8.))
+                .pb(ui::sp(4.)),
+            )
+            .when(spread, |d| d.children(rows))
+            .into_any_element()
+    }
+
     // ---- a folder to work in ------------------------------------------------
 
     fn render_add_place(&self, server: &ServerRow, cx: &mut Context<Self>) -> AnyElement {
@@ -645,13 +745,21 @@ impl Render for ServersView {
                 Some(server) => self.render_add_place(&server, cx),
                 None => div().into_any_element(),
             },
-            Pane::Overview => ui::empty_state(
-                "computer",
-                "Your servers' work is in your projects",
-                "Each folder a server offers is an environment in the sidebar: under the project with the same repository here, or under a project of its own. Its sessions open there, as yours do.",
-                None,
-            )
-            .into_any_element(),
+            Pane::Overview => div()
+                .id("servers-overview")
+                .size_full()
+                .flex()
+                .flex_col()
+                .items_center()
+                .overflow_y_scroll()
+                .child(ui::empty_state(
+                    "computer",
+                    "Your servers' work is in your projects",
+                    "Each folder a server offers is an environment in the sidebar: under the project with the same repository here, or under a project of its own. Its sessions open there, as yours do.",
+                    None,
+                ))
+                .child(self.render_balance(cx))
+                .into_any_element(),
         };
 
         let servers: Vec<ServerRow> = self.state.servers.clone();

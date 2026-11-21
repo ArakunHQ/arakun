@@ -9,6 +9,7 @@ use gpui::{
     StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, px,
 };
 
+use crate::agent::AgentKind;
 use crate::env_name;
 use crate::git;
 use crate::input::{InputEvent, TextInput};
@@ -66,7 +67,7 @@ pub struct CreateEnvDialog {
     /// the first prompt.
     suggested: String,
     /// Who renames a branch that keeps `suggested`; None when naming is off.
-    namer: Option<crate::agent::AgentKind>,
+    namer: Option<AgentKind>,
     branches: git::Branches,
     /// The local branches are read. Until then a random name could match one, which
     /// would be checked out and later renamed.
@@ -161,7 +162,7 @@ impl CreateEnvDialog {
                 // A new environment's sessions start on the agent picked last.
                 let namer = env_name::namer();
                 namer
-                    .pick(crate::model::default_agent().kind())
+                    .pick(crate::model::default_agent())
                     .map(|(agent, _)| agent)
                     .filter(|a| namer.choice.agent().is_some() || env_name::installed(*a))
             },

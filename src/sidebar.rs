@@ -635,6 +635,19 @@ impl Preset {
         }
     }
 
+    /// The preset applied over `current`: the preset's layout, collapse and
+    /// density, with the look the user chose (card, side, badges, shortcuts)
+    /// kept. The Icons preset is its collapse and density, so those can't stay.
+    pub fn apply(self, current: &Style) -> Sidebar {
+        let mut s = self.layout();
+        s.style = Style {
+            collapse: s.style.collapse,
+            density: s.style.density,
+            ..*current
+        };
+        s
+    }
+
     pub fn layout(self) -> Sidebar {
         let views = |vs: &[View]| vs.iter().map(|v| Piece::view(*v)).collect::<Vec<_>>();
         let more = [
@@ -1737,5 +1750,26 @@ mod tests {
             small().as_switcher().sections,
             Preset::Switcher.layout().sections
         );
+    }
+
+    #[test]
+    fn preset_sets_collapse_and_density_but_keeps_the_look() {
+        let mine = Style {
+            variant: Variant::Floating,
+            side: Side::Right,
+            badges: false,
+            ..Style::default()
+        };
+        let icons = Preset::Compact.apply(&mine);
+        assert_eq!(icons.style.collapse, Collapse::Icons);
+        assert_eq!(icons.style.density, Density::Compact);
+        assert_eq!(icons.style.variant, Variant::Floating);
+        assert_eq!(icons.style.side, Side::Right);
+        assert!(!icons.style.badges);
+        // Leaving Icons for another preset widens the rail again.
+        let back = Preset::Focused.apply(&icons.style);
+        assert_eq!(back.style.collapse, Collapse::Hide);
+        assert_eq!(back.style.density, Density::Normal);
+        assert_eq!(back.style.side, Side::Right);
     }
 }

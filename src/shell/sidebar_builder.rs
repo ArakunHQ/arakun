@@ -9,7 +9,9 @@ use gpui::Point;
 use super::rail_blocks::url_title;
 use super::*;
 use crate::input::{InputEvent, TextInput};
-use crate::sidebar::{BadgeMode, Item, Mode, Path as ItemPath, Piece, Pin, Sidebar, TitleAction};
+use crate::sidebar::{
+    BadgeMode, Item, Mode, Path as ItemPath, Piece, Pin, Preset, Sidebar, TitleAction,
+};
 
 /// What the right column is about.
 #[derive(Clone, Copy, PartialEq)]
@@ -153,6 +155,20 @@ impl Shell {
             self.builder.inputs = None;
         }
         cx.notify();
+    }
+
+    /// A preset lays out the pieces and sets collapse and density; the look
+    /// (card, side) stays as chosen.
+    pub(super) fn apply_sidebar_preset(&mut self, preset: Preset, cx: &mut Context<Self>) {
+        self.change_sidebar(cx, |s| *s = preset.apply(&s.style));
+        self.clear_builder_selection();
+    }
+
+    /// The preset the sidebar is laid out as, if it is one.
+    pub(super) fn sidebar_preset(&self) -> Option<Preset> {
+        Preset::ALL
+            .into_iter()
+            .find(|p| p.layout().sections == self.sidebar.sections)
     }
 
     pub(super) fn undo_sidebar(&mut self, redo: bool, cx: &mut Context<Self>) {

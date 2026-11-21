@@ -73,7 +73,7 @@ pub fn status_of(t: &Thread) -> Status {
 }
 
 /// The saved transcript at `path`, ready to show; `None` when the session has none yet.
-fn read_restored(path: &Path) -> anyhow::Result<Option<Restored>> {
+pub(super) fn read_restored(path: &Path) -> anyhow::Result<Option<Restored>> {
     if !path.exists() {
         return Ok(None);
     }
@@ -94,12 +94,13 @@ pub(super) struct QueuedPrompt {
     text: String,
     /// Where it was written: what it mentions is found there.
     from: PathBuf,
-    agent: model::Agent,
+    agent: AgentKind,
     draft_settings: Vec<(Setting, String)>,
     claude_settings: Vec<(Setting, String)>,
     opencode_settings: Vec<(Setting, String)>,
     codex_settings: Vec<(Setting, String)>,
     devin_settings: Vec<(Setting, String)>,
+    cursor_settings: Vec<(Setting, String)>,
     workers_ai_settings: Vec<(Setting, String)>,
 }
 
@@ -281,6 +282,11 @@ impl Shell {
         if self.restoring.contains(id) || !self.needs_live(env_path, id, window, cx) {
             return;
         }
+        // Read while the pointer rested on its row: shown in this frame.
+        if let Some(restored) = self.take_ahead(id) {
+            self.go_live(env_path, id, restored, window, cx);
+            return;
+        }
         let sid = SharedString::from(id.to_string());
         self.restoring.insert(sid.clone());
         let (env, transcript) = (env_path.to_path_buf(), state::transcript_path(id));
@@ -316,14 +322,12 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Whatever was read ahead is older than what goes live now.
+        self.ahead.remove(id);
         let Some(session) = self.session_mut(env_path, id) else {
             return;
         };
-        let (kind, meta, title) = (
-            session.agent.kind(),
-            session.meta.clone(),
-            session.title.clone(),
-        );
+        let (kind, meta, title) = (session.agent, session.meta.clone(), session.title.clone());
         let thread = match restored {
             Ok(Some(r)) => Thread::restored(r, cx),
             Ok(None) => Thread::start(kind, env_path.to_path_buf(), meta, cx),
@@ -582,13 +586,19 @@ impl Shell {
                     .sessions_on_screen()
                     .iter()
                     .any(|(p, sid)| p.as_path() == env_path && sid.as_ref() == id.as_ref());
+                let mut linked = false;
                 if let Some(s) = self.session_mut(env_path, id) {
+                    linked = meta.pr.is_some()
+                        && s.meta.as_ref().and_then(|m| m.pr.as_ref()) != meta.pr.as_ref();
                     s.unread = away && status == Status::Idle;
                     s.status = status;
                     s.added = added;
                     s.removed = removed;
                     s.meta = Some(meta);
                     s.updated = model::unix_now();
+                }
+                if linked {
+                    self.session_connected(id, cx);
                 }
                 let path = state::transcript_path(id);
                 let key = id.to_string();
@@ -699,6 +709,7 @@ impl Shell {
             },
             codex_settings: env.codex_settings.clone(),
             devin_settings: env.devin_settings.clone(),
+            cursor_settings: env.cursor_settings.clone(),
             workers_ai_settings: env.workers_ai_settings.clone(),
         }
     }
@@ -720,6 +731,7 @@ impl Shell {
         env.opencode_settings = p.opencode_settings;
         env.codex_settings = p.codex_settings;
         env.devin_settings = p.devin_settings;
+        env.cursor_settings = p.cursor_settings;
         env.workers_ai_settings = p.workers_ai_settings;
         let text = crate::agent::attach::move_mentions(&p.text, &p.from, env_path);
         let title = summary(&text);
@@ -797,7 +809,9 @@ impl Shell {
                     let thread = self.active_thread(cx);
                     if let Some(thread) = &thread {
                         thread.update(cx, |t, cx| {
-                            if reachable {
+                            if reachable && now {
+                                t.interrupt_with(prompt, cx);
+                            } else if reachable {
                                 t.send(prompt, cx);
                             } else {
                                 t.post_notice(
@@ -816,7 +830,7 @@ impl Shell {
                     let first = super::servers::FirstPrompt {
                         env: path.clone(),
                         text: text.clone(),
-                        agent: agent.kind(),
+                        agent,
                         note: note.clone(),
                         mentions_from: from.clone(),
                         desktop: true,
@@ -840,7 +854,7 @@ impl Shell {
                     Some(env.sessions[env.session_index(&id)?].agent)
                 });
                 let agent = session_agent.unwrap_or(agent);
-                self.name_after_first_prompt(&path, &text, agent.kind(), cx);
+                self.name_after_first_prompt(&path, &text, agent, cx);
             } else {
                 // Not sent: back into the composer, as the user wrote it.
                 self.env_mut().draft.set(&text);
@@ -858,7 +872,7 @@ impl Shell {
                 .find_env(&path)
                 .and_then(|e| e.sessions.iter().find(|s| s.id == id))
                 .map_or(self.env().agent, |s| s.agent);
-            self.name_after_first_prompt(&path, &text, agent.kind(), cx);
+            self.name_after_first_prompt(&path, &text, agent, cx);
             if text.trim() == "/stage" {
                 self.stage_session(&path, &id, window, cx, |this, staged, path, id, _, cx| {
                     let (text, error) = crate::agent::staged_notice(staged);
@@ -925,7 +939,7 @@ impl Shell {
     pub(super) fn servers_start_first(
         &mut self,
         first: super::servers::FirstPrompt,
-        agent: model::Agent,
+        agent: AgentKind,
         settings: &[(String, String)],
         cx: &mut Context<Self>,
     ) -> bool {
@@ -980,13 +994,14 @@ impl Shell {
         env.opencode_settings = p.opencode_settings;
         env.codex_settings = p.codex_settings;
         env.devin_settings = p.devin_settings;
+        env.cursor_settings = p.cursor_settings;
         env.workers_ai_settings = p.workers_ai_settings;
         let picks = server_picks(env, p.agent);
         let note = self.rename_notes.remove(env_path);
         let first = super::servers::FirstPrompt {
             env: env_path.to_path_buf(),
             text: p.text.clone(),
-            agent: p.agent.kind(),
+            agent: p.agent,
             note: note.clone(),
             mentions_from: Some(p.from.clone()),
             desktop: true,
@@ -1122,12 +1137,49 @@ impl Shell {
         }
     }
 
+    /// Starts a session with `text` in the environment in front, shown in a
+    /// tab: what an action elsewhere (the GitHub tab, the palette) hands an
+    /// agent. On a server it starts there, as a prompt typed in its composer would.
+    pub(super) fn ask_agent(
+        &mut self,
+        title: SharedString,
+        text: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (path, agent) = (self.env().path.clone(), self.env().agent);
+        if self.env().remote.is_none() {
+            self.start_session_in(&path, agent, title, text, true, window, cx);
+            return;
+        }
+        // One session per worktree, as in `send_prompt`: the server makes one
+        // for it unless this folder takes sessions in place.
+        let env = self.env();
+        if (env.is_checkout || !env.sessions.is_empty()) && !self.servers_start_in_place(&path) {
+            let prompt = self.queue_prompt(text);
+            self.quick_create_env_then(self.active_project, Some(prompt), window, cx);
+            return;
+        }
+        let picks = server_picks(self.env(), agent);
+        let first = super::servers::FirstPrompt {
+            env: path,
+            text,
+            agent,
+            note: None,
+            mentions_from: None,
+            // When the server does not start it, it waits in the composer.
+            desktop: true,
+        };
+        self.servers_start_first(first, agent, &picks, cx);
+        cx.notify();
+    }
+
     /// Starts a session in any environment with `text` as its first prompt; `show`
     /// opens it in a tab (the active one of that environment).
     pub(super) fn start_session_in(
         &mut self,
         env_path: &Path,
-        agent: model::Agent,
+        agent: AgentKind,
         title: SharedString,
         text: String,
         show: bool,
@@ -1143,7 +1195,7 @@ impl Shell {
     pub(super) fn start_session_with(
         &mut self,
         env_path: &Path,
-        agent: model::Agent,
+        agent: AgentKind,
         title: SharedString,
         text: String,
         show: bool,
@@ -1153,6 +1205,11 @@ impl Shell {
     ) -> Option<SharedString> {
         // Its folder is going away this moment (`shell::cleanup`).
         if self.being_cleaned_up(env_path) {
+            return None;
+        }
+        // A server's folder is not on this machine: an agent started here
+        // would fail as if it were not installed. `ask_agent` starts it there.
+        if model::Remote::is_path(env_path) {
             return None;
         }
         let visible = self.has_projects() && self.env().path == env_path;
@@ -1174,12 +1231,12 @@ impl Shell {
         }
         crate::telemetry::capture(
             crate::telemetry::events::SESSION_STARTED,
-            &[("agent", agent.key())],
+            &[("agent", agent.id())],
         );
         let env_path = env_path.to_path_buf();
         // Every way a session starts (the composer, automations, `arakun agent new`) passes here.
-        self.name_after_first_prompt(&env_path, &text, agent.kind(), cx);
-        let thread = Thread::start(agent.kind(), env_path.clone(), None, cx);
+        self.name_after_first_prompt(&env_path, &text, agent, cx);
+        let thread = Thread::start(agent, env_path.clone(), None, cx);
         self.apply_env_settings(&env_path, agent, extra, &thread, cx);
         thread.update(cx, |t, cx| t.send(text, cx));
         self.attach(&env_path, &id, thread, window, cx);
@@ -1193,20 +1250,21 @@ impl Shell {
     fn apply_env_settings(
         &self,
         env_path: &Path,
-        agent: model::Agent,
+        agent: AgentKind,
         extra: Vec<(Setting, String)>,
         thread: &Entity<Thread>,
         cx: &mut Context<Self>,
     ) {
-        let settings = (agent == model::Agent::Droid)
+        let settings = (agent == AgentKind::Droid)
             .then(|| self.draft_settings_for(env_path))
             .flatten();
         let mut claude_settings = match (agent, self.find_env(env_path)) {
-            (model::Agent::Claude, Some(env)) => env.claude_settings.clone(),
-            (model::Agent::OpenCode, Some(env)) => opencode_draft(env),
-            (model::Agent::Codex, Some(env)) => codex_draft(env),
-            (model::Agent::Devin, Some(env)) => devin_draft(env),
-            (model::Agent::WorkersAi, Some(env)) => env.workers_ai_settings.clone(),
+            (AgentKind::Claude, Some(env)) => env.claude_settings.clone(),
+            (AgentKind::OpenCode, Some(env)) => opencode_draft(env),
+            (AgentKind::Codex, Some(env)) => codex_draft(env),
+            (AgentKind::Devin, Some(env)) => devin_draft(env),
+            (AgentKind::Cursor, Some(env)) => cursor_draft(env),
+            (AgentKind::WorkersAi, Some(env)) => env.workers_ai_settings.clone(),
             _ => Vec::new(),
         };
         if !extra.is_empty() {
@@ -1243,7 +1301,7 @@ impl Shell {
     /// told about it with the next prompt; the old agent stops.
     pub(super) fn continue_with(
         &mut self,
-        agent: model::Agent,
+        agent: AgentKind,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -1318,7 +1376,7 @@ impl Shell {
                 crate::agent::notes::HANDOFF_BUDGET,
             );
             Thread::continued(
-                agent.kind(),
+                agent,
                 env_path.clone(),
                 old.title.to_string(),
                 entries,
@@ -1332,7 +1390,7 @@ impl Shell {
                 let _ = std::fs::remove_file(path);
             }))
             .detach();
-            Thread::start(agent.kind(), env_path.clone(), None, cx)
+            Thread::start(agent, env_path.clone(), None, cx)
         };
         drop(old);
         let env = self.env_mut();
@@ -1413,8 +1471,8 @@ impl Shell {
 
     /// Loads Droid's defaults and model list off the main thread; the list is
     /// cached, so Droid is only asked when the cache is missing or old.
-    /// Claude's, OpenCode's, Codex's and Devin's options are cached the same way; the agent
-    /// is only asked when none of its sessions has reported them yet.
+    /// Claude's, OpenCode's, Codex's, Devin's and Cursor's options are cached the same
+    /// way; the agent is only asked when none of its sessions has reported them yet.
     pub(super) fn warm_droid_catalog(&mut self, cx: &mut Context<Self>) {
         let droid = catalog::droid_native();
         cx.spawn(async move |this, cx| {
@@ -1433,6 +1491,9 @@ impl Shell {
                 .await;
             let _ = this.update(cx, |_, cx| cx.notify());
             cx.background_spawn(crate::guard::task(async { catalog::refresh_devin() }))
+                .await;
+            let _ = this.update(cx, |_, cx| cx.notify());
+            cx.background_spawn(crate::guard::task(async { catalog::refresh_cursor() }))
                 .await;
             let _ = this.update(cx, |_, cx| cx.notify());
         })
@@ -1499,7 +1560,7 @@ impl Shell {
     }
 
     /// The agent of the composer's session, or the one picked for the next session.
-    pub(super) fn composer_agent(&self) -> model::Agent {
+    pub(super) fn composer_agent(&self) -> AgentKind {
         let env = self.env();
         match self.strip.tabs.get(self.composer_tab()).map(|t| &t.kind) {
             Some(TabKind::Session { agent, .. }) => *agent,
@@ -1535,7 +1596,7 @@ impl Shell {
     pub(super) fn draft_choices(
         &self,
         env_path: &Path,
-        agent: model::Agent,
+        agent: AgentKind,
         s: Setting,
     ) -> Option<(String, Vec<SettingOption>)> {
         let env = self.find_env(env_path)?;
@@ -1545,7 +1606,7 @@ impl Shell {
             return self.server_draft_choices(env, agent, s);
         }
         match agent {
-            model::Agent::Droid => {
+            AgentKind::Droid => {
                 if s == Setting::Fast {
                     return None;
                 }
@@ -1556,7 +1617,7 @@ impl Shell {
                 }
                 Some(crate::agent::setting_options(&settings, models, s))
             }
-            model::Agent::Claude => {
+            AgentKind::Claude => {
                 let options = catalog::claude_options();
                 let o = crate::agent::acp_option(&options, s)?;
                 let (mut current, choices) = crate::agent::acp_setting_options(o, s);
@@ -1567,7 +1628,7 @@ impl Shell {
                 }
                 Some((current, choices))
             }
-            model::Agent::OpenCode => {
+            AgentKind::OpenCode => {
                 let options = catalog::opencode_options();
                 let draft = opencode_draft(env);
                 let picked =
@@ -1587,7 +1648,7 @@ impl Shell {
                 }
                 Some((current, choices))
             }
-            model::Agent::Codex => {
+            AgentKind::Codex => {
                 let options = catalog::codex_options();
                 let draft = codex_draft(env);
                 let picked =
@@ -1607,10 +1668,13 @@ impl Shell {
                 }
                 Some((current, choices))
             }
-            // Devin's mode and model; it has no reasoning levels.
-            model::Agent::Devin => {
-                let options = catalog::devin_options();
-                let draft = devin_draft(env);
+            // Devin's and Cursor's mode and model; they have no reasoning levels.
+            AgentKind::Devin | AgentKind::Cursor => {
+                let (options, draft) = if agent == AgentKind::Devin {
+                    (catalog::devin_options(), devin_draft(env))
+                } else {
+                    (catalog::cursor_options(), cursor_draft(env))
+                };
                 let o = crate::agent::acp_option(&options, s)?;
                 let (mut current, choices) = crate::agent::acp_setting_options(o, s);
                 if let Some((_, v)) = draft
@@ -1621,7 +1685,7 @@ impl Shell {
                 }
                 Some((current, choices))
             }
-            model::Agent::WorkersAi => {
+            AgentKind::WorkersAi => {
                 let options = crate::agent::workers_ai::draft_options(&env.workers_ai_settings);
                 crate::agent::acp_option(&options, s)
                     .map(|o| crate::agent::acp_setting_options(o, s))
@@ -1639,7 +1703,7 @@ impl Shell {
             return Some(crate::agent::acp_label(s, &current, &options));
         }
         Some(match self.env().agent {
-            model::Agent::Droid => {
+            AgentKind::Droid => {
                 let settings = self.draft_settings()?;
                 if settings.get(s).is_empty() {
                     "Default".to_string()
@@ -1647,11 +1711,12 @@ impl Shell {
                     crate::agent::setting_label(&settings, &catalog::current().models, s)
                 }
             }
-            model::Agent::Claude
-            | model::Agent::OpenCode
-            | model::Agent::Codex
-            | model::Agent::Devin
-            | model::Agent::WorkersAi => crate::agent::acp_label(s, &current, &options),
+            AgentKind::Claude
+            | AgentKind::OpenCode
+            | AgentKind::Codex
+            | AgentKind::Devin
+            | AgentKind::Cursor
+            | AgentKind::WorkersAi => crate::agent::acp_label(s, &current, &options),
         })
     }
 
@@ -1691,7 +1756,7 @@ impl Shell {
     pub(super) fn remember_setting(
         &mut self,
         env_path: &Path,
-        agent: model::Agent,
+        agent: AgentKind,
         s: Setting,
         value: &str,
         cx: &mut Context<Self>,
@@ -1705,15 +1770,16 @@ impl Shell {
         // What OpenCode takes from the pick made anywhere, until this
         // environment has a model of its own. A server's models are its own:
         // they neither come from nor go to this machine's picks.
-        let local_opencode = agent == model::Agent::OpenCode && env.remote.is_none();
+        let local_opencode = agent == AgentKind::OpenCode && env.remote.is_none();
         let inherited = local_opencode.then(|| opencode_draft(env));
         let draft = match agent {
-            model::Agent::Droid => &mut env.draft_settings,
-            model::Agent::Claude => &mut env.claude_settings,
-            model::Agent::OpenCode => &mut env.opencode_settings,
-            model::Agent::Codex => &mut env.codex_settings,
-            model::Agent::Devin => &mut env.devin_settings,
-            model::Agent::WorkersAi => &mut env.workers_ai_settings,
+            AgentKind::Droid => &mut env.draft_settings,
+            AgentKind::Claude => &mut env.claude_settings,
+            AgentKind::OpenCode => &mut env.opencode_settings,
+            AgentKind::Codex => &mut env.codex_settings,
+            AgentKind::Devin => &mut env.devin_settings,
+            AgentKind::Cursor => &mut env.cursor_settings,
+            AgentKind::WorkersAi => &mut env.workers_ai_settings,
         };
         put_in_draft(
             draft,
@@ -1736,7 +1802,7 @@ impl Shell {
     /// the environment's next session of another agent starts with.
     pub(super) fn agent_choices(
         &self,
-        agent: model::Agent,
+        agent: AgentKind,
         s: Setting,
         cx: &gpui::App,
     ) -> Option<(String, Vec<SettingOption>)> {
@@ -1754,7 +1820,7 @@ impl Shell {
     /// The label of `agent`'s value for a setting, as `setting_value_label`.
     pub(super) fn agent_value_label(
         &self,
-        agent: model::Agent,
+        agent: AgentKind,
         s: Setting,
         cx: &gpui::App,
     ) -> Option<String> {
@@ -1763,7 +1829,7 @@ impl Shell {
         }
         let (current, options) = self.agent_choices(agent, s, cx)?;
         // Droid's short model name, as its chip shows it.
-        if agent == model::Agent::Droid
+        if agent == AgentKind::Droid
             && self.env().remote.is_none()
             && let Some(settings) = self.draft_settings()
         {
@@ -1794,7 +1860,7 @@ impl Shell {
     /// session tab, or a hand-over of the running one.
     pub(super) fn switch_agent(
         &mut self,
-        agent: model::Agent,
+        agent: AgentKind,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -1817,7 +1883,7 @@ impl Shell {
     /// a click meant for reasoning or fast mode should not do.
     pub(super) fn pick_setting(
         &mut self,
-        agent: model::Agent,
+        agent: AgentKind,
         s: Setting,
         value: &str,
         window: &mut Window,
@@ -1840,7 +1906,7 @@ impl Shell {
 
     /// Back to `agent`'s defaults, for the composer's session (when it is
     /// `agent`'s) and the next ones.
-    pub(super) fn reset_settings(&mut self, agent: model::Agent, cx: &mut Context<Self>) {
+    pub(super) fn reset_settings(&mut self, agent: AgentKind, cx: &mut Context<Self>) {
         if !self.has_projects() {
             return;
         }
@@ -1850,15 +1916,16 @@ impl Shell {
             let model_menu =
                 |s: &Setting| matches!(s, Setting::Model | Setting::Effort | Setting::Fast);
             match agent {
-                model::Agent::Droid => env.draft_settings.retain(|(s, _)| !model_menu(s)),
-                model::Agent::Claude => env.claude_settings.retain(|(s, _)| !model_menu(s)),
-                model::Agent::OpenCode => {
+                AgentKind::Droid => env.draft_settings.retain(|(s, _)| !model_menu(s)),
+                AgentKind::Claude => env.claude_settings.retain(|(s, _)| !model_menu(s)),
+                AgentKind::OpenCode => {
                     env.opencode_settings.retain(|(s, _)| !model_menu(s));
                     catalog::remember_opencode_pick(Vec::new());
                 }
-                model::Agent::Codex => env.codex_settings.retain(|(s, _)| !model_menu(s)),
-                model::Agent::Devin => env.devin_settings.retain(|(s, _)| !model_menu(s)),
-                model::Agent::WorkersAi => env.workers_ai_settings.retain(|(s, _)| !model_menu(s)),
+                AgentKind::Codex => env.codex_settings.retain(|(s, _)| !model_menu(s)),
+                AgentKind::Devin => env.devin_settings.retain(|(s, _)| !model_menu(s)),
+                AgentKind::Cursor => env.cursor_settings.retain(|(s, _)| !model_menu(s)),
+                AgentKind::WorkersAi => env.workers_ai_settings.retain(|(s, _)| !model_menu(s)),
             }
         }
         self.save(cx);
@@ -1869,7 +1936,7 @@ impl Shell {
             .filter(|t| agent == self.composer_agent() && !t.read(cx).is_remote())
         {
             let defaults: Vec<(Setting, String)> = match agent {
-                model::Agent::Droid => {
+                AgentKind::Droid => {
                     let d = &catalog::current().defaults;
                     [Setting::Model, Setting::Effort]
                         .into_iter()
@@ -1877,11 +1944,12 @@ impl Shell {
                         .filter(|(_, v)| !v.is_empty())
                         .collect()
                 }
-                model::Agent::Claude | model::Agent::Codex | model::Agent::Devin => {
+                AgentKind::Claude | AgentKind::Codex | AgentKind::Devin | AgentKind::Cursor => {
                     let options = match agent {
-                        model::Agent::Claude => catalog::claude_options(),
-                        model::Agent::Codex => catalog::codex_options(),
-                        _ => catalog::devin_options(),
+                        AgentKind::Claude => catalog::claude_options(),
+                        AgentKind::Codex => catalog::codex_options(),
+                        AgentKind::Devin => catalog::devin_options(),
+                        _ => catalog::cursor_options(),
                     };
                     [Setting::Model, Setting::Effort, Setting::Fast]
                         .into_iter()
@@ -1891,13 +1959,13 @@ impl Shell {
                         .collect()
                 }
                 // OpenCode's default model; its reasoning follows.
-                model::Agent::OpenCode => {
+                AgentKind::OpenCode => {
                     crate::agent::acp_option(&catalog::opencode_options(), Setting::Model)
                         .map(|o| (Setting::Model, o.current.clone()))
                         .into_iter()
                         .collect()
                 }
-                model::Agent::WorkersAi => crate::agent::workers_ai::draft_options(&[])
+                AgentKind::WorkersAi => crate::agent::workers_ai::draft_options(&[])
                     .into_iter()
                     .map(|o| {
                         (
@@ -1925,7 +1993,7 @@ impl Shell {
     /// Shift+Tab: the next permission level (Claude's mode, Droid's autonomy).
     pub(super) fn cycle_permissions(&mut self, cx: &mut Context<Self>) {
         let s = match self.composer_agent() {
-            model::Agent::Droid if self.setting_choices(Setting::Autonomy, cx).is_some() => {
+            AgentKind::Droid if self.setting_choices(Setting::Autonomy, cx).is_some() => {
                 Setting::Autonomy
             }
             _ => Setting::Mode,
@@ -2107,7 +2175,7 @@ impl Shell {
             return;
         };
         let title: SharedString = meta.title.clone().into();
-        let agent = model::Agent::from_key(meta.agent.id());
+        let agent = meta.agent;
         let mut session = Session::new(id.clone(), title.clone(), agent);
         session.meta = Some(meta);
         env.sessions.insert(0, session);
@@ -2240,15 +2308,7 @@ impl Shell {
         found.retain(|d| !known.contains(&d.id));
         found.sort_by_key(|a| a.updated);
         for d in found {
-            let agent = match d.agent {
-                AgentKind::Claude => model::Agent::Claude,
-                AgentKind::Droid => model::Agent::Droid,
-                AgentKind::OpenCode => model::Agent::OpenCode,
-                AgentKind::Codex => model::Agent::Codex,
-                AgentKind::Devin => model::Agent::Devin,
-                AgentKind::WorkersAi => model::Agent::WorkersAi,
-            };
-            let mut session = Session::new(new_session_id(), d.title.clone().into(), agent);
+            let mut session = Session::new(new_session_id(), d.title.clone().into(), d.agent);
             session.updated = d.updated;
             session.meta = Some(crate::agent::SessionMeta {
                 agent: d.agent,
@@ -2258,6 +2318,7 @@ impl Shell {
                 created: d.updated,
                 updated: d.updated,
                 pr: None,
+                seat: None,
             });
             env.sessions.insert(0, session);
         }
@@ -2507,6 +2568,12 @@ pub(super) fn devin_draft(env: &model::Environment) -> Vec<(Setting, String)> {
     offered_draft(&env.devin_settings, &catalog::devin_options())
 }
 
+/// The Cursor settings an environment's next session starts with, without a
+/// model Cursor no longer offers.
+pub(super) fn cursor_draft(env: &model::Environment) -> Vec<(Setting, String)> {
+    offered_draft(&env.cursor_settings, &catalog::cursor_options())
+}
+
 /// `picked`, the model first, without a model the agent no longer offers.
 fn offered_draft(
     picked: &[(Setting, String)],
@@ -2567,7 +2634,7 @@ fn value_changed(
 /// The model and reasoning picked here for `env`'s next `agent` session, as
 /// a server's `start` takes them, the model first. Only picks: with none, the
 /// server starts the session on what it remembers.
-pub(super) fn server_picks(env: &model::Environment, agent: model::Agent) -> Vec<(String, String)> {
+pub(super) fn server_picks(env: &model::Environment, agent: AgentKind) -> Vec<(String, String)> {
     let mut picks: Vec<(Setting, String)> = agent_draft(env, agent)
         .iter()
         .filter(|(s, _)| matches!(s, Setting::Model | Setting::Effort))
@@ -2581,14 +2648,15 @@ pub(super) fn server_picks(env: &model::Environment, agent: model::Agent) -> Vec
 }
 
 /// What an environment picked for its next `agent` session.
-pub(super) fn agent_draft(env: &model::Environment, agent: model::Agent) -> &[(Setting, String)] {
+pub(super) fn agent_draft(env: &model::Environment, agent: AgentKind) -> &[(Setting, String)] {
     match agent {
-        model::Agent::Droid => &env.draft_settings,
-        model::Agent::Claude => &env.claude_settings,
-        model::Agent::OpenCode => &env.opencode_settings,
-        model::Agent::Codex => &env.codex_settings,
-        model::Agent::Devin => &env.devin_settings,
-        model::Agent::WorkersAi => &env.workers_ai_settings,
+        AgentKind::Droid => &env.draft_settings,
+        AgentKind::Claude => &env.claude_settings,
+        AgentKind::OpenCode => &env.opencode_settings,
+        AgentKind::Codex => &env.codex_settings,
+        AgentKind::Devin => &env.devin_settings,
+        AgentKind::Cursor => &env.cursor_settings,
+        AgentKind::WorkersAi => &env.workers_ai_settings,
     }
 }
 
@@ -2619,20 +2687,20 @@ mod tests {
     fn a_server_gets_only_the_model_and_reasoning_picked() {
         use super::{Setting, model, server_picks};
         let mut env = model::Environment::new("/w/app".into(), None, false);
-        assert!(server_picks(&env, model::Agent::Claude).is_empty());
+        assert!(server_picks(&env, AgentKind::Claude).is_empty());
         env.claude_settings = vec![
             (Setting::Effort, "high".into()),
             (Setting::Mode, "plan".into()),
             (Setting::Model, "opus".into()),
         ];
         assert_eq!(
-            server_picks(&env, model::Agent::Claude),
+            server_picks(&env, AgentKind::Claude),
             vec![
                 ("modelId".to_string(), "opus".to_string()),
                 ("reasoningEffort".to_string(), "high".to_string()),
             ]
         );
-        assert!(server_picks(&env, model::Agent::Codex).is_empty());
+        assert!(server_picks(&env, AgentKind::Codex).is_empty());
     }
 
     #[test]

@@ -1,0 +1,5 @@
+{
+  "prompt": "Users report that `paginate` in pages.py drops the last item when the item count is not a multiple of the page size, and returns an empty first page for an empty list instead of no pages. Fix it. Run the tests before you finish.",
+  "check": "python3 -m unittest discover -s bench_hidden -t . -q",
+  "timeout": 600
+}

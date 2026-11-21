@@ -35,7 +35,7 @@ Written in Rust with [GPUI](https://github.com/zed-industries/zed/tree/main/crat
 
 ## Why Arakun
 
-- **Many agents, one place.** Claude Code, Droid, OpenCode, Codex, Devin and Workers AI
+- **Many agents, one place.** Claude Code, Droid, OpenCode, Codex, Devin, Cursor and Workers AI
   sessions side by side. Give each task its own git worktree so the agents don't step on each
   other.
 - **The agents can use the app.** The `arakun` command line lets an agent open pages,
@@ -55,11 +55,15 @@ Windows and other options: see [Install](#install).
 
 ### First launch
 
-Before you have a project, Arakun walks you through a short setup: which agents it
-found and the one to start with, dark or light and five shortcuts, GitHub and the phone
-remote, the question about crash reports, and your first project. Every step can be
-skipped, and "Skip setup" leaves it at once. Adding a project ends it. Open it again
-with "Show onboarding" in the palette (`Ctrl+K`). That it was done is kept in
+Before you have a project, Arakun checks the machine for agents and GitHub, then walks
+you through four short steps while a small copy of the window beside them changes as
+you pick: the agent new sessions start with, your first project, the color scheme and
+sidebar layout, and GitHub, the phone remote and crash reports. Enter goes to the next
+step, and on the last one it finishes the setup. Esc goes back one step; on the first
+step of a setup opened again, it closes it. Every step can be skipped, and "Skip setup"
+leaves it at once. It ends on the start screen of the project
+you added, with three shortcuts worth knowing. Open it again with "Show onboarding" in
+the palette (`Ctrl+K`). That it was done is kept in
 `state.onboarding.json`, next to `state.json` in Arakun's data folder.
 
 If Arakun can't read one of its files there (`state.json`, `history.json`,
@@ -116,6 +120,11 @@ copy of it, rename it back, and start a version that can read it.
   its environment's name. The Workspace panel shows Sessions, an Explorer and the
   uncommitted
   Changes; the Branches tab draws every live branch against the default one.
+  In the Commit changes dialog, "Write with <agent>" writes the message from what
+  the commit takes (the staged changes, or every change, new files too, when nothing
+  is staged; up to 60,000 characters of diff and the first 300 files) in the style of
+  the last commit subjects. It picks the agent as the pull request dialog does, and you
+  edit the message before you commit. Closing the dialog while it writes stops the agent.
 
   <img src="docs/screenshots/changes.png" alt="A file's diff in a tab, next to the Changes list with lines added and removed per file" width="760">
 - **Add or clone a project.** "Add project" (`Ctrl+O`) searches the git repositories
@@ -154,9 +163,10 @@ copy of it, rename it back, and start a version that can read it.
   On by default; turn off Settings › Branches › Archive after merge (saved in
   `~/.local/share/arakun/settle-after-merge`, `%LOCALAPPDATA%\arakun\` on Windows).
 - **Old environments removed.** Settings › Branches › Remove old environments (Off, 7, 14
-  or 30 days; also asked during the setup) removes an environment's worktree once its
+  or 30 days) removes an environment's worktree once its
   pull request is merged or closed and it sat unused that long. Arakun checks every hour,
   asking `git` and `gh`. An environment stays when it has uncommitted or untracked files,
+  git-ignored files other than build output (`target/`, `node_modules/` and the like),
   a commit that isn't in the pull request, an agent working or waiting for you, an
   automation that is on and runs in it, or is the one on screen. The branch is kept. Off by default; the first time an environment
   would have gone, a notice suggests it once. Saved in `~/.local/share/arakun/env-cleanup`
@@ -185,6 +195,7 @@ copy of it, rename it back, and start a version that can read it.
 | OpenCode | The `opencode` CLI |
 | Codex | Through the ACP adapter `@agentclientprotocol/codex-acp`, which brings its own `codex` |
 | Devin | The `devin` CLI (`devin acp`) |
+| Cursor | The Cursor CLI (`cursor-agent acp`) |
 | Cloudflare Workers AI | A tool loop Arakun runs itself against the Workers AI API |
 
 The Claude Code adapter runs the Claude Code binary bundled with it (the `claude` on
@@ -195,6 +206,14 @@ permission rules work as they do in the terminal. It leaves out commands that on
 sense in the terminal app: `/clear`, `/cost`, `/keybindings-help`, `/login`, `/logout`,
 `/output-style:new`, `/release-notes`, `/todos` and others Claude Code marks as
 terminal-only. The status line and keybindings from your settings don't apply in Arakun.
+
+Workers AI reads the project's `AGENTS.md` (or `CLAUDE.md`) and can use skills: a
+folder with a `SKILL.md` in `~/.claude/skills`, `~/.agents/skills`, the project's
+`.claude/skills` or `.agents/skills`, or a Claude Code plugin you turned on. Its system
+prompt lists each skill's name and description, and the agent loads a skill's
+instructions when a task matches it or when you type `/<name>`. A skill in your home
+folder wins over a project skill with the same name. A headless session's sandbox only
+sees the project's skills.
 
 - **Agent sessions.** Transcripts render markdown, diffs, tool calls and images;
   sessions can be resumed, and per-turn diffs show what each turn changed, including
@@ -218,11 +237,28 @@ terminal-only. The status line and keybindings from your settings don't apply in
   global one. `arakun mem scripts` lists the scripts agents wrote again and again in a
   project's sessions, worth keeping as a script of the project.
 - **Headless agents.** `arakun agent run` starts an agent in its own process that keeps
-  going with the app closed. Its tools run inside a bubblewrap sandbox (workspace
-  writable, the rest read-only, no credentials, no network unless `--allow net`), and a
-  policy (`--policy readonly|workspace|full`) decides which tool calls need your approval
-  (`arakun agent approve|deny`). Linux only (needs `bwrap`); headless runs use Workers AI
-  models for now.
+  going with the app closed. Its tools run inside a sandbox (workspace writable, the
+  rest read-only, no credentials, no network unless `--allow net`), and a policy
+  (`--policy readonly|workspace|full`) decides which tool calls need your approval
+  (`arakun agent approve|deny`). The sandbox is bubblewrap on Linux (needs `bwrap`) and
+  Seatbelt (`sandbox-exec`) on macOS; headless runs use Workers AI models for now.
+- **Sandboxed agents.** Turn on Sandbox agents in Settings › Project and the agents
+  of that project's sessions run in a sandbox: Seatbelt on macOS, bubblewrap on Linux
+  (needs `bwrap`). They can write the environment, the repository's Git folder (not
+  its config or hooks), package caches and temporary folders; other tools' logins and
+  tokens (`GH_TOKEN`, cloud keys), browser profiles and files that look like secrets
+  (`.env`, keys) stay hidden. On Linux only the secret files a scan finds at the
+  start are hidden (up to 8 folders deep, 50,000 entries, skipping `node_modules`,
+  `target` and the like); macOS also hides ones made later, by name. An environment
+  whose `.git` file leads to a folder its repository doesn't list won't start. They
+  keep the network and their own login (on macOS the keychain), and reach Arakun
+  through a socket of their own that refuses `arakun run`, `arakun agent` and anything
+  else that would act outside. On Linux, sandboxed Claude Code keeps its settings in
+  `~/.claude/.claude.json` (a copy of `~/.claude.json` at first), because bubblewrap
+  can't let it write beside the file in `$HOME`. Workers AI sessions and Windows can't
+  be sandboxed yet. A sandboxed
+  agent can still change what you later run outside it: the project's files, and its
+  own settings such as `~/.claude.json`.
 - **Server.** `arakun server serve` is Arakun without a window, for a machine nobody
   sits at: a build box, the workstation at the office, a VPS. It runs sessions of any
   agent signed in on that machine and keeps them going while nothing is connected.
@@ -243,13 +279,15 @@ terminal-only. The status line and keybindings from your settings don't apply in
   pull request template, else the commit messages). It opens as a draft unless you turn
   that off, pushes the branch first when it has commits GitHub doesn't, and then shows
   the new pull request in the GitHub tab. "Open GitHub's form" opens the page in your
-  browser instead, to write the description there. "Write with Claude Code" has Claude Code
-  write the title and the description from the branch's commits, its diff (up to 60,000
-  characters) and the template, when it is the environment's agent or the one picked for
-  naming branches; the button names the agent, so you see where the diff goes before
-  you click. It answers once with its tools off, so it reads nothing else, and
-  nothing goes to GitHub until you create the pull request. Other agents don't write it:
-  they can read files while they answer.
+  browser instead, to write the description there. "Write with <agent>" has the
+  environment's agent write the title and the description from the branch's commits, its
+  diff (up to 60,000 characters) and the template, or the one picked for naming branches
+  when the environment's agent isn't installed; the button names the agent, so you see
+  where the diff goes before you click. It answers once, in an empty folder, with as
+  little reach as its CLI allows: Claude Code, OpenCode and Workers AI with no tools,
+  Codex in a read-only sandbox without its shell or your Codex config, Droid with `droid
+  exec` (read-only), Cursor in ask mode and Devin in its default mode, which only reads.
+  Nothing goes to GitHub until you create the pull request.
 - **Queue.** The GitHub tab opens on one line that says how many things need you,
   then a quiet list grouped by where each pull request stands (Needs you, Stuck,
   pilot is on it, Waiting on CI, Waiting on others, Ready to merge), stacked pull
@@ -294,13 +332,30 @@ terminal-only. The status line and keybindings from your settings don't apply in
   change in the open project, and leaves git and GitHub to you), "Close issue" and, on
   a closed one, "Reopen issue"; both ask a second time. In the box, `/work`, `/close`
   and `/reopen` do the same.
-- **Alerts and filters.** Review requests, mentions and assignments raise an alert; so
-  does anything new in the organizations and repositories on your watch list. Click the
+- **Alerts and filters.** A pending review request alerts once per pull request.
+  New activity in the thread does not ask for the same review again. Mentions,
+  assignments and other activity from watched repositories still alert as before. Click the
   repository line above the verdict to show only some organizations or repositories; the rest
   doesn't show, count or alert. "Mark all read" marks only what that choice shows.
 - **Pull request agent.** With a pull request agent on a server of your own
-  (arakun-pilot), `~/.config/arakun-pilot/client.json` (`$XDG_CONFIG_HOME` when set to an absolute path;
-  `{"url": "…", "token": "…"}`) turns it on, and Arakun reads `GET <url>/board` and
+  (arakun-pilot), Ctrl+K "Connect arakun-pilot…" (also in the GitHub tab's `…` menu,
+  and under an empty queue) asks for the Worker's address, its token and, to send it
+  tasks, its admin token; it checks the token against the Worker before it saves them
+  (the admin token is saved unchecked, since only sending a task tries it), and
+  later "arakun-pilot settings…" changes them or disconnects. Under that row the
+  `…` menu says how pilot is doing ("Connected to … · read 2 min ago", or what is
+  wrong), and when pilot can't be read, or its settings file can't be used, the
+  queue says why with a "Settings…" link to the form. From a terminal,
+  `arakun github pilot connect <url> --token -` (the token on stdin) does the same;
+  `arakun github pilot status` says whether they still work and
+  `arakun github pilot disconnect` removes them. A token never goes in the command line,
+  where `ps` and shell history would show it: `--token -` reads it from stdin, else
+  `ARAKUN_PILOT_TOKEN`, else the token already saved for the same address. The admin
+  token comes the same way, from `--admin-token -` or `ARAKUN_PILOT_ADMIN_TOKEN` (only
+  one of the two can come from stdin); `--no-admin-token` removes the saved one, and
+  `--no-check` saves without asking the Worker first. An empty stdin is an error. They go in
+  `~/.config/arakun-pilot/client.json` (`$XDG_CONFIG_HOME` when set to an absolute path;
+  `{"url": "…", "token": "…"}`, readable only by you), and Arakun reads `GET <url>/board` and
   `GET <url>/items` every minute. A test Arakun with `ARAKUN_STATE` set, as `arakun dev`
   starts one, reads `arakun-pilot/client.json` in the folder of that state file instead.
   The `url` must be `https://`; plain `http://` works only for `localhost`, `127.0.0.1`
@@ -312,7 +367,7 @@ terminal-only. The status line and keybindings from your settings don't apply in
   the island opens that sheet over whatever window is in front (Esc gives it back).
   Without a board, the notice opens the pull request's sheet, which doesn't show the
   question: answer it on pilot's card in the queue. On your own pull requests, "Ask pilot" in the sheet sends what you
-  typed as a task (`POST <url>/tasks`, which needs `"admin_token"` in `client.json`).
+  typed as a task (`POST <url>/tasks`, which needs the admin token).
   While the Worker has no board, its cards show at the top of the queue under "Your
   agent". With a board, a card about a pull request the board follows shows under
   "From pilot" in that pull request's sheet, and the rest in a "From pilot" group at the
@@ -321,7 +376,7 @@ terminal-only. The status line and keybindings from your settings don't apply in
   kept in `~/.local/share/arakun/pilot.json` (`%LOCALAPPDATA%\arakun\pilot.json` on
   Windows; next to the state file when `ARAKUN_STATE` is set). Ctrl+K "Send to the cloud agent…" (or type
   `cloud: <task>`) hands it new work, on the open pull request of yours picked in the tab
-  or on a new branch (`POST <url>/tasks`); that needs `"admin_token"` in `client.json`
+  or on a new branch (`POST <url>/tasks`); that needs the admin token
   too. On that card `Tab` switches between your pull request and a new branch (see
   [Keyboard shortcuts](#keyboard-shortcuts)).
 
@@ -381,6 +436,9 @@ after a week).
   you write and fill the box. `{number}` in a shortcut is a blank you type each time,
   on the number keyboard. Hold a message you sent to keep it, or tap **+** in the row.
   Shortcuts stay in that phone's browser.
+  Charts and diagrams in a reply (` ```chart ` and ` ```mermaid ` blocks) are drawn
+  on the phone as they are in the app. **Code** shows the block's text, and **Open**
+  shows the drawing full screen.
 
 ### More tabs
 
@@ -415,12 +473,40 @@ after a week).
   a gateway set in `ANTHROPIC_BASE_URL`. Droid can also use a Factory API key you
   connect in Arakun (kept in the system keyring) or `FACTORY_API_KEY`, which goes only
   to api.factory.ai. When Claude Code runs on CLIProxyAPI, add the proxy's management key in the
-  tab to see the 5-hour and weekly limits of every claude.ai account behind it. The
-  key is only sent to the proxy it was added for, over https or to this machine. It is
-  saved in `~/.local/share/arakun/cliproxy-management-key`, and the last limits read
-  in `cliproxy-plan.json` next to it.
-- **Marketplace.** Plugins and MCP servers to add, and the MCP servers, plugins, skills
-  and permission rules the agents load now. Under Arakun › Extensions (or Settings ›
+  tab to see the 5-hour and weekly limits of every Claude and Codex account behind it,
+  how many still have room, and which ones the proxy holds back (cooling down, or
+  signed out). For a proxy Claude Code does not run on, use Add CLIProxyAPI (or Change
+  address) and type its address. Refresh reads the accounts now; Change key and
+  Forget key replace or remove the key. The key is only sent to the proxy it was added
+  for, over https or to this machine. It is saved in
+  `~/.local/share/arakun/cliproxy-management-key`, a typed address in
+  `cliproxy-address`, and the last limits read in `cliproxy-plan.json` next to it.
+- **Claude seats.** With several Claude subscriptions, give each Claude Code session a
+  seat of its own so parallel sessions don't drain one. Save each subscription's
+  long-lived token (from `claude setup-token`) with `arakun seat add <name>`: it is read
+  from stdin, checked with one small call (about 35 tokens of that seat) and kept in
+  `~/.local/share/arakun/seats/<name>`, readable only by you. From then on each new
+  Claude Code session starts on the seat with the most room in its 5-hour window that
+  is not near its 5-hour or weekly limit (your own sign-in and a
+  `CLAUDE_CODE_OAUTH_TOKEN` Arakun was started with count as seats too), and keeps
+  that seat for its whole life, also when it is resumed or restarted. The token goes
+  only into that session's environment; there is no proxy. If every seat is near its
+  limit, the session starts on the one with the most room and says so. The composer
+  shows the seat of the session, and the Usage tab every seat's windows and live
+  sessions. Reading a token's windows sends that seat a one-token message, so Arakun
+  does it only while the Usage tab is on screen, for `arakun seat ls`, and when a new
+  session picks its seat (waiting at most 4 seconds), and at most every 15 minutes per
+  token. A seat whose token is refused is skipped, and a session saved on it moves to
+  another seat and says so. Seats can't work
+  while `~/.claude/settings.json` sets `CLAUDE_CODE_OAUTH_TOKEN` in its `env` block,
+  because Claude Code applies that over each session's environment; the Usage tab says
+  so, and sessions start as before. Without a saved seat nothing changes.
+- **Marketplace.** Plugins, MCP servers and skills to add, and the MCP servers, plugins,
+  skills and permission rules the agents load now. Discover › Skills searches
+  [skills.sh](https://skills.sh); Install copies the skill's folder from its GitHub
+  repository into `~/.claude/skills`, where Claude Code and Workers AI find it. It uses
+  your `gh` sign-in (or `GH_TOKEN`) when there is one, since GitHub answers few
+  requests without one. Skills install on this computer only, not on a paired server. Under Arakun › Extensions (or Settings ›
   General › Sidebar) you turn on the tabs the sidebar shows besides Inbox, Runs, Branches and Marketplace: GitHub, Notes,
   Memory, Usage, Cloudflare, PostHog, Isometric, Phone, Servers and Automations. The
   palette and Customize › Sidebar list only the tabs that are on. A new install starts
@@ -442,6 +528,13 @@ the workspace panel is, so the work stays in view while you change it. Open it f
 palette (`Customize`), View › Customize… or Settings › Appearance › Open Customize, which
 only sums up what is chosen. It opens without a project too.
 
+Settings › Appearance › Reduce motion holds the mascot, spinners and the island still (its
+working dots, its change of shape and its alert cards), and shows menus and dialogs
+without sliding them in. System (the default)
+follows macOS's Reduce motion, GNOME's Animations switch or Windows' Animation effects,
+and picks up a change when Arakun's window comes to the front; On and Off ignore the
+system. The choice is kept in `state.json` as `reduce_motion`.
+
 - **Colors.** Mode draws the color scheme on black or on a white background with dark text.
   There are built-in color schemes (Arakun Black, the default, then Calma, Arakun Night,
   Graphite, Midnight, Forest, Rosé). Only the center of the window is a sheet; the
@@ -449,7 +542,10 @@ only sums up what is chosen. It opens without a project too.
   accent is kept for what needs you. Duplicate one to change its tint, background and
   accent; Arakun warns when text or the accent gets hard to read. Grays sets how bright
   secondary text and borders are, and Diff colors how added and removed lines look, with a
-  few lines of a diff under it to see the choice.
+  few lines of a diff under it to see the choice. Contrast follows the system's high
+  contrast setting (macOS Increase contrast, Windows high contrast, GNOME's high contrast
+  theme), or is set to Standard or High: High raises secondary text to 7:1 and borders
+  to 3:1, whatever Grays says, and turns Glass off.
   Reset colors goes back to Arakun Black, dark, and keeps your color schemes. The mode,
   the choice and your color schemes are kept in `palettes.json` next to the state.
 
@@ -600,8 +696,12 @@ curl -fsSL https://arakun.dev/install | sh -s -- --server    # the same
 ```
 
 It is the install script with `--server`: it checks the release the same way and installs
-`~/.local/bin/arakun-server` (uninstall: `rm ~/.local/bin/arakun-server`). It takes
-`--version` too. Releases after v0.4.0 carry it. It does not update itself: run the line
+`~/.local/bin/arakun-server` (uninstall: `rm ~/.local/bin/arakun-server`). It also
+installs what the server runs agents with, if it is missing: git and gh with the system's
+package manager (as root, or with `sudo` that needs no password; otherwise it prints the
+command to run), and Node.js 22 from nodejs.org in `~/.local/share/arakun/node`, linked
+as `node`, `npm` and `npx` in `~/.local/bin`. Without Node, a new session fails as it
+starts. `--no-tools` leaves all three to you. It takes `--version` too. Releases after v0.4.0 carry it. It does not update itself: run the line
 again for a new release, then restart the service if it runs as one:
 `systemctl --user restart arakun-server`. A server in another folder
 (`ARAKUN_SERVER_DIR`) is the unit `arakun-server-<folder>`, and a service installed as
@@ -615,6 +715,20 @@ signed `SHA256SUMS`, and puts it next to the installed app. The update is instal
 you quit Arakun, so the next start runs it. Settings › General › Updates shows the version, has **Check now**,
 and on Linux and macOS **Restart now**. Turn **Update automatically** off there to stop
 the checks; `ARAKUN_UPDATES=0` turns them off for one run.
+
+When a version has a serious problem, Arakun can ask you to update, or require it. Once
+an hour, and a few seconds after it starts, a release build reads the `update-policy`
+feature flag from Arakun's PostHog project. The request carries only the version, the
+update channel, the operating system and the processor type; the id it sends is your
+install's random id only if you agreed to usage counts, and a new one each start
+otherwise. If the flag says *request*, Arakun downloads the latest release and asks you
+to restart into it; **Later** or Escape puts it off until the next start. If it says
+*force*, a dialog stays over the window, and Escape and shortcuts do nothing, until you
+restart into the new version (on Windows: quit and open Arakun again) or quit. After a
+failed download, both offer **Try again**.
+Neither happens when no newer release exists. Maintainers set this per version in
+PostHog: one condition set per version range on `$app_version`, with a semver operator,
+and the variant to use.
 
 From a terminal, `arakun update` downloads the latest release and installs it. If Arakun
 is running, it is installed when Arakun quits: on Linux and macOS `arakun restart` does
@@ -658,7 +772,7 @@ one updater runs), `no-auto-update` (there while **Update automatically** is off
 follows nightlies and a release follows releases), `update-channel.lock` (held while the
 channel changes or an update is installed) and `update-download/` (the download, removed when it is done). The new version waits next to
 the installed one as `.arakun.update` (`.Arakun.app.update` on macOS, `.arakun.exe.update`
-on Windows), unpacked first as `.arakun.incoming`.
+on Windows, with its `.pdb` as `.arakun.exe.update.pdb`), unpacked first as `.arakun.incoming`.
 
 Arakun updates itself where it runs from, so that folder and the binary must be yours
 (the install scripts' folders are). A binary that belongs to another user, such as one a
@@ -730,7 +844,8 @@ window. On Ubuntu 23.10 and later, browser tabs also need the AppArmor profile i
 [Browser tabs on Ubuntu](#browser-tabs-on-ubuntu).
 
 **Windows:** extract `arakun-<version>-windows-x86_64.zip` and run `arakun.exe`. Keep the
-files next to it together: `arakun-helper.exe` and the CEF runtime are for browser tabs.
+files next to it together: `arakun-helper.exe` and the CEF runtime are for browser tabs,
+and `arakun.pdb` gives crash reports Arakun's function names.
 
 **macOS:** open `arakun-<version>-macos-arm64.dmg` and drag `Arakun.app` into
 `Applications`. The app and the disk image are signed with a Developer ID and notarized by
@@ -754,6 +869,11 @@ Arakun does not bundle the agents. Install the ones you want to use:
   with `devin auth login` (Settings › Devin runs it for you) or `WINDSURF_API_KEY` in
   the environment. Arakun starts `devin acp`; `ARAKUN_DEVIN_BIN` picks another `devin`
   and `ARAKUN_DEVIN_ACP` runs another command instead.
+- Cursor: the [Cursor CLI](https://cursor.com/docs/cli/installation), signed in with
+  `cursor-agent login` (Settings › Cursor runs it for you) or `CURSOR_API_KEY` in the
+  environment. Arakun starts `cursor-agent acp`; `ARAKUN_CURSOR_BIN` picks another
+  `cursor-agent` and `ARAKUN_CURSOR_ACP` runs another command instead. Cursor sessions
+  use the MCP servers in `~/.cursor/mcp.json` and the project's `.cursor/mcp.json`.
 - Workers AI: a Cloudflare API token with Workers AI access, either stored through
   `opencode auth login` or set as `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`.
 
@@ -769,8 +889,13 @@ the usage log), it moves to `<agent>.old.log` or `usage.old.jsonl` (`<name>.old.
 next to an `ARAKUN_USAGE_LOG` file) and a new one starts. Arakun keeps only that one
 older copy: each move replaces the previous one.
 
+Turns of Workers AI sessions also log what each tool's results added to the context.
+`arakun usage tools [--days N] [--json]` adds them up, largest first, with bash split by
+the program the command runs (`bash cargo`, `bash git`), so you can see which tools and
+commands cost the tokens.
+
 Optional tools: `git` (Changes, worktrees, branches), `gh` (CI, GitHub tab), `bwrap`
-(headless agents), `secret-tool` from libsecret (stored logins on Linux), `tailscale`
+(headless agents on Linux), `secret-tool` from libsecret (stored logins on Linux), `tailscale`
 (phone over Tailscale), `cf` (Cloudflare tab).
 
 ## Build from source
@@ -932,7 +1057,13 @@ arakun check                      # run the project check here
 arakun rename fix/tab-name         # rename this environment's branch (before it is pushed)
 arakun page screenshot            # PNG of the environment's browser tab
 arakun notify "done"              # desktop notification
+arakun shrink -- cargo test       # run it and print a summary: failures, collapsed logs,
+                                  # JSON outline; the whole output goes to a file it names
 arakun notices --unseen           # notices you haven't read yet
+arakun usage tools --days 7       # which tools' results used the tokens of Workers AI turns
+arakun seat add work < token.txt  # save a Claude seat (a `claude setup-token` token)
+arakun seat ls                    # the seats and their 5-hour and weekly usage
+arakun seat rm work               # forget a seat
 arakun ls                         # projects, environments and sessions
 arakun show                       # bring the window up (running `arakun` again does too)
 arakun quit                       # quit Arakun, also when its window is hidden
@@ -945,6 +1076,12 @@ arakun github draft o/r#12 --verdict approve --head <sha> --body-file - --agent 
                                   # asks the user first if it is outside its workspace or
                                   # the command shares its line with others. --head is
                                   # the commit the agent read; an approval needs it
+arakun github pilot connect <url> --token -
+                                  # connect arakun-pilot: check the Worker, save its
+                                  # settings (also status, disconnect). Tokens come
+                                  # from stdin (-) or ARAKUN_PILOT_TOKEN and
+                                  # ARAKUN_PILOT_ADMIN_TOKEN; also --admin-token -,
+                                  # --no-admin-token, --no-check
 arakun agent run <prompt>         # start a headless agent
 arakun server serve               # run sessions on this machine without the window (arakun server help)
 arakun --version                  # print the version (needs no running Arakun)
@@ -989,7 +1126,13 @@ The link is good for two minutes and pairs one device. There are two ways to use
   same tabs, with the same composer, as sessions here: send, stop, approve and answer
   go to the server. "New environment" makes a worktree on a server too: Alt+click the
   + and pick the machine, or right-click a server's environment. A plain + makes it on
-  the open environment's machine. It goes in
+  the open environment's machine. To spread them instead, turn on **Spread across
+  machines** in the Servers tab: a new environment then goes to a connected machine
+  that has the project, This computer included, picking the least busy one (the fewest
+  sessions at work). Set each machine to Prefer, Normal or Avoid there: a preferred
+  machine takes new environments before the others, and an avoided one only when no other
+  can. The New environment dialog starts on that machine too, and a first prompt stays
+  on the machine it was written on. This is kept in `servers-balance.json`. A new environment on a server goes in
   `~/arakun-workspaces/<project>/<branch>` there. Unless naming is off in Settings ›
   Branches, Arakun names its branch after the first prompt, as here. Right-click a
   server's environment to archive it there (the sessions that ask for attention
@@ -999,8 +1142,16 @@ The link is good for two minutes and pairs one device. There are two ways to use
   servers' sessions too. A terminal in a server's environment is a shell in that folder
   on the server, and the project commands from Settings run there too. It keeps running
   while the connection is down and picks up where it was once it is back; one no app
-  follows for an hour is hung up. Git and the file tree stay with this machine's folders.
-  Fork, compact, rewind and `/stage` in a server's session run on the server, with its
+  follows for an hour is hung up. The Changes panel of a server's environment shows
+  that folder's changes and diffs, and stage, discard, commit, pull, push and the pull
+  request button run there, with the server's `git` and `gh` logins
+  (`ARAKUN_GITHUB=readonly` on the server keeps it from pushing or opening pull requests;
+  set it before `service install`). On a server reached over plain http, the diffs,
+  commit messages and pull request text cross the network unencrypted, like the rest of
+  that link: reach it over https or the relay. The Explorer lists a server's environment, its files
+  open in file tabs (text only, read from the server), and `@` in the composer completes
+  its paths. Merging into the main checkout and GitHub's form stay with this machine's
+  folders. Fork, compact, rewind and `/stage` in a server's session run on the server, with its
   agent and its git: a fork or a rewind opens as a new session there. "Continue with"
   hands a server's session to another of the agents on that server, in the same tab.
   In a server's environment, the model menu lists the models and reasoning levels that
@@ -1044,12 +1195,13 @@ arakun-server service install   # keep it running; see Keep it running
 
 `arakun-server help` lists them all.
 
-- **Agents.** Claude Code, Droid, OpenCode, Codex, Devin and Workers AI, as in the app. Sign in to
+- **Agents.** Claude Code, Droid, OpenCode, Codex, Devin, Cursor and Workers AI, as in the app. Sign in to
   each one on that machine first: the server uses its logins and its permission
   settings. An agent set to allow everything there asks for nothing here either.
   Claude Code and Codex also need their ACP adapter. The server installs a missing one
   with npm the first time a session needs it, into `~/.local/share/arakun/agents`
-  (`%LOCALAPPDATA%\arakun\agents` on Windows), so Node must be on the server's `PATH`. The service keeps the `PATH` it was installed
+  (`%LOCALAPPDATA%\arakun\agents` on Windows), so Node 22 or newer must be on the
+  server's `PATH`; the server install script puts one there. The service keeps the `PATH` it was installed
   with: if Node comes from mise or nvm, run `arakun-server service install` from a shell
   where `node` works.
 - **How devices reach it.** `serve --reach relay` (the default) dials out to the relay,
@@ -1100,6 +1252,7 @@ arakun-server service uninstall   # stop it and remove the service; the data sta
   restarts the server.
 - **Agents.** The service gets the `PATH` of the shell you install it from, so it finds
   the same agents. If you install an agent somewhere else later, run `install` again.
+  It also keeps `ARAKUN_GITHUB=readonly` when that is set in that shell.
   It also keeps `XDG_DATA_HOME` and `ARAKUN_SERVER_DIR` when they are set, so it uses
   the folder the other commands look in.
 - **Logged out (Linux).** As a normal user it turns on lingering
@@ -1129,7 +1282,7 @@ forward through tabs, `Ctrl+Cmd+F` toggles full screen, and `Cmd+H`, `Cmd+M` and
 `Cmd+Q` hide, minimize and quit.
 
 - `Ctrl+T` new session (in a new worktree, made when you send the first prompt, unless the open one is a worktree without one), `Ctrl+J` toggle the terminal dock, `Ctrl+B` toggle the sidebar
-- `Ctrl+Alt+B` toggle the workspace panel, `Ctrl+Alt+S` toggle the subagents panel
+- `Ctrl+Alt+B` toggle the workspace panel, `Ctrl+Alt+S` toggle the session panel (its pull request and subagents)
 - `Ctrl+D` / `Ctrl+Shift+D` split right / down, `Ctrl+Alt+arrows` move between panes
 - `Ctrl+Tab`, `Ctrl+1...9` switch tabs, across environments; `Alt+Up` / `Alt+Down`
   switch environments
@@ -1189,8 +1342,11 @@ forward through tabs, `Ctrl+Cmd+F` toggles full screen, and `Cmd+H`, `Cmd+M` and
   `C` comment, `R` review with an agent, `U` catch me up, `S` summarize, `D` all or
   fewer details, `O` open on GitHub. `Enter` opens the selected item's sheet, and `Esc` closes it (the sheet an
   island notice opened over another tab too). While the sheet is closed, `J` / `K`
-  only move through the list; while it is open, they open the next item. In the
-  comment box, `Enter` sends the comment and `/` lists the actions
+  only move through the list; while it is open, they open the next item. On a pilot
+  card you clicked, `1` to `4` send its ready answers, `E` opens "Other answer…" and
+  `Y` marks a fixed or failed card dealt with; the buttons show their keys, and after
+  an answer the next question is picked. In the comment box, `Enter` sends the
+  comment and `/` lists the actions
 
 ## Contributing
 

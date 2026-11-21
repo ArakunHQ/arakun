@@ -224,6 +224,7 @@ pub fn merge(app: Option<&Feed>, headless: &Seen) -> Feed {
             None => headless.today.clone(),
         },
         viewing: app.and_then(|f| f.viewing.clone()),
+        reduce_motion: app.and_then(|f| f.reduce_motion),
     }
 }
 
@@ -453,6 +454,7 @@ mod tests {
             rows: vec![row("h1", "Workers AI"), row("s1", "Opus 5.5")],
             today: Some("$3.00".into()),
             viewing: Some("s1".into()),
+            reduce_motion: None,
         };
         let both = merge(Some(&app), &headless);
         let rows: Vec<(&str, &str)> = both

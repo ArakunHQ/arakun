@@ -230,6 +230,19 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // The agent can edit what the check runs, so in a sandboxed project the
+        // check runs in the agent's sandbox, or not at all.
+        let sandbox = thread.read(cx).sandbox();
+        if sandbox.is_none() && crate::agent::sandbox::wanted(env_path).unwrap_or(true) {
+            thread.update(cx, |t, cx| {
+                t.post_notice(
+                    format!("Not checking · {command}: the agent's sandbox is not running"),
+                    true,
+                    cx,
+                )
+            });
+            return;
+        }
         let lp = self.checks.entry(id.to_string()).or_default();
         lp.generation += 1;
         lp.running += 1;
@@ -253,7 +266,7 @@ impl Shell {
             let (tx, rx) = oneshot::channel();
             let _ = std::thread::Builder::new()
                 .name("arakun-check".into())
-                .spawn(move || tx.send(run_check(&dir, &cmd, CHECK_TIMEOUT)));
+                .spawn(move || tx.send(run_check(&dir, &cmd, sandbox.as_deref(), CHECK_TIMEOUT)));
             let result = rx
                 .await
                 .unwrap_or_else(|_| Err(std::io::Error::other("the check stopped")));
@@ -468,12 +481,20 @@ fn check_jobs() -> usize {
 /// Runs `command` with the system shell (`sh`, `cmd` on Windows) in `dir`
 /// without a terminal, stdout and stderr together, stopping it (and whatever
 /// it started) after `timeout`.
-fn run_check(dir: &Path, command: &str, timeout: Duration) -> std::io::Result<CheckRun> {
+fn run_check(
+    dir: &Path,
+    command: &str,
+    sandbox: Option<&crate::agent::sandbox::Session>,
+    timeout: Duration,
+) -> std::io::Result<CheckRun> {
     // Waits for the one running; the timeout counts from when this one starts.
     let _turn = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
     let start = Instant::now();
     let (mut stdout, writer) = std::io::pipe()?;
-    let mut cmd = crate::platform::shell_command(command);
+    let mut cmd = match sandbox {
+        Some(s) => s.shell_command(command),
+        None => crate::platform::shell_command(command),
+    };
     cmd.current_dir(dir)
         // Test runners and package scripts take it as "no watch mode, no prompts".
         .env("CI", "1")
@@ -773,12 +794,12 @@ mod tests {
         } else {
             ("echo out; echo err >&2; exit 3", "true")
         };
-        let run = run_check(&dir, failing, Duration::from_secs(10)).unwrap();
+        let run = run_check(&dir, failing, None, Duration::from_secs(10)).unwrap();
         assert_eq!(run.code, Some(3));
         assert!(!run.passed());
         assert_eq!(run.output, "out\nerr");
         assert!(
-            run_check(&dir, passing, Duration::from_secs(10))
+            run_check(&dir, passing, None, Duration::from_secs(10))
                 .unwrap()
                 .passed()
         );
@@ -788,6 +809,28 @@ mod tests {
                 && prompt.contains("$ make test\nexit 3")
                 && prompt.contains("out\nerr")
         );
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn a_sandboxed_check_runs_inside() {
+        let dir = crate::platform::canonicalize(std::env::temp_dir())
+            .unwrap()
+            .join(format!("arakun-check-sbx-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(".env"), "KEY=1").unwrap();
+        let Ok(s) = crate::agent::sandbox::Session::new(crate::agent::AgentKind::Codex, &dir)
+        else {
+            // No runner here, or a bubblewrap that can't start (no user namespaces in CI).
+            std::fs::remove_dir_all(&dir).unwrap();
+            return;
+        };
+        // An agent that edits the check's script still can't read what the sandbox hides.
+        let run = run_check(&dir, "cat .env; echo ok", Some(&s), Duration::from_secs(30)).unwrap();
+        assert!(!run.output.contains("KEY=1"), "{}", run.output);
+        assert!(run.output.ends_with("ok"), "{}", run.output);
+        drop(s);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
@@ -846,6 +889,7 @@ mod tests {
         let run = run_check(
             &std::env::temp_dir(),
             crate::git::NICE_OF_SHELL,
+            None,
             Duration::from_secs(10),
         )
         .unwrap();
@@ -911,7 +955,13 @@ mod tests {
         } else {
             "echo started; sleep 30"
         };
-        let run = run_check(&std::env::temp_dir(), slow, Duration::from_millis(300)).unwrap();
+        let run = run_check(
+            &std::env::temp_dir(),
+            slow,
+            None,
+            Duration::from_millis(300),
+        )
+        .unwrap();
         assert!(run.timed_out && !run.passed());
         assert_eq!(run.output, "started");
         assert!(run.elapsed < Duration::from_secs(5));
@@ -929,7 +979,7 @@ mod tests {
             let dir = dir.clone();
             std::thread::spawn(move || {
                 let first = "touch first-start; sleep 1; touch first-end";
-                run_check(&dir, first, Duration::from_secs(10)).unwrap()
+                run_check(&dir, first, None, Duration::from_secs(10)).unwrap()
             })
         };
         // The second must queue behind the first, so wait until the first holds
@@ -940,7 +990,8 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         // It fails if it starts while the first one is still going.
-        let second = run_check(&dir, "test -f first-end", Duration::from_millis(500)).unwrap();
+        let second =
+            run_check(&dir, "test -f first-end", None, Duration::from_millis(500)).unwrap();
         let first = first.join().unwrap();
         assert_eq!(first.code, Some(0));
         assert!(!second.timed_out);

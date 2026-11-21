@@ -32,12 +32,6 @@ pub fn load<T: DeserializeOwned>(path: &Path) -> Option<T> {
     })
 }
 
-/// The JSON in `path` when it reads, without setting it aside when it doesn't:
-/// for a reader that doesn't own the file at the moment.
-pub fn peek<T: DeserializeOwned>(path: &Path) -> Option<T> {
-    serde_json::from_slice(&std::fs::read(path).ok()?).ok()
-}
-
 /// `load` with a parser of its own, for files that skip what they don't know.
 pub fn load_with<T>(path: &Path, parse: impl FnOnce(&[u8]) -> Result<T, String>) -> Option<T> {
     let bytes = match std::fs::read(path) {

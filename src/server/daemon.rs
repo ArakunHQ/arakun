@@ -20,6 +20,7 @@ use futures::channel::mpsc;
 use gpui::{App, AppContext as _, Context, Entity, Global, Subscription, Task};
 use serde_json::json;
 
+use super::files;
 use super::local::{self, Reply, Request};
 use super::pty::{self, Pty};
 use super::store::{self, Place, Record, Store};
@@ -734,14 +735,7 @@ impl Daemon {
                 }
             }
         }));
-        tasks.push(cx.spawn(async move |this, cx| {
-            loop {
-                cx.background_executor().timer(TICK).await;
-                if this.update(cx, |this, cx| this.tick(cx)).is_err() {
-                    break;
-                }
-            }
-        }));
+        tasks.push(crate::poll::poll_every(cx, TICK, TICK, Self::tick));
         if let Some(signal) = crate::signals::first_signal() {
             tasks.push(cx.spawn(async move |this, cx| {
                 if signal.await.is_ok() {
@@ -768,6 +762,7 @@ impl Daemon {
             }
             catalog::refresh_codex();
             catalog::refresh_devin();
+            catalog::refresh_cursor();
         })));
         let account = cx.new(Account::new);
         let account_events = cx.observe(&account, |this, _, cx| this.usage_changed(cx));
@@ -1000,6 +995,16 @@ impl Daemon {
     /// sends a turn asks, the device's and the local commands' alike.
     fn admit(&self, place: &Path) -> Result<(), String> {
         admission(place, &self.deleting)
+    }
+
+    /// Whether a device may read the files of `place`: one of this server's
+    /// folders, not being deleted.
+    fn place_to_read(&self, place: &Path) -> Result<(), String> {
+        self.admit(place)?;
+        match self.store.place(place) {
+            Some(_) => Ok(()),
+            None => Err("that folder is not one of this server's".into()),
+        }
     }
 
     fn thread_event(
@@ -1867,6 +1872,14 @@ impl Daemon {
             }
         };
         match ev {
+            // Rare, and the list may be long: it goes once, not with every state.
+            ThreadEvent::CommandsChanged => {
+                if let Some(thread) = self.thread(id) {
+                    let msg = wire::commands_message(id, thread.read(cx).commands());
+                    self.send_watchers(id, msg);
+                }
+                return;
+            }
             ThreadEvent::EntriesChanged { from } => {
                 let e = self.dirty.entry(id.to_string()).or_insert(*from);
                 *e = (*e).min(*from);
@@ -2010,13 +2023,20 @@ impl Daemon {
                     status: record.status,
                     place: &place,
                 };
+                let mut commands = None;
                 let reply = match self.live.get(&session) {
                     Some(live) => {
                         let t = live.thread.read(cx);
+                        // Empty but known still goes: the app may hold an older list.
+                        commands = t
+                            .commands_known()
+                            .then(|| wire::commands_message(&session, t.commands()));
                         wire::session_live(&head, t, status_of(t), &self.scope(t.cwd()))
                     }
                     None => self.with_entries(&session, cx, |all, cwd| {
-                        wire::session_saved(&head, all, &self.scope(cwd))
+                        // The read just made, kept: not read again.
+                        let queue = self.last_read.queue(&self.store.transcript_path(&session));
+                        wire::session_saved(&head, all, &queue, &self.scope(cwd))
                     }),
                 };
                 let watched = self.watching.entry(client).or_default();
@@ -2032,6 +2052,9 @@ impl Daemon {
                     }
                 }
                 self.transport.send(client, reply);
+                if let Some(commands) = commands {
+                    self.transport.send(client, commands);
+                }
             }
             ClientMsg::Close { session: None } => self.stop_watching(client, cx),
             ClientMsg::Close {
@@ -2210,11 +2233,31 @@ impl Daemon {
                     json!({ "type": "settings", "id": session, "settings": wire::settings(list) });
                 self.transport.send(client, reply.to_string());
             }
-            ClientMsg::Cancel { session } => {
+            ClientMsg::Cancel {
+                session,
+                keep_queue,
+            } => {
                 if let Some(thread) = self.thread(&session) {
-                    stop_turn(&thread, cx);
+                    if keep_queue {
+                        thread.update(cx, |t, cx| t.cancel(cx));
+                    } else {
+                        stop_turn(&thread, cx);
+                    }
                 }
             }
+            ClientMsg::Unqueue {
+                session,
+                index,
+                text,
+                now,
+            } => match self.queue_thread(&session, now, cx) {
+                Ok(thread) => thread.update(cx, |t, cx| t.unqueue(index, &text, now, cx)),
+                Err(e) => self.transport.send(client, session_error(&session, &e)),
+            },
+            ClientMsg::ResumeQueue { session } => match self.queue_thread(&session, true, cx) {
+                Ok(thread) => thread.update(cx, |t, cx| t.resume_queue(cx)),
+                Err(e) => self.transport.send(client, session_error(&session, &e)),
+            },
             ClientMsg::Permission { session, option } => {
                 if let Some(thread) = self.thread(&session) {
                     thread.update(cx, |t, cx| t.respond_permission(&option, cx));
@@ -2376,6 +2419,41 @@ impl Daemon {
             }
             ClientMsg::TermClose { term } => {
                 self.terms.remove(&term);
+            }
+            ClientMsg::ListDir { place, dir } => {
+                let place = PathBuf::from(place);
+                match self.place_to_read(&place) {
+                    Ok(()) => {
+                        self.answer_off_thread(client, move || files::list_dir(&place, &dir), cx)
+                    }
+                    Err(e) => {
+                        let msg = json!({ "type": "dir", "place": place, "dir": dir, "error": e });
+                        self.transport.send(client, msg.to_string());
+                    }
+                }
+            }
+            ClientMsg::ReadFile { place, path } => {
+                let place = PathBuf::from(place);
+                match self.place_to_read(&place) {
+                    Ok(()) => {
+                        self.answer_off_thread(client, move || files::read_file(&place, &path), cx)
+                    }
+                    Err(e) => {
+                        let msg =
+                            json!({ "type": "file", "place": place, "path": path, "error": e });
+                        self.transport.send(client, msg.to_string());
+                    }
+                }
+            }
+            ClientMsg::ListFiles { place } => {
+                let place = PathBuf::from(place);
+                match self.place_to_read(&place) {
+                    Ok(()) => self.answer_off_thread(client, move || files::list_files(&place), cx),
+                    Err(_) => {
+                        let msg = json!({ "type": "files", "place": place, "files": [] });
+                        self.transport.send(client, msg.to_string());
+                    }
+                }
             }
             ClientMsg::Usage => {
                 // Fresh numbers follow through `usage_changed` once the reads land.
@@ -2636,8 +2714,47 @@ impl Daemon {
                 })
                 .detach();
             }
+            ClientMsg::Git {
+                reference,
+                place,
+                call,
+            } => self.git(client, reference, place, call, cx),
             ClientMsg::Ping => {}
         }
+    }
+
+    /// Runs git in one of the places for a device, off the main thread: a
+    /// push or a commit's hooks take as long as they take.
+    fn git(
+        &self,
+        client: ClientId,
+        reference: u64,
+        place: String,
+        call: crate::git_call::Call,
+        cx: &mut Context<Self>,
+    ) {
+        let dir = PathBuf::from(place);
+        // Git runs nowhere else: a device names one of the folders it offers.
+        if self.store.place(&dir).is_none() || self.deleting.contains(&dir) {
+            let why = anyhow::anyhow!("that folder is not one of this server's");
+            let reply = crate::git_call::reply(reference, Err(why));
+            self.transport.send(client, reply.to_string());
+            return;
+        }
+        cx.spawn(async move |this, cx| {
+            let done = cx
+                .background_executor()
+                .spawn(crate::guard::task(async move { call.run(&dir) }))
+                .await;
+            let reply = crate::git_call::reply(reference, done);
+            let _ = this.update(cx, |this, _| {
+                // A diff or a pull request's description can be past one frame.
+                for frame in wire::parts(reply.to_string()) {
+                    this.transport.send(client, frame);
+                }
+            });
+        })
+        .detach();
     }
 
     /// Runs `job` off the main thread (it waits on `claude`) and sends what it
@@ -2896,6 +3013,28 @@ impl Daemon {
             return Err(format!("{} is being deleted.", path.display()));
         }
         offer(&mut self.store, path, agent)
+    }
+
+    /// The thread whose queue a device acts on. A session let go while its
+    /// queue waited is brought back: its transcript kept the queue. Work
+    /// that would start a turn is held to what a prompt sent is held to.
+    fn queue_thread(
+        &mut self,
+        id: &str,
+        starts_turn: bool,
+        cx: &mut Context<Self>,
+    ) -> Result<Entity<Thread>, String> {
+        if !starts_turn && let Some(thread) = self.thread(id) {
+            return Ok(thread);
+        }
+        // Bringing the agent back starts it in that folder, so it is asked too.
+        if let Some(s) = self.store.session(id) {
+            self.admit(&s.place)?;
+        }
+        if starts_turn && self.handing_over.contains(id) {
+            return Err("it is being handed to another agent".into());
+        }
+        self.ensure_live(id, cx)
     }
 
     /// Sends `text` to the session `id` as its next prompt.
@@ -3557,7 +3696,7 @@ fn staged_message(session: &str, staged: Result<Vec<String>, String>) -> String 
 }
 
 fn unknown_agent(agent: &str) -> String {
-    format!("unknown agent {agent}: claude, droid, opencode, codex, devin or workers-ai")
+    format!("unknown agent {agent}: claude, droid, opencode, codex, devin, cursor or workers-ai")
 }
 
 /// What a session waits on the user for, with the command that answers it.
@@ -3654,11 +3793,16 @@ fn draft_choices(
             }
             Some(agent::setting_options(&settings, &catalog.models, s))
         }
-        AgentKind::Claude | AgentKind::OpenCode | AgentKind::Codex | AgentKind::Devin => {
+        AgentKind::Claude
+        | AgentKind::OpenCode
+        | AgentKind::Codex
+        | AgentKind::Devin
+        | AgentKind::Cursor => {
             let options = match agent {
                 AgentKind::Claude => catalog::claude_options(),
                 AgentKind::Codex => catalog::codex_options(),
                 AgentKind::Devin => catalog::devin_options(),
+                AgentKind::Cursor => catalog::cursor_options(),
                 _ => catalog::opencode_options(),
             };
             // OpenCode's and Codex's reasoning levels are per model: the cached
@@ -5544,6 +5688,7 @@ hB4c5Ctl3gH87t2sYgahkwsrsgaPmTiVB9bYTD52y70dAtxVNNOhFsNf\n\
                 created: 1,
                 updated: 1,
                 pr: None,
+                seat: None,
             },
             entries: vec![Entry::Agent { text: text.into() }],
             usage: agent::Usage::default(),

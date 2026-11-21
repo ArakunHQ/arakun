@@ -663,7 +663,7 @@ impl Element for TextElement {
         let style = window.text_style();
 
         let (display_text, text_color) = if content.is_empty() {
-            (input.placeholder.clone(), theme::mix(0.35))
+            (input.placeholder.clone(), theme::text_subtle())
         } else if input.secret || (input.redacted && crate::redact::on()) {
             // Same byte length per char, so offsets into `content` still index the line.
             let masked: String = content.chars().map(|c| "*".repeat(c.len_utf8())).collect();

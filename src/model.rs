@@ -14,84 +14,21 @@ use crate::explorer::Explorer;
 use crate::git;
 use crate::terminal::{Terminal, TerminalView};
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Agent {
-    Claude,
-    Droid,
-    OpenCode,
-    Codex,
-    Devin,
-    WorkersAi,
-}
-
-/// The agent picked last, anywhere, as its place in `Agent::ALL`: new environments start with it.
+/// The agent picked last, anywhere, as its place in `AgentKind::ALL`: new environments start with it.
 static LAST_AGENT: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(1);
 
 /// The agent a new environment starts with: the last one picked (Droid until one is).
-pub fn default_agent() -> Agent {
+pub fn default_agent() -> AgentKind {
     let i = LAST_AGENT.load(std::sync::atomic::Ordering::Relaxed);
-    Agent::ALL.get(i as usize).copied().unwrap_or(Agent::Droid)
+    AgentKind::ALL
+        .get(i as usize)
+        .copied()
+        .unwrap_or(AgentKind::Droid)
 }
 
-pub fn set_default_agent(agent: Agent) {
-    let i = Agent::ALL.iter().position(|a| *a == agent).unwrap_or(1);
+pub fn set_default_agent(agent: AgentKind) {
+    let i = AgentKind::ALL.iter().position(|a| *a == agent).unwrap_or(1);
     LAST_AGENT.store(i as u8, std::sync::atomic::Ordering::Relaxed);
-}
-
-impl Agent {
-    pub const ALL: [Agent; 6] = [
-        Agent::Claude,
-        Agent::Droid,
-        Agent::OpenCode,
-        Agent::Codex,
-        Agent::Devin,
-        Agent::WorkersAi,
-    ];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Agent::Claude => "Claude Code",
-            Agent::Droid => "Droid",
-            Agent::OpenCode => "OpenCode",
-            Agent::Codex => "Codex",
-            Agent::Devin => "Devin",
-            Agent::WorkersAi => "Workers AI",
-        }
-    }
-
-    pub fn key(self) -> &'static str {
-        match self {
-            Agent::Claude => "claude",
-            Agent::Droid => "droid",
-            Agent::OpenCode => "opencode",
-            Agent::Codex => "codex",
-            Agent::Devin => "devin",
-            Agent::WorkersAi => "workers-ai",
-        }
-    }
-
-    pub fn kind(self) -> AgentKind {
-        match self {
-            Agent::Claude => AgentKind::Claude,
-            Agent::Droid => AgentKind::Droid,
-            Agent::OpenCode => AgentKind::OpenCode,
-            Agent::Codex => AgentKind::Codex,
-            Agent::Devin => AgentKind::Devin,
-            Agent::WorkersAi => AgentKind::WorkersAi,
-        }
-    }
-
-    /// Unknown keys (and old files' missing ones) read as Droid.
-    pub fn from_key(key: &str) -> Self {
-        match key {
-            "claude" => Agent::Claude,
-            "opencode" => Agent::OpenCode,
-            "codex" => Agent::Codex,
-            "devin" => Agent::Devin,
-            "workers-ai" => Agent::WorkersAi,
-            _ => Agent::Droid,
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -106,7 +43,7 @@ pub enum Status {
 pub enum TabKind {
     NewSession,
     Session {
-        agent: Agent,
+        agent: AgentKind,
         id: SharedString,
     },
     Browser {
@@ -202,8 +139,8 @@ fn yes() -> bool {
 pub const GRACE_SECS: u64 = 3600;
 
 impl Automation {
-    pub fn agent(&self) -> Option<Agent> {
-        self.agent.as_deref().map(Agent::from_key)
+    pub fn agent(&self) -> Option<AgentKind> {
+        self.agent.as_deref().map(AgentKind::from_id)
     }
 
     /// The next scheduled run, if it is scheduled and enabled.
@@ -275,6 +212,9 @@ pub struct Tab {
     pub sheet: usize,
     /// A diff tab loads its diff even past the size limit ("Show anyway").
     pub large: bool,
+    /// Counts the loads of a file or diff tab: only the latest one shows,
+    /// whichever finishes last.
+    pub loads: u64,
 }
 
 impl Tab {
@@ -297,6 +237,7 @@ impl Tab {
             markdown: None,
             sheet: 0,
             large: false,
+            loads: 0,
         }
     }
 
@@ -328,7 +269,7 @@ pub struct BrowserTab {
 pub struct Session {
     pub id: SharedString,
     pub title: SharedString,
-    pub agent: Agent,
+    pub agent: AgentKind,
     pub status: Status,
     /// Unix seconds of the last activity.
     pub updated: u64,
@@ -374,7 +315,7 @@ pub struct LiveSession {
 }
 
 impl Session {
-    pub fn new(id: SharedString, title: SharedString, agent: Agent) -> Self {
+    pub fn new(id: SharedString, title: SharedString, agent: AgentKind) -> Self {
         Self {
             id,
             title,
@@ -490,7 +431,7 @@ pub struct Environment {
     pub draft: crate::draft::Draft,
     /// Images waiting in the composer, sent along with the draft.
     pub draft_images: Vec<PathBuf>,
-    pub agent: Agent,
+    pub agent: AgentKind,
     /// Native Droid settings picked on the New session tab, for the next session.
     pub draft_settings: Vec<(crate::agent::Setting, String)>,
     /// Claude Code settings for the next session: picked on the New session tab,
@@ -502,6 +443,8 @@ pub struct Environment {
     pub codex_settings: Vec<(crate::agent::Setting, String)>,
     /// The same for Devin.
     pub devin_settings: Vec<(crate::agent::Setting, String)>,
+    /// The same for Cursor.
+    pub cursor_settings: Vec<(crate::agent::Setting, String)>,
     /// The same for Workers AI.
     pub workers_ai_settings: Vec<(crate::agent::Setting, String)>,
     pub explorer: Explorer,
@@ -512,6 +455,9 @@ pub struct Environment {
     /// A push, pull or PR running from the Changes panel.
     pub git_busy: Option<GitOp>,
     pub git_error: Option<SharedString>,
+    /// Why a server's changes could not be read the last time it was asked:
+    /// the panel then shows what it had, or nothing, and says so.
+    pub status_error: Option<SharedString>,
     /// Unix seconds it was last on screen, for the cleanup of old environments.
     pub used: u64,
     /// A folder on a paired server, not here. Its sessions run there; nothing
@@ -902,12 +848,14 @@ impl Environment {
             opencode_settings: Vec::new(),
             codex_settings: Vec::new(),
             devin_settings: Vec::new(),
+            cursor_settings: Vec::new(),
             workers_ai_settings: Vec::new(),
             sync: git::Sync::default(),
             pr: None,
             pr_checked: None,
             git_busy: None,
             git_error: None,
+            status_error: None,
             used: unix_now(),
             remote: None,
         };
@@ -1003,6 +951,8 @@ pub struct Project {
     pub check: Option<String>,
     /// The user doesn't want arakun to suggest a check here.
     pub check_declined: bool,
+    /// Its agents run in a sandbox (`agent::sandbox`).
+    pub sandbox: bool,
     /// The branch new environments start from; None for origin's default branch.
     pub base: Option<String>,
     /// Scratch notes, shown by the Notes tab.
@@ -1303,9 +1253,9 @@ mod tests {
         // A worktree waiting for its first session stays in the list.
         assert!(!env.archived());
         env.sessions
-            .push(Session::new("a".into(), "A".into(), Agent::Claude));
+            .push(Session::new("a".into(), "A".into(), AgentKind::Claude));
         env.sessions
-            .push(Session::new("b".into(), "B".into(), Agent::Claude));
+            .push(Session::new("b".into(), "B".into(), AgentKind::Claude));
         env.sessions[0].settled = true;
         assert!(!env.archived());
         env.sessions[1].settled = true;

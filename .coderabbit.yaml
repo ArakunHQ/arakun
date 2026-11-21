@@ -64,6 +64,8 @@ reviews:
           - "src/github/**"
           - "src/phone/**"
           - "relay/**"
+          - "teams/**"
+          - "src/arakun_teams/**"
           - "phone/**"
           - "Cargo.toml"
           - "Cargo.lock"
@@ -93,7 +95,7 @@ reviews:
     behavior across several files or views (new panels, menus, settings,
     shortcuts or background work) that stays out of the paths and kinds of
     change listed next. High or higher: any change to
-    src/phone (end-to-end encryption and its wire format), relay/ or phone/;
+    src/phone (end-to-end encryption and its wire format), relay/, phone/, teams/ or src/arakun_teams/;
     the headless agent sandbox, its policy and its broker (src/headless*);
     the control socket (src/control.rs); code that reads, stores or sends
     tokens and API keys (src/account.rs, src/fetch.rs, src/voice.rs,
@@ -207,6 +209,7 @@ reviews:
   path_filters:
     - "!Cargo.lock"
     - "!relay/package-lock.json"
+    - "!teams/package-lock.json"
     - "!assets/**"
     - "!docs/screenshots/**"
     - "!phone/*.png"
@@ -243,6 +246,9 @@ reviews:
     - path: "relay/**"
       instructions: |
         The relay is a Cloudflare Worker that forwards encrypted frames between the desktop and the phone. It must never see plaintext or keys. Check limits and input validation on every frame, authentication on admin routes, and Durable Object state that can grow without a bound. A new route or limit needs a test in `relay/test`.
+    - path: "teams/**"
+      instructions: |
+        The teams Worker signs users in with GitHub and keeps per-user feature flags in D1. It must never store or log the GitHub token or a session token; the database holds only SHA-256 hashes of sessions. Users are keyed by numeric GitHub ID, never by login. Every endpoint that needs a user goes through `session()`, and every team feature checks its flag on the server. Admin routes compare `ADMIN_SECRET` in constant time. No GitHub IDs of real users belong in the repository. A schema change is a new file in `teams/migrations`, never an edit to an applied one. A new route or check needs a test in `teams/test`.
     - path: "src/headless*/**"
       instructions: |
         This is the security boundary for headless agents. `sandbox.rs` must keep credentials, the host's sockets and the network out of the sandbox unless a `--allow` grants them. `policy.rs` reads commands the way a shell would; a new rule must hold up against quoting, `;`, `&&`, pipes, `$(…)`, `bash -c` and env prefixes, and must err toward asking. Actions in `broker.rs` that send, push, publish or pay must wait for the user's approval. Ask for a test for every new policy rule or way around one.
@@ -345,6 +351,9 @@ code_generation:
       - path: "relay/**/*.ts"
         instructions: |
           Tests go in `relay/test/*.test.ts` and run with vitest and `@cloudflare/vitest-plugin`. Reuse the helpers in `relay/test/helpers.ts`.
+      - path: "teams/**/*.ts"
+        instructions: |
+          Tests go in `teams/test/*.test.ts` and run with vitest and `@cloudflare/vitest-plugin`, with the D1 migrations applied. Reuse the fake GitHub and helpers in `teams/test/helpers.ts`.
       - path: "phone/**/*.js"
         instructions: |
           Tests go in `phone/test/*.test.mjs` and run with `node --test`, without extra packages. Format checks use the vectors in `phone/test/vectors`, which the Rust side writes.

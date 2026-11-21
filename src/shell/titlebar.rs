@@ -8,6 +8,7 @@ impl Shell {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        let a11y = window.is_a11y_active();
         // The tabs take what they need and the centred title what is left.
         let mut strip = div()
             .flex()
@@ -341,8 +342,11 @@ impl Shell {
                                     .justify_center()
                                     .size(px(20.))
                                     .rounded(crate::ui::rad(4.))
-                                    .invisible()
-                                    .group_hover(group.clone(), |s| s.visible())
+                                    // Hidden elements register no click listeners,
+                                    // so keep it pressable for a screen reader.
+                                    .when(!a11y, |d| {
+                                        d.invisible().group_hover(group.clone(), |s| s.visible())
+                                    })
                                     .hover(|s| s.bg(theme::fill_selected()))
                                     .child(icon("cancel01", 12.).text_color(theme::text_subtle()))
                                     .on_click(cx.listener(move |this, _, window, cx| {

@@ -502,7 +502,15 @@ impl Shell {
         cx.notify();
     }
 
-    pub(super) fn render_dock(&self, viewport_h: f32, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(super) fn render_dock(
+        &self,
+        viewport_h: f32,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        // A hidden element registers no click listeners, so a close button
+        // that only shows on hover could not be pressed by a screen reader.
+        let hide_close = !window.is_a11y_active();
         let env = self.env();
         let dock_open = self.dock_open;
         let env_path = env.path.clone();
@@ -567,7 +575,7 @@ impl Shell {
                             .justify_center()
                             .size(px(20.))
                             .rounded(crate::ui::rad(4.))
-                            .when(!active, |d| {
+                            .when(!active && hide_close, |d| {
                                 d.invisible().group_hover(group.clone(), |s| s.visible())
                             })
                             .hover(|s| s.bg(theme::fill_selected()))

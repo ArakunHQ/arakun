@@ -797,6 +797,19 @@ impl Shell {
                         .flatten()
                 });
                 let description = o.description.filter(|_| describe);
+                // Plain children don't reach screen readers, so the row says
+                // what it shows next to its name: the description and the
+                // note, which for an unavailable choice is the reason.
+                let mut spoken: Vec<&str> = Vec::new();
+                for text in [description.as_deref(), note.as_deref()]
+                    .into_iter()
+                    .flatten()
+                {
+                    if !spoken.contains(&text) {
+                        spoken.push(text);
+                    }
+                }
+                let spoken = (!spoken.is_empty()).then(|| spoken.join(". "));
                 ui::choice_row(
                     ("choice", s as usize * 1000 + i),
                     o.name.clone(),
@@ -805,8 +818,8 @@ impl Shell {
                 .when(self.menu_focus(offset + i), |d| d.bg(theme::fill_hover()))
                 .when(!enabled, |d| d.opacity(0.45).cursor_default())
                 // gpui has no disabled state to give screen readers; the
-                // reason says the choice is out of reach, and why.
-                .when_some(o.disabled.clone(), |d, why| d.aria_description(why))
+                // reason, part of the note, says the choice is out of reach.
+                .when_some(spoken, |d, text| d.aria_description(text))
                 .child(
                     div()
                         .flex_1()

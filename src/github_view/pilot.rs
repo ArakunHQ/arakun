@@ -851,8 +851,9 @@ impl GitHubView {
         let Some(id) = self.pilot_focus.clone() else {
             return false;
         };
-        // Any card shown, the sheet's too: a click can pick those as well.
-        let Some(card) = self.pilot.read(cx).find(&id).cloned() else {
+        // Only a card the keys reach now: the sheet's too while it is open,
+        // but not one it hid on Esc, which stays picked.
+        let Some(card) = self.pilot_answerable(cx).into_iter().find(|c| c.id == id) else {
             return false;
         };
         match card_key(&card, key) {

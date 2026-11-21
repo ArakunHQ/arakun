@@ -455,6 +455,8 @@ pub struct Shell {
     runs_view: Entity<RunsView>,
     memory_view: Entity<MemoryView>,
     _memory_view: Subscription,
+    /// New scene and Change in the Isometric tab start sessions.
+    _iso_view: Subscription,
     cloudflare_view: Entity<CloudflareView>,
     _cloudflare_view: [Subscription; 2],
     #[cfg(feature = "coderlabs")]
@@ -801,6 +803,24 @@ impl Shell {
         let usage_view = cx.new(UsageView::new);
         let gallery_view = cx.new(GalleryView::new);
         let iso_view = cx.new(crate::iso_view::IsoView::new);
+        let iso_sub = cx.subscribe_in(
+            &iso_view,
+            window,
+            |this, _, ev: &crate::iso_view::IsoEvent, window, cx| match ev {
+                crate::iso_view::IsoEvent::Ask { title, prompt } => {
+                    let env = this.env().path.clone();
+                    this.start_session_in(
+                        &env,
+                        model::default_agent(),
+                        title.clone().into(),
+                        prompt.clone(),
+                        true,
+                        window,
+                        cx,
+                    );
+                }
+            },
+        );
         #[cfg(feature = "coderlabs")]
         let canvas_view = cx.new(crate::canvas_view::CanvasView::new);
         let usage_sub = cx.subscribe_in(
@@ -1021,6 +1041,7 @@ impl Shell {
             runs_view,
             memory_view,
             _memory_view: memory_sub,
+            _iso_view: iso_sub,
             cloudflare_view,
             _cloudflare_view: cloudflare_sub,
             #[cfg(feature = "coderlabs")]

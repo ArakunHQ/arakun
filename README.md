@@ -536,6 +536,14 @@ after a week).
   room. Right-click a title for Ungroup, which removes the segment and keeps its
   pieces in the one above. In Customize › Sidebar, a segment can be set to start
   folded or not to say what is inside; a new one is born titled and collapsible.
+- **Isometric.** Animated isometric scenes: the project's `iso/*.rhai` scripts, then
+  the starters that ship with Arakun. New scene asks what to draw and starts a session
+  that writes it as a new file in `iso/`; Change starts a session that edits the scene
+  on screen. A starter is copied into `iso/` first. The tab shows each save as the
+  agent writes it. Export PNG, Export SVG and Export animated SVG save the scene in
+  the look on screen: a 1600 px wide frame, one frame, or the whole loop.
+  Agents in any project read the guide with `arakun iso docs` and the shipped scenes
+  with `arakun iso example [name]`.
 - **Automations.** Scheduled shell commands or agent prompts per project.
 
 ### Make it yours

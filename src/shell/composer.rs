@@ -555,8 +555,12 @@ impl Shell {
             if name.contains(char::is_whitespace) {
                 return None;
             }
-            // This computer's skills; a server's session says what it has there.
-            let skills = (self.env().remote.is_none()
+            // This computer's skills, where the agent sees them.
+            let session = match self.strip.tabs.get(self.composer_tab()).map(|t| &t.kind) {
+                Some(TabKind::Session { id, .. }) => Some(id.as_ref()),
+                _ => None,
+            };
+            let skills = (host_skills_reach(self.project(), self.env(), session)
                 && matches!(
                     self.composer_agent(),
                     AgentKind::Claude | AgentKind::WorkersAi
@@ -1684,5 +1688,55 @@ impl EntityInputHandler for Shell {
     ) -> Option<usize> {
         let ix = self.composer_index_at(point)?;
         Some(self.env().draft.byte_to_utf16(ix))
+    }
+}
+
+/// Whether the agent of `session` in `env` sees the skills on this computer,
+/// so `/` completion may offer them. A server's environment or project, a
+/// sandbox and a headless session each see other files: there only the
+/// commands the session reports count.
+fn host_skills_reach(project: &Project, env: &Environment, session: Option<&str>) -> bool {
+    env.remote.is_none()
+        && !project.is_remote()
+        && !project.sandbox
+        && !session.is_some_and(crate::headless::shown)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::Remote;
+
+    #[test]
+    fn host_skills_stay_with_agents_on_this_computer() {
+        let mut project =
+            crate::state::new_project(std::path::Path::new("/tmp/arakun-skills-test"));
+        fn env(p: &Project) -> &Environment {
+            &p.environments[0]
+        }
+        assert!(host_skills_reach(&project, env(&project), None));
+        assert!(host_skills_reach(&project, env(&project), Some("s-local")));
+
+        crate::headless::set_shown("s-headless", true);
+        assert!(!host_skills_reach(
+            &project,
+            env(&project),
+            Some("s-headless")
+        ));
+        crate::headless::set_shown("s-headless", false);
+
+        project.sandbox = true;
+        assert!(!host_skills_reach(&project, env(&project), None));
+        project.sandbox = false;
+
+        project.environments[0].remote = Some(Remote {
+            server: "s1".into(),
+            machine: "box".into(),
+            place: "/srv/app".into(),
+        });
+        assert!(!host_skills_reach(&project, env(&project), None));
+
+        let remote = crate::state::new_project(&Remote::project_path("s1/app"));
+        assert!(!host_skills_reach(&remote, env(&remote), None));
     }
 }

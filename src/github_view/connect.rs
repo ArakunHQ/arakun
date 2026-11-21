@@ -24,9 +24,16 @@ pub enum PilotDialogEvent {
 pub struct PilotDialog {
     /// The settings on disk when the form opened.
     saved: Option<Config>,
+    /// A settings file there that can't be used: still one to fix or
+    /// disconnect, not "Connect".
+    broken: bool,
+    /// "Remove the saved admin token" was clicked: saving drops it.
+    drop_admin: bool,
     url: Entity<TextInput>,
     token: Entity<TextInput>,
     admin: Entity<TextInput>,
+    /// "Remove the saved admin token": Tab from the admin box lands on it.
+    drop_admin_focus: FocusHandle,
     busy: bool,
     error: Option<SharedString>,
     /// "Disconnect" waits for its second click.
@@ -38,7 +45,12 @@ impl EventEmitter<PilotDialogEvent> for PilotDialog {}
 
 impl PilotDialog {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let saved = pilot::load_config();
+        // read_config, not load_config: a broken file must open as itself,
+        // with Disconnect and why it can't be used.
+        let (saved, broken) = match pilot::read_config() {
+            Ok(saved) => (saved, None),
+            Err(e) => (None, Some(e)),
+        };
         let url = cx.new(|cx| {
             let mut input = TextInput::new("https://pilot.example.workers.dev", cx).mono();
             if let Some(s) = &saved {
@@ -46,26 +58,21 @@ impl PilotDialog {
             }
             input
         });
-        let token_hint = if saved.is_some() {
-            "Saved. Leave empty to keep it"
-        } else {
-            "The Worker's read token"
-        };
-        let token = cx.new(|cx| TextInput::new(token_hint, cx).mono().secret());
-        let admin_hint = if saved.as_ref().is_some_and(|s| s.admin_token.is_some()) {
-            "Saved. Leave empty to keep it"
-        } else {
-            "Optional: lets Arakun send pilot tasks"
-        };
-        let admin = cx.new(|cx| TextInput::new(admin_hint, cx).mono().secret());
+        let token = cx.new(|cx| TextInput::new("", cx).mono().secret());
+        let admin = cx.new(|cx| TextInput::new("", cx).mono().secret());
         let follow = |this: &mut Self,
                       input: &Entity<TextInput>,
                       ev: &InputEvent,
                       window: &mut Window,
                       cx: &mut Context<Self>| match ev {
             InputEvent::Submit => this.connect(cx),
-            // Tab: address, token, admin token, and round again.
+            // Tab: address, token, admin token, its remove button when
+            // there is one (then on through the dialog's buttons), and round.
             InputEvent::Complete => {
+                if *input == this.admin && this.saved_admin(cx) {
+                    window.focus(&this.drop_admin_focus, cx);
+                    return;
+                }
                 let next = if *input == this.url {
                     &this.token
                 } else if *input == this.token {
@@ -83,6 +90,9 @@ impl PilotDialog {
             InputEvent::Changed => {
                 this.error = None;
                 this.confirm_remove = false;
+                if *input == this.url {
+                    this.hints(cx);
+                }
                 cx.notify();
             }
             _ => {}
@@ -95,16 +105,59 @@ impl PilotDialog {
         // Connected: the token is what changes most; else start at the top.
         let first = if saved.is_some() { &token } else { &url };
         window.focus(&first.focus_handle(cx), cx);
-        Self {
+        let mut this = Self {
             saved,
+            broken: broken.is_some(),
+            drop_admin: false,
             url,
             token,
             admin,
+            drop_admin_focus: cx.focus_handle().tab_index(0).tab_stop(true),
             busy: false,
-            error: None,
+            error: broken.map(|e| format!("The saved settings can't be used: {e}.").into()),
             confirm_remove: false,
             _subs: subs,
-        }
+        };
+        this.hints(cx);
+        this
+    }
+
+    /// Whether a save keeps something running: the dialog stays until it ends.
+    pub fn busy(&self) -> bool {
+        self.busy
+    }
+
+    /// Whether the address typed is the saved one: only then do empty
+    /// token boxes keep the saved tokens, which never go to another host.
+    fn same_address(&self, cx: &App) -> bool {
+        let typed = self.url.read(cx).text().trim().trim_end_matches('/');
+        self.saved.as_ref().is_some_and(|s| s.url == typed)
+    }
+
+    fn saved_admin(&self, cx: &App) -> bool {
+        self.same_address(cx) && self.saved.as_ref().is_some_and(|s| s.admin_token.is_some())
+    }
+
+    /// The token boxes' hints for the address typed now.
+    fn hints(&mut self, cx: &mut Context<Self>) {
+        let same = self.same_address(cx);
+        let token = if same {
+            "Saved. Leave empty to keep it"
+        } else {
+            "The Worker's read token"
+        };
+        let had_admin = self.saved.as_ref().is_some_and(|s| s.admin_token.is_some());
+        let admin = if self.saved_admin(cx) && self.drop_admin {
+            "Removed when you save"
+        } else if self.saved_admin(cx) {
+            "Saved. Leave empty to keep it"
+        } else if had_admin {
+            "Type it again: the saved one stays with the old address"
+        } else {
+            "Optional: lets Arakun send pilot tasks"
+        };
+        self.token.update(cx, |i, cx| i.set_placeholder(token, cx));
+        self.admin.update(cx, |i, cx| i.set_placeholder(admin, cx));
     }
 
     fn draft(&self, cx: &App) -> Draft {
@@ -112,9 +165,24 @@ impl PilotDialog {
         Draft {
             url: self.url.read(cx).text().to_string(),
             token: self.token.read(cx).text().to_string(),
-            // Empty keeps the saved one; "Disconnect" is how it goes.
-            admin_token: (!admin.is_empty()).then_some(admin),
+            // Typed wins; else empty keeps the saved one, unless it was removed.
+            admin_token: if !admin.is_empty() {
+                Some(admin)
+            } else if self.drop_admin {
+                Some(String::new())
+            } else {
+                None
+            },
         }
+    }
+
+    fn toggle_drop_admin(&mut self, cx: &mut Context<Self>) {
+        if self.busy {
+            return;
+        }
+        self.drop_admin = !self.drop_admin;
+        self.hints(cx);
+        cx.notify();
     }
 
     fn connect(&mut self, cx: &mut Context<Self>) {
@@ -207,7 +275,8 @@ fn labeled(
 impl Render for PilotDialog {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let free = !self.busy;
-        let connected = self.saved.is_some();
+        let connected = self.saved.is_some() || self.broken;
+        let saved_admin = self.saved_admin(cx);
         let title = if connected {
             "arakun-pilot"
         } else {
@@ -242,11 +311,31 @@ impl Render for PilotDialog {
                         Some("https://, or http:// on localhost only: the tokens never cross a network unencrypted."),
                     ))
                     .child(labeled("Token", &self.token, None))
-                    .child(labeled(
-                        "Admin token",
-                        &self.admin,
-                        Some("Only for sending pilot tasks, from the palette or a pull request's sheet."),
-                    ))
+                    .child(
+                        labeled(
+                            "Admin token",
+                            &self.admin,
+                            Some("Only for sending pilot tasks, from the palette or a pull request's sheet."),
+                        )
+                        // The only way to drop the admin token and keep the rest.
+                        // A button, so Tab reaches it and Enter or Space press it.
+                        .when(saved_admin, |d| {
+                            let label = if self.drop_admin {
+                                "Keep the saved admin token"
+                            } else {
+                                "Remove the saved admin token"
+                            };
+                            d.child(
+                                div().flex().child(
+                                    ui::button("pilot-drop-admin", label, ButtonKind::Ghost, free)
+                                        .track_focus(&self.drop_admin_focus)
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.toggle_drop_admin(cx)
+                                        })),
+                                ),
+                            )
+                        }),
+                    )
                     .child(ui::text(
                         Type::Caption,
                         theme::text_faint(),

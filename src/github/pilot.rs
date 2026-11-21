@@ -775,7 +775,15 @@ fn status_line(
         ));
     }
     Some(match (problem, last_read) {
-        (Some(e), _) => (format!("Can't reach {host}: {e}"), true),
+        // Only a Worker that never answered is out of reach; one that
+        // refused the token or failed did answer.
+        (Some(e), _) => match e.strip_prefix("could not reach ") {
+            Some(rest) => {
+                let why = rest.split_once(": ").map_or(rest, |(_, why)| why);
+                (format!("Can't reach {host}: {why}"), true)
+            }
+            None => (format!("Can't read {host}: {e}"), true),
+        },
         (None, Some(t)) => {
             let ago = match now.saturating_sub(t) {
                 0..60 => "just now".to_string(),
@@ -1091,13 +1099,24 @@ mod tests {
         let (down, bad) = status_line(
             Some(&cfg),
             None,
-            Some("could not reach"),
+            Some("could not reach https://p.dev: timed out"),
             None,
             Some(1),
             100,
         )
         .unwrap();
-        assert!(bad && down.starts_with("Can't reach p.dev"));
+        assert!(bad, "{down}");
+        assert_eq!(down, "Can't reach p.dev: timed out");
+        let (refused, bad) = status_line(
+            Some(&cfg),
+            None,
+            Some(&status_problem(401)),
+            None,
+            Some(1),
+            100,
+        )
+        .unwrap();
+        assert!(bad && refused.starts_with("Can't read p.dev: the Worker refused the token"));
         let (ok, bad) = status_line(Some(&cfg), None, None, None, Some(1000), 1000 + 125).unwrap();
         assert!(!bad);
         assert_eq!(ok, "Connected to p.dev · read 2 min ago");

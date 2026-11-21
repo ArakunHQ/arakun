@@ -98,7 +98,7 @@ reviews:
     behavior across several files or views (new panels, menus, settings,
     shortcuts or background work) that stays out of the paths and kinds of
     change listed next. High or higher: any change to
-    src/phone (end-to-end encryption and its wire format), relay/, phone/, teams/ or src/arakun_teams/;
+    core/src/phone (end-to-end encryption and its wire format), relay/, phone/, teams/ or src/arakun_teams/;
     the headless agent sandbox, its policy and its broker (src/headless*);
     the control socket (src/control.rs); code that reads, stores or sends
     tokens and API keys (core/src/account.rs, core/src/fetch.rs, src/voice.rs,
@@ -186,7 +186,7 @@ reviews:
           as `res`, message kinds) anywhere in core/src/phone/ (e2e.rs, identity.rs,
           wire.rs, relay.rs and the rest), and neither phone/*.js nor
           phone/test/vectors/ changes in the same pull request. Fail the same
-          way the other way round: phone/*.js changes the format and src/phone
+          way the other way round: phone/*.js changes the format and core/src/phone
           does not. Pass when the change is a refactor with no change to bytes
           on the wire and the description says so, or when neither side
           changes the format.

@@ -217,7 +217,10 @@ impl Shell {
         }
         let needs_push = !s.published || s.ahead > 0;
         let path = env.path.clone();
-        let agent = env.agent;
+        let agent = crate::pr_writer::session_agent(
+            env.sessions.iter().map(|s| (s.agent, s.updated)),
+            env.agent,
+        );
         // Busy while the clone is read, so a second click opens nothing.
         if let Some(env) = self.find_env_mut(&path) {
             env.git_busy = Some(GitOp::PullRequest);
@@ -339,7 +342,10 @@ impl Shell {
         let branch = env.branch.clone();
         let files = env.changes.len();
         let staged = env.changes.iter().filter(|c| c.staged).count();
-        let agent = env.agent;
+        let agent = crate::pr_writer::session_agent(
+            env.sessions.iter().map(|s| (s.agent, s.updated)),
+            env.agent,
+        );
         let at = self.git_at(&path);
         let dialog = cx.new(|cx| CommitDialog::new(at, branch, files, staged, agent, window, cx));
         let sub = cx.subscribe_in(

@@ -53,8 +53,8 @@ pub struct Input {
     pub template: Option<String>,
 }
 
-/// The agent that writes for an environment whose sessions use `session`:
-/// that agent, when it can answer here. None when it can't, and then no agent
+/// The agent that writes for an environment whose session uses `session`
+/// ([`session_agent`]): that agent, when it can answer here. None when it can't, and then no agent
 /// writes: the user chose that provider for this code, and choosing one to
 /// name branches (Settings › Branches) is not consent to send it a diff.
 ///
@@ -67,11 +67,25 @@ pub fn writer(session: AgentKind, installed: impl Fn(AgentKind) -> bool) -> Opti
     installed(session).then_some(session)
 }
 
+/// The agent whose session the branch is from: that of the environment's
+/// session with the latest activity, given as (agent, last activity), since
+/// "Continue with" moves a session to another agent without changing `next`.
+/// `next`, the agent for the environment's next session, when it has none.
+pub fn session_agent(
+    sessions: impl IntoIterator<Item = (AgentKind, u64)>,
+    next: AgentKind,
+) -> AgentKind {
+    sessions
+        .into_iter()
+        .max_by_key(|(_, updated)| *updated)
+        .map_or(next, |(agent, _)| agent)
+}
+
 /// What a dialog says when [`writer`] found none, so nobody wonders why
 /// another agent isn't asked instead.
 pub fn no_writer(session: AgentKind) -> String {
     format!(
-        "{}, this environment's agent, isn't set up here, and the diff goes to no other agent.",
+        "{}, the agent of this environment's session, isn't set up here, and the diff goes to no other agent.",
         session.label()
     )
 }
@@ -380,6 +394,21 @@ mod tests {
         }
         assert_eq!(model(AgentKind::Claude), "sonnet");
         assert_eq!(model(AgentKind::Codex), "");
+    }
+
+    #[test]
+    fn the_latest_session_names_the_agent() {
+        // Handed over to Codex: its session is the latest, whatever the
+        // environment's next session would use.
+        let sessions = [(AgentKind::Claude, 10), (AgentKind::Codex, 20)];
+        assert_eq!(session_agent(sessions, AgentKind::Claude), AgentKind::Codex);
+        assert_eq!(
+            writer(session_agent(sessions, AgentKind::Claude), |a| a
+                == AgentKind::Claude),
+            None
+        );
+        // No session yet: the agent its next one would use.
+        assert_eq!(session_agent([], AgentKind::Droid), AgentKind::Droid);
     }
 
     #[test]

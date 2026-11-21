@@ -153,10 +153,14 @@ fi
 
 # --- Rust ---
 say "Rust"
-# A shell that started before rustup was installed does not have it on PATH yet.
+# A shell that started before rustup was installed, or one that does not read the
+# profile, does not have it on PATH yet.
 cargo_bin=${CARGO_HOME:-$HOME/.cargo}/bin
-case :$PATH: in *:"$cargo_bin":*) ;; *) [ -d "$cargo_bin" ] && PATH=$cargo_bin:$PATH ;; esac
-installed_rustup=0
+added_cargo_bin=0
+case :$PATH: in
+  *:"$cargo_bin":*) ;;
+  *) [ -d "$cargo_bin" ] && PATH=$cargo_bin:$PATH && added_cargo_bin=1 ;;
+esac
 if command -v rustup >/dev/null; then
   # From /, so rust-toolchain.toml does not apply: this is the default toolchain.
   ok "rustup ($(cd / && RUSTUP_AUTO_INSTALL=0 rustc --version 2>/dev/null || echo 'no default toolchain'))"
@@ -173,8 +177,8 @@ elif [ $check = 1 ]; then
 elif ask "install Rust with rustup (https://rustup.rs) into ~/.cargo?"; then
   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs |
     sh -s -- -y --no-modify-path --profile minimal --default-toolchain stable --component clippy
-  PATH=$cargo_bin:$PATH
-  installed_rustup=1
+  [ $added_cargo_bin = 1 ] || PATH=$cargo_bin:$PATH
+  added_cargo_bin=1
 else
   say "skipped; the build needs Rust" >&2
   exit 1
@@ -204,9 +208,10 @@ if [ $rust_missing = 1 ] && [ $check = 0 ]; then
   fi
 fi
 
-if [ $installed_rustup = 1 ]; then
+if [ $added_cargo_bin = 1 ]; then
   # Claude Code's SessionStart hook: later commands in the session get the new PATH.
-  if [ -n "${CLAUDE_ENV_FILE:-}" ]; then
+  # --check only reports, so it leaves the file alone.
+  if [ $check = 0 ] && [ -n "${CLAUDE_ENV_FILE:-}" ]; then
     echo "export PATH=\"$cargo_bin:\$PATH\"" >> "$CLAUDE_ENV_FILE"
   else
     say "add $cargo_bin to PATH (or open a new shell after: . \"${CARGO_HOME:-$HOME/.cargo}/env\")"

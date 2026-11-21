@@ -15,6 +15,9 @@ pub mod cli;
 pub mod raster;
 pub mod scenes;
 pub mod script;
+// TEMP: the Isometric tab lists these in the next commit.
+#[allow(dead_code)]
+pub mod starters;
 pub mod svg;
 pub mod text;
 
@@ -737,10 +740,6 @@ impl Node {
     }
     pub fn ink(mut self, ink: Ink) -> Self {
         self.ink = Some(ink);
-        self
-    }
-    pub fn no_ink(mut self) -> Self {
-        self.ink = None;
         self
     }
     pub fn dashed(mut self) -> Self {

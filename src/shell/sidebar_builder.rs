@@ -53,7 +53,19 @@ pub(super) struct Builder {
     pub flash: Option<SharedString>,
     /// The item or segment being dragged, to dim where it was.
     pub lifted: Option<BuilderSel>,
+    /// What a right-click on the rail just took out, for the rail to say
+    /// so and offer the way back, and a count that tells one such note
+    /// from the next.
+    pub removed: Option<(SharedString, u64)>,
+    /// The pointer is on that note: it stays, so Undo is not taken away
+    /// from under a click.
+    pub removed_hovered: bool,
 }
+
+/// How long the rail offers to undo what a right-click took out.
+const REMOVED_NOTE: std::time::Duration = std::time::Duration::from_secs(10);
+/// How long it stays once the pointer that held it there has left.
+const REMOVED_NOTE_HOVERED: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// A piece lifted from the palette (`from: None`) or from its place.
 #[derive(Clone)]
@@ -127,6 +139,7 @@ pub(super) struct History {
     /// Text is being typed into a field: its first key made the undo step,
     /// the keys after it join that step.
     typing: Option<Field>,
+    recorded: u64,
 }
 
 impl History {
@@ -138,6 +151,12 @@ impl History {
         !self.redo.is_empty()
     }
 
+    /// How many steps were recorded, as a mark to tell whether a change
+    /// made one. Not the length of `undo`, which stops growing when full.
+    fn steps(&self) -> u64 {
+        self.recorded
+    }
+
     /// A change was made to `before`: one step to undo.
     fn record(&mut self, before: Sidebar) {
         self.undo.push(before);
@@ -146,6 +165,7 @@ impl History {
         }
         self.redo.clear();
         self.typing = None;
+        self.recorded += 1;
     }
 
     /// A key was typed into `field` of `before`. A whole burst of typing
@@ -206,6 +226,8 @@ impl Shell {
         f(&mut self.sidebar);
         if self.sidebar != before {
             self.builder.history.record(before);
+            // Undo no longer brings back what the rail's note is about.
+            self.builder.removed = None;
             self.sidebar.save();
         }
         // A selection can point past what is left.
@@ -238,11 +260,55 @@ impl Shell {
     pub(super) fn undo_sidebar(&mut self, redo: bool, cx: &mut Context<Self>) {
         if let Some(prev) = self.builder.history.step(redo, &self.sidebar) {
             self.sidebar = prev;
+            self.builder.removed = None;
             self.sidebar.save();
             self.builder.sel = None;
             self.builder.inputs = None;
             cx.notify();
         }
+    }
+
+    /// A change made by a right-click on the rail, outside Customize, that
+    /// takes something out. Undo lives in Customize, out of sight from here,
+    /// so the rail says what went and offers it back for a while.
+    pub(super) fn remove_from_rail(
+        &mut self,
+        what: impl FnOnce(&Sidebar) -> Option<String>,
+        cx: &mut Context<Self>,
+        f: impl FnOnce(&mut Sidebar),
+    ) {
+        let what = what(&self.sidebar);
+        let before = self.builder.history.steps();
+        self.change_sidebar(cx, f);
+        let (Some(what), true) = (what, self.builder.history.steps() != before) else {
+            return;
+        };
+        let id = self.builder.removed.as_ref().map_or(0, |(_, id)| id + 1);
+        self.builder.removed = Some((what.into(), id));
+        self.builder.removed_hovered = false;
+        cx.spawn(async move |this, cx| {
+            let mut wait = REMOVED_NOTE;
+            loop {
+                cx.background_executor().timer(wait).await;
+                let stays = this.update(cx, |this, cx| {
+                    if this.builder.removed.as_ref().is_none_or(|(_, i)| *i != id) {
+                        return false;
+                    }
+                    if this.builder.removed_hovered {
+                        return true;
+                    }
+                    this.builder.removed = None;
+                    cx.notify();
+                    false
+                });
+                if !stays.unwrap_or(false) {
+                    break;
+                }
+                // Looked at again soon after the pointer may have left.
+                wait = REMOVED_NOTE_HOVERED;
+            }
+        })
+        .detach();
     }
 
     pub(super) fn select_builder(

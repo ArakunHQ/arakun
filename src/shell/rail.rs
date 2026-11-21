@@ -549,6 +549,10 @@ impl Shell {
                     .children(self.render_rail_sections(cx)),
             )
             .pb(crate::ui::sp(4.))
+            .relative()
+            .when(!narrow && !self.arranging(), |d| {
+                d.children(self.render_removed_note(cx))
+            })
     }
 
     /// Offers the Switcher to someone whose layout predates it, once: "Try it"
@@ -620,6 +624,53 @@ impl Shell {
                         ),
                 )
                 .child(div().flex().gap(crate::ui::sp(6.)).child(yes).child(no)),
+        )
+    }
+
+    /// What a right-click just took out of the rail, with the way back.
+    /// It goes on its own after a while, unless the pointer is on it, or at
+    /// the next change. It lies over
+    /// the foot of the rail: in the list, the rows would jump when it goes
+    /// and a late click on Undo would land on one of them.
+    fn render_removed_note(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let (what, _) = self.builder.removed.clone()?;
+        Some(
+            div()
+                .id("rail-removed")
+                // It stays while the pointer is on it.
+                .on_hover(cx.listener(|this, hovered: &bool, _, _| {
+                    this.builder.removed_hovered = *hovered;
+                }))
+                .flex()
+                .absolute()
+                .left(crate::ui::sp(8.))
+                .right(crate::ui::sp(8.))
+                .bottom(crate::ui::sp(8.))
+                .items_center()
+                .gap(crate::ui::sp(6.))
+                .pl(crate::ui::sp(10.))
+                .pr(crate::ui::sp(4.))
+                .py(crate::ui::sp(4.))
+                .rounded(crate::ui::rad(8.))
+                .border_1()
+                .border_color(theme::border())
+                .bg(theme::dialog())
+                .shadow_lg()
+                .occlude()
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_size(px(ui::TEXT_SM))
+                        .text_color(theme::text_muted())
+                        .child(what),
+                )
+                .child(
+                    ui::button("rail-removed-undo", "Undo", ui::ButtonKind::Ghost, true)
+                        .on_click(cx.listener(|this, _, _, cx| this.undo_sidebar(false, cx))),
+                )
+                .into_any_element(),
         )
     }
 

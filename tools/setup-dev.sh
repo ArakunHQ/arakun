@@ -210,7 +210,8 @@ fi
 
 if [ $added_cargo_bin = 1 ]; then
   # Claude Code's SessionStart hook: later commands in the session get the new PATH.
-  if [ -n "${CLAUDE_ENV_FILE:-}" ]; then
+  # --check only reports, so it leaves the file alone.
+  if [ $check = 0 ] && [ -n "${CLAUDE_ENV_FILE:-}" ]; then
     echo "export PATH=\"$cargo_bin:\$PATH\"" >> "$CLAUDE_ENV_FILE"
   else
     say "add $cargo_bin to PATH (or open a new shell after: . \"${CARGO_HOME:-$HOME/.cargo}/env\")"

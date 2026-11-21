@@ -145,6 +145,15 @@ pub(super) fn avatar(name: &str, size: f32) -> gpui::Div {
         .child(letter)
 }
 
+/// What the rail says when a segment went: "Tools removed", or "Segment
+/// removed" for one with no name. Short, to fit beside Undo in a narrow rail.
+fn section_gone(section: &Section, how: &str) -> String {
+    match section.title.trim() {
+        "" => format!("Segment {how}"),
+        title => format!("{title} {how}"),
+    }
+}
+
 impl Shell {
     /// Narrowed to icons: the rail's collapse is Icons and it is closed.
     pub(super) fn rail_narrow(&self) -> bool {
@@ -334,9 +343,13 @@ impl Shell {
 
     pub(super) fn hide_rail_item(&mut self, path: crate::sidebar::Path, cx: &mut Context<Self>) {
         self.menu = None;
-        self.edit_sidebar(cx, |s| {
-            s.remove(path);
-        });
+        self.remove_from_rail(
+            |s| s.get(path).map(|i| format!("{} hidden", i.name())),
+            cx,
+            |s| {
+                s.remove(path);
+            },
+        );
     }
 
     // ── Drawing ─────────────────────────────────────────────────────────
@@ -1188,9 +1201,13 @@ impl Shell {
                     ui::menu_item("rsm-ungroup", "ungroup-items", "Ungroup", false, true).on_click(
                         cx.listener(move |this, _, _, cx| {
                             this.menu = None;
-                            this.edit_sidebar(cx, |sb| {
-                                sb.ungroup_section(s);
-                            })
+                            this.remove_from_rail(
+                                |sb| Some(section_gone(sb.sections.get(s)?, "ungrouped")),
+                                cx,
+                                |sb| {
+                                    sb.ungroup_section(s);
+                                },
+                            )
                         }),
                     ),
                 )
@@ -1199,9 +1216,13 @@ impl Shell {
                 ui::menu_item("rsm-hide", "view-off", "Remove segment", true, true).on_click(
                     cx.listener(move |this, _, _, cx| {
                         this.menu = None;
-                        this.edit_sidebar(cx, |sb| {
-                            sb.remove_section(s);
-                        })
+                        this.remove_from_rail(
+                            |sb| Some(section_gone(sb.sections.get(s)?, "removed")),
+                            cx,
+                            |sb| {
+                                sb.remove_section(s);
+                            },
+                        )
                     }),
                 ),
             )
@@ -1226,6 +1247,14 @@ impl Shell {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_segment_that_went_is_called_by_its_title() {
+        let mut s = Section::new("Tools", Mode::Scroll, vec![]);
+        assert_eq!(section_gone(&s, "removed"), "Tools removed");
+        s.title = " ".into();
+        assert_eq!(section_gone(&s, "ungrouped"), "Segment ungrouped");
+    }
 
     #[test]
     fn the_inbox_count_stops_at_nine() {

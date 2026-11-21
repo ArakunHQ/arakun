@@ -80,15 +80,20 @@ fn hsla(c: Rgb, alpha: f32) -> Hsla {
 enum Entry {
     Builtin(&'static scenes::Scene),
     Script(ScriptScene),
-    Starter(&'static Starter, ScriptScene),
-    Broken { path: PathBuf, error: String },
+    /// Compiled and measured once per tab (`starter_cache`), not per reload.
+    Starter(&'static Starter, Rc<ScriptScene>, Rect),
+    Broken {
+        path: PathBuf,
+        error: String,
+    },
 }
 
 impl Entry {
     /// The compiled script behind a project or starter scene.
     fn script(&self) -> Option<&ScriptScene> {
         match self {
-            Entry::Script(s) | Entry::Starter(_, s) => Some(s),
+            Entry::Script(s) => Some(s),
+            Entry::Starter(_, s, _) => Some(s),
             _ => None,
         }
     }
@@ -96,7 +101,9 @@ impl Entry {
     fn name(&self) -> String {
         match self {
             Entry::Builtin(s) => s.name.into(),
-            Entry::Script(s) | Entry::Starter(_, s) => s.meta.name.clone(),
+            Entry::Script(_) | Entry::Starter(..) => self
+                .script()
+                .map_or_else(String::new, |s| s.meta.name.clone()),
             Entry::Broken { path, .. } => path
                 .file_stem()
                 .unwrap_or_default()
@@ -108,7 +115,9 @@ impl Entry {
     fn about(&self) -> String {
         match self {
             Entry::Builtin(s) => s.about.into(),
-            Entry::Script(s) | Entry::Starter(_, s) => s.meta.about.clone(),
+            Entry::Script(_) | Entry::Starter(..) => self
+                .script()
+                .map_or_else(String::new, |s| s.meta.about.clone()),
             Entry::Broken { .. } => String::new(),
         }
     }
@@ -116,7 +125,7 @@ impl Entry {
     fn seconds(&self) -> f32 {
         match self {
             Entry::Builtin(s) => s.seconds,
-            Entry::Script(s) | Entry::Starter(_, s) => s.meta.seconds,
+            Entry::Script(_) | Entry::Starter(..) => self.script().map_or(1., |s| s.meta.seconds),
             Entry::Broken { .. } => 1.,
         }
     }
@@ -152,13 +161,22 @@ impl Entry {
     fn nodes(&self, t: f32, tau: f32) -> Result<Vec<Node>, String> {
         match self {
             Entry::Builtin(s) => Ok((s.build)(t)),
-            Entry::Script(s) | Entry::Starter(_, s) => s.frame_at(t, tau),
+            Entry::Script(s) => s.frame_at(t, tau),
+            Entry::Starter(_, s, _) => s.frame_at(t, tau),
             Entry::Broken { error, .. } => Err(error.clone()),
         }
     }
 
     /// The bounds over the whole loop, so the fit holds still.
     fn extent(&self) -> Rect {
+        match self {
+            Entry::Starter(_, _, ext) => *ext,
+            _ => self.measure(),
+        }
+    }
+
+    /// Runs the loop to find its bounds.
+    fn measure(&self) -> Rect {
         iso::rest_bounds((0..=48).filter_map(|i| {
             let t = i as f32 / 48.;
             self.nodes(t, t * self.seconds()).ok()
@@ -220,6 +238,9 @@ pub struct IsoView {
     /// Why the last request could not be sent.
     ask_error: Option<String>,
     exporting: Exporting,
+    /// The starters, compiled and measured once: they never change while
+    /// Arakun runs, and every save in `iso/` reloads the list.
+    starters: Vec<CachedStarter>,
     _watch: gpui::Task<()>,
 }
 
@@ -280,6 +301,7 @@ impl IsoView {
             pending: Vec::new(),
             ask_error: None,
             exporting: Exporting::Idle,
+            starters: starter_cache(),
             _watch: watch,
         };
         view.reload();
@@ -316,11 +338,7 @@ impl IsoView {
                 });
             }
         }
-        // Compiled once: a starter never changes while Arakun runs.
-        let starters = starters::ALL
-            .iter()
-            .filter_map(|st| starters::load(st).ok().map(|s| Entry::Starter(st, s)))
-            .collect();
+        let starters = starter_entries(&self.starters);
         let builtins = scenes::ALL.iter().map(Entry::Builtin).collect();
         // A script of the same name replaces the starter or built-in scene.
         let entries = order(scripts, starters, builtins);
@@ -423,7 +441,7 @@ impl IsoView {
                 copied_from: None,
             }),
             // Never edited where it ships: the project gets its own copy.
-            Some(Entry::Starter(st, s)) => {
+            Some(Entry::Starter(st, s, _)) => {
                 mkdir()?;
                 let name = s.meta.name.clone();
                 let path = ask::free_path_except(&dir, &ask::slug(&name), &self.pending);
@@ -514,7 +532,7 @@ impl IsoView {
         };
         let source = match entry {
             Entry::Builtin(s) => Source::Builtin(s),
-            Entry::Starter(st, _) => Source::Starter(st),
+            Entry::Starter(st, ..) => Source::Starter(st),
             Entry::Script(s) => Source::File(s.path.clone()),
             Entry::Broken { .. } => return,
         };
@@ -525,7 +543,6 @@ impl IsoView {
             source,
             name: entry.name(),
             seconds: entry.seconds(),
-            extent: self.extents[self.scene],
             palette,
             t: self.t,
             tau: self.tau,
@@ -1160,7 +1177,6 @@ struct Job {
     source: Source,
     name: String,
     seconds: f32,
-    extent: Rect,
     palette: Palette,
     t: f32,
     tau: f32,
@@ -1180,7 +1196,10 @@ impl Job {
             (Source::Builtin(b), None) => Ok((b.build)(t)),
             _ => Err("no scene".into()),
         };
-        let (ext, pal) = (self.extent, &self.palette);
+        // Measured again rather than taken from the tab, whose fallback box
+        // would let a scene that draws nothing export a blank file.
+        let ext = iso::export::extent(&frame, self.seconds)?;
+        let pal = &self.palette;
         match self.kind {
             Kind::Png => iso::export::png(&frame, ext, self.t, self.tau, pal, 1600),
             Kind::Svg => iso::export::svg(&self.name, &frame, ext, self.t, self.tau, pal)
@@ -1201,11 +1220,36 @@ enum Exporting {
     Failed(String, Instant),
 }
 
-/// Project scripts, then starters, then the Rust scenes; a later scene
-/// with the name of an earlier one is left out.
+/// A starter with its compiled scene and the box it fills.
+type CachedStarter = (&'static Starter, Rc<ScriptScene>, Rect);
+
+/// Compiles and measures every starter that loads.
+fn starter_cache() -> Vec<CachedStarter> {
+    starters::ALL
+        .iter()
+        .filter_map(|st| {
+            let s = Rc::new(starters::load(st).ok()?);
+            let ext = Entry::Starter(st, s.clone(), [0.; 4]).measure();
+            Some((st, s, ext))
+        })
+        .collect()
+}
+
+/// The list entries of the cached starters, sharing their compiled scenes.
+fn starter_entries(cache: &[CachedStarter]) -> Vec<Entry> {
+    cache
+        .iter()
+        .map(|(st, s, ext)| Entry::Starter(st, s.clone(), *ext))
+        .collect()
+}
+
+/// Project scripts, then starters, then the Rust scenes. Every project
+/// script stays, even two of one name, so a file an agent just wrote always
+/// shows; a starter or Rust scene with the name of an earlier scene is left
+/// out.
 fn order(scripts: Vec<Entry>, starters: Vec<Entry>, builtins: Vec<Entry>) -> Vec<Entry> {
-    let mut out: Vec<Entry> = Vec::new();
-    for e in scripts.into_iter().chain(starters).chain(builtins) {
+    let mut out = scripts;
+    for e in starters.into_iter().chain(builtins) {
         let name = e.name();
         if !out.iter().any(|o| o.name() == name) {
             out.push(e);
@@ -1248,6 +1292,33 @@ mod tests {
     }
 
     #[test]
+    fn order_keeps_every_project_script() {
+        let names: Vec<String> = order(
+            vec![broken("x/a.rhai"), broken("y/a.rhai")],
+            vec![broken("s/a.rhai")],
+            vec![],
+        )
+        .iter()
+        .map(|e| e.path().unwrap().display().to_string())
+        .collect();
+        assert_eq!(names, ["x/a.rhai", "y/a.rhai"]);
+    }
+
+    #[test]
+    fn starter_entries_reuse_the_cache() {
+        let cache = starter_cache();
+        assert_eq!(cache.len(), starters::ALL.len());
+        let entries = starter_entries(&cache);
+        for (e, c) in entries.iter().zip(&cache) {
+            let Entry::Starter(_, s, ext) = e else {
+                panic!("not a starter")
+            };
+            assert!(Rc::ptr_eq(s, &c.1));
+            assert_eq!(e.extent(), *ext);
+        }
+    }
+
+    #[test]
     fn export_names() {
         assert_eq!(
             export_name("EC2 instances", Kind::Loop),
@@ -1260,14 +1331,11 @@ mod tests {
     #[test]
     fn export_job_writes_each_kind() {
         let st = &starters::ALL[1];
-        let scene = starters::load(st).unwrap();
-        let extent = Entry::Starter(st, scene).extent();
         let job = |kind| Job {
             kind,
             source: Source::Starter(st),
             name: "CPU".into(),
             seconds: 5.,
-            extent,
             palette: Look::Paper.palette(),
             t: 0.3,
             tau: 1.5,
@@ -1285,6 +1353,28 @@ mod tests {
             ..job(Kind::Svg)
         };
         assert!(rust.run().is_ok());
+    }
+
+    #[test]
+    fn export_of_an_empty_scene_fails() {
+        let dir = std::env::temp_dir().join(format!("arakun-iso-empty-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("empty.rhai");
+        std::fs::write(&path, "[]").unwrap();
+        assert!(ScriptScene::load(&path).is_ok());
+        for kind in [Kind::Png, Kind::Svg, Kind::Loop] {
+            let job = Job {
+                kind,
+                source: Source::File(path.clone()),
+                name: "empty".into(),
+                seconds: 1.,
+                palette: Look::Paper.palette(),
+                t: 0.,
+                tau: 0.,
+            };
+            assert!(job.run().is_err());
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

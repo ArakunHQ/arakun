@@ -15,8 +15,9 @@
 #                        so keep that line as it is.
 #                        It also installs what the server runs agents with, unless
 #                        --no-tools: git and gh with the package manager (as root or
-#                        with sudo that needs no password), and Node.js from nodejs.org
-#                        in ${XDG_DATA_HOME:-~/.local/share}/arakun/node.
+#                        with sudo that needs no password), Node.js from nodejs.org
+#                        in ${XDG_DATA_HOME:-~/.local/share}/arakun/node, and Claude
+#                        Code with its own installer in ~/.local/bin/claude.
 # --nightly:             the newest nightly build of main instead of the latest release.
 # ARAKUN_VERSION pins a release, like --version (`nightly` is --nightly).
 # Windows: tools/install-release.ps1.
@@ -275,6 +276,36 @@ server_tools() {
     fi
   done
   if [ -d "$node_dir" ]; then uninstall="$uninstall \"$node_dir\""; fi
+  install_claude
+}
+
+# Installs Claude Code with Anthropic's native installer, which puts `claude` in
+# $bindir. The server needs it signed in before a session can start, and the
+# copy the adapter bundles is not on PATH. `npm install -g` would put it in
+# $node_dir/bin, which is not on PATH either.
+install_claude() {
+  if PATH="$bindir:$PATH" command -v claude >/dev/null; then return 0; fi
+  claude_cmd='curl -fsSL https://claude.ai/install.sh | bash'
+  if ! command -v bash >/dev/null; then
+    say "warning: Claude Code's installer needs bash; install bash, then run: $claude_cmd"
+    return 0
+  fi
+  # A data folder left by an earlier Claude install is the user's; the
+  # uninstall line must not delete it.
+  claude_data="${XDG_DATA_HOME:-$HOME/.local/share}/claude"
+  claude_data_new=1
+  if [ -e "$claude_data" ]; then claude_data_new=; fi
+  say "installing Claude Code"
+  curl -fsSL -o "$tmp/claude-install.sh" https://claude.ai/install.sh &&
+    bash "$tmp/claude-install.sh" >/dev/null || true
+  if [ -x "$bindir/claude" ]; then
+    say "installed Claude Code in $bindir; sign in with 'claude' before the first session"
+    uninstall="$uninstall ~/.local/bin/claude"
+    if [ -n "$claude_data_new" ]; then uninstall="$uninstall \"$claude_data\""; fi
+  else
+    say "warning: could not install Claude Code; run this, then sign in with 'claude':"
+    printf '\n  %s\n\n' "$claude_cmd"
+  fi
 }
 
 main() {
@@ -296,8 +327,8 @@ main() {
         # Not read from $0: under `curl | sh` there is no file.
         echo "usage: install-release.sh [--server [--no-tools]] [--nightly | --version vX.Y.Z]   (or ARAKUN_VERSION=vX.Y.Z)"
         echo "  --server    install arakun-server (Linux), the server without the window,"
-        echo "              and what it runs agents with: git, gh and Node.js $node_major"
-        echo "  --no-tools  with --server: leave git, gh and Node.js to you"
+        echo "              and what it runs agents with: git, gh, Node.js $node_major and Claude Code"
+        echo "  --no-tools  with --server: leave git, gh, Node.js and Claude Code to you"
         echo "  --nightly   install the newest nightly build of main (it can break)"
         return 0
         ;;

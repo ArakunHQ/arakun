@@ -151,7 +151,7 @@ fn print_entries(entries: &[Entry], printed: &mut Vec<String>) {
                 "[plan] {}",
                 entries
                     .iter()
-                    .map(|p| format!("{}:{}", p.status, p.content))
+                    .map(|p| format!("{:?}:{}", p.status, p.content))
                     .collect::<Vec<_>>()
                     .join(" | ")
             ),

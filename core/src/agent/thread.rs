@@ -242,8 +242,34 @@ pub struct PlanEntry {
     pub content: String,
     #[serde(default)]
     pub priority: String,
-    /// pending, in_progress or completed.
-    pub status: String,
+    pub status: PlanStatus,
+}
+
+/// Where a plan entry stands. Stored in transcripts and sent by agents as
+/// snake_case strings.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanStatus {
+    Pending,
+    InProgress,
+    Completed,
+    /// A status this version does not know; shown like `Pending`.
+    #[serde(other)]
+    Unknown,
+}
+
+impl PlanStatus {
+    /// Reads a status the agent wrote as plain text, like Droid's
+    /// "[in_progress] Do x".
+    pub fn parse(s: &str) -> Self {
+        parse_snake(s).unwrap_or(Self::Unknown)
+    }
+}
+
+/// A snake_case string as one of the enums above, through their serde names
+/// so the names live in one place.
+fn parse_snake<T: serde::de::DeserializeOwned>(s: &str) -> Option<T> {
+    serde_json::from_value(Value::from(s)).ok()
 }
 
 /// How a notice from arakun shows besides its text.
@@ -391,25 +417,57 @@ pub struct Usage {
 /// A claude.ai plan window (5 hours, a week) as a `rate_limit_event` reports it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PlanLimit {
-    /// five_hour, seven_day, seven_day_opus, seven_day_sonnet, overage, ...
-    pub window: String,
-    /// allowed, allowed_warning or rejected.
-    pub status: String,
+    pub window: LimitWindow,
+    pub status: LimitStatus,
     pub used_percent: Option<u64>,
     /// Unix seconds.
     pub resets_at: Option<u64>,
 }
 
+/// Which plan window a [`PlanLimit`] is about (`rateLimitType`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LimitWindow {
+    FiveHour,
+    SevenDay,
+    SevenDayOpus,
+    SevenDaySonnet,
+    Overage,
+    SevenDayOverageIncluded,
+    #[serde(other)]
+    Unknown,
+}
+
+/// How close a [`PlanLimit`] is (`status`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LimitStatus {
+    Allowed,
+    AllowedWarning,
+    Rejected,
+    #[serde(other)]
+    Unknown,
+}
+
+impl LimitStatus {
+    pub fn parse(s: &str) -> Self {
+        parse_snake(s).unwrap_or(Self::Unknown)
+    }
+}
+
 impl PlanLimit {
     fn from_json(v: &Value) -> Option<Self> {
-        let status = str_of(v, "status")?;
+        let status = LimitStatus::parse(v["status"].as_str()?);
         // Claude Code reports a fraction; the /usage endpoint a percentage.
         let used_percent = v["utilization"]
             .as_f64()
             .filter(|u| u.is_finite() && *u >= 0.)
             .map(|u| if u <= 1. { u * 100. } else { u }.round() as u64);
         Some(PlanLimit {
-            window: str_of(v, "rateLimitType").unwrap_or_else(|| "five_hour".into()),
+            window: v["rateLimitType"]
+                .as_str()
+                .and_then(parse_snake)
+                .unwrap_or(LimitWindow::FiveHour),
             status,
             used_percent,
             resets_at: v["resetsAt"].as_f64().filter(|t| *t > 0.).map(|t| t as u64),
@@ -417,20 +475,20 @@ impl PlanLimit {
     }
 
     fn window_label(&self) -> &str {
-        match self.window.as_str() {
-            "five_hour" => "5h limit",
-            "seven_day" => "weekly limit",
-            "seven_day_opus" => "Opus weekly limit",
-            "seven_day_sonnet" => "Sonnet weekly limit",
-            "overage" | "seven_day_overage_included" => "extra usage",
-            _ => "plan limit",
+        match self.window {
+            LimitWindow::FiveHour => "5h limit",
+            LimitWindow::SevenDay => "weekly limit",
+            LimitWindow::SevenDayOpus => "Opus weekly limit",
+            LimitWindow::SevenDaySonnet => "Sonnet weekly limit",
+            LimitWindow::Overage | LimitWindow::SevenDayOverageIncluded => "extra usage",
+            LimitWindow::Unknown => "plan limit",
         }
     }
 
     /// "5h limit 82%", "5h limit reached · resets 15:40"; None while nothing is near.
     pub fn label(&self) -> Option<String> {
         let name = self.window_label();
-        if self.status == "rejected" {
+        if self.status == LimitStatus::Rejected {
             let reset = self
                 .resets_at
                 .and_then(crate::platform::local_time)
@@ -440,7 +498,7 @@ impl PlanLimit {
         }
         match self.used_percent {
             Some(p) => Some(format!("{name} {p}%")),
-            None if self.status == "allowed_warning" => Some(format!("{name} near")),
+            None if self.status == LimitStatus::AllowedWarning => Some(format!("{name} near")),
             None => None,
         }
     }
@@ -4623,9 +4681,46 @@ mod tests {
         let l = PlanLimit::from_json(&json!({"status": "rejected", "rateLimitType": "seven_day"}))
             .unwrap();
         assert_eq!(l.label().as_deref(), Some("weekly limit reached"));
+        // A window or status this version does not know still reads.
+        let l = PlanLimit::from_json(&json!({"status": "blocked", "rateLimitType": "monthly"}))
+            .unwrap();
+        assert_eq!(
+            (l.window, l.status),
+            (LimitWindow::Unknown, LimitStatus::Unknown)
+        );
+        assert_eq!(l.label(), None);
+        let l =
+            PlanLimit::from_json(&json!({"status": "allowed_warning", "rateLimitType": "monthly"}))
+                .unwrap();
+        assert_eq!(l.label().as_deref(), Some("plan limit near"));
         assert_eq!(fmt_cost(0.4249, "USD", true), "≈ $0.42");
         assert_eq!(fmt_cost(0.004, "USD", false), "<$0.01");
         assert_eq!(fmt_cost(1.2, "EUR", false), "1.20 EUR");
+    }
+    #[test]
+    fn plan_statuses_keep_their_stored_names() {
+        let entries: Vec<PlanEntry> = serde_json::from_value(json!([
+            {"content": "a", "status": "pending"},
+            {"content": "b", "status": "in_progress"},
+            {"content": "c", "status": "completed"},
+            // A status from a newer agent keeps the rest of the plan.
+            {"content": "d", "status": "cancelled"},
+        ]))
+        .unwrap();
+        let statuses: Vec<_> = entries.iter().map(|e| e.status).collect();
+        assert_eq!(
+            statuses,
+            [
+                PlanStatus::Pending,
+                PlanStatus::InProgress,
+                PlanStatus::Completed,
+                PlanStatus::Unknown
+            ]
+        );
+        let back = serde_json::to_value(&entries[..3]).unwrap();
+        assert_eq!(back[1]["status"], "in_progress");
+        assert_eq!(PlanStatus::parse("completed"), PlanStatus::Completed);
+        assert_eq!(PlanStatus::parse("done"), PlanStatus::Unknown);
     }
     #[test]
     fn words_api_retries() {

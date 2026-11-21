@@ -30,7 +30,7 @@ use super::selection::{SelText, TextMap};
 use super::shell_diff::ShellChange;
 use super::thread::{
     AskUserRequest, CheckAnswer, Entry, NoticeMark, NoticePlace, PermissionRequest, PlanEntry,
-    RewindPlan, Thread, ThreadEvent, ThreadStatus, ToolCall, ToolContent, ToolStatus,
+    PlanStatus, RewindPlan, Thread, ThreadEvent, ThreadStatus, ToolCall, ToolContent, ToolStatus,
 };
 use super::{AgentKind, launch};
 use crate::highlight::LineSpans;

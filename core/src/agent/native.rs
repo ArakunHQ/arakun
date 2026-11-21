@@ -22,8 +22,8 @@ use serde_json::{Value, json};
 use super::super::attach;
 use super::super::rpc::{Connection, RpcError};
 use super::{
-    Entry, FailedAt, PermissionOption, PermissionRequest, PlanEntry, SessionMeta, Thread,
-    ThreadEvent, ThreadStatus, ToolCall, ToolContent, ToolStatus, recount, str_of,
+    Entry, FailedAt, PermissionOption, PermissionRequest, PlanEntry, PlanStatus, SessionMeta,
+    Thread, ThreadEvent, ThreadStatus, ToolCall, ToolContent, ToolStatus, recount, str_of,
 };
 
 /// Which protocol a [`Thread`] speaks.
@@ -592,8 +592,8 @@ fn parse_todos(input: &Value) -> Vec<PlanEntry> {
                 let rest = rest.strip_prefix("- ").unwrap_or(rest);
                 let (status, content) = match rest.strip_prefix('[').and_then(|r| r.split_once(']'))
                 {
-                    Some((s, c)) => (s.trim().to_string(), c.trim().to_string()),
-                    None => ("pending".to_string(), rest.to_string()),
+                    Some((s, c)) => (PlanStatus::parse(s.trim()), c.trim().to_string()),
+                    None => (PlanStatus::Pending, rest.to_string()),
                 };
                 (!content.is_empty()).then_some(PlanEntry {
                     content,
@@ -608,7 +608,9 @@ fn parse_todos(input: &Value) -> Vec<PlanEntry> {
                 Some(PlanEntry {
                     content: str_of(t, "content").or_else(|| str_of(t, "text"))?,
                     priority: str_of(t, "priority").unwrap_or_default(),
-                    status: str_of(t, "status").unwrap_or_else(|| "pending".into()),
+                    status: t["status"]
+                        .as_str()
+                        .map_or(PlanStatus::Pending, PlanStatus::parse),
                 })
             })
             .collect(),

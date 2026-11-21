@@ -55,10 +55,10 @@ pub use shell_diff::ShellChange;
 pub use thread::{
     AskUserRequest, Backend, CheckAnswer, Choice, ConfigOption, Entry, FailedAt, ModelInfo,
     NativeSettings, NoticeMark, NoticePlace, PermissionOption, PermissionRequest, PlanEntry,
-    PlanLimit, Question, RemoteAction, Restored, RewindPlan, SessionMeta, Setting, SettingOption,
-    SpecPlan, Subagent, SubagentRecord, SubagentState, Thread, ThreadEvent, ThreadStatus, ToolCall,
-    ToolContent, ToolStatus, Transcript, Usage, acp_label, acp_option, acp_setting_options,
-    apply_setting, edited_files, fmt_cost, fmt_count, setting_label, setting_options,
-    staged_notice,
+    PlanLimit, PlanStatus, Question, RemoteAction, Restored, RewindPlan, SessionMeta, Setting,
+    SettingOption, SpecPlan, Subagent, SubagentRecord, SubagentState, Thread, ThreadEvent,
+    ThreadStatus, ToolCall, ToolContent, ToolStatus, Transcript, Usage, acp_label, acp_option,
+    acp_setting_options, apply_setting, edited_files, fmt_cost, fmt_count, setting_label,
+    setting_options, staged_notice,
 };
 pub use view::{ThreadView, ThreadViewEvent};

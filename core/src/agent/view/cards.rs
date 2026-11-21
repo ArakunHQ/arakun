@@ -641,7 +641,10 @@ impl ThreadView {
 
 /// The agent's plan as a checklist, with how many entries are done.
 pub(super) fn plan_card(entries: &[PlanEntry]) -> AnyElement {
-    let done = entries.iter().filter(|e| e.status == "completed").count();
+    let done = entries
+        .iter()
+        .filter(|e| e.status == PlanStatus::Completed)
+        .count();
     div()
         .flex()
         .flex_col()
@@ -683,13 +686,13 @@ pub(super) fn plan_card(entries: &[PlanEntry]) -> AnyElement {
                 .flex_col()
                 .py(crate::ui::sp(4.))
                 .children(entries.iter().map(|e| {
-                    let (color, strike) = match e.status.as_str() {
-                        "completed" => (theme::mix(0.4), true),
-                        "in_progress" => (theme::mix(0.85), false),
-                        _ => (theme::mix(0.6), false),
+                    let (color, strike) = match e.status {
+                        PlanStatus::Completed => (theme::mix(0.4), true),
+                        PlanStatus::InProgress => (theme::mix(0.85), false),
+                        PlanStatus::Pending | PlanStatus::Unknown => (theme::mix(0.6), false),
                     };
-                    let state: AnyElement = match e.status.as_str() {
-                        "completed" => div()
+                    let state: AnyElement = match e.status {
+                        PlanStatus::Completed => div()
                             .size(px(16.))
                             .flex()
                             .items_center()
@@ -698,10 +701,10 @@ pub(super) fn plan_card(entries: &[PlanEntry]) -> AnyElement {
                             .bg(Hsla::from(theme::success()).opacity(0.2))
                             .child(icon("tick02", 10.).text_color(theme::success()))
                             .into_any_element(),
-                        "in_progress" => icon("loading03", 16.)
+                        PlanStatus::InProgress => icon("loading03", 16.)
                             .text_color(theme::link())
                             .into_any_element(),
-                        _ => div()
+                        PlanStatus::Pending | PlanStatus::Unknown => div()
                             .size(px(16.))
                             .rounded_full()
                             .border_1()

@@ -364,6 +364,17 @@ fn rows(events: &[Event], draft: bool, newest_first: bool) -> Vec<Row> {
 }
 
 impl Timeline {
+    /// Event `i`'s place oldest first. Keys built on it (a folded body, a
+    /// thread) stay on the same event when the order flips, and newest first
+    /// they don't move each time a new event comes in.
+    fn stable(&self, i: usize) -> usize {
+        if self.key.5 {
+            self.events.len() - 1 - i
+        } else {
+            i
+        }
+    }
+
     fn part(&self, ix: usize) -> Part {
         match self.rows[ix] {
             Row::Event(ref r) => Part {
@@ -711,7 +722,11 @@ impl GitHubView {
                 div().into_any_element(),
                 div()
                     .mt(px(8.))
-                    .child(self.render_thread(&format!("gh-ev-{event}-t{n}"), &threads[n], cx))
+                    .child(self.render_thread(
+                        &format!("gh-ev-{}-t{n}", t.stable(event)),
+                        &threads[n],
+                        cx,
+                    ))
                     .into_any_element(),
             );
         }
@@ -752,7 +767,7 @@ impl GitHubView {
             let range = range.clone();
             let i = range.start;
             let e: &Event = &events[i];
-            let key = format!("gh-ev-{i}");
+            let key = format!("gh-ev-{}", t.stable(i));
             let lead = face(self, &e.author, cx);
             let mut rows: Vec<(AnyElement, AnyElement)> = Vec::new();
             match &e.kind {
@@ -1077,6 +1092,36 @@ mod tests {
                 Row::Draft => "draft".to_string(),
             })
             .collect()
+    }
+
+    fn timeline(events: Vec<Event>, newest_first: bool) -> Timeline {
+        Timeline {
+            key: (
+                String::new(),
+                String::new(),
+                String::new(),
+                false,
+                0,
+                newest_first,
+            ),
+            author: String::new(),
+            opened_at: 0,
+            body: String::new(),
+            noun: "",
+            rows: rows(&events, false, newest_first),
+            events,
+            new_oids: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn an_event_keeps_its_key_when_the_order_flips() {
+        let oldest = timeline(vec![comment(1), comment(2), comment(3)], false);
+        let newest = timeline(vec![comment(3), comment(2), comment(1)], true);
+        for (i, e) in oldest.events.iter().enumerate() {
+            let j = newest.events.iter().position(|n| n.at == e.at).unwrap();
+            assert_eq!(oldest.stable(i), newest.stable(j));
+        }
     }
 
     #[test]

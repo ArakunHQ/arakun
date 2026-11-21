@@ -5893,6 +5893,7 @@ hB4c5Ctl3gH87t2sYgahkwsrsgaPmTiVB9bYTD52y70dAtxVNNOhFsNf\n\
                 updated: 1,
                 pr: None,
                 seat: None,
+                seat_key: None,
             },
             entries: vec![Entry::Agent { text: text.into() }],
             usage: agent::Usage::default(),

@@ -123,7 +123,7 @@ impl NamedSeat {
 }
 
 /// Whether a read's error says the token was turned away.
-fn is_refusal(error: &str) -> bool {
+pub(crate) fn is_refusal(error: &str) -> bool {
     error.starts_with("HTTP 401") || error.starts_with("HTTP 403")
 }
 
@@ -390,11 +390,7 @@ pub fn seats_probing(probe: &[String]) -> Seats {
 /// turn: waiting for another refresh can take long enough that the reason
 /// to read the named seats (the Usage tab on screen) is gone.
 pub fn seats_probing_if(probe: &[String], still: impl FnOnce() -> bool) -> Seats {
-    // One refresh at a time: two sessions starting together would otherwise
-    // both find a seat due and both send it a message. The second one waits,
-    // then finds the first one's read in the cache.
-    static ONE: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    let _one = ONE.lock().unwrap_or_else(|e| e.into_inner());
+    let _one = one_refresh();
     let probe = if still() { probe } else { &[] };
     let at = now();
     let mut out = cached_seats().unwrap_or_default();
@@ -444,6 +440,42 @@ pub fn seats_probing_if(probe: &[String], still: impl FnOnce() -> bool) -> Seats
     remember_seats(out)
 }
 
+/// One refresh at a time: two sessions starting together would otherwise
+/// both find a seat due and both send it a message. The second one waits,
+/// then finds the first one's read in the cache.
+fn one_refresh() -> std::sync::MutexGuard<'static, ()> {
+    static ONE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    ONE.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Checks named seat `name`'s `token` before a session starts on it: one read
+/// of its windows, kept in the cache like any other. A good read of the seat
+/// newer than `within` seconds stands in for it, so a seat a pick has just
+/// read is not sent a second message. The error never carries the token.
+pub fn check_named(name: &str, token: &str, within: u64) -> Result<PlanUsage> {
+    let _one = one_refresh();
+    let at = now();
+    let mut out = cached_seats().unwrap_or_default();
+    if let Some(usage) = recent_read(&out.named, name, at, within) {
+        return Ok(usage);
+    }
+    let got = fetch_borrowed(token).map_err(|e| anyhow!(hide_token(&format!("{e:#}"), token)));
+    record(&mut out.named, name, at, &got);
+    out.named.sort_by(|a, b| a.name.cmp(&b.name));
+    store_seats(&out);
+    remember_seats(out);
+    got
+}
+
+/// Named seat `name`'s windows when its last read worked and is newer than
+/// `within` seconds at `at`.
+fn recent_read(named: &[NamedSeat], name: &str, at: u64, within: u64) -> Option<PlanUsage> {
+    named
+        .iter()
+        .find(|s| s.name == name && s.error.is_none() && at.saturating_sub(s.at) < within)
+        .and_then(|s| s.usage.clone())
+}
+
 /// The named seats whose windows are older than [`BORROWED_STALE`], or were
 /// never read.
 fn named_due(named: &[NamedSeat], names: &[String], at: u64) -> Vec<String> {
@@ -483,35 +515,41 @@ fn refresh_named(
     });
     for (name, got) in read {
         changed = true;
-        let ix = match named.iter().position(|s| s.name == name) {
-            Some(ix) => ix,
-            None => {
-                named.push(NamedSeat {
-                    name,
-                    ..NamedSeat::default()
-                });
-                named.len() - 1
-            }
-        };
-        let seat = &mut named[ix];
-        seat.at = at;
-        match got {
-            Ok(usage) => {
-                seat.usage = Some(usage);
-                seat.error = None;
-            }
-            Err(e) => {
-                let e = format!("{e:#}");
-                // A timeout does not say a refused token works again; only
-                // a good read clears the refusal.
-                if !seat.refused() || is_refusal(&e) {
-                    seat.error = Some(e);
-                }
-            }
-        }
+        record(named, &name, at, &got);
     }
     named.sort_by(|a, b| a.name.cmp(&b.name));
     changed
+}
+
+/// Puts one read of named seat `name`, made at `at`, into `named`. A read
+/// that fails keeps the seat's last windows.
+fn record(named: &mut Vec<NamedSeat>, name: &str, at: u64, got: &Result<PlanUsage>) {
+    let ix = match named.iter().position(|s| s.name == name) {
+        Some(ix) => ix,
+        None => {
+            named.push(NamedSeat {
+                name: name.to_string(),
+                ..NamedSeat::default()
+            });
+            named.len() - 1
+        }
+    };
+    let seat = &mut named[ix];
+    seat.at = at;
+    match got {
+        Ok(usage) => {
+            seat.usage = Some(usage.clone());
+            seat.error = None;
+        }
+        Err(e) => {
+            let e = format!("{e:#}");
+            // A timeout does not say a refused token works again; only
+            // a good read clears the refusal.
+            if !seat.refused() || is_refusal(&e) {
+                seat.error = Some(e);
+            }
+        }
+    }
 }
 
 /// `text` with `token` cut out, should an error ever quote it.
@@ -1221,6 +1259,32 @@ mod tests {
         };
         let back: Seats = serde_json::from_str(&serde_json::to_string(&seats).unwrap()).unwrap();
         assert_eq!(back.named, named);
+    }
+
+    #[test]
+    fn only_a_recent_good_read_stands_in_for_a_launch_check() {
+        let good = parse_headers(&serde_json::json!({
+            "anthropic-ratelimit-unified-5h-utilization": ["0.25"],
+        }));
+        let named = vec![
+            NamedSeat {
+                name: "ok".into(),
+                at: 1_000,
+                usage: Some(good.clone()),
+                error: None,
+            },
+            NamedSeat {
+                name: "busy".into(),
+                at: 1_000,
+                usage: Some(good),
+                error: Some("HTTP 429".into()),
+            },
+        ];
+        assert!(recent_read(&named, "ok", 1_059, 60).is_some());
+        // Too old, failed last time, or never read: checked again.
+        assert!(recent_read(&named, "ok", 1_060, 60).is_none());
+        assert!(recent_read(&named, "busy", 1_001, 60).is_none());
+        assert!(recent_read(&named, "new", 1_001, 60).is_none());
     }
 
     #[test]

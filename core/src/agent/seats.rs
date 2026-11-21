@@ -10,6 +10,12 @@
 //! no proxy: each session is Claude Code itself, on its own token.
 //!
 //! Seats are opt-in: with no named seat saved, sessions start as before.
+//!
+//! A session is pinned to its seat by name and by a fingerprint of the
+//! seat's token, so a token swapped under the same name is noticed. Before a
+//! session starts on a named seat, its token is checked with one small read.
+//! A session never moves to another account without a notice that says so,
+//! and sessions in the sandbox leave seats out.
 
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -20,6 +26,7 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use anyhow::{Result, anyhow, bail};
+use sha2::{Digest as _, Sha256};
 
 use super::claude_auth;
 use super::plan::{self, PlanUsage, Seats};
@@ -39,6 +46,21 @@ const LIVE_WEIGHT: i64 = 10;
 /// it picks on the last ones known. Reads that take longer still land in
 /// the cache for the next pick.
 const FRESH_WAIT: Duration = Duration::from_secs(4);
+/// A good read of a named seat this recent counts as the check before a
+/// session starts on it, so a seat a pick has just read is not read twice.
+const CHECKED_FOR: u64 = 60;
+/// How long a session start waits for that check before it starts anyway
+/// and says the token could not be checked.
+const CHECK_WAIT: Duration = Duration::from_secs(10);
+
+/// A one-way fingerprint of a seat's token: SHA-256, in hex. Saved with the
+/// session instead of the token, to notice a token swapped under one name.
+pub fn fingerprint(token: &str) -> String {
+    Sha256::digest(token.trim().as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
 
 /// The seat's name as people read it.
 pub fn label(id: &str) -> String {
@@ -46,6 +68,15 @@ pub fn label(id: &str) -> String {
         OWN => "Sign-in".into(),
         BORROWED => "Borrowed token".into(),
         name => name.into(),
+    }
+}
+
+/// The seat as a notice names it, mid-sentence.
+fn called(id: &str) -> String {
+    match id {
+        OWN => "the sign-in".into(),
+        BORROWED => "the borrowed token".into(),
+        name => format!("seat {name}"),
     }
 }
 
@@ -354,6 +385,9 @@ pub struct Assignment {
     pub seat: String,
     /// The seat's token; `None` for the sign-in, which runs with none.
     token: Option<String>,
+    /// The token's [`fingerprint`], saved with the session; `None` for the
+    /// sign-in, whose token Claude Code renews on its own.
+    pub key: Option<String>,
     /// Something to tell the session: its seat is gone, or every seat is full.
     pub notice: Option<String>,
     /// The session counts as live on the seat from the moment it is picked,
@@ -368,6 +402,7 @@ impl std::fmt::Debug for Assignment {
         f.debug_struct("Assignment")
             .field("seat", &self.seat)
             .field("token", &self.token.as_ref().map(|_| "[token]"))
+            .field("key", &self.key)
             .field("notice", &self.notice)
             .field("lease", &self.lease.as_ref().map(|l| l.id))
             .finish()
@@ -375,6 +410,18 @@ impl std::fmt::Debug for Assignment {
 }
 
 impl Assignment {
+    /// A named seat's token, which is checked before the session starts.
+    fn named_token(&self) -> Option<&str> {
+        (self.seat != BORROWED).then_some(self.token.as_deref())?
+    }
+
+    fn add_notice(&mut self, text: String) {
+        self.notice = Some(match self.notice.take() {
+            Some(n) => format!("{n} {text}"),
+            None => text,
+        });
+    }
+
     /// What the session's process gets: the seat's token, or none at all for
     /// the sign-in (one in Arakun's own environment would win over it).
     pub fn env(&self) -> (Vec<(String, OsString)>, Vec<String>) {
@@ -385,20 +432,158 @@ impl Assignment {
     }
 }
 
+/// Where a Claude Code session starts.
+#[derive(Debug)]
+pub enum Seating {
+    /// On a seat.
+    On(Assignment),
+    /// As it would without seats. The notice says why, when the session was
+    /// on a seat and now runs on another account.
+    Off(Option<String>),
+}
+
 /// The seat a Claude Code session starts on: `pinned`, the one saved with
 /// it, while that seat is still there and its token was not refused; else
-/// the one [`pick`] finds. `None` leaves the session as it would be without
-/// seats: none are saved, or they can't work ([`blocked`]).
+/// the one [`pick`] finds. `key` is the pinned token's [`fingerprint`]. A
+/// named seat's token is checked first ([`settle`]).
 ///
-/// Only a pick reads windows, and only those of the seats it chooses between
-/// that are stale past [`plan::seats_probing`]'s bounds, waiting at most
-/// [`FRESH_WAIT`]. The resolver that calls this runs off the UI thread. The
-/// session is counted on its seat in the same step as the pick.
-pub fn assign(pinned: Option<&str>) -> Option<Assignment> {
-    if blocked().is_some() {
-        return None;
+/// Sessions in the sandbox, and all of them while seats can't work
+/// ([`blocked`]), start as they would without seats, and one that was on a
+/// seat says so. The resolver that calls this runs off the UI thread.
+pub fn assign(pinned: Option<&str>, key: Option<&str>, sandboxed: bool) -> Seating {
+    // The sign-in is what a session runs on without seats, unless Arakun
+    // has a token of its own.
+    let moved = |p: &str| p != OWN || plan::active_is_borrowed();
+    if sandboxed {
+        return Seating::Off(pinned.filter(|p| moved(p)).map(|p| {
+            format!(
+                "This session runs in the sandbox, which does not use seats, so it runs on \
+                 Claude Code's default account instead of {}.",
+                called(p)
+            )
+        }));
+    }
+    if let Some(b) = blocked() {
+        return Seating::Off(pinned.filter(|p| moved(p)).map(|p| {
+            format!(
+                "{} This session runs on Claude Code's default account instead of {}.",
+                b.notice(),
+                called(p)
+            )
+        }));
     }
     let store = Store::open();
+    settle(
+        pinned,
+        store.names().len() + 2,
+        || choose(pinned, key, &store),
+        check,
+        |seat, token| store.token(seat).as_deref() == Some(token),
+    )
+}
+
+/// The seat [`choose`] finds, once its token has passed `check`. One that is
+/// refused is marked so by the check, and the session chooses again. One that
+/// is saved anew while it is checked (`still` is false) too. A check that
+/// can't finish starts the session anyway, with a notice. At most `tries`
+/// choices.
+fn settle(
+    pinned: Option<&str>,
+    tries: usize,
+    mut choose: impl FnMut() -> Option<Assignment>,
+    mut check: impl FnMut(&str, &str) -> std::result::Result<(), String>,
+    still: impl Fn(&str, &str) -> bool,
+) -> Seating {
+    let mut skipped: Vec<String> = Vec::new();
+    for _ in 0..tries {
+        let Some(mut a) = choose() else {
+            break;
+        };
+        let Some(token) = a.named_token().map(str::to_string) else {
+            return Seating::On(with_skipped(a, &skipped));
+        };
+        match check(&a.seat, &token) {
+            Ok(()) if still(&a.seat, &token) => return Seating::On(with_skipped(a, &skipped)),
+            Ok(()) => {}
+            // A pinned session's move says so itself.
+            Err(e) if plan::is_refusal(&e) => {
+                if pinned != Some(a.seat.as_str()) && !skipped.contains(&a.seat) {
+                    skipped.push(a.seat.clone());
+                }
+            }
+            Err(e) => {
+                a.add_notice(format!(
+                    "{}'s token could not be checked before this session started ({}), so a \
+                     problem with it shows only once the session runs.",
+                    upper(&called(&a.seat)),
+                    plan::hide_token(&e, &token)
+                ));
+                return Seating::On(with_skipped(a, &skipped));
+            }
+        }
+    }
+    let why = pinned.map(|p| {
+        format!(
+            "No Claude seat can take this session: {} can't be used and no other seat \
+             works, so it starts as it would without seats.",
+            called(p)
+        )
+    });
+    Seating::Off(why.or_else(|| skipped_notice(&skipped)))
+}
+
+/// `a`, saying which seats were skipped on the way to it.
+fn with_skipped(mut a: Assignment, skipped: &[String]) -> Assignment {
+    if let Some(text) = skipped_notice(skipped) {
+        let rest = a.notice.take();
+        a.notice = Some(text);
+        if let Some(rest) = rest {
+            a.add_notice(rest);
+        }
+    }
+    a
+}
+
+fn skipped_notice(skipped: &[String]) -> Option<String> {
+    let (first, rest) = skipped.split_first()?;
+    let names = rest
+        .iter()
+        .fold(first.clone(), |all, n| format!("{all}, {n}"));
+    Some(format!(
+        "Skipped {} {names}: the token was refused. Run `arakun seat rm <name>` and add it again \
+         with a new token from `claude setup-token`.",
+        if rest.is_empty() { "seat" } else { "seats" },
+    ))
+}
+
+fn upper(text: &str) -> String {
+    let mut chars = text.chars();
+    chars
+        .next()
+        .map_or_else(String::new, |c| c.to_uppercase().chain(chars).collect())
+}
+
+/// One read of named seat `seat` with `token`, kept in the cache, waiting at
+/// most [`CHECK_WAIT`]. The error never carries the token.
+fn check(seat: &str, token: &str) -> std::result::Result<(), String> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let (seat, token) = (seat.to_string(), token.to_string());
+    std::thread::Builder::new()
+        .name("seat-check".into())
+        .spawn(move || {
+            let got = plan::check_named(&seat, &token, CHECKED_FOR);
+            let _ = tx.send(got.map(|_| ()).map_err(|e| format!("{e:#}")));
+        })
+        .map_err(|e| e.to_string())?;
+    rx.recv_timeout(CHECK_WAIT)
+        .unwrap_or_else(|_| Err(format!("no answer within {} seconds", CHECK_WAIT.as_secs())))
+}
+
+/// [`assign`]'s choice before the check. Only a pick reads windows, and only
+/// those of the seats it chooses between that are stale past
+/// [`plan::seats_probing`]'s bounds, waiting at most [`FRESH_WAIT`]. The
+/// session is counted on its seat in the same step as the pick.
+fn choose(pinned: Option<&str>, key: Option<&str>, store: &Store) -> Option<Assignment> {
     let names = store.names();
     let own = plan::own_sign_in();
     let borrowed = plan::borrowed_seat_token();
@@ -430,6 +615,7 @@ pub fn assign(pinned: Option<&str>) -> Option<Assignment> {
     let mut live = live_lock();
     let mut a = decide(
         pinned,
+        key,
         &names,
         own,
         borrowed.is_some(),
@@ -466,10 +652,12 @@ fn keeps_pin(
 }
 
 /// [`assign`] without the files. `token` says whether a seat is there and
-/// its token: `Some(None)` for the sign-in.
+/// its token: `Some(None)` for the sign-in. `key` is the pinned token's
+/// [`fingerprint`] as saved with the session.
 #[allow(clippy::too_many_arguments)]
 fn decide(
     pinned: Option<&str>,
+    key: Option<&str>,
     names: &[String],
     own: bool,
     borrowed: bool,
@@ -482,10 +670,21 @@ fn decide(
         && keeps_pin(pinned, seats, &token)
         && let Some(t) = token(seat)
     {
+        let now_key = t.as_deref().map(fingerprint);
+        // Sessions saved before fingerprints have none, and take this one.
+        let swapped = key.is_some() && now_key.is_some() && key != now_key.as_deref();
+        let notice = swapped.then(|| {
+            format!(
+                "The token of {} changed since this session last ran, so the session may be \
+                 on another Claude account now. It goes on with the new token.",
+                called(seat)
+            )
+        });
         return Some(Assignment {
             seat: seat.to_string(),
+            key: now_key,
             token: t,
-            notice: None,
+            notice,
             lease: None,
         });
     }
@@ -521,6 +720,7 @@ fn decide(
     }
     Some(Assignment {
         seat: picked.id,
+        key: t.as_deref().map(fingerprint),
         token: t,
         notice,
         lease: None,
@@ -917,6 +1117,7 @@ mod tests {
         };
         let a = decide(
             None,
+            None,
             &names,
             true,
             false,
@@ -951,10 +1152,32 @@ mod tests {
             ..Seats::default()
         };
         let live = HashMap::from([("b".to_string(), 0)]);
-        let a = decide(Some("a"), &names, true, false, &seats, &live, 0, tokens).unwrap();
+        let a = decide(
+            Some("a"),
+            None,
+            &names,
+            true,
+            false,
+            &seats,
+            &live,
+            0,
+            tokens,
+        )
+        .unwrap();
         assert_eq!((a.seat.as_str(), a.notice.as_deref()), ("a", None));
         // The sign-in runs with no token at all, even one Arakun was started with.
-        let a = decide(Some(OWN), &names, true, false, &seats, &live, 0, tokens).unwrap();
+        let a = decide(
+            Some(OWN),
+            None,
+            &names,
+            true,
+            false,
+            &seats,
+            &live,
+            0,
+            tokens,
+        )
+        .unwrap();
         assert_eq!(a.seat, OWN);
         assert_eq!(a.env(), (Vec::new(), vec![TOKEN_VAR.to_string()]));
     }
@@ -969,6 +1192,7 @@ mod tests {
         };
         let a = decide(
             Some("gone"),
+            None,
             &names,
             true,
             false,
@@ -1022,6 +1246,7 @@ mod tests {
         // "a" looks emptiest from its last good read, but its token is dead.
         let a = decide(
             Some("a"),
+            None,
             &names,
             true,
             false,
@@ -1037,6 +1262,7 @@ mod tests {
         assert!(notice.contains("arakun seat rm a"), "{notice}");
         // New sessions don't pick it either.
         let a = decide(
+            None,
             None,
             &names,
             true,
@@ -1058,6 +1284,7 @@ mod tests {
         };
         let a = decide(
             Some("a"),
+            None,
             &names,
             true,
             false,
@@ -1071,9 +1298,215 @@ mod tests {
     }
 
     #[test]
+    fn a_fingerprint_is_one_way_and_stable() {
+        let key = fingerprint(SECRET);
+        assert_eq!(key.len(), 64);
+        assert!(key.chars().all(|c| c.is_ascii_hexdigit()));
+        assert!(!key.contains(SECRET));
+        assert_eq!(fingerprint(&format!(" {SECRET}\n")), key);
+        assert_ne!(fingerprint(&format!("{SECRET}-b")), key);
+    }
+
+    #[test]
+    fn a_token_swapped_under_the_seats_name_is_noticed() {
+        let names: Vec<String> = vec!["a".into(), "b".into()];
+        let seats = Seats {
+            named: vec![named("a", Some(usage(10, 10)))],
+            ..Seats::default()
+        };
+        let live = HashMap::new();
+        let key = fingerprint(&format!("{SECRET}-a"));
+        let run = |key: Option<&str>| {
+            decide(
+                Some("a"),
+                key,
+                &names,
+                true,
+                false,
+                &seats,
+                &live,
+                0,
+                tokens,
+            )
+            .unwrap()
+        };
+        // Same token: no notice, same key.
+        let a = run(Some(&key));
+        assert_eq!(
+            (a.notice.as_deref(), a.key.as_deref()),
+            (None, Some(key.as_str()))
+        );
+        // A session saved before fingerprints takes the token's quietly.
+        let a = run(None);
+        assert_eq!(
+            (a.notice.as_deref(), a.key.as_deref()),
+            (None, Some(key.as_str()))
+        );
+        // Another token under the name: it stays on the seat, and says so.
+        let other = fingerprint("an-older-token");
+        let a = run(Some(&other));
+        assert_eq!(a.seat, "a");
+        assert_eq!(a.key.as_deref(), Some(key.as_str()));
+        let notice = a.notice.unwrap();
+        assert!(notice.contains("token of seat a changed"), "{notice}");
+        assert!(!notice.contains(SECRET), "{notice}");
+        // The sign-in has no token to fingerprint.
+        let a = decide(
+            Some(OWN),
+            Some(&other),
+            &names,
+            true,
+            false,
+            &seats,
+            &live,
+            0,
+            tokens,
+        );
+        assert_eq!(a.map(|a| (a.key, a.notice)), Some((None, None)));
+    }
+
+    fn on(seat: &str, token: Option<&str>) -> Assignment {
+        Assignment {
+            seat: seat.into(),
+            token: token.map(String::from),
+            key: token.map(fingerprint),
+            notice: None,
+            lease: None,
+        }
+    }
+
+    fn seated(s: Seating) -> Assignment {
+        match s {
+            Seating::On(a) => a,
+            Seating::Off(n) => panic!("off: {n:?}"),
+        }
+    }
+
+    #[test]
+    fn a_named_seat_is_checked_before_a_session_starts_on_it() {
+        let mut checked = Vec::new();
+        let a = seated(settle(
+            None,
+            3,
+            || Some(on("a", Some(SECRET))),
+            |seat, token| {
+                checked.push((seat.to_string(), token == SECRET));
+                Ok(())
+            },
+            |_, _| true,
+        ));
+        assert_eq!((a.seat.as_str(), a.notice), ("a", None));
+        assert_eq!(checked, [("a".to_string(), true)]);
+        // The sign-in and the borrowed token are not: Claude Code renews the
+        // one, and the other is what it runs on without seats.
+        for seat in [OWN, BORROWED] {
+            let token = (seat == BORROWED).then_some(SECRET);
+            let a = seated(settle(
+                None,
+                3,
+                || Some(on(seat, token)),
+                |_, _| panic!("{seat} was checked"),
+                |_, _| true,
+            ));
+            assert_eq!(a.seat, seat);
+        }
+    }
+
+    #[test]
+    fn a_refused_seat_is_chosen_again_and_named() {
+        // A new session: "a" is refused at the check, the next choice is "b".
+        let mut order = vec![on("b", Some("tok-b")), on("a", Some(SECRET))];
+        let refuse_a = |seat: &str, _: &str| {
+            if seat == "a" {
+                Err("HTTP 401: the token's answer carried no rate-limit headers".to_string())
+            } else {
+                Ok(())
+            }
+        };
+        let a = seated(settle(None, 3, || order.pop(), refuse_a, |_, _| true));
+        assert_eq!(a.seat, "b");
+        let notice = a.notice.unwrap();
+        assert!(notice.contains("Skipped seat a"), "{notice}");
+        assert!(notice.contains("arakun seat rm"), "{notice}");
+        // A pinned session's move names its seat itself, so no second notice.
+        let mut order = vec![on("b", Some("tok-b")), on("a", Some(SECRET))];
+        let a = seated(settle(Some("a"), 3, || order.pop(), refuse_a, |_, _| true));
+        assert_eq!((a.seat.as_str(), a.notice), ("b", None));
+        // Nothing left to choose: a pinned session says so, never quietly.
+        let mut order = vec![on("a", Some(SECRET))];
+        match settle(Some("a"), 3, || order.pop(), refuse_a, |_, _| true) {
+            Seating::Off(Some(n)) => assert!(n.contains("seat a can't be used"), "{n}"),
+            other => panic!("{other:?}"),
+        }
+        let mut order = vec![on("a", Some(SECRET))];
+        match settle(None, 3, || order.pop(), refuse_a, |_, _| true) {
+            Seating::Off(Some(n)) => assert!(n.contains("Skipped seat a"), "{n}"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_check_that_cant_finish_starts_on_the_seat_and_says_so() {
+        let a = seated(settle(
+            Some("a"),
+            3,
+            || Some(on("a", Some(SECRET))),
+            |_, t| Err(format!("curl: could not resolve host, token {t}")),
+            |_, _| true,
+        ));
+        assert_eq!(a.seat, "a");
+        let notice = a.notice.unwrap();
+        assert!(
+            notice.starts_with("Seat a's token could not be checked"),
+            "{notice}"
+        );
+        assert!(!notice.contains(SECRET), "{notice}");
+    }
+
+    #[test]
+    fn a_seat_saved_anew_while_checked_is_chosen_again() {
+        let mut chosen = 0;
+        let a = seated(settle(
+            None,
+            3,
+            || {
+                chosen += 1;
+                Some(on("a", Some(if chosen == 1 { "old" } else { SECRET })))
+            },
+            |_, _| Ok(()),
+            |_, token| token == SECRET,
+        ));
+        assert_eq!((chosen, a.key), (2, Some(fingerprint(SECRET))));
+    }
+
+    #[test]
+    fn sandboxed_sessions_leave_seats_out() {
+        // Reads no file for a named seat: the pin alone says it moves.
+        match assign(Some("work"), None, true) {
+            Seating::Off(Some(n)) => {
+                assert!(n.contains("sandbox") && n.contains("seat work"), "{n}")
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
     fn without_named_seats_sessions_start_as_before() {
         let seats = Seats::default();
-        assert!(decide(None, &[], true, true, &seats, &HashMap::new(), 0, tokens).is_none());
+        assert!(
+            decide(
+                None,
+                None,
+                &[],
+                true,
+                true,
+                &seats,
+                &HashMap::new(),
+                0,
+                tokens
+            )
+            .is_none()
+        );
     }
 
     #[test]

@@ -701,7 +701,9 @@ installs what the server runs agents with, if it is missing: git and gh with the
 package manager (as root, or with `sudo` that needs no password; otherwise it prints the
 command to run), and Node.js 22 from nodejs.org in `~/.local/share/arakun/node`, linked
 as `node`, `npm` and `npx` in `~/.local/bin`. Without Node, a new session fails as it
-starts. `--no-tools` leaves all three to you. It takes `--version` too. Releases after v0.4.0 carry it. It does not update itself: run the line
+starts. When no `claude` is on the `PATH`, it installs Claude Code with
+[its own installer](https://docs.anthropic.com/en/docs/claude-code/setup) in
+`~/.local/bin/claude`; run `claude` once to sign in. `--no-tools` leaves all four to you. It takes `--version` too. Releases after v0.4.0 carry it. It does not update itself: run the line
 again for a new release, then restart the service if it runs as one:
 `systemctl --user restart arakun-server`. A server in another folder
 (`ARAKUN_SERVER_DIR`) is the unit `arakun-server-<folder>`, and a service installed as

@@ -375,7 +375,7 @@ impl Call<'_> {
                 .body(body.to_string())
                 .map_err(|e| ApiError::Network(e.to_string()))
                 .and_then(|r| {
-                    server(&self.base)
+                    server(self.base)
                         .run(r)
                         .map_err(|e| ApiError::Network(e.to_string()))
                 }),
@@ -383,7 +383,7 @@ impl Call<'_> {
                 .body(())
                 .map_err(|e| ApiError::Network(e.to_string()))
                 .and_then(|r| {
-                    server(&self.base)
+                    server(self.base)
                         .run(r)
                         .map_err(|e| ApiError::Network(e.to_string()))
                 }),

@@ -109,6 +109,16 @@ impl Render for DraggedSection {
 
 const UNDO_KEEP: usize = 100;
 
+/// A text field of the options, to tell typing in one from typing in the
+/// next.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Field {
+    Name,
+    Emoji,
+    /// A pin's URL, command or path, or a title's text.
+    Target,
+}
+
 /// The layouts to go back and forward to.
 #[derive(Default)]
 pub(super) struct History {
@@ -116,7 +126,7 @@ pub(super) struct History {
     redo: Vec<Sidebar>,
     /// Text is being typed into a field: its first key made the undo step,
     /// the keys after it join that step.
-    typing: bool,
+    typing: Option<Field>,
 }
 
 impl History {
@@ -135,21 +145,22 @@ impl History {
             self.undo.remove(0);
         }
         self.redo.clear();
-        self.typing = false;
+        self.typing = None;
     }
 
-    /// A key was typed into a field of `before`. A whole burst of typing
-    /// is one step, not one per key.
-    fn record_typed(&mut self, before: Sidebar) {
-        if !self.typing {
+    /// A key was typed into `field` of `before`. A whole burst of typing
+    /// in one field is one step, not one per key; the next field starts
+    /// another.
+    fn record_typed(&mut self, before: Sidebar, field: Field) {
+        if self.typing != Some(field) {
             self.record(before);
-            self.typing = true;
+            self.typing = Some(field);
         }
     }
 
     /// The fields were left: what is typed next is a step of its own.
     fn settle(&mut self) {
-        self.typing = false;
+        self.typing = None;
     }
 
     /// The layout one step back (or forward again), `current` kept for the
@@ -162,7 +173,7 @@ impl History {
         };
         let next = from.pop()?;
         to.push(current.clone());
-        self.typing = false;
+        self.typing = None;
         Some(next)
     }
 }
@@ -300,7 +311,7 @@ impl Shell {
             cx.subscribe(&name_input, move |this, input, ev: &InputEvent, cx| {
                 if matches!(ev, InputEvent::Changed) {
                     let text = input.read(cx).text().to_string();
-                    this.typed_edit(cx, |s| match sel {
+                    this.typed_edit(Field::Name, cx, |s| match sel {
                         BuilderSel::Item(p) => {
                             if let Some(i) = s.get_mut(p) {
                                 i.label = Some(text).filter(|t| !t.trim().is_empty());
@@ -317,7 +328,7 @@ impl Shell {
             cx.subscribe(&emoji_input, move |this, input, ev: &InputEvent, cx| {
                 if let (InputEvent::Changed, BuilderSel::Item(p)) = (ev, sel) {
                     let text = input.read(cx).text().trim().to_string();
-                    this.typed_edit(cx, |s| {
+                    this.typed_edit(Field::Emoji, cx, |s| {
                         if let Some(i) = s.get_mut(p) {
                             i.emoji = Some(text).filter(|t| !t.is_empty());
                         }
@@ -329,7 +340,7 @@ impl Shell {
             subs.push(cx.subscribe(t, move |this, input, ev: &InputEvent, cx| {
                 if matches!(ev, InputEvent::Changed) {
                     let text = input.read(cx).text().to_string();
-                    this.typed_edit(cx, |s| {
+                    this.typed_edit(Field::Target, cx, |s| {
                         if let Some(i) = s.get_mut(p) {
                             match &mut i.piece {
                                 Piece::Pin {
@@ -367,11 +378,11 @@ impl Shell {
 
     /// A change typed in a field: saved at every key, and one undo step for
     /// the whole burst of typing.
-    fn typed_edit(&mut self, cx: &mut Context<Self>, f: impl FnOnce(&mut Sidebar)) {
+    fn typed_edit(&mut self, field: Field, cx: &mut Context<Self>, f: impl FnOnce(&mut Sidebar)) {
         let before = self.sidebar.clone();
         f(&mut self.sidebar);
         if self.sidebar != before {
-            self.builder.history.record_typed(before);
+            self.builder.history.record_typed(before, field);
             self.sidebar.save();
         }
         cx.notify();
@@ -815,9 +826,9 @@ mod tests {
         let mut h = History::default();
         assert!(!h.can_undo() && !h.can_redo());
         // "Top" is renamed one key at a time.
-        h.record_typed(titled("Top"));
-        h.record_typed(titled("T"));
-        h.record_typed(titled("To"));
+        h.record_typed(titled("Top"), Field::Name);
+        h.record_typed(titled("T"), Field::Name);
+        h.record_typed(titled("To"), Field::Name);
         let back = h.step(false, &titled("Tools")).expect("one step");
         assert_eq!(back.sections[0].title, "Top");
         assert!(!h.can_undo(), "the keys in between are not steps");
@@ -828,16 +839,30 @@ mod tests {
     #[test]
     fn typing_after_leaving_the_field_is_its_own_step() {
         let mut h = History::default();
-        h.record_typed(titled("A"));
+        h.record_typed(titled("A"), Field::Name);
         h.settle();
-        h.record_typed(titled("B"));
+        h.record_typed(titled("B"), Field::Name);
         // A change that is not typed ends the burst too.
         h.record(titled("C"));
-        h.record_typed(titled("D"));
+        h.record_typed(titled("D"), Field::Name);
         let titles: Vec<_> = std::iter::from_fn(|| h.step(false, &titled("now")))
             .map(|s| s.sections[0].title.clone())
             .collect();
         assert_eq!(titles, ["D", "C", "B", "A"]);
+    }
+
+    #[test]
+    fn typing_in_another_field_is_its_own_step() {
+        let mut h = History::default();
+        h.record_typed(titled("A"), Field::Name);
+        h.record_typed(titled("B"), Field::Emoji);
+        h.record_typed(titled("C"), Field::Emoji);
+        // Back in the first field, a step again.
+        h.record_typed(titled("D"), Field::Name);
+        let titles: Vec<_> = std::iter::from_fn(|| h.step(false, &titled("now")))
+            .map(|s| s.sections[0].title.clone())
+            .collect();
+        assert_eq!(titles, ["D", "B", "A"]);
     }
 
     #[test]

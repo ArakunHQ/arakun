@@ -585,7 +585,7 @@ system. The choice is kept in `state.json` as `reduce_motion`.
   click (with nothing selected, into the segment that holds the most views), and selects what it added. The pieces among them (not Group, Link, Command or Title, which ask for more
   first) can also be dragged onto the sidebar where they should go. Pieces and segment
   titles drag into another order on the sidebar itself. The panel's header has undo
-  and redo for these changes; a name typed into a field is one step. Done closes the panel, and "Customize sidebar…" in the
+  and redo for these changes; what is typed into one field is one step. Done closes the panel, and "Customize sidebar…" in the
   sidebar's right-click menu opens this tab. Reset sidebar goes back to the default
   layout and width. The layout is kept in `sidebar.json`.
 - **Share a look.** Export… at the foot of the panel, on any tab, copies the colors,

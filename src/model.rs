@@ -80,6 +80,8 @@ pub enum TabKind {
     Site,
     /// The PostHog project of the open project (`posthog_view`).
     PostHog,
+    /// The canvases of a Doop instance (`doop_view`).
+    Doop,
     /// What agent sessions used: cost, tokens and credits over time.
     Usage,
     /// The design system's tokens and components (`gallery_view`).

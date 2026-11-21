@@ -2626,7 +2626,7 @@ impl Daemon {
                         .await;
                     let _ = this.update(cx, |this, cx| match done {
                         // The app shows the new name, and tells the agent, once it is so.
-                        Ok(true) => {
+                        Ok(Some(to)) => {
                             this.inbox_dirty = true;
                             this.sync_inbox(cx);
                             let renamed = json!({
@@ -2635,7 +2635,7 @@ impl Daemon {
                             this.transport.send(client, renamed.to_string());
                         }
                         // Renamed by hand meanwhile: that name stays, and nothing changed.
-                        Ok(false) => {}
+                        Ok(None) => {}
                         Err(e) => this
                             .transport
                             .send(client, error_about("rename_branch", &e)),
@@ -4349,13 +4349,18 @@ fn env_deleted(place: &str, deleted: bool, error: Option<&str>) -> String {
 
 /// Renames the branch at `place` from `from` to `to`, as long as `from` is
 /// still the one checked out there: one renamed by hand meanwhile stays.
-/// Whether it renamed it.
-fn rename_branch(place: &Path, from: &str, to: &str) -> Result<bool, String> {
+/// The name it took, or None when it left the branch alone. Only the namer
+/// asks, so a name another branch has gets the next free number, as on the
+/// app's side.
+fn rename_branch(place: &Path, from: &str, to: &str) -> Result<Option<String>, String> {
     if !plain_branch(to) {
         return Err(format!("{to:?} is not a branch name this server takes"));
     }
     if store::branch(place).as_deref() != Some(from) {
-        return Ok(false);
+        return Ok(None);
+    }
+    if from == to {
+        return Ok(Some(to.to_string()));
     }
     // Pushed: the remote keeps the old name, as the app's own rename knows.
     // A push without --set-upstream leaves only the remote-tracking ref.
@@ -4385,7 +4390,25 @@ fn rename_branch(place: &Path, from: &str, to: &str) -> Result<bool, String> {
             "{from} was already pushed; rename it on the remote too, or keep the name"
         ));
     }
-    run_git(git(place).args(["branch", "-m", "--", from, to])).map(|()| true)
+    let exists = |name: &str| {
+        local_output(
+            git(place)
+                .args(["show-ref", "--verify", "--quiet", "--"])
+                .arg(format!("refs/heads/{name}")),
+        )
+        .map(|o| o.status.success())
+        .map_err(|e| format!("could not check whether {name} exists: {e}"))
+    };
+    let mut name = to.to_string();
+    let mut n = 2;
+    while exists(&name)? {
+        if n == 10 {
+            return Err(format!("branches {to} to {to}-9 already exist"));
+        }
+        name = format!("{to}-{n}");
+        n += 1;
+    }
+    run_git(git(place).args(["branch", "-m", "--", from, &name])).map(|()| Some(name))
 }
 
 /// Clones `source` into `dest`, or takes `dest` as it is when it already holds
@@ -5010,10 +5033,13 @@ mod tests {
     fn a_branch_renamed_by_hand_meanwhile_stays() {
         let tmp = scratch("rename");
         repo_at(&tmp, &["-b", "random-name"]);
-        assert_eq!(rename_branch(&tmp, "random-name", "fix-login"), Ok(true));
+        assert_eq!(
+            rename_branch(&tmp, "random-name", "fix-login"),
+            Ok(Some("fix-login".into()))
+        );
         assert_eq!(store::branch(&tmp).as_deref(), Some("fix-login"));
         // The app's rename comes after the user's: it changes nothing.
-        assert_eq!(rename_branch(&tmp, "random-name", "other"), Ok(false));
+        assert_eq!(rename_branch(&tmp, "random-name", "other"), Ok(None));
         assert_eq!(store::branch(&tmp).as_deref(), Some("fix-login"));
         assert!(rename_branch(&tmp, "fix-login", "-x").is_err());
         // Pushed: the name stays.
@@ -5022,6 +5048,20 @@ mod tests {
         let err = rename_branch(&tmp, "fix-login", "other").unwrap_err();
         assert!(err.contains("already pushed"), "{err}");
         assert_eq!(store::branch(&tmp).as_deref(), Some("fix-login"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn a_taken_name_gets_the_next_free_number() {
+        let tmp = scratch("rename-taken");
+        repo_at(&tmp, &["-b", "random-name"]);
+        run_git(git(&tmp).args(["branch", "fix-login"])).unwrap();
+        run_git(git(&tmp).args(["branch", "fix-login-2"])).unwrap();
+        assert_eq!(
+            rename_branch(&tmp, "random-name", "fix-login"),
+            Ok(Some("fix-login-3".into()))
+        );
+        assert_eq!(store::branch(&tmp).as_deref(), Some("fix-login-3"));
         let _ = std::fs::remove_dir_all(&tmp);
     }
 

@@ -587,7 +587,7 @@ system. The choice is kept in `state.json` as `reduce_motion`.
   titles drag into another order on the sidebar itself. The panel's header has undo
   and redo for these changes; what is typed into one field is one step. Done closes the panel, and "Customize sidebar…" in the
   sidebar's right-click menu opens this tab. After that menu hides a piece, ungroups
-  or removes a segment, a note at the foot of the sidebar says so for ten seconds, with an Undo button. Reset sidebar goes back to the default
+  or removes a segment, a note at the foot of the sidebar says so for ten seconds, with an Undo button; it stays while the pointer is on it. Reset sidebar goes back to the default
   layout and width. The layout is kept in `sidebar.json`.
 - **Share a look.** Export… at the foot of the panel, on any tab, copies the colors,
   the shape or the sidebar, the ones you tick, as one line (`arakun:look/v1:…`).

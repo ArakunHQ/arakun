@@ -4,6 +4,8 @@
 //! (`shell::arrange`). Every change applies to the rail at once and saves
 //! (`crate::sidebar`).
 
+use std::time::{Duration, Instant};
+
 use gpui::Point;
 
 use super::rail_blocks::url_title;
@@ -54,18 +56,29 @@ pub(super) struct Builder {
     /// The item or segment being dragged, to dim where it was.
     pub lifted: Option<BuilderSel>,
     /// What a right-click on the rail just took out, for the rail to say
-    /// so and offer the way back, and a count that tells one such note
-    /// from the next.
+    /// so and offer the way back, and the undo step that took it out, which
+    /// tells one such note from the next.
     pub removed: Option<(SharedString, u64)>,
     /// The pointer is on that note: it stays, so Undo is not taken away
     /// from under a click.
-    pub removed_hovered: bool,
+    removed_hovered: bool,
+    /// When that note goes, unless the pointer holds it.
+    removed_until: Option<Instant>,
 }
 
 /// How long the rail offers to undo what a right-click took out.
-const REMOVED_NOTE: std::time::Duration = std::time::Duration::from_secs(10);
-/// How long it stays once the pointer that held it there has left.
-const REMOVED_NOTE_HOVERED: std::time::Duration = std::time::Duration::from_secs(2);
+const REMOVED_NOTE: Duration = Duration::from_secs(10);
+/// How long it stays, at least, once the pointer that was on it has left.
+const REMOVED_NOTE_LEFT: Duration = Duration::from_secs(2);
+
+/// How long the note still stays at `now`: `None` when its time is up.
+/// Under the pointer it is looked at again later, as leaving sets `until`.
+fn note_stays(hovered: bool, until: Instant, now: Instant) -> Option<Duration> {
+    if hovered {
+        return Some(REMOVED_NOTE_LEFT);
+    }
+    Some(until.saturating_duration_since(now)).filter(|left| !left.is_zero())
+}
 
 /// A piece lifted from the palette (`from: None`) or from its place.
 #[derive(Clone)]
@@ -283,32 +296,46 @@ impl Shell {
         let (Some(what), true) = (what, self.builder.history.steps() != before) else {
             return;
         };
-        let id = self.builder.removed.as_ref().map_or(0, |(_, id)| id + 1);
+        // The step is this note's alone: `change_sidebar` cleared the note
+        // before, so a count kept in it would start over every time.
+        let id = self.builder.history.steps();
         self.builder.removed = Some((what.into(), id));
         self.builder.removed_hovered = false;
+        self.builder.removed_until = Some(Instant::now() + REMOVED_NOTE);
         cx.spawn(async move |this, cx| {
             let mut wait = REMOVED_NOTE;
             loop {
                 cx.background_executor().timer(wait).await;
                 let stays = this.update(cx, |this, cx| {
-                    if this.builder.removed.as_ref().is_none_or(|(_, i)| *i != id) {
-                        return false;
+                    let b = &mut this.builder;
+                    if b.removed.as_ref().is_none_or(|(_, i)| *i != id) {
+                        return None;
                     }
-                    if this.builder.removed_hovered {
-                        return true;
+                    let until = b.removed_until.unwrap_or_else(Instant::now);
+                    let stays = note_stays(b.removed_hovered, until, Instant::now());
+                    if stays.is_none() {
+                        b.removed = None;
+                        cx.notify();
                     }
-                    this.builder.removed = None;
-                    cx.notify();
-                    false
+                    stays
                 });
-                if !stays.unwrap_or(false) {
-                    break;
+                match stays {
+                    Ok(Some(left)) => wait = left,
+                    _ => break,
                 }
-                // Looked at again soon after the pointer may have left.
-                wait = REMOVED_NOTE_HOVERED;
             }
         })
         .detach();
+    }
+
+    /// The pointer came onto the rail's note or left it. Once it has left,
+    /// the note stays a little longer, however long it was held.
+    pub(super) fn hover_removed_note(&mut self, hovered: bool) {
+        self.builder.removed_hovered = hovered;
+        if !hovered {
+            let least = Instant::now() + REMOVED_NOTE_LEFT;
+            self.builder.removed_until = self.builder.removed_until.max(Some(least));
+        }
     }
 
     pub(super) fn select_builder(
@@ -929,6 +956,32 @@ mod tests {
             .map(|s| s.sections[0].title.clone())
             .collect();
         assert_eq!(titles, ["D", "B", "A"]);
+    }
+
+    #[test]
+    fn the_note_stays_under_the_pointer_and_a_while_after() {
+        let now = Instant::now();
+        let secs = Duration::from_secs;
+        // Its time is up, but the pointer is on it.
+        assert_eq!(
+            note_stays(true, now, now + secs(5)),
+            Some(REMOVED_NOTE_LEFT)
+        );
+        // Left alone, until its time.
+        assert_eq!(note_stays(false, now + secs(3), now), Some(secs(3)));
+        assert_eq!(note_stays(false, now, now), None);
+        assert_eq!(note_stays(false, now, now + secs(1)), None);
+    }
+
+    #[test]
+    fn every_recorded_change_is_a_step_of_its_own() {
+        // What tells one note on the rail from the next.
+        let mut h = History::default();
+        h.record(titled("A"));
+        let first = h.steps();
+        h.step(false, &titled("B"));
+        h.record(titled("C"));
+        assert_ne!(h.steps(), first);
     }
 
     #[test]

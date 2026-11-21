@@ -639,7 +639,7 @@ impl Shell {
                 .id("rail-removed")
                 // It stays while the pointer is on it.
                 .on_hover(cx.listener(|this, hovered: &bool, _, _| {
-                    this.builder.removed_hovered = *hovered;
+                    this.hover_removed_note(*hovered);
                 }))
                 .flex()
                 .absolute()

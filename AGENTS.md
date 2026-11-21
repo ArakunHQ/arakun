@@ -111,6 +111,8 @@ cargo test --locked --no-default-features <module>   # only the modules you touc
 (cd relay && npx tsc --noEmit)
 # teams/ changed
 (cd teams && npm ci && npm run check)
+# ios/ changed (macOS with Xcode)
+(cd ios/ArakunKit && swift test)
 ```
 
 Leave the rest to CI on the draft pull request: the full `cargo test`, the

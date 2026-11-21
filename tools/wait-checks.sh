@@ -7,7 +7,8 @@
 #
 # It waits for the checks main's ruleset requires, apart from "Human approval",
 # which waits for a review that only comes after `gh pr ready`. It also waits
-# for the macOS job when the diff touches macOS code. Other checks, such as the
+# for the macOS job when the diff touches macOS code, and for the iOS job when
+# it touches the iOS app or what it reads. Other checks, such as the
 # macOS job for other changes and CodeQL, can still be running: they take a
 # shared runner pool, and waiting for them cost up to 100 minutes a pull request.
 #
@@ -18,6 +19,7 @@ set -euo pipefail
 export LC_ALL=C
 
 MACOS_CHECK="Clippy and tests (macOS, no browser)"
+IOS_CHECK="iOS (Swift tests and simulator build)"
 SKIP_CHECK="Human approval"
 INTERVAL=20
 TIMEOUT_MIN=${WAIT_CHECKS_TIMEOUT:-60}
@@ -70,6 +72,11 @@ classify() {
   else
     echo "The diff touches no macOS code; not waiting for the macOS job."
     wanted=$required
+  fi
+  # The paths ci.yml's `changes` job runs the iOS job for.
+  if [ -n "$files" ] && grep -qE '^(ios|phone)/|^assets/brand/mascot\.json$|^assets/fonts/|^\.github/workflows/ci\.yml$|^\.github/actions/' <<< "$files"; then
+    echo "Waiting for the iOS job too: the diff touches the iOS app or what it reads."
+    wanted=$(printf '%s\n%s\n' "$wanted" "$IOS_CHECK")
   fi
   wanted=$(grep -v '^$' <<< "$wanted" || true)
 }

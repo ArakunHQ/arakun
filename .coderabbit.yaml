@@ -70,6 +70,7 @@ reviews:
           - "teams/**"
           - "src/arakun_teams/**"
           - "phone/**"
+          - "ios/ArakunKit/**"
           - "**/Cargo.toml"
           - "Cargo.lock"
           - "deny.toml"
@@ -98,7 +99,7 @@ reviews:
     behavior across several files or views (new panels, menus, settings,
     shortcuts or background work) that stays out of the paths and kinds of
     change listed next. High or higher: any change to
-    core/src/phone (end-to-end encryption and its wire format), relay/, phone/, teams/ or src/arakun_teams/;
+    core/src/phone (end-to-end encryption and its wire format), relay/, phone/, ios/ArakunKit, teams/ or src/arakun_teams/;
     the headless agent sandbox, its policy and its broker (src/headless*);
     the control socket (src/control.rs); code that reads, stores or sends
     tokens and API keys (core/src/account.rs, core/src/fetch.rs, src/voice.rs,
@@ -187,7 +188,10 @@ reviews:
           wire.rs, relay.rs and the rest), and neither phone/*.js nor
           phone/test/vectors/ changes in the same pull request. Fail the same
           way the other way round: phone/*.js changes the format and core/src/phone
-          does not. Pass when the change is a refactor with no change to bytes
+          does not. ios/ArakunKit/ (E2E.swift, RelayLink.swift, Models.swift)
+          speaks the same format: fail too when the format changes on either
+          side and ios/ArakunKit does not follow, or ios/ArakunKit changes it
+          alone. Pass when the change is a refactor with no change to bytes
           on the wire and the description says so, or when neither side
           changes the format.
       - name: Setup scripts stay in step
@@ -246,6 +250,9 @@ reviews:
     - path: "phone/**"
       instructions: |
         The phone web app talks to the Rust side in `core/src/phone` through the relay. A change to the encryption or message format must match `core/src/phone` and the test vectors. Never log keys, tokens or message contents. The app embeds these files, so a change here ships with the desktop build. `sw.js` caches nothing on purpose; flag a change that starts caching the page.
+    - path: "ios/**"
+      instructions: |
+        The native iOS app. `ios/ArakunKit` is the phone page's protocol in Swift (`phone/relay.js` and `phone/e2e.js`): a change to its encryption, framing or messages must match `core/src/phone`, and its tests read `phone/test/vectors`. Review crypto as there: nonce reuse, frame order, key handling. Pairing credentials stay in the Keychain, never in UserDefaults or logs. Views take colors, fonts and corners from `Arakun/Theme.swift`, never hand-written values. Code behind `#if DEBUG` (the `-demo` mode) must not reach a release build.
     - path: "relay/**"
       instructions: |
         The relay is a Cloudflare Worker that forwards encrypted frames between the desktop and the phone. It must never see plaintext or keys. Check limits and input validation on every frame, authentication on admin routes, and Durable Object state that can grow without a bound. A new route or limit needs a test in `relay/test`.

@@ -38,19 +38,28 @@ xcrun simctl launch booted com.arakun.ios -demo -demoOpen s1
 
 The app follows the brand book (`.claude/skills/arakun-brand`): black and white grounds
 with no tint, amber only for the one primary button and the live dot, Geist and Geist
-Mono (`Arakun/Fonts`, from `assets/fonts`), the line icons from `assets/icons`, and the
+Mono (`assets/fonts`, which `project.yml` reads from there), the line icons from `assets/icons`, and the
 raccoon. Every color, font and corner comes from `Arakun/Theme.swift`; it
 follows the system's dark or light setting.
 
 The raccoon is alive, as on the desktop: `Arakun/Mascot.swift` is a smaller port of
-`core/src/mascot.rs`, drawn from the same `assets/brand/mascot.json` (copied to
-`Arakun/mascot.json`). It blinks and looks around, and shows the mood of what it
+`core/src/mascot.rs`, drawn from the same `assets/brand/mascot.json` (read from there,
+not copied). It blinks and looks around, and shows the mood of what it
 watches: thinking dots, reading while the agent works, a hopping question mark when a
 session needs you, a tick when a turn ends, a shake and an exclamation mark on an
 error, and sleep when the computer is offline or nothing happens for two minutes. A tap
 makes it hop. One raccoon per screen: the pairing screen, the inbox header (the mood of
 all sessions) and the composer of a session (that session's mood). With Reduce Motion
 it holds still.
+
+## CI and TestFlight
+
+CI's iOS job (`.github/workflows/ci.yml`) runs `swift test` and builds the app unsigned
+for the simulator when `ios/`, `phone/`, the mascot's drawing or the fonts change.
+`.github/workflows/ios-release.yml` signs the app and uploads it to TestFlight: after
+every release, or by hand (`gh workflow run ios-release.yml --ref main`). It needs an
+App Store Connect API key in the `testflight` environment and skips until there is one;
+the steps are at the top of that workflow.
 
 ## Pairing
 

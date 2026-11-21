@@ -91,8 +91,10 @@ off, and do not add code behind them.
 CI runs the checks below that a pull request can affect. A change to docs, `iso/` or
 `tools/` (apart from `tools/rustfmt.sh` and the layout audit) alone skips the Rust
 jobs, the relay job runs only when `relay/`, `phone/` or CI itself changes, the teams
-job only when `teams/` or CI itself changes, cargo-deny runs only when `Cargo.toml`,
-`Cargo.lock` or `deny.toml` changes, and zizmor runs only when `.github/` changes.
+job only when `teams/` or CI itself changes, the iOS job only when `ios/`, `phone/`,
+the mascot's drawing or the fonts in `assets/`, or CI itself changes (a change to `ios/`
+alone skips the Rust jobs), cargo-deny runs only when `Cargo.toml`, `Cargo.lock` or
+`deny.toml` changes, and zizmor runs only when `.github/` changes.
 
 CI is the gate, not your machine. Before you push, run the quick checks for what you
 changed: `tools/rustfmt.sh --check` and clippy for Rust, and the tests of the modules
@@ -119,6 +121,11 @@ cargo deny check
 
 # teams/ changed
 (cd teams && npm ci && npx tsc --noEmit && npx vitest run)
+
+# ios/ changed (macOS with Xcode; brew install xcodegen)
+(cd ios/ArakunKit && swift test)
+(cd ios && xcodegen generate && xcodebuild build -quiet -project Arakun.xcodeproj \
+  -scheme Arakun -destination "generic/platform=iOS Simulator" CODE_SIGNING_ALLOWED=NO)
 
 # .github/ changed (brew install zizmor, or pipx install zizmor)
 zizmor .github

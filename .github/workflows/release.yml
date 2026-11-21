@@ -1134,6 +1134,21 @@ jobs:
     permissions:
       contents: read
 
+  # The iOS app ships with the release too: once the release is out, upload
+  # it to TestFlight from the tag. It skips pre-releases, and skips without
+  # failing until the `testflight` environment has its App Store Connect key.
+  ios:
+    name: iOS
+    needs: release
+    uses: $/.github/workflows/ios-release.yml
+    # It lives in the `testflight` environment, which the called job uses.
+    secrets:
+      APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+      APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+      APP_STORE_CONNECT_KEY: ${{ secrets.APP_STORE_CONNECT_KEY }}
+    permissions:
+      contents: read
+
   # A nightly build of main, published as a pre-release with no approval. A
   # job of its own, like the release job: it runs no code from the
   # repository, and only it can read the nightly key. That key lives in the

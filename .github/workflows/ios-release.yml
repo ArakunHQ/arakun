@@ -1,0 +1,157 @@
+name: iOS release
+
+# Signs the iOS app (ios/) and uploads it to App Store Connect, where it shows
+# in TestFlight. CI's iOS job only builds it unsigned; this is the delivery.
+#
+# Two ways in:
+#
+# - A release: release.yml calls this after its publish job, on the v* tag.
+#   Pre-releases (a `-` in the tag) don't upload. The app's version is the
+#   tag's.
+# - By hand, for a TestFlight build between releases, on main or a v* tag:
+#
+#     gh workflow run ios-release.yml --ref main
+#
+#   Off a tag, the version is Cargo.toml's.
+#
+# The build number is the UTC date and time (20261121.1930), so it always goes
+# up, whichever way in.
+#
+# The `testflight` environment holds an App Store Connect API key (Users and
+# Access, Integrations, a team key with the App Manager role). With it Xcode
+# makes and renews the signing certificate and the profile itself, so no
+# certificate is stored here:
+#
+#   APP_STORE_CONNECT_KEY_ID      the key's id
+#   APP_STORE_CONNECT_ISSUER_ID   the issuer id shown above the keys
+#   APP_STORE_CONNECT_KEY         the .p8 file's contents
+#
+# Until they are set, the job says so and skips, so a release is never held up
+# by it. The app record (bundle id com.arakun.ios, team V9JGU28UV7) must exist
+# in App Store Connect before the first upload. Its deployment rules should let
+# main and v* tags through.
+
+on:
+  workflow_call:
+    # A called workflow gets an environment secret only when the caller passes
+    # it; otherwise it is empty.
+    secrets:
+      APP_STORE_CONNECT_KEY_ID:
+        required: false
+      APP_STORE_CONNECT_ISSUER_ID:
+        required: false
+      APP_STORE_CONNECT_KEY:
+        required: false
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  testflight:
+    name: Upload to TestFlight
+    if: >-
+      (startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-'))
+      || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
+    runs-on: macos-latest
+    timeout-minutes: 45
+    environment:
+      name: testflight
+      url: https://appstoreconnect.apple.com/apps
+    # One upload at a time; never one cancelled half way.
+    concurrency:
+      group: ios-release
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    env:
+      KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+      ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+    steps:
+      - name: Check the App Store Connect key is set
+        id: key
+        env:
+          KEY: ${{ secrets.APP_STORE_CONNECT_KEY }}
+        run: |
+          if [ -z "$KEY_ID" ] || [ -z "$ISSUER_ID" ] || [ -z "$KEY" ]; then
+            echo "::notice::The testflight environment has no App Store Connect key yet; skipping the upload"
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.key.outputs.ready == 'true'
+        with:
+          persist-credentials: false
+
+      - name: Version and build number
+        id: version
+        if: steps.key.outputs.ready == 'true'
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          case "$REF" in
+            refs/tags/v*) version=${REF#refs/tags/v} ;;
+            *) version=$(sed -n 's/^version = "\([0-9.]*\).*"/\1/p' Cargo.toml | head -n 1) ;;
+          esac
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::'$version' is not a version"; exit 1; }
+          build=$(date -u +%Y%m%d.%H%M)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "build=$build" >> "$GITHUB_OUTPUT"
+          echo "::notice::Arakun for iOS $version ($build)"
+
+      - name: Xcode
+        if: steps.key.outputs.ready == 'true'
+        run: xcodebuild -version
+
+      # The .xcodeproj is generated, not checked in.
+      - name: xcodegen
+        if: steps.key.outputs.ready == 'true'
+        working-directory: ios
+        run: |
+          brew install xcodegen
+          xcodegen generate
+
+      - name: Write the API key
+        if: steps.key.outputs.ready == 'true'
+        env:
+          KEY: ${{ secrets.APP_STORE_CONNECT_KEY }}
+        run: |
+          umask 077
+          printf '%s\n' "$KEY" > "$RUNNER_TEMP/AuthKey.p8"
+
+      - name: Archive
+        if: steps.key.outputs.ready == 'true'
+        working-directory: ios
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          BUILD: ${{ steps.version.outputs.build }}
+        run: >-
+          xcodebuild archive -quiet
+          -project Arakun.xcodeproj -scheme Arakun -configuration Release
+          -destination "generic/platform=iOS"
+          -archivePath "$RUNNER_TEMP/Arakun.xcarchive"
+          -allowProvisioningUpdates
+          -authenticationKeyPath "$RUNNER_TEMP/AuthKey.p8"
+          -authenticationKeyID "$KEY_ID"
+          -authenticationKeyIssuerID "$ISSUER_ID"
+          MARKETING_VERSION="$VERSION"
+          CURRENT_PROJECT_VERSION="$BUILD"
+
+      # ExportOptions.plist says to sign for the App Store and upload.
+      - name: Sign and upload
+        if: steps.key.outputs.ready == 'true'
+        working-directory: ios
+        run: >-
+          xcodebuild -exportArchive
+          -archivePath "$RUNNER_TEMP/Arakun.xcarchive"
+          -exportOptionsPlist ExportOptions.plist
+          -exportPath "$RUNNER_TEMP/export"
+          -allowProvisioningUpdates
+          -authenticationKeyPath "$RUNNER_TEMP/AuthKey.p8"
+          -authenticationKeyID "$KEY_ID"
+          -authenticationKeyIssuerID "$ISSUER_ID"
+
+      - name: Remove the API key
+        if: always() && steps.key.outputs.ready == 'true'
+        run: rm -f "$RUNNER_TEMP/AuthKey.p8"

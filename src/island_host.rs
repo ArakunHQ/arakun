@@ -536,6 +536,12 @@ mod host {
         #[cfg(windows)]
         external: super::external::Sessions,
         launched: Option<Instant>,
+        /// An app connected and has left since: the host goes too once nothing holds it.
+        #[cfg(target_os = "macos")]
+        app_left: bool,
+        /// The wait before quitting; replacing it drops the one before.
+        #[cfg(target_os = "macos")]
+        leaving: Option<Task<()>>,
         /// When a card's button or a row was last pressed.
         button_at: Option<Instant>,
         /// The voice call going on, and its number: what a finished one says is ignored.
@@ -635,6 +641,10 @@ mod host {
                 #[cfg(windows)]
                 external: super::external::Sessions::default(),
                 launched: None,
+                #[cfg(target_os = "macos")]
+                app_left: false,
+                #[cfg(target_os = "macos")]
+                leaving: None,
                 button_at: None,
                 #[cfg(feature = "coderlabs")]
                 call: None,
@@ -666,6 +676,13 @@ mod host {
             match msg {
                 Msg::Hello { conn, pid, out } => {
                     eprintln!("arakun: island: app {pid} connected");
+                    // It came up: a Dock click after it quits must start it again.
+                    self.launched = None;
+                    #[cfg(target_os = "macos")]
+                    {
+                        self.app_left = false;
+                        self.leaving = None;
+                    }
                     self.app = Some(AppLink {
                         conn,
                         pid,
@@ -712,8 +729,11 @@ mod host {
                     });
                     self.push(cx);
                     #[cfg(target_os = "macos")]
-                    if !busy {
-                        self.leave_with_app(cx);
+                    {
+                        self.app_left = true;
+                        // A full wait from this departure, not an earlier one.
+                        self.leaving = None;
+                        self.leave_if_alone(cx);
                     }
                 }
                 Msg::Gone { .. } => {}
@@ -735,14 +755,21 @@ mod host {
 
         /// On macOS this process counts as a running Arakun.app. While it stays,
         /// the island outlives Quit and the Dock brings this process forward
-        /// instead of starting the app (`Msg::Reopen` covers that). So it quits
-        /// with the app, unless a headless session still runs.
+        /// instead of starting the app (`Msg::Reopen` covers that). So once the
+        /// app has left, it quits as soon as no headless session runs.
         #[cfg(target_os = "macos")]
-        fn leave_with_app(&mut self, cx: &mut Context<Self>) {
-            cx.spawn(async move |this, cx| {
+        fn leave_if_alone(&mut self, cx: &mut Context<Self>) {
+            if !self.app_left || self.leaving.is_some() || self.held() {
+                return;
+            }
+            self.leaving = Some(cx.spawn(async move |this, cx| {
                 cx.background_executor().timer(LEAVE_AFTER).await;
                 let alone = this.update(cx, |host, _| {
-                    host.app.is_none() && !host.headless.rows.iter().any(|r| r.status.active())
+                    let alone = host.app_left && !host.held();
+                    if !alone {
+                        host.leaving = None;
+                    }
+                    alone
                 });
                 if alone.unwrap_or(false) {
                     eprintln!("arakun: island: the app left; quitting with it");
@@ -750,8 +777,13 @@ mod host {
                     let _ = std::fs::remove_file(proto::socket_path());
                     cx.update(|cx| cx.quit());
                 }
-            })
-            .detach();
+            }));
+        }
+
+        /// An app or a running headless session keeps the host.
+        #[cfg(target_os = "macos")]
+        fn held(&self) -> bool {
+            self.app.is_some() || self.headless.rows.iter().any(|r| r.status.active())
         }
 
         /// What any source asks of the island.
@@ -868,6 +900,9 @@ mod host {
             if changed {
                 self.push(cx);
             }
+            // The last headless session that held the host after the app left ended.
+            #[cfg(target_os = "macos")]
+            self.leave_if_alone(cx);
         }
 
         /// An agent outside Arakun changed: its row, and a card when its turn

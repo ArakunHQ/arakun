@@ -641,7 +641,7 @@ impl Thread {
 
     // ---- saving and reopening ----------------------------------------------
 
-    pub(super) fn subagent_records(&self, cx: &gpui::App) -> Vec<SubagentRecord> {
+    pub fn subagent_records(&self, cx: &gpui::App) -> Vec<SubagentRecord> {
         self.subagents
             .iter()
             .filter(|s| !s.mirrored)

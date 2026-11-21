@@ -49,8 +49,7 @@ pub(super) struct Builder {
     pub sel: Option<BuilderSel>,
     pub inputs: Option<BuilderInputs>,
     pub prompt: Option<BuilderPrompt>,
-    pub undo: Vec<Sidebar>,
-    pub redo: Vec<Sidebar>,
+    pub history: History,
     pub flash: Option<SharedString>,
     /// The item or segment being dragged, to dim where it was.
     pub lifted: Option<BuilderSel>,
@@ -110,6 +109,64 @@ impl Render for DraggedSection {
 
 const UNDO_KEEP: usize = 100;
 
+/// The layouts to go back and forward to.
+#[derive(Default)]
+pub(super) struct History {
+    undo: Vec<Sidebar>,
+    redo: Vec<Sidebar>,
+    /// Text is being typed into a field: its first key made the undo step,
+    /// the keys after it join that step.
+    typing: bool,
+}
+
+impl History {
+    pub(super) fn can_undo(&self) -> bool {
+        !self.undo.is_empty()
+    }
+
+    pub(super) fn can_redo(&self) -> bool {
+        !self.redo.is_empty()
+    }
+
+    /// A change was made to `before`: one step to undo.
+    fn record(&mut self, before: Sidebar) {
+        self.undo.push(before);
+        if self.undo.len() > UNDO_KEEP {
+            self.undo.remove(0);
+        }
+        self.redo.clear();
+        self.typing = false;
+    }
+
+    /// A key was typed into a field of `before`. A whole burst of typing
+    /// is one step, not one per key.
+    fn record_typed(&mut self, before: Sidebar) {
+        if !self.typing {
+            self.record(before);
+            self.typing = true;
+        }
+    }
+
+    /// The fields were left: what is typed next is a step of its own.
+    fn settle(&mut self) {
+        self.typing = false;
+    }
+
+    /// The layout one step back (or forward again), `current` kept for the
+    /// way back. `None` when there is no step.
+    fn step(&mut self, redo: bool, current: &Sidebar) -> Option<Sidebar> {
+        let (from, to) = if redo {
+            (&mut self.redo, &mut self.undo)
+        } else {
+            (&mut self.undo, &mut self.redo)
+        };
+        let next = from.pop()?;
+        to.push(current.clone());
+        self.typing = false;
+        Some(next)
+    }
+}
+
 /// A titled block of the side columns.
 fn panel_title(text: &str) -> gpui::Div {
     div()
@@ -137,11 +194,7 @@ impl Shell {
         let before = self.sidebar.clone();
         f(&mut self.sidebar);
         if self.sidebar != before {
-            self.builder.undo.push(before);
-            if self.builder.undo.len() > UNDO_KEEP {
-                self.builder.undo.remove(0);
-            }
-            self.builder.redo.clear();
+            self.builder.history.record(before);
             self.sidebar.save();
         }
         // A selection can point past what is left.
@@ -172,13 +225,8 @@ impl Shell {
     }
 
     pub(super) fn undo_sidebar(&mut self, redo: bool, cx: &mut Context<Self>) {
-        let (from, to) = if redo {
-            (&mut self.builder.redo, &mut self.builder.undo)
-        } else {
-            (&mut self.builder.undo, &mut self.builder.redo)
-        };
-        if let Some(prev) = from.pop() {
-            to.push(std::mem::replace(&mut self.sidebar, prev));
+        if let Some(prev) = self.builder.history.step(redo, &self.sidebar) {
+            self.sidebar = prev;
             self.sidebar.save();
             self.builder.sel = None;
             self.builder.inputs = None;
@@ -189,11 +237,17 @@ impl Shell {
     pub(super) fn select_builder(
         &mut self,
         sel: BuilderSel,
-        window: &mut Window,
+        _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.select(sel, cx)
+    }
+
+    /// Selects a piece or a segment and makes the fields for it.
+    fn select(&mut self, sel: BuilderSel, cx: &mut Context<Self>) {
         self.builder.sel = Some(sel);
         self.builder.prompt = None;
+        self.builder.history.settle();
         let (name, emoji, target) = match sel {
             BuilderSel::Item(p) => {
                 let Some(item) = self.sidebar.get(p) else {
@@ -246,7 +300,7 @@ impl Shell {
             cx.subscribe(&name_input, move |this, input, ev: &InputEvent, cx| {
                 if matches!(ev, InputEvent::Changed) {
                     let text = input.read(cx).text().to_string();
-                    this.quiet_edit(cx, |s| match sel {
+                    this.typed_edit(cx, |s| match sel {
                         BuilderSel::Item(p) => {
                             if let Some(i) = s.get_mut(p) {
                                 i.label = Some(text).filter(|t| !t.trim().is_empty());
@@ -263,7 +317,7 @@ impl Shell {
             cx.subscribe(&emoji_input, move |this, input, ev: &InputEvent, cx| {
                 if let (InputEvent::Changed, BuilderSel::Item(p)) = (ev, sel) {
                     let text = input.read(cx).text().trim().to_string();
-                    this.quiet_edit(cx, |s| {
+                    this.typed_edit(cx, |s| {
                         if let Some(i) = s.get_mut(p) {
                             i.emoji = Some(text).filter(|t| !t.is_empty());
                         }
@@ -275,7 +329,7 @@ impl Shell {
             subs.push(cx.subscribe(t, move |this, input, ev: &InputEvent, cx| {
                 if matches!(ev, InputEvent::Changed) {
                     let text = input.read(cx).text().to_string();
-                    this.quiet_edit(cx, |s| {
+                    this.typed_edit(cx, |s| {
                         if let Some(i) = s.get_mut(p) {
                             match &mut i.piece {
                                 Piece::Pin {
@@ -301,7 +355,6 @@ impl Shell {
                 }
             }));
         }
-        let _ = window;
         self.builder.inputs = Some(BuilderInputs {
             sel,
             name: name_input,
@@ -312,7 +365,20 @@ impl Shell {
         cx.notify();
     }
 
-    /// A change typed in a field: saved, but not one undo step per key.
+    /// A change typed in a field: saved at every key, and one undo step for
+    /// the whole burst of typing.
+    fn typed_edit(&mut self, cx: &mut Context<Self>, f: impl FnOnce(&mut Sidebar)) {
+        let before = self.sidebar.clone();
+        f(&mut self.sidebar);
+        if self.sidebar != before {
+            self.builder.history.record_typed(before);
+            self.sidebar.save();
+        }
+        cx.notify();
+    }
+
+    /// A change that is using the sidebar, not editing it (folding a
+    /// segment): saved, but not a step to undo.
     pub(super) fn quiet_edit(&mut self, cx: &mut Context<Self>, f: impl FnOnce(&mut Sidebar)) {
         f(&mut self.sidebar);
         self.sidebar.save();
@@ -368,30 +434,35 @@ impl Shell {
         cx.notify();
     }
 
-    /// A click on a palette piece: at the end of the selected segment, else
-    /// of the first scrolling one.
+    /// The segment a click on a palette piece adds to: the selected one, or
+    /// the one that holds the selected piece, else the sidebar's own choice
+    /// (`Sidebar::home`). `None` when the sidebar has no segment.
+    pub(super) fn add_target(&self) -> Option<usize> {
+        match self.builder.sel {
+            Some(BuilderSel::Section(s)) | Some(BuilderSel::Item((s, _))) => Some(s),
+            None => self.sidebar.home(),
+        }
+        .filter(|s| *s < self.sidebar.sections.len())
+    }
+
+    /// A click on a palette piece: at the end of `add_target`, and selected,
+    /// so a new link or command can be named right away.
     pub(super) fn add_piece(&mut self, piece: Piece, cx: &mut Context<Self>) {
-        let target = match self.builder.sel {
-            Some(BuilderSel::Section(s)) => Some(s),
-            Some(BuilderSel::Item((s, _))) => Some(s),
-            None => self
-                .sidebar
-                .sections
-                .iter()
-                .position(|s| s.mode == Mode::Scroll)
-                .or(Some(0)),
-        };
-        let Some(s) = target.filter(|s| *s < self.sidebar.sections.len()) else {
+        let Some(s) = self.add_target() else {
             self.change_sidebar(cx, |sb| {
                 let at = sb.add_section(0);
                 sb.insert(Item::new(piece), (at, 0));
             });
+            self.select(BuilderSel::Item((0, 0)), cx);
             return;
         };
         let end = self.sidebar.sections[s].items.len();
         self.change_sidebar(cx, |sb| {
             sb.insert(Item::new(piece), (s, end));
         });
+        // Last in its segment, also when it moved there from the same one.
+        let last = self.sidebar.sections[s].items.len().saturating_sub(1);
+        self.select(BuilderSel::Item((s, last)), cx);
     }
 
     /// The tab on screen as a pin, when it is a page or a file.
@@ -422,6 +493,7 @@ impl Shell {
         self.builder.sel = None;
         self.builder.inputs = None;
         self.builder.prompt = None;
+        self.builder.history.settle();
     }
 
     pub(super) fn drop_piece(&mut self, d: &DraggedPiece, to: ItemPath, cx: &mut Context<Self>) {
@@ -572,7 +644,10 @@ impl Shell {
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.change_sidebar(cx, |s| {
                         s.remove(p);
-                    })
+                    });
+                    // The next piece slides into this place; the fields
+                    // still hold what was typed for the one that went.
+                    this.clear_builder_selection();
                 })),
             ),
         )
@@ -699,7 +774,8 @@ impl Shell {
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.change_sidebar(cx, |s| {
                                 s.ungroup_section(si);
-                            })
+                            });
+                            this.clear_builder_selection();
                         })),
                     ),
                 )
@@ -716,9 +792,62 @@ impl Shell {
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.change_sidebar(cx, |s| {
                             s.remove_section(si);
-                        })
+                        });
+                        this.clear_builder_selection();
                     })),
                 ),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn titled(title: &str) -> Sidebar {
+        let mut s = Sidebar::default();
+        s.sections[0].title = title.into();
+        s
+    }
+
+    #[test]
+    fn a_burst_of_typing_is_one_step_to_undo() {
+        let mut h = History::default();
+        assert!(!h.can_undo() && !h.can_redo());
+        // "Top" is renamed one key at a time.
+        h.record_typed(titled("Top"));
+        h.record_typed(titled("T"));
+        h.record_typed(titled("To"));
+        let back = h.step(false, &titled("Tools")).expect("one step");
+        assert_eq!(back.sections[0].title, "Top");
+        assert!(!h.can_undo(), "the keys in between are not steps");
+        let again = h.step(true, &back).expect("redo");
+        assert_eq!(again.sections[0].title, "Tools");
+    }
+
+    #[test]
+    fn typing_after_leaving_the_field_is_its_own_step() {
+        let mut h = History::default();
+        h.record_typed(titled("A"));
+        h.settle();
+        h.record_typed(titled("B"));
+        // A change that is not typed ends the burst too.
+        h.record(titled("C"));
+        h.record_typed(titled("D"));
+        let titles: Vec<_> = std::iter::from_fn(|| h.step(false, &titled("now")))
+            .map(|s| s.sections[0].title.clone())
+            .collect();
+        assert_eq!(titles, ["D", "C", "B", "A"]);
+    }
+
+    #[test]
+    fn a_new_change_drops_what_could_be_redone() {
+        let mut h = History::default();
+        h.record(titled("A"));
+        h.step(false, &titled("B"));
+        assert!(h.can_redo());
+        h.record(titled("A"));
+        assert!(!h.can_redo());
+        assert!(h.step(true, &titled("C")).is_none());
     }
 }

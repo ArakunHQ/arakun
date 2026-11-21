@@ -21,6 +21,8 @@ use super::api::DEVICE_HEADER;
 const RETRY_MIN: Duration = Duration::from_secs(1);
 const RETRY_MAX: Duration = Duration::from_secs(60);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+/// How long one address may take to answer before the next is tried.
+const ATTEMPT_TIMEOUT: Duration = Duration::from_secs(4);
 /// How long a read waits before the loop looks at what there is to send.
 const READ_TICK: Duration = Duration::from_millis(20);
 const WAIT_TICK: Duration = Duration::from_millis(100);
@@ -233,12 +235,16 @@ fn connect(dial: &Dial) -> Result<Socket, Ended> {
             .map_err(|_| Ended::Refused("The session can't go in a header.".into()))?;
         headers.insert(name, value);
     }
-    let addrs = (host.as_str(), port)
+    let mut addrs: Vec<_> = (host.as_str(), port)
         .to_socket_addrs()
-        .map_err(|e| Ended::Retry(format!("Could not resolve {host}: {e}")))?;
+        .map_err(|e| Ended::Retry(format!("Could not resolve {host}: {e}")))?
+        .collect();
+    // IPv4 first, and a short wait per address: on a network whose IPv6 is
+    // broken, each IPv6 attempt would otherwise hang for the whole timeout.
+    super::api::ipv4_first(&mut addrs);
     let stream = addrs
         .into_iter()
-        .find_map(|addr| TcpStream::connect_timeout(&addr, CONNECT_TIMEOUT).ok())
+        .find_map(|addr| TcpStream::connect_timeout(&addr, ATTEMPT_TIMEOUT).ok())
         .ok_or_else(|| Ended::Retry(format!("Could not reach {host}:{port}.")))?;
     let _ = stream.set_nodelay(true);
     let _ = stream.set_read_timeout(Some(CONNECT_TIMEOUT));

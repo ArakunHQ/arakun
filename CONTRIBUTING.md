@@ -79,7 +79,8 @@ a while and later ones are quick.
 
 The phone relay in [`relay/`](relay) is a separate TypeScript project. It needs Node 24
 or newer; see [relay/README.md](relay/README.md). So is the teams Worker in
-[`teams/`](teams); see [teams/README.md](teams/README.md).
+[`teams/`](teams); see [teams/README.md](teams/README.md). So is the cloud sessions
+rehearsal in [`cloud/`](cloud); see [cloud/README.md](cloud/README.md).
 
 ### Features you can ignore
 
@@ -91,7 +92,8 @@ off, and do not add code behind them.
 CI runs the checks below that a pull request can affect. A change to docs, `iso/` or
 `tools/` (apart from `tools/rustfmt.sh` and the layout audit) alone skips the Rust
 jobs, the relay job runs only when `relay/`, `phone/` or CI itself changes, the teams
-job only when `teams/` or CI itself changes, cargo-deny runs only when `Cargo.toml`,
+job only when `teams/` or CI itself changes, the cloud job only when `cloud/` or CI
+itself changes, cargo-deny runs only when `Cargo.toml`,
 `Cargo.lock` or `deny.toml` changes, and zizmor runs only when `.github/` changes.
 
 CI is the gate, not your machine. Before you push, run the quick checks for what you
@@ -119,6 +121,9 @@ cargo deny check
 
 # teams/ changed
 (cd teams && npm ci && npx tsc --noEmit && npx vitest run)
+
+# cloud/ changed (Node 22.18 or newer)
+(cd cloud && npm ci && npm run check && npm test)
 
 # .github/ changed (brew install zizmor, or pipx install zizmor)
 zizmor .github
@@ -314,7 +319,7 @@ that keeps one on purpose goes on its allow-list.
     in behavior), `perf`, `test`, `build` (Cargo, dependencies, tools), `ci`, `chore`
     or `revert` (`revert: <the title of the change you undo>`).
   - **scope** (optional): the part of Arakun it touches, usually the module or folder:
-    `terminal`, `agent`, `browser`, `phone`, `relay`, `teams`, `iso`, `windows`...
+    `terminal`, `agent`, `browser`, `phone`, `relay`, `teams`, `cloud`, `iso`, `windows`...
   - **description:** imperative and lower case, with no period at the end, for example
     `fix(terminal): keep the tab name on resize` or
     `feat(phone): answer permission prompts`.

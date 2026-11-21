@@ -40,8 +40,8 @@ env:
   CI_CARGO_CONFIG: profile.dev.package."*".opt-level=0
 
 jobs:
-  # Decides which of the jobs below a change needs, so a docs-only, relay-only
-  # or teams-only change does not pay for the Rust builds. The jobs are still
+  # Decides which of the jobs below a change needs, so a docs-only, relay-only,
+  # teams-only or cloud-only change does not pay for the Rust builds. The jobs are still
   # required checks: a job skipped by its `if` counts as passed, while a
   # workflow-level `paths` filter would leave the checks pending forever.
   changes:
@@ -54,6 +54,7 @@ jobs:
       rust: ${{ steps.diff.outputs.rust }}
       relay: ${{ steps.diff.outputs.relay }}
       teams: ${{ steps.diff.outputs.teams }}
+      cloud: ${{ steps.diff.outputs.cloud }}
     steps:
       - name: Sort the changed files
         id: diff
@@ -68,13 +69,13 @@ jobs:
         run: |
           if [ "$MAIN_PASSED" = true ]; then
             echo "::notice::CI already passed on main for $AFTER, so every job skips"
-            { echo rust=false; echo relay=false; echo teams=false; } >> "$GITHUB_OUTPUT"
+            { echo rust=false; echo relay=false; echo teams=false; echo cloud=false; } >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
           everything() {
             echo "::notice::$1, so every job runs"
-            { echo rust=true; echo relay=true; echo teams=true; } >> "$GITHUB_OUTPUT"
+            { echo rust=true; echo relay=true; echo teams=true; echo cloud=true; } >> "$GITHUB_OUTPUT"
             exit 0
           }
 
@@ -99,14 +100,16 @@ jobs:
           rust=false
           relay=false
           teams=false
+          cloud=false
           while IFS= read -r f; do
             [ -n "$f" ] || continue
             case "$f" in
               # How CI itself runs: test everything with it.
-              .github/workflows/ci.yml | .github/actions/*) rust=true relay=true teams=true ;;
+              .github/workflows/ci.yml | .github/actions/*) rust=true relay=true teams=true cloud=true ;;
               # The relay job also runs the phone tests.
               relay/*) relay=true ;;
               teams/*) teams=true ;;
+              cloud/*) cloud=true ;;
               # The app embeds phone/ (rust_embed) and tests against its vectors.
               phone/*) rust=true relay=true ;;
               # The browser job prepares CEF with it.
@@ -126,8 +129,8 @@ jobs:
             esac
           done <<< "$files"
 
-          echo "rust=$rust relay=$relay teams=$teams"
-          { echo "rust=$rust"; echo "relay=$relay"; echo "teams=$teams"; } >> "$GITHUB_OUTPUT"
+          echo "rust=$rust relay=$relay teams=$teams cloud=$cloud"
+          { echo "rust=$rust"; echo "relay=$relay"; echo "teams=$teams"; echo "cloud=$cloud"; } >> "$GITHUB_OUTPUT"
 
   # Clippy and the tests build different artifacts (metadata vs. code), so they
   # run side by side instead of one after the other.
@@ -475,3 +478,31 @@ jobs:
       - run: npm ci
       - run: npx tsc --noEmit
       - run: npx vitest run
+
+  # The cloud sessions rehearsal is TypeScript apart from the app, like the
+  # relay; its tests run the budget Durable Object and R2 inside workerd.
+  cloud:
+    name: Cloud rehearsal (types and tests)
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.cloud != 'false' }}
+    runs-on: depot-ubuntu-24.04
+    defaults:
+      run:
+        working-directory: cloud
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # CPU and memory use for the weekly runner-sizing report.
+      - uses: $/.github/actions/runner-usage
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: cloud/package-lock.json
+
+      - run: npm ci
+      - run: npm run check
+      - run: npm test

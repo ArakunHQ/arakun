@@ -210,6 +210,7 @@ reviews:
     - "!Cargo.lock"
     - "!relay/package-lock.json"
     - "!teams/package-lock.json"
+    - "!cloud/package-lock.json"
     - "!assets/**"
     - "!docs/screenshots/**"
     - "!phone/*.png"
@@ -249,6 +250,9 @@ reviews:
     - path: "teams/**"
       instructions: |
         The teams Worker signs users in with GitHub and keeps per-user feature flags in D1. It must never store or log the GitHub token or a session token; the database holds only SHA-256 hashes of sessions. Users are keyed by numeric GitHub ID, never by login. Every endpoint that needs a user goes through `session()`, and every team feature checks its flag on the server. Admin routes compare `ADMIN_SECRET` in constant time. No GitHub IDs of real users belong in the repository. A schema change is a new file in `teams/migrations`, never an edit to an applied one. A new route or check needs a test in `teams/test`.
+    - path: "cloud/**"
+      instructions: |
+        A local rehearsal of cloud sessions on Cloudflare Containers; nothing in it is deployed. The budget Durable Object must never let a lease outlive its reservation: check that every path that boots a machine first commits the lease and its alarm, that failures release the lease only after the machine is confirmed stopped, and that the monthly, per-task and per-step limits in `cloud/src/budget.ts` hold. Requests must not accept a host, repository, command, credential or upload. The workspace checkpoint accepts only the fixed fixture paths and formats, and the SQLite pointer moves only after an R2 read-back. A change to these rules needs a test in `cloud/test`.
     - path: "src/headless*/**"
       instructions: |
         This is the security boundary for headless agents. `sandbox.rs` must keep credentials, the host's sockets and the network out of the sandbox unless a `--allow` grants them. `policy.rs` reads commands the way a shell would; a new rule must hold up against quoting, `;`, `&&`, pipes, `$(…)`, `bash -c` and env prefixes, and must err toward asking. Actions in `broker.rs` that send, push, publish or pay must wait for the user's approval. Ask for a test for every new policy rule or way around one.

@@ -1,0 +1,16 @@
+{
+  "compilerOptions": {
+    "target": "es2022",
+    "module": "es2022",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "lib": ["es2022"],
+    "skipLibCheck": true,
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "types": ["@cloudflare/workers-types"]
+  },
+  // Only the Worker. The runner runs in Bun inside the container and the tests
+  // in Node; tsconfig.bun.json checks those.
+  "include": ["src"]
+}

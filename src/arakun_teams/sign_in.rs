@@ -430,7 +430,7 @@ impl Render for SignInDialog {
         } else {
             self.render_flow(cx)
         };
-        ui::modal_panel("teams-sign-in", 440.)
+        ui::modal_panel("teams-sign-in", 440., title.clone())
             .track_focus(&self.focus)
             .on_key_down(cx.listener(|this, ev: &gpui::KeyDownEvent, _, cx| {
                 if ev.keystroke.key == "escape" {

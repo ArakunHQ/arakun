@@ -12,6 +12,12 @@ and reloads one the moment it is saved; errors show above the stage with the
 line. `arakun iso` renders frames without the window, so you can look at what
 you wrote.
 
+New scene and Change in the tab start a session whose first prompt names the
+one file to write (`iso/<name>.rhai`). Write exactly that file and keep its
+name: the tab selects it as soon as it appears. A prompt that says the scene
+is a copy of a built-in one means the file already holds that starter; edit
+it in place.
+
 Read `reference.md` (next to this file) for every function before writing.
 `iso/billing.rhai` (a coin meter), `iso/cpu.rhai` (a circuit board) and
 `iso/ec2.rhai` (a guided tour with captions, drawn-on labels and a spotlight)

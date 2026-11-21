@@ -38,15 +38,14 @@ pub fn slug(text: &str) -> String {
     }
 }
 
-/// `dir/<base>.rhai`, or the first of `<base>-2.rhai`, `-3`… not on disk.
-pub fn free_path(dir: &Path, base: &str) -> PathBuf {
-    let first = dir.join(format!("{base}.rhai"));
-    if !first.exists() {
-        return first;
-    }
-    (2..)
-        .map(|n| dir.join(format!("{base}-{n}.rhai")))
-        .find(|p| !p.exists())
+/// `dir/<base>.rhai`, or the first of `<base>-2.rhai`, `-3`… that is
+/// neither on disk nor in `taken`: files already asked for whose agent has
+/// not written them yet.
+pub fn free_path_except(dir: &Path, base: &str, taken: &[PathBuf]) -> PathBuf {
+    let free = |p: &PathBuf| !p.exists() && !taken.contains(p);
+    std::iter::once(dir.join(format!("{base}.rhai")))
+        .chain((2..).map(|n| dir.join(format!("{base}-{n}.rhai"))))
+        .find(free)
         .expect("some number is free")
 }
 
@@ -124,11 +123,18 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         std::fs::write(d.join("cpu.rhai"), "").unwrap();
-        assert_eq!(free_path(&d, "cpu"), d.join("cpu-2.rhai"));
+        assert_eq!(free_path_except(&d, "cpu", &[]), d.join("cpu-2.rhai"));
         std::fs::write(d.join("cpu-2.rhai"), "").unwrap();
-        assert_eq!(free_path(&d, "cpu"), d.join("cpu-3.rhai"));
-        assert_eq!(free_path(&d, "db"), d.join("db.rhai"));
+        assert_eq!(free_path_except(&d, "cpu", &[]), d.join("cpu-3.rhai"));
+        assert_eq!(free_path_except(&d, "db", &[]), d.join("db.rhai"));
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn free_path_except_skips_asked_names() {
+        let d = std::env::temp_dir().join(format!("arakun-ask-except-{}", std::process::id()));
+        let asked = [d.join("rack.rhai")];
+        assert_eq!(free_path_except(&d, "rack", &asked), d.join("rack-2.rhai"));
     }
 
     #[test]

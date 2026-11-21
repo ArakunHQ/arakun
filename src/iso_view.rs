@@ -3,17 +3,22 @@
 //! frame on screen.
 
 use std::cell::{Cell, RefCell};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    Bounds, ClipboardItem, Context, FocusHandle, Hsla, InteractiveElement as _, IntoElement,
-    MouseButton, MouseDownEvent, MouseMoveEvent, ParentElement as _, Pixels, Render, RenderImage,
-    StatefulInteractiveElement as _, Styled as _, Window, canvas, div, px,
+    AppContext as _, Bounds, ClipboardItem, Context, Entity, EventEmitter, FocusHandle,
+    Focusable as _, Hsla, InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent,
+    MouseMoveEvent, ParentElement as _, Pixels, Render, RenderImage,
+    StatefulInteractiveElement as _, Styled as _, Subscription, Window, canvas, div, px,
 };
+
+use crate::input::{InputEvent, TextInput};
+use crate::iso::ask::{self, Ask};
+use crate::iso::starters::{self, Starter};
 
 use crate::iso::raster::{self, Fit};
 use crate::iso::script::{self, ScriptScene};
@@ -67,21 +72,31 @@ fn hsla(c: Rgb, alpha: f32) -> Hsla {
     .into()
 }
 
-/// A scene the tab can play: one of `iso::scenes`, a script from the
-/// project's `iso/` folder, or a script that failed to load.
+/// A scene the tab can play: one of `iso::scenes`, a starter that ships
+/// with Arakun, a script from the project's `iso/` folder, or a script that
+/// failed to load.
 // A handful per tab; boxing the script scenes would buy nothing.
 #[allow(clippy::large_enum_variant)]
 enum Entry {
     Builtin(&'static scenes::Scene),
     Script(ScriptScene),
+    Starter(&'static Starter, ScriptScene),
     Broken { path: PathBuf, error: String },
 }
 
 impl Entry {
+    /// The compiled script behind a project or starter scene.
+    fn script(&self) -> Option<&ScriptScene> {
+        match self {
+            Entry::Script(s) | Entry::Starter(_, s) => Some(s),
+            _ => None,
+        }
+    }
+
     fn name(&self) -> String {
         match self {
             Entry::Builtin(s) => s.name.into(),
-            Entry::Script(s) => s.meta.name.clone(),
+            Entry::Script(s) | Entry::Starter(_, s) => s.meta.name.clone(),
             Entry::Broken { path, .. } => path
                 .file_stem()
                 .unwrap_or_default()
@@ -93,7 +108,7 @@ impl Entry {
     fn about(&self) -> String {
         match self {
             Entry::Builtin(s) => s.about.into(),
-            Entry::Script(s) => s.meta.about.clone(),
+            Entry::Script(s) | Entry::Starter(_, s) => s.meta.about.clone(),
             Entry::Broken { .. } => String::new(),
         }
     }
@@ -101,14 +116,14 @@ impl Entry {
     fn seconds(&self) -> f32 {
         match self {
             Entry::Builtin(s) => s.seconds,
-            Entry::Script(s) => s.meta.seconds,
+            Entry::Script(s) | Entry::Starter(_, s) => s.meta.seconds,
             Entry::Broken { .. } => 1.,
         }
     }
 
     fn path(&self) -> Option<&PathBuf> {
         match self {
-            Entry::Builtin(_) => None,
+            Entry::Builtin(_) | Entry::Starter(..) => None,
             Entry::Script(s) => Some(&s.path),
             Entry::Broken { path, .. } => Some(path),
         }
@@ -116,24 +131,20 @@ impl Entry {
 
     /// The steps of a guided scene and where in each the guide stops.
     fn steps(&self) -> Option<(u32, f32)> {
-        match self {
-            Entry::Script(s) if s.meta.steps > 0 => Some((s.meta.steps, s.meta.hold)),
-            _ => None,
-        }
+        self.script()
+            .filter(|s| s.meta.steps > 0)
+            .map(|s| (s.meta.steps, s.meta.hold))
     }
 
     /// Whether it is drawn in the soft style.
     fn soft(&self) -> bool {
-        matches!(self, Entry::Script(s) if s.meta.soft)
+        self.script().is_some_and(|s| s.meta.soft)
     }
 
     fn look(&self) -> Option<Look> {
-        match self {
-            Entry::Script(s) => match s.meta.look.as_deref() {
-                Some("paper") => Some(Look::Paper),
-                Some("arakun") => Some(Look::Arakun),
-                _ => None,
-            },
+        match self.script()?.meta.look.as_deref() {
+            Some("paper") => Some(Look::Paper),
+            Some("arakun") => Some(Look::Arakun),
             _ => None,
         }
     }
@@ -141,7 +152,7 @@ impl Entry {
     fn nodes(&self, t: f32, tau: f32) -> Result<Vec<Node>, String> {
         match self {
             Entry::Builtin(s) => Ok((s.build)(t)),
-            Entry::Script(s) => s.frame_at(t, tau),
+            Entry::Script(s) | Entry::Starter(_, s) => s.frame_at(t, tau),
             Entry::Broken { error, .. } => Err(error.clone()),
         }
     }
@@ -201,8 +212,29 @@ pub struct IsoView {
     copied: Option<Instant>,
     shown: Shown,
     focus: FocusHandle,
+    /// The New scene or Change prompt, while it is open.
+    asking: Option<Asking>,
+    /// Scene files asked for and not written yet; the first of them to
+    /// appear is selected.
+    pending: Vec<PathBuf>,
+    /// Why the last request could not be sent.
+    ask_error: Option<String>,
     _watch: gpui::Task<()>,
 }
+
+/// The open prompt row: whether it changes the scene on screen, and its input.
+struct Asking {
+    change: bool,
+    input: Entity<TextInput>,
+    _sub: Subscription,
+}
+
+/// What the tab asks the shell for: a session with this title and first prompt.
+pub enum IsoEvent {
+    Ask { title: String, prompt: String },
+}
+
+impl EventEmitter<IsoEvent> for IsoView {}
 
 impl IsoView {
     pub fn new(cx: &mut Context<Self>) -> Self {
@@ -243,6 +275,9 @@ impl IsoView {
             copied: None,
             shown: Rc::default(),
             focus: cx.focus_handle(),
+            asking: None,
+            pending: Vec::new(),
+            ask_error: None,
             _watch: watch,
         };
         view.reload();
@@ -252,6 +287,10 @@ impl IsoView {
     /// Lists the scenes of `root`'s `iso/` folder ahead of the built-in ones.
     pub fn set_root(&mut self, root: PathBuf, cx: &mut Context<Self>) {
         if self.root.as_ref() != Some(&root) {
+            self.pending = std::mem::take(&mut self.pending)
+                .into_iter()
+                .filter_map(|p| pending_after_root_change(Some(p), self.root.as_deref(), &root))
+                .collect();
             self.root = Some(root);
             self.reload();
             cx.notify();
@@ -263,26 +302,26 @@ impl IsoView {
             .entries
             .get(self.scene)
             .map(|e| (e.path().cloned(), e.name()));
-        let mut entries = Vec::new();
+        let mut scripts = Vec::new();
         self.loaded = Vec::new();
         if let Some(root) = &self.root {
             let dir = root.join("iso");
             self.loaded = signature(&dir);
             for loaded in script::load_dir(&dir) {
-                entries.push(match loaded {
+                scripts.push(match loaded {
                     Ok(s) => Entry::Script(s),
                     Err((path, error)) => Entry::Broken { path, error },
                 });
             }
         }
-        // A script of the same name replaces the built-in scene.
-        let names: Vec<String> = entries.iter().map(Entry::name).collect();
-        entries.extend(
-            scenes::ALL
-                .iter()
-                .filter(|s| !names.iter().any(|n| n == s.name))
-                .map(Entry::Builtin),
-        );
+        // Compiled once: a starter never changes while Arakun runs.
+        let starters = starters::ALL
+            .iter()
+            .filter_map(|st| starters::load(st).ok().map(|s| Entry::Starter(st, s)))
+            .collect();
+        let builtins = scenes::ALL.iter().map(Entry::Builtin).collect();
+        // A script of the same name replaces the starter or built-in scene.
+        let entries = order(scripts, starters, builtins);
         self.extents = entries.iter().map(Entry::extent).collect();
         // Stay on the scene that was showing, found by file or by name.
         self.scene = current
@@ -293,8 +332,110 @@ impl IsoView {
                 })
             })
             .unwrap_or(0);
+        // A scene asked for has appeared: show it, once.
+        let asked = entries.iter().enumerate().find_map(|(i, e)| {
+            let path = e.path()?;
+            self.pending.iter().position(|p| p == path).map(|k| (i, k))
+        });
         self.entries = entries;
         self.generation += 1;
+        if let Some((i, k)) = asked {
+            self.pending.remove(k);
+            self.select(i);
+        }
+    }
+
+    /// Opens the prompt row for a new scene, or for a change to this one.
+    fn open_ask(&mut self, change: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let placeholder = if change {
+            "Describe the change"
+        } else {
+            "Describe the scene"
+        };
+        let input = cx.new(|cx| TextInput::new(placeholder, cx));
+        let sub = cx.subscribe(&input, |this, input, ev: &InputEvent, cx| match ev {
+            InputEvent::Submit => {
+                let words = input.read(cx).text().trim().to_string();
+                if !words.is_empty() {
+                    this.send_ask(words, cx);
+                }
+            }
+            InputEvent::Cancel => {
+                this.asking = None;
+                cx.notify();
+            }
+            _ => {}
+        });
+        window.focus(&input.focus_handle(cx), cx);
+        self.asking = Some(Asking {
+            change,
+            input,
+            _sub: sub,
+        });
+        self.ask_error = None;
+        cx.notify();
+    }
+
+    /// Works out the file, then asks the shell for a session that writes it.
+    fn send_ask(&mut self, words: String, cx: &mut Context<Self>) {
+        let change = self.asking.as_ref().is_some_and(|a| a.change);
+        match self.ask_for(words, change) {
+            Ok(ask) => {
+                self.asking = None;
+                self.ask_error = None;
+                cx.emit(IsoEvent::Ask {
+                    title: ask::title(&ask),
+                    prompt: ask::prompt(&ask),
+                });
+            }
+            Err(e) => self.ask_error = Some(e),
+        }
+        cx.notify();
+    }
+
+    fn ask_for(&mut self, words: String, change: bool) -> Result<Ask, String> {
+        let root = self.root.clone().ok_or("No environment is open")?;
+        let dir = root.join("iso");
+        let rel = |p: &Path| p.strip_prefix(&root).unwrap_or(p).to_path_buf();
+        let mkdir = || std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()));
+        if !change {
+            mkdir()?;
+            let path = ask::free_path_except(&dir, &ask::slug(&words), &self.pending);
+            self.pending.push(path.clone());
+            return Ok(Ask::New {
+                path: rel(&path),
+                words,
+            });
+        }
+        match self.entries.get(self.scene) {
+            Some(Entry::Script(s)) => Ok(Ask::Change {
+                path: rel(&s.path),
+                words,
+                error: None,
+                copied_from: None,
+            }),
+            Some(Entry::Broken { path, error }) => Ok(Ask::Change {
+                path: rel(path),
+                words,
+                error: Some(error.clone()),
+                copied_from: None,
+            }),
+            // Never edited where it ships: the project gets its own copy.
+            Some(Entry::Starter(st, s)) => {
+                mkdir()?;
+                let name = s.meta.name.clone();
+                let path = ask::free_path_except(&dir, &ask::slug(&name), &self.pending);
+                std::fs::write(&path, st.source).map_err(|e| format!("{}: {e}", path.display()))?;
+                self.pending.push(path.clone());
+                Ok(Ask::Change {
+                    path: rel(&path),
+                    words,
+                    error: None,
+                    copied_from: Some(name),
+                })
+            }
+            Some(Entry::Builtin(_)) | None => Err("This scene has no script to change".into()),
+        }
     }
 
     fn select(&mut self, i: usize) {
@@ -597,6 +738,36 @@ impl Render for IsoView {
             true,
         )
         .on_click(cx.listener(|this, _, _, cx| this.copy_svg(cx)));
+        let new_scene = ui::button_with(
+            "iso-new",
+            Some("add01"),
+            "New scene",
+            ButtonKind::Outline,
+            true,
+        )
+        .on_click(cx.listener(|this, _, window, cx| this.open_ask(false, window, cx)));
+        let changeable = !matches!(entry, Entry::Builtin(_));
+        let change = ui::button_with(
+            "iso-change",
+            Some("pencil-edit01"),
+            "Change",
+            ButtonKind::Outline,
+            changeable,
+        )
+        .when(changeable, |b| {
+            b.on_click(cx.listener(|this, _, window, cx| this.open_ask(true, window, cx)))
+        })
+        .when(!changeable, |b| {
+            b.tooltip(ui::tip(
+                "This scene is part of Arakun and has no script to change",
+            ))
+        });
+        let ask_row = self.asking.as_ref().map(|a| {
+            ui::field()
+                .child(ui::icon("sparkles", 14.).text_color(theme::text_muted()))
+                .child(div().flex_1().min_w_0().child(a.input.clone()))
+        });
+        let ask_error = self.ask_error.clone();
 
         // ---- timeline ------------------------------------------------------------
         let slot = self.timeline.clone();
@@ -826,9 +997,15 @@ impl Render for IsoView {
                             .gap(crate::ui::sp(10.))
                             .when(steps.is_some(), |d| d.child(modes))
                             .child(looks)
+                            .child(new_scene)
+                            .child(change)
                             .child(copy),
                     ),
             )
+            .when_some(ask_row, |d, row| d.child(row))
+            .when_some(ask_error, |d, e| {
+                d.child(ui::text(Type::Caption, theme::error().into(), e))
+            })
             .when_some(error, |d, e| {
                 d.child(
                     div()
@@ -841,5 +1018,65 @@ impl Render for IsoView {
             })
             .child(stage)
             .child(controls)
+    }
+}
+
+/// Project scripts, then starters, then the Rust scenes; a later scene
+/// with the name of an earlier one is left out.
+fn order(scripts: Vec<Entry>, starters: Vec<Entry>, builtins: Vec<Entry>) -> Vec<Entry> {
+    let mut out: Vec<Entry> = Vec::new();
+    for e in scripts.into_iter().chain(starters).chain(builtins) {
+        let name = e.name();
+        if !out.iter().any(|o| o.name() == name) {
+            out.push(e);
+        }
+    }
+    out
+}
+
+/// A scene asked for in one environment is not looked for in another.
+fn pending_after_root_change(
+    pending: Option<PathBuf>,
+    old: Option<&Path>,
+    new: &Path,
+) -> Option<PathBuf> {
+    pending.filter(|_| old == Some(new))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn broken(path: &str) -> Entry {
+        Entry::Broken {
+            path: PathBuf::from(path),
+            error: String::new(),
+        }
+    }
+
+    #[test]
+    fn order_hides_later_same_names() {
+        let names: Vec<String> = order(
+            vec![broken("x/a.rhai")],
+            vec![broken("s/b.rhai"), broken("s/a.rhai")],
+            vec![],
+        )
+        .iter()
+        .map(Entry::name)
+        .collect();
+        assert_eq!(names, ["a", "b"]);
+    }
+
+    #[test]
+    fn set_root_clears_pending() {
+        let p = Some(PathBuf::from("/r1/iso/x.rhai"));
+        assert_eq!(
+            pending_after_root_change(p.clone(), Some(Path::new("/r1")), Path::new("/r2")),
+            None
+        );
+        assert_eq!(
+            pending_after_root_change(p.clone(), Some(Path::new("/r1")), Path::new("/r1")),
+            p
+        );
     }
 }

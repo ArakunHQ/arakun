@@ -11,16 +11,12 @@
 //! unit is one screen unit along the vertical.
 
 pub mod anim;
-// TEMP: the Isometric tab uses this in the next commit.
-#[allow(dead_code)]
 pub mod ask;
 pub mod cli;
 pub mod export;
 pub mod raster;
 pub mod scenes;
 pub mod script;
-// TEMP: the Isometric tab lists these in the next commit.
-#[allow(dead_code)]
 pub mod starters;
 pub mod svg;
 pub mod text;

@@ -290,12 +290,18 @@ install_claude() {
     say "warning: Claude Code's installer needs bash; install bash, then run: $claude_cmd"
     return 0
   fi
+  # A data folder left by an earlier Claude install is the user's; the
+  # uninstall line must not delete it.
+  claude_data="${XDG_DATA_HOME:-$HOME/.local/share}/claude"
+  claude_data_new=1
+  if [ -e "$claude_data" ]; then claude_data_new=; fi
   say "installing Claude Code"
   curl -fsSL -o "$tmp/claude-install.sh" https://claude.ai/install.sh &&
     bash "$tmp/claude-install.sh" >/dev/null || true
   if [ -x "$bindir/claude" ]; then
     say "installed Claude Code in $bindir; sign in with 'claude' before the first session"
-    uninstall="$uninstall ~/.local/bin/claude \"${XDG_DATA_HOME:-$HOME/.local/share}/claude\""
+    uninstall="$uninstall ~/.local/bin/claude"
+    if [ -n "$claude_data_new" ]; then uninstall="$uninstall \"$claude_data\""; fi
   else
     say "warning: could not install Claude Code; run this, then sign in with 'claude':"
     printf '\n  %s\n\n' "$claude_cmd"

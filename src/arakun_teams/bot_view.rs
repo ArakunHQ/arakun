@@ -918,8 +918,7 @@ impl TeamsView {
                         })),
                     )
                     .child(
-                        ui::icon_button(("teams-bot-dismiss", row), "cancel01", 12.)
-                            .tooltip(ui::tip("Dismiss"))
+                        ui::icon_button(("teams-bot-dismiss", row), "cancel01", 12., "Dismiss")
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.hub.update(cx, |h, cx| h.stop_bot(&ask, cx));
                             })),

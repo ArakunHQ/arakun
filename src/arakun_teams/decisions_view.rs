@@ -304,12 +304,12 @@ impl TeamsView {
                             .child("Decision"),
                     )
                     .child(
-                        ui::icon_button("teams-decision-close", "cancel01", 14.)
-                            .tooltip(ui::tip("Close"))
-                            .on_click(cx.listener(|this, _, _, cx| {
+                        ui::icon_button("teams-decision-close", "cancel01", 14., "Close").on_click(
+                            cx.listener(|this, _, _, cx| {
                                 this.decision = None;
                                 cx.notify();
-                            })),
+                            }),
+                        ),
                     ),
             )
             .child(

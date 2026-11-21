@@ -113,14 +113,47 @@ fn split_issuer(issuer: &str) -> (&str, &str) {
     }
 }
 
-/// Where the metadata of the MCP endpoint may be, in the order to ask: for
-/// the endpoint itself (RFC 9728 puts the well-known part before its path),
-/// then for the instance as a whole.
-fn resource_urls(host: &str) -> [String; 2] {
+/// Where the metadata of the MCP endpoint may be, in the order to ask, with
+/// the resources each may describe: the endpoint itself (RFC 9728 puts the
+/// well-known part before its path), then the instance as a whole. Doop
+/// names the endpoint in both, so the instance-wide one may too.
+fn resource_urls(host: &str) -> [(String, Vec<String>); 2] {
+    let mcp = super::mcp_url(host);
     [
-        format!("{host}/.well-known/oauth-protected-resource/mcp"),
-        format!("{host}/.well-known/oauth-protected-resource"),
+        (
+            format!("{host}/.well-known/oauth-protected-resource/mcp"),
+            vec![mcp.clone()],
+        ),
+        (
+            format!("{host}/.well-known/oauth-protected-resource"),
+            vec![host.to_string(), mcp],
+        ),
     ]
+}
+
+/// The same identifier, give or take a trailing slash.
+fn same_id(a: &str, b: &str) -> bool {
+    a.trim_end_matches('/') == b.trim_end_matches('/')
+}
+
+/// The authorization server a protected-resource document names, if the
+/// document is about one of `resources` (RFC 9728 §3.3). A document about
+/// another resource says nothing about this one.
+fn resource_issuer(host: &str, resources: &[String], v: &Value) -> Option<String> {
+    let resource = v["resource"].as_str()?;
+    if !resources.iter().any(|r| same_id(r, resource)) {
+        return None;
+    }
+    endpoint(host, &v["authorization_servers"][0])
+}
+
+/// The metadata in `v`, if it is the metadata of `issuer` (RFC 8414 §3.3):
+/// one issuer's document can't send a sign-in to another's endpoints.
+fn issuer_meta(host: &str, issuer: &str, v: &Value) -> Option<Meta> {
+    if !same_id(v["issuer"].as_str()?, issuer) {
+        return None;
+    }
+    parse_meta(host, v)
 }
 
 /// Where an authorization server's metadata may be, in the order to ask.
@@ -146,17 +179,17 @@ fn issuer_urls(issuer: &str) -> Vec<String> {
 fn discover(host: &str) -> Result<Meta, Error> {
     let issuer = resource_urls(host)
         .iter()
-        .find_map(|url| {
+        .find_map(|(url, resources)| {
             let (status, v) = get_json(url, None).ok()?;
             (200..=299)
                 .contains(&status)
-                .then(|| endpoint(host, &v["authorization_servers"][0]))
+                .then(|| resource_issuer(host, resources, &v))
                 .flatten()
         })
         .unwrap_or_else(|| host.to_string());
     for url in issuer_urls(&issuer) {
         if let (200..=299, v) = get_json(&url, None)?
-            && let Some(meta) = parse_meta(host, &v)
+            && let Some(meta) = issuer_meta(host, &issuer, &v)
         {
             return Ok(meta);
         }
@@ -487,6 +520,10 @@ pub fn sign_in(
         ))
     })?;
     let client_secret = client["client_secret"].as_str().filter(|s| !s.is_empty());
+    // Registering doesn't stop for Cancel; a tab opened after it would lead nowhere.
+    if canceled() {
+        return Err(Error::Failed("The sign-in was canceled.".into()));
+    }
     let verifier = random(32)?;
     let state = random(16)?;
     open(&authorize_url(
@@ -583,7 +620,7 @@ mod tests {
     #[test]
     fn metadata_is_asked_for_where_the_standards_put_it() {
         assert_eq!(
-            resource_urls("https://d.acme.dev"),
+            resource_urls("https://d.acme.dev").map(|(url, _)| url),
             [
                 "https://d.acme.dev/.well-known/oauth-protected-resource/mcp",
                 "https://d.acme.dev/.well-known/oauth-protected-resource",
@@ -605,6 +642,49 @@ mod tests {
                 "https://login.example/tenant/.well-known/openid-configuration",
             ]
         );
+    }
+
+    #[test]
+    fn metadata_counts_only_when_it_is_about_what_was_asked() {
+        let h = "https://d.acme.dev";
+        let [(_, scoped), (_, root)] = resource_urls(h);
+        let doc = |resource: &str| json!({"resource": resource, "authorization_servers": ["https://login.acme.dev"]});
+        let login = Some("https://login.acme.dev".to_string());
+        assert_eq!(
+            resource_issuer(h, &scoped, &doc("https://d.acme.dev/mcp")),
+            login
+        );
+        // Doop names its MCP endpoint in the instance-wide document too.
+        assert_eq!(
+            resource_issuer(h, &root, &doc("https://d.acme.dev/mcp")),
+            login
+        );
+        assert_eq!(
+            resource_issuer(h, &root, &doc("https://d.acme.dev/")),
+            login
+        );
+        assert_eq!(
+            resource_issuer(h, &scoped, &doc("https://d.acme.dev")),
+            None
+        );
+        assert_eq!(
+            resource_issuer(h, &scoped, &doc("https://d.acme.dev/other")),
+            None
+        );
+        let mut nameless = doc("");
+        nameless.as_object_mut().unwrap().remove("resource");
+        assert_eq!(resource_issuer(h, &root, &nameless), None);
+
+        let mut tenant = json!({
+            "issuer": "https://login.example/a",
+            "authorization_endpoint": "https://login.example/a/authorize",
+            "token_endpoint": "https://login.example/a/token",
+        });
+        assert!(issuer_meta(h, "https://login.example/a", &tenant).is_some());
+        assert!(issuer_meta(h, "https://login.example/a/", &tenant).is_some());
+        assert_eq!(issuer_meta(h, "https://login.example/b", &tenant), None);
+        tenant.as_object_mut().unwrap().remove("issuer");
+        assert_eq!(issuer_meta(h, "https://login.example/a", &tenant), None);
     }
 
     #[test]

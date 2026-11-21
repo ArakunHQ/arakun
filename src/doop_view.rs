@@ -75,7 +75,11 @@ pub struct DoopView {
     loading: bool,
     /// The instance's tools and canvases are being read.
     listing: bool,
+    /// Why the picked canvas couldn't be read.
     error: Option<Error>,
+    /// Why the instance's tools and canvases couldn't be read. Kept apart
+    /// from `error` so a failed list never hides a canvas that did load.
+    list_error: Option<Error>,
     /// Unix seconds of the last full read.
     read_at: u64,
     /// Goes up when the session or the canvas changes: an answer for an
@@ -165,6 +169,7 @@ impl DoopView {
             loading: false,
             listing: false,
             error: None,
+            list_error: None,
             read_at: 0,
             epoch: 0,
             list_epoch: 0,
@@ -248,6 +253,7 @@ impl DoopView {
         self.canvas = None;
         self.thumbs.clear();
         self.error = None;
+        self.list_error = None;
         self.add_note = None;
         self.loading = false;
         self.read_at = 0;
@@ -274,6 +280,7 @@ impl DoopView {
         };
         self.listing = true;
         self.error = None;
+        self.list_error = None;
         self.list_epoch += 1;
         let list_epoch = self.list_epoch;
         self._load = Some(cx.spawn(async move |this, cx| {
@@ -306,10 +313,9 @@ impl DoopView {
                         }
                         this.read_canvas(renders, cx);
                     }
-                    Err(e) => {
-                        this.loading = false;
-                        this.error = Some(e);
-                    }
+                    // A canvas picked meanwhile is still being read; its own
+                    // answer decides what the canvas side shows.
+                    Err(e) => this.list_error = Some(e),
                 }
                 cx.notify();
             })
@@ -790,14 +796,22 @@ impl DoopView {
             .child(ui::text(
                 Type::Caption,
                 theme::text_faint(),
-                self.add_note.clone().unwrap_or_else(|| {
-                    if self.listed.is_some() {
-                        "A canvas someone shared with you: add it by its link.".to_string()
-                    } else {
-                        "This instance doesn't list its canvases. Add each one by its link."
-                            .to_string()
-                    }
-                }),
+                self.add_note
+                    .clone()
+                    .or_else(|| {
+                        self.canvas
+                            .is_some()
+                            .then(|| self.list_error.as_ref().map(Error::message))
+                            .flatten()
+                    })
+                    .unwrap_or_else(|| {
+                        if self.listed.is_some() {
+                            "A canvas someone shared with you: add it by its link.".to_string()
+                        } else {
+                            "This instance doesn't list its canvases. Add each one by its link."
+                                .to_string()
+                        }
+                    }),
             ))
             .into_any_element()
     }
@@ -893,7 +907,10 @@ impl DoopView {
 
     /// The frames of the picked canvas.
     fn render_canvas(&self, cx: &mut Context<Self>) -> AnyElement {
-        if let Some(e) = &self.error {
+        let list_error = (self.canvas.is_none() && !self.loading)
+            .then_some(self.list_error.as_ref())
+            .flatten();
+        if let Some(e) = self.error.as_ref().or(list_error) {
             return self.render_error(e, cx);
         }
         let Some(canvas) = &self.canvas else {
@@ -981,7 +998,7 @@ impl DoopView {
         }
         // Nothing read yet: the tools come before anything else can show.
         if self.tools.is_none() {
-            return match &self.error {
+            return match self.list_error.as_ref().or(self.error.as_ref()) {
                 Some(e) => self.render_error(e, cx),
                 None => ui::loading("doop-reading", "Reading Doop…").into_any_element(),
             };

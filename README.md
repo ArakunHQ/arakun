@@ -432,11 +432,16 @@ after a week).
   the canvas in a browser tab. Sign in with the browser, or paste an agent key (the form offers the one
   in `DOOP_KEY` or `~/.config/arakun/doop_key`). The form signs in to Doop
   (doop.design), or to a self-hosted instance when you pick Self-hosted and type its
-  address; every sign-in stays saved in
+  address. Plain `http://` is only taken for an instance on this machine or a private
+  network, and then the key or token crosses that network unencrypted; use `https://`
+  unless you trust every device on it. Every sign-in stays saved in
   `~/.local/share/arakun/doop/sessions.json`
   (`%LOCALAPPDATA%\arakun\doop\sessions.json` on Windows) and the header switches between them. The
   tab reads through the instance's MCP endpoint (`<instance>/mcp`), so a canvas an
-  instance doesn't list can be added by its link. Accounts › Agents adds that MCP server
+  instance doesn't list can be added by its link; those canvases are kept in
+  `~/.local/share/arakun/doop/pins.json` and the renders in
+  `~/.local/share/arakun/cache/doop/` (under `%LOCALAPPDATA%\arakun\` on Windows).
+  Accounts › Agents adds that MCP server
   to Claude Code or Droid (as `doop`, or `doop-<host>` for a self-hosted instance), so
   sessions can read and draw on the same canvases.
 - **Usage.** Token use and estimated API cost from Claude Code's and Droid's own logs,

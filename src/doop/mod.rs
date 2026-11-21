@@ -376,7 +376,11 @@ fn check_key(host: &str, status: u16, text: &str) -> Result<(), Error> {
             "{} refused this key.",
             host_label(host)
         ))),
-        Err(e) => Err(e),
+        // The server's own words may echo the key back, so they stay out.
+        Err(Error::Failed(_)) => Err(Error::Failed(format!(
+            "{} didn't take this key (it answered {status}).",
+            host_label(host)
+        ))),
     }
 }
 
@@ -1220,9 +1224,10 @@ pub fn server_name(host: &str) -> String {
             _ => {}
         }
     }
-    // Plain http is another address than https on the same host.
+    // Plain http is another address than https on the same host. `_` only
+    // comes from a port's colon otherwise, so no host spells this prefix.
     let plain = if host.starts_with("http://") {
-        "http-"
+        "http_"
     } else {
         ""
     };
@@ -1668,7 +1673,11 @@ mod tests {
             server_name("https://design-acme.example"),
             server_name("https://design.acme.example")
         );
-        assert_eq!(server_name("http://doop.lan"), "doop-http-doop-lan");
+        assert_eq!(server_name("http://doop.lan"), "doop-http_doop-lan");
+        assert_ne!(
+            server_name("http://doop.lan"),
+            server_name("https://http.doop.lan")
+        );
         assert_eq!(
             connect_command(AgentKind::Claude, "https://d.acme.dev", false).unwrap(),
             "claude mcp add --scope user --transport http doop-d-acme-dev https://d.acme.dev/mcp && claude /mcp"
@@ -1695,10 +1704,13 @@ mod tests {
         let h = "https://d.acme.dev";
         let ok = r#"{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}"#;
         assert_eq!(check_key(h, 200, ok), Ok(()));
-        let rpc_error = r#"{"jsonrpc":"2.0","id":1,"error":{"message":"Bad key"}}"#;
+        // The server's message may hold the key, so it never reaches the notice.
+        let rpc_error = r#"{"jsonrpc":"2.0","id":1,"error":{"message":"Bad key sk-123"}}"#;
         assert_eq!(
             check_key(h, 200, rpc_error),
-            Err(Error::Failed("Bad key".into()))
+            Err(Error::Failed(
+                "d.acme.dev didn't take this key (it answered 200).".into()
+            ))
         );
         assert!(matches!(
             check_key(h, 200, "<!doctype html>"),

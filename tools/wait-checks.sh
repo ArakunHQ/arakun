@@ -73,8 +73,19 @@ classify() {
     echo "The diff touches no macOS code; not waiting for the macOS job."
     wanted=$required
   fi
-  # The paths ci.yml's `changes` job runs the iOS job for.
-  if [ -n "$files" ] && grep -qE '^(ios|phone)/|^assets/brand/mascot\.json$|^assets/fonts/|^\.github/workflows/ci\.yml$|^\.github/actions/' <<< "$files"; then
+  # The paths ci.yml's `changes` job runs the iOS job for, read as it reads
+  # them: a renamed file counts by its old path too, and a list that cannot
+  # be read runs every job, so the wait must include iOS then.
+  local names
+  if ! names=$(gh api --paginate "repos/{owner}/{repo}/pulls/$pr/files" \
+    --jq '.[] | .filename, (.previous_filename // empty)'); then
+    echo "Waiting for the iOS job too: could not list the changed files."
+    wanted=$(printf '%s\n%s\n' "$wanted" "$IOS_CHECK")
+  elif [ "$(grep -c . <<< "$names")" -ge 3000 ]; then
+    # The API lists at most 3000 files; ci.yml runs every job past that.
+    echo "Waiting for the iOS job too: too many changed files to list."
+    wanted=$(printf '%s\n%s\n' "$wanted" "$IOS_CHECK")
+  elif grep -qE '^(ios|phone)/|^assets/brand/mascot\.json$|^assets/fonts/|^\.github/workflows/ci\.yml$|^\.github/actions/' <<< "$names"; then
     echo "Waiting for the iOS job too: the diff touches the iOS app or what it reads."
     wanted=$(printf '%s\n%s\n' "$wanted" "$IOS_CHECK")
   fi

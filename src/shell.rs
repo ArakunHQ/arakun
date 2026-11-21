@@ -37,6 +37,7 @@ mod extensions;
 mod git_actions;
 mod github;
 pub use github::open_terminal_link;
+mod doop;
 mod headless;
 mod home;
 mod inbox;
@@ -93,6 +94,7 @@ use crate::cloudflare_view::CloudflareView;
 use crate::coderspace::CoderSpace;
 use crate::customize_view::{CustomizeEvent, CustomizeTab, CustomizeView};
 use crate::dialogs::{CreateEnvDialog, DeleteEnvDialog, DialogEvent};
+use crate::doop_view::DoopView;
 use crate::explorer;
 use crate::extensions_view::ExtensionsView;
 use crate::gallery_view::GalleryView;
@@ -465,6 +467,8 @@ pub struct Shell {
     _team_view: Subscription,
     posthog_view: Entity<PostHogView>,
     _posthog_view: Subscription,
+    doop_view: Entity<DoopView>,
+    _doop_view: Subscription,
     branches_view: Entity<BranchesView>,
     github: Entity<GitHub>,
     github_view: Entity<GitHubView>,
@@ -848,6 +852,10 @@ impl Shell {
         let posthog_sub = cx.subscribe_in(&posthog_view, window, |this, _, ev, window, cx| {
             this.on_posthog_event(ev, window, cx)
         });
+        let doop_view = cx.new(DoopView::new);
+        let doop_sub = cx.subscribe_in(&doop_view, window, |this, _, ev, window, cx| {
+            this.on_doop_event(ev, window, cx)
+        });
         let branches_view = cx.new(BranchesView::new);
         let sidebar = crate::sidebar::Sidebar::load();
         let views = crate::sidebar::Extensions::load(&sidebar);
@@ -1025,6 +1033,8 @@ impl Shell {
             _team_view: team_sub,
             posthog_view,
             _posthog_view: posthog_sub,
+            doop_view,
+            _doop_view: doop_sub,
             branches_view,
             _branches_view: branches_sub,
             github,
@@ -3668,6 +3678,7 @@ impl Shell {
                     .update(cx, |v, cx| v.set_project(&root, cx));
                 self.posthog_view.clone().into_any_element()
             }
+            Some(TabKind::Doop) => self.doop_view.clone().into_any_element(),
             Some(TabKind::Branches) => {
                 // Sessions start and stop all the time; the rows follow them.
                 self.sync_branches_view(cx);

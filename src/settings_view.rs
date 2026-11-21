@@ -297,7 +297,7 @@ impl Section {
         let general = if self == Section::General {
             "update updates automatic automatically auto version release upgrade nightly channel beta testers \
              links open system default external \
-             sidebar views extensions rail github notes memory usage cloudflare posthog isometric phone servers automations"
+             sidebar views extensions rail github notes memory usage cloudflare posthog doop isometric phone servers automations"
         } else {
             ""
         };

@@ -454,6 +454,23 @@ after a week).
   missing says which one and the others keep working. PostHog counts queries per
   hour: the tab shows how many are left, keeps answers on disk and reads again only
   when they are 15 minutes old or you refresh.
+- **Doop.** The canvases of a [Doop](https://doop.design) instance and the frames
+  of the one you pick, page by page, each with its render; a click opens the frame on
+  the canvas in a browser tab. Sign in with the browser, or paste an agent key (the form offers the one
+  in `DOOP_KEY` or `~/.config/arakun/doop_key`). The form signs in to Doop
+  (doop.design), or to a self-hosted instance when you pick Self-hosted and type its
+  address. Plain `http://` is only taken for an instance on this machine or a private
+  network, and then the key or token crosses that network unencrypted; use `https://`
+  unless you trust every device on it. Every sign-in stays saved in
+  `~/.local/share/arakun/doop/sessions.json`
+  (`%LOCALAPPDATA%\arakun\doop\sessions.json` on Windows) and the header switches between them. The
+  tab reads through the instance's MCP endpoint (`<instance>/mcp`), so a canvas an
+  instance doesn't list can be added by its link; those canvases are kept in
+  `~/.local/share/arakun/doop/pins.json` and the renders in
+  `~/.local/share/arakun/cache/doop/` (under `%LOCALAPPDATA%\arakun\` on Windows).
+  Accounts › Agents adds that MCP server
+  to Claude Code or Droid (as `doop`, or `doop-<host>` for a self-hosted instance), so
+  sessions can read and draw on the same canvases.
 - **Usage.** Token use and estimated API cost from Claude Code's and Droid's own logs,
   and Devin's local SQLite session history, including sessions run outside Arakun.
   Devin's history is read only from `$XDG_DATA_HOME/devin/cli/sessions.db` (by default
@@ -508,7 +525,7 @@ after a week).
   your `gh` sign-in (or `GH_TOKEN`) when there is one, since GitHub answers few
   requests without one. Skills install on this computer only, not on a paired server. Under Arakun › Extensions (or Settings ›
   General › Sidebar) you turn on the tabs the sidebar shows besides Inbox, Runs, Branches and Marketplace: GitHub, Notes,
-  Memory, Usage, Cloudflare, PostHog, Isometric, Phone, Servers and Automations. The
+  Memory, Usage, Cloudflare, PostHog, Doop, Isometric, Phone, Servers and Automations. The
   palette and Customize › Sidebar list only the tabs that are on. A new install starts
   with none on, except what you set up in the first-run setup: GitHub once the GitHub
   CLI is signed in, and Phone if you chose to pair one. An update keeps the ones your
@@ -588,7 +605,7 @@ For streams, demos and screen sharing. `Ctrl+Shift+H`, the palette or Settings �
 turns it on; a "Redacted" pill in the title bar shows it is on, and a click on it turns it
 off. While it is on, Arakun hides:
 
-- account emails and names: the Cloudflare and PostHog accounts, the claude.ai accounts
+- account emails and names: the Cloudflare, PostHog and Doop accounts, the claude.ai accounts
   behind CLIProxyAPI, your git name and email in the sidebar, Cloudflare's audit log;
 - the phone's pairing QR code and code, its addresses and the names of paired phones
   ("Copy link" still copies the real link);

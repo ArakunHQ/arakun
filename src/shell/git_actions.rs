@@ -230,7 +230,7 @@ impl Shell {
                 .background_spawn(crate::guard::task(async move {
                     // Finding an agent's CLI reads the disk too.
                     let writer = crate::pr_writer::writer(agent, crate::env_name::installed);
-                    at.pr_plan(&r, &b).map(|plan| (plan, writer))
+                    at.pr_plan(&r, &b).map(|plan| (plan, agent, writer))
                 }))
                 .await;
             let _ = this.update_in(cx, |this, window, cx| match plan {
@@ -258,7 +258,7 @@ impl Shell {
         remote: String,
         branch: String,
         needs_push: bool,
-        (plan, writer): (git::PrPlan, Option<AgentKind>),
+        (plan, session, writer): (git::PrPlan, AgentKind, Option<AgentKind>),
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -271,7 +271,9 @@ impl Shell {
         }
         let at = self.git_at(&path);
         let dialog = cx.new(|cx| {
-            PullRequestDialog::new(at, remote, branch, needs_push, plan, writer, window, cx)
+            PullRequestDialog::new(
+                at, remote, branch, needs_push, plan, session, writer, window, cx,
+            )
         });
         let sub = cx.subscribe_in(
             &dialog,

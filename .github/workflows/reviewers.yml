@@ -7,8 +7,7 @@ name: Reviewers
 # authors resolve only the threads they fixed (CONTRIBUTING.md), so someone
 # has to be asked or the pull request sits blocked. cubic's approval is
 # dismissed then: nothing runs this again when a thread is resolved, so the
-# author could resolve the rest afterwards and merge on it. cubic approves
-# with its P2 and P3 findings still open (cubic.yaml), so this happens often.
+# author could resolve the rest afterwards and merge on it.
 # An author who resolves cubic's threads before it approves keeps the
 # approval: cubic checks again once its last blocking thread is resolved.
 # It replaces CODEOWNERS, so

@@ -65,7 +65,8 @@ Every commit message and pull request title follows
   Resolve a thread on GitHub once the pushed commit fixes it; leave the ones you
   declined open for the reviewer. Never resolve a thread you didn't fix to get cubic's
   approval. A workflow dismisses cubic's approval when a thread is still open, so
-  resolve the fixed ones right after you push. If you change a rule here or in
+  resolve the fixed ones right after you push. cubic may push its own fixes to your
+  branch, so pull before you push. If you change a rule here or in
   CONTRIBUTING.md, check the rules in `cubic.yaml` too.
 
 ### Stacked pull requests

@@ -14,8 +14,13 @@ version: 1
 
 reviews:
   enabled: true
-  # Balanced feedback. Every comment still has to be answered (AGENTS.md).
-  sensitivity: medium
+  # These people review cubic's findings and its approvals.
+  senior_reviewers:
+    - rikvisser-dev
+    - daniektj
+    - KarloAldrete
+  # Thorough feedback. Every comment still has to be answered (AGENTS.md).
+  sensitivity: high
   # Review drafts too, so the review runs next to CI instead of after it.
   # Agents open a pull request when its content is final and mark it ready
   # once the required checks pass (tools/wait-checks.sh); waiting for that
@@ -25,62 +30,34 @@ reviews:
   incremental_commits: true
   # cubic resolves its own threads when a later commit fixes them.
   resolve_threads_when_addressed: true
-  architecture_diagrams: true
+  architecture_diagrams: false
+  merge_confidence_summary: true
   # cubic must review outside pull requests without being asked: without its
   # check run the Reviewers workflow never asks a person. Their approval is
   # held back below and by the workflow.
   external_contributors_require_manual_review: false
+  # Ultrareview runs by itself on high-risk pull requests; ask for one on
+  # others by hand.
+  ultrareview: manual
+  auto_ultrareview: high_risk_only
 
-  # Approves pull requests of moderate risk or less (see the prompt), once
-  # their P0 and P1 findings are resolved. P2 and P3 findings stay in the
-  # review as advice and don't hold back the approval. Most feature pull
-  # requests rate moderate, and a person had to approve every one; the
-  # sensitive paths stay with a person through `exclude`. Merging still takes
-  # a person with write access.
+  # Approves a pull request once every finding is resolved, whatever its risk,
+  # unless it touches a path under `exclude`: those stay with a person.
+  # Merging still takes a person with write access.
   # The Reviewers workflow dismisses an approval of a pull request from
   # outside the team (the TEAM list there), whatever cubic counts as an
   # external contributor. It also dismisses one when cubic approves with
   # threads still open, and asks a person. Authors may resolve cubic's threads
   # they fixed in the GitHub UI (CONTRIBUTING.md), and cubic checks again when
-  # its last blocking thread is resolved, so an approval can follow that.
+  # its last open thread is resolved, so an approval can follow that.
   auto_approve_behavior: live
-  auto_approve: custom
-  auto_approve_custom_prompt: >-
-    Approve only a pull request of minimal, low or moderate risk; never one of
-    high risk or higher. Minimal risk: changes only to docs or Markdown that
-    people read (README.md, docs/, CONTRIBUTING.md), comments, tests, iso/*.rhai
-    scenes or screenshots, or a typo or label in UI text, with no change in
-    behavior. Low risk: a small UI or layout change in one view that uses the
-    design system tokens, or a change to AGENTS.md, CLAUDE.md or a skill in
-    .claude/skills (agents follow those and run the commands in them).
-    Moderate: a feature or a change in behavior across several files or views
-    (new panels, menus, settings, shortcuts or background work) that stays out
-    of the paths and kinds of change listed next. High or higher: any change to
-    core/src/phone (end-to-end encryption and its wire format), relay/, phone/,
-    teams/ or src/arakun_teams/; the headless agent sandbox, its policy and its
-    broker (src/headless*); the control socket (src/control.rs); code that
-    reads, stores or sends tokens and API keys (core/src/account.rs,
-    core/src/fetch.rs, src/voice.rs, src/cloudflare, src/posthog, src/github);
-    .github/workflows or .github/actions; cubic.yaml (it sets these approval
-    rules); .claude/settings.json or .claude/hooks (they run when a session
-    starts); lefthook.yml; Cargo.toml, Cargo.lock, deny.toml, build.rs or
-    rust-toolchain.toml; tools/setup-dev.* or tools/install* (they run on
-    users' machines, often with sudo); core/src/platform.rs; git operations in
-    core/src/git.rs; how agents and shells are launched
-    (core/src/agent/launch.rs and core/src/agent/rpc.rs); release signature
-    checks in src/update.rs; the daemon in core/src/server.rs and
-    core/src/server/; and any format stored on disk (including src/state.rs,
-    src/memory.rs, src/stored.rs and core/src/durable.rs) or a CLI flag that
-    other tools rely on. A change for one platform that the other platforms
-    build without testing also raises the risk. Code behind the `browser`
-    feature is only built on Linux in CI, so a change there that touches
-    Windows or macOS paths raises it too.
+  auto_approve: always
   auto_approve_rules:
     exclude_external_contributors: true
-    allow_open_issues: p2_and_p3
-    # Never approve a pull request that touches one of these paths, whatever
-    # its risk: a person approves them. Keep the list in step with the high
-    # risk paths in auto_approve_custom_prompt.
+    allow_open_issues: none
+    # Never approve a pull request that touches one of these paths: a person
+    # approves them. They are the parts where a mistake costs the most
+    # (security, credentials, stored formats, what runs on users' machines).
     exclude:
       - ".github/**"
       - "AGENTS.md"
@@ -286,11 +263,17 @@ reviews:
         Isometric scene scripts in the line-iso style: thin ink outlines, three-tone faces, one accent color.
 
 pr_descriptions:
-  # Pull requests fill in .github/pull_request_template.md themselves.
-  generate: false
+  # cubic adds its summary and a link to its review to the description the
+  # author wrote from .github/pull_request_template.md.
+  generate: true
+  cubic_review_link: true
+  skip_if_author_description: false
 
 issues:
-  # Authors and their agents fix review comments themselves.
-  fix_with_cubic_buttons: false
-  pr_comment_fixes: false
-  auto_fix: "off"
+  # cubic can fix its own findings: from a button, from a comment on the pull
+  # request, or by itself. Its fixes are commits on the pull request's branch.
+  fix_with_cubic_buttons: true
+  pr_comment_fixes: true
+  fix_commits_to_pr: true
+  coding_agent_provider: cubic
+  auto_fix: "on"

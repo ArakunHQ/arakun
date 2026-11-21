@@ -127,5 +127,6 @@ approves, and marking ready is what asks for the review.
   won't. Once the push is up, resolve the threads it fixed (right away: an
   approval with threads still open is dismissed). Leave the declined ones open
   for the reviewer. Never resolve a thread you didn't fix to get cubic's
-  approval.
+  approval. cubic may push its own fixes to the branch: `git pull --rebase`
+  before you push.
 - Never merge, approve or self-review. A person does that.

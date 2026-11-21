@@ -353,8 +353,9 @@ that keeps one on purpose goes on its allow-list.
   status waits for a person.
 - **Answer every cubic comment.** Fix it and push, or reply with the reason you
   won't. cubic reviews each push and resolves the comments it sees fixed. It labels
-  each comment P0 to P3, and approves a routine change only once its P0 and P1
-  comments are resolved. When a commit you pushed fixes a comment it left open,
+  each comment P0 to P3, and approves a change only once all its comments are
+  resolved. cubic can also fix its own comments and push the fix to your branch, so
+  pull before you push. When a commit you pushed fixes a comment it left open,
   resolve that thread yourself, right after the push. Only resolve what you fixed:
   leave a comment you declined open for the reviewer. If cubic approves with comments
   still open, a workflow dismisses its approval and asks a person, who resolves them

@@ -18,6 +18,28 @@ struct ModelTests {
         #expect(inbox.places.first?.branch == "main")
     }
 
+    @Test func aNumberPastIntIsNilNotATrap() {
+        #expect(json("1e20").int == nil)
+        #expect(json("-1e20").int == nil)
+        #expect(json("42").int == 42)
+        #expect(json("2.9").int == 2)
+    }
+
+    @Test func readsTheImagesAUserEntryNames() {
+        let e = Entry(json(#"{"type":"user","text":"look","at":0,"pastes":[],"images":[{"name":"shot.png","url":"/image?x"}]}"#))
+        guard case .user(_, _, _, _, let images) = e else { Issue.record("not a user entry"); return }
+        #expect(images == ["shot.png"])
+    }
+
+    @Test func aToolChangesWithItsExitCodeAndDiffs() {
+        let a = Entry(json(#"{"type":"tool","id":"t","title":"x","kind":"edit","status":"completed","diffs":[{"path":"a","added":1,"removed":0}]}"#))
+        let b = Entry(json(#"{"type":"tool","id":"t","title":"x","kind":"edit","status":"completed","diffs":[{"path":"a","added":2,"removed":0}]}"#))
+        let c = Entry(json(#"{"type":"tool","id":"t","title":"x","kind":"edit","status":"completed","exit_code":1,"diffs":[{"path":"a","added":1,"removed":0}]}"#))
+        #expect(a != b)
+        #expect(a != c)
+        #expect(a == Entry(json(#"{"type":"tool","id":"t","title":"x","kind":"edit","status":"completed","diffs":[{"path":"a","added":1,"removed":0}]}"#)))
+    }
+
     @Test func mergesTheTailAfterAReconnect() {
         var s = LiveSession(id: "s1", title: "", agent: "")
         s.apply(session: json(#"{"from":2,"count":4,"entries":[{"type":"agent","text":"c"},{"type":"agent","text":"d"}],"status":"working"}"#))

@@ -7,6 +7,9 @@ struct SessionView: View {
     @Environment(AppModel.self) private var model
     @State private var draft = ""
     @FocusState private var typing: Bool
+    /// Whether the end of the transcript is on screen; new entries follow only then.
+    @State private var atEnd = true
+    @State private var unseen = false
 
     var body: some View {
         let s = model.session?.id == id ? model.session : nil
@@ -36,6 +39,8 @@ struct SessionView: View {
                     // Room for the raccoon perched over the composer, inside the
                     // list so scrolling to the end keeps the last entry clear of it.
                     Color.clear.frame(height: 48).id("end")
+                        .onAppear { atEnd = true; unseen = false }
+                        .onDisappear { atEnd = false }
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 12)
@@ -43,18 +48,42 @@ struct SessionView: View {
             .scrollDismissesKeyboard(.interactively)
             .defaultScrollAnchor(.bottom)
             .onChange(of: s?.count) { _, _ in
-                withAnimation { proxy.scrollTo("end", anchor: .bottom) }
+                // Someone reading further up keeps their place.
+                if atEnd {
+                    withAnimation { proxy.scrollTo("end", anchor: .bottom) }
+                } else {
+                    unseen = true
+                }
+            }
+            .overlay(alignment: .bottom) {
+                if unseen {
+                    Button {
+                        withAnimation { proxy.scrollTo("end", anchor: .bottom) }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Icon("arrow-down01", size: 14)
+                            Text("New entries").font(.geist(14, .medium))
+                        }
+                    }
+                    .buttonStyle(.outline)
+                    .padding(.bottom, 8)
+                    .transition(.opacity)
+                }
             }
         }
         .background(Color.ground.ignoresSafeArea())
         .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(spacing: 10) {
                 ConnectionBanner()
-                if let p = s?.permission {
-                    PermissionCard(ask: p) { model.allow($0) }
-                } else if let q = s?.question {
-                    QuestionCard(ask: q, answer: model.answer, skip: model.skipQuestion).id(q.toolCallId)
+                // Offline the cards stay but wait: an answer now would be lost.
+                Group {
+                    if let p = s?.permission {
+                        PermissionCard(ask: p) { model.allow($0) }
+                    } else if let q = s?.question {
+                        QuestionCard(ask: q, answer: model.answer, skip: model.skipQuestion).id(q.toolCallId)
+                    }
                 }
+                .disabled(!model.isLinked)
                 Composer(draft: $draft, typing: $typing, working: s?.status == .working, linked: model.isLinked,
                          send: send, stop: model.stop)
             }
@@ -185,6 +214,9 @@ struct Composer: View {
                     .frame(height: 34)
                     .background(RoundedRectangle(cornerRadius: Radius.control).strokeBorder(Color.failure.opacity(0.5)))
                 }
+                // Offline the cancel would be dropped, as a message would.
+                .disabled(!linked)
+                .opacity(linked ? 1 : 0.5)
                 .padding(6)
             } else {
                 let ready = !empty && linked

@@ -59,14 +59,28 @@ public struct Credentials: Codable, Equatable, Sendable {
 /// Joins the `{part: {body, more}}` pieces of a message too big for one relay
 /// frame: given each piece in turn, it gives back the whole message with the
 /// last one and nil before that.
+/// A message over `most` bytes is dropped, as core/src/phone/relay.rs's
+/// Joiner does, so the computer cannot grow it without end.
 public struct Joiner {
     private var parts = Data()
+    private var tooBig = false
+    let most: Int
 
-    public init() {}
+    public init(most: Int = 64 * 1024 * 1024) {
+        self.most = most
+    }
 
     public mutating func add(_ part: [String: Any]) -> Data? {
-        parts.append(Base64URL.decode(part["body"] as? String ?? "") ?? Data())
-        if part["more"] as? Bool == true { return nil }
+        let piece = Base64URL.decode(part["body"] as? String ?? "") ?? Data()
+        let more = part["more"] as? Bool == true
+        if tooBig || parts.count + piece.count > most {
+            // Skip the rest of this message; the next one starts clean.
+            tooBig = more
+            parts = Data()
+            return nil
+        }
+        parts.append(piece)
+        if more { return nil }
         defer { parts = Data() }
         return parts
     }

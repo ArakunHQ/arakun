@@ -7,7 +7,7 @@ struct EntryView: View {
 
     var body: some View {
         switch entry {
-        case .user(let text, let at, let elapsed, let pastes):
+        case .user(let text, let at, let elapsed, let pastes, let images):
             HStack {
                 Spacer(minLength: 48)
                 VStack(alignment: .trailing, spacing: 6) {
@@ -18,10 +18,20 @@ struct EntryView: View {
                         .padding(.vertical, 10)
                         .card()
                     ForEach(Array(pastes.enumerated()), id: \.offset) { _, p in
-                        Text(p).font(.code).foregroundStyle(Color.textMuted).lineLimit(4)
-                            .padding(10)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(RoundedRectangle(cornerRadius: Radius.control).fill(Color.deep))
+                        PasteView(text: p)
+                    }
+                    // The pictures themselves come through the channel; the
+                    // app names them for now.
+                    ForEach(Array(images.enumerated()), id: \.offset) { _, name in
+                        HStack(spacing: 6) {
+                            Icon("file01", size: 13)
+                            Text(name).lineLimit(1).truncationMode(.middle)
+                        }
+                        .font(.mono(11.5))
+                        .foregroundStyle(Color.textMuted)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(RoundedRectangle(cornerRadius: Radius.control).fill(Color.deep))
                     }
                     HStack(spacing: 6) {
                         Text(at, style: .time)
@@ -109,6 +119,32 @@ struct EntryView: View {
     }
 }
 
+/// A pasted block, four lines until tapped open.
+private struct PasteView: View {
+    let text: String
+    @State private var open = false
+
+    private var long: Bool { text.split(separator: "\n", omittingEmptySubsequences: false).count > 4 }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(text).font(.code).foregroundStyle(Color.textMuted).lineLimit(open ? nil : 4)
+                .textSelection(.enabled)
+            if long {
+                Button(open ? "Show less" : "Show all") {
+                    withAnimation(.snappy(duration: 0.2)) { open.toggle() }
+                }
+                .font(.mono(11.5))
+                .foregroundStyle(Color.amberInk)
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: Radius.control).fill(Color.deep))
+    }
+}
+
 /// A row that opens to show more: thinking, a tool's output.
 struct Fold<Content: View, Trailing: View>: View {
     let icon: String
@@ -148,6 +184,7 @@ struct Fold<Content: View, Trailing: View>: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .accessibilityValue(open ? "Expanded" : "Collapsed")
             if open {
                 content
                     .padding(.leading, 25)

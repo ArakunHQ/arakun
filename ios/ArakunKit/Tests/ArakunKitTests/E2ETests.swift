@@ -118,6 +118,26 @@ struct PartTests {
             #expect(whole.map { String(decoding: $0, as: UTF8.self) } == v["message"] as? String)
         }
     }
+
+    @Test func dropsAMessageTooBigToJoin() {
+        var j = Joiner(most: 4)
+        #expect(j.add(["body": Base64URL.encode(Data("abc".utf8)), "more": true]) == nil)
+        #expect(j.add(["body": Base64URL.encode(Data("de".utf8)), "more": true]) == nil)
+        // The rest of the dropped message is skipped, then the next one joins.
+        #expect(j.add(["body": Base64URL.encode(Data("f".utf8))]) == nil)
+        #expect(j.add(["body": Base64URL.encode(Data("ok".utf8))]) == Data("ok".utf8))
+    }
+}
+
+struct BytesTests {
+    @Test func readsOnlyWhatIsThere() {
+        let d = Data([0x80, 0x01, 0x02])
+        #expect(d.readBigEndian(Int8.self) == -128)
+        #expect(d.readBigEndian(UInt16.self, at: 1) == 0x0102)
+        #expect(d.readBigEndian(UInt16.self, at: 2) == nil)
+        #expect(d.readBigEndian(UInt8.self, at: -1) == nil)
+        #expect(d.readBigEndian(UInt8.self, at: Int.max) == nil)
+    }
 }
 
 struct PairingTests {
@@ -164,10 +184,14 @@ struct HandshakeTests {
         let sig = try identity.signature(for: signed).rawRepresentation
         let reply: [String: Any] = ["v": 1, "pub": Base64URL.encode(pub), "e": Base64URL.encode(ePc),
                                     "nonce": Base64URL.encode(noncePc), "sig": Base64URL.encode(sig), "arakun": "1.2.3"]
-        let session = try phone.finish(try JSONSerialization.data(withJSONObject: reply), label: label, channel: channel)
-        #expect(session.arakun == "1.2.3")
         #expect(throws: E2E.Failure.badHello("sig")) {
             try phone.finish(try JSONSerialization.data(withJSONObject: reply), label: label, channel: channel + 1)
+        }
+        let session = try phone.finish(try JSONSerialization.data(withJSONObject: reply), label: label, channel: channel)
+        #expect(session.arakun == "1.2.3")
+        // A second session from the same handshake would reuse its nonces.
+        #expect(throws: E2E.Failure.badHello("handshake already finished")) {
+            try phone.finish(try JSONSerialization.data(withJSONObject: reply), label: label, channel: channel)
         }
 
         let shared = try eph.sharedSecretFromKeyAgreement(with: P256.KeyAgreement.PublicKey(x963Representation: ePhone))

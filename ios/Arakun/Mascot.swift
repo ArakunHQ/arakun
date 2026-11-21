@@ -156,6 +156,8 @@ private final class MascotState {
     var propAlpha: CGFloat = 0
     var prop: Pose.Prop?
     var mood: Mood = .idle
+    /// The mood last asked for, apart from `mood`, which plays `done` in between.
+    var requested: Mood = .idle
     var moodStart: TimeInterval = 0
     var last: TimeInterval?
     var nextBlink: TimeInterval = 1.5
@@ -165,7 +167,8 @@ private final class MascotState {
     var hopStart: TimeInterval?
     /// A mood that was busy and turns idle plays `done` first.
     func enter(_ m: Mood, at now: TimeInterval) {
-        guard m != mood else { return }
+        guard m != requested else { return }
+        requested = m
         let busy = mood == .working || mood == .thinking || mood == .waiting
         mood = (m == .idle && busy) ? .done : m
         moodStart = now
@@ -317,11 +320,12 @@ struct Mascot: View {
     }
 
     private func step(_ s: MascotState, now: TimeInterval) -> (Pose, blink: CGFloat) {
-        if s.last == nil { s.moodStart = now; s.mood = mood }
+        if s.last == nil { s.moodStart = now; s.mood = mood; s.requested = mood }
         s.enter(mood, at: now)
         let dt = CGFloat(min(0.05, now - (s.last ?? now - 1 / 60)))
         s.last = now
-        let p = still ? Pose() : pose(s, now: now)
+        if still { return (settle(s), 1) }
+        let p = pose(s, now: now)
         for i in 0..<5 { s.head[i].step(to: p.head[i], dt: dt, stiffness: i == 0 ? 400 : 190, damping: i == 0 ? 14 : 15) }
         for i in 0..<2 { s.look[i].step(to: p.look[i], dt: dt, stiffness: 260, damping: 24) }
         for i in 0..<3 { s.eye[i].step(to: p.eye[i], dt: dt, stiffness: 300, damping: 24) }
@@ -343,6 +347,24 @@ struct Mascot: View {
             }
         }
         return (p, blink)
+    }
+
+    /// Reduce Motion: the mood's resting pose at once, symbol and all, with no
+    /// springs to wait out on the paused timeline.
+    private func settle(_ s: MascotState) -> Pose {
+        // No `done` interlude: nothing would end it.
+        s.mood = mood
+        s.hopStart = nil
+        s.glance = [0, 0]
+        s.nextGlance = .infinity
+        // Far enough in that the mood's opening moves are over, short of the doze.
+        let p = pose(s, now: s.moodStart + 1)
+        for i in 0..<5 { s.head[i] = Spring(p.head[i]) }
+        for i in 0..<2 { s.look[i] = Spring(p.look[i]) }
+        for i in 0..<3 { s.eye[i] = Spring(p.eye[i]) }
+        s.prop = p.prop
+        s.propAlpha = p.prop == nil ? 0 : 1
+        return p
     }
 
     // ---- paint -----------------------------------------------------------

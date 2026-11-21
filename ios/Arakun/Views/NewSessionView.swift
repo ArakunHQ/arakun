@@ -41,8 +41,7 @@ struct NewSessionView: View {
             .safeAreaInset(edge: .bottom) {
                 Button {
                     guard let p = model.places.first(where: { $0.path == placePath }) else { return }
-                    sent = true
-                    model.startSession(in: p, text: text.trimmingCharacters(in: .whitespacesAndNewlines))
+                    sent = model.startSession(in: p, text: text.trimmingCharacters(in: .whitespacesAndNewlines))
                 } label: {
                     HStack(spacing: 10) {
                         if sent { ProgressView().tint(Color.onAmber) }
@@ -51,7 +50,7 @@ struct NewSessionView: View {
                     .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.primary)
-                .disabled(sent || placePath.isEmpty || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !model.isLinked)
+                .disabled(sent || !model.places.contains(where: { $0.path == placePath }) || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !model.isLinked)
                 .padding(16)
                 .background(Color.ground)
             }
@@ -63,11 +62,16 @@ struct NewSessionView: View {
                 }
             }
             .onAppear { if placePath.isEmpty { placePath = model.places.first?.path ?? "" } }
+            .onChange(of: model.places) { _, places in
+                // The chosen place went away: fall back to the first one left.
+                if !places.contains(where: { $0.path == placePath }) { placePath = places.first?.path ?? "" }
+            }
             .onChange(of: model.session?.id) { _, id in
                 if sent, let id { started(id) }
             }
             .onChange(of: model.notice) { _, n in
-                // The computer refused it: let the form be sent again.
+                // The computer refused it, or the link dropped before it
+                // answered: let the form be sent again, prompt and all.
                 if n != nil { sent = false }
             }
         }

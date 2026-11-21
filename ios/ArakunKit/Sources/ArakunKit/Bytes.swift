@@ -50,10 +50,10 @@ extension Data {
     /// The big-endian integer at `offset`.
     func readBigEndian<T: FixedWidthInteger>(_: T.Type, at offset: Int = 0) -> T? {
         let size = MemoryLayout<T>.size
-        guard count >= offset + size else { return nil }
+        guard offset >= 0, offset <= count, size <= count - offset else { return nil }
         var v: T = 0
         for b in self[(startIndex + offset)..<(startIndex + offset + size)] {
-            v = (v << 8) | T(b)
+            v = (v << 8) | T(truncatingIfNeeded: b)
         }
         return v
     }

@@ -24,6 +24,13 @@ struct InboxView: View {
                     }
                     if model.isLinked && model.inbox.isEmpty {
                         Empty(mood: mood)
+                    } else if !model.inbox.isEmpty && shown.isEmpty {
+                        Text("No sessions match “\(query.trimmingCharacters(in: .whitespaces))”.")
+                            .font(.callout)
+                            .foregroundStyle(Color.textMuted)
+                            .multilineTextAlignment(.center)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 48)
                     }
                 }
                 .padding(.horizontal, 16)

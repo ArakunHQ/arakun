@@ -33,6 +33,8 @@ final class AppModel {
     var notice: String?
     /// A session asked for before the link was up (from a started session).
     private var openWhenLinked: String?
+    /// A start sent and not yet answered with `started` or `error`.
+    private var starting = false
 
     private var link: RelayLink?
     private var retry: Duration = .milliseconds(500)
@@ -106,7 +108,21 @@ final class AppModel {
         inbox = []
         places = []
         session = nil
+        openWhenLinked = nil
+        loadingOlder = false
+        starting = false
         connection = .unpaired
+    }
+
+    /// The link went down: what was asked of it will not be answered.
+    private func interrupted() {
+        // The computer answers an `entries` request at most once, so asking
+        // again after a drop is safe.
+        loadingOlder = false
+        if starting {
+            starting = false
+            notice = "The connection dropped while the session was starting. Check the inbox before you start it again."
+        }
     }
 
     private func lost() {
@@ -126,9 +142,12 @@ final class AppModel {
         case .open(let who, let new):
             if let new {
                 credentials = new
-                Keychain.save(new)
+                if !Keychain.save(new) {
+                    notice = "Could not keep the pairing in the Keychain. You may need to pair again after the app restarts."
+                }
             }
             host = who.host.isEmpty ? host : who.host
+            interrupted()
             connection = .connected
             retry = .milliseconds(500)
             if let s = session { link?.send(["type": "open", "session": s.id]) }
@@ -139,9 +158,11 @@ final class AppModel {
         case .message(let data):
             if let msg = JSON.parse(data) { receive(msg) }
         case .computer(let online, let since):
+            if !online { interrupted() }
             connection = online ? .connecting : .computerAway(since: since)
         case .closed(let kind, let detail):
             link = nil
+            interrupted()
             switch kind {
             case .unpaired:
                 forget()
@@ -184,8 +205,10 @@ final class AppModel {
             guard session?.id == msg["id"].str else { return }
             session?.apply(state: msg)
         case "started":
+            starting = false
             open(msg["id"].str)
         case "error":
+            starting = false
             notice = msg["message"].string
         default:
             break
@@ -197,6 +220,9 @@ final class AppModel {
     private func send(_ msg: [String: Any]) {
         link?.send(msg)
     }
+
+    /// Whether a message sent now reaches the computer; the link drops it otherwise.
+    private var canSend: Bool { link?.isReady == true }
 
     func open(_ id: String) {
         let line = inbox.first { $0.id == id }
@@ -212,12 +238,13 @@ final class AppModel {
 
     func close() {
         session = nil
+        openWhenLinked = nil
         loadingOlder = false
         send(["type": "close"])
     }
 
     func loadOlder() {
-        guard let s = session, s.from > 0, !loadingOlder else { return }
+        guard let s = session, s.from > 0, !loadingOlder, canSend else { return }
         loadingOlder = true
         send(["type": "entries", "session": s.id, "from": max(0, s.from - 50), "to": s.from])
     }
@@ -228,30 +255,38 @@ final class AppModel {
     }
 
     func stop() {
-        guard let s = session else { return }
+        guard let s = session, canSend else { return }
         send(["type": "cancel", "session": s.id, "keep_queue": true])
     }
 
     func allow(_ option: PermissionAsk.Option) {
-        guard let s = session else { return }
+        // Offline the card stays, with what was picked in it.
+        guard let s = session, canSend else { return }
         send(["type": "permission", "session": s.id, "option": option.id])
         session?.permission = nil
     }
 
     func answer(_ answers: [String]) {
-        guard let s = session else { return }
+        // Offline the card stays, with what was picked in it.
+        guard let s = session, canSend else { return }
         send(["type": "answer", "session": s.id, "answers": answers])
         session?.question = nil
     }
 
     func skipQuestion() {
-        guard let s = session else { return }
+        // Offline the card stays, with what was picked in it.
+        guard let s = session, canSend else { return }
         send(["type": "skip_question", "session": s.id])
         session?.question = nil
     }
 
-    func startSession(in place: Place, text: String) {
+    /// Whether the start went out; the form keeps its prompt when it did not.
+    @discardableResult
+    func startSession(in place: Place, text: String) -> Bool {
+        guard canSend else { return false }
+        starting = true
         send(["type": "start", "env": place.path, "agent": place.agent, "text": text])
+        return true
     }
 
     /// The computer skips the push for the session on screen while the app shows it.

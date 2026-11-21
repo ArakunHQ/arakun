@@ -33,7 +33,8 @@ public enum JSON: Decodable, Equatable, Sendable {
     public var string: String? { if case .string(let s) = self { s } else { nil } }
     public var str: String { string ?? "" }
     public var double: Double? { if case .number(let n) = self { n } else { nil } }
-    public var int: Int? { double.map { Int($0) } }
+    /// Whole numbers only as far as Int reaches: a bigger one is nil, not a trap.
+    public var int: Int? { double.flatMap { Int(exactly: $0.rounded(.towardZero)) } }
     public var bool: Bool { if case .bool(let b) = self { b } else { false } }
     public var array: [JSON] { if case .array(let a) = self { a } else { [] } }
     public var isNull: Bool { self == .null }

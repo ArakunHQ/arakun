@@ -29,6 +29,8 @@ private struct AskFrame<Content: View>: View {
 struct PermissionCard: View {
     let ask: PermissionAsk
     let pick: (PermissionAsk.Option) -> Void
+    /// The allow-always option waiting for its second yes.
+    @State private var always: PermissionAsk.Option?
 
     var body: some View {
         AskFrame(icon: "hand", title: "Permission") {
@@ -43,18 +45,64 @@ struct PermissionCard: View {
                 VStack(alignment: .leading, spacing: 8) { buttons }
             }
         }
+        .confirmationDialog("Allow this for the rest of the session?",
+                            isPresented: Binding(get: { always != nil }, set: { if !$0 { always = nil } }),
+                            titleVisibility: .visible, presenting: always) { o in
+            Button(o.name) { pick(o) }
+        } message: { _ in
+            Text("The agent will not ask again before doing it.")
+        }
     }
 
-    /// The first allow is the one primary button; a reject is red text.
+    /// As the phone page has it, a stray touch allows nothing: a one-time
+    /// allow is held, an allow for the session asks a second time. A reject
+    /// is red text.
     @ViewBuilder private var buttons: some View {
-        let primary = ask.options.first(where: { $0.kind.hasPrefix("allow") })?.id
         ForEach(ask.options) { o in
-            if o.id == primary {
-                Button(o.name) { pick(o) }.buttonStyle(.primaryCompact).fixedSize()
+            if o.kind == "allow_always" {
+                Button(o.name) { always = o }.buttonStyle(.outline).fixedSize()
+            } else if o.kind.hasPrefix("allow") {
+                HoldButton(title: o.name) { pick(o) }.fixedSize()
             } else {
                 Button(o.name) { pick(o) }.buttonStyle(.outline(o.kind.hasPrefix("reject") ? .failure : .text)).fixedSize()
             }
         }
+    }
+}
+
+/// The primary button, answered only once the finger has stayed down while it fills.
+private struct HoldButton: View {
+    let title: String
+    let action: () -> Void
+    @State private var holding = false
+    @Environment(\.isEnabled) private var enabled
+    private static let hold: Double = 0.7
+
+    var body: some View {
+        Text("Hold to \(title.lowercased())")
+            .font(.geist(15, .semibold))
+            .foregroundStyle(Color.onAmber)
+            .padding(.horizontal, 14)
+            .frame(minHeight: 40)
+            .background(Color.amber)
+            .overlay(alignment: .leading) {
+                GeometryReader { g in
+                    Rectangle().fill(Color.onAmber.opacity(0.18)).frame(width: holding ? g.size.width : 0)
+                }
+                .animation(holding ? .linear(duration: Self.hold) : .easeOut(duration: 0.15), value: holding)
+            }
+            .clipShape(RoundedRectangle(cornerRadius: Radius.control))
+            .opacity(enabled ? 1 : 0.4)
+            .onLongPressGesture(minimumDuration: Self.hold) {
+                guard enabled else { return }
+                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                action()
+            } onPressingChanged: { holding = $0 && enabled }
+            // VoiceOver's double tap is deliberate already.
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(title)
+            .accessibilityAddTraits(.isButton)
+            .accessibilityAction { if enabled { action() } }
     }
 }
 
@@ -103,6 +151,10 @@ struct QuestionCard: View {
                     .buttonStyle(.primaryCompact)
                     .disabled(last ? answers.contains(where: \.isEmpty) : answerOf(page).isEmpty)
                 }
+            } else if ask.questions.isEmpty {
+                // Nothing to answer, but the agent still waits on it.
+                Text("The agent asked no question.").font(.small).foregroundStyle(Color.textMuted)
+                Button("Skip", action: skip).buttonStyle(.outline)
             }
         }
         .onAppear {
@@ -138,6 +190,7 @@ struct QuestionCard: View {
             .overlay(RoundedRectangle(cornerRadius: Radius.control).strokeBorder(on ? Color.amber.opacity(0.5) : Color.line))
         }
         .buttonStyle(.plain)
+        .accessibilityAddTraits(on ? .isSelected : [])
     }
 
     private var last: Bool { page >= ask.questions.count - 1 }

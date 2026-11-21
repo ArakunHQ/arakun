@@ -135,22 +135,26 @@ public enum E2E {
 
     /// A handshake under way: `hello` goes to the computer, and `finish` takes
     /// its answer and gives the session, or throws why it is not trusted.
-    public struct Handshake {
+    /// It finishes once: two sessions from one handshake would share keys and
+    /// counters, and so reuse AES-GCM nonces.
+    public final class Handshake {
         let key: P256.KeyAgreement.PrivateKey
         let nonce: Data
         public let hello: Data
+        private var finished = false
 
         public init() {
             key = P256.KeyAgreement.PrivateKey()
-            var n = Data(count: 16)
-            n.withUnsafeMutableBytes { _ = SecRandomCopyBytes(kSecRandomDefault, 16, $0.baseAddress!) }
-            nonce = n
+            // CryptoKit's generator stops the app rather than hand back bytes
+            // that are not random, unlike an unchecked SecRandomCopyBytes.
+            nonce = SymmetricKey(size: SymmetricKeySize(bitCount: 128)).withUnsafeBytes { Data($0) }
             let e = key.publicKey.x963Representation
             let obj: [String: Any] = ["v": E2E.version, "e": Base64URL.encode(e), "nonce": Base64URL.encode(nonce)]
             hello = try! JSONSerialization.data(withJSONObject: obj)
         }
 
         public func finish(_ reply: Data, label: String, channel: UInt32) throws -> Session {
+            guard !finished else { throw Failure.badHello("handshake already finished") }
             guard let obj = try? JSONSerialization.jsonObject(with: reply) as? [String: Any] else {
                 throw Failure.badHello("not json")
             }
@@ -161,6 +165,7 @@ public enum E2E {
             let keys = deriveKeys(shared: shared.withUnsafeBytes { Data($0) }, noncePhone: nonce, noncePc: pc.nonce)
             let session = Session(sealKey: keys.phoneToPc, openKey: keys.pcToPhone)
             session.arakun = pc.arakun
+            finished = true
             return session
         }
     }

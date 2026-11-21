@@ -7,8 +7,8 @@ import Foundation
 
 @MainActor
 public final class RelayLink {
-    /// Who answered: the device id the computer knows this phone by, and the
-    /// computer's name.
+    /// Who answered: the device id the computer knows this phone by, the
+    /// phone's name as the computer keeps it, and the computer's name (`host`).
     public struct Who: Sendable {
         public let id: String
         public let name: String

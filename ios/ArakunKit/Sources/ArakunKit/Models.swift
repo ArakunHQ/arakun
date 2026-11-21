@@ -71,7 +71,8 @@ public struct Inbox: Sendable {
 
 /// One entry of a session's transcript, cut down for a phone.
 public enum Entry: Equatable, Sendable {
-    case user(text: String, at: Date, elapsedMs: Int?, pastes: [String])
+    /// `images` are the names of the pictures the words mention.
+    case user(text: String, at: Date, elapsedMs: Int?, pastes: [String], images: [String])
     case agent(String)
     case thought(String)
     case tool(Tool)
@@ -94,8 +95,11 @@ public enum Entry: Equatable, Sendable {
         public let diffs: [(path: String, added: Int, removed: Int)]
 
         public static func == (a: Tool, b: Tool) -> Bool {
-            a.id == b.id && a.title == b.title && a.status == b.status && a.output == b.output
-                && a.command == b.command && a.added == b.added && a.removed == b.removed
+            a.id == b.id && a.title == b.title && a.kind == b.kind && a.status == b.status
+                && a.output == b.output && a.command == b.command && a.exitCode == b.exitCode
+                && a.added == b.added && a.removed == b.removed
+                && a.diffs.count == b.diffs.count
+                && zip(a.diffs, b.diffs).allSatisfy { $0.path == $1.path && $0.added == $1.added && $0.removed == $1.removed }
         }
     }
 
@@ -109,7 +113,8 @@ public enum Entry: Equatable, Sendable {
         switch j["type"].str {
         case "user":
             self = .user(text: j["text"].str, at: Date(timeIntervalSince1970: j["at"].double ?? 0),
-                         elapsedMs: j["elapsed_ms"].int, pastes: j["pastes"].array.map { $0["text"].str })
+                         elapsedMs: j["elapsed_ms"].int, pastes: j["pastes"].array.map { $0["text"].str },
+                         images: j["images"].array.map { $0["name"].str })
         case "agent": self = .agent(j["text"].str)
         case "thought": self = .thought(j["text"].str)
         case "tool":

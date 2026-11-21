@@ -11,7 +11,7 @@ struct PairView: View {
         ScrollView {
             VStack(spacing: 32) {
                 VStack(spacing: 16) {
-                    Mascot(mood: model.connection == .pairing ? .thinking : model.pairError != nil ? .error : .idle, width: 132)
+                    Mascot(mood: model.connection == .pairing ? .thinking : problem != nil ? .error : .idle, width: 132)
                         .padding(.top, 24)
                     Text("Arakun")
                         .font(.geist(40, .semibold, relativeTo: .largeTitle))
@@ -70,7 +70,7 @@ struct PairView: View {
                                 .disabled(pasted.isEmpty)
                         }
                     }
-                    if let e = model.pairError {
+                    if let e = problem {
                         HStack(alignment: .firstTextBaseline, spacing: 8) {
                             Icon("alert-circle", size: 15)
                             Text(e)
@@ -102,6 +102,13 @@ struct PairView: View {
                 model.pair(code)
             }
         }
+    }
+
+    /// What went wrong, from pairing or from a computer that did not prove its key.
+    private var problem: String? {
+        if let e = model.pairError { return e }
+        if case .failed(let why) = model.connection { return why }
+        return nil
     }
 
     private func pairPasted() {

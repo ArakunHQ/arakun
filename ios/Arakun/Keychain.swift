@@ -20,17 +20,26 @@ enum Keychain {
         return try? JSONDecoder().decode(Credentials.self, from: data)
     }
 
-    static func save(_ c: Credentials?) {
+    /// Stores `c`, or forgets the credentials when it is nil. New credentials
+    /// replace the old ones in place, so a failed write keeps the old ones.
+    @discardableResult
+    static func save(_ c: Credentials?) -> Bool {
         let base: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
         ]
-        SecItemDelete(base as CFDictionary)
-        guard let c, let data = try? JSONEncoder().encode(c) else { return }
-        var add = base
-        add[kSecValueData as String] = data
-        add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        SecItemAdd(add as CFDictionary, nil)
+        guard let c else {
+            let status = SecItemDelete(base as CFDictionary)
+            return status == errSecSuccess || status == errSecItemNotFound
+        }
+        guard let data = try? JSONEncoder().encode(c) else { return false }
+        let fields: [String: Any] = [
+            kSecValueData as String: data,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+        ]
+        let status = SecItemUpdate(base as CFDictionary, fields as CFDictionary)
+        guard status == errSecItemNotFound else { return status == errSecSuccess }
+        return SecItemAdd(base.merging(fields) { $1 } as CFDictionary, nil) == errSecSuccess
     }
 }

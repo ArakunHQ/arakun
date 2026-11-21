@@ -16,6 +16,9 @@ struct ScannerView: UIViewControllerRepresentable {
     final class Scanner: UIViewController, @preconcurrency AVCaptureMetadataOutputObjectsDelegate {
         var found: ((String) -> Void)?
         private let session = AVCaptureSession()
+        /// One queue for start and stop, so a quick close cannot stop the
+        /// camera before it has started and leave it running.
+        private let queue = DispatchQueue(label: "com.arakun.ios.scanner")
         private var done = false
 
         override func viewDidLoad() {
@@ -43,7 +46,7 @@ struct ScannerView: UIViewControllerRepresentable {
             preview.frame = view.layer.bounds
             view.layer.addSublayer(preview)
             let session = self.session
-            DispatchQueue.global(qos: .userInitiated).async { session.startRunning() }
+            queue.async { session.startRunning() }
         }
 
         override func viewDidLayoutSubviews() {
@@ -54,7 +57,7 @@ struct ScannerView: UIViewControllerRepresentable {
         override func viewWillDisappear(_ animated: Bool) {
             super.viewWillDisappear(animated)
             let session = self.session
-            DispatchQueue.global(qos: .userInitiated).async { session.stopRunning() }
+            queue.async { session.stopRunning() }
         }
 
         func metadataOutput(_: AVCaptureMetadataOutput, didOutput objects: [AVMetadataObject], from _: AVCaptureConnection) {

@@ -260,23 +260,44 @@ pub fn detach(cmd: &mut Command) -> &mut Command {
 /// Starts this binary again once this process is gone, so it opens a fresh
 /// install and finds the control socket free. The running binary may have been
 /// replaced on disk since it started; its path still names the new one.
+///
+/// On macOS Arakun.app is opened through LaunchServices rather than by running its
+/// binary. A bundle's binary run directly gets no app identity, and right after an
+/// update it can die on its first start while the system checks the new bundle.
 #[cfg(unix)]
 pub fn relaunch() -> std::io::Result<()> {
     let exe = std::env::current_exe()?;
     let exe = exe.to_string_lossy();
     let exe = exe.strip_suffix(" (deleted)").unwrap_or(&exe);
+    let wait = r#"while kill -0 "$1" 2>/dev/null; do sleep 0.1; done; "#;
     let mut cmd = Command::new("sh");
-    cmd.args([
-        "-c",
-        r#"while kill -0 "$1" 2>/dev/null; do sleep 0.1; done; exec "$2""#,
-        "sh",
-    ])
-    .arg(std::process::id().to_string())
-    .arg(exe)
-    .stdin(std::process::Stdio::null())
-    .stdout(std::process::Stdio::null())
-    .stderr(std::process::Stdio::null());
+    #[cfg(target_os = "macos")]
+    let bundle = canonicalize(exe).ok().and_then(|exe| app_bundle(&exe));
+    #[cfg(not(target_os = "macos"))]
+    let bundle: Option<PathBuf> = None;
+    match bundle {
+        Some(app) => cmd
+            .args(["-c", &format!(r#"{wait}exec /usr/bin/open -n "$2""#), "sh"])
+            .arg(std::process::id().to_string())
+            .arg(app),
+        None => cmd
+            .args(["-c", &format!(r#"{wait}exec "$2""#), "sh"])
+            .arg(std::process::id().to_string())
+            .arg(exe),
+    };
+    cmd.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
     detach(&mut cmd).spawn().map(|_| ())
+}
+
+/// The `.app` folder holding `exe` when it is a bundle's main binary
+/// (`X.app/Contents/MacOS/x`), `None` for a bare binary such as `cargo run`'s.
+#[cfg(any(target_os = "macos", test))]
+fn app_bundle(exe: &Path) -> Option<PathBuf> {
+    is_bundled(exe)
+        .then(|| exe.ancestors().nth(3).map(Path::to_path_buf))
+        .flatten()
 }
 
 #[cfg(not(unix))]
@@ -1715,6 +1736,16 @@ mod tests {
     use super::*;
     #[cfg(unix)]
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn relaunch_opens_the_bundle_a_binary_belongs_to() {
+        assert_eq!(
+            app_bundle(Path::new("/Applications/Arakun.app/Contents/MacOS/arakun")),
+            Some(PathBuf::from("/Applications/Arakun.app"))
+        );
+        assert_eq!(app_bundle(Path::new("/repo/target/debug/arakun")), None);
+        assert_eq!(app_bundle(Path::new("/x/Contents/MacOS/arakun")), None);
+    }
 
     #[cfg(unix)]
     #[test]

@@ -88,6 +88,10 @@ fn check_buckets(tints: &[Tint], n: usize) -> Vec<Tint> {
 
 impl Shell {
     pub(super) fn open_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Replacing a dialog that is still saving would lose its result.
+        if self.modal_busy(cx) {
+            return;
+        }
         self.menu = None;
         self.env_menu_open = false;
         self.refresh_repo_pulls(cx);

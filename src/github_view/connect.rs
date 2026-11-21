@@ -13,7 +13,7 @@ use crate::github::pilot::{self, Config};
 use crate::github::pilot_setup::{self, Draft};
 use crate::input::{InputEvent, TextInput};
 use crate::theme;
-use crate::ui::{self, ButtonKind, Type, Typography as _};
+use crate::ui::{self, ButtonKind, Type};
 
 pub enum PilotDialogEvent {
     /// Saved or removed: pilot reads its settings again.
@@ -32,6 +32,8 @@ pub struct PilotDialog {
     url: Entity<TextInput>,
     token: Entity<TextInput>,
     admin: Entity<TextInput>,
+    /// "Remove the saved admin token": Tab from the admin box lands on it.
+    drop_admin_focus: FocusHandle,
     busy: bool,
     error: Option<SharedString>,
     /// "Disconnect" waits for its second click.
@@ -64,8 +66,13 @@ impl PilotDialog {
                       window: &mut Window,
                       cx: &mut Context<Self>| match ev {
             InputEvent::Submit => this.connect(cx),
-            // Tab: address, token, admin token, and round again.
+            // Tab: address, token, admin token, its remove button when
+            // there is one (then on through the dialog's buttons), and round.
             InputEvent::Complete => {
+                if *input == this.admin && this.saved_admin(cx) {
+                    window.focus(&this.drop_admin_focus, cx);
+                    return;
+                }
                 let next = if *input == this.url {
                     &this.token
                 } else if *input == this.token {
@@ -105,6 +112,7 @@ impl PilotDialog {
             url,
             token,
             admin,
+            drop_admin_focus: cx.focus_handle().tab_index(0).tab_stop(true),
             busy: false,
             error: broken.map(|e| format!("The saved settings can't be used: {e}.").into()),
             confirm_remove: false,
@@ -310,22 +318,21 @@ impl Render for PilotDialog {
                             Some("Only for sending pilot tasks, from the palette or a pull request's sheet."),
                         )
                         // The only way to drop the admin token and keep the rest.
+                        // A button, so Tab reaches it and Enter or Space press it.
                         .when(saved_admin, |d| {
+                            let label = if self.drop_admin {
+                                "Keep the saved admin token"
+                            } else {
+                                "Remove the saved admin token"
+                            };
                             d.child(
-                                div()
-                                    .id("pilot-drop-admin")
-                                    .ty(Type::Caption)
-                                    .text_color(theme::link())
-                                    .cursor_pointer()
-                                    .hover(|s| s.underline())
-                                    .child(if self.drop_admin {
-                                        "Keep the saved admin token"
-                                    } else {
-                                        "Remove the saved admin token"
-                                    })
-                                    .on_click(
-                                        cx.listener(|this, _, _, cx| this.toggle_drop_admin(cx)),
-                                    ),
+                                div().flex().child(
+                                    ui::button("pilot-drop-admin", label, ButtonKind::Ghost, free)
+                                        .track_focus(&self.drop_admin_focus)
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.toggle_drop_admin(cx)
+                                        })),
+                                ),
                             )
                         }),
                     )

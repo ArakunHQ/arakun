@@ -2557,6 +2557,10 @@ impl Shell {
     }
 
     fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Replacing a dialog that is still saving would lose its result.
+        if self.modal_busy(cx) {
+            return;
+        }
         // A second dialog would read the palettes before the open one's
         // pending save lands, then save over that edit.
         if matches!(self.modal, Some((Modal::Settings(_), _))) {

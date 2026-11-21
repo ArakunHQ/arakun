@@ -56,6 +56,13 @@ pre-push:
       glob: *teams
       run: cd teams && (test node_modules/.package-lock.json -nt package-lock.json || npm ci) && npm test
 
+    # The iOS app's protocol, against the vectors the Rust side writes; as
+    # the "What changed" job in ci.yml, phone/ and CI itself count too. Swift
+    # with CryptoKit is macOS only, so it skips elsewhere.
+    - name: ios-tests
+      glob: ["ios/*", "ios/**/*", "phone/*", "phone/**/*", ".github/workflows/ci.yml", ".github/actions/*", ".github/actions/**/*"]
+      run: if [ "$(uname)" = Darwin ]; then cd ios/ArakunKit && swift test; else echo "ios-tests skipped, macOS only"; fi
+
 commit-msg:
   jobs:
     - name: conventional-commits

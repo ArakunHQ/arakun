@@ -188,8 +188,9 @@ lefthook install
 - **On commit:** clippy if Rust files changed, the relay's types if `relay/` changed,
   the teams Worker's types if `teams/` changed, and the phone tests if `phone/` or
   `core/src/phone/` changed. They check the files on disk, not only what you staged.
-- **On push:** `cargo test`, the relay tests and the teams tests, if the commits you
-  push change those parts.
+- **On push:** `cargo test`, the relay tests, the teams tests and, on macOS, the iOS
+  protocol tests (`swift test` in `ios/ArakunKit`), if the commits you push change
+  those parts.
 - **On the commit message:** the Conventional Commits check (see
   [Pull requests](#pull-requests)).
 
@@ -250,6 +251,17 @@ tools/bench/releases.sh v0.10.0 v0.11.1       # the same on your own Linux machi
   on.
 - **Docs.** If you change a command, a flag, a shortcut or a storage path, update the
   README (and [docs/windows.md](docs/windows.md) if it is different on Windows).
+
+### The iOS app
+
+- `ios/ArakunKit` is the phone page's protocol in Swift: a change to its encryption,
+  framing or messages must match `core/src/phone` and `phone/`, and its tests read
+  `phone/test/vectors`.
+- Pairing credentials stay in the Keychain (`ios/Arakun/Keychain.swift`), never in
+  `UserDefaults` or logs.
+- Views take colors, fonts and corners from `ios/Arakun/Theme.swift`, never
+  hand-written values.
+- The `-demo` mode is behind `#if DEBUG` and must not reach a release build.
 
 ### UI changes
 

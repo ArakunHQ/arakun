@@ -384,7 +384,7 @@ sees the project's skills.
 <summary>When the GitHub tab reads GitHub, and what it stores</summary>
 
 Arakun reads GitHub in the background only after you open the tab once, and stops while
-`gh` is missing or signed out. It keeps the watch list, the filter choice and whether you
+`gh` is missing or signed out. It keeps the watch list, the filter choice, the comment order and whether you
 opened the tab in `github.json` next to its state, drafts in `github/drafts/` beside
 them, and the profile pictures it shows in `github/avatars/` (each downloaded again
 after a week).

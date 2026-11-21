@@ -436,6 +436,9 @@ pub struct Settings {
     /// The GitHub tab was opened at least once: until then nothing polls gh.
     #[serde(default)]
     pub opened: bool,
+    /// Conversations and their threads show the newest comment first.
+    #[serde(default)]
+    pub newest_first: bool,
 }
 
 fn file() -> PathBuf {
@@ -1123,6 +1126,18 @@ impl GitHub {
         self.settings.watch.retain(|w| w != entry);
         store(&self.settings);
         cx.notify();
+    }
+
+    pub fn newest_first(&self) -> bool {
+        self.settings.newest_first
+    }
+
+    pub fn set_newest_first(&mut self, on: bool, cx: &mut Context<Self>) {
+        if self.settings.newest_first != on {
+            self.settings.newest_first = on;
+            store(&self.settings);
+            cx.notify();
+        }
     }
 
     pub fn set_window_active(&mut self, active: bool, cx: &mut Context<Self>) {

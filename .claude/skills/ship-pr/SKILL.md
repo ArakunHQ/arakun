@@ -119,8 +119,10 @@ approves, and marking ready is what asks for the review.
 
 - Exit 1 (a check failed): use the `triage-ci` skill, push the fix, wait again.
 - Exit 0: `gh pr ready`. cubic, the review bot, reviews drafts too, so its
-  review is often done before the checks; marking ready asks for the
-  reviewers, so never before the required checks pass.
+  review is often done before the checks. Marking ready is what lets the
+  reviewers be asked, so never before the required checks pass. They are asked
+  only once cubic has finished and every cubic comment is resolved or answered,
+  and not at all if cubic approved and every review thread is resolved.
 - The first pull request of a new contributor needs the CLA signed; only the
   person can do that.
 - cubic comments: fix each one and push, or reply with the reason you

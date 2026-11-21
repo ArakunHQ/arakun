@@ -41,7 +41,7 @@ fn auth_path() -> PathBuf {
 
 /// The Go API key, if `opencode auth login` stored one. Never logged or shown.
 fn key() -> Option<String> {
-    let json: Value = serde_json::from_slice(&std::fs::read(auth_path()).ok()?).ok()?;
+    let json: Value = crate::durable::load_json(auth_path())?;
     json[PROVIDER]["key"]
         .as_str()
         .filter(|k| !k.is_empty())
@@ -54,13 +54,11 @@ fn cache_path() -> PathBuf {
 
 /// The last fetch, however old; `None` when never fetched.
 pub fn cached() -> Option<PlanUsage> {
-    serde_json::from_str(&std::fs::read_to_string(cache_path()).ok()?).ok()
+    crate::durable::load_json(cache_path())
 }
 
 fn store(usage: &PlanUsage) {
-    if let Ok(json) = serde_json::to_vec_pretty(usage) {
-        let _ = crate::durable::write(&cache_path(), &json);
-    }
+    crate::durable::cache_json(&cache_path(), usage);
 }
 
 /// The last usage any view fetched, for surfaces that only render (the rail).

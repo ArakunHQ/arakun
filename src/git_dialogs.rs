@@ -47,6 +47,11 @@ pub struct CommitDialog {
     input: Entity<TextInput>,
     /// Some(all) while a commit runs.
     busy: Option<bool>,
+    /// The agent that writes the message; None until it is found, and when
+    /// none can.
+    writer: Option<AgentKind>,
+    /// While the agent writes.
+    writing: bool,
     error: Option<SharedString>,
     _sub: Subscription,
 }
@@ -59,10 +64,24 @@ impl CommitDialog {
         branch: SharedString,
         files: usize,
         staged: usize,
+        session: AgentKind,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let input = cx.new(|cx| TextInput::new("Describe what changed", cx));
+        // Finding an agent's CLI reads the disk: off the main thread.
+        cx.spawn(async move |this, cx| {
+            let writer = cx
+                .background_spawn(async move {
+                    crate::pr_writer::writer(session, crate::env_name::installed)
+                })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.writer = writer;
+                cx.notify();
+            });
+        })
+        .detach();
         let sub = cx.subscribe_in(&input, window, |this: &mut Self, _, ev, _, cx| match ev {
             InputEvent::Submit => {
                 let all = this.staged == 0;
@@ -87,9 +106,92 @@ impl CommitDialog {
             staged,
             input,
             busy: None,
+            writer: None,
+            writing: false,
             error: None,
             _sub: sub,
         }
+    }
+
+    /// Whether a commit now takes every change: nothing is staged.
+    fn takes_all(&self) -> bool {
+        self.staged == 0
+    }
+
+    /// "Write with <agent>": the agent reads what the commit takes (the
+    /// staged changes, or all of them) and writes the message into the box,
+    /// where the user reads and edits it before committing.
+    fn write_with_ai(&mut self, cx: &mut Context<Self>) {
+        let Some(agent) = self.writer else { return };
+        if self.writing || self.busy.is_some() {
+            return;
+        }
+        self.writing = true;
+        self.error = None;
+        cx.notify();
+        let (at, all) = (self.at.clone(), self.takes_all());
+        let typed = self.input.read(cx).text().to_string();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_spawn(crate::guard::task(async move {
+                    let source = crate::pr_writer::commit::read(&at, all)?;
+                    crate::pr_writer::commit::write(agent, &source)
+                }))
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.writing = false;
+                match result {
+                    // A message typed meanwhile is the user's.
+                    Ok(_) if this.input.read(cx).text() != typed => {}
+                    Ok(message) => this.input.update(cx, |i, cx| i.set_text(message, cx)),
+                    Err(e) => {
+                        this.error =
+                            Some(format!("{} couldn't write it: {e}", agent.label()).into())
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// The button beside the message's label.
+    fn write_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let can = self.writer.is_some() && !self.writing && self.busy.is_none();
+        // Its name says where the diff goes before the click sends it.
+        let label: SharedString = match (self.writing, self.writer) {
+            (true, _) => "Writing…".into(),
+            (false, Some(agent)) => format!("Write with {}", agent.label()).into(),
+            (false, None) => "Write with AI".into(),
+        };
+        let what = if self.takes_all() {
+            "every change"
+        } else {
+            "the staged changes"
+        };
+        let tip = match self.writer {
+            Some(agent) => format!(
+                "Sends the diff of {what} to {}, which writes the message",
+                agent.label()
+            ),
+            None => "Needs this environment's agent, or the one picked for naming branches, \
+                     to be installed"
+                .to_string(),
+        };
+        ui::button_with(
+            "commit-write",
+            (!self.writing).then_some("sparkles"),
+            label,
+            ButtonKind::Outline,
+            can,
+        )
+        .when(self.writing, |d| {
+            d.child(ui::spinner("commit-writing", 12., theme::content()))
+        })
+        .tooltip(ui::tip_text(tip))
+        .when(can, |d| {
+            d.on_click(cx.listener(|this, _, _, cx| this.write_with_ai(cx)))
+        })
     }
 
     fn message(&self, cx: &App) -> String {
@@ -98,7 +200,7 @@ impl CommitDialog {
 
     fn submit(&mut self, all: bool, cx: &mut Context<Self>) {
         let message = self.message(cx);
-        if self.busy.is_some() || message.is_empty() {
+        if self.busy.is_some() || self.writing || message.is_empty() {
             return;
         }
         self.busy = Some(all);
@@ -132,7 +234,7 @@ impl Focusable for CommitDialog {
 
 impl Render for CommitDialog {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let ready = !self.message(cx).is_empty() && self.busy.is_none();
+        let ready = !self.message(cx).is_empty() && self.busy.is_none() && !self.writing;
         let has_staged = self.staged > 0;
         let files = if self.files == 1 {
             "1 file".to_string()
@@ -189,9 +291,17 @@ impl Render for CommitDialog {
                             .gap(crate::ui::sp(6.))
                             .child(
                                 div()
-                                    .text_size(px(ui::TEXT_SM))
-                                    .text_color(theme::text_muted())
-                                    .child("Message"),
+                                    .flex()
+                                    .items_center()
+                                    .gap(crate::ui::sp(8.))
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .text_size(px(ui::TEXT_SM))
+                                            .text_color(theme::text_muted())
+                                            .child("Message"),
+                                    )
+                                    .child(self.write_button(cx)),
                             )
                             .child(
                                 div()
@@ -654,7 +764,8 @@ impl PullRequestDialog {
                 "Sends the branch's commits and diff to {}, which writes the title and description",
                 agent.label()
             ),
-            None => "Needs Claude Code: as this environment's agent, or picked for naming branches"
+            None => "Needs this environment's agent, or the one picked for naming branches, \
+                     to be installed"
                 .to_string(),
         };
         ui::button_with(

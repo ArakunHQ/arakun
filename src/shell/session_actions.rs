@@ -13,9 +13,10 @@ use gpui::{
 };
 
 use super::{ContextMenu, MenuTarget, Modal, Shell};
+use crate::agent::AgentKind;
 use crate::agent::catalog::{self, AgentSession};
 use crate::input::{InputEvent, TextInput};
-use crate::model::{self, Agent, Status};
+use crate::model::{self, Status};
 use crate::theme;
 use crate::ui::{self, ButtonKind, icon};
 
@@ -137,7 +138,7 @@ impl Render for RenameDialog {
 
 pub struct RemoveDialog {
     title: SharedString,
-    agent: Agent,
+    agent: AgentKind,
     busy: bool,
     focus: FocusHandle,
 }
@@ -147,7 +148,7 @@ impl EventEmitter<SessionDialogEvent> for RemoveDialog {}
 impl RemoveDialog {
     pub fn new(
         title: SharedString,
-        agent: Agent,
+        agent: AgentKind,
         busy: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -172,13 +173,13 @@ impl Focusable for RemoveDialog {
 impl Render for RemoveDialog {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let kept = match self.agent {
-            Agent::Droid => "Droid keeps its own copy, so it can be imported again later.",
-            Agent::Claude => "Claude Code keeps its own copy of the session.",
-            Agent::OpenCode => "OpenCode keeps its own copy of the session.",
-            Agent::Codex => "Codex keeps its own copy of the session.",
-            Agent::Devin => "Devin keeps its own copy of the session.",
-            Agent::Cursor => "Cursor keeps its own copy of the session.",
-            Agent::WorkersAi => "arakun keeps the messages the model saw until then.",
+            AgentKind::Droid => "Droid keeps its own copy, so it can be imported again later.",
+            AgentKind::Claude => "Claude Code keeps its own copy of the session.",
+            AgentKind::OpenCode => "OpenCode keeps its own copy of the session.",
+            AgentKind::Codex => "Codex keeps its own copy of the session.",
+            AgentKind::Devin => "Devin keeps its own copy of the session.",
+            AgentKind::Cursor => "Cursor keeps its own copy of the session.",
+            AgentKind::WorkersAi => "arakun keeps the messages the model saw until then.",
         };
         ui::modal_panel("remove-session", 420.)
             .track_focus(&self.focus)
@@ -532,9 +533,9 @@ impl Shell {
             || s.meta.as_ref().is_some_and(|m| m.session_id.is_some());
         // On a server, its agent decides, and says so when it cannot.
         let can_compact = if env.remote.is_some() {
-            matches!(s.agent, Agent::Claude | Agent::Droid)
+            matches!(s.agent, AgentKind::Claude | AgentKind::Droid)
         } else {
-            known && (s.agent == Agent::Claude || catalog::droid_native())
+            known && (s.agent == AgentKind::Claude || catalog::droid_native())
         };
         let can_fork =
             can_compact && (env.remote.is_some() || live.is_none_or(|t| t.supports_fork()));

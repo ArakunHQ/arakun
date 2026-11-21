@@ -560,15 +560,9 @@ fn cache_dir() -> PathBuf {
     crate::platform::app_dir().join("cache")
 }
 
-fn write_json(file: &std::path::Path, v: &impl serde::Serialize) {
-    if let Ok(json) = serde_json::to_vec(v) {
-        let _ = crate::durable::write(file, &json);
-    }
-}
-
 /// What the last load found, to show while the next one runs.
 pub fn cached() -> Option<Snapshot> {
-    serde_json::from_slice(&std::fs::read(cache_dir().join("cloudflare.json")).ok()?).ok()
+    crate::durable::load_json(cache_dir().join("cloudflare.json"))
 }
 
 /// Asks `cf` who is signed in; it refreshes an expired token on the way.
@@ -608,7 +602,7 @@ fn whoami() -> Result<Session, LoadError> {
     };
     s.token = read_token(&s, true)
         .ok_or_else(|| LoadError::SignedOut(format!("Couldn't read the token ({source})")))?;
-    write_json(&cache_dir().join("cloudflare-session.json"), &s);
+    crate::durable::cache_json(&cache_dir().join("cloudflare-session.json"), &s);
     Ok(s)
 }
 
@@ -617,7 +611,7 @@ fn whoami() -> Result<Session, LoadError> {
 fn read_token(s: &Session, any: bool) -> Option<String> {
     let token = match &s.file {
         Some(file) => {
-            let c: Value = serde_json::from_slice(&std::fs::read(file).ok()?).ok()?;
+            let c: Value = crate::durable::load_json(file)?;
             // RFC 3339 times compare as text; a minute of margin.
             let expires = c["expiration_time"].as_str().unwrap_or_default();
             if !any
@@ -635,9 +629,7 @@ fn read_token(s: &Session, any: bool) -> Option<String> {
 
 /// The session the last `whoami` found, with its token if still good: no Node.
 fn quick_session() -> Option<Session> {
-    let mut s: Session =
-        serde_json::from_slice(&std::fs::read(cache_dir().join("cloudflare-session.json")).ok()?)
-            .ok()?;
+    let mut s: Session = crate::durable::load_json(cache_dir().join("cloudflare-session.json"))?;
     s.token = read_token(&s, false)?;
     Some(s)
 }
@@ -749,7 +741,7 @@ pub fn load(
         }
         other => other?,
     };
-    write_json(&cache_dir().join("cloudflare.json"), &snap);
+    crate::durable::cache_json(&cache_dir().join("cloudflare.json"), &snap);
     Ok(snap)
 }
 

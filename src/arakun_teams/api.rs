@@ -198,7 +198,7 @@ pub fn poll_token(device_code: &str) -> Result<TokenAnswer, ApiError> {
 pub fn sign_in(base: &str, github_token: &str) -> Result<SignedIn, ApiError> {
     let body = serde_json::json!({ "access_token": github_token }).to_string();
     let (status, body) = answer(
-        agent()
+        server(base)
             .post(format!("{base}/auth/github"))
             .header("Content-Type", "application/json")
             .send(body),
@@ -208,7 +208,7 @@ pub fn sign_in(base: &str, github_token: &str) -> Result<SignedIn, ApiError> {
 
 pub fn me(base: &str, session: &str) -> Result<Me, ApiError> {
     let (status, body) = answer(
-        agent()
+        server(base)
             .get(format!("{base}/me"))
             .header("Authorization", format!("Bearer {session}"))
             .call(),
@@ -219,7 +219,7 @@ pub fn me(base: &str, session: &str) -> Result<Me, ApiError> {
 /// Ends the session on the server.
 pub fn logout(base: &str, session: &str) -> Result<(), ApiError> {
     let (status, body) = answer(
-        agent()
+        server(base)
             .post(format!("{base}/auth/logout"))
             .header("Authorization", format!("Bearer {session}"))
             .send_empty(),
@@ -458,11 +458,19 @@ impl Call<'_> {
                 .header("Content-Type", "application/json")
                 .body(body.to_string())
                 .map_err(|e| ApiError::Network(e.to_string()))
-                .and_then(|r| agent().run(r).map_err(|e| ApiError::Network(e.to_string()))),
+                .and_then(|r| {
+                    server(&self.base)
+                        .run(r)
+                        .map_err(|e| ApiError::Network(e.to_string()))
+                }),
             None => req
                 .body(())
                 .map_err(|e| ApiError::Network(e.to_string()))
-                .and_then(|r| agent().run(r).map_err(|e| ApiError::Network(e.to_string()))),
+                .and_then(|r| {
+                    server(&self.base)
+                        .run(r)
+                        .map_err(|e| ApiError::Network(e.to_string()))
+                }),
         };
         read(sent, limit)
     }
@@ -570,15 +578,19 @@ impl Call<'_> {
         self.get(&format!("/teams/{team_id}/pending"))
     }
 
+    /// `devices` and `keyed_epoch` are what the admin reviewed, so a device
+    /// added or a rotation ended since then answers `409`, not `400`.
     pub fn approve(
         &self,
         team_id: &str,
         github_id: u64,
         request_id: &str,
+        devices: &[String],
+        keyed_epoch: Option<u64>,
         envelopes: &[Envelope],
     ) -> Result<(), ApiError> {
         let path = format!("/teams/{team_id}/pending/{github_id}/approve");
-        let body = serde_json::json!({ "request_id": request_id, "envelopes": envelopes });
+        let body = approval(request_id, devices, keyed_epoch, envelopes);
         self.post::<serde_json::Value>("POST", &path, body)
             .map(|_| ())
     }
@@ -746,20 +758,57 @@ fn github_error(body: &str) -> String {
         .unwrap_or_default()
 }
 
+/// The body of an approval. A Worker without the team's `keyed_epoch` gave
+/// the client none to send back, so it is left out then.
+fn approval(
+    request_id: &str,
+    devices: &[String],
+    keyed_epoch: Option<u64>,
+    envelopes: &[Envelope],
+) -> serde_json::Value {
+    let mut body = serde_json::json!({
+        "request_id": request_id,
+        "devices": devices,
+        "envelopes": envelopes,
+    });
+    if let Some(epoch) = keyed_epoch {
+        body["keyed_epoch"] = epoch.into();
+    }
+    body
+}
+
 fn agent() -> &'static ureq::Agent {
     static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
-    AGENT.get_or_init(|| {
-        let config = ureq::Agent::config_builder()
-            .timeout_global(Some(Duration::from_secs(20)))
-            .http_status_as_error(false)
-            .user_agent(concat!("arakun/", env!("CARGO_PKG_VERSION")))
-            .build();
-        ureq::Agent::with_parts(
-            config,
-            ureq::unversioned::transport::DefaultConnector::new(),
-            Ipv4First::default(),
-        )
-    })
+    AGENT.get_or_init(|| build(false))
+}
+
+/// The agent for the Teams server at `base`. Plain `http://` to this machine
+/// skips the proxy from the environment (`HTTP_PROXY`, `ALL_PROXY`): it would
+/// carry the session off the machine unencrypted. `https://` keeps it.
+fn server(base: &str) -> &'static ureq::Agent {
+    static DIRECT: OnceLock<ureq::Agent> = OnceLock::new();
+    if crate::github::pilot::local_http(base) {
+        DIRECT.get_or_init(|| build(true))
+    } else {
+        agent()
+    }
+}
+
+fn build(direct: bool) -> ureq::Agent {
+    let mut config = ureq::Agent::config_builder();
+    if direct {
+        config = config.proxy(None);
+    }
+    let config = config
+        .timeout_global(Some(Duration::from_secs(20)))
+        .http_status_as_error(false)
+        .user_agent(concat!("arakun/", env!("CARGO_PKG_VERSION")))
+        .build();
+    ureq::Agent::with_parts(
+        config,
+        ureq::unversioned::transport::DefaultConnector::new(),
+        Ipv4First::default(),
+    )
 }
 
 /// The system resolver, with IPv4 addresses tried first. ureq dials one address
@@ -816,6 +865,14 @@ mod tests {
 
     fn answer(json: &str) -> TokenAnswer {
         serde_json::from_str(json).unwrap()
+    }
+
+    #[test]
+    fn only_a_local_http_server_skips_the_proxy() {
+        let direct = server("http://localhost:8787");
+        assert!(std::ptr::eq(direct, server("http://127.0.0.1:8787")));
+        assert!(!std::ptr::eq(direct, agent()));
+        assert!(std::ptr::eq(server(DEFAULT_URL), agent()));
     }
 
     #[test]
@@ -956,6 +1013,18 @@ mod tests {
             Err(ApiError::Status(429, "too many sign-ins".into()))
         );
         assert_eq!(json::<Me>(200, "<html>"), Err(ApiError::Unreadable));
+    }
+
+    #[test]
+    fn an_approval_names_what_the_admin_reviewed() {
+        let devices = ["d1".to_string(), "d2".to_string()];
+        let body = approval("r", &devices, Some(4), &[]);
+        assert_eq!(body["request_id"], "r");
+        assert_eq!(body["devices"], serde_json::json!(["d1", "d2"]));
+        assert_eq!(body["keyed_epoch"], 4);
+        assert_eq!(body["envelopes"], serde_json::json!([]));
+        let older = approval("r", &devices, None, &[]);
+        assert!(older.get("keyed_epoch").is_none());
     }
 
     #[test]

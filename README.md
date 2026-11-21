@@ -55,11 +55,15 @@ Windows and other options: see [Install](#install).
 
 ### First launch
 
-Before you have a project, Arakun walks you through a short setup: which agents it
-found and the one to start with, dark or light and five shortcuts, GitHub and the phone
-remote, the question about crash reports, and your first project. Every step can be
-skipped, and "Skip setup" leaves it at once. Adding a project ends it. Open it again
-with "Show onboarding" in the palette (`Ctrl+K`). That it was done is kept in
+Before you have a project, Arakun checks the machine for agents and GitHub, then walks
+you through four short steps while a small copy of the window beside them changes as
+you pick: the agent new sessions start with, your first project, the color scheme and
+sidebar layout, and GitHub, the phone remote and crash reports. Enter goes to the next
+step, and on the last one it finishes the setup. Esc goes back one step; on the first
+step of a setup opened again, it closes it. Every step can be skipped, and "Skip setup"
+leaves it at once. It ends on the start screen of the project
+you added, with three shortcuts worth knowing. Open it again with "Show onboarding" in
+the palette (`Ctrl+K`). That it was done is kept in
 `state.onboarding.json`, next to `state.json` in Arakun's data folder.
 
 If Arakun can't read one of its files there (`state.json`, `history.json`,
@@ -116,6 +120,11 @@ copy of it, rename it back, and start a version that can read it.
   its environment's name. The Workspace panel shows Sessions, an Explorer and the
   uncommitted
   Changes; the Branches tab draws every live branch against the default one.
+  In the Commit changes dialog, "Write with <agent>" writes the message from what
+  the commit takes (the staged changes, or every change, new files too, when nothing
+  is staged; up to 60,000 characters of diff) in the style of the last commit subjects.
+  It picks the agent as the pull request dialog does, and you edit the message before
+  you commit.
 
   <img src="docs/screenshots/changes.png" alt="A file's diff in a tab, next to the Changes list with lines added and removed per file" width="760">
 - **Add or clone a project.** "Add project" (`Ctrl+O`) searches the git repositories
@@ -154,7 +163,7 @@ copy of it, rename it back, and start a version that can read it.
   On by default; turn off Settings › Branches › Archive after merge (saved in
   `~/.local/share/arakun/settle-after-merge`, `%LOCALAPPDATA%\arakun\` on Windows).
 - **Old environments removed.** Settings › Branches › Remove old environments (Off, 7, 14
-  or 30 days; also asked during the setup) removes an environment's worktree once its
+  or 30 days) removes an environment's worktree once its
   pull request is merged or closed and it sat unused that long. Arakun checks every hour,
   asking `git` and `gh`. An environment stays when it has uncommitted or untracked files,
   git-ignored files other than build output (`target/`, `node_modules/` and the like),
@@ -270,13 +279,15 @@ sees the project's skills.
   pull request template, else the commit messages). It opens as a draft unless you turn
   that off, pushes the branch first when it has commits GitHub doesn't, and then shows
   the new pull request in the GitHub tab. "Open GitHub's form" opens the page in your
-  browser instead, to write the description there. "Write with Claude Code" has Claude Code
-  write the title and the description from the branch's commits, its diff (up to 60,000
-  characters) and the template, when it is the environment's agent or the one picked for
-  naming branches; the button names the agent, so you see where the diff goes before
-  you click. It answers once with its tools off, so it reads nothing else, and
-  nothing goes to GitHub until you create the pull request. Other agents don't write it:
-  they can read files while they answer.
+  browser instead, to write the description there. "Write with <agent>" has the
+  environment's agent write the title and the description from the branch's commits, its
+  diff (up to 60,000 characters) and the template, or the one picked for naming branches
+  when the environment's agent isn't installed; the button names the agent, so you see
+  where the diff goes before you click. It answers once, in an empty folder, with as
+  little reach as its CLI allows: Claude Code, OpenCode and Workers AI with no tools,
+  Codex in a read-only sandbox without its shell or your Codex config, Droid with `droid
+  exec` (read-only), Cursor in ask mode and Devin in its default mode, which only reads.
+  Nothing goes to GitHub until you create the pull request.
 - **Queue.** The GitHub tab opens on one line that says how many things need you,
   then a quiet list grouped by where each pull request stands (Needs you, Stuck,
   pilot is on it, Waiting on CI, Waiting on others, Ready to merge), stacked pull
@@ -327,8 +338,18 @@ sees the project's skills.
   repository line above the verdict to show only some organizations or repositories; the rest
   doesn't show, count or alert. "Mark all read" marks only what that choice shows.
 - **Pull request agent.** With a pull request agent on a server of your own
-  (arakun-pilot), `~/.config/arakun-pilot/client.json` (`$XDG_CONFIG_HOME` when set to an absolute path;
-  `{"url": "…", "token": "…"}`) turns it on, and Arakun reads `GET <url>/board` and
+  (arakun-pilot), Ctrl+K "Connect arakun-pilot…" (also in the GitHub tab's `…` menu,
+  and under an empty queue) asks for the Worker's address, its token and, to send it
+  tasks, its admin token; it checks the token against the Worker before it saves them
+  (the admin token is saved unchecked, since only sending a task tries it), and
+  later "arakun-pilot settings…" changes them or disconnects. Under that row the
+  `…` menu says how pilot is doing ("Connected to … · read 2 min ago", or what is
+  wrong), and when pilot can't be read, or its settings file can't be used, the
+  queue says why with a "Settings…" link to the form. From a terminal,
+  `arakun github pilot connect <url> --token -` (the token on stdin) does the same; `arakun github pilot status` says whether
+  they still work and `arakun github pilot disconnect` removes them. They go in
+  `~/.config/arakun-pilot/client.json` (`$XDG_CONFIG_HOME` when set to an absolute path;
+  `{"url": "…", "token": "…"}`, readable only by you), and Arakun reads `GET <url>/board` and
   `GET <url>/items` every minute. A test Arakun with `ARAKUN_STATE` set, as `arakun dev`
   starts one, reads `arakun-pilot/client.json` in the folder of that state file instead.
   The `url` must be `https://`; plain `http://` works only for `localhost`, `127.0.0.1`
@@ -340,7 +361,7 @@ sees the project's skills.
   the island opens that sheet over whatever window is in front (Esc gives it back).
   Without a board, the notice opens the pull request's sheet, which doesn't show the
   question: answer it on pilot's card in the queue. On your own pull requests, "Ask pilot" in the sheet sends what you
-  typed as a task (`POST <url>/tasks`, which needs `"admin_token"` in `client.json`).
+  typed as a task (`POST <url>/tasks`, which needs the admin token).
   While the Worker has no board, its cards show at the top of the queue under "Your
   agent". With a board, a card about a pull request the board follows shows under
   "From pilot" in that pull request's sheet, and the rest in a "From pilot" group at the
@@ -349,7 +370,7 @@ sees the project's skills.
   kept in `~/.local/share/arakun/pilot.json` (`%LOCALAPPDATA%\arakun\pilot.json` on
   Windows; next to the state file when `ARAKUN_STATE` is set). Ctrl+K "Send to the cloud agent…" (or type
   `cloud: <task>`) hands it new work, on the open pull request of yours picked in the tab
-  or on a new branch (`POST <url>/tasks`); that needs `"admin_token"` in `client.json`
+  or on a new branch (`POST <url>/tasks`); that needs the admin token
   too. On that card `Tab` switches between your pull request and a new branch (see
   [Keyboard shortcuts](#keyboard-shortcuts)).
 
@@ -446,10 +467,14 @@ after a week).
   a gateway set in `ANTHROPIC_BASE_URL`. Droid can also use a Factory API key you
   connect in Arakun (kept in the system keyring) or `FACTORY_API_KEY`, which goes only
   to api.factory.ai. When Claude Code runs on CLIProxyAPI, add the proxy's management key in the
-  tab to see the 5-hour and weekly limits of every claude.ai account behind it. The
-  key is only sent to the proxy it was added for, over https or to this machine. It is
-  saved in `~/.local/share/arakun/cliproxy-management-key`, and the last limits read
-  in `cliproxy-plan.json` next to it.
+  tab to see the 5-hour and weekly limits of every Claude and Codex account behind it,
+  how many still have room, and which ones the proxy holds back (cooling down, or
+  signed out). For a proxy Claude Code does not run on, use Add CLIProxyAPI (or Change
+  address) and type its address. Refresh reads the accounts now; Change key and
+  Forget key replace or remove the key. The key is only sent to the proxy it was added
+  for, over https or to this machine. It is saved in
+  `~/.local/share/arakun/cliproxy-management-key`, a typed address in
+  `cliproxy-address`, and the last limits read in `cliproxy-plan.json` next to it.
 - **Claude seats.** With several Claude subscriptions, give each Claude Code session a
   seat of its own so parallel sessions don't drain one. Save each subscription's
   long-lived token (from `claude setup-token`) with `arakun seat add <name>`: it is read
@@ -496,11 +521,13 @@ after a week).
   says when it ran out or GitHub turned it down, with a way to get a new one. Arakun
   asks GitHub for no scopes and hands the token once to the Teams server, which keeps
   only your GitHub user name and ID. Arakun drops the GitHub token and keeps the
-  session the server answers with in the system keyring. Signed in, the User row shows
+  session the server answers with in the system keyring: the Keychain on macOS, the
+  Credential Manager on Windows, and the Secret Service through `secret-tool` on Linux
+  (without it, the session lasts until Arakun quits). Signed in, the User row shows
   your GitHub picture and "Signed in with GitHub". An account the server has turned
   Teams on for gets a **Team** row under Search in the sidebar; any other account sees
   "Signed in as @you" in Settings and nothing else. Sign out (Settings › Account) removes
-  the session from the keyring and asks the server to end it; if the server can't be
+  the session from the keyring, then asks the server to end it; if the server can't be
   reached, the session there stays valid until it expires (90 days without renewal,
   180 days after sign-in at most). `ARAKUN_TEAMS_URL` points Arakun at another Teams
   server, such as one run with `wrangler dev` (see
@@ -518,12 +545,13 @@ after a week).
   GitHub login and removes members. "N waiting" at the top opens the people who
   accepted an invite, each device with its code: approving hands the team key to their
   devices whose endorsement chain checks out, from yours. It doesn't wait for
-  **Compare**, but a device marked as not matching is refused. The server still supplies the membership and roles; it
-  is not an independent proof of who belongs to the team. Removing someone rotates
-  the key for the remaining members, not messages already seen. Hover a message and
-  press the reply arrow to answer it: the quote shows above your message, and clicking
-  it scrolls to the original. **Esc** drops the reply. Messages whose signature does
-  not check out are hidden and counted. The **+** of the composer (files) is not there yet.
+  **Compare**, but a device marked as not matching is refused. The server still
+  supplies the membership and roles; it is not an independent proof of who belongs to
+  the team. Removing someone rotates the key for the remaining members, not messages
+  already seen. Hover a message and press the reply arrow to answer it: the quote
+  shows above your message, and clicking it scrolls to the original. **Esc** drops the
+  reply. Messages whose signature does not check out are hidden and counted. The **+**
+  of the composer (files) is not there yet.
 
   **@bot** reviews a discussion and proposes a decision. Reply to the first message
   it should read and write `@bot` (or press the composer's **@bot**): the messages
@@ -546,21 +574,25 @@ after a week).
   what @bot checked; search it, or show only yours.
 
   **Encrypted**, at the top of a channel, says what the server sees and what it
-  can't. When a member adds a device, the chat says "them added a new device" where
-  it happened, with **Compare**: both devices show six groups of five digits (and a
-  QR code of them), made from the two devices' signing keys. Read them to each other;
-  **They match** marks the device checked on this device only (kept in the keys file below).
+  can't. When a member adds a device, the chat says "@them added a new device" where
+  it happened, with **Compare**: both devices show six groups of five digits, made
+  from both keys of each of the two devices. Read them to each other; **They match**
+  marks the device checked on this device only (kept in the keys file below).
   **They don't** is kept too: that person gets no team key from this device until a
-  later comparison matches.
+  later comparison matches, and this device makes no new team key while they are in
+  the team (compare again, or remove them).
 
   A second device of yours shows "Approve this device from your other device" and a
   code: on a device that already has Teams, click the team's name › **Your devices**
-  (or **Your devices** at the top, on a device not in a team yet) and paste it. The team keys and trusted device roots are kept in
-  `teams-<account>-<scope>.keys` next to the state, sealed with a key from the keyring. The scope identifies
-  the server and profile. A lost cache can recover only the key envelopes the server
-  still has for this device, not its local trust records. Signing out discards
-  unsent drafts. A test Arakun with its own `ARAKUN_STATE` (such as
-  `arakun dev`) keeps its own Teams session, device and keys.
+  (or **Your devices** at the top, on a device not in a team yet) and paste it. The
+  team keys and trusted device roots are kept in `teams-<account>-<scope>.keys` next
+  to the state, sealed with a key from the keyring. The scope identifies the server
+  and profile. A lost cache can recover only the key envelopes the server still has
+  for this device, not its local trust records. Signing out discards unsent drafts.
+  A test Arakun with its own `ARAKUN_STATE` (such as `arakun dev`) keeps its own
+  Teams session, device and keys. With `ARAKUN_TEAMS_FIXTURE` (a stand-in account
+  for testing), `ARAKUN_TEAMS_FIXTURE_SIGN_IN=ok`, `expired` or `denied` starts
+  signed out and plays the sign-in dialog to that end without GitHub.
 
 ### Make it yours
 
@@ -576,7 +608,10 @@ only sums up what is chosen. It opens without a project too.
   accent is kept for what needs you. Duplicate one to change its tint, background and
   accent; Arakun warns when text or the accent gets hard to read. Grays sets how bright
   secondary text and borders are, and Diff colors how added and removed lines look, with a
-  few lines of a diff under it to see the choice.
+  few lines of a diff under it to see the choice. Contrast follows the system's high
+  contrast setting (macOS Increase contrast, Windows high contrast, GNOME's high contrast
+  theme), or is set to Standard or High: High raises secondary text to 7:1 and borders
+  to 3:1, whatever Grays says, and turns Glass off.
   Reset colors goes back to Arakun Black, dark, and keeps your color schemes. The mode,
   the choice and your color schemes are kept in `palettes.json` next to the state.
 
@@ -1108,6 +1143,9 @@ arakun github draft o/r#12 --verdict approve --head <sha> --body-file - --agent 
                                   # asks the user first if it is outside its workspace or
                                   # the command shares its line with others. --head is
                                   # the commit the agent read; an approval needs it
+arakun github pilot connect <url> --token -
+                                  # connect arakun-pilot: check the Worker, save its
+                                  # settings (also status, disconnect)
 arakun agent run <prompt>         # start a headless agent
 arakun server serve               # run sessions on this machine without the window (arakun server help)
 arakun --version                  # print the version (needs no running Arakun)
@@ -1172,7 +1210,9 @@ The link is good for two minutes and pairs one device. There are two ways to use
   that folder's changes and diffs, and stage, discard, commit, pull, push and the pull
   request button run there, with the server's `git` and `gh` logins
   (`ARAKUN_GITHUB=readonly` on the server keeps it from pushing or opening pull requests;
-  set it before `service install`). The Explorer lists a server's environment, its files
+  set it before `service install`). On a server reached over plain http, the diffs,
+  commit messages and pull request text cross the network unencrypted, like the rest of
+  that link: reach it over https or the relay. The Explorer lists a server's environment, its files
   open in file tabs (text only, read from the server), and `@` in the composer completes
   its paths. Merging into the main checkout and GitHub's form stay with this machine's
   folders. Fork, compact, rewind and `/stage` in a server's session run on the server, with its
@@ -1366,8 +1406,11 @@ forward through tabs, `Ctrl+Cmd+F` toggles full screen, and `Cmd+H`, `Cmd+M` and
   `C` comment, `R` review with an agent, `U` catch me up, `S` summarize, `D` all or
   fewer details, `O` open on GitHub. `Enter` opens the selected item's sheet, and `Esc` closes it (the sheet an
   island notice opened over another tab too). While the sheet is closed, `J` / `K`
-  only move through the list; while it is open, they open the next item. In the
-  comment box, `Enter` sends the comment and `/` lists the actions
+  only move through the list; while it is open, they open the next item. On a pilot
+  card you clicked, `1` to `4` send its ready answers, `E` opens "Other answer…" and
+  `Y` marks a fixed or failed card dealt with; the buttons show their keys, and after
+  an answer the next question is picked. In the comment box, `Enter` sends the
+  comment and `/` lists the actions
 
 ## Contributing
 

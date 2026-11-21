@@ -95,15 +95,22 @@ pub fn device_id_of(sig_pub: &[u8]) -> String {
 }
 
 /// The numbers two people read to each other to check that a device is who
-/// it says, Signal style: six groups of five digits from both devices' `sig`
-/// public keys (base64url). Sorted first, so each side gets the same numbers
-/// whichever device it is on. `None` when a key is not a P-256 point.
-pub fn compare_numbers(a: &str, b: &str) -> Option<[String; 6]> {
-    let a = point(a, "sig_pub").ok()?;
-    let b = point(b, "sig_pub").ok()?;
+/// it says, Signal style: six groups of five digits from both devices'
+/// public keys (base64url), each given as `(sig_pub, enc_pub)`. Both keys
+/// count: team keys are sealed to `enc_pub`, and the first device of an
+/// account has no endorsement that ties its `enc_pub` to its `sig_pub`.
+/// Sorted first, so each side gets the same numbers whichever device it is
+/// on. `None` when a key is not a P-256 point.
+pub fn compare_numbers(a: (&str, &str), b: (&str, &str)) -> Option<[String; 6]> {
+    let keys = |(sig, enc): (&str, &str)| -> Option<Vec<u8>> {
+        let mut both = point(sig, "sig_pub").ok()?;
+        both.extend(point(enc, "enc_pub").ok()?);
+        Some(both)
+    };
+    let (a, b) = (keys(a)?, keys(b)?);
     let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
     let mut h = sha2::Sha512::new();
-    h.update(b"arakun-teams compare v1");
+    h.update(b"arakun-teams compare v2");
     h.update(&lo);
     h.update(&hi);
     let digest = h.finalize();
@@ -696,19 +703,25 @@ mod tests {
 
     #[test]
     fn compare_numbers_match_on_both_sides() {
-        let (a, b) = (Device::generate(), Device::generate());
-        let mine = compare_numbers(a.sig_pub(), b.sig_pub()).unwrap();
-        assert_eq!(
-            compare_numbers(b.sig_pub(), a.sig_pub()),
-            Some(mine.clone())
-        );
+        fn pair(k: &(String, String)) -> (&str, &str) {
+            (&k.0, &k.1)
+        }
+        let keys = |d: &Device| (d.sig_pub().to_string(), d.enc_pub().to_string());
+        let (a, b) = (keys(&Device::generate()), keys(&Device::generate()));
+        let mine = compare_numbers(pair(&a), pair(&b)).unwrap();
+        assert_eq!(compare_numbers(pair(&b), pair(&a)), Some(mine.clone()));
         assert!(
             mine.iter()
                 .all(|g| g.len() == 5 && g.bytes().all(|c| c.is_ascii_digit()))
         );
-        let c = Device::generate();
-        assert_ne!(compare_numbers(a.sig_pub(), c.sig_pub()), Some(mine));
-        assert_eq!(compare_numbers("not a key", b.sig_pub()), None);
+        let c = keys(&Device::generate());
+        assert_ne!(compare_numbers(pair(&a), pair(&c)), Some(mine.clone()));
+        // The same signing key with another encryption key, as a server
+        // swapping a first device's enc_pub would show it, reads differently.
+        let swapped = (b.0.as_str(), c.1.as_str());
+        assert_ne!(compare_numbers(pair(&a), swapped), Some(mine));
+        assert_eq!(compare_numbers(("not a key", &a.1), pair(&b)), None);
+        assert_eq!(compare_numbers((&a.0, "not a key"), pair(&b)), None);
     }
 
     #[test]

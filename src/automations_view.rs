@@ -10,8 +10,9 @@ use gpui::{
     StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, px,
 };
 
+use crate::agent::AgentKind;
 use crate::input::{InputEvent, TextInput};
-use crate::model::{Agent, Automation, unix_now};
+use crate::model::{Automation, unix_now};
 use crate::schedule::{self, Schedule};
 use crate::theme;
 use crate::ui::{self, ButtonKind, icon, icon_button};
@@ -42,7 +43,7 @@ enum Every {
 
 struct Template {
     name: &'static str,
-    agent: Option<Agent>,
+    agent: Option<AgentKind>,
     body: &'static str,
     schedule: Schedule,
 }
@@ -50,7 +51,7 @@ struct Template {
 const TEMPLATES: &[Template] = &[
     Template {
         name: "Find critical bugs",
-        agent: Some(Agent::Droid),
+        agent: Some(AgentKind::Droid),
         body: "Review the git history of the last day in this repo for high-severity correctness bugs \
                (crashes, data loss, security holes, broken error handling). Report each finding with the \
                file, the commit and a suggested fix. Do not change any code.",
@@ -58,7 +59,7 @@ const TEMPLATES: &[Template] = &[
     },
     Template {
         name: "Weekly changelog",
-        agent: Some(Agent::Droid),
+        agent: Some(AgentKind::Droid),
         body: "Write a concise changelog of this repo covering the commits of the last 7 days, grouped into \
                features, fixes and internal changes. Show it here; do not commit anything.",
         schedule: Schedule::Weekly {
@@ -69,7 +70,7 @@ const TEMPLATES: &[Template] = &[
     },
     Template {
         name: "Audit dependencies",
-        agent: Some(Agent::Claude),
+        agent: Some(AgentKind::Claude),
         body: "Audit this repo's dependencies: list outdated or vulnerable packages, what upgrading each one \
                would involve, and which upgrades are safe to do now. Do not change any files.",
         schedule: Schedule::Weekly {
@@ -98,7 +99,7 @@ pub struct AutomationsDialog {
     name: Entity<TextInput>,
     body: Entity<TextInput>,
     time: Entity<TextInput>,
-    agent: Option<Agent>,
+    agent: Option<AgentKind>,
     every: Every,
     day: u8,
     env: Option<PathBuf>,
@@ -147,7 +148,7 @@ impl AutomationsDialog {
             name,
             body,
             time,
-            agent: Some(Agent::Droid),
+            agent: Some(AgentKind::Droid),
             every: Every::Manual,
             day: 1,
             env: None,
@@ -267,7 +268,7 @@ impl AutomationsDialog {
                 self.env = a.env.clone();
             }
             None => {
-                self.load("", Some(Agent::Droid), "", Schedule::Manual, cx);
+                self.load("", Some(AgentKind::Droid), "", Schedule::Manual, cx);
                 self.env = None;
             }
         }
@@ -278,7 +279,7 @@ impl AutomationsDialog {
     fn load(
         &mut self,
         name: &str,
-        agent: Option<Agent>,
+        agent: Option<AgentKind>,
         body: &str,
         schedule: Schedule,
         cx: &mut Context<Self>,
@@ -380,7 +381,7 @@ impl AutomationsDialog {
         let automation = Automation {
             name,
             body,
-            agent: self.agent.map(|a| a.key().to_string()),
+            agent: self.agent.map(|a| a.id().to_string()),
             schedule,
             enabled: old.is_none_or(|a| a.enabled),
             env: self.env.clone(),
@@ -614,7 +615,7 @@ impl AutomationsDialog {
                     self.agent.is_some(),
                     cx,
                     |this, agent, cx| {
-                        this.agent = agent.then_some(this.agent.unwrap_or(Agent::Droid));
+                        this.agent = agent.then_some(this.agent.unwrap_or(AgentKind::Droid));
                         cx.notify();
                     },
                 ),
@@ -625,12 +626,12 @@ impl AutomationsDialog {
                 segmented(
                     "auto-agent",
                     &[
-                        (Agent::Droid, Agent::Droid.label()),
-                        (Agent::Claude, Agent::Claude.label()),
-                        (Agent::OpenCode, Agent::OpenCode.label()),
-                        (Agent::Codex, Agent::Codex.label()),
-                        (Agent::Devin, Agent::Devin.label()),
-                        (Agent::Cursor, Agent::Cursor.label()),
+                        (AgentKind::Droid, AgentKind::Droid.label()),
+                        (AgentKind::Claude, AgentKind::Claude.label()),
+                        (AgentKind::OpenCode, AgentKind::OpenCode.label()),
+                        (AgentKind::Codex, AgentKind::Codex.label()),
+                        (AgentKind::Devin, AgentKind::Devin.label()),
+                        (AgentKind::Cursor, AgentKind::Cursor.label()),
                     ],
                     agent,
                     cx,

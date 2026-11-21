@@ -12,8 +12,6 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 use sha2::Digest as _;
@@ -27,7 +25,23 @@ const DEVICE_ACCOUNT: &str = "teams-device";
 /// (`ARAKUN_STATE`, as `arakun dev` sets) keeps its own Teams session and
 /// device, so it never signs the person's own Arakun out or takes its keys.
 pub fn account(name: &str) -> String {
-    account_for(name, std::env::var("ARAKUN_STATE").ok().as_deref())
+    let state = std::env::var("ARAKUN_STATE").ok();
+    account_for(name, state.as_deref().map(profile).as_deref())
+}
+
+/// `ARAKUN_STATE` as it names this profile's credentials. A relative path
+/// is read from the working directory, like the state file itself, so two
+/// folders with `state.json` don't share one device and session. An
+/// absolute path stays as given, so the names already in use don't change.
+fn profile(state: &str) -> String {
+    let path = Path::new(state);
+    if path.is_absolute() {
+        return state.to_string();
+    }
+    std::path::absolute(path)
+        .ok()
+        .and_then(|p| p.to_str().map(str::to_string))
+        .unwrap_or_else(|| state.to_string())
 }
 
 fn account_for(name: &str, state: Option<&str>) -> String {
@@ -88,11 +102,13 @@ pub fn load_device(
         .as_deref()
         .map(|s| s.to_str().ok_or("The Teams state path is not UTF-8."))
         .transpose()?
-        .filter(|s| !s.is_empty());
+        .filter(|s| !s.is_empty())
+        .map(profile);
     let dir = state
+        .as_deref()
         .and_then(|s| Path::new(s).parent())
         .map_or_else(crate::state::data_dir, Path::to_owned);
-    let scope = Scope::new(base, github_id, state, &dir);
+    let scope = Scope::new(base, github_id, state.as_deref(), &dir);
     // Two tabs starting together must not create different identities for
     // one account. The application already holds the state lock across processes.
     static INIT: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -114,7 +130,13 @@ fn load_in(
     let legacy = match &scope.legacy {
         Some(name) => match read(name)? {
             None if legacy_file.try_exists().map_err(|e| e.to_string())? => {
-                return Err("The old Teams cache exists, but its device keys could not be found. Restore the keyring entry and try again.".into());
+                // Its owner registered its device, and v1 never removes one.
+                // An account with no devices is not the owner, so it sets
+                // up beside the file and leaves it alone.
+                if !trusted_devices()?.is_empty() {
+                    return Err("The old Teams cache exists, but its device keys could not be found. Restore the keyring entry and try again.".into());
+                }
+                return new_device(scope, cached, write);
             }
             result => result,
         },
@@ -142,6 +164,16 @@ fn load_in(
             return Ok(local);
         }
     }
+    new_device(scope, cached, write)
+}
+
+/// A new device for `scope`, unless its cache exists: that one's keys are
+/// missing, and a new device could never open it.
+fn new_device(
+    scope: &Scope,
+    cached: bool,
+    write: impl FnOnce(&str, &str) -> Result<(), String>,
+) -> Result<Local, String> {
     if cached {
         return Err("The Teams cache exists, but its device keys are missing. Restore the keyring entry to open it.".into());
     }
@@ -432,6 +464,9 @@ pub struct Kept {
     /// the unread counts.
     #[serde(default)]
     read: BTreeMap<String, u64>,
+    /// Team → a keyed epoch → the newest epoch seen skipped right after it.
+    #[serde(default)]
+    skipped: BTreeMap<String, BTreeMap<u64, u64>>,
 }
 
 impl Kept {
@@ -552,6 +587,39 @@ impl Kept {
         changed
     }
 
+    /// Notes the epochs a pending rotation skips: those between the newest
+    /// keyed one and the current one. The Worker gives a key only to the
+    /// current epoch or one that has envelopes already, so these never get one.
+    pub(super) fn observe_skips(&mut self, team: &TeamDetail) -> bool {
+        let Some(keyed) = team.keyed_epoch else {
+            return false;
+        };
+        if !team.rotation_pending || team.epoch <= keyed.saturating_add(1) {
+            return false;
+        }
+        let last = team.epoch - 1;
+        let seen = self
+            .skipped
+            .entry(team.team_id.clone())
+            .or_default()
+            .entry(keyed)
+            .or_default();
+        if *seen >= last {
+            return false;
+        }
+        *seen = last;
+        true
+    }
+
+    /// Whether every epoch between `older` and `newer` was seen skipped, so
+    /// none of them has a key.
+    pub(super) fn skipped_between(&self, team_id: &str, older: u64, newer: u64) -> bool {
+        self.skipped
+            .get(team_id)
+            .and_then(|m| m.get(&older))
+            .is_some_and(|last| last.saturating_add(1) >= newer)
+    }
+
     pub(super) fn needs_delivery(
         &self,
         team: &str,
@@ -648,6 +716,7 @@ impl Kept {
         self.grants.remove(team_id);
         let prefix = format!("{team_id}/");
         self.read.retain(|k, _| !k.starts_with(&prefix));
+        self.skipped.remove(team_id);
     }
 
     pub(super) fn retain_teams(&mut self, ids: &std::collections::HashSet<&str>) {
@@ -655,6 +724,7 @@ impl Kept {
         self.grants.retain(|id, _| ids.contains(id.as_str()));
         self.read
             .retain(|k, _| k.split_once('/').is_some_and(|(t, _)| ids.contains(t)));
+        self.skipped.retain(|id, _| ids.contains(id.as_str()));
     }
 }
 
@@ -707,7 +777,6 @@ impl Local {
         Sealer {
             file_key: self.file_key,
             device: self.device.id().to_string(),
-            order: Arc::default(),
             path: self.path.clone(),
         }
     }
@@ -718,34 +787,10 @@ impl Local {
 pub struct Sealer {
     file_key: TeamKey,
     device: String,
-    /// Each save replaces the whole file from a background thread, so an
-    /// older snapshot that finishes late must not undo a newer one.
-    order: Arc<Order>,
     path: PathBuf,
 }
 
-#[derive(Default)]
-struct Order {
-    issued: AtomicU64,
-    written: Mutex<u64>,
-}
-
-impl Order {
-    /// The turn to write `ticket`, or `None` when a newer one was written.
-    fn admit(&self, ticket: u64) -> Option<std::sync::MutexGuard<'_, u64>> {
-        let mut written = self.written.lock().unwrap_or_else(|e| e.into_inner());
-        if ticket <= *written {
-            return None;
-        }
-        *written = ticket;
-        Some(written)
-    }
-}
-
-pub(super) async fn after_save<T>(
-    pending: Option<impl Future<Output = ()>>,
-    next: impl FnOnce() -> T,
-) -> T {
+pub(super) async fn after_save<T>(pending: Option<impl Future>, next: impl FnOnce() -> T) -> T {
     if let Some(task) = pending {
         task.await;
     }
@@ -753,43 +798,29 @@ pub(super) async fn after_save<T>(
 }
 
 impl Sealer {
-    /// A place in line for the snapshot about to be written. Take it on the
-    /// thread that made the snapshot, so the numbers follow the changes.
-    pub fn ticket(&self) -> u64 {
-        self.order.issued.fetch_add(1, Ordering::Relaxed) + 1
-    }
-
-    /// Writes `kept` unless a newer ticket was written already.
-    pub fn write(&self, ticket: u64, kept: &Kept) {
+    /// Writes the whole cache, so a later write also retries a failed one.
+    pub fn write(&self, kept: &Kept) -> Result<(), String> {
         if kept.device != self.device {
-            eprintln!("arakun: refusing to save a Teams cache belonging to a different device");
-            return;
+            return Err("it belongs to another device".into());
         }
-        // Held through the write, so two saves never interleave.
-        let Some(_turn) = self.order.admit(ticket) else {
-            return;
-        };
-        let saved = serde_json::to_vec(kept)
+        serde_json::to_vec(kept)
             .map_err(std::io::Error::other)
             .and_then(|plain| {
                 crate::durable::write_private(
                     &self.path,
                     &crypto::seal_local(&self.file_key, &plain),
                 )
-            });
-        if let Err(e) = saved {
-            eprintln!("arakun: could not save {}: {e}", self.path.display());
-        }
+            })
+            .map_err(|e| {
+                eprintln!("arakun: could not save {}: {e}", self.path.display());
+                e.to_string()
+            })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn write_now(sealer: &Sealer, kept: &Kept) {
-        sealer.write(sealer.ticket(), kept);
-    }
     use std::cell::RefCell;
 
     struct Fixture {
@@ -851,7 +882,7 @@ mod tests {
             let mut kept = local.read().unwrap();
             kept.put_key("shared", 3, &[42; 32]);
             kept.ask("private", "unannounced team");
-            write_now(&local.sealer(), &kept);
+            local.sealer().write(&kept).unwrap();
             local
         }
     }
@@ -889,7 +920,7 @@ mod tests {
         let (release, gate) = futures::channel::oneshot::channel::<()>();
         let saving = async {
             gate.await.unwrap();
-            write_now(&local.sealer(), &accepted);
+            local.sealer().write(&accepted).unwrap();
         }
         .shared();
         let reload = || {
@@ -905,6 +936,20 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_save_is_returned_not_only_logged() {
+        let f = Fixture::new();
+        let local = f.load(&f.scope(7), no_lookup).unwrap();
+        let blocked = f.dir.join("not-a-folder");
+        std::fs::write(&blocked, b"").unwrap();
+        let sealer = Sealer {
+            path: blocked.join("teams.keys"),
+            ..local.sealer()
+        };
+        assert!(sealer.write(&local.read().unwrap()).is_err());
+        assert!(local.sealer().write(&local.read().unwrap()).is_ok());
+    }
+
+    #[test]
     fn device_and_encrypted_cache_survive_a_round_trip_between_accounts() {
         let f = Fixture::new();
         let (alice, bob) = (f.scope(7), f.scope(8));
@@ -917,10 +962,10 @@ mod tests {
         ak.put_key("shared", 1, &[1; 32]);
         bk.put_key("shared", 1, &[2; 32]);
         ak.ask("alone", "private team");
-        write_now(&b.sealer(), &bk);
+        b.sealer().write(&bk).unwrap();
         // A delayed save captured before the switch cannot target Bob's cache.
-        write_now(&a.sealer(), &ak);
-        write_now(&b.sealer(), &ak);
+        a.sealer().write(&ak).unwrap();
+        assert!(b.sealer().write(&ak).is_err());
         let back = f.load(&alice, no_lookup).unwrap();
         assert_eq!(back.device.id(), a.device.id());
         assert_eq!(back.read().unwrap(), ak);
@@ -942,7 +987,7 @@ mod tests {
         let b = f.load(&bob, || Ok(vec![])).unwrap();
         assert_ne!(b.device.id(), old.device.id());
         assert!(b.read().unwrap().asked().is_empty());
-        write_now(&b.sealer(), &b.read().unwrap());
+        b.sealer().write(&b.read().unwrap()).unwrap();
         let a = f.load(&alice, || Ok(vec![row(&old.device)])).unwrap();
         assert_eq!(a.device.id(), old.device.id());
         assert_eq!(a.file_key, old.file_key);
@@ -1012,6 +1057,24 @@ mod tests {
     }
 
     #[test]
+    fn an_orphaned_legacy_cache_does_not_block_an_account_without_devices() {
+        let f = Fixture::new();
+        let old = f.legacy();
+        let bytes = std::fs::read(&old.path).unwrap();
+        f.ring.borrow_mut().clear();
+        // The owner, or an account the server can't vouch for, still has to
+        // restore the entry.
+        assert!(f.load(&f.scope(7), || Ok(vec![row(&old.device)])).is_err());
+        assert!(f.load(&f.scope(7), || Err("offline".into())).is_err());
+        assert!(f.ring.borrow().is_empty());
+        let bob = f.scope(8);
+        let b = f.load(&bob, || Ok(vec![])).unwrap();
+        assert_ne!(b.device.id(), old.device.id());
+        assert!(f.ring.borrow().contains_key(&bob.entry));
+        assert_eq!(std::fs::read(&old.path).unwrap(), bytes);
+    }
+
+    #[test]
     fn an_unreadable_or_orphaned_cache_stays_in_place() {
         let f = Fixture::new();
         let old = f.legacy();
@@ -1020,20 +1083,11 @@ mod tests {
         assert!(f.load(&scope, || Ok(vec![row(&old.device)])).is_err());
         assert_eq!(std::fs::read(&old.path).unwrap(), b"unreadable");
         f.ring.borrow_mut().clear();
-        assert!(f.load(&scope, no_lookup).is_err());
+        assert!(f.load(&scope, || Ok(vec![row(&old.device)])).is_err());
         assert!(f.ring.borrow().is_empty());
         std::fs::rename(&old.path, &scope.file).unwrap();
         assert!(f.load(&scope, no_lookup).is_err());
         assert_eq!(std::fs::read(&scope.file).unwrap(), b"unreadable");
-    }
-
-    #[test]
-    fn an_older_snapshot_does_not_overwrite_a_newer_one() {
-        let order = Order::default();
-        assert!(order.admit(2).is_some());
-        assert!(order.admit(1).is_none());
-        assert!(order.admit(2).is_none());
-        assert!(order.admit(3).is_some());
     }
 
     #[test]
@@ -1044,6 +1098,16 @@ mod tests {
             account_for("teams-device", Some("/tmp/dev/state.json")),
             "teams-device@/tmp/dev/state.json"
         );
+    }
+
+    #[test]
+    fn a_relative_state_names_its_own_folder() {
+        let absolute = std::env::temp_dir().join("dev").join("state.json");
+        let absolute = absolute.to_str().unwrap();
+        assert_eq!(profile(absolute), absolute);
+        let here = std::env::current_dir().unwrap().join("state.json");
+        assert_eq!(profile("state.json"), here.to_str().unwrap());
+        assert_eq!(profile(""), "");
     }
 
     #[test]
@@ -1119,8 +1183,7 @@ mod tests {
         assert!(!k.needs_delivery("T", 7, 10, "a", 2));
         assert!(k.needs_delivery("T", 7, 10, "a", 3));
         k.delivered("T", 7, 10, "a", 3);
-        let sealer = local.sealer();
-        sealer.write(sealer.ticket(), &k);
+        local.sealer().write(&k).unwrap();
         k = local.read().unwrap();
         assert!(!k.needs_delivery("T", 7, 10, "a", 3));
         assert!(k.needs_delivery("T", 7, 10, "b", 3));

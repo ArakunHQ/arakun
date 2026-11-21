@@ -85,10 +85,7 @@ fn doctor(v: &Value) -> Option<Runtime> {
 }
 
 fn read_json(path: &Path) -> Value {
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or(Value::Null)
+    crate::durable::load_json(path).unwrap_or(Value::Null)
 }
 
 fn droid_installed(factory: &Path) -> Vec<Installed> {

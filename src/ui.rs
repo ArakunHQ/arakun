@@ -59,6 +59,8 @@ pub fn tree_item(last: bool, mid: f32, gap: f32, row: gpui::AnyElement) -> gpui:
 // Explicit paths: the examples include this file by `#[path]` from elsewhere.
 #[path = "ui/chart.rs"]
 mod chart;
+#[path = "ui/contrast.rs"]
+pub mod contrast;
 #[path = "ui/kit.rs"]
 mod kit;
 #[path = "ui/motion.rs"]

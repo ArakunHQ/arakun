@@ -15,7 +15,7 @@ use serde_json::{Value, json};
 
 use super::client::Sender;
 use crate::git;
-use crate::git_call::{Call, DiffText, NewPr, PrSource, Status};
+use crate::git_call::{Call, CommitSource, DiffText, NewPr, PrSource, Status};
 
 /// How much longer than the server's own limit the app waits for an answer:
 /// the way there and back.
@@ -177,6 +177,11 @@ impl GitAt {
                 max_diff,
             }),
         }
+    }
+
+    /// What a commit of all changes, or of the staged ones, would hold.
+    pub fn commit_source(&self, all: bool, max_diff: usize) -> Result<CommitSource> {
+        self.call(Call::CommitSource { all, max_diff })
     }
 }
 

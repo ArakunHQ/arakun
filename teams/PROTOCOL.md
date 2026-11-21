@@ -230,16 +230,16 @@ removes an owner, and the last owner cannot leave (`409`). The server deletes th
 removed member's envelopes and closes their channel sockets (code `4403`).
 
 The next time an admin device connects it makes a new team key and uploads
-envelopes for every remaining device (`PUT /teams/<team_id>/envelopes`). Until
-then, clients keep sending with the old epoch. The server accepts a message, or a
-channel name, only when its epoch is the newest one with envelopes: the previous
-epoch while the rotation is pending, the current one after it. So an older epoch
-is refused only after the new epoch's envelopes exist, and nothing is stored under
-an epoch whose key may never reach the members: two removals before a rotation
-skip an epoch, and nothing is ever sealed with it. While the rotation is pending
-the members' messages use a key the removed member holds; clients show that the
-rotation is pending (`rotation_pending`). A removed member keeps what they
-already read, and once the rotation ends, never what comes after.
+envelopes for every remaining device (`PUT /teams/<team_id>/envelopes`). The
+server accepts a message, or a channel name, only when its epoch is the newest one
+with envelopes: the previous epoch while the rotation is pending, the current one
+after it. So an older epoch is refused only after the new epoch's envelopes exist,
+and nothing is stored under an epoch whose key may never reach the members: two
+removals before a rotation skip an epoch, and nothing is ever sealed with it. The
+removed member holds the previous epoch's key, so the Arakun client seals nothing
+new with it: until the rotation ends it does not send, and shows that the rotation
+is pending (`rotation_pending`). A removed member keeps what they already read,
+and once the rotation ends, never what comes after.
 
 ## Channels and messages
 
@@ -410,7 +410,8 @@ Such a server can:
   different clients different lists.
 - Stall a rotation: a client does not seal a key to a user whose pinned first
   device changed, and the server refuses a rotation that leaves out a device. The
-  team then keeps sending under the epoch a removed member holds.
+  team then can't send: the Arakun client does not seal under the epoch a removed
+  member holds.
 - Read the metadata above, as any server here can.
 
 It cannot:

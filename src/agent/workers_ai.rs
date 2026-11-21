@@ -544,6 +544,71 @@ fn request_body(model: &Model, effort: &str, messages: &[Value]) -> Value {
     }
 }
 
+// ---- one question --------------------------------------------------------------
+
+/// The model [`ask`] uses when it is given none it knows: fast and cheap.
+pub const ASK_MODEL: &str = "@cf/deepseek-ai/deepseek-v4.1-flash-1017";
+
+/// Asks `model` (a Chat Completions one, else [`ASK_MODEL`]) one question and
+/// returns its answer. The request carries no tools, so the model can only
+/// write text. Blocks; run it in the background.
+pub fn ask(model: &str, prompt: &str, timeout: Duration) -> Result<String, String> {
+    let model = self::model(model)
+        .filter(|m| m.api == Api::Chat)
+        .or_else(|| self::model(ASK_MODEL))
+        .ok_or("no Workers AI model to ask")?;
+    let creds = endpoint_for(model)?;
+    let body = json!({
+        "model": model.id,
+        "messages": [{"role": "user", "content": prompt}],
+        "stream": false,
+        "max_completion_tokens": 8192,
+        "reasoning_effort": model.effort(Some("low")),
+    });
+    let mut builder = ureq::http::Request::builder()
+        .method("POST")
+        .uri(&creds.url)
+        .header("Content-Type", "application/json");
+    if let Some(token) = &creds.token {
+        builder = builder.header("Authorization", format!("Bearer {token}"));
+    }
+    let request = builder.body(body.to_string()).map_err(|e| e.to_string())?;
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(timeout))
+        .http_status_as_error(false)
+        .user_agent(concat!("arakun/", env!("ARAKUN_VERSION")))
+        .build()
+        .into();
+    let mut response = agent
+        .run(request)
+        .map_err(|e| format!("could not reach Workers AI ({e})"))?;
+    let status = response.status().as_u16();
+    let text = response
+        .body_mut()
+        .with_config()
+        .limit(4 << 20)
+        .read_to_string()
+        .map_err(|e| e.to_string())?;
+    let v: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+    if status != 200 {
+        let why = api_error(&v).unwrap_or_else(|| text.trim().chars().take(200).collect());
+        return Err(format!("Workers AI answered {status}: {why}"));
+    }
+    answer(&v)
+}
+
+/// The text of a Chat Completions reply that is not streamed.
+fn answer(v: &Value) -> Result<String, String> {
+    if let Some(e) = api_error(v) {
+        return Err(e);
+    }
+    v["choices"][0]["message"]["content"]
+        .as_str()
+        .filter(|s| !s.trim().is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| "Workers AI sent no answer".to_string())
+}
+
 // ---- sessions ------------------------------------------------------------------
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -3144,6 +3209,19 @@ pub(crate) fn fetch(request: ureq::http::Request<String>, tx: &mpsc::Sender<Net>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn one_question_gets_the_message_or_the_error() {
+        let reply =
+            json!({"choices": [{"message": {"content": "fix: a", "reasoning_content": "hm"}}]});
+        assert_eq!(answer(&reply), Ok("fix: a".into()));
+        assert_eq!(
+            answer(&json!({"errors": [{"message": "no quota"}]})),
+            Err("no quota".into())
+        );
+        assert!(answer(&json!({"choices": [{"message": {"content": null}}]})).is_err());
+        assert!(model(ASK_MODEL).is_some_and(|m| m.api == Api::Chat));
+    }
 
     #[test]
     fn sse_lines_survive_any_split() {

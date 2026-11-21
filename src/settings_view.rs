@@ -37,7 +37,7 @@ pub enum SettingsEvent {
     OpenUsage,
     /// Close Settings and open the Customize panel.
     OpenCustomize,
-    RailUsage(crate::agent::AgentKind, bool),
+    RailUsage(AgentKind, bool),
     Arcade(bool),
     Island(bool),
     /// The whole UI's zoom, in percent.
@@ -164,7 +164,7 @@ impl Section {
     }
 
     /// The agent a section is about; the list shows its logo.
-    fn agent(self) -> Option<crate::agent::AgentKind> {
+    fn agent(self) -> Option<AgentKind> {
         match self {
             Section::Claude => Some(AgentKind::Claude),
             Section::Codex => Some(AgentKind::Codex),
@@ -1058,7 +1058,7 @@ impl SettingsDialog {
                     .into_any_element(),
                 ];
                 let mut chips = div().flex().flex_wrap().items_center().gap(crate::ui::sp(6.));
-                for (i, agent) in crate::agent::AgentKind::ALL.into_iter().enumerate() {
+                for (i, agent) in AgentKind::WITH_PLAN.into_iter().enumerate() {
                     let on = crate::account_view::rail_shows(agent);
                     chips = chips.child(
                         ui::chip(("set-rail-usage", i), agent.label(), on).on_click(cx.listener(move |_, _, _, cx| {
@@ -1541,7 +1541,7 @@ impl SettingsDialog {
             rows.push(
                 row(
                     "Checking…",
-                    "Reading the session from the system keyring.",
+                    "Checking the session with the Teams server.",
                     div().into_any_element(),
                 )
                 .into_any_element(),

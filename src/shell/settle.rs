@@ -87,10 +87,15 @@ impl Shell {
                     let mut found = Vec::new();
                     for envs in projects {
                         let merged = settle::recent_merged(&envs[0].0, now);
+                        // A full list may have left a branch's merge out.
+                        let full = merged.len() >= settle::MERGED_PER_REPO;
                         for (path, branch) in &envs {
-                            for m in settle::of_branch(&merged, branch) {
-                                found.push((path.clone(), m.clone()));
+                            let mut mine: Vec<Merged> =
+                                settle::of_branch(&merged, branch).cloned().collect();
+                            if mine.is_empty() && full {
+                                mine = settle::merged_of_branch(path, branch);
                             }
+                            found.extend(mine.into_iter().map(|m| (path.clone(), m)));
                         }
                     }
                     found

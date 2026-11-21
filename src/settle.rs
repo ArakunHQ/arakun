@@ -89,8 +89,12 @@ impl Merged {
 }
 
 /// The most merged pull requests read per repository: far more than one
-/// person merges in [`RECENT_SECS`].
-const MERGED_PER_REPO: &str = "300";
+/// person merges in [`RECENT_SECS`]. A list this long may have left some out,
+/// so the branches it doesn't name are asked one by one ([`merged_of_branch`]).
+pub const MERGED_PER_REPO: usize = 300;
+/// The most merged pull requests read per branch: a branch can be merged
+/// more than once.
+const MERGED_PER_BRANCH: &str = "5";
 /// A `gh` that hangs must not hold up the next check.
 const GH_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -101,21 +105,42 @@ const GH_TIMEOUT: Duration = Duration::from_secs(30);
 /// can't say.
 pub fn recent_merged(dir: &Path, now: u64) -> Vec<Merged> {
     let search = merged_since(now);
+    let limit = MERGED_PER_REPO.to_string();
+    gh_merged(
+        dir,
+        &[
+            "--search",
+            &search,
+            "--limit",
+            &limit,
+            "--json",
+            "number,url,mergedAt,headRefName",
+        ],
+    )
+}
+
+/// The user's newest merged pull requests from `branch`, asked in `dir`: for
+/// when [`recent_merged`] came back full. Empty when there are none or gh
+/// can't say.
+pub fn merged_of_branch(dir: &Path, branch: &str) -> Vec<Merged> {
+    gh_merged(
+        dir,
+        &[
+            "--head",
+            branch,
+            "--limit",
+            MERGED_PER_BRANCH,
+            "--json",
+            "number,url,mergedAt,headRefName",
+        ],
+    )
+}
+
+/// `gh pr list` of the user's merged pull requests, with `args` added.
+fn gh_merged(dir: &Path, args: &[&str]) -> Vec<Merged> {
     let mut cmd = crate::git::gh(dir);
-    cmd.args([
-        "pr",
-        "list",
-        "--state",
-        "merged",
-        "--author",
-        "@me",
-        "--search",
-        &search,
-        "--limit",
-        MERGED_PER_REPO,
-        "--json",
-        "number,url,mergedAt,headRefName",
-    ]);
+    cmd.args(["pr", "list", "--state", "merged", "--author", "@me"]);
+    cmd.args(args);
     match crate::headless::sandbox::run_with_timeout(cmd, None, GH_TIMEOUT) {
         Ok(out) if out.status.success() => serde_json::from_slice(&out.stdout).unwrap_or_default(),
         _ => Vec::new(),

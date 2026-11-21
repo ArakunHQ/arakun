@@ -284,15 +284,13 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 name = "arakun"
 version = "0.12.1"
 dependencies = [
- "aes-gcm",
- "alacritty_terminal",
  "anyhow",
+ "arakun-core",
  "backtrace",
  "base64 0.23.1",
  "calamine",
  "cef",
  "cef-dll-sys",
- "dunce",
  "embed-resource",
  "futures",
  "getrandom 0.4.3",
@@ -300,11 +298,8 @@ dependencies = [
  "gpui_platform",
  "ignore",
  "image",
- "imagesize 0.15.0",
  "libc",
- "lyon_tessellation",
  "minisign-verify",
- "polling",
  "pulldown-cmark",
  "qrcode",
  "raw-window-handle",
@@ -312,13 +307,10 @@ dependencies = [
  "rhai",
  "ring",
  "rusqlite",
- "rust-embed",
- "rustls",
  "serde",
  "serde_json",
  "sha2 0.11.1",
  "smallvec",
- "syntect",
  "tiny-skia 0.12.0",
  "ttf-parser",
  "tungstenite",
@@ -331,27 +323,31 @@ dependencies = [
 ]
 
 [[package]]
-name = "arakun-server"
+name = "arakun-core"
 version = "0.12.1"
 dependencies = [
  "aes-gcm",
  "alacritty_terminal",
  "anyhow",
  "base64 0.23.1",
+ "cef",
  "dunce",
  "futures",
  "getrandom 0.4.3",
  "gpui",
  "gpui_platform",
  "ignore",
+ "image",
  "imagesize 0.15.0",
  "libc",
  "lyon_tessellation",
  "polling",
  "pulldown-cmark",
  "qrcode",
+ "raw-window-handle",
  "ring",
  "rust-embed",
+ "rustls",
  "serde",
  "serde_json",
  "sha2 0.11.1",
@@ -361,6 +357,14 @@ dependencies = [
  "unicode-segmentation",
  "ureq",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "arakun-server"
+version = "0.12.1"
+dependencies = [
+ "arakun-core",
+ "gpui_platform",
 ]
 
 [[package]]

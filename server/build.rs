@@ -1,5 +1,5 @@
-//! `ARAKUN_VERSION`, as the app's build.rs sets it: the server shares the
-//! app's source files, which print it.
+//! `ARAKUN_VERSION`, as the app's build.rs and core/build.rs set it, for
+//! `arakun-server --version`.
 
 fn main() {
     println!("cargo::rerun-if-changed=build.rs");

@@ -7,27 +7,7 @@
 //! Ctrl+Shift+T new tab, Ctrl+Shift+W hang up the tab, Ctrl+PageUp/PageDown switch tabs. A tab closes when its shell
 //! exits; the demo quits with the last one.
 
-#[path = "../src/assets.rs"]
-mod assets;
-#[path = "../src/caret.rs"]
-mod caret;
-#[path = "../src/input.rs"]
-#[allow(dead_code)]
-mod input;
-#[allow(dead_code)]
-#[path = "../src/platform.rs"]
-mod platform;
-#[allow(dead_code)]
-#[path = "../src/redact.rs"]
-mod redact;
-#[path = "../src/terminal/mod.rs"]
-mod terminal;
-#[path = "../src/theme.rs"]
-#[allow(dead_code)]
-mod theme;
-#[path = "../src/ui.rs"]
-#[allow(dead_code, unused_imports)]
-mod ui;
+use arakun_core::{assets, terminal, theme, ui};
 
 use gpui::{
     App, AppContext as _, Bounds, Context, Entity, FocusHandle, Focusable as _,

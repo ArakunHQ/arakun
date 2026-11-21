@@ -131,6 +131,10 @@ request that also fixes the new lints.
 
 - Format with `tools/rustfmt.sh` (rustfmt defaults). Plain `cargo fmt` stops at the
   private modules this repository does not have.
+- The code the app shares with `arakun-server` and the examples is the `arakun-core`
+  crate in `core/`; the app reaches it as `crate::agent` and so on. A core item the
+  app uses must be `pub`. Where the app and the server differ, core asks through
+  `core/src/host.rs`; never include a file by `#[path]` from another package.
 - Tests go in a `#[cfg(test)] mod tests` at the bottom of the file they test.
 - UI code uses the design system: colors, grays, text sizes and fonts from `theme` and
   `ui`, never hand-written values. `src/design_lint.rs` fails the tests otherwise.

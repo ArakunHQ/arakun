@@ -21,9 +21,8 @@
 //! for now: its own permission settings (allow rules, bypass mode) answer
 //! before ACP asks, so the policy could not be enforced through it.
 
-pub mod broker;
 pub mod policy;
-pub mod sandbox;
+pub use arakun_core::headless::{broker, sandbox};
 
 use std::cell::Cell;
 use std::path::{Path, PathBuf};

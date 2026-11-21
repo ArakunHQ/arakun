@@ -1,24 +1,23 @@
-mod accept;
-mod account;
+// The code shared with `arakun-server` and the examples (core/), named as if it were here.
+use arakun_core::{
+    accept, account, agent, assets, browser, caret, clone_source, durable, explorer, fetch,
+    frame_timer, git, git_call, guard, highlight, input, island, mascot, phone, platform, poll,
+    redact, schedule, server, signals, terminal, theme, ui, zoom,
+};
 mod account_view;
-mod agent;
 mod app_menu;
 mod ascii_face;
-mod assets;
 mod attach_picker;
 mod automations_view;
 mod background;
 mod branches;
 mod branches_view;
-mod browser;
 #[cfg(feature = "coderlabs")]
 mod canvas;
 #[cfg(feature = "coderlabs")]
 mod canvas_view;
-mod caret;
 mod ci;
 mod cleanup;
-mod clone_source;
 mod cloudflare;
 mod cloudflare_view;
 #[cfg(feature = "coderlabs")]
@@ -33,25 +32,15 @@ mod dialogs;
 mod doop;
 mod doop_view;
 mod draft;
-mod durable;
 mod env_name;
-mod explorer;
 mod extensions_view;
-mod fetch;
 mod flags;
-mod frame_timer;
 mod gallery_view;
-mod git;
-mod git_call;
 mod git_dialogs;
 mod github;
 mod github_view;
-mod guard;
 mod headless;
-mod highlight;
 mod history;
-mod input;
-mod island;
 mod island_host;
 mod iso;
 mod iso_view;
@@ -59,7 +48,6 @@ mod iso_view;
 mod lab;
 mod logos;
 mod look;
-mod mascot;
 mod memory;
 mod memory_view;
 mod model;
@@ -67,22 +55,14 @@ mod notices;
 mod onboarding;
 mod palette;
 mod palettes;
-mod phone;
-mod phone_page;
 mod phone_view;
 mod picker;
-mod platform;
-mod poll;
 mod posthog;
 mod posthog_view;
 mod pr_writer;
 mod prompts;
-mod redact;
 mod repeats;
-mod rotate;
 mod runs_view;
-mod schedule;
-mod server;
 mod servers;
 mod servers_view;
 mod settings_view;
@@ -91,7 +71,6 @@ mod sheet;
 mod shell;
 mod shrink;
 mod sidebar;
-mod signals;
 #[cfg(feature = "coderlabs")]
 mod site;
 #[cfg(feature = "coderlabs")]
@@ -107,9 +86,6 @@ mod team;
 mod team_view;
 mod telemetry;
 mod telemetry_dialog;
-mod terminal;
-mod theme;
-mod ui;
 mod ui_zoom;
 mod update;
 mod update_dialog;
@@ -121,7 +97,6 @@ mod window_error;
 mod words_lint;
 #[cfg(feature = "coderlabs")]
 mod xlog;
-mod zoom;
 
 use gpui::{
     App, AppContext as _, Bounds, KeyBinding, TitlebarOptions, WindowBackgroundAppearance,
@@ -160,6 +135,13 @@ fn saved_place(cx: &App) -> Option<(WindowBounds, Option<gpui::DisplayId>)> {
 }
 
 fn main() {
+    arakun_core::host::set(arakun_core::host::Host {
+        memory_prompt: memory::prompt_for,
+        memory_root: memory::root,
+        sandbox_socket: control::sandbox_socket_path,
+        shim_dir: control::shim_dir,
+        github_read_only: github::pr::READ_ONLY,
+    });
     browser::handle_subprocess();
     if control::run_cli() {
         return;

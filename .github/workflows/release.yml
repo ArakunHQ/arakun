@@ -4,7 +4,7 @@ name: Release
 # Release with SHA256SUMS, its minisign signature and a build provenance
 # attestation.
 #
-# To release: set `version` in Cargo.toml and server/Cargo.toml, merge that,
+# To release: set `version` in Cargo.toml, core/Cargo.toml and server/Cargo.toml, merge that,
 # then run this workflow on main with that version:
 #
 #   gh workflow run release.yml --ref main -f version=1.2.3
@@ -261,9 +261,10 @@ jobs:
           read_version() { python3 -c 'import sys, tomllib; print(tomllib.load(open(sys.argv[1], "rb"))["package"]["version"])' "$1"; }
           app=$(read_version Cargo.toml)
           server=$(read_version server/Cargo.toml)
-          echo "Cargo.toml: $app, server/Cargo.toml: $server, tag: ${TAG:-none}"
-          if [ "$app" != "$server" ]; then
-            echo "::error::Cargo.toml says $app but server/Cargo.toml says $server; they are released together"
+          core=$(read_version core/Cargo.toml)
+          echo "Cargo.toml: $app, server/Cargo.toml: $server, core/Cargo.toml: $core, tag: ${TAG:-none}"
+          if [ "$app" != "$server" ] || [ "$app" != "$core" ]; then
+            echo "::error::Cargo.toml says $app, server/Cargo.toml $server and core/Cargo.toml $core; they are released together"
             exit 1
           fi
           if [ -n "$TAG" ] && [ "$TAG" != "v$app" ]; then
@@ -482,7 +483,7 @@ jobs:
           cp "target/$TARGET/release/arakun" "dist/$name/"
           strip "dist/$name/arakun"
           cp LICENSE NOTICE README.md "dist/$name/"
-          # Next to the binary, where src/browser/loader.rs looks first. Without
+          # Next to the binary, where core/src/browser/loader.rs looks first. Without
           # sdk/, which only the build reads.
           cp -r "$RUNNER_TEMP/cef" "dist/$name/cef"
           rm -rf "dist/$name/cef/sdk"
@@ -607,7 +608,7 @@ jobs:
           Copy-Item "$release/arakun.pdb" $out
           # The CEF runtime build.rs copied: DLLs, .pak, .bin, .dat and the
           # SwiftShader manifest, not the import libraries. The two locales
-          # src/browser/runtime.rs picks from, as on Linux.
+          # core/src/browser/runtime.rs picks from, as on Linux.
           Copy-Item "$release/*" $out -Include *.dll, *.pak, *.bin, *.dat, *.json
           Copy-Item "$release/locales/en-US.pak", "$release/locales/es.pak", "$release/locales/es-419.pak" "$out/locales"
           Copy-Item LICENSE, NOTICE, README.md $out
@@ -844,7 +845,7 @@ jobs:
           # Hardened runtime, which notarization requires. Inside out: the
           # framework's libraries, the framework, then the app, since signing a
           # bundle does not sign the code nested in it. There are no helper apps:
-          # CEF's child processes are arakun itself again (src/browser/runtime.rs),
+          # CEF's child processes are arakun itself again (core/src/browser/runtime.rs),
           # so the one binary takes the entitlement Chromium gives its renderer
           # and GPU helpers: V8 and SwiftShader write JIT code.
           # Extended attributes first: codesign --strict refuses a bundle with

@@ -1,4 +1,4 @@
-// The way to the computer through the relay (relay/ and src/phone/relay.rs).
+// The way to the computer through the relay (relay/ and core/src/phone/relay.rs).
 // The page asks the host whether it is a relay (`/_relay`); if so, everything
 // goes through one WebSocket to it, sealed with E2E (e2e.js) so the relay only
 // passes bytes along. Inside the channel the phone speaks the same JSON it

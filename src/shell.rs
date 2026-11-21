@@ -1668,6 +1668,11 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Ctrl+O reaches here over an open dialog; replacing one that is still
+        // saving would lose its result.
+        if self.modal_busy(cx) {
+            return;
+        }
         self.menu = None;
         self.env_menu_open = false;
         let existing = self.projects.iter().map(|p| p.path.clone()).collect();

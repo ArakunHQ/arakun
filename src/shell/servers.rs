@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 
 use futures::StreamExt as _;
 use futures::channel::mpsc;
-use gpui::{AppContext as _, Context, Entity, SharedString, Task, Window};
+use gpui::{App, AppContext as _, Context, Entity, SharedString, Task, Window};
 use serde_json::{Value, json};
 
 use super::{Modal, Shell};
@@ -667,6 +667,19 @@ fn project_for(
     };
     let key = key.unwrap_or_else(|| format!("{server}{repo}"));
     (Remote::project_path(&key), false)
+}
+
+/// Shows the followed session in `thread` as it is now, and why it stopped
+/// there if it did. The reason goes after what is shown, which would replace it.
+fn show_following(f: &Following, thread: &Entity<Thread>, cx: &mut App) {
+    let (status, transcript) = (thread_status(f.status), transcript_of(f));
+    let why = f.broken.clone();
+    thread.update(cx, |t, cx| {
+        t.show_transcript(transcript, status, cx);
+        if let Some(why) = why {
+            t.post_notice(why, true, cx);
+        }
+    });
 }
 
 /// The transcript a viewer thread is handed: the entries so far, as this session.
@@ -3112,15 +3125,7 @@ impl Shell {
                 if f.refill.is_none()
                     && let Some(thread) = thread_of(&self.projects, &f.env_path, &f.session)
                 {
-                    let (status, transcript) = (thread_status(f.status), transcript_of(f));
-                    // The reason goes after what is shown, which would replace it.
-                    let why = f.broken.clone();
-                    thread.update(cx, |t, cx| {
-                        t.show_transcript(transcript, status, cx);
-                        if let Some(why) = why {
-                            t.post_notice(why, true, cx);
-                        }
-                    });
+                    show_following(f, &thread, cx);
                 }
             }
             "subagents" => {
@@ -3130,8 +3135,7 @@ impl Shell {
                 };
                 f.subagents = subagents;
                 if let Some(thread) = thread_of(&self.projects, &f.env_path, &f.session) {
-                    let (status, transcript) = (thread_status(f.status), transcript_of(f));
-                    thread.update(cx, |t, cx| t.show_transcript(transcript, status, cx));
+                    show_following(f, &thread, cx);
                 }
             }
             "rewind_plan" => {
@@ -3677,6 +3681,7 @@ mod tests {
             started: 1,
             ended: Some(2),
             host: None,
+            call: None,
             entries: Vec::new(),
         }];
         let ids: Vec<String> = transcript_of(&f)

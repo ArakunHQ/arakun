@@ -98,6 +98,10 @@ pub struct SubagentRecord {
     /// The session that started it, when that is another subagent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host: Option<String>,
+    /// The Agent call in the parent's transcript that started it, if any.
+    /// Without it, a reopened transcript would mirror that call as a second subagent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call: Option<String>,
     #[serde(default)]
     pub entries: Vec<Entry>,
 }
@@ -653,6 +657,7 @@ impl Thread {
                 started: s.started,
                 ended: s.ended,
                 host: s.host.clone(),
+                call: s.call.clone(),
                 entries: s.thread.read(cx).entries().to_vec(),
             })
             .collect()
@@ -671,7 +676,19 @@ impl Thread {
             return;
         }
         let before = self.subagents.len();
+        let mut unmirrored = false;
         for r in records {
+            // The child session is the subagent its Agent call stands for:
+            // drop the mirror made of that call before the record came.
+            if let Some(call) = r.call.as_deref()
+                && let Some(m) = self
+                    .subagents
+                    .iter()
+                    .position(|s| s.mirrored && s.id == call)
+            {
+                self.subagents.remove(m);
+                unmirrored = true;
+            }
             let state = if reopened && r.state.is_running() {
                 SubagentState::Cancelled
             } else {
@@ -692,6 +709,9 @@ impl Thread {
                     s.task = r.task;
                     s.ended = ended;
                     s.state = state;
+                    if r.call.is_some() {
+                        s.call = r.call;
+                    }
                     let thread = s.thread.clone();
                     // The saved entries already say how it ended.
                     thread.update(cx, |c, cx| {
@@ -717,7 +737,7 @@ impl Thread {
                         started: r.started,
                         ended,
                         mirrored: false,
-                        call: None,
+                        call: r.call,
                         host: r.host,
                         thread,
                     });
@@ -735,7 +755,7 @@ impl Thread {
             self.set_stand_in(&id, host.as_deref(), state, cx);
         }
         self.mirror_all(cx);
-        if self.subagents.len() != before {
+        if unmirrored || self.subagents.len() != before {
             cx.emit(ThreadEvent::SubagentsChanged { spawned: None });
         }
     }

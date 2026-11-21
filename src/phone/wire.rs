@@ -1549,6 +1549,7 @@ mod tests {
             started: 7,
             ended: None,
             host: None,
+            call: None,
             entries: vec![said(text)],
         };
         // One small and one too big for a frame: it all comes in parts.

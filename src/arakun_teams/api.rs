@@ -273,9 +273,9 @@ impl Role {
 
     pub fn word(self) -> &'static str {
         match self {
-            Role::Owner => "owner",
-            Role::Admin => "admin",
-            Role::Member => "member",
+            Role::Owner => "Owner",
+            Role::Admin => "Admin",
+            Role::Member => "Member",
         }
     }
 }

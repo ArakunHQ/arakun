@@ -243,6 +243,10 @@ mod host {
     const QUIT_AFTER: Duration = Duration::from_millis(100);
     /// A second click on the shape a button just shrank is not one on the resting island.
     const AFTER_BUTTON: Duration = Duration::from_secs(1);
+    /// How long the host waits after the app leaves before it quits too: an
+    /// update restart connects again within it.
+    #[cfg(target_os = "macos")]
+    const LEAVE_AFTER: Duration = Duration::from_secs(3);
 
     /// How often finished and silent outside sessions are looked for.
     #[cfg(windows)]
@@ -281,6 +285,9 @@ mod host {
         },
         #[cfg(feature = "coderlabs")]
         Wake(super::wake::Wake),
+        /// Arakun.app was opened (a Dock click) and macOS gave it to this process.
+        #[cfg(target_os = "macos")]
+        Reopen,
         /// A desktop notification (`desktop.rs`), which only Linux passes on.
         #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
         Notice(Alert),
@@ -313,6 +320,8 @@ mod host {
             }
         };
         let (tx, rx) = mpsc::unbounded();
+        #[cfg(target_os = "macos")]
+        let reopened = tx.clone();
         #[cfg(feature = "coderlabs")]
         {
             let woke = tx.clone();
@@ -343,34 +352,38 @@ mod host {
             eprintln!("arakun: island socket: {e}");
             return 1;
         }
-        gpui::Application::with_platform(crate::ui_zoom::platform())
-            .with_assets(crate::assets::Assets)
-            .run(move |cx: &mut App| {
-                crate::assets::load_fonts(cx);
-                crate::signals::quit_on_signals(cx);
-                crate::ui::motion::follow_system(cx);
-                island::hide_from_dock();
-                if !island::supported(cx) {
-                    eprintln!("arakun: {}", super::NEEDS);
-                    EXIT.store(1, Ordering::Relaxed);
-                    cx.quit();
-                    return;
-                }
-                // Wayland names its screens a moment after start: wait for them so the
-                // island can pick the landscape one, then open it.
-                cx.spawn(async move |cx| {
-                    for _ in 0..80 {
-                        if cx.update(|cx| !cx.displays().is_empty()) {
-                            break;
-                        }
-                        cx.background_executor()
-                            .timer(Duration::from_millis(25))
-                            .await;
+        let app = gpui::Application::with_platform(crate::ui_zoom::platform())
+            .with_assets(crate::assets::Assets);
+        // macOS counts this process as a running Arakun.app, so opening the app
+        // (a Dock click) comes here instead of starting it.
+        #[cfg(target_os = "macos")]
+        app.on_reopen(move |_| drop(reopened.unbounded_send(Msg::Reopen)));
+        app.run(move |cx: &mut App| {
+            crate::assets::load_fonts(cx);
+            crate::signals::quit_on_signals(cx);
+            crate::ui::motion::follow_system(cx);
+            island::hide_from_dock();
+            if !island::supported(cx) {
+                eprintln!("arakun: {}", super::NEEDS);
+                EXIT.store(1, Ordering::Relaxed);
+                cx.quit();
+                return;
+            }
+            // Wayland names its screens a moment after start: wait for them so the
+            // island can pick the landscape one, then open it.
+            cx.spawn(async move |cx| {
+                for _ in 0..80 {
+                    if cx.update(|cx| !cx.displays().is_empty()) {
+                        break;
                     }
-                    cx.update(|cx| open(cx, rx));
-                })
-                .detach();
-            });
+                    cx.background_executor()
+                        .timer(Duration::from_millis(25))
+                        .await;
+                }
+                cx.update(|cx| open(cx, rx));
+            })
+            .detach();
+        });
         let _ = std::fs::remove_file(&path);
         #[cfg(feature = "coderlabs")]
         super::call::kill_all();
@@ -698,6 +711,10 @@ mod host {
                         }
                     });
                     self.push(cx);
+                    #[cfg(target_os = "macos")]
+                    if !busy {
+                        self.leave_with_app(cx);
+                    }
                 }
                 Msg::Gone { .. } => {}
                 Msg::Request { msg, done } => {
@@ -705,10 +722,36 @@ mod host {
                 }
                 #[cfg(feature = "coderlabs")]
                 Msg::Wake(w) => self.wake(w, cx),
+                #[cfg(target_os = "macos")]
+                Msg::Reopen => match &self.app {
+                    Some(app) => focus(app.pid),
+                    None => self.launch(),
+                },
                 Msg::Notice(alert) => {
                     self.apply(ToIsland::Alert { alert }, cx);
                 }
             }
+        }
+
+        /// On macOS this process counts as a running Arakun.app. While it stays,
+        /// the island outlives Quit and the Dock brings this process forward
+        /// instead of starting the app (`Msg::Reopen` covers that). So it quits
+        /// with the app, unless a headless session still runs.
+        #[cfg(target_os = "macos")]
+        fn leave_with_app(&mut self, cx: &mut Context<Self>) {
+            cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(LEAVE_AFTER).await;
+                let alone = this.update(cx, |host, _| {
+                    host.app.is_none() && !host.headless.rows.iter().any(|r| r.status.active())
+                });
+                if alone.unwrap_or(false) {
+                    eprintln!("arakun: island: the app left; quitting with it");
+                    // macOS ends the process inside `quit`, before `main` gets to it.
+                    let _ = std::fs::remove_file(proto::socket_path());
+                    cx.update(|cx| cx.quit());
+                }
+            })
+            .detach();
         }
 
         /// What any source asks of the island.

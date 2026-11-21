@@ -424,6 +424,10 @@ pub struct Shell {
     browsers_dirty: bool,
     account: Entity<Account>,
     _account: Subscription,
+    /// The Teams sign-in, and whether the server lets this account in.
+    teams: Entity<crate::arakun_teams::Teams>,
+    teams_view: Entity<crate::arakun_teams::view::TeamsView>,
+    _teams: [Subscription; 2],
     rail_open: bool,
     panel_open: bool,
     /// What the rail shows, in the user's order.
@@ -752,6 +756,21 @@ impl Shell {
             this.check_limit_alerts(cx);
             this.phone_usage_changed(cx);
         });
+        let teams = cx.new(crate::arakun_teams::Teams::new);
+        let teams_view = cx.new(|cx| crate::arakun_teams::view::TeamsView::new(teams.clone(), cx));
+        let teams_subs = [
+            cx.observe(&teams, |this, _, cx| this.teams_changed(cx)),
+            cx.subscribe_in(
+                &teams_view,
+                window,
+                |this, _, ev: &crate::arakun_teams::view::TeamsViewEvent, window, cx| match ev {
+                    crate::arakun_teams::view::TeamsViewEvent::OpenSettings => {
+                        crate::settings_view::start_on_account();
+                        this.open_settings(window, cx);
+                    }
+                },
+            ),
+        ];
         let session_query = cx.new(|cx| TextInput::new("Search sessions...", cx));
         let session_query_sub =
             cx.subscribe(&session_query, |_, input, ev: &InputEvent, cx| match ev {
@@ -1024,6 +1043,9 @@ impl Shell {
             browsers_dirty: false,
             account,
             _account: account_sub,
+            teams,
+            teams_view,
+            _teams: teams_subs,
             rail_open: layout.rail_open,
             panel_open: layout.panel_open,
             sidebar,
@@ -2333,6 +2355,31 @@ impl Shell {
         cx.notify();
     }
 
+    /// Opens (or focuses) the Teams tab.
+    pub(super) fn open_teams_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.has_projects() {
+            self.pick_project_for("The Teams tab", Self::open_teams_tab, window, cx);
+            return;
+        }
+        self.show_view_tab("Teams", TabKind::Teams, |k| matches!(k, TabKind::Teams));
+        self.note_active_tab(cx);
+        self.teams_view.update(cx, |v, cx| v.focus(window, cx));
+        cx.notify();
+    }
+
+    /// The rail shows Teams once the server lets the account in. A layout
+    /// saved before Teams existed gets it once, where the other views are.
+    fn teams_changed(&mut self, cx: &mut Context<Self>) {
+        use crate::sidebar::View;
+        if self.teams.read(cx).enabled() && self.sidebar.is_new(View::Teams) {
+            self.change_sidebar(cx, |s| {
+                s.place(View::Teams);
+                s.known.push(View::Teams);
+            });
+        }
+        cx.notify();
+    }
+
     /// Opens (or focuses) the Team tab: what the team hub holds.
     #[cfg(feature = "team")]
     pub(super) fn open_team_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -2724,6 +2771,7 @@ impl Shell {
         self.env_menu_open = false;
         let arcade = self.arcade;
         let droid = self.account.read(cx).connected();
+        let teams = self.teams.clone();
         #[cfg(feature = "coderlabs")]
         let coderspace = {
             let cs = self.coderspace.read(cx);
@@ -2765,6 +2813,7 @@ impl Shell {
             SettingsDialog::new(
                 arcade,
                 droid,
+                teams,
                 look,
                 #[cfg(feature = "coderlabs")]
                 coderspace,
@@ -2870,6 +2919,10 @@ impl Shell {
                 SettingsEvent::OpenTasks => {
                     this.close_modal(window, cx);
                     this.open_tasks_tab(window, cx);
+                }
+                SettingsEvent::OpenTeams => {
+                    this.close_modal(window, cx);
+                    this.open_teams_tab(window, cx);
                 }
                 SettingsEvent::OpenUsage => {
                     this.close_modal(window, cx);
@@ -3085,8 +3138,14 @@ impl Shell {
     /// Closes the Customize panel; its last edit is saved as it goes.
     fn close_customize(&mut self, cx: &mut Context<Self>) {
         self.customize = None;
-        // The views the Add chips marked new have been seen.
-        if self.sidebar.mark_known() {
+        // The views the Add chips marked new have been seen, except Teams
+        // while the server keeps the account out: it stays new until it shows.
+        let hidden: &[crate::sidebar::View] = if self.teams.read(cx).enabled() {
+            &[]
+        } else {
+            &[crate::sidebar::View::Teams]
+        };
+        if self.sidebar.mark_known(hidden) {
             self.sidebar.save();
         }
         cx.notify();
@@ -3849,6 +3908,7 @@ impl Shell {
             }
             Some(TabKind::Phone) => self.phone_view.clone().into_any_element(),
             Some(TabKind::Servers) => self.servers_view.clone().into_any_element(),
+            Some(TabKind::Teams) => self.teams_view.clone().into_any_element(),
             Some(TabKind::Gallery) => self.gallery_view.clone().into_any_element(),
             Some(TabKind::Isometric) => {
                 // Follows the visible environment, also for a tab restored at

@@ -6,6 +6,7 @@ use arakun_core::{
 };
 mod account_view;
 mod app_menu;
+mod arakun_teams;
 mod ascii_face;
 mod attach_picker;
 mod automations_view;

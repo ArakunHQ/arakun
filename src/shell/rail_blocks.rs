@@ -78,6 +78,7 @@ pub(super) fn view_id(view: View) -> &'static str {
         View::Phone => "nav-phone",
         View::Servers => "nav-servers",
         View::Automations => "nav-automations",
+        View::Teams => "nav-teams",
         #[cfg(feature = "team")]
         View::Team => "nav-team",
     }
@@ -262,6 +263,7 @@ impl Shell {
             View::Canvas => self.open_canvas_tab(None, window, cx),
             View::Phone => self.open_phone_tab(window, cx),
             View::Servers => self.open_servers_tab(window, cx),
+            View::Teams => self.open_teams_tab(window, cx),
             View::Automations => {
                 if !self.has_projects() {
                     self.open_picker(window, cx);
@@ -316,9 +318,11 @@ impl Shell {
     }
 
     /// Whether the rail draws a piece: a view that is an extension only once
-    /// it is turned on in the Marketplace.
+    /// it is turned on in the Marketplace, and Teams only for an account the
+    /// Teams server lets in.
     pub(super) fn rail_shows(&self, piece: &Piece, cx: &App) -> bool {
         match piece {
+            Piece::View { view: View::Teams } => self.teams.read(cx).enabled(),
             Piece::View { view } => self.extensions_view.read(cx).shows(*view),
             _ => true,
         }

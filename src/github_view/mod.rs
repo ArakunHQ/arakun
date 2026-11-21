@@ -710,6 +710,13 @@ impl GitHubView {
     /// the list).
     fn select(&mut self, entry: Entry, open: bool, cx: &mut Context<Self>) {
         let same = self.picked.as_ref().is_some_and(|p| p.key() == entry.key());
+        // A picked card belongs to its pull request: moving to another one
+        // (J, K or a click) lets go of it, or its keys would answer a card
+        // no longer in front. A card's own click reveals its pull request
+        // after picking it, so that one keeps it.
+        if !same && !self.pilot_focus_on(&entry.key(), cx) {
+            self.pilot_focus = None;
+        }
         self.picked = Some(entry);
         if open {
             self.sheet_open = true;

@@ -135,6 +135,29 @@ fn next_card(cards: &[Item], gone: &str) -> Option<String> {
         .map(|c| c.id.clone())
 }
 
+/// The cards keys reach, from the queue's `loose` cards and the board's
+/// `sheet` cards: with the sheet open, those of the pull request it shows;
+/// else the queue's (sheet cards show only in the sheet).
+fn answerable(
+    sheet_open: bool,
+    shown: Option<&ItemRef>,
+    loose: Vec<Item>,
+    sheet: Vec<Item>,
+) -> Vec<Item> {
+    use crate::github::queue::key_of;
+    if !sheet_open {
+        return loose;
+    }
+    let Some(key) = shown.map(key_of) else {
+        return Vec::new();
+    };
+    loose
+        .into_iter()
+        .chain(sheet)
+        .filter(|c| c.item_ref().is_some_and(|r| key_of(&r) == key))
+        .collect()
+}
+
 /// What a key does on the picked card.
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum CardKey {
@@ -769,6 +792,36 @@ impl GitHubView {
             .into_any_element()
     }
 
+    /// Whether the picked card is about the pull request `key`.
+    pub(super) fn pilot_focus_on(&self, key: &str, cx: &App) -> bool {
+        self.pilot_focus
+            .as_deref()
+            .and_then(|id| self.pilot.read(cx).find(id).and_then(Item::item_ref))
+            .is_some_and(|r| crate::github::queue::key_of(&r) == key)
+    }
+
+    /// The cards keys can answer now, in the order they show: with the
+    /// sheet open, those of its pull request (in the queue or the sheet);
+    /// else the queue's. The next card after an answer comes from these, so
+    /// focus never lands on one the keys can't reach.
+    fn pilot_answerable(&self, cx: &App) -> Vec<Item> {
+        let p = self.pilot.read(cx);
+        let sheet: Vec<Item> = match p.board() {
+            Some(b) => p
+                .shown()
+                .filter(|c| board::card_place(b, c) == CardPlace::Sheet)
+                .cloned()
+                .collect(),
+            None => Vec::new(),
+        };
+        answerable(
+            self.sheet_open,
+            self.item().as_ref(),
+            self.pilot_cards(cx),
+            sheet,
+        )
+    }
+
     /// Whether a key goes to the picked card first.
     pub(super) fn pilot_keys_apply(&self, held: bool, cx: &App) -> bool {
         let card = self
@@ -798,7 +851,9 @@ impl GitHubView {
         let Some(id) = self.pilot_focus.clone() else {
             return false;
         };
-        let Some(card) = self.pilot_cards(cx).into_iter().find(|c| c.id == id) else {
+        // Only a card the keys reach now: the sheet's too while it is open,
+        // but not one it hid on Esc, which stays picked.
+        let Some(card) = self.pilot_answerable(cx).into_iter().find(|c| c.id == id) else {
             return false;
         };
         match card_key(&card, key) {
@@ -886,7 +941,7 @@ impl GitHubView {
                             this.pilot_refocus = true;
                         }
                         if this.pilot_focus.as_deref() == Some(id.as_str()) {
-                            let cards = this.pilot_cards(cx);
+                            let cards = this.pilot_answerable(cx);
                             this.pilot_focus = next_card(&cards, &id);
                         }
                         this.pilot_open.remove(&id);
@@ -994,7 +1049,7 @@ impl GitHubView {
         self.pilot_notes.remove(id);
         self.pilot_open.remove(id);
         if self.pilot_focus.as_deref() == Some(id) {
-            let cards = self.pilot_cards(cx);
+            let cards = self.pilot_answerable(cx);
             self.pilot_focus = next_card(&cards, id);
         }
         let id = id.to_string();
@@ -1151,6 +1206,28 @@ mod tests {
         assert!(!card_keys_apply(false, true, None, Some(&card)));
         // A held key's repeats never answer.
         assert!(!card_keys_apply(true, false, Some(&card), None));
+    }
+
+    #[test]
+    fn after_an_answer_focus_stays_on_cards_the_keys_reach() {
+        let on = |id: &str, number| Item {
+            repo: pilot::REPO.into(),
+            number,
+            ..card(id, Kind::NeedsYou)
+        };
+        let shown = on("x", 95).item_ref().unwrap();
+        let loose = vec![on("a", 95), on("b", 96), on("c", 95)];
+        let sheet = vec![on("s", 95), on("t", 96)];
+        let ids = |cards: Vec<Item>| cards.into_iter().map(|c| c.id).collect::<Vec<_>>();
+        // The sheet on #95: its loose and sheet cards, never #96's.
+        let open = answerable(true, Some(&shown), loose.clone(), sheet.clone());
+        assert_eq!(ids(open.clone()), ["a", "c", "s"]);
+        assert_eq!(next_card(&open, "c").as_deref(), Some("s"));
+        assert_eq!(next_card(&open[2..], "s"), None);
+        // The sheet closed: the queue's cards, the sheet's don't show.
+        let closed = answerable(false, Some(&shown), loose.clone(), sheet.clone());
+        assert_eq!(ids(closed), ["a", "b", "c"]);
+        assert!(answerable(true, None, loose, sheet).is_empty());
     }
 
     #[test]

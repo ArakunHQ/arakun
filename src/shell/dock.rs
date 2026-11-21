@@ -510,6 +510,7 @@ impl Shell {
         let path = env.path.clone();
         let mut tabs = div()
             .id("term-tabs")
+            .role(gpui::Role::TabList)
             .flex()
             .flex_1()
             .min_w_0()
@@ -543,7 +544,7 @@ impl Shell {
                             .text_color(theme::text_faint())
                             .child(tab.number.to_string()),
                     )
-                    .child(div().flex_1().min_w_0().truncate().child(title))
+                    .child(div().flex_1().min_w_0().truncate().child(title.clone()))
                     .when(tab.unseen && !active, |d| {
                         d.child(
                             div()
@@ -557,6 +558,7 @@ impl Shell {
                     .child(
                         div()
                             .id(("term-close", i))
+                            .map(|d| ui::labelled(d, gpui::Role::Button, format!("Close {title}")))
                             .absolute()
                             .right(px(4.))
                             .top(px(DOCK_TAB_CLOSE_TOP))

@@ -471,8 +471,8 @@ pub fn menu_divider() -> gpui::Div {
         .bg(theme::border_subtle())
 }
 
-/// A pickable row with a radio dot; the caller adds the name and any note.
-/// `name` is what screen readers call it.
+/// A pickable row with a radio dot for a menu; the caller adds the name and
+/// any note. `name` is what screen readers call it.
 pub fn choice_row(
     id: impl Into<ElementId>,
     name: impl Into<SharedString>,
@@ -480,7 +480,7 @@ pub fn choice_row(
 ) -> gpui::Stateful<gpui::Div> {
     div()
         .id(id)
-        .role(Role::RadioButton)
+        .role(Role::MenuItemRadio)
         .aria_label(name)
         .aria_toggled(crate::ui::toggled(selected))
         .flex()

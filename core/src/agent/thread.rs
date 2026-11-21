@@ -4860,6 +4860,21 @@ mod tests {
         assert!(!serde_json::to_string(&old).unwrap().contains("subagents"));
     }
 
+    #[test]
+    fn a_subagent_keeps_the_agent_call_that_started_it() {
+        let read = |json: &str| -> SubagentRecord { serde_json::from_str(json).unwrap() };
+        let r = read(
+            r#"{"id":"child","name":"Explore","state":"completed","started":1,"call":"tool-1"}"#,
+        );
+        assert_eq!(r.call.as_deref(), Some("tool-1"));
+        let back = serde_json::to_string(&r).unwrap();
+        assert_eq!(read(&back).call.as_deref(), Some("tool-1"));
+        // One standing alone has none, and saves none.
+        let alone = read(r#"{"id":"child","name":"Explore","state":"completed","started":1}"#);
+        assert!(alone.call.is_none());
+        assert!(!serde_json::to_string(&alone).unwrap().contains("call"));
+    }
+
     fn write(id: &str, path: &Path, old: Option<&str>, new: &str) -> Entry {
         let mut t = ToolCall {
             id: id.into(),

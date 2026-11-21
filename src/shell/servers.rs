@@ -19,13 +19,13 @@ use std::path::{Path, PathBuf};
 
 use futures::StreamExt as _;
 use futures::channel::mpsc;
-use gpui::{AppContext as _, Context, Entity, SharedString, Task, Window};
+use gpui::{App, AppContext as _, Context, Entity, SharedString, Task, Window};
 use serde_json::{Value, json};
 
 use super::{Modal, Shell};
 use crate::agent::{
-    AgentKind, Entry, RemoteAction, SessionMeta, Setting, SettingOption, Thread, ThreadStatus,
-    Transcript, Usage,
+    AgentKind, Entry, RemoteAction, SessionMeta, Setting, SettingOption, SubagentRecord, Thread,
+    ThreadStatus, Transcript, Usage,
 };
 use crate::dialogs::{DeleteEnvDialog, DialogEvent};
 use crate::extensions_view::ServerTarget;
@@ -72,6 +72,9 @@ struct Following {
     env_path: PathBuf,
     /// Its entries so far, whole, as the server's transcript holds them.
     entries: Vec<Entry>,
+    /// Its subagents that ran as child sessions, as the server last sent them.
+    /// Their transcripts are not among the entries.
+    subagents: Vec<SubagentRecord>,
     agent: AgentKind,
     cwd: PathBuf,
     title: String,
@@ -666,6 +669,19 @@ fn project_for(
     (Remote::project_path(&key), false)
 }
 
+/// Shows the followed session in `thread` as it is now, and why it stopped
+/// there if it did. The reason goes after what is shown, which would replace it.
+fn show_following(f: &Following, thread: &Entity<Thread>, cx: &mut App) {
+    let (status, transcript) = (thread_status(f.status), transcript_of(f));
+    let why = f.broken.clone();
+    thread.update(cx, |t, cx| {
+        t.show_transcript(transcript, status, cx);
+        if let Some(why) = why {
+            t.post_notice(why, true, cx);
+        }
+    });
+}
+
 /// The transcript a viewer thread is handed: the entries so far, as this session.
 fn transcript_of(f: &Following) -> Transcript {
     Transcript {
@@ -687,7 +703,7 @@ fn transcript_of(f: &Following) -> Transcript {
         resume: false,
         queue: f.queue.prompts.clone(),
         handoff: None,
-        subagents: Vec::new(),
+        subagents: f.subagents.clone(),
     }
 }
 
@@ -1371,6 +1387,7 @@ impl Shell {
             session: id.to_string(),
             env_path: env_path.to_path_buf(),
             entries: Vec::new(),
+            subagents: Vec::new(),
             agent,
             cwd: PathBuf::from(&remote.place),
             title,
@@ -3108,15 +3125,17 @@ impl Shell {
                 if f.refill.is_none()
                     && let Some(thread) = thread_of(&self.projects, &f.env_path, &f.session)
                 {
-                    let (status, transcript) = (thread_status(f.status), transcript_of(f));
-                    // The reason goes after what is shown, which would replace it.
-                    let why = f.broken.clone();
-                    thread.update(cx, |t, cx| {
-                        t.show_transcript(transcript, status, cx);
-                        if let Some(why) = why {
-                            t.post_notice(why, true, cx);
-                        }
-                    });
+                    show_following(f, &thread, cx);
+                }
+            }
+            "subagents" => {
+                let Some(f) = following else { return };
+                let Ok(subagents) = wire::read_subagents(msg) else {
+                    return;
+                };
+                f.subagents = subagents;
+                if let Some(thread) = thread_of(&self.projects, &f.env_path, &f.session) {
+                    show_following(f, &thread, cx);
                 }
             }
             "rewind_plan" => {
@@ -3634,6 +3653,7 @@ mod tests {
             session: session.into(),
             env_path: PathBuf::new(),
             entries: Vec::new(),
+            subagents: Vec::new(),
             agent: AgentKind::Claude,
             cwd: PathBuf::new(),
             title: String::new(),
@@ -3646,6 +3666,30 @@ mod tests {
             by,
             queue: RemoteQueue::default(),
         }
+    }
+
+    #[test]
+    fn the_viewer_gets_the_subagents_the_server_sent() {
+        use crate::agent::SubagentState;
+        let mut f = following("s1", "a", Vec::new());
+        assert!(transcript_of(&f).subagents.is_empty());
+        f.subagents = vec![SubagentRecord {
+            id: "child".into(),
+            name: "Explore".into(),
+            task: String::new(),
+            state: SubagentState::Completed,
+            started: 1,
+            ended: Some(2),
+            host: None,
+            call: None,
+            entries: Vec::new(),
+        }];
+        let ids: Vec<String> = transcript_of(&f)
+            .subagents
+            .into_iter()
+            .map(|s| s.id)
+            .collect();
+        assert_eq!(ids, ["child"]);
     }
 
     #[test]

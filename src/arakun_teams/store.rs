@@ -451,6 +451,15 @@ pub struct Kept {
     /// names, until an admin approves.
     #[serde(default)]
     asked: BTreeMap<String, String>,
+    /// Devices of other people whose compare numbers the user checked with
+    /// them and found the same. A device ID derives from its signing key, so a
+    /// new key is a new, unchecked device.
+    #[serde(default)]
+    verified: BTreeSet<String>,
+    /// Devices whose compare numbers the user found different. Kept so that,
+    /// as PROTOCOL.md asks, no team key goes to their owner after a restart.
+    #[serde(default)]
+    mismatched: BTreeSet<String>,
     /// Team → a keyed epoch → the newest epoch seen skipped right after it.
     #[serde(default)]
     skipped: BTreeMap<String, BTreeMap<u64, u64>>,
@@ -654,6 +663,31 @@ impl Kept {
 
     pub fn forget_ask(&mut self, team_id: &str) -> bool {
         self.asked.remove(team_id).is_some()
+    }
+
+    pub fn verified(&self, device_id: &str) -> bool {
+        self.verified.contains(device_id)
+    }
+
+    /// The user found this device's compare numbers different.
+    pub fn mismatched(&self, device_id: &str) -> bool {
+        self.mismatched.contains(device_id)
+    }
+
+    pub fn mismatched_ids(&self) -> impl Iterator<Item = &String> {
+        self.mismatched.iter()
+    }
+
+    /// Marks a device as matching ("They match") or not ("They don't");
+    /// whether that changed anything.
+    pub fn set_verified(&mut self, device_id: &str, yes: bool) -> bool {
+        let (add, drop) = if yes {
+            (&mut self.verified, &mut self.mismatched)
+        } else {
+            (&mut self.mismatched, &mut self.verified)
+        };
+        let dropped = drop.remove(device_id);
+        add.insert(device_id.to_string()) || dropped
     }
 
     /// Forgets a team this user is no longer in.
@@ -1081,6 +1115,17 @@ mod tests {
         assert!(k.see(7, ["a".to_string()]));
         assert!(!k.see(7, ["a".to_string()]));
         assert!(k.seen(7).unwrap().contains("a"));
+        assert!(!k.verified("a"));
+        assert!(k.set_verified("a", true));
+        assert!(!k.set_verified("a", true));
+        assert!(k.verified("a"));
+        assert!(k.set_verified("a", false));
+        assert!(!k.verified("a"));
+        assert!(k.mismatched("a"));
+        assert!(!k.set_verified("a", false));
+        assert!(k.set_verified("a", true));
+        assert!(!k.mismatched("a"));
+        assert!(k.set_verified("a", false));
         assert!(k.grants.is_empty());
         assert!(!k.needs_delivery("T", 7, 10, "a", 1));
         let mut team = TeamDetail {

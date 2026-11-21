@@ -1,22 +1,25 @@
-//! The Teams tab: the user's teams with their channels on the left, and on
-//! the right a channel's chat, a team's members, invites and approvals, or a
-//! form. What it shows comes from the [`Hub`]; this view only draws it and
-//! keeps what is typed.
+//! The Team tab: one team at a time, as a sheet. A channel shows its chat
+//! between the team's channels and people on the left and, when asked, the
+//! encryption panel or a device compare on the right. The team's page, its
+//! invites and its approvals are pages of their own, as are the steps before
+//! a team: starting one, an invite, and waiting for an admin. What it shows
+//! comes from the [`Hub`]; this view only draws it and keeps what is typed.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::time::Duration;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, AppContext as _, ClipboardItem, Context, Entity, EventEmitter, FocusHandle,
-    Focusable as _, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _, Render,
-    ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Task,
-    Window, div, px,
+    Focusable as _, FontWeight, InteractiveElement as _, IntoElement, MouseButton,
+    ParentElement as _, Render, ScrollHandle, SharedString, StatefulInteractiveElement as _,
+    Styled as _, Subscription, Task, Window, div, px,
 };
 
 use super::Teams;
-use super::api::{InviteRow, Role};
-use super::hub::{self, ChannelState, Delivery, DeviceState, Hub, Load, Msg, TeamState};
+use super::api::{DeviceRow, InviteRow, Role};
+use super::hub::{self, ChannelState, Delivery, DeviceState, Hub, Load, Msg, Notice, TeamState};
 use super::socket;
 use crate::input::{InputEvent, TextInput};
 use crate::theme;
@@ -27,36 +30,81 @@ pub enum TeamsViewEvent {
     OpenSettings,
 }
 
-/// What the side beside the list shows.
+/// What the sheet shows.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Pane {
     /// Nothing picked yet: the first channel once there is one.
     None,
     Channel(String, String),
+    /// A team's people (frame "Team created").
     Team(String),
+    /// Invite people to a team.
+    Invite(String),
+    /// People who accepted an invite, waiting for an admin.
+    Pending(String),
     NewTeam,
+    /// The invites this user got.
+    Invites,
+    /// A team this user asked to join, waiting for an admin.
+    Asked(String),
+    /// This user's own devices.
     Devices,
 }
 
-/// A team as the list shows it.
-struct ListTeam {
-    id: String,
-    name: String,
-    role: Role,
-    /// Each channel's ID and name, `None` while locked.
-    channels: Vec<(String, Option<String>)>,
-    /// People waiting for approval.
-    pending: usize,
-    keyless: bool,
+/// What the panel at the right of a channel shows.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Side {
+    Encryption,
+    /// Compare this device with another one, or pick which.
+    Compare(Option<String>),
 }
 
-/// The list of teams, as wide as a sidebar.
-const LIST_W: f32 = 248.;
+/// The left column and the right panel of a channel, as wide as a sidebar.
+const COLUMN_W: f32 = 200.;
+const PANEL_W: f32 = 320.;
+/// A page's column, centered in the sheet.
+const PAGE_W: f32 = 520.;
 /// Messages from one sender this close together share a header.
 const GROUP_SECS: u64 = 5 * 60;
-const AVATAR: f32 = 28.;
+const AVATAR: f32 = 24.;
 /// How much of a message a reply quotes.
 const SNIPPET: usize = 90;
+/// Rows inside a card sit this far from its edge.
+const CARD_INSET: f32 = 4.;
+
+/// GitHub pictures on disk, by lower-case login: a copy taken for one render.
+struct Faces {
+    pictures: HashMap<String, PathBuf>,
+    hidden: bool,
+}
+
+impl Faces {
+    fn of(teams: &Teams) -> Self {
+        Faces {
+            pictures: teams.pictures(),
+            hidden: crate::redact::on(),
+        }
+    }
+
+    /// The person's picture, round; their initial while there is none, or
+    /// while redacted mode hides faces.
+    fn avatar(&self, login: &str, size: f32) -> gpui::Div {
+        let picture = self
+            .pictures
+            .get(&login.to_ascii_lowercase())
+            .filter(|_| !self.hidden);
+        ui::avatar_image(login, picture.map(|p| p.as_path()), size)
+    }
+}
+
+/// A row of a channel's list, in order.
+enum Line {
+    Day(String),
+    /// An admin let this device in, during this run.
+    Joined,
+    Notice(Notice),
+    Message(usize),
+}
 
 #[derive(Default)]
 struct Drafts {
@@ -81,6 +129,20 @@ pub struct TeamsView {
     teams: Entity<Teams>,
     hub: Entity<Hub>,
     pane: Pane,
+    side: Option<Side>,
+    /// The teams menu under the team's name is open.
+    team_menu: bool,
+    /// The team picked last, for the bar over pages of no team (your devices).
+    last_team: Option<String>,
+    /// The field for a new channel shows in the channel list.
+    adding_channel: bool,
+    /// "Create team" was pressed: the team the server names for it
+    /// (`Hub::created`) opens once it arrives. Any other team arriving
+    /// meanwhile, say from an approved invite, is not it.
+    creating: bool,
+    /// The invite accepted on the Invites page, as (team, invite): once the
+    /// request is in, the sheet shows its wait instead of an empty list.
+    accepting: Option<(String, String)>,
     team_name: Entity<TextInput>,
     invite: Entity<TextInput>,
     channel_name: Entity<TextInput>,
@@ -99,6 +161,8 @@ pub struct TeamsView {
     _flash: Option<Task<()>>,
     /// "Remove" or "Leave" was pressed once on this member.
     confirm_remove: Option<(String, u64)>,
+    /// "They don't" was pressed for this device in the compare panel.
+    mismatch: Option<String>,
     copied: bool,
     focus: FocusHandle,
     _subs: Vec<Subscription>,
@@ -109,9 +173,9 @@ impl EventEmitter<TeamsViewEvent> for TeamsView {}
 impl TeamsView {
     pub fn new(teams: Entity<Teams>, cx: &mut Context<Self>) -> Self {
         let hub = cx.new(|cx| Hub::new(teams.clone(), cx));
-        let team_name = cx.new(|cx| TextInput::new("Team name", cx));
-        let invite = cx.new(|cx| TextInput::new("GitHub user name", cx));
-        let channel_name = cx.new(|cx| TextInput::new("New channel", cx));
+        let team_name = cx.new(|cx| TextInput::new("Arakun", cx));
+        let invite = cx.new(|cx| TextInput::new("GitHub login", cx).mono());
+        let channel_name = cx.new(|cx| TextInput::new("new-channel", cx));
         let composer = cx.new(|cx| TextInput::new("Message", cx));
         let device_code = cx.new(|cx| TextInput::new("arakun-device.…", cx).mono());
         let on = |cx: &mut Context<Self>,
@@ -132,15 +196,17 @@ impl TeamsView {
                     this.create_team(cx)
                 }
             }),
-            on(cx, &invite, |this, ev, cx| {
-                if ev == InputEvent::Submit {
-                    this.send_invite(cx)
-                }
+            on(cx, &invite, |this, ev, cx| match ev {
+                InputEvent::Submit => this.send_invite(cx),
+                _ => cx.notify(),
             }),
-            on(cx, &channel_name, |this, ev, cx| {
-                if ev == InputEvent::Submit {
-                    this.create_channel(cx)
+            on(cx, &channel_name, |this, ev, cx| match ev {
+                InputEvent::Submit => this.create_channel(cx),
+                InputEvent::Cancel => {
+                    this.adding_channel = false;
+                    cx.notify();
                 }
+                _ => {}
             }),
             on(cx, &composer, |this, ev, cx| match ev {
                 InputEvent::Submit => this.send(cx),
@@ -148,7 +214,7 @@ impl TeamsView {
                     this.reply_to = None;
                     cx.notify();
                 }
-                _ => {}
+                _ => cx.notify(),
             }),
             on(cx, &device_code, |_, _, cx| cx.notify()),
         ];
@@ -157,6 +223,12 @@ impl TeamsView {
             teams,
             hub,
             pane: Pane::None,
+            side: None,
+            team_menu: false,
+            last_team: None,
+            adding_channel: false,
+            creating: false,
+            accepting: None,
             team_name,
             invite,
             channel_name,
@@ -172,6 +244,7 @@ impl TeamsView {
             flash: None,
             _flash: None,
             confirm_remove: None,
+            mismatch: None,
             copied: false,
             focus: cx.focus_handle(),
             _subs: subs,
@@ -213,7 +286,8 @@ impl TeamsView {
     }
 
     /// Opens the first channel once there is one and nothing else was picked,
-    /// and keeps the pane on things that still exist.
+    /// opens a team just created, keeps the pane on things that still exist,
+    /// and asks for the pictures of everyone the tab can show.
     fn hub_changed(&mut self, cx: &mut Context<Self>) {
         self.sync_account(cx);
         let hub = self.hub.read(cx);
@@ -225,29 +299,97 @@ impl TeamsView {
                 .team
                 .get(t)
                 .is_some_and(|s| s.channels.iter().any(|ch| ch.id == *c)),
-            Pane::Team(t) => !hub.teams.iter().any(|r| r.team_id == *t),
+            Pane::Team(t) | Pane::Invite(t) | Pane::Pending(t) => {
+                !hub.teams.iter().any(|r| r.team_id == *t)
+            }
+            // Turned down, or let in (handled below).
+            Pane::Asked(t) => !hub.asked().iter().any(|(a, _)| a == t),
             _ => false,
+        };
+        // The request went in: show its wait. It failed: the invite stays.
+        let accepted = match &self.accepting {
+            Some((t, _)) if hub.asked().iter().any(|(a, _)| a == t) => Some(Some(t.clone())),
+            Some((_, invite)) if !hub.busy.contains(&format!("accept:{invite}")) => Some(None),
+            _ => None,
+        };
+        // An admin let this user in while they looked at the wait.
+        let let_in = match &self.pane {
+            Pane::Asked(t) if hub.teams.iter().any(|r| r.team_id == *t) => Some(t.clone()),
+            _ => None,
         };
         // A team still loading is not gone yet.
         let loading = match &self.pane {
-            Pane::Channel(t, _) | Pane::Team(t) => {
+            Pane::Channel(t, _) => {
                 hub.teams.iter().any(|r| r.team_id == *t) && !hub.team.contains_key(t)
             }
             _ => false,
         };
-        if gone && !loading {
+        let created = hub
+            .created
+            .clone()
+            .filter(|t| self.creating && hub.team.contains_key(t));
+        // Refused before the server made anything: the name stays to fix.
+        let create_failed =
+            self.creating && hub.created.is_none() && !hub.busy.contains("create-team");
+        let mut people: Vec<String> = Vec::new();
+        people.extend(hub.me().map(|m| m.login.clone()));
+        for t in hub.team.values() {
+            people.extend(t.detail.members.iter().map(|m| m.login.clone()));
+            people.extend(t.pending.iter().map(|p| p.login.clone()));
+        }
+        people.extend(
+            hub.invites
+                .iter()
+                .filter_map(|i| i.invited_by_login.clone()),
+        );
+        people.extend(hub.inviters.values().cloned());
+        people.extend(hub.sent.iter().map(|(_, l, _)| l.clone()));
+        if let Some(accepted) = accepted {
+            self.accepting = None;
+            if let Some(t) = accepted
+                && self.pane == Pane::Invites
+            {
+                self.pane = Pane::Asked(t);
+            }
+        }
+        if let Some(t) = let_in {
+            let first = self.first_channel(&t, cx);
+            match first {
+                Some((t, c)) => self.open_channel(t, c, cx),
+                None => self.pane = Pane::Team(t),
+            }
+        } else if let Some(team) = created {
+            self.creating = false;
+            self.team_name.update(cx, |i, cx| i.set_text("", cx));
+            self.pane = Pane::Team(team);
+        } else if create_failed {
+            self.creating = false;
+        } else if gone && !loading {
             self.pane = Pane::None;
+            self.side = None;
         }
         if self.pane == Pane::None {
+            let hub = self.hub.read(cx);
             let first = hub.teams.iter().find_map(|r| {
                 let t = hub.team.get(&r.team_id)?;
                 let c = t.channels.first()?;
                 Some((r.team_id.clone(), c.id.clone()))
             });
+            // Every team loaded and none has a channel (its setup failed
+            // part way): its page, where an admin can make the first one.
+            let channelless = hub
+                .teams
+                .iter()
+                .all(|r| hub.team.contains_key(&r.team_id))
+                .then(|| hub.teams.first().map(|r| r.team_id.clone()))
+                .flatten();
             if let Some((t, c)) = first {
                 self.open_channel(t, c, cx);
+            } else if let Some(t) = channelless {
+                self.pane = Pane::Team(t);
             }
         }
+        self.teams.update(cx, |t, cx| t.want_pictures(people, cx));
         cx.notify();
     }
 
@@ -256,6 +398,9 @@ impl TeamsView {
         if let Pane::Channel(t, c) = &self.pane {
             let was = hub::channel_key(t, c);
             if was == key {
+                // A refused channel has no link left: picking it again retries.
+                self.hub
+                    .update(cx, |h, cx| h.open_channel(&team, &channel, cx));
                 return;
             }
             let typed = self.composer.read(cx).text().to_string();
@@ -263,8 +408,19 @@ impl TeamsView {
                 self.drafts.channels.insert(was, typed);
             }
         }
+        let name = self
+            .hub
+            .read(cx)
+            .team
+            .get(&team)
+            .and_then(|t| t.channels.iter().find(|c| c.id == channel))
+            .and_then(|c| c.name.clone())
+            .unwrap_or_else(|| "this channel".into());
         let draft = self.drafts.channels.remove(&key).unwrap_or_default();
-        self.composer.update(cx, |i, cx| i.set_text(draft, cx));
+        self.composer.update(cx, |i, cx| {
+            i.set_text(draft, cx);
+            i.set_placeholder(format!("Message {name}"), cx);
+        });
         self.reply_to = None;
         self.seen_count = 0;
         self.flash = None;
@@ -277,12 +433,21 @@ impl TeamsView {
 
     /// Shows a pane, with the cursor in its field when it has one.
     fn show(&mut self, pane: Pane, window: &mut Window, cx: &mut Context<Self>) {
+        self.team_menu = false;
+        if let Some(t) = self.selected_team() {
+            self.last_team = Some(t.to_string());
+        }
         let field = match &pane {
             Pane::NewTeam => Some(self.team_name.clone()),
             Pane::Devices => Some(self.device_code.clone()),
+            Pane::Invite(_) => Some(self.invite.clone()),
             Pane::Channel(..) => Some(self.composer.clone()),
             _ => None,
         };
+        if let Pane::Team(t) | Pane::Pending(t) = &pane {
+            let t = t.clone();
+            self.hub.update(cx, |h, cx| h.load_team(&t, cx));
+        }
         if let Pane::Channel(t, c) = pane {
             self.open_channel(t, c, cx);
         } else {
@@ -295,21 +460,29 @@ impl TeamsView {
         cx.notify();
     }
 
+    /// The team the sheet is about.
     fn selected_team(&self) -> Option<&str> {
         match &self.pane {
-            Pane::Channel(t, _) | Pane::Team(t) => Some(t),
+            Pane::Channel(t, _) | Pane::Team(t) | Pane::Invite(t) | Pane::Pending(t) => Some(t),
             _ => None,
         }
     }
 
+    /// A team's first channel, to open from its pages.
+    fn first_channel(&self, team_id: &str, cx: &Context<Self>) -> Option<(String, String)> {
+        let c = self.hub.read(cx).team.get(team_id)?.channels.first()?;
+        Some((team_id.to_string(), c.id.clone()))
+    }
+
     fn create_team(&mut self, cx: &mut Context<Self>) {
         let name = self.team_name.read(cx).text().trim().to_string();
-        if name.is_empty() {
+        // Enter while a team is being made or opened would make a second one.
+        if name.is_empty() || self.creating || self.hub.read(cx).busy.contains("create-team") {
             return;
         }
-        self.team_name.update(cx, |i, cx| i.set_text("", cx));
+        // The name stays in the field until the team opens, to fix on a refusal.
+        self.creating = true;
         self.hub.update(cx, |h, cx| h.create_team(name, cx));
-        self.pane = Pane::None;
         cx.notify();
     }
 
@@ -346,8 +519,10 @@ impl TeamsView {
             return;
         }
         self.channel_name.update(cx, |i, cx| i.set_text("", cx));
+        self.adding_channel = false;
         self.hub
             .update(cx, |h, cx| h.create_channel(&team, name, cx));
+        cx.notify();
     }
 
     fn send(&mut self, cx: &mut Context<Self>) {
@@ -355,7 +530,14 @@ impl TeamsView {
             return;
         };
         let text = self.composer.read(cx).text().trim().to_string();
-        if text.is_empty() {
+        // A refused socket does not retry, so a queued message would never go.
+        let refused = self
+            .hub
+            .read(cx)
+            .channels
+            .get(&hub::channel_key(&team, &channel))
+            .is_some_and(|c| matches!(c.status, socket::Status::Refused(_)));
+        if text.is_empty() || refused {
             return;
         }
         let reply_to = self.reply_to.take();
@@ -387,6 +569,16 @@ impl TeamsView {
         cx.notify();
     }
 
+    fn toggle_side(&mut self, side: Side, cx: &mut Context<Self>) {
+        self.side = if self.side.as_ref() == Some(&side) {
+            None
+        } else {
+            Some(side)
+        };
+        self.mismatch = None;
+        cx.notify();
+    }
+
     // ---- pieces ------------------------------------------------------------------
 
     fn banner(icon_name: &str, tone: Tone, text: impl Into<SharedString>) -> gpui::Div {
@@ -395,7 +587,7 @@ impl TeamsView {
             .flex_none()
             .items_center()
             .gap(ui::sp(8.))
-            .px(ui::sp(12.))
+            .px(ui::sp(16.))
             .py(ui::sp(6.))
             .border_b_1()
             .border_color(theme::border_subtle())
@@ -403,332 +595,1116 @@ impl TeamsView {
             .child(ui::text(Type::Label, tone.color(), text).flex_1().min_w_0())
     }
 
-    fn section(title: &str) -> gpui::Div {
-        ui::overline(title).pt(ui::sp(4.))
-    }
-
-    fn list_row(id: impl Into<gpui::ElementId>, selected: bool) -> gpui::Stateful<gpui::Div> {
-        div()
-            .id(id)
-            .flex()
-            .items_center()
-            .gap(ui::sp(8.))
-            .min_h(px(ui::MENU_ROW_H))
-            .px(ui::sp(8.))
-            .rounded(ui::rad(ui::RADIUS))
-            .cursor_pointer()
-            .hover(|d| d.bg(theme::fill_hover()))
-            .when(selected, |d| d.bg(theme::fill_selected()))
-    }
-
-    // ---- the list ------------------------------------------------------------------
-
-    fn render_invite(
-        &self,
-        ix: usize,
-        inv: &InviteRow,
-        busy: bool,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let inv2 = inv.clone();
-        div()
-            .flex()
-            .flex_col()
-            .gap(ui::sp(6.))
-            .p(ui::sp(8.))
-            .rounded(ui::rad(ui::RADIUS))
-            .border_1()
-            .border_color(theme::border())
-            .bg(theme::fill_raised())
-            .child(
-                div()
-                    .truncate()
-                    .ty(Type::Label)
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(theme::content())
-                    .child(inv.team_name.clone()),
-            )
-            .child(ui::text(
-                Type::Caption,
-                theme::text_faint(),
-                match &inv.invited_by_login {
-                    Some(by) => format!("@{by} invited you"),
-                    None => "You're invited".into(),
-                },
-            ))
-            .child(
-                div().flex().child(
-                    ui::button(
-                        ("teams-accept", ix),
-                        if busy { "Joining…" } else { "Accept" },
-                        ButtonKind::Primary,
-                        !busy,
-                    )
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.hub.update(cx, |h, cx| h.accept(&inv2, cx));
-                    })),
-                ),
-            )
-            .into_any_element()
-    }
-
-    fn render_list(&self, cx: &mut Context<Self>) -> AnyElement {
-        let hub = self.hub.read(cx);
-        let invites: Vec<InviteRow> = hub.invites.clone();
-        let invite_busy: Vec<bool> = invites
-            .iter()
-            .map(|i| hub.busy.contains(&format!("accept:{}", i.invite_id)))
-            .collect();
-        let asked = hub.asked();
-        let creating = hub.busy.contains("create-team");
-        let teams: Vec<ListTeam> = hub
-            .teams
-            .iter()
-            .map(|r| {
-                let t = hub.team.get(&r.team_id);
-                ListTeam {
-                    id: r.team_id.clone(),
-                    name: r.name.clone(),
-                    role: r.role,
-                    channels: t
-                        .map(|t| {
-                            t.channels
-                                .iter()
-                                .map(|c| (c.id.clone(), c.name.clone()))
-                                .collect()
-                        })
-                        .unwrap_or_default(),
-                    pending: t.map_or(0, |t| t.pending.len()),
-                    keyless: t.is_some_and(|t| t.keyless),
-                }
-            })
-            .collect();
-        let open = match &self.pane {
-            Pane::Channel(t, c) => Some((t.clone(), c.clone())),
-            _ => None,
-        };
-        let selected_team = self.selected_team().map(str::to_string);
-
-        let mut list = div()
-            .id("teams-list")
-            .flex()
-            .flex_col()
-            .flex_none()
-            .w(px(LIST_W))
-            .gap(ui::sp(4.))
-            .p(ui::sp(8.))
-            .border_r_1()
-            .border_color(theme::border_subtle())
-            .overflow_y_scroll();
-
-        if !invites.is_empty() {
-            list = list
-                .child(Self::section("Invites").px(ui::sp(8.)))
-                .children(
-                    invites
-                        .iter()
-                        .enumerate()
-                        .map(|(ix, inv)| self.render_invite(ix, inv, invite_busy[ix], cx)),
-                );
-        }
-
-        list = list.child(
-            div()
-                .flex()
-                .items_center()
-                .justify_between()
-                .px(ui::sp(8.))
-                .pt(ui::sp(6.))
-                .child(Self::section("Teams"))
-                .child(
-                    ui::icon_button("teams-new", "add01", 14.)
-                        .tooltip(ui::tip("New team"))
-                        .on_click(
-                            cx.listener(|this, _, window, cx| this.show(Pane::NewTeam, window, cx)),
-                        ),
-                ),
-        );
-        if creating {
-            list = list.child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(ui::sp(8.))
-                    .px(ui::sp(8.))
-                    .h(px(ui::MENU_ROW_H))
-                    .child(ui::spinner("teams-creating", 12., theme::text_faint()))
-                    .child(ui::text(
-                        Type::Body,
-                        theme::text_subtle(),
-                        "Creating the team…",
-                    )),
-            );
-        }
-        for (ix, team) in teams.into_iter().enumerate() {
-            let ListTeam {
-                id: team_id,
-                name,
-                role,
-                channels,
-                pending,
-                keyless,
-            } = team;
-            let selected = selected_team.as_deref() == Some(team_id.as_str());
-            let tid = team_id.clone();
-            list = list.child(
-                Self::list_row(
-                    ("teams-team", ix),
-                    matches!(&self.pane, Pane::Team(t) if *t == team_id),
-                )
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.pane = Pane::Team(tid.clone());
-                    let tid = tid.clone();
-                    this.hub.update(cx, |h, cx| h.load_team(&tid, cx));
-                    cx.notify();
-                }))
-                .child(ui::avatar(&name, 20.).rounded(ui::rad(ui::RADIUS_SM)))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .truncate()
-                        .ty(Type::Label)
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(theme::content())
-                        .child(name),
-                )
-                .when(pending > 0, |d| {
-                    d.child(ui::badge(format!("{pending} waiting"), Tone::Warning))
-                })
-                .when(role != Role::Member && pending == 0, |d| {
-                    d.child(ui::text(Type::Caption, theme::text_faint(), role.word()))
-                }),
-            );
-            if keyless {
-                list = list.child(
-                    ui::text(
-                        Type::Caption,
-                        theme::text_faint(),
-                        "Waiting for an admin to approve this device",
-                    )
-                    .pl(ui::sp(36.))
-                    .pr(ui::sp(8.))
-                    .pb(ui::sp(4.)),
-                );
-            }
-            if selected || open.is_none() {
-                for (cix, (cid, cname)) in channels.into_iter().enumerate() {
-                    let on = open
-                        .as_ref()
-                        .is_some_and(|(t, c)| *t == team_id && *c == cid);
-                    let (t2, c2) = (team_id.clone(), cid.clone());
-                    list = list.child(
-                        Self::list_row(("teams-channel", ix * 1000 + cix), on)
-                            .pl(ui::sp(36.))
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.show(Pane::Channel(t2.clone(), c2.clone()), window, cx)
-                            }))
-                            .child(ui::text(Type::Body, theme::text_faint(), "#"))
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .truncate()
-                                    .ty(Type::Body)
-                                    .text_color(if on {
-                                        theme::content()
-                                    } else {
-                                        theme::text_muted()
-                                    })
-                                    .child(cname.unwrap_or_else(|| "locked channel".into())),
-                            ),
-                    );
-                }
-            }
-        }
-        for (team_id, name) in asked {
-            list = list.child(
-                div()
-                    .id(SharedString::from(format!("teams-asked-{team_id}")))
-                    .flex()
-                    .items_center()
-                    .gap(ui::sp(8.))
-                    .min_h(px(ui::MENU_ROW_H))
-                    .px(ui::sp(8.))
-                    .child(
-                        ui::avatar(&name, 20.)
-                            .rounded(ui::rad(ui::RADIUS_SM))
-                            .opacity(0.5),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .min_w_0()
-                            .child(
-                                div()
-                                    .truncate()
-                                    .ty(Type::Label)
-                                    .text_color(theme::text_subtle())
-                                    .child(name),
-                            )
-                            .child(ui::text(
-                                Type::Caption,
-                                theme::text_faint(),
-                                "Waiting for an admin to approve you",
-                            )),
-                    ),
-            );
-        }
-        list.into_any_element()
-    }
-
-    // ---- panes -----------------------------------------------------------------------
-
+    /// A page's column: centered, as wide as a form.
     fn page() -> gpui::Div {
         div()
             .flex()
             .flex_col()
-            .gap(ui::sp(16.))
-            .p(ui::sp(ui::PAGE_PAD))
-            .max_w(px(640.))
+            .gap(ui::sp(20.))
+            .w(px(PAGE_W))
+            .max_w_full()
+            .mx_auto()
+            .py(ui::sp(32.))
     }
 
-    fn render_new_team(&self, cx: &mut Context<Self>) -> AnyElement {
-        let creating = self.hub.read(cx).busy.contains("create-team");
-        Self::page()
-            .child(ui::page_title(
-                "New team",
-                Some("A place to talk with the people you build with.".into_any_element()),
-            ))
+    fn scrolling(id: &'static str, page: gpui::Div) -> AnyElement {
+        div()
+            .id(id)
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_h_0()
+            .px(ui::sp(16.))
+            .overflow_y_scroll()
+            .child(page)
+            .into_any_element()
+    }
+
+    /// A raised card on a page; its rows sit `CARD_INSET` in.
+    fn card() -> gpui::Div {
+        div()
+            .flex()
+            .flex_col()
+            .rounded(ui::rad(ui::RADIUS_LG))
+            .border_1()
+            .border_color(theme::border_subtle())
+            .bg(theme::fill_raised())
+    }
+
+    /// A card's rows, `CARD_INSET` from its edge.
+    fn rows() -> gpui::Div {
+        div()
+            .flex()
+            .flex_col()
+            .gap(ui::sp(2.))
+            .p(ui::sp(CARD_INSET))
+    }
+
+    /// The square a row's picture or icon sits on.
+    fn tile(child: impl IntoElement) -> gpui::Div {
+        div()
+            .flex()
+            .flex_none()
+            .items_center()
+            .justify_center()
+            .size(px(ui::BUTTON_H))
+            .rounded(ui::rad(ui::RADIUS_SM))
+            .bg(theme::fill_selected())
+            .child(child)
+    }
+
+    /// A person (or an action) in a card: a tile, a name and a note, and
+    /// what goes at the end.
+    fn person_row(
+        lead: impl IntoElement,
+        title: impl Into<SharedString>,
+        note: impl Into<SharedString>,
+        selected: bool,
+    ) -> gpui::Div {
+        div()
+            .flex()
+            .items_center()
+            .gap(ui::sp(12.))
+            .px(ui::sp(10.))
+            .py(ui::sp(8.))
+            .rounded(ui::nested(ui::RADIUS_LG, CARD_INSET))
+            .when(selected, |d| d.bg(theme::fill_hover()))
+            .child(Self::tile(lead))
             .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_w_0()
+                    .child(
+                        div()
+                            .truncate()
+                            .ty(Type::Body)
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(theme::text())
+                            .child(title.into()),
+                    )
+                    .child(
+                        div()
+                            .truncate()
+                            .ty(Type::Caption)
+                            .text_color(theme::text_subtle())
+                            .child(note.into()),
+                    ),
+            )
+    }
+
+    /// An icon and a sentence, under a form or in a card.
+    fn note(icon_name: &str, text: impl Into<SharedString>) -> gpui::Div {
+        div()
+            .flex()
+            .items_center()
+            .gap(ui::sp(8.))
+            .ty(Type::Label)
+            .font_weight(FontWeight::NORMAL)
+            .text_color(theme::text_subtle())
+            .child(icon(icon_name, 14.).text_color(theme::text_subtle()))
+            .child(div().flex_1().min_w_0().child(text.into()))
+    }
+
+    /// A label and its value, a line above: the panel's facts.
+    fn fact(label: impl Into<SharedString>, value: impl IntoElement) -> gpui::Div {
+        div()
+            .flex()
+            .justify_between()
+            .items_center()
+            .gap(ui::sp(16.))
+            .py(ui::sp(8.))
+            .border_t_1()
+            .border_color(theme::border_subtle())
+            .ty(Type::Body)
+            .child(
+                div()
+                    .flex_none()
+                    .text_color(theme::text_subtle())
+                    .child(label.into()),
+            )
+            .child(div().text_color(theme::text()).text_right().child(value))
+    }
+
+    fn footnote(text: impl Into<SharedString>) -> gpui::Div {
+        ui::text(Type::Label, theme::text_subtle(), text).font_weight(FontWeight::NORMAL)
+    }
+
+    /// A rail-style title over a group in the channel column.
+    fn column_title(title: &'static str) -> gpui::Div {
+        div()
+            .flex()
+            .items_center()
+            .gap(ui::sp(4.))
+            .h(px(ui::BUTTON_H))
+            .px(ui::sp(8.))
+            .text_size(px(ui::TEXT_SM))
+            .text_color(theme::text_subtle())
+            .child(div().flex_1().min_w_0().truncate().child(title))
+    }
+
+    // ---- the header ------------------------------------------------------------------
+
+    /// The sheet's bar: the team, the channel, "Encrypted", the people and
+    /// Decisions (which comes with @bot).
+    fn render_header(
+        &self,
+        team_id: &str,
+        channel: Option<String>,
+        faces: &Faces,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let hub = self.hub.read(cx);
+        let row = hub.teams.iter().find(|r| r.team_id == team_id);
+        let t = hub.team.get(team_id);
+        let name = t
+            .map(|t| t.detail.name.clone())
+            .or_else(|| row.map(|r| r.name.clone()))
+            .unwrap_or_default();
+        let admin = row.is_some_and(|r| r.role.is_admin());
+        let waiting = t.map_or(0, |t| t.pending.len());
+        let members: Vec<String> = t
+            .map(|t| t.detail.members.iter().map(|m| m.login.clone()).collect())
+            .unwrap_or_default();
+        let in_channel = channel.is_some();
+        let encryption_open = self.side == Some(Side::Encryption);
+        let tid = team_id.to_string();
+        let tid2 = team_id.to_string();
+        let tid3 = team_id.to_string();
+        div()
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap(ui::sp(8.))
+            .h(px(ui::BAR_H))
+            .pl(ui::sp(16.))
+            .pr(ui::sp(12.))
+            .border_b_1()
+            .border_color(theme::border_subtle())
+            .child(
+                // A chip that sits flush with the bar's padding until hovered.
+                div()
+                    .id("teams-team-name")
+                    .flex()
+                    .items_center()
+                    .min_w_0()
+                    .h(px(ui::CONTROL_H))
+                    .px(ui::sp(6.))
+                    .ml(-ui::sp(6.))
+                    .mr(-ui::sp(4.))
+                    .rounded(ui::rad(ui::RADIUS))
+                    .cursor_pointer()
+                    .hover(|s| s.bg(theme::fill_hover()))
+                    .when(self.team_menu, |d| d.bg(theme::fill_selected()))
+                    .child(
+                        div()
+                            .truncate()
+                            .ty(Type::Body)
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(theme::content())
+                            .child(name),
+                    )
+                    .tooltip(ui::tip("Teams, devices, a new team"))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.team_menu = !this.team_menu;
+                        cx.notify();
+                    })),
+            )
+            .children(channel.map(|c| {
+                div()
+                    .truncate()
+                    .ty(Type::Body)
+                    .text_color(theme::text_subtle())
+                    .child(c)
+            }))
+            .child(
+                div()
+                    .id("teams-encrypted")
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .gap(ui::sp(6.))
+                    .h(px(ui::CONTROL_H))
+                    .px(ui::sp(8.))
+                    .rounded(ui::rad(ui::RADIUS))
+                    .ty(Type::Label)
+                    .font_weight(FontWeight::NORMAL)
+                    .text_color(theme::text_subtle())
+                    .when(encryption_open, |d| d.bg(theme::fill_selected()))
+                    .when(in_channel, |d| {
+                        d.cursor_pointer()
+                            .hover(|s| s.bg(theme::fill_hover()).text_color(theme::text()))
+                            .on_click(
+                                cx.listener(|this, _, _, cx| {
+                                    this.toggle_side(Side::Encryption, cx)
+                                }),
+                            )
+                    })
+                    .child(icon("square-lock02", 12.).text_color(theme::text_subtle()))
+                    .child("Encrypted"),
+            )
+            .child(div().flex_1())
+            .when(admin && waiting > 0, |d| {
+                d.child(
+                    ui::button_lead(
+                        "teams-waiting",
+                        Some(
+                            div()
+                                .size(px(6.))
+                                .rounded_full()
+                                .bg(theme::needs_you())
+                                .into_any_element(),
+                        ),
+                        format!("{waiting} waiting"),
+                        ButtonKind::Ghost,
+                        true,
+                    )
+                    .tooltip(ui::tip("People waiting for you to approve them"))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.show(Pane::Pending(tid.clone()), window, cx)
+                    })),
+                )
+            })
+            .when(!members.is_empty() && in_channel, |d| {
+                d.child(
+                    div()
+                        .id("teams-people")
+                        .flex()
+                        .items_center()
+                        .gap(ui::sp(4.))
+                        .px(ui::sp(4.))
+                        .h(px(ui::CONTROL_H))
+                        .rounded(ui::rad(ui::RADIUS))
+                        .cursor_pointer()
+                        .hover(|s| s.bg(theme::fill_hover()))
+                        .tooltip(ui::tip("The team's people"))
+                        .children(members.iter().take(6).map(|l| faces.avatar(l, 20.)))
+                        .when(members.len() > 6, |d| {
+                            d.child(ui::text(
+                                Type::Caption,
+                                theme::text_subtle(),
+                                format!("+{}", members.len() - 6),
+                            ))
+                        })
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.show(Pane::Team(tid2.clone()), window, cx)
+                        })),
+                )
+            })
+            .when(!in_channel, |d| {
+                d.when_some(self.first_channel(&tid3, cx), |d, (t, c)| {
+                    d.child(
+                        ui::button_with(
+                            "teams-to-chat",
+                            Some("comment01"),
+                            "Chat",
+                            ButtonKind::Ghost,
+                            true,
+                        )
+                        .on_click(cx.listener(
+                            move |this, _, window, cx| {
+                                this.show(Pane::Channel(t.clone(), c.clone()), window, cx)
+                            },
+                        )),
+                    )
+                })
+            })
+            .child(
+                ui::button("teams-decisions", "Decisions", ButtonKind::Ghost, false)
+                    .tooltip(ui::tip("The decision log comes with @bot")),
+            )
+            .into_any_element()
+    }
+
+    /// The bar over pages of no team. Without a team there is no team menu,
+    /// yet a second device needs Your devices on this one to be let in.
+    fn render_teamless_bar(&self, cx: &mut Context<Self>) -> AnyElement {
+        let on_devices = self.pane == Pane::Devices;
+        div()
+            .flex()
+            .flex_none()
+            .items_center()
+            .justify_end()
+            .h(px(ui::BAR_H))
+            .px(ui::sp(12.))
+            .border_b_1()
+            .border_color(theme::border_subtle())
+            .child(if on_devices {
+                ui::button_with(
+                    "teams-devices-back",
+                    Some("arrow-left01"),
+                    "Back",
+                    ButtonKind::Ghost,
+                    true,
+                )
+                .on_click(cx.listener(|this, _, window, cx| this.show(Pane::None, window, cx)))
+            } else {
+                ui::button_with(
+                    "teams-to-devices",
+                    Some("computer"),
+                    "Your devices",
+                    ButtonKind::Ghost,
+                    true,
+                )
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.hub.update(cx, |h, cx| h.load_my_devices(cx));
+                    this.show(Pane::Devices, window, cx)
+                }))
+            })
+            .into_any_element()
+    }
+
+    /// The menu under the team's name: every team, a new one, your devices.
+    fn render_team_menu(&self, cx: &mut Context<Self>) -> AnyElement {
+        let hub = self.hub.read(cx);
+        let current = self.selected_team().map(str::to_string);
+        // Each team's ID, name and first channel.
+        type Entry = (String, String, Option<(String, String)>);
+        let teams: Vec<Entry> = hub
+            .teams
+            .iter()
+            .map(|r| {
+                let first = hub
+                    .team
+                    .get(&r.team_id)
+                    .and_then(|t| t.channels.first())
+                    .map(|c| (r.team_id.clone(), c.id.clone()));
+                (r.team_id.clone(), r.name.clone(), first)
+            })
+            .collect();
+        let has_invites = !hub.invites.is_empty();
+        let asked = hub.asked();
+        let mut panel = ui::menu_panel("teams-menu", 240.).p(ui::sp(5.));
+        for (i, (id, name, first)) in teams.into_iter().enumerate() {
+            let on = current.as_deref() == Some(id.as_str());
+            panel = panel.child(
+                ui::menu_item(("teams-menu-team", i), "ungroup-items", name, false, true)
+                    .when(on, |d| d.bg(theme::selection()))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        let pane = match &first {
+                            Some((t, c)) => Pane::Channel(t.clone(), c.clone()),
+                            None => Pane::Team(id.clone()),
+                        };
+                        this.show(pane, window, cx)
+                    })),
+            );
+        }
+        // Teams asked to join: their wait, until an admin lets this user in.
+        for (i, (id, name)) in asked.into_iter().enumerate() {
+            panel = panel.child(
+                ui::menu_item(("teams-menu-asked", i), "clock01", name, false, true)
+                    .when(self.pane == Pane::Asked(id.clone()), |d| {
+                        d.bg(theme::selection())
+                    })
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.show(Pane::Asked(id.clone()), window, cx)
+                    })),
+            );
+        }
+        panel
+            .child(ui::menu_divider())
+            .when(has_invites, |d| {
+                d.child(
+                    ui::menu_item("teams-menu-invites", "mail01", "Invites", false, true).on_click(
+                        cx.listener(|this, _, window, cx| this.show(Pane::Invites, window, cx)),
+                    ),
+                )
+            })
+            .child(
+                ui::menu_item("teams-menu-new", "add01", "Start a team", false, true).on_click(
+                    cx.listener(|this, _, window, cx| this.show(Pane::NewTeam, window, cx)),
+                ),
+            )
+            .child(
+                ui::menu_item(
+                    "teams-menu-devices",
+                    "computer",
+                    "Your devices",
+                    false,
+                    true,
+                )
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.hub.update(cx, |h, cx| h.load_my_devices(cx));
+                    this.show(Pane::Devices, window, cx)
+                })),
+            )
+            .into_any_element()
+    }
+
+    // ---- pages before a team -------------------------------------------------------
+
+    /// "Start a team".
+    fn render_new_team(&self, cx: &mut Context<Self>) -> AnyElement {
+        let creating = self.hub.read(cx).busy.contains("create-team") || self.creating;
+        Self::scrolling(
+            "teams-new-page",
+            Self::page()
+                .child(ui::page_title(
+                    "Start a team",
+                    Some(
+                        "A place to talk ideas through, with @bot to check them. You will be its owner."
+                            .into_any_element(),
+                    ),
+                ))
+                .child(
+                    Self::card().child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(ui::sp(12.))
+                            .p(ui::sp(16.))
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(ui::sp(6.))
+                                    .child(
+                                        ui::text(Type::Body, theme::text(), "Team name")
+                                            .font_weight(FontWeight::MEDIUM),
+                                    )
+                                    .child(
+                                        ui::field()
+                                            .child(
+                                                icon("ungroup-items", 14.)
+                                                    .text_color(theme::text_subtle()),
+                                            )
+                                            .child(div().flex_1().child(self.team_name.clone())),
+                                    ),
+                            )
+                            .child(Self::note(
+                                "square-lock02",
+                                "This device makes the team key. The server never gets it.",
+                            ))
+                            .child(
+                                div().flex().justify_end().child(
+                                    ui::button(
+                                        "teams-create",
+                                        if creating { "Creating…" } else { "Create team" },
+                                        ButtonKind::Primary,
+                                        !creating,
+                                    )
+                                    .on_click(cx.listener(|this, _, _, cx| this.create_team(cx))),
+                                ),
+                            ),
+                    ),
+                ),
+        )
+    }
+
+    /// The invites this user got, as the invitee sees them.
+    fn render_invites(&self, faces: &Faces, cx: &mut Context<Self>) -> AnyElement {
+        let hub = self.hub.read(cx);
+        let invites: Vec<(InviteRow, bool)> = hub
+            .invites
+            .iter()
+            .map(|i| {
+                let busy = hub.busy.contains(&format!("accept:{}", i.invite_id));
+                (i.clone(), busy)
+            })
+            .collect();
+        let me = hub
+            .me()
+            .map(|m| crate::redact::value(&m.login))
+            .unwrap_or_default();
+        let mut page = Self::page().child(ui::page_title(
+            if invites.len() > 1 {
+                "Invites"
+            } else {
+                "An invite"
+            },
+            Some(format!("You are signed in as {me}.").into_any_element()),
+        ));
+        if invites.is_empty() {
+            page = page.child(Self::footnote("No invites are waiting."));
+        }
+        for (ix, (inv, busy)) in invites.into_iter().enumerate() {
+            let by = inv.invited_by_login.clone();
+            let title = match &by {
+                Some(by) => format!("{by} invited you to {}", inv.team_name),
+                None => format!("You are invited to {}", inv.team_name),
+            };
+            let accept = inv.clone();
+            page = page.child(
+                Self::card().child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(ui::sp(16.))
+                        .p(ui::sp(16.))
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(ui::sp(12.))
+                                .child(faces.avatar(by.as_deref().unwrap_or(&inv.team_name), 32.))
+                                .child(
+                                    div()
+                                        .flex()
+                                        .flex_col()
+                                        .gap(ui::sp(3.))
+                                        .min_w_0()
+                                        .child(
+                                            div()
+                                                .truncate()
+                                                .ty(Type::Heading)
+                                                .text_color(theme::text())
+                                                .child(title),
+                                        )
+                                        .child(
+                                            ui::text(
+                                                Type::Label,
+                                                theme::text_subtle(),
+                                                format!(
+                                                    "Invited as {me} · {}",
+                                                    ago(inv.created_at)
+                                                ),
+                                            )
+                                            .font_weight(FontWeight::NORMAL),
+                                        ),
+                                ),
+                        )
+                        .child(Self::note(
+                            "square-lock02",
+                            "After you accept, an admin approves this device. Then it can read the team.",
+                        ))
+                        .child(
+                            div().flex().justify_end().gap(ui::sp(8.)).child(
+                                ui::button(
+                                    ("teams-accept", ix),
+                                    if busy { "Joining…" } else { "Accept" },
+                                    ButtonKind::Primary,
+                                    !busy,
+                                )
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.accepting = Some((
+                                        accept.team_id.clone(),
+                                        accept.invite_id.clone(),
+                                    ));
+                                    this.hub.update(cx, |h, cx| h.accept(&accept, cx));
+                                })),
+                            ),
+                        ),
+                ),
+            );
+        }
+        Self::scrolling("teams-invites-page", page)
+    }
+
+    /// "Waiting for an admin to approve this device": after accepting an
+    /// invite, or a device of a member that holds no team key yet.
+    fn render_waiting(
+        &self,
+        team: &str,
+        subtitle: &'static str,
+        admins: Vec<String>,
+        faces: &Faces,
+    ) -> AnyElement {
+        let device = crate::redact::value(&hub::device_name());
+        let who: AnyElement = if admins.is_empty() {
+            "An admin of the team".into_any_element()
+        } else {
+            div()
+                .flex()
+                .items_center()
+                .justify_end()
+                .gap(ui::sp(4.))
+                .children(admins.iter().take(6).map(|l| faces.avatar(l, 20.)))
+                .child(
+                    div().ml(ui::sp(4.)).child(
+                        admins
+                            .iter()
+                            .take(3)
+                            .cloned()
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                    ),
+                )
+                .into_any_element()
+        };
+        Self::scrolling(
+            "teams-waiting-page",
+            Self::page()
+                .child(ui::page_title(
+                    team.to_string(),
+                    Some(subtitle.into_any_element()),
+                ))
+                .child(
+                    Self::card().child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(ui::sp(16.))
+                            .p(ui::sp(16.))
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(ui::sp(12.))
+                                    .child(Self::tile(ui::spinner(
+                                        "teams-waiting-spin",
+                                        16.,
+                                        theme::accent(),
+                                    )))
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .flex_col()
+                                            .gap(ui::sp(3.))
+                                            .min_w_0()
+                                            .child(ui::text(
+                                                Type::Heading,
+                                                theme::text(),
+                                                "Waiting for an admin to approve this device",
+                                            ))
+                                            .child(
+                                                ui::text(
+                                                    Type::Label,
+                                                    theme::text_subtle(),
+                                                    format!("{device} · asked to join"),
+                                                )
+                                                .font_weight(FontWeight::NORMAL),
+                                            ),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .child(Self::fact("Who can approve", who))
+                                    .child(Self::fact(
+                                        "What you get",
+                                        "The team key, sent to this device only",
+                                    ))
+                                    .child(Self::fact("Until then", "You can't read or write here"))
+                                    .child(div().border_t_1().border_color(theme::border_subtle())),
+                            )
+                            .child(Self::note(
+                                "square-lock02",
+                                "An admin's device holds the key. The server does not.",
+                            )),
+                    ),
+                ),
+        )
+    }
+
+    // ---- a team's pages ------------------------------------------------------------
+
+    /// The team's people, with "Invite people", and a way to the approvals.
+    fn render_team(&self, team_id: &str, faces: &Faces, cx: &mut Context<Self>) -> AnyElement {
+        let hub = self.hub.read(cx);
+        let Some(t) = hub.team.get(team_id) else {
+            return ui::loading("teams-team-loading", "Reading the team…").into_any_element();
+        };
+        let me = hub.me().map_or(0, |m| m.github_id);
+        let my_login = hub.me().map(|m| m.login.clone());
+        let admin = t.role.is_admin();
+        let role = t.role;
+        let members = t.detail.members.clone();
+        let devices: HashMap<u64, Vec<DeviceRow>> = t.devices.clone();
+        let pending = t.pending.len();
+        let problem = t.problem.clone();
+        let name = t.detail.name.clone();
+        let first = t.channels.first().map(|c| (c.id.clone(), c.name.clone()));
+        let can_add_channel = admin && !t.keyless;
+        let making = hub.busy.contains(&format!("channel:{team_id}"));
+        let device_count: usize = devices.values().map(Vec::len).sum();
+        let owners = members.iter().filter(|m| m.role == Role::Owner).count();
+        let tid = team_id.to_string();
+
+        let subtitle = if members.len() == 1 && device_count <= 1 {
+            "Your team is ready. It has one person and one device.".to_string()
+        } else {
+            format!(
+                "{} · {}. You are {}.",
+                plural(members.len(), "person", "people"),
+                plural(device_count, "device", "devices"),
+                match role {
+                    Role::Owner => "its owner",
+                    Role::Admin => "an admin",
+                    Role::Member => "a member",
+                }
+            )
+        };
+        let mut rows = Self::rows();
+        for (i, m) in members.iter().enumerate() {
+            let theirs = devices.get(&m.github_id).cloned().unwrap_or_default();
+            let held = match theirs.as_slice() {
+                [one] => format!("{} holds the key", crate::redact::text(&one.name)),
+                more => plural(more.len(), "device", "devices"),
+            };
+            let role_word = m.role.word();
+            let self_row = m.github_id == me;
+            let confirming = self.confirm_remove.as_ref() == Some(&(tid.clone(), m.github_id));
+            let last_owner = m.role == Role::Owner && owners < 2;
+            let can_remove = !last_owner
+                && (self_row || (admin && m.role != Role::Owner) || role == Role::Owner);
+            let gid = m.github_id;
+            let (t1, t2) = (tid.clone(), tid.clone());
+            rows = rows.child(
+                Self::person_row(
+                    faces.avatar(&m.login, AVATAR),
+                    shown_login(&m.login, my_login.as_deref()),
+                    format!("{role_word} · {held}"),
+                    false,
+                )
+                .when(self_row, |d| d.child(ui::badge("You", Tone::Neutral)))
+                .when(can_remove && !confirming, |d| {
+                    d.child(
+                        ui::button(
+                            ("teams-remove", i),
+                            if self_row { "Leave" } else { "Remove" },
+                            ButtonKind::Ghost,
+                            true,
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.confirm_remove = Some((t1.clone(), gid));
+                            cx.notify();
+                        })),
+                    )
+                })
+                .when(confirming, |d| {
+                    d.child(
+                        ui::button(("teams-remove-no", i), "Keep", ButtonKind::Ghost, true)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.confirm_remove = None;
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        ui::button(
+                            ("teams-remove-yes", i),
+                            if self_row { "Leave the team" } else { "Remove" },
+                            ButtonKind::Danger,
+                            true,
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.confirm_remove = None;
+                            this.hub.update(cx, |h, cx| h.remove(&t2, gid, cx));
+                        })),
+                    )
+                }),
+            );
+        }
+        if admin {
+            let t3 = tid.clone();
+            rows = rows.child(
+                Self::person_row(
+                    icon("add01", 16.).text_color(theme::text_subtle()),
+                    "Invite people",
+                    "By their GitHub login",
+                    false,
+                )
+                .child(
+                    ui::button("teams-to-invite", "Invite", ButtonKind::Outline, true).on_click(
+                        cx.listener(move |this, _, window, cx| {
+                            this.show(Pane::Invite(t3.clone()), window, cx)
+                        }),
+                    ),
+                ),
+            );
+        }
+        let mut page = Self::page()
+            .child(ui::page_title(name, Some(subtitle.into_any_element())))
+            .child(Self::card().child(rows));
+        if admin && pending > 0 {
+            let t4 = tid.clone();
+            page = page.child(
+                Self::card().child(
+                    Self::rows().child(
+                        Self::person_row(
+                            icon("clock01", 16.).text_color(theme::needs_you()),
+                            format!("{} waiting for you", plural(pending, "person", "people")),
+                            "They accepted. Approve each of their devices.",
+                            false,
+                        )
+                        .child(
+                            ui::button("teams-to-pending", "Review", ButtonKind::Outline, true)
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.show(Pane::Pending(t4.clone()), window, cx)
+                                })),
+                        ),
+                    ),
+                ),
+            );
+        }
+        if let Some(p) = problem {
+            page = page.child(ui::text(Type::Label, theme::attention().into(), p));
+        }
+        if let Some((cid, cname)) = first {
+            let t5 = tid.clone();
+            let cname = cname.unwrap_or_else(|| "general".into());
+            page = page.child(
                 div()
                     .flex()
                     .items_center()
-                    .gap(ui::sp(8.))
-                    .child(ui::field().flex_1().child(self.team_name.clone()))
+                    .gap(ui::sp(12.))
                     .child(
-                        ui::button("teams-create", if creating { "Creating…" } else { "Create" }, ButtonKind::Primary, !creating)
-                            .on_click(cx.listener(|this, _, _, cx| this.create_team(cx))),
+                        Self::footnote(format!(
+                            "A {cname} channel is waiting. Its name is encrypted like everything else."
+                        ))
+                        .flex_1(),
+                    )
+                    .child(
+                        ui::button_with(
+                            "teams-open-first",
+                            Some("comment01"),
+                            format!("Open {cname}"),
+                            ButtonKind::Ghost,
+                            true,
+                        )
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.show(Pane::Channel(t5.clone(), cid.clone()), window, cx)
+                        })),
                     ),
-            )
-            .child(
+            );
+        } else if can_add_channel {
+            // A team whose first channel was not made: there is no channel
+            // column to add one from, so it starts here.
+            page = page.child(
+                Self::card().child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(ui::sp(8.))
+                        .p(ui::sp(12.))
+                        .child(
+                            ui::field()
+                                .flex_1()
+                                .child(icon("comment01", 14.).text_color(theme::text_subtle()))
+                                .child(div().flex_1().child(self.channel_name.clone())),
+                        )
+                        .child(
+                            ui::button(
+                                "teams-first-channel",
+                                if making {
+                                    "Making…"
+                                } else {
+                                    "Make the first channel"
+                                },
+                                ButtonKind::Primary,
+                                !making,
+                            )
+                            .on_click(cx.listener(|this, _, _, cx| this.create_channel(cx))),
+                        ),
+                ),
+            );
+        }
+        Self::scrolling("teams-team-page", page)
+    }
+
+    /// Invite people by GitHub login, and the invites sent from here.
+    fn render_invite(&self, team_id: &str, faces: &Faces, cx: &mut Context<Self>) -> AnyElement {
+        let hub = self.hub.read(cx);
+        let inviting = hub.busy.contains(&format!("invite:{team_id}"));
+        let t = hub.team.get(team_id);
+        let pending: HashSet<String> = t
+            .map(|t| {
+                t.pending
+                    .iter()
+                    .map(|p| p.login.to_ascii_lowercase())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let members: HashSet<String> = t
+            .map(|t| {
+                t.detail
+                    .members
+                    .iter()
+                    .map(|m| m.login.to_ascii_lowercase())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let sent: Vec<(String, u64)> = hub
+            .sent
+            .iter()
+            .rev()
+            .filter(|(t, l, _)| t == team_id && !members.contains(&l.to_ascii_lowercase()))
+            .map(|(_, l, at)| (l.clone(), *at))
+            .collect();
+        let typed = self
+            .invite
+            .read(cx)
+            .text()
+            .trim()
+            .trim_start_matches('@')
+            .to_string();
+        let mut card = Self::card().child(
+            div()
+                .flex()
+                .items_center()
+                .gap(ui::sp(8.))
+                .p(ui::sp(12.))
+                .child(
+                    ui::field()
+                        .flex_1()
+                        .child(icon("github", 14.).text_color(theme::text_subtle()))
+                        .child(div().flex_1().child(self.invite.clone())),
+                )
+                .child(
+                    ui::button(
+                        "teams-invite",
+                        if inviting { "Inviting…" } else { "Invite" },
+                        ButtonKind::Primary,
+                        !inviting && !typed.is_empty(),
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| this.send_invite(cx))),
+                ),
+        );
+        if !typed.is_empty() {
+            card = card.child(
+                div().px(ui::sp(CARD_INSET)).pb(ui::sp(CARD_INSET)).child(
+                    Self::person_row(
+                        faces.avatar(&typed, AVATAR),
+                        typed.clone(),
+                        "A GitHub login",
+                        true,
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_none()
+                            .items_center()
+                            .gap(ui::sp(6.))
+                            .h(px(22.))
+                            .px(ui::sp(8.))
+                            .rounded(ui::rad(ui::RADIUS_SM))
+                            .border_1()
+                            .border_color(theme::border())
+                            .ty(Type::Caption)
+                            .text_color(theme::text_muted())
+                            .child(div().size(px(5.)).rounded_full().bg(theme::text_muted()))
+                            .child("Enter to invite"),
+                    ),
+                ),
+            );
+        }
+        let mut page = Self::page()
+            .child(ui::page_title(
+                "Invite people",
+                Some(
+                    "By GitHub login. They accept, then an admin approves each of their devices."
+                        .into_any_element(),
+                ),
+            ))
+            .child(card);
+        if !sent.is_empty() {
+            let mut rows = Self::rows();
+            for (login, at) in sent {
+                let note = if pending.contains(&login.to_ascii_lowercase()) {
+                    format!("Invited {} · accepted, waiting for approval", ago(at))
+                } else {
+                    format!("Invited {} · has not answered", ago(at))
+                };
+                rows = rows.child(Self::person_row(
+                    faces.avatar(&login, AVATAR),
+                    login,
+                    note,
+                    false,
+                ));
+            }
+            page = page.child(
                 div()
                     .flex()
-                    .items_start()
-                    .gap(ui::sp(8.))
-                    .child(icon("square-lock02", 14.).text_color(theme::text_faint()).mt(px(1.)))
+                    .flex_col()
+                    .gap(ui::sp(10.))
+                    .child(ui::text(Type::Overline, theme::text_subtle(), "INVITED").px(ui::sp(4.)))
+                    .child(Self::card().child(rows)),
+            );
+        }
+        Self::scrolling(
+            "teams-invite-page",
+            page.child(Self::footnote(
+                "An invite lasts 7 days. It shows in their Team tab once they sign in.",
+            )),
+        )
+    }
+
+    /// People who accepted, each device with its code: approve or reject.
+    fn render_pending(&self, team_id: &str, faces: &Faces, cx: &mut Context<Self>) -> AnyElement {
+        let hub = self.hub.read(cx);
+        let Some(t) = hub.team.get(team_id) else {
+            return ui::loading("teams-pending-loading", "Reading the team…").into_any_element();
+        };
+        let keyless = t.keyless;
+        let pending = t.pending.clone();
+        let approving: Vec<bool> = pending
+            .iter()
+            .map(|p| {
+                hub.busy
+                    .contains(&format!("approve:{team_id}:{}", p.github_id))
+            })
+            .collect();
+        let tid = team_id.to_string();
+        let mut rows = Self::rows();
+        for (i, p) in pending.iter().enumerate() {
+            let (t1, t2, gid) = (tid.clone(), tid.clone(), p.github_id);
+            let request = p.request_id.clone();
+            let reject_request = request.clone();
+            let busy = approving[i];
+            rows = rows
+                .child(
+                    Self::person_row(
+                        faces.avatar(&p.login, AVATAR),
+                        p.login.clone(),
+                        format!(
+                            "Accepted {} · {}",
+                            ago(p.requested_at),
+                            plural(p.devices.len(), "device", "devices")
+                        ),
+                        false,
+                    )
                     .child(
-                        ui::text(
-                            Type::Caption,
-                            theme::text_faint(),
-                            "Channel names and messages are encrypted on this device. The server keeps the team's name, who is in it and when messages were sent, never what they say. You can invite people by their GitHub user name once the team exists.",
+                        ui::button(("teams-reject", i), "Reject", ButtonKind::Ghost, !busy)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.hub.update(cx, |h, cx| {
+                                    h.reject(&t1, gid, reject_request.clone(), cx)
+                                })
+                            })),
+                    )
+                    .child(
+                        ui::button(
+                            ("teams-approve", i),
+                            if busy { "Approving…" } else { "Approve" },
+                            ButtonKind::Primary,
+                            !busy && !keyless,
                         )
-                        .flex_1()
-                        .min_w_0(),
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.hub
+                                .update(cx, |h, cx| h.approve(&t2, gid, &request, cx))
+                        })),
                     ),
-            )
-            .into_any_element()
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .pl(ui::sp(50.))
+                        .pr(ui::sp(10.))
+                        .pb(ui::sp(8.))
+                        .children(p.devices.iter().map(device_line)),
+                );
+        }
+        let mut page = Self::page().child(ui::page_title(
+            "Waiting for you",
+            Some(
+                "Approving sends the team key from this device to each of theirs. The server cannot do it."
+                    .into_any_element(),
+            ),
+        ));
+        if pending.is_empty() {
+            page = page.child(Self::footnote("Nobody is waiting. New requests show here."));
+        } else {
+            page = page.child(Self::card().child(rows)).child(Self::footnote(
+                "Check a device you do not know with its owner before you approve. Its code is at the right.",
+            ));
+        }
+        if keyless {
+            page = page.child(Self::footnote(
+                "This device holds no team key yet, so it can't approve anyone.",
+            ));
+        }
+        Self::scrolling("teams-pending-page", page)
     }
 
     fn render_devices(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -743,48 +1719,39 @@ impl TeamsView {
         let known = code
             .as_ref()
             .is_some_and(|c| devices.iter().any(|d| d.device_id == c.id));
-        let rows = devices.iter().map(|d| {
+        let mut rows = Self::rows();
+        for d in &devices {
             let this_one = d.device_id == mine;
-            div()
-                .flex()
-                .items_center()
-                .gap(ui::sp(10.))
-                .py(ui::sp(6.))
-                .child(icon("computer", 16.).text_color(theme::text_subtle()))
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .flex_1()
-                        .min_w_0()
-                        .child(
-                            div()
-                                .truncate()
-                                .ty(Type::Label)
-                                .text_color(theme::content())
-                                .child(crate::redact::text(&d.name).into_owned()),
-                        )
-                        .child(ui::text(
-                            Type::Caption,
-                            theme::text_faint(),
-                            format!("{} · added {}", short_id(&d.device_id), when(d.created_at)),
-                        )),
+            rows = rows.child(
+                Self::person_row(
+                    icon("computer", 16.).text_color(theme::text_subtle()),
+                    crate::redact::text(&d.name).into_owned(),
+                    format!(
+                        "{} · added {}",
+                        fingerprint(&d.device_id),
+                        when(d.created_at)
+                    ),
+                    false,
                 )
                 .when(this_one, |r| {
-                    r.child(ui::badge("this device", Tone::Neutral))
-                })
-        });
-        Self::page()
+                    r.child(ui::badge("This device", Tone::Neutral))
+                }),
+            );
+        }
+        let page = Self::page()
             .child(ui::page_title(
                 "Your devices",
-                Some("Every device signs what it sends, and holds its own copy of each team key.".into_any_element()),
+                Some(
+                    "Every device signs what it sends, and holds its own copy of each team key."
+                        .into_any_element(),
+                ),
             ))
-            .child(div().flex().flex_col().children(rows))
-            .child(Self::section("Add a device"))
+            .child(Self::card().child(rows))
+            .child(ui::text(Type::Heading, theme::text(), "Add a device"))
             .child(ui::text(
                 Type::Body,
                 theme::text_subtle(),
-                "On the new device, open Teams: it shows a code. Paste it here to vouch for that device. Your teams' admins then give it the keys.",
+                "On the new device, open Team: it shows a code. Paste it here to vouch for that device. Your teams' admins then give it the keys.",
             ))
             .child(
                 div()
@@ -811,371 +1778,200 @@ impl TeamsView {
             .children(code.map(|c| {
                 ui::text(
                     Type::Caption,
-                    if known { theme::text_faint() } else { theme::text_subtle() },
                     if known {
-                        format!("{} is one of your devices already.", crate::redact::text(&c.name))
+                        theme::text_faint()
+                    } else {
+                        theme::text_subtle()
+                    },
+                    if known {
+                        format!(
+                            "{} is one of your devices already.",
+                            crate::redact::text(&c.name)
+                        )
                     } else {
                         format!(
-                            "\"{}\", device {}. Check the new device shows the same ID.",
+                            "\"{}\", device {}. Check the new device shows the same code.",
                             crate::redact::text(&c.name),
-                            short_id(&c.id)
+                            fingerprint(&c.id)
                         )
                     },
                 )
             }))
-            .when(!code_text.trim().is_empty() && hub::read_device_code(&code_text).is_none(), |d| {
-                d.child(ui::text(
-                    Type::Caption,
-                    theme::attention().into(),
-                    "That is not a device code. Copy the whole line the new device shows.",
-                ))
-            })
-            .into_any_element()
-    }
-
-    fn render_team(&self, team_id: &str, cx: &mut Context<Self>) -> AnyElement {
-        let hub = self.hub.read(cx);
-        let Some(t) = hub.team.get(team_id) else {
-            return ui::loading("teams-team-loading", "Reading the team…").into_any_element();
-        };
-        let me = hub.me().map_or(0, |m| m.github_id);
-        let admin = t.role.is_admin();
-        let inviting = hub.busy.contains(&format!("invite:{team_id}"));
-        let making_channel = hub.busy.contains(&format!("channel:{team_id}"));
-        let notices: Vec<_> = hub
-            .notices
-            .iter()
-            .filter(|n| n.team_id == team_id)
-            .cloned()
-            .collect();
-        let members = t.detail.members.clone();
-        let pending = t.pending.clone();
-        let channels = t.channels.clone();
-        let devices: HashMap<u64, usize> = t.devices.iter().map(|(k, v)| (*k, v.len())).collect();
-        let approving: Vec<bool> = pending
-            .iter()
-            .map(|p| {
-                hub.busy
-                    .contains(&format!("approve:{team_id}:{}", p.github_id))
-            })
-            .collect();
-        let keyless = t.keyless;
-        let problem = t.problem.clone();
-        let name = t.detail.name.clone();
-        let epoch = t.detail.epoch;
-        let role = t.role;
-
-        let mut page = Self::page().child(ui::page_title(
-            name,
-            Some(
-                format!(
-                    "{} member{} · you are {} · key {epoch}",
-                    members.len(),
-                    if members.len() == 1 { "" } else { "s" },
-                    if role == Role::Admin {
-                        "an admin"
-                    } else if role == Role::Owner {
-                        "the owner"
-                    } else {
-                        "a member"
-                    }
-                )
-                .into_any_element(),
-            ),
-        ));
-        if keyless {
-            page = page.child(
-                ui::card()
-                    .flex()
-                    .items_center()
-                    .gap(ui::sp(10.))
-                    .p(ui::sp(12.))
-                    .child(ui::spinner("teams-keyless", 14., theme::text_faint()))
-                    .child(ui::text(
-                        Type::Body,
-                        theme::text(),
-                        "Waiting for an admin to approve this device. Messages show here once one of their devices hands it the team key.",
-                    )),
+            .when(
+                !code_text.trim().is_empty() && hub::read_device_code(&code_text).is_none(),
+                |d| {
+                    d.child(ui::text(
+                        Type::Caption,
+                        theme::attention().into(),
+                        "That is not a device code. Copy the whole line the new device shows.",
+                    ))
+                },
             );
-        }
-        if let Some(p) = problem {
-            page = page.child(ui::text(Type::Label, theme::attention().into(), p));
-        }
-        for (i, n) in notices.into_iter().enumerate() {
-            let id = n.device_id.clone();
-            page = page.child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(ui::sp(8.))
-                    .child(icon("computer", 14.).text_color(theme::text_subtle()))
-                    .child(
-                        ui::text(
-                            Type::Label,
-                            theme::text(),
-                            format!(
-                                "@{} added a new device: {}",
-                                n.login,
-                                crate::redact::text(&n.device)
-                            ),
-                        )
-                        .flex_1(),
-                    )
-                    .child(
-                        ui::icon_button(("teams-notice-team", i), "cancel01", 12.)
-                            .tooltip(ui::tip("Dismiss"))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.hub.update(cx, |h, cx| h.dismiss_notice(&id, cx))
-                            })),
-                    ),
-            );
-        }
-
-        // Channels.
-        let tid = team_id.to_string();
-        page =
-            page.child(Self::section("Channels")).child(
-                div().flex().flex_col().gap(ui::sp(2.)).children(
-                    channels.into_iter().enumerate().map(|(i, c)| {
-                        let (t2, c2) = (tid.clone(), c.id.clone());
-                        Self::list_row(("teams-team-channel", i), false)
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.show(Pane::Channel(t2.clone(), c2.clone()), window, cx)
-                            }))
-                            .child(ui::text(Type::Body, theme::text_faint(), "#"))
-                            .child(ui::text(
-                                Type::Body,
-                                theme::text(),
-                                c.name.unwrap_or_else(|| {
-                                    "locked: sealed with a key this device doesn't hold".into()
-                                }),
-                            ))
-                    }),
-                ),
-            );
-        if admin && !keyless {
-            page = page.child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(ui::sp(8.))
-                    .child(
-                        ui::field()
-                            .flex_1()
-                            .child(ui::text(Type::Body, theme::text_faint(), "#"))
-                            .child(self.channel_name.clone()),
-                    )
-                    .child(
-                        ui::button(
-                            "teams-add-channel",
-                            if making_channel {
-                                "Adding…"
-                            } else {
-                                "Add channel"
-                            },
-                            ButtonKind::Outline,
-                            !making_channel,
-                        )
-                        .on_click(cx.listener(|this, _, _, cx| this.create_channel(cx))),
-                    ),
-            );
-        }
-
-        // Waiting for approval.
-        if admin && !pending.is_empty() {
-            page = page.child(Self::section("Waiting for approval"));
-            for (i, p) in pending.iter().enumerate() {
-                let (t1, t2, gid) = (tid.clone(), tid.clone(), p.github_id);
-                let request = p.request_id.clone();
-                let reject_request = request.clone();
-                let busy = approving[i];
-                page = page.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(ui::sp(10.))
-                        .p(ui::sp(10.))
-                        .rounded(ui::rad(ui::RADIUS))
-                        .border_1()
-                        .border_color(theme::border())
-                        .bg(theme::fill_raised())
-                        .child(ui::avatar(&p.login, AVATAR))
-                        .child(
-                            div()
-                                .flex()
-                                .flex_col()
-                                .flex_1()
-                                .min_w_0()
-                                .child(
-                                    ui::text(
-                                        Type::Label,
-                                        theme::content(),
-                                        format!("@{}", p.login),
-                                    )
-                                    .font_weight(FontWeight::SEMIBOLD),
-                                )
-                                .child(ui::text(
-                                    Type::Caption,
-                                    theme::text_faint(),
-                                    format!(
-                                        "accepted the invite {} · {} device{}",
-                                        when(p.requested_at),
-                                        p.devices.len(),
-                                        if p.devices.len() == 1 { "" } else { "s" }
-                                    ),
-                                )),
-                        )
-                        .child(
-                            ui::button(("teams-reject", i), "Turn down", ButtonKind::Ghost, !busy)
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.hub.update(cx, |h, cx| {
-                                        h.reject(&t1, gid, reject_request.clone(), cx)
-                                    })
-                                })),
-                        )
-                        .child(
-                            ui::button_with(
-                                ("teams-approve", i),
-                                Some("tick02"),
-                                if busy { "Approving…" } else { "Approve" },
-                                ButtonKind::Primary,
-                                !busy && !keyless,
-                            )
-                            .on_click(cx.listener(
-                                move |this, _, _, cx| {
-                                    this.hub
-                                        .update(cx, |h, cx| h.approve(&t2, gid, &request, cx))
-                                },
-                            )),
-                        ),
-                );
-            }
-            page = page.child(ui::text(
-                Type::Caption,
-                theme::text_faint(),
-                "Approving seals the team's keys to each of their devices on this one. The server can't let anyone in by itself.",
-            ));
-        }
-
-        // Members.
-        let owners = members.iter().filter(|m| m.role == Role::Owner).count();
-        page = page.child(Self::section("Members"));
-        for (i, m) in members.iter().enumerate() {
-            let confirming = self.confirm_remove.as_ref() == Some(&(tid.clone(), m.github_id));
-            let last_owner = m.role == Role::Owner && owners < 2;
-            let can_remove = !last_owner
-                && (m.github_id == me || (admin && m.role != Role::Owner) || role == Role::Owner);
-            let gid = m.github_id;
-            let (t1, t2) = (tid.clone(), tid.clone());
-            let self_row = m.github_id == me;
-            page = page.child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(ui::sp(10.))
-                    .py(ui::sp(4.))
-                    .child(ui::avatar(&m.login, AVATAR))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .flex_1()
-                            .min_w_0()
-                            .child(ui::text(
-                                Type::Label,
-                                theme::content(),
-                                format!("@{}", m.login),
-                            ))
-                            .child(ui::text(
-                                Type::Caption,
-                                theme::text_faint(),
-                                format!(
-                                    "joined {} · {} device{}",
-                                    when(m.joined_at),
-                                    devices.get(&m.github_id).copied().unwrap_or(0),
-                                    if devices.get(&m.github_id) == Some(&1) {
-                                        ""
-                                    } else {
-                                        "s"
-                                    }
-                                ),
-                            )),
-                    )
-                    .when(m.role != Role::Member, |d| {
-                        d.child(ui::badge(m.role.word(), Tone::Neutral))
-                    })
-                    .when(can_remove && !confirming, |d| {
-                        d.child(
-                            ui::button(
-                                ("teams-remove", i),
-                                if self_row { "Leave" } else { "Remove" },
-                                ButtonKind::Ghost,
-                                true,
-                            )
-                            .on_click(cx.listener(
-                                move |this, _, _, cx| {
-                                    this.confirm_remove = Some((t1.clone(), gid));
-                                    cx.notify();
-                                },
-                            )),
-                        )
-                    })
-                    .when(confirming, |d| {
-                        d.child(
-                            ui::button(
-                                ("teams-remove-yes", i),
-                                if self_row { "Leave the team" } else { "Remove" },
-                                ButtonKind::Danger,
-                                true,
-                            )
-                            .on_click(cx.listener(
-                                move |this, _, _, cx| {
-                                    this.confirm_remove = None;
-                                    this.hub.update(cx, |h, cx| h.remove(&t2, gid, cx));
-                                },
-                            )),
-                        )
-                        .child(
-                            ui::button(("teams-remove-no", i), "Keep", ButtonKind::Ghost, true)
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.confirm_remove = None;
-                                    cx.notify();
-                                })),
-                        )
-                    }),
-            );
-        }
-
-        if admin {
-            page = page
-                .child(Self::section("Invite"))
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(ui::sp(8.))
-                        .child(ui::field().flex_1().child(ui::text(Type::Body, theme::text_faint(), "@")).child(self.invite.clone()))
-                        .child(
-                            ui::button_with("teams-invite", Some("user"), if inviting { "Inviting…" } else { "Invite" }, ButtonKind::Primary, !inviting)
-                                .on_click(cx.listener(|this, _, _, cx| this.send_invite(cx))),
-                        ),
-                )
-                .child(ui::text(
-                    Type::Caption,
-                    theme::text_faint(),
-                    "They accept it in their Teams tab, then you approve them here. An invite lasts 7 days.",
-                ));
-        }
-        div()
-            .id("teams-team-page")
-            .size_full()
-            .overflow_y_scroll()
-            .child(page)
-            .into_any_element()
+        Self::scrolling("teams-devices-page", page)
     }
 
     // ---- the chat -----------------------------------------------------------------------
 
+    /// The channel column: channels, people, and a word on names.
+    fn render_column(
+        &self,
+        team_id: &str,
+        channel_id: &str,
+        faces: &Faces,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let hub = self.hub.read(cx);
+        let Some(t) = hub.team.get(team_id) else {
+            return div().into_any_element();
+        };
+        let admin = t.role.is_admin() && !t.keyless;
+        let channels: Vec<(String, Option<String>)> = t
+            .channels
+            .iter()
+            .map(|c| (c.id.clone(), c.name.clone()))
+            .collect();
+        let my_login = hub.me().map(|m| m.login.as_str());
+        let people: Vec<(String, String)> = t
+            .detail
+            .members
+            .iter()
+            .map(|m| (m.login.clone(), shown_login(&m.login, my_login)))
+            .collect();
+        let making = hub.busy.contains(&format!("channel:{team_id}"));
+        let tid = team_id.to_string();
+        let mut list =
+            div()
+                .flex()
+                .flex_col()
+                .gap(ui::sp(2.))
+                .child(Self::column_title("Channels").when(admin, |d| {
+                    d.child(
+                        ui::icon_button("teams-add-channel", "add01", 12.)
+                            .tooltip(ui::tip("New channel"))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.adding_channel = !this.adding_channel;
+                                if this.adding_channel {
+                                    let handle = this.channel_name.read(cx).focus_handle(cx);
+                                    window.focus(&handle, cx);
+                                }
+                                cx.notify();
+                            })),
+                    )
+                }));
+        for (i, (cid, cname)) in channels.into_iter().enumerate() {
+            let on = cid == channel_id;
+            let (t2, c2) = (tid.clone(), cid.clone());
+            list = list.child(
+                div()
+                    .id(("teams-channel", i))
+                    .flex()
+                    .items_center()
+                    .gap(ui::sp(8.))
+                    .h(px(ui::INPUT_H))
+                    .px(ui::sp(8.))
+                    .rounded(ui::rad(ui::RADIUS))
+                    .ty(Type::Body)
+                    .cursor_pointer()
+                    .text_color(if on {
+                        theme::content()
+                    } else {
+                        theme::text_subtle()
+                    })
+                    .when(on, |d| d.bg(theme::fill_selected()))
+                    .hover(|s| s.bg(theme::fill_selected()).text_color(theme::content()))
+                    .child(icon("comment01", 14.).text_color(if on {
+                        theme::text_subtle()
+                    } else {
+                        theme::text_faint()
+                    }))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .child(cname.unwrap_or_else(|| "locked channel".into())),
+                    )
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.show(Pane::Channel(t2.clone(), c2.clone()), window, cx)
+                    })),
+            );
+        }
+        if self.adding_channel || making {
+            list = list.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(ui::sp(8.))
+                    .h(px(ui::INPUT_H))
+                    .px(ui::sp(8.))
+                    .rounded(ui::rad(ui::RADIUS))
+                    .border_1()
+                    .border_color(theme::border())
+                    .ty(Type::Body)
+                    .child(if making {
+                        ui::spinner("teams-making-channel", 12., theme::text_faint())
+                            .into_any_element()
+                    } else {
+                        icon("comment01", 14.)
+                            .text_color(theme::text_faint())
+                            .into_any_element()
+                    })
+                    .child(div().flex_1().min_w_0().child(self.channel_name.clone())),
+            );
+        }
+        list = list
+            .child(div().h(px(ui::sp(8.).as_f32())))
+            .child(Self::column_title("People"));
+        for (login, shown) in people {
+            list = list.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(ui::sp(8.))
+                    .h(px(ui::BUTTON_H))
+                    .px(ui::sp(8.))
+                    .ty(Type::Body)
+                    .text_color(theme::text_muted())
+                    .child(faces.avatar(&login, 20.))
+                    .child(div().flex_1().min_w_0().truncate().child(shown)),
+            );
+        }
+        div()
+            .id("teams-column")
+            .flex()
+            .flex_col()
+            .flex_none()
+            .w(px(COLUMN_W))
+            .px(ui::sp(8.))
+            .pt(ui::sp(8.))
+            .pb(ui::sp(12.))
+            .border_r_1()
+            .border_color(theme::border_subtle())
+            .overflow_y_scroll()
+            .child(list)
+            .child(div().flex_1())
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(ui::sp(6.))
+                    .px(ui::sp(8.))
+                    .pt(ui::sp(12.))
+                    .ty(Type::Caption)
+                    .text_color(theme::text_faint())
+                    .child(icon("square-lock02", 12.).text_color(theme::text_faint()))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .whitespace_normal()
+                            .child("Channel names are encrypted too"),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn render_message(
         &self,
         index: usize,
@@ -1183,10 +1979,12 @@ impl TeamsView {
         compact: bool,
         quoted: Option<(usize, &Msg)>,
         team_channel: (&str, &str),
+        faces: &Faces,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let group: SharedString = format!("teams-msg-{index}").into();
         let id = m.id.clone();
+        let my_login = self.hub.read(cx).me().map(|m| m.login.clone());
         let lit = self.flash.as_deref() == Some(m.id.as_str())
             || self.reply_to.as_deref() == Some(m.id.as_str());
         let quote = m.body.reply_to.as_ref().map(|target| match quoted {
@@ -1197,24 +1995,18 @@ impl TeamsView {
                     .flex()
                     .items_center()
                     .gap(ui::sp(6.))
-                    .pl(ui::sp(AVATAR / 2.))
                     .min_w_0()
+                    .pb(ui::sp(2.))
                     .cursor_pointer()
+                    .child(icon("arrow-turn-forward", 12.).text_color(theme::text_faint()))
                     .child(
-                        div()
-                            .w(px(AVATAR / 2. + 4.))
-                            .h(px(8.))
-                            .mt(px(6.))
-                            .border_l_2()
-                            .border_t_2()
-                            .border_color(theme::border_strong())
-                            .rounded_tl(ui::rad(ui::RADIUS_SM)),
-                    )
-                    .child(ui::avatar(&q.login, 14.))
-                    .child(
-                        ui::text(Type::Caption, theme::text_subtle(), format!("@{}", q.login))
-                            .flex_none()
-                            .font_weight(FontWeight::SEMIBOLD),
+                        ui::text(
+                            Type::Caption,
+                            theme::text_subtle(),
+                            shown_login(&q.login, my_login.as_deref()),
+                        )
+                        .flex_none()
+                        .font_weight(FontWeight::MEDIUM),
                     )
                     .child(
                         div()
@@ -1225,6 +2017,7 @@ impl TeamsView {
                             .hover(|d| d.text_color(theme::text()))
                             .child(snippet(&q.body.text)),
                     )
+                    .tooltip(ui::tip("Jump to the message"))
                     .on_click(cx.listener(move |this, _, _, cx| this.jump_to(qi, qid.clone(), cx)))
                     .into_any_element()
             }
@@ -1232,8 +2025,8 @@ impl TeamsView {
                 .flex()
                 .items_center()
                 .gap(ui::sp(6.))
-                .pl(ui::sp(AVATAR + 12.))
-                .child(icon("arrow-turn-backward", 11.).text_color(theme::text_faint()))
+                .pb(ui::sp(2.))
+                .child(icon("arrow-turn-forward", 12.).text_color(theme::text_faint()))
                 .child(ui::text(
                     Type::Caption,
                     theme::text_faint(),
@@ -1300,6 +2093,7 @@ impl TeamsView {
             .flex_col()
             .flex_1()
             .min_w_0()
+            .children(quote)
             .when(!compact, |d| {
                 d.child(
                     div()
@@ -1307,10 +2101,17 @@ impl TeamsView {
                         .items_center()
                         .gap(ui::sp(8.))
                         .child(
-                            ui::text(Type::Label, theme::content(), m.login.clone())
-                                .font_weight(FontWeight::SEMIBOLD),
+                            ui::text(
+                                Type::Body,
+                                theme::content(),
+                                shown_login(&m.login, my_login.as_deref()),
+                            )
+                            .font_weight(FontWeight::SEMIBOLD),
                         )
-                        .child(ui::text(Type::Caption, theme::text_faint(), when(m.at)))
+                        .child(
+                            ui::text(Type::Caption, theme::text_faint(), clock(m.at))
+                                .font_family(theme::FONT_MONO),
+                        )
                         .children(kind),
                 )
             })
@@ -1326,35 +2127,29 @@ impl TeamsView {
             .group(group.clone())
             .relative()
             .flex()
-            .flex_col()
-            .gap(ui::sp(2.))
+            .items_start()
+            .gap(ui::sp(12.))
             .px(ui::sp(16.))
-            .pt(ui::sp(if compact { 1. } else { 10. }))
-            .pb(ui::sp(1.))
+            .pt(ui::sp(if compact { 0. } else { 8. }))
+            .pb(ui::sp(if compact { 2. } else { 6. }))
             .hover(|d| d.bg(theme::fill_hover()))
             .when(lit, |d| d.bg(theme::fill_selected()))
-            .children(quote)
-            .child(
+            .child(if compact {
                 div()
-                    .flex()
-                    .items_start()
-                    .gap(ui::sp(12.))
-                    .child(if compact {
-                        div()
-                            .w(px(AVATAR))
-                            .flex_none()
-                            .invisible()
-                            .group_hover(group.clone(), |s| s.visible())
-                            .child(
-                                ui::text(Type::Caption, theme::text_faint(), clock(m.at))
-                                    .pt(ui::sp(2.))
-                                    .whitespace_nowrap(),
-                            )
-                    } else {
-                        ui::avatar(&m.login, AVATAR).mt(px(2.))
-                    })
-                    .child(body),
-            )
+                    .w(px(AVATAR))
+                    .flex_none()
+                    .invisible()
+                    .group_hover(group.clone(), |s| s.visible())
+                    .child(
+                        ui::text(Type::Caption, theme::text_faint(), clock(m.at))
+                            .font_family(theme::FONT_MONO)
+                            .pt(ui::sp(2.))
+                            .whitespace_nowrap(),
+                    )
+            } else {
+                faces.avatar(&m.login, AVATAR).mt(px(2.))
+            })
+            .child(body)
             .when(m.delivery == Delivery::Sent, |d| {
                 d.child(
                     div()
@@ -1382,254 +2177,100 @@ impl TeamsView {
             .into_any_element()
     }
 
-    fn render_channel(
-        &mut self,
-        team_id: &str,
-        channel_id: &str,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
+    /// "Rik added a new device, rik-thinkpad", where it happened in the chat.
+    fn render_notice(&self, i: usize, n: &Notice, cx: &mut Context<Self>) -> AnyElement {
+        let id = n.device_id.clone();
         let hub = self.hub.read(cx);
-        let Some(t): Option<&TeamState> = hub.team.get(team_id) else {
-            return ui::loading("teams-channel-loading", "Reading the team…").into_any_element();
-        };
-        let key = hub::channel_key(team_id, channel_id);
-        let c: Option<&ChannelState> = hub.channels.get(&key);
-        let name = t
-            .channels
-            .iter()
-            .find(|ch| ch.id == channel_id)
-            .and_then(|ch| ch.name.clone())
-            .unwrap_or_else(|| "locked channel".into());
-        let status = c.map_or(socket::Status::Connecting, |c| c.status.clone());
-        let messages: Vec<Msg> = c.map(|c| c.messages.clone()).unwrap_or_default();
-        let loading = c.is_none_or(|c| c.loading);
-        let (hidden, locked) = c.map_or((0, 0), |c| (c.hidden, c.locked()));
-        let keyless = t.keyless;
-        let team_name = t.detail.name.clone();
-        let notices: Vec<_> = hub
-            .notices
-            .iter()
-            .filter(|n| n.team_id == team_id)
-            .cloned()
-            .collect();
-        let members = t.detail.members.len();
-        let reply = self
-            .reply_to
-            .as_ref()
-            .and_then(|id| messages.iter().find(|m| m.id == *id))
-            .cloned();
-
-        // Keep the newest in view when it arrives and the list was at its bottom.
-        if messages.len() != self.seen_count {
-            let max = self.scroll.max_offset().y;
-            let at_bottom = -self.scroll.offset().y >= max - px(48.);
-            if self.seen_count == 0 || at_bottom {
-                self.scroll.scroll_to_bottom();
-            }
-            self.seen_count = messages.len();
-        }
-
-        let (dot, word) = match &status {
-            socket::Status::Connected => (Tone::Success, "live".to_string()),
-            socket::Status::Connecting => (Tone::Neutral, "connecting…".to_string()),
-            socket::Status::Waiting(_) => (Tone::Warning, "reconnecting…".to_string()),
-            socket::Status::Refused(why) => (Tone::Danger, why.clone()),
-        };
-        let tid = team_id.to_string();
-        let head = div()
+        let verified = hub.verified(&n.device_id);
+        let login = shown_login(&n.login, hub.me().map(|m| m.login.as_str()));
+        div()
             .flex()
-            .flex_none()
             .items_center()
-            .gap(ui::sp(10.))
-            .h(px(ui::BAR_H))
-            .px(ui::sp(16.))
-            .border_b_1()
+            .gap(ui::sp(8.))
+            .mx(ui::sp(16.))
+            .my(ui::sp(8.))
+            .pl(ui::sp(12.))
+            .pr(ui::sp(4.))
+            .py(ui::sp(4.))
+            .rounded(ui::rad(ui::RADIUS))
+            .border_1()
             .border_color(theme::border_subtle())
-            .child(ui::text(Type::Heading, theme::text_faint(), "#"))
-            .child(
-                div()
-                    .truncate()
-                    .ty(Type::Label)
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(theme::content())
-                    .child(name.clone()),
-            )
-            .child(ui::text(Type::Caption, theme::text_faint(), team_name).truncate())
-            .child(div().flex_1())
+            .ty(Type::Label)
+            .font_weight(FontWeight::NORMAL)
+            .text_color(theme::text_muted())
+            .child(icon("computer", 14.).text_color(theme::text_subtle()))
             .child(
                 div()
                     .flex()
-                    .items_center()
-                    .gap(ui::sp(4.))
-                    .child(icon("square-lock02", 12.).text_color(theme::text_faint()))
-                    .child(ui::text(
-                        Type::Caption,
-                        theme::text_faint(),
-                        "end-to-end encrypted",
-                    )),
+                    .flex_1()
+                    .min_w_0()
+                    .flex_wrap()
+                    .child(format!("{login} added a new device,\u{a0}"))
+                    .child(
+                        div()
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(theme::text())
+                            .child(crate::redact::text(&n.device).into_owned()),
+                    )
+                    .child("."),
             )
-            .child(ui::status_dot(word, dot))
+            .when(verified, |d| d.child(ui::badge("Checked", Tone::Success)))
             .child(
-                ui::button_with(
-                    "teams-members",
-                    Some("user"),
-                    format!("{members}"),
+                ui::button(
+                    ("teams-notice-compare", i),
+                    "Compare",
                     ButtonKind::Ghost,
                     true,
                 )
-                .tooltip(ui::tip("Members"))
                 .on_click(cx.listener(move |this, _, _, cx| {
-                    this.pane = Pane::Team(tid.clone());
+                    this.side = Some(Side::Compare(Some(id.clone())));
+                    this.mismatch = None;
                     cx.notify();
                 })),
-            );
-
-        let mut banners: Vec<AnyElement> = Vec::new();
-        if keyless {
-            banners.push(
-                Self::banner(
-                    "clock01",
-                    Tone::Warning,
-                    "Waiting for an admin to approve this device",
-                )
-                .into_any_element(),
-            );
-        }
-        for (i, n) in notices.into_iter().enumerate() {
-            let id = n.device_id.clone();
-            banners.push(
-                Self::banner(
-                    "computer",
-                    Tone::Info,
-                    format!(
-                        "@{} added a new device: {}",
-                        n.login,
-                        crate::redact::text(&n.device)
-                    ),
-                )
-                .child(
-                    ui::icon_button(("teams-notice", i), "cancel01", 12.)
-                        .tooltip(ui::tip("Dismiss"))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.hub.update(cx, |h, cx| h.dismiss_notice(&id, cx))
-                        })),
-                )
-                .into_any_element(),
-            );
-        }
-
-        // The list: one note at the top, then one child per message, so a
-        // message's index is its child's.
-        let mut note = Vec::new();
-        if hidden > 0 {
-            note.push(format!(
-                "{hidden} message{} did not check out and {} hidden.",
-                if hidden == 1 { "" } else { "s" },
-                if hidden == 1 { "is" } else { "are" }
-            ));
-        }
-        if locked > 0 {
-            note.push(format!(
-                "{locked} older message{} {} sealed with a key this device doesn't hold.",
-                if locked == 1 { "" } else { "s" },
-                if locked == 1 { "is" } else { "are" }
-            ));
-        }
-        let first = if keyless && messages.is_empty() {
-            ui::empty_state(
-                "square-lock02",
-                "Waiting for an admin to approve this device",
-                "This device holds no key of the team yet. Once an admin's device hands it one, the messages open here.",
-                None,
             )
             .into_any_element()
-        } else if loading && messages.is_empty() {
-            ui::loading("teams-history", "Reading the channel…").into_any_element()
-        } else if messages.is_empty() && hidden + locked == 0 {
-            ui::empty_state(
-                "message01",
-                &format!("This is the start of #{name}"),
-                "Say hello. Only this team's devices can read what is said here.",
-                None,
-            )
-            .into_any_element()
-        } else {
-            div()
-                .flex()
-                .flex_col()
-                .gap(ui::sp(4.))
-                .px(ui::sp(16.))
-                .pt(ui::sp(16.))
-                .pb(ui::sp(4.))
-                .child(ui::text(
-                    Type::Heading,
-                    theme::content(),
-                    format!("#{name}"),
-                ))
-                .child(ui::text(
-                    Type::Caption,
-                    theme::text_faint(),
-                    "Messages here are end-to-end encrypted.",
-                ))
-                .children(
-                    note.into_iter()
-                        .map(|n| ui::text(Type::Caption, theme::attention().into(), n)),
-                )
-                .into_any_element()
-        };
-        let index_of: HashMap<&str, usize> = messages
-            .iter()
-            .enumerate()
-            .map(|(i, m)| (m.id.as_str(), i + 1))
-            .collect();
-        let mut rows: Vec<AnyElement> = vec![first];
-        for (i, m) in messages.iter().enumerate() {
-            let compact = i > 0 && {
-                let p = &messages[i - 1];
-                p.github_id == m.github_id
-                    && m.at.saturating_sub(p.at) < GROUP_SECS
-                    && p.body.kind == m.body.kind
+    }
+
+    fn render_composer(
+        &self,
+        can_send: bool,
+        keyless: bool,
+        connected: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let my_login = self.hub.read(cx).me().map(|m| m.login.clone());
+        let reply = self.reply_to.as_ref().and_then(|id| {
+            let Pane::Channel(t, c) = &self.pane else {
+                return None;
             };
-            let quoted = m
-                .body
-                .reply_to
-                .as_deref()
-                .and_then(|r| Some((*index_of.get(r)?, messages.iter().find(|q| q.id == r)?)));
-            rows.push(self.render_message(i + 1, m, compact, quoted, (team_id, channel_id), cx));
-        }
-        let list = div()
-            .id(SharedString::from(format!(
-                "teams-messages-{team_id}-{channel_id}"
-            )))
-            .flex()
-            .flex_col()
-            .flex_1()
-            .min_h_0()
-            .pb(ui::sp(12.))
-            .overflow_y_scroll()
-            .track_scroll(&self.scroll)
-            .children(rows);
-
-        let can_send = !keyless;
-        let connected = status == socket::Status::Connected;
+            self.hub
+                .read(cx)
+                .channels
+                .get(&hub::channel_key(t, c))?
+                .messages
+                .iter()
+                .find(|m| m.id == *id)
+                .cloned()
+        });
+        let typed = !self.composer.read(cx).text().trim().is_empty();
+        let ready = typed && can_send;
         let reply_bar = reply.map(|r| {
             div()
                 .flex()
                 .items_center()
                 .gap(ui::sp(8.))
                 .px(ui::sp(12.))
-                .py(ui::sp(6.))
-                .rounded_t(ui::rad(ui::RADIUS))
-                .bg(theme::fill_raised())
-                .border_1()
-                .border_b_0()
-                .border_color(theme::border())
-                .child(icon("arrow-turn-backward", 12.).text_color(theme::text_subtle()))
+                .pt(ui::sp(8.))
+                .child(icon("arrow-turn-forward", 12.).text_color(theme::text_subtle()))
                 .child(ui::text(Type::Caption, theme::text_subtle(), "Replying to").flex_none())
                 .child(
-                    ui::text(Type::Caption, theme::content(), format!("@{}", r.login))
-                        .flex_none()
-                        .font_weight(FontWeight::SEMIBOLD),
+                    ui::text(
+                        Type::Caption,
+                        theme::content(),
+                        shown_login(&r.login, my_login.as_deref()),
+                    )
+                    .flex_none()
+                    .font_weight(FontWeight::SEMIBOLD),
                 )
                 .child(
                     div()
@@ -1649,33 +2290,89 @@ impl TeamsView {
                         })),
                 )
         });
-        let composer = div()
+        let square = |id: &'static str| {
+            div()
+                .id(id)
+                .flex()
+                .flex_none()
+                .items_center()
+                .justify_center()
+                .size(px(ui::CONTROL_H))
+                .rounded(ui::nested(ui::RADIUS_XL, 8.))
+        };
+        div()
             .flex()
             .flex_col()
             .flex_none()
             .px(ui::sp(16.))
-            .pb(ui::sp(14.))
-            .children(reply_bar)
+            .pb(ui::sp(16.))
             .child(
                 div()
                     .flex()
-                    .items_center()
-                    .gap(ui::sp(8.))
+                    .flex_col()
+                    .rounded(ui::rad(ui::RADIUS_XL))
+                    .border_1()
+                    .border_color(theme::border())
+                    .bg(theme::raised())
+                    .children(reply_bar)
                     .child(
-                        ui::field()
-                            .flex_1()
-                            .when(self.reply_to.is_some(), |d| d.rounded_t(ui::rad(0.)))
+                        div()
+                            .px(ui::sp(12.))
+                            .pt(ui::sp(10.))
+                            .pb(ui::sp(6.))
+                            .text_size(px(ui::TEXT_LG))
                             .child(self.composer.clone()),
                     )
                     .child(
-                        ui::button_with(
-                            "teams-send",
-                            Some("arrow-up01"),
-                            "Send",
-                            ButtonKind::Primary,
-                            can_send,
-                        )
-                        .on_click(cx.listener(|this, _, _, cx| this.send(cx))),
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(ui::sp(4.))
+                            .px(ui::sp(8.))
+                            .pb(ui::sp(8.))
+                            .child(
+                                square("teams-attach")
+                                    .bg(theme::selection())
+                                    .opacity(0.5)
+                                    .tooltip(ui::tip("Files come in a later version"))
+                                    .child(icon("add01", 14.).text_color(theme::text_subtle())),
+                            )
+                            .child(
+                                div()
+                                    .id("teams-bot")
+                                    .flex()
+                                    .flex_none()
+                                    .items_center()
+                                    .gap(ui::sp(6.))
+                                    .h(px(ui::CONTROL_H))
+                                    .px(ui::sp(8.))
+                                    .rounded(ui::rad(ui::RADIUS))
+                                    .ty(Type::Label)
+                                    .text_color(theme::text_faint())
+                                    .tooltip(ui::tip("@bot comes in the next version"))
+                                    .child(div().opacity(0.6).child(crate::shell::agent_icon(
+                                        crate::agent::AgentKind::Claude,
+                                        12.,
+                                    )))
+                                    .child("@bot"),
+                            )
+                            .child(div().flex_1())
+                            .child(
+                                square("teams-send")
+                                    .bg(if ready {
+                                        theme::content()
+                                    } else {
+                                        theme::fill_selected()
+                                    })
+                                    .when(ready, |d| d.cursor_pointer())
+                                    .tooltip(ui::tip("Send (Enter)"))
+                                    .child(icon("arrow-up01", 14.).text_color(if ready {
+                                        theme::background()
+                                    } else {
+                                        theme::text_faint()
+                                    }))
+                                    .on_click(cx.listener(|this, _, _, cx| this.send(cx))),
+                            ),
                     ),
             )
             .when(!can_send || !connected, |d| {
@@ -1685,23 +2382,639 @@ impl TeamsView {
                         theme::text_faint(),
                         if keyless {
                             "You can write here once this device holds the team key."
-                        } else {
+                        } else if can_send {
                             "Not connected right now. What you send goes out once it is back."
+                        } else {
+                            "The channel turned this device away. Open it again to retry."
                         },
                     )
-                    .pt(ui::sp(6.)),
+                    .pt(ui::sp(6.))
+                    .px(ui::sp(4.)),
                 )
-            });
+            })
+            .into_any_element()
+    }
 
+    fn render_channel(
+        &mut self,
+        team_id: &str,
+        channel_id: &str,
+        faces: &Faces,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let hub = self.hub.read(cx);
+        let Some(t): Option<&TeamState> = hub.team.get(team_id) else {
+            return ui::loading("teams-channel-loading", "Reading the team…").into_any_element();
+        };
+        let key = hub::channel_key(team_id, channel_id);
+        let c: Option<&ChannelState> = hub.channels.get(&key);
+        let name = t
+            .channels
+            .iter()
+            .find(|ch| ch.id == channel_id)
+            .and_then(|ch| ch.name.clone())
+            .unwrap_or_else(|| "locked channel".into());
+        let status = c.map_or(socket::Status::Connecting, |c| c.status.clone());
+        let messages: Vec<Msg> = c.map(|c| c.messages.clone()).unwrap_or_default();
+        let loading = c.is_none_or(|c| c.loading);
+        let (hidden, locked) = c.map_or((0, 0), |c| (c.hidden, c.locked()));
+        let keyless = t.keyless;
+        let joined = hub.joined.contains(team_id);
+        let team_name = t.detail.name.clone();
+        // Each notice goes where its device was added among the messages.
+        let added: HashMap<String, u64> = t
+            .devices
+            .values()
+            .flatten()
+            .map(|d| (d.device_id.clone(), d.created_at))
+            .collect();
+        let notices: Vec<(Notice, u64)> = hub
+            .notices
+            .iter()
+            .filter(|n| n.team_id == team_id)
+            .map(|n| {
+                (
+                    n.clone(),
+                    added.get(&n.device_id).copied().unwrap_or(u64::MAX),
+                )
+            })
+            .collect();
+
+        // Keep the newest in view when it arrives and the list was at its bottom.
+        if messages.len() != self.seen_count {
+            let max = self.scroll.max_offset().y;
+            let at_bottom = -self.scroll.offset().y >= max - px(48.);
+            if self.seen_count == 0 || at_bottom {
+                self.scroll.scroll_to_bottom();
+            }
+            self.seen_count = messages.len();
+        }
+
+        // The list, laid out first so a quote knows its target's row.
+        let mut lines: Vec<Line> = Vec::new();
+        let mut day = None;
+        let mut placed = vec![false; notices.len()];
+        for (i, m) in messages.iter().enumerate() {
+            for (n, (notice, at)) in notices.iter().enumerate() {
+                if !placed[n] && *at <= m.at {
+                    placed[n] = true;
+                    lines.push(Line::Notice(notice.clone()));
+                }
+            }
+            if let Some(d) = crate::platform::local_time(m.at).map(|t| (t.year, t.month, t.day))
+                && day != Some(d)
+            {
+                day = Some(d);
+                lines.push(Line::Day(day_label(m.at)));
+            }
+            if joined && i == 0 {
+                lines.push(Line::Joined);
+            }
+            lines.push(Line::Message(i));
+        }
+        if joined && messages.is_empty() {
+            lines.push(Line::Joined);
+        }
+        for (n, (notice, _)) in notices.iter().enumerate() {
+            if !placed[n] {
+                lines.push(Line::Notice(notice.clone()));
+            }
+        }
+
+        // One room-filling spacer and one note go first.
+        const LEAD: usize = 2;
+        let index_of: HashMap<&str, usize> = lines
+            .iter()
+            .enumerate()
+            .filter_map(|(row, l)| match l {
+                Line::Message(i) => Some((messages[*i].id.as_str(), row + LEAD)),
+                _ => None,
+            })
+            .collect();
+
+        let mut note = Vec::new();
+        if hidden > 0 {
+            note.push(format!(
+                "{hidden} message{} did not check out and {} hidden.",
+                if hidden == 1 { "" } else { "s" },
+                if hidden == 1 { "is" } else { "are" }
+            ));
+        }
+        if locked > 0 {
+            note.push(format!(
+                "{locked} older message{} {} sealed with a key this device doesn't hold.",
+                if locked == 1 { "" } else { "s" },
+                if locked == 1 { "is" } else { "are" }
+            ));
+        }
+        let first = if loading && messages.is_empty() {
+            ui::loading("teams-history", "Reading the channel…").into_any_element()
+        } else if messages.is_empty() && hidden + locked == 0 && !joined {
+            ui::empty_state(
+                "comment01",
+                &format!("This is the start of {name}"),
+                "Say hello. Only this team's devices can read what is said here.",
+                None,
+            )
+            .into_any_element()
+        } else {
+            div()
+                .flex()
+                .flex_col()
+                .gap(ui::sp(4.))
+                .px(ui::sp(16.))
+                .children(
+                    note.into_iter()
+                        .map(|n| ui::text(Type::Caption, theme::attention().into(), n)),
+                )
+                .into_any_element()
+        };
+        let mut rows: Vec<AnyElement> = vec![div().flex_1().into_any_element(), first];
+        for (li, line) in lines.iter().enumerate() {
+            let el = match line {
+                Line::Day(label) => {
+                    ui::text(Type::Overline, theme::text_faint(), label.to_uppercase())
+                        .px(ui::sp(16.))
+                        .pt(ui::sp(12.))
+                        .pb(ui::sp(4.))
+                        .into_any_element()
+                }
+                Line::Notice(n) => self.render_notice(li, n, cx),
+                Line::Joined => div()
+                    .flex()
+                    .items_center()
+                    .gap(ui::sp(6.))
+                    .px(ui::sp(16.))
+                    .py(ui::sp(8.))
+                    .ty(Type::Label)
+                    .font_weight(FontWeight::NORMAL)
+                    .text_color(theme::text_subtle())
+                    .child(icon("tick02", 12.).text_color(theme::success()))
+                    .child(format!(
+                        "An admin approved {}. You can read {team_name} from here on, and its history.",
+                        crate::redact::text(&hub::device_name())
+                    ))
+                    .into_any_element(),
+                Line::Message(i) => {
+                    let i = *i;
+                    let m = &messages[i];
+                    let compact = i > 0
+                        && matches!(lines.get(li.wrapping_sub(1)), Some(Line::Message(_)))
+                        && {
+                            let p = &messages[i - 1];
+                            p.github_id == m.github_id
+                                && m.at.saturating_sub(p.at) < GROUP_SECS
+                                && p.body.kind == m.body.kind
+                        };
+                    let quoted = m.body.reply_to.as_deref().and_then(|r| {
+                        Some((*index_of.get(r)?, messages.iter().find(|q| q.id == r)?))
+                    });
+                    self.render_message(
+                        li + LEAD,
+                        m,
+                        compact,
+                        quoted,
+                        (team_id, channel_id),
+                        faces,
+                        cx,
+                    )
+                }
+            };
+            rows.push(el);
+        }
+        let list = div()
+            .id(SharedString::from(format!(
+                "teams-messages-{team_id}-{channel_id}"
+            )))
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_h_0()
+            .pb(ui::sp(12.))
+            .overflow_y_scroll()
+            .track_scroll(&self.scroll)
+            .children(rows);
+
+        // A refused socket does not retry, so nothing queued would go out.
+        let refused = matches!(status, socket::Status::Refused(_));
+        let can_send = !keyless && !refused;
+        let connected = status == socket::Status::Connected;
+        let status_line = match &status {
+            socket::Status::Connected => None,
+            socket::Status::Connecting => Some(("connecting…".to_string(), Tone::Neutral)),
+            socket::Status::Waiting(_) => Some(("reconnecting…".to_string(), Tone::Warning)),
+            socket::Status::Refused(why) => Some((why.clone(), Tone::Danger)),
+        };
+        let center = div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_w_0()
+            .min_h_0()
+            .when_some(
+                status_line.filter(|_| refused || !messages.is_empty()),
+                |d, (w, tone)| {
+                    d.child(
+                        div()
+                            .flex()
+                            .justify_end()
+                            .px(ui::sp(16.))
+                            .pt(ui::sp(6.))
+                            .child(ui::status_dot(w, tone)),
+                    )
+                },
+            )
+            .child(list)
+            .child(self.render_composer(can_send, keyless, connected, cx));
+
+        let column = self.render_column(team_id, channel_id, faces, cx);
+        let side = self
+            .side
+            .clone()
+            .map(|s| self.render_side(team_id, s, faces, cx));
+        div()
+            .flex()
+            .flex_1()
+            .min_h_0()
+            .child(column)
+            .child(center)
+            .children(side)
+            .into_any_element()
+    }
+
+    // ---- the right panel ----------------------------------------------------------------
+
+    fn render_side(
+        &self,
+        team_id: &str,
+        side: Side,
+        faces: &Faces,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let (title, body) = match &side {
+            Side::Encryption => (
+                "Encryption".to_string(),
+                self.render_encryption(team_id, cx),
+            ),
+            Side::Compare(None) => (
+                "Compare a device".to_string(),
+                self.render_pick_device(team_id, faces, cx),
+            ),
+            Side::Compare(Some(device)) => self.render_compare(team_id, device, cx),
+        };
+        div()
+            .id("teams-side")
+            .flex()
+            .flex_col()
+            .flex_none()
+            .w(px(PANEL_W))
+            .border_l_1()
+            .border_color(theme::border_subtle())
+            .overflow_y_scroll()
+            .child(
+                div()
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .justify_between()
+                    .h(px(ui::BAR_H))
+                    .pl(ui::sp(16.))
+                    .pr(ui::sp(8.))
+                    .child(
+                        div()
+                            .truncate()
+                            .ty(Type::Body)
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(theme::text())
+                            .child(title),
+                    )
+                    .child(
+                        ui::icon_button("teams-side-close", "cancel01", 14.)
+                            .tooltip(ui::tip("Close"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.side = None;
+                                this.mismatch = None;
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(ui::sp(16.))
+                    .px(ui::sp(16.))
+                    .pt(ui::sp(8.))
+                    .pb(ui::sp(16.))
+                    .child(body),
+            )
+            .into_any_element()
+    }
+
+    /// "Encrypted. The server can't read it.", with what it does see.
+    fn render_encryption(&self, team_id: &str, cx: &mut Context<Self>) -> AnyElement {
+        let host = self
+            .teams
+            .read(cx)
+            .server_host()
+            .unwrap_or_else(|| "The server".into());
+        let hub = self.hub.read(cx);
+        let Some(t) = hub.team.get(team_id) else {
+            return div().into_any_element();
+        };
+        let epoch = t.detail.epoch;
+        let people = t.detail.members.len();
+        let devices: usize = t.devices.values().map(Vec::len).sum();
         div()
             .flex()
             .flex_col()
-            .size_full()
-            .child(head)
-            .children(banners)
-            .child(list)
-            .child(composer)
+            .gap(ui::sp(16.))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(ui::sp(8.))
+                    .child(ui::text(
+                        Type::Heading,
+                        theme::text(),
+                        "Encrypted. The server can't read it.",
+                    ))
+                    .child(ui::text(
+                        Type::Body,
+                        theme::text_subtle(),
+                        format!(
+                            "Messages and channel names are locked on your devices before they leave. {host} only passes them on."
+                        ),
+                    )),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .child(Self::fact("Team key", format!("Epoch {epoch}")))
+                    .child(Self::fact(
+                        "Held by",
+                        format!(
+                            "{} · {}",
+                            plural(people, "person", "people"),
+                            plural(devices, "device", "devices")
+                        ),
+                    ))
+                    .child(Self::fact("The server sees", "Who is in the team, and when"))
+                    .child(Self::fact("The server can't see", "Messages, names, files")),
+            )
+            .child(
+                div()
+                    .flex()
+                    .gap(ui::sp(8.))
+                    .child(
+                        ui::button("teams-see-devices", "See devices", ButtonKind::Outline, true)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.hub.update(cx, |h, cx| h.load_my_devices(cx));
+                                this.show(Pane::Devices, window, cx)
+                            })),
+                    )
+                    .child(
+                        ui::button("teams-compare-any", "Compare a device", ButtonKind::Ghost, true)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.side = Some(Side::Compare(None));
+                                cx.notify();
+                            })),
+                    ),
+            )
             .into_any_element()
+    }
+
+    /// Every device of the team's people but this one, to pick one to compare.
+    fn render_pick_device(
+        &self,
+        team_id: &str,
+        faces: &Faces,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let hub = self.hub.read(cx);
+        let Some(t) = hub.team.get(team_id) else {
+            return div().into_any_element();
+        };
+        let mine = hub.device_id().unwrap_or_default().to_string();
+        let my_login = hub.me().map(|m| m.login.clone());
+        let mut devices: Vec<(String, DeviceRow, bool)> = t
+            .detail
+            .members
+            .iter()
+            .flat_map(|m| {
+                t.devices
+                    .get(&m.github_id)
+                    .into_iter()
+                    .flatten()
+                    .filter(|d| d.device_id != mine)
+                    .map(|d| (m.login.clone(), d.clone(), hub.verified(&d.device_id)))
+            })
+            .collect();
+        devices.sort_by_key(|(_, _, verified)| *verified);
+        let mut list = div().flex().flex_col().gap(ui::sp(2.)).child(ui::text(
+            Type::Body,
+            theme::text_subtle(),
+            "Pick a device. Its owner opens Compare on it, and you both read the numbers.",
+        ));
+        if devices.is_empty() {
+            list = list.child(Self::footnote("No other devices in this team yet."));
+        }
+        for (i, (login, d, verified)) in devices.into_iter().enumerate() {
+            let id = d.device_id.clone();
+            list = list.child(
+                div()
+                    .id(("teams-pick-device", i))
+                    .flex()
+                    .items_center()
+                    .gap(ui::sp(8.))
+                    .h(px(ui::INPUT_H))
+                    .px(ui::sp(8.))
+                    .rounded(ui::rad(ui::RADIUS))
+                    .cursor_pointer()
+                    .hover(|s| s.bg(theme::fill_hover()))
+                    .ty(Type::Body)
+                    .child(faces.avatar(&login, 20.))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_color(theme::text())
+                            .child(format!(
+                                "{} · {}",
+                                shown_login(&login, my_login.as_deref()),
+                                crate::redact::text(&d.name)
+                            )),
+                    )
+                    .when(verified, |r| {
+                        r.child(icon("tick02", 14.).text_color(theme::success()))
+                    })
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.side = Some(Side::Compare(Some(id.clone())));
+                        this.mismatch = None;
+                        cx.notify();
+                    })),
+            );
+        }
+        list.into_any_element()
+    }
+
+    /// The numbers both devices show, and the same as a QR code.
+    fn render_compare(
+        &self,
+        team_id: &str,
+        device_id: &str,
+        cx: &mut Context<Self>,
+    ) -> (String, AnyElement) {
+        let hub = self.hub.read(cx);
+        let found = hub.team.get(team_id).and_then(|t| {
+            t.devices.iter().find_map(|(gid, ds)| {
+                let d = ds.iter().find(|d| d.device_id == device_id)?;
+                Some((t.login(*gid), d.clone()))
+            })
+        });
+        let Some((login, device)) = found else {
+            return (
+                "Compare a device".into(),
+                Self::footnote("That device is not in this team any more.").into_any_element(),
+            );
+        };
+        // One of your own devices shows your login: mask it in redacted mode.
+        let login = shown_login(&login, hub.me().map(|m| m.login.as_str()));
+        let name = crate::redact::text(&device.name).into_owned();
+        let numbers = hub.public_keys().and_then(|mine| {
+            super::crypto::compare_numbers(mine, (&device.sig_pub, &device.enc_pub))
+        });
+        let verified = hub.verified(device_id);
+        let mismatch = self.mismatch.as_deref() == Some(device_id) || hub.mismatched(device_id);
+        let title = format!("Compare {name}");
+        let Some(numbers) = numbers else {
+            return (
+                title,
+                Self::footnote(
+                    "This device's keys could not be read, so there is nothing to compare.",
+                )
+                .into_any_element(),
+            );
+        };
+        let cell = |n: &String| {
+            div()
+                .flex()
+                .flex_1()
+                .items_center()
+                .justify_center()
+                .h(px(ui::INPUT_H))
+                .rounded(ui::rad(ui::RADIUS))
+                .border_1()
+                .border_color(theme::border_subtle())
+                .bg(theme::sunk())
+                .font_family(theme::FONT_MONO)
+                .text_size(px(ui::TEXT_MD))
+                .text_color(theme::text())
+                .child(n.clone())
+        };
+        let grid = div()
+            .flex()
+            .flex_col()
+            .gap(ui::sp(4.))
+            .child(
+                div()
+                    .flex()
+                    .gap(ui::sp(4.))
+                    .children(numbers[..3].iter().map(cell)),
+            )
+            .child(
+                div()
+                    .flex()
+                    .gap(ui::sp(4.))
+                    .children(numbers[3..].iter().map(cell)),
+            );
+        let id1 = device_id.to_string();
+        let id2 = device_id.to_string();
+        let body = div()
+            .flex()
+            .flex_col()
+            .gap(ui::sp(16.))
+            .child(ui::text(
+                Type::Body,
+                theme::text_subtle(),
+                format!(
+                    "Ask {login} to open Compare on {name}. If both show the same numbers, it is theirs."
+                ),
+            ))
+            .child(grid)
+            .children(if verified {
+                Some(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(ui::sp(8.))
+                        .ty(Type::Label)
+                        .font_weight(FontWeight::NORMAL)
+                        .text_color(theme::success())
+                        .child(icon("tick02", 14.).text_color(theme::success()))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .child(format!("You checked {name} with {login}. It is theirs.")),
+                        )
+                        .into_any_element(),
+                )
+            } else if mismatch {
+                Some(
+
+                ui::text(
+                    Type::Label,
+                    theme::error().into(),
+                    format!(
+                        "The numbers differ: {name} may not be {login}'s. Tell {login} and a team admin, and read its messages with care."
+                    ),
+                )
+                .font_weight(FontWeight::NORMAL)
+                .into_any_element(),
+                )
+            } else {
+                None
+            })
+            .child(
+                div()
+                    .flex()
+                    .gap(ui::sp(8.))
+                    .child(
+                        ui::button_with(
+                            "teams-match",
+                            Some("tick02"),
+                            "They match",
+                            ButtonKind::Primary,
+                            !verified,
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.mismatch = None;
+                            let id = id1.clone();
+                            this.hub.update(cx, |h, cx| {
+                                h.set_verified(&id, true, cx);
+                                h.dismiss_notice(&id, cx);
+                            });
+                        })),
+                    )
+                    .child(
+                        ui::button_with(
+                            "teams-no-match",
+                            Some("cancel01"),
+                            "They don't",
+                            ButtonKind::Outline,
+                            true,
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.mismatch = Some(id2.clone());
+                            let id = id2.clone();
+                            this.hub.update(cx, |h, cx| h.set_verified(&id, false, cx));
+                        })),
+                    ),
+            );
+        (title, body.into_any_element())
     }
 
     // ---- states before the teams ---------------------------------------------------------
@@ -1722,84 +3035,271 @@ impl TeamsView {
     fn render_unendorsed(&self, code: &str, id: &str, cx: &mut Context<Self>) -> AnyElement {
         let code_owned = code.to_string();
         let copied = self.copied;
-        Self::centered(
-            div()
-                .flex()
-                .flex_col()
-                .items_center()
-                .gap(ui::sp(12.))
+        Self::scrolling(
+            "teams-unendorsed",
+            Self::page()
+                .child(ui::page_title(
+                    "Approve this device from your other device",
+                    Some(
+                        "You use Team on another device already. There, open the team's menu › Your devices and paste this code. Only a device of yours can let this one in."
+                            .into_any_element(),
+                    ),
+                ))
                 .child(
-                    div()
-                        .size(px(40.))
-                        .rounded(ui::rad(ui::RADIUS))
-                        .bg(theme::fill_raised())
-                        .border_1()
-                        .border_color(theme::border())
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(icon("computer", 18.).text_color(theme::text_subtle())),
-                )
-                .child(ui::heading("Approve this device from your other device"))
-                .child(
-                    ui::text(
-                        Type::Body,
-                        theme::text_subtle(),
-                        "You use Teams on another device already. There, open Teams › Your devices and paste this code. Only a device of yours can let this one in.",
-                    )
-                    .text_center(),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(ui::sp(8.))
-                        .w_full()
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .truncate()
-                                .px(ui::sp(10.))
-                                .py(ui::sp(6.))
-                                .rounded(ui::rad(ui::RADIUS))
-                                .bg(theme::fill_raised())
-                                .border_1()
-                                .border_color(theme::border())
-                                .font_family(theme::FONT_MONO)
-                                .text_size(px(ui::TEXT_SM))
-                                .text_color(theme::text_muted())
-                                .child(code.to_string()),
-                        )
-                        .child(
-                            ui::button_with("teams-copy-code", Some(if copied { "tick02" } else { "copy01" }), if copied { "Copied" } else { "Copy" }, ButtonKind::Outline, true)
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    cx.write_to_clipboard(ClipboardItem::new_string(code_owned.clone()));
-                                    this.copied = true;
-                                    cx.notify();
-                                })),
-                        ),
-                )
-                .child(ui::text(Type::Caption, theme::text_faint(), format!("Device ID {}", short_id(id))))
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(ui::sp(8.))
-                        .child(ui::spinner("teams-endorse-wait", 12., theme::text_faint()))
-                        .child(ui::text(Type::Caption, theme::text_faint(), "Waiting for approval…")),
+                    Self::card().child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(ui::sp(12.))
+                            .p(ui::sp(16.))
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(ui::sp(8.))
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .truncate()
+                                            .px(ui::sp(10.))
+                                            .py(ui::sp(6.))
+                                            .rounded(ui::rad(ui::RADIUS))
+                                            .bg(theme::sunk())
+                                            .border_1()
+                                            .border_color(theme::border())
+                                            .font_family(theme::FONT_MONO)
+                                            .text_size(px(ui::TEXT_SM))
+                                            .text_color(theme::text_muted())
+                                            .child(code.to_string()),
+                                    )
+                                    .child(
+                                        ui::button_with(
+                                            "teams-copy-code",
+                                            Some(if copied { "tick02" } else { "copy01" }),
+                                            if copied { "Copied" } else { "Copy" },
+                                            ButtonKind::Outline,
+                                            true,
+                                        )
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            cx.write_to_clipboard(ClipboardItem::new_string(
+                                                code_owned.clone(),
+                                            ));
+                                            this.copied = true;
+                                            cx.notify();
+                                        })),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(ui::sp(8.))
+                                    .child(ui::spinner(
+                                        "teams-endorse-wait",
+                                        14.,
+                                        theme::text_subtle(),
+                                    ))
+                                    .child(
+                                        ui::text(
+                                            Type::Label,
+                                            theme::text_subtle(),
+                                            format!(
+                                                "Waiting for approval · this device's code is {}",
+                                                fingerprint(id)
+                                            ),
+                                        )
+                                        .font_weight(FontWeight::NORMAL),
+                                    ),
+                            ),
+                    ),
                 ),
         )
+    }
+
+    /// The sheet once this device is registered.
+    fn render_ready(&mut self, faces: &Faces, cx: &mut Context<Self>) -> AnyElement {
+        let hub = self.hub.read(cx);
+        let no_teams = hub.teams.is_empty();
+        let has_invites = !hub.invites.is_empty();
+        let asked = hub.asked();
+        let error = hub.error.clone();
+        let info = hub.info.clone();
+        let unreachable = match &hub.load {
+            Load::Unreachable(e) => Some(e.clone()),
+            _ => None,
+        };
+        let keyless = |t: &str| hub.team.get(t).is_some_and(|t| t.keyless);
+        let admins_of = |t: &str| -> Vec<String> {
+            hub.team
+                .get(t)
+                .map(|t| {
+                    t.detail
+                        .members
+                        .iter()
+                        .filter(|m| m.role.is_admin())
+                        .map(|m| m.login.clone())
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let name_of = |t: &str| {
+            hub.teams
+                .iter()
+                .find(|r| r.team_id == t)
+                .map(|r| r.name.clone())
+                .unwrap_or_default()
+        };
+        // A device without the team key waits instead of a channel it can't
+        // read. The team's pages stay: rejecting a request and leaving need
+        // no key, and Approve is off there until the key comes.
+        let waiting_on = match &self.pane {
+            Pane::Channel(t, _) => Some(t.as_str()),
+            _ => None,
+        }
+        .filter(|t| keyless(t))
+        .map(|t| (t.to_string(), name_of(t), admins_of(t)));
+        let inviters = hub.inviters.clone();
+        let first_team = hub.teams.first().map(|r| r.team_id.clone());
+        let back_team = || {
+            self.last_team
+                .clone()
+                .filter(|t| !name_of(t).is_empty())
+                .or_else(|| first_team.clone())
+        };
+
+        let (header_team, header_channel, body): (Option<String>, Option<String>, AnyElement) =
+            match self.pane.clone() {
+                _ if waiting_on.is_some() => {
+                    let (t, name, admins) = waiting_on.expect("checked");
+                    let subtitle =
+                        "This device is new to the team. One step is left, and it is not yours.";
+                    (
+                        Some(t),
+                        None,
+                        self.render_waiting(&name, subtitle, admins, faces),
+                    )
+                }
+                Pane::Channel(t, c) => {
+                    let name = self
+                        .hub
+                        .read(cx)
+                        .team
+                        .get(&t)
+                        .and_then(|s| s.channels.iter().find(|ch| ch.id == c))
+                        .map(|ch| ch.name.clone().unwrap_or_else(|| "locked channel".into()));
+                    let body = self.render_channel(&t, &c, faces, cx);
+                    (Some(t), name, body)
+                }
+                Pane::Team(t) => (Some(t.clone()), None, self.render_team(&t, faces, cx)),
+                Pane::Invite(t) => (Some(t.clone()), None, self.render_invite(&t, faces, cx)),
+                Pane::Pending(t) => (Some(t.clone()), None, self.render_pending(&t, faces, cx)),
+                Pane::Devices => (back_team(), None, self.render_devices(cx)),
+                // The header's menu is the way back to the team.
+                Pane::NewTeam => (back_team(), None, self.render_new_team(cx)),
+                Pane::Invites => (back_team(), None, self.render_invites(faces, cx)),
+                Pane::Asked(t) => {
+                    let name = asked
+                        .iter()
+                        .find(|(a, _)| *a == t)
+                        .map(|(_, n)| n.clone())
+                        .unwrap_or_default();
+                    let who: Vec<String> = inviters.get(&t).cloned().into_iter().collect();
+                    let subtitle =
+                        "You accepted the invite. One step is left, and it is not yours.";
+                    (
+                        back_team(),
+                        None,
+                        self.render_waiting(&name, subtitle, who, faces),
+                    )
+                }
+                Pane::None if no_teams && has_invites => {
+                    (None, None, self.render_invites(faces, cx))
+                }
+                Pane::None if no_teams && !asked.is_empty() => {
+                    let (t, name) = asked[0].clone();
+                    let who: Vec<String> = inviters.get(&t).cloned().into_iter().collect();
+                    let subtitle =
+                        "You accepted the invite. One step is left, and it is not yours.";
+                    (None, None, self.render_waiting(&name, subtitle, who, faces))
+                }
+                Pane::None if no_teams => (None, None, self.render_new_team(cx)),
+                Pane::None => (
+                    None,
+                    None,
+                    Self::centered(ui::loading("teams-opening", "Opening the team…")),
+                ),
+            };
+        let header = match header_team {
+            Some(t) => self.render_header(&t, header_channel, faces, cx),
+            None => self.render_teamless_bar(cx),
+        };
+        let retry = ui::button_with(
+            "teams-retry-banner",
+            Some("refresh01"),
+            "Try again",
+            ButtonKind::Outline,
+            true,
+        )
+        .on_click(cx.listener(|this, _, _, cx| this.hub.update(cx, |h, cx| h.retry(cx))));
+        div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_h_0()
+            .child(header)
+            .children(unreachable.map(|e| {
+                Self::banner(
+                    "alert-circle",
+                    Tone::Warning,
+                    format!("Can't reach the Teams server: {}", crate::redact::text(&e)),
+                )
+                .child(retry)
+            }))
+            .children(info.map(|e| {
+                Self::banner(
+                    "tick02",
+                    Tone::Success,
+                    crate::redact::text(&e).into_owned(),
+                )
+                .child(
+                    ui::icon_button("teams-info-dismiss", "cancel01", 12.)
+                        .tooltip(ui::tip("Dismiss"))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.hub.update(cx, |h, cx| {
+                                h.info = None;
+                                cx.notify();
+                            })
+                        })),
+                )
+            }))
+            .children(error.map(|e| {
+                Self::banner(
+                    "alert-circle",
+                    Tone::Warning,
+                    crate::redact::text(&e).into_owned(),
+                )
+                .child(
+                    ui::icon_button("teams-error-dismiss", "cancel01", 12.)
+                        .tooltip(ui::tip("Dismiss"))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.hub.update(cx, |h, cx| {
+                                h.error = None;
+                                cx.notify();
+                            })
+                        })),
+                )
+            }))
+            .child(body)
+            .into_any_element()
     }
 }
 
 impl Render for TeamsView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let teams = self.teams.read(cx);
-        let login = teams
-            .me()
-            .filter(|_| teams.enabled())
-            .map(|m| crate::redact::value(&m.login));
+        let enabled = teams.enabled();
+        let faces = Faces::of(teams);
         let hub = self.hub.read(cx);
         // Notifications can arrive in either order. Never draw one member's
         // messages or fields under another member's login.
@@ -1811,61 +3311,6 @@ impl Render for TeamsView {
         let device = hub.device.clone();
         let load = hub.load.clone();
         let empty = hub.teams.is_empty() && hub.invites.is_empty() && hub.asked().is_empty();
-        let no_teams = hub.teams.is_empty();
-        let asking = !hub.asked().is_empty();
-        let error = hub.error.clone();
-        let info = hub.info.clone();
-        let registered = device == DeviceState::Registered;
-
-        let header =
-            div()
-                .flex()
-                .flex_none()
-                .items_center()
-                .gap(ui::sp(8.))
-                .h(px(ui::TOOLBAR_H))
-                .px(ui::sp(12.))
-                .border_b_1()
-                .border_color(theme::stroke())
-                .text_size(px(ui::TEXT_SM))
-                .text_color(theme::text_subtle())
-                .child(icon("message-multiple01", 14.).text_color(theme::text_subtle()))
-                .child(div().flex_none().child("Teams"))
-                .child(div().flex_1())
-                .when_some(login.clone(), |d, l| {
-                    d.child(div().text_color(theme::text_faint()).child(format!("@{l}")))
-                })
-                .when(registered, |d| {
-                    d.child(
-                        ui::icon_button("teams-refresh", "refresh01", 13.)
-                            .tooltip(ui::tip("Read everything again"))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.hub.update(cx, |h, cx| h.refresh(cx))
-                            })),
-                    )
-                    .child(
-                        ui::button_with(
-                            "teams-devices",
-                            Some("computer"),
-                            "Your devices",
-                            ButtonKind::Ghost,
-                            true,
-                        )
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.hub.update(cx, |h, cx| h.load_my_devices(cx));
-                            this.show(Pane::Devices, window, cx);
-                        })),
-                    )
-                })
-                .when(login.is_some(), |d| {
-                    d.child(
-                        ui::button("teams-sign-out", "Sign out", ButtonKind::Ghost, true).on_click(
-                            cx.listener(|this, _, _, cx| {
-                                this.teams.update(cx, |t, cx| t.sign_out(cx));
-                            }),
-                        ),
-                    )
-                });
 
         let retry = |id: &'static str, cx: &mut Context<Self>| {
             ui::button_with(
@@ -1879,12 +3324,12 @@ impl Render for TeamsView {
             .into_any_element()
         };
 
-        let body: AnyElement = if login.is_none() {
+        let body: AnyElement = if !enabled {
             // The tab can stay open after a sign-out, or after the server took
             // the flag away.
             Self::centered(ui::empty_state(
-                "user",
-                "Teams is not on here",
+                "ungroup-items",
+                "Team is not on here",
                 "Sign in with GitHub in Settings, with an account that has Teams.",
                 Some(
                     ui::button(
@@ -1921,150 +3366,107 @@ impl Render for TeamsView {
                 (_, Load::Loading) if empty => {
                     Self::centered(ui::loading("teams-loading", "Reading your teams…"))
                 }
-                _ => {
-                    let pane = match self.pane.clone() {
-                        Pane::NewTeam => self.render_new_team(cx),
-                        Pane::Devices => self.render_devices(cx),
-                        Pane::Team(t) => self.render_team(&t, cx),
-                        Pane::Channel(t, c) => self.render_channel(&t, &c, cx),
-                        Pane::None if empty => Self::centered(ui::empty_state(
-                            "message-multiple01",
-                            "You're not in a team yet",
-                            &format!(
-                                "Create a team, or ask a team's admin to invite @{}. Invites show up here.",
-                                login.clone().unwrap_or_default()
-                            ),
-                            Some(
-                                ui::button_with(
-                                    "teams-empty-new",
-                                    Some("add01"),
-                                    "New team",
-                                    ButtonKind::Primary,
-                                    true,
-                                )
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.show(Pane::NewTeam, window, cx)
-                                }))
-                                .into_any_element(),
-                            ),
-                        )),
-                        Pane::None if no_teams && asking => Self::centered(ui::empty_state(
-                            "clock01",
-                            "Waiting for approval",
-                            "An admin approves you from one of their devices, which hands yours the team key. This page updates by itself.",
-                            None,
-                        )),
-                        Pane::None if no_teams => Self::centered(ui::empty_state(
-                            "message-multiple01",
-                            "You're invited",
-                            "Accept an invite on the left. An admin of the team then approves you.",
-                            None,
-                        )),
-                        Pane::None => Self::centered(ui::empty_state(
-                            "message01",
-                            "No channel open",
-                            "Pick a team or a channel on the left.",
-                            None,
-                        )),
-                    };
-                    let unreachable = match &load {
-                        Load::Unreachable(e) => Some(e.clone()),
-                        _ => None,
-                    };
-                    div()
-                        .flex()
-                        .flex_col()
-                        .flex_1()
-                        .min_h_0()
-                        .children(unreachable.map(|e| {
-                            Self::banner(
-                                "alert-circle",
-                                Tone::Warning,
-                                format!(
-                                    "Can't reach the Teams server: {}",
-                                    crate::redact::text(&e)
-                                ),
-                            )
-                            .child(retry("teams-retry-banner", cx))
-                        }))
-                        .children(info.map(|e| {
-                            Self::banner(
-                                "tick02",
-                                Tone::Success,
-                                crate::redact::text(&e).into_owned(),
-                            )
-                            .child(
-                                ui::icon_button("teams-info-dismiss", "cancel01", 12.)
-                                    .tooltip(ui::tip("Dismiss"))
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.hub.update(cx, |h, cx| {
-                                            h.info = None;
-                                            cx.notify();
-                                        })
-                                    })),
-                            )
-                        }))
-                        .children(error.map(|e| {
-                            Self::banner(
-                                "alert-circle",
-                                Tone::Warning,
-                                crate::redact::text(&e).into_owned(),
-                            )
-                            .child(
-                                ui::icon_button("teams-error-dismiss", "cancel01", 12.)
-                                    .tooltip(ui::tip("Dismiss"))
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.hub.update(cx, |h, cx| {
-                                            h.error = None;
-                                            cx.notify();
-                                        })
-                                    })),
-                            )
-                        }))
-                        .child(
-                            div()
-                                .flex()
-                                .flex_1()
-                                .min_h_0()
-                                .child(self.render_list(cx))
-                                .child(
-                                    div()
-                                        .flex()
-                                        .flex_col()
-                                        .flex_1()
-                                        .min_w_0()
-                                        .min_h_0()
-                                        .child(pane),
-                                ),
-                        )
-                        .into_any_element()
-                }
+                _ => self.render_ready(&faces, cx),
             }
         };
+        let menu = self.team_menu.then(|| self.render_team_menu(cx));
 
         div()
             .track_focus(&self.focus)
+            .relative()
             .flex()
             .flex_col()
             .size_full()
-            .bg(theme::background())
+            // No background: the window's card paints the sheet and rounds its
+            // corners. A fill here would cover them, since its clip is square.
             .font_family(theme::FONT_SANS)
             .text_color(theme::content())
-            .child(header)
             .child(body)
+            .when_some(menu, |d, menu| {
+                d.child(
+                    div()
+                        .id("teams-menu-backdrop")
+                        .absolute()
+                        .inset_0()
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _, _, cx| {
+                                this.team_menu = false;
+                                cx.notify();
+                            }),
+                        ),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .top(px(ui::BAR_H - 4.))
+                        .left(ui::sp(12.))
+                        .child(menu),
+                )
+            })
             .into_any_element()
     }
 }
 
-/// The first characters of a device ID, enough to compare by eye.
-fn short_id(id: &str) -> String {
-    let s: Vec<char> = id.chars().take(8).collect();
-    let (a, b) = s.split_at(s.len().min(4));
-    format!(
-        "{} {}",
-        a.iter().collect::<String>(),
-        b.iter().collect::<String>()
-    )
+/// A device under a person waiting for approval: its name and its code.
+fn device_line(d: &DeviceRow) -> gpui::Div {
+    let phone = d.name.to_ascii_lowercase().contains("phone");
+    div()
+        .flex()
+        .items_center()
+        .gap(ui::sp(8.))
+        .h(px(ui::BUTTON_H))
+        .ty(Type::Label)
+        .font_weight(FontWeight::NORMAL)
+        .text_color(theme::text_muted())
+        .child(
+            icon(if phone { "signal-full02" } else { "computer" }, 14.)
+                .text_color(theme::text_subtle()),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .child(crate::redact::text(&d.name).into_owned()),
+        )
+        .child(
+            ui::text(
+                Type::Caption,
+                theme::text_faint(),
+                fingerprint(&d.device_id),
+            )
+            .font_family(theme::FONT_MONO),
+        )
+}
+
+/// A login as the sheet shows it. The signed-in user's own one is masked in
+/// redacted mode, as on the Invites page: next to "You" it tells a screen
+/// share whose account this is. Other people's logins stay, the team is them.
+fn shown_login(login: &str, me: Option<&str>) -> String {
+    if me.is_some_and(|me| me.eq_ignore_ascii_case(login)) {
+        crate::redact::value(login)
+    } else {
+        login.to_string()
+    }
+}
+
+fn plural(n: usize, one: &str, many: &str) -> String {
+    match n {
+        1 => format!("1 {one}"),
+        n => format!("{n} {many}"),
+    }
+}
+
+/// A device's code, short enough to read out: the start and end of its ID.
+fn fingerprint(id: &str) -> String {
+    let chars: Vec<char> = id.chars().collect();
+    if chars.len() <= 8 {
+        return id.to_string();
+    }
+    let head: String = chars[..4].iter().collect();
+    let tail: String = chars[chars.len() - 4..].iter().collect();
+    format!("{head}…{tail}")
 }
 
 /// A reply's quote of a message: its first line, cut short.
@@ -2085,17 +3487,68 @@ fn clock(at: u64) -> String {
         .unwrap_or_default()
 }
 
+fn now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+/// How long ago, in words: "just now", "4 minutes ago", "yesterday".
+fn ago(at: u64) -> String {
+    ago_from(at, now())
+}
+
+fn ago_from(at: u64, now: u64) -> String {
+    let secs = now.saturating_sub(at);
+    match secs {
+        0..60 => "just now".into(),
+        60..120 => "a minute ago".into(),
+        120..3600 => format!("{} minutes ago", secs / 60),
+        3600..7200 => "an hour ago".into(),
+        7200..86_400 => format!("{} hours ago", secs / 3600),
+        86_400..172_800 => "yesterday".into(),
+        _ => format!("{} days ago", secs / 86_400),
+    }
+}
+
+/// The divider over a day's messages: today, yesterday, or the date.
+fn day_label(at: u64) -> String {
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let now = now();
+    let (Some(t), Some(today), Some(yesterday)) = (
+        crate::platform::local_time(at),
+        crate::platform::local_time(now),
+        crate::platform::local_time(now.saturating_sub(86_400)),
+    ) else {
+        return String::new();
+    };
+    let day = (t.year, t.month, t.day);
+    if day == (today.year, today.month, today.day) {
+        "Today".into()
+    } else if day == (yesterday.year, yesterday.month, yesterday.day) {
+        "Yesterday".into()
+    } else if t.year == today.year {
+        format!("{} {}", MONTHS[t.month.clamp(0, 11) as usize], t.day)
+    } else {
+        format!(
+            "{} {}, {}",
+            MONTHS[t.month.clamp(0, 11) as usize],
+            t.day,
+            t.year
+        )
+    }
+}
+
 /// When something happened: the time today, else the day and the time.
 fn when(at: u64) -> String {
     const MONTHS: [&str; 12] = [
         "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
     ];
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs());
     let (Some(t), Some(today)) = (
         crate::platform::local_time(at),
-        crate::platform::local_time(now),
+        crate::platform::local_time(now()),
     ) else {
         return String::new();
     };
@@ -2146,8 +3599,24 @@ mod tests {
     }
 
     #[test]
-    fn short_ids_come_in_two_groups() {
-        assert_eq!(short_id("5aGHOa1mWiRjRcHwVBGPDw"), "5aGH Oa1m");
-        assert_eq!(short_id("ab"), "ab ");
+    fn fingerprints_show_the_ends() {
+        assert_eq!(fingerprint("5aGHOa1mWiRjRcHwVBGPDw"), "5aGH…GPDw");
+        assert_eq!(fingerprint("ab"), "ab");
+    }
+
+    #[test]
+    fn ago_reads_as_words() {
+        assert_eq!(ago_from(1000, 1030), "just now");
+        assert_eq!(ago_from(1000, 1000 + 4 * 60), "4 minutes ago");
+        assert_eq!(ago_from(0, 3 * 3600), "3 hours ago");
+        assert_eq!(ago_from(0, 100_000), "yesterday");
+        assert_eq!(ago_from(0, 3 * 86_400), "3 days ago");
+        assert_eq!(ago_from(50, 10), "just now");
+    }
+
+    #[test]
+    fn counts_say_one_or_many() {
+        assert_eq!(plural(1, "device", "devices"), "1 device");
+        assert_eq!(plural(3, "person", "people"), "3 people");
     }
 }

@@ -69,6 +69,8 @@ pub enum SettingsEvent {
     OpenAccount,
     OpenExtensions,
     OpenTeams,
+    /// The sign-in dialog, which shows GitHub's code and what to do with it.
+    SignInTeams,
     #[cfg(feature = "coderlabs")]
     OpenTasks,
     #[cfg(feature = "coderlabs")]
@@ -1577,8 +1579,8 @@ impl SettingsDialog {
                 rows.push(
                     row(
                         "Teams",
-                        "Your team's place in Arakun. Channels come in a later version.",
-                        ui::button("set-teams-open", "Open Teams", ButtonKind::Outline, true)
+                        "Your team's end-to-end encrypted messages.",
+                        ui::button("set-teams-open", "Open Team", ButtonKind::Outline, true)
                             .on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::OpenTeams)))
                             .into_any_element(),
                     )
@@ -1588,6 +1590,7 @@ impl SettingsDialog {
         } else if let Phase::Waiting {
             user_code,
             verification_uri,
+            ..
         } = phase
         {
             let code_chip = div()
@@ -1646,9 +1649,7 @@ impl SettingsDialog {
                     "Not signed in",
                     "Sign in to use what Arakun is trying out with some people, such as Teams. GitHub shares only your user name and ID: no repositories, no email.",
                     ui::button_with("set-teams-in", Some("github"), label, ButtonKind::Outline, idle)
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.teams.update(cx, |t, cx| t.sign_in(cx));
-                        }))
+                        .on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::SignInTeams)))
                         .into_any_element(),
                 )
                 .into_any_element(),

@@ -521,45 +521,64 @@ after a week).
   folded or not to say what is inside; a new one is born titled and collapsible.
 - **Automations.** Scheduled shell commands or agent prompts per project.
 - **Teams.** A pilot, only for the accounts it is turned on for; the agents and the
-  rest of Arakun never need it. Settings › Account › Sign in with GitHub shows a code
-  and opens GitHub's device page: enter the code there and approve. Arakun asks GitHub
-  for no scopes and hands the token once to the Teams server, which keeps only your
-  GitHub user name and ID. Arakun drops the GitHub token and keeps the session the
-  server answers with in the system keyring: the Keychain on macOS, the Credential
-  Manager on Windows, and the Secret Service through `secret-tool` on Linux (without
-  it, the session lasts until Arakun quits). An account the server has turned Teams on
-  for gets a Teams tab in the sidebar; any other account sees "Signed in as @you" in
-  Settings and nothing else. Sign out removes the session from the keyring, then asks
-  the server to end it; if the server can't be reached, the session there stays valid
-  until it expires (90 days without renewal, 180 days after sign-in at most).
-  `ARAKUN_TEAMS_URL` points Arakun at another Teams server, such as one run with
-  `wrangler dev` (see [teams/README.md](teams/README.md)); the default is
-  `https://teams.arakun.dev`, and plain `http://` works only for `localhost`,
-  `127.0.0.1` and `[::1]`.
+  rest of Arakun never need it. **Sign in with GitHub** (the User row of the sidebar,
+  or Settings › Account) opens a dialog with a code and opens GitHub's device page:
+  enter the code there and approve. The dialog counts down the code's 15 minutes and
+  says when it ran out or GitHub turned it down, with a way to get a new one. Arakun
+  asks GitHub for no scopes and hands the token once to the Teams server, which keeps
+  only your GitHub user name and ID. Arakun drops the GitHub token and keeps the
+  session the server answers with in the system keyring: the Keychain on macOS, the
+  Credential Manager on Windows, and the Secret Service through `secret-tool` on Linux
+  (without it, the session lasts until Arakun quits). Signed in, the User row shows
+  your GitHub picture and "Signed in with GitHub". An account the server has turned
+  Teams on for gets a **Team** row under Search in the sidebar; any other account sees
+  "Signed in as @you" in Settings and nothing else. Sign out (Settings › Account) removes
+  the session from the keyring, then asks the server to end it; if the server can't be
+  reached, the session there stays valid until it expires (90 days without renewal,
+  180 days after sign-in at most). `ARAKUN_TEAMS_URL` points Arakun at another Teams
+  server, such as one run with `wrangler dev` (see
+  [teams/README.md](teams/README.md)); the default is `https://teams.arakun.dev`, and
+  plain `http://` works only for `localhost`, `127.0.0.1` and `[::1]`.
 
-  The Teams tab is an end-to-end encrypted team chat. Each account on this
+  The Team tab is an end-to-end encrypted team chat. Each account on this
   profile has its own device key pairs in the system keyring; the
   server only stores and forwards what they seal and sign (see
-  [teams/PROTOCOL.md](teams/PROTOCOL.md)). The **+** beside Teams creates a team with
-  a `#general` channel; the team page invites people by GitHub user name, adds
-  channels and approves the people who accepted. Approving hands the team key to
-  their verified devices from yours. The server still supplies the membership and
-  roles; it is not an independent proof of who belongs to the team. Removing
-  someone rotates the key for the remaining members, not messages already seen.
-  Hover a message and press the reply arrow to answer it: the quote shows above
-  your message, and clicking it
-  scrolls to the original. **Esc** drops the reply. Messages whose signature does not
-  check out are hidden and counted. When a member adds a device, the others see
-  "@them added a new device".
+  [teams/PROTOCOL.md](teams/PROTOCOL.md)). With no team yet it offers **Start a team**,
+  which makes one with a `general` channel. A channel shows the team's channels
+  (**+** adds one) and people on the left, and the chat with a composer at the bottom.
+  Click the team's name for your other teams, **Start a team** and **Your devices**;
+  click the people at the top right for the team's page, which invites people by
+  GitHub login and removes members. "N waiting" at the top opens the people who
+  accepted an invite, each device with its code: approving hands the team key to their
+  devices whose endorsement chain checks out, from yours. It doesn't wait for
+  **Compare**, but a device marked as not matching is refused. The server still
+  supplies the membership and roles; it is not an independent proof of who belongs to
+  the team. Removing someone rotates the key for the remaining members, not messages
+  already seen. Hover a message and press the reply arrow to answer it: the quote
+  shows above your message, and clicking it scrolls to the original. **Esc** drops the
+  reply. Messages whose signature does not check out are hidden and counted.
+  **Decisions**, the **+** of the composer and **@bot** are not there yet.
+
+  **Encrypted**, at the top of a channel, says what the server sees and what it
+  can't. When a member adds a device, the chat says "@them added a new device" where
+  it happened, with **Compare**: both devices show six groups of five digits, made
+  from both keys of each of the two devices. Read them to each other; **They match**
+  marks the device checked on this device only (kept in the keys file below).
+  **They don't** is kept too: that person gets no team key from this device until a
+  later comparison matches, and this device makes no new team key while they are in
+  the team (compare again, or remove them).
 
   A second device of yours shows "Approve this device from your other device" and a
-  code: on a device that already has Teams, open **Your devices** and paste it. The
-  team keys and trusted device roots are kept in `teams-<account>-<scope>.keys`
-  next to the state, sealed with a key from the keyring. The scope identifies
-  the server and profile. A lost cache can recover only the key envelopes the server
-  still has for this device, not its local trust records. Signing out discards
-  unsent drafts. A test Arakun with its own `ARAKUN_STATE` (such as
-  `arakun dev`) keeps its own Teams session, device and keys.
+  code: on a device that already has Teams, click the team's name › **Your devices**
+  (or **Your devices** at the top, on a device not in a team yet) and paste it. The
+  team keys and trusted device roots are kept in `teams-<account>-<scope>.keys` next
+  to the state, sealed with a key from the keyring. The scope identifies the server
+  and profile. A lost cache can recover only the key envelopes the server still has
+  for this device, not its local trust records. Signing out discards unsent drafts.
+  A test Arakun with its own `ARAKUN_STATE` (such as `arakun dev`) keeps its own
+  Teams session, device and keys. With `ARAKUN_TEAMS_FIXTURE` (a stand-in account
+  for testing), `ARAKUN_TEAMS_FIXTURE_SIGN_IN=ok`, `expired` or `denied` starts
+  signed out and plays the sign-in dialog to that end without GitHub.
 
 ### Make it yours
 

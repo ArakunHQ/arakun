@@ -38,7 +38,7 @@ struct InboxView: View {
             }
             .background(Color.ground.ignoresSafeArea())
             .searchable(text: $query, prompt: "Search sessions")
-            .refreshable { model.reconnectNow() }
+            .refreshable { model.refresh() }
             .navigationTitle("")
             .navigationBarTitleDisplayMode(.inline)
             .navigationDestination(for: String.self) { id in
@@ -199,9 +199,12 @@ struct SessionRow: View {
                     .lineLimit(2)
                     .multilineTextAlignment(.leading)
                 Spacer(minLength: 8)
-                Text(session.updated.shortAgo)
-                    .font(.mono(11.5))
-                    .foregroundStyle(Color.textFaint)
+                // Redrawn each half minute, so an idle row's age keeps up.
+                TimelineView(.periodic(from: .now, by: 30)) { _ in
+                    Text(session.updated.shortAgo)
+                        .font(.mono(11.5))
+                        .foregroundStyle(Color.textFaint)
+                }
             }
             if let asks = session.asks {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {

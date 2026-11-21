@@ -371,10 +371,10 @@ struct Mascot: View {
 
     /// Paper fur and ink holes on every ground, as the brand's marks and the
     /// desktop's mascot draw it.
-    private let fur = Color(UIColor(hex: 0xF1EFE8))
-    private let inkColor = Color(UIColor(hex: 0x151515))
+    private let fur = Color.fur
+    private let inkColor = Color.furInk
     /// The symbols over the head: in the text color, so they read on white too.
-    private var propColor: Color { scheme == .dark ? fur : Color(UIColor(hex: 0x151515)) }
+    private var propColor: Color { scheme == .dark ? fur : Color.furInk }
 
     private func draw(_ g: inout GraphicsContext, size: CGSize, now: TimeInterval) {
         let s = state
@@ -395,7 +395,7 @@ struct Mascot: View {
         head.fill(art.ink, with: .color(inkColor))
         head.fill(art.body, with: .color(fur), style: FillStyle(eoFill: true))
 
-        let amber = Color(UIColor(hex: 0xFFB547))
+        let amber = Color.amber
         let bigger: CGFloat = small ? 1.3 : 1
         for (i, r) in art.eyes.enumerated() {
             let mirror: CGFloat = i == 0 ? 1 : -1

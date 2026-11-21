@@ -30,6 +30,10 @@ extension Color {
     static let amberSoft = pair(0x2A1F0D, 0xFFF1DB)
     /// Text on an amber fill.
     static let onAmber = Color(UIColor(hex: 0x151515))
+    /// The raccoon's paper fur and its ink, the same on every ground, as the
+    /// brand's marks draw it.
+    static let fur = Color(UIColor(hex: 0xF1EFE8))
+    static let furInk = Color(UIColor(hex: 0x151515))
 
     // Status: state only, always with a word beside it.
     static let success = pair(0x3FB950, 0x1A7F37)

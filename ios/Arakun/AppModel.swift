@@ -92,6 +92,15 @@ final class AppModel {
         }
     }
 
+    /// Pull to refresh. The inbox is live while connected and there is no
+    /// message that asks for it, so a fresh link brings a fresh snapshot; it
+    /// also replaces a socket that died without a word.
+    func refresh() {
+        guard credentials != nil, connection != .pairing else { return }
+        retry = .milliseconds(500)
+        connect()
+    }
+
     func unpair() {
         Task {
             _ = try? await link?.fetch("/unpair", method: "POST")

@@ -800,6 +800,7 @@ impl Shell {
                                 base.as_deref(),
                                 None,
                                 None,
+                                None,
                             )),
                     )
                     .into_any_element()

@@ -141,6 +141,42 @@ fn image_file(path: &str, scope: &Scope) -> Option<String> {
     (len <= attach::MAX_IMAGE_BYTES).then(|| super::image_link(key, &file))
 }
 
+/// The file of an image a session names (`link`, as written), when its agent
+/// named it. Only those are sent, so asking cannot read any file the server can.
+pub fn named_image(all: &[Entry], cwd: &Path, link: &str) -> Option<PathBuf> {
+    let named = all.iter().any(|e| match e {
+        Entry::Agent { text } => crate::agent::markdown::image_files(text)
+            .iter()
+            .any(|l| l == link),
+        _ => false,
+    });
+    named
+        .then(|| crate::agent::markdown::image_path(link, Some(cwd)))
+        .flatten()
+}
+
+/// The answer to the app asking for an image: its bytes, or that there are
+/// none to send. `at` is told back, so the app knows which question it answers.
+/// It reads the file: call it off the thread that answers everyone else.
+pub fn image_message(session: &str, link: &str, at: usize, file: Option<&Path>) -> Value {
+    let image = file.and_then(|f| {
+        let mime = attach::mime_type(f)?;
+        let len = std::fs::metadata(f).ok().filter(|m| m.is_file())?.len();
+        (len <= attach::MAX_IMAGE_BYTES).then_some(())?;
+        Some((mime, std::fs::read(f).ok()?))
+    });
+    let mut msg = json!({ "type": "image", "id": session, "path": link, "at": at });
+    match image {
+        Some((mime, bytes)) => {
+            use base64::Engine as _;
+            msg["mime"] = json!(mime);
+            msg["data"] = json!(base64::engine::general_purpose::STANDARD.encode(bytes));
+        }
+        None => msg["missing"] = json!(true),
+    }
+    msg
+}
+
 pub fn permission(p: &PermissionRequest) -> Value {
     json!({
         "tool_call_id": p.tool_call_id,
@@ -1157,6 +1193,48 @@ mod tests {
             text.ends_with("![remote](https://x.dev/a.png) last"),
             "{text}"
         );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_app_gets_only_images_the_agent_named() {
+        let dir = std::env::temp_dir().join(format!("arakun-wire-image-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("shot.png"), b"png").unwrap();
+        std::fs::write(dir.join("other.png"), b"other").unwrap();
+        let all = vec![
+            Entry::Agent {
+                text: "Here:\n\n![the shot](shot.png)\n\n![gone](missing.png)".into(),
+            },
+            // Only what the agent says is shown as images.
+            Entry::Thought {
+                text: "![x](other.png)".into(),
+            },
+        ];
+        let file = named_image(&all, &dir, "shot.png");
+        assert_eq!(file, Some(dir.join("shot.png")));
+        let v = image_message("s1", "shot.png", 3, file.as_deref());
+        assert_eq!(v["type"], "image");
+        assert_eq!(
+            (&v["id"], &v["path"], &v["at"]),
+            (&json!("s1"), &json!("shot.png"), &json!(3))
+        );
+        assert_eq!(v["mime"], "image/png");
+        use base64::Engine as _;
+        let data = base64::engine::general_purpose::STANDARD
+            .decode(v["data"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(data, b"png");
+        assert_eq!(named_image(&all, &dir, "other.png"), None);
+        assert_eq!(named_image(&all, &dir, "../shot.png"), None);
+        let v = image_message(
+            "s1",
+            "missing.png",
+            0,
+            named_image(&all, &dir, "missing.png").as_deref(),
+        );
+        assert_eq!(v["missing"], true);
+        assert!(v.get("data").is_none());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

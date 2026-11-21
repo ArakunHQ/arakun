@@ -463,14 +463,7 @@ impl Shell {
                 let p = for_path.clone();
                 let skills = cx
                     .background_spawn(crate::guard::task(async move {
-                        crate::agent::claude_ext::agent_skills(&p, true)
-                            .into_iter()
-                            .map(|s| crate::agent::Choice {
-                                id: s.name.clone(),
-                                name: s.name,
-                                description: (!s.description.is_empty()).then_some(s.description),
-                            })
-                            .collect::<Vec<_>>()
+                        crate::agent::claude_ext::skill_choices(&p)
                     }))
                     .await;
                 let _ = this.update(cx, |this, cx| {

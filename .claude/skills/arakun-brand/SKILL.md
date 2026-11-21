@@ -15,7 +15,7 @@ To read the canvas, use the Doop MCP tools: `get_guidelines` (name
 `arakun-brand`), `get_tokens`, `get_frame_screenshot`. Its HTTP API needs a
 login, but the asset and render URLs below are public.
 
-In the app itself, colors and sizes come from `src/theme.rs` and `src/ui.rs`;
+In the app itself, colors and sizes come from `core/src/theme.rs` and `core/src/ui.rs`;
 follow the `ui-change` skill there. This skill covers everything around the app,
 and the words in it.
 

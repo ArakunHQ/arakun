@@ -55,36 +55,39 @@ reviews:
           - "lefthook.yml"
           - "src/headless*"
           - "src/headless*/**"
+          - "core/src/headless*"
+          - "core/src/headless*/**"
+          - "core/src/host.rs"
           - "src/control.rs"
-          - "src/account.rs"
-          - "src/fetch.rs"
+          - "core/src/account.rs"
+          - "core/src/fetch.rs"
           - "src/voice.rs"
           - "src/cloudflare/**"
           - "src/posthog/**"
           - "src/github/**"
-          - "src/phone/**"
+          - "core/src/phone/**"
           - "relay/**"
           - "teams/**"
           - "src/arakun_teams/**"
           - "phone/**"
-          - "Cargo.toml"
+          - "**/Cargo.toml"
           - "Cargo.lock"
           - "deny.toml"
           - "build.rs"
           - "rust-toolchain.toml"
           - "tools/setup-dev.*"
           - "tools/install*"
-          - "src/platform.rs"
-          - "src/git.rs"
-          - "src/agent/launch.rs"
-          - "src/agent/rpc.rs"
+          - "core/src/platform.rs"
+          - "core/src/git.rs"
+          - "core/src/agent/launch.rs"
+          - "core/src/agent/rpc.rs"
           - "src/state.rs"
           - "src/memory.rs"
           - "src/stored.rs"
-          - "src/durable.rs"
+          - "core/src/durable.rs"
           - "src/update.rs"
-          - "src/server/**"
-          - "src/server.rs"
+          - "core/src/server/**"
+          - "core/src/server.rs"
   merge_risk_instructions: >-
     Minimal risk: changes only to docs or Markdown that people read (README.md,
     docs/, CONTRIBUTING.md), comments, tests, iso/*.rhai scenes or screenshots,
@@ -98,17 +101,17 @@ reviews:
     src/phone (end-to-end encryption and its wire format), relay/, phone/, teams/ or src/arakun_teams/;
     the headless agent sandbox, its policy and its broker (src/headless*);
     the control socket (src/control.rs); code that reads, stores or sends
-    tokens and API keys (src/account.rs, src/fetch.rs, src/voice.rs,
+    tokens and API keys (core/src/account.rs, core/src/fetch.rs, src/voice.rs,
     src/cloudflare, src/posthog, src/github); .github/workflows or
     .github/actions; .coderabbit.yaml (it sets these approval rules);
     .claude/settings.json or .claude/hooks (they run when a session starts);
     lefthook.yml; Cargo.toml, Cargo.lock, deny.toml, build.rs or
     rust-toolchain.toml; tools/setup-dev.* or tools/install* (they run on
-    users' machines, often with sudo); src/platform.rs; git operations in
-    src/git.rs; how agents and shells are launched (src/agent/launch.rs and
-    src/agent/rpc.rs); release signature checks in src/update.rs; the daemon
-    in src/server.rs and src/server/; and any format stored on disk (including
-    src/state.rs, src/memory.rs, src/stored.rs and src/durable.rs) or a CLI
+    users' machines, often with sudo); core/src/platform.rs; git operations in
+    core/src/git.rs; how agents and shells are launched (core/src/agent/launch.rs and
+    core/src/agent/rpc.rs); release signature checks in src/update.rs; the daemon
+    in core/src/server.rs and core/src/server/; and any format stored on disk (including
+    src/state.rs, src/memory.rs, src/stored.rs and core/src/durable.rs) or a CLI
     flag that other tools rely on. A change for one platform that the other platforms build without
     testing also raises the risk. Code behind the `browser` feature is only
     built on Linux in CI, so a change there that touches Windows or macOS
@@ -180,7 +183,7 @@ reviews:
         instructions: >-
           Fail if the diff changes the encryption, keys, nonces, framing or
           the messages the desktop sends or reads (field names, envelopes such
-          as `res`, message kinds) anywhere in src/phone/ (e2e.rs, identity.rs,
+          as `res`, message kinds) anywhere in core/src/phone/ (e2e.rs, identity.rs,
           wire.rs, relay.rs and the rest), and neither phone/*.js nor
           phone/test/vectors/ changes in the same pull request. Fail the same
           way the other way round: phone/*.js changes the format and src/phone
@@ -230,26 +233,26 @@ reviews:
         - Comments say why, not what, in plain short sentences. A new module starts with a `//!` comment saying what it is for.
         - Tests marked `#[ignore]` read this machine's state. A new test that reads the real home directory, sign-ins or network must be `#[ignore]`.
         - Never print, log or put a token, API key or password in an error message, a URL, a process argument or a panic message.
-    - path: "src/**/*.rs"
+    - path: "{src,core/src}/**/*.rs"
       instructions: |
         UI code (views, dialogs, the sidebar, anything that builds GPUI elements) must use the design system: colors, grays, text sizes, radii, heights and fonts from `theme` and `ui` (`theme::text_muted()`, `theme::border()`, `ui::TEXT_SM`, `ui::RADIUS_*`, `ui::BUTTON_H`, `theme::FONT_MONO`). Flag hand-written values where the system has a name. `src/design_lint.rs` catches colors, text sizes and fonts, but not corner radii or spacing, so check those by eye.
         Text the user reads uses the glossary under "Words in the interface" in CONTRIBUTING.md (environment, session, palette, color scheme, Workspace panel, notice). `src/words_lint.rs` catches the retired words it knows; flag a new name for something the glossary already names.
-    - path: "src/ui/**"
+    - path: "core/src/ui/**"
       instructions: |
         This is the design system itself. A change here affects every view. Check that a new token or component is used consistently and shows up in the gallery (`src/gallery_view.rs`).
-    - path: "src/phone/**"
+    - path: "core/src/phone/**"
       instructions: |
         This is the phone's end-to-end encryption and wire format. The phone (`phone/*.js`) and its test vectors (`phone/test/vectors`) must change with any change to the format, keys or framing here. Review crypto carefully: nonce reuse, key handling, constant-time comparison, and anything that logs secrets.
     - path: "phone/**"
       instructions: |
-        The phone web app talks to the Rust side in `src/phone` through the relay. A change to the encryption or message format must match `src/phone` and the test vectors. Never log keys, tokens or message contents. The app embeds these files, so a change here ships with the desktop build. `sw.js` caches nothing on purpose; flag a change that starts caching the page.
+        The phone web app talks to the Rust side in `core/src/phone` through the relay. A change to the encryption or message format must match `core/src/phone` and the test vectors. Never log keys, tokens or message contents. The app embeds these files, so a change here ships with the desktop build. `sw.js` caches nothing on purpose; flag a change that starts caching the page.
     - path: "relay/**"
       instructions: |
         The relay is a Cloudflare Worker that forwards encrypted frames between the desktop and the phone. It must never see plaintext or keys. Check limits and input validation on every frame, authentication on admin routes, and Durable Object state that can grow without a bound. A new route or limit needs a test in `relay/test`.
     - path: "teams/**"
       instructions: |
         The teams Worker signs users in with GitHub and keeps per-user feature flags in D1. It must never store or log the GitHub token or a session token; the database holds only SHA-256 hashes of sessions. Users are keyed by numeric GitHub ID, never by login. Every endpoint that needs a user goes through `session()`, and every team feature checks its flag on the server. Admin routes compare `ADMIN_SECRET` in constant time. No GitHub IDs of real users belong in the repository. A schema change is a new file in `teams/migrations`, never an edit to an applied one. A new route or check needs a test in `teams/test`.
-    - path: "src/headless*/**"
+    - path: "{src,core/src}/headless*/**"
       instructions: |
         This is the security boundary for headless agents. `sandbox.rs` must keep credentials, the host's sockets and the network out of the sandbox unless a `--allow` grants them. `policy.rs` reads commands the way a shell would; a new rule must hold up against quoting, `;`, `&&`, pipes, `$(…)`, `bash -c` and env prefixes, and must err toward asking. Actions in `broker.rs` that send, push, publish or pay must wait for the user's approval. Ask for a test for every new policy rule or way around one.
     - path: "src/headless.rs"
@@ -258,31 +261,31 @@ reviews:
     - path: "src/control.rs"
       instructions: |
         The control socket lets any process inside arakun open pages, files and terminals. Check that the socket is created with permissions only the user can use, that every JSON line is validated before use, and that Windows (`uds_windows`) behaves the same.
-    - path: "src/{account,fetch,voice}.rs"
+    - path: "{src,core/src}/{account,fetch,voice}.rs"
       instructions: |
         These read and use API keys. Keys come from the desktop keyring or an environment variable and must never be logged, shown in full, or written to a file other than the keyring.
     - path: "src/{cloudflare,posthog,github}/**"
       instructions: |
         These use the user's sign-ins (the `cf` profile, PostHog API keys in a 0600 file, the `gh` CLI). Check that tokens are never logged or shown, that files holding them are created 0600, and that network calls run off the UI thread with a timeout.
-    - path: "src/{state,durable,memory}.rs"
+    - path: "{src,core/src}/{state,durable,memory}.rs"
       instructions: |
         These are formats stored on disk. Files written by the last release must still load: new fields need `#[serde(default)]`, and a renamed or removed field breaks users. Writes must go through `durable.rs` so a crash never leaves a half-written file.
-    - path: "src/git.rs"
+    - path: "core/src/git.rs"
       instructions: |
         Every function here blocks; callers must run it on the background executor. Keep `GIT_OPTIONAL_LOCKS=0` on polling commands. Put `--` before paths and pass refs and paths as separate arguments, never through a shell.
-    - path: "src/agent/**"
+    - path: "core/src/agent/**"
       instructions: |
         Agents run as child processes that speak JSON-RPC on stdio. Check that a process is killed and reaped when its thread closes, that reads from its stdio never block the UI thread, and that unknown or missing fields in a message do not panic.
-    - path: "src/browser/**"
+    - path: "core/src/browser/**"
       instructions: |
         Browser tabs build only with the `browser` feature. CI builds them with clippy on Linux only, never on Windows or macOS and never in the tests. Check `cfg` gates and platform-specific paths by eye, and that code outside `src/browser` that uses them is behind `cfg(feature = "browser")`.
-    - path: "src/terminal/**"
+    - path: "core/src/terminal/**"
       instructions: |
         The terminal paints every frame. Flag allocations, locks held across painting, and work per cell that could be done per line. The PTY and its shell must be cleaned up when the `Terminal` drops.
-    - path: "src/platform.rs"
+    - path: "core/src/platform.rs"
       instructions: |
         Windows-specific behavior lives here. Changes need a check on a real Windows machine; say so if the pull request does not mention one. Check that docs/windows.md still matches.
-    - path: "Cargo.toml"
+    - path: "**/Cargo.toml"
       instructions: |
         - Each new dependency needs a comment above it that says what uses it, like the other entries.
         - Prefer pure Rust crates and crates GPUI already pulls in.

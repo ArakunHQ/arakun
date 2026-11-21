@@ -1,5 +1,5 @@
 // Charts and diagrams drawn from fenced blocks in agent replies, as the desktop
-// draws them (src/agent/chart.rs): ```chart (JSON, or `label: value` lines)
+// draws them (core/src/agent/chart.rs): ```chart (JSON, or `label: value` lines)
 // and ```mermaid (flowcharts and pies). The same input is accepted and the
 // flowchart is laid out by the same rules; here it is drawn as inline SVG.
 // Anything that does not parse stays a code block: render() returns null.

@@ -12,13 +12,13 @@ use std::path::{Path, PathBuf};
 /// Files that define the system or show it off, and the island: a black HUD
 /// over the desktop with type of its own, the same whatever the app's scale.
 const EXEMPT: &[&str] = &[
-    "src/theme.rs",
-    "src/ui.rs",
-    "src/ui/kit.rs",
-    "src/ui/chart.rs",
+    "core/src/theme.rs",
+    "core/src/ui.rs",
+    "core/src/ui/kit.rs",
+    "core/src/ui/chart.rs",
     "src/gallery_view.rs",
     "src/design_lint.rs",
-    "src/island.rs",
+    "core/src/island.rs",
 ];
 
 /// Files that keep their own corners and spacing: the island process draws a
@@ -369,6 +369,7 @@ fn views_use_the_design_system() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut files = Vec::new();
     sources(&root.join("src"), &mut files);
+    sources(&root.join("core/src"), &mut files);
     files.sort();
     let mut report = Vec::new();
     for file in files {

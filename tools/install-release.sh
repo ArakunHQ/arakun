@@ -141,7 +141,7 @@ check_glibc() {
 }
 
 # The Node.js major the Claude Code adapter needs at least (the "engines" of
-# @agentclientprotocol/claude-agent-acp, CLAUDE_ACP_PACKAGE in src/agent/launch.rs).
+# @agentclientprotocol/claude-agent-acp, CLAUDE_ACP_PACKAGE in core/src/agent/launch.rs).
 node_major=22
 
 # The major version of the node on PATH, or nothing.
@@ -488,7 +488,7 @@ main() {
     mkdir "$tmp/x"
     tar -C "$tmp/x" -xzf "$tmp/$file"
     [ -f "$tmp/x/$name/arakun" ] || die "the archive has no arakun binary"
-    # The browser's runtime goes where src/browser/loader.rs looks first: a cef folder
+    # The browser's runtime goes where core/src/browser/loader.rs looks first: a cef folder
     # next to the binary, from a manual install, else the data folder (where
     # tools/install.sh keeps it too). Releases from before the browser have none.
     cef=${XDG_DATA_HOME:-$HOME/.local/share}/arakun/cef

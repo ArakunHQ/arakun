@@ -43,7 +43,7 @@ while [ $# -gt 0 ]; do
 done
 
 # macOS: an Arakun.app in ~/Applications, with CEF inside it (Contents/Frameworks, which
-# src/browser/loader.rs looks in first) and PREFIX/bin/arakun pointing into it.
+# core/src/browser/loader.rs looks in first) and PREFIX/bin/arakun pointing into it.
 if [ "$(uname)" = Darwin ]; then
   app=$HOME/Applications/Arakun.app
   if [ $uninstall = 1 ]; then

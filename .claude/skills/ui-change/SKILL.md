@@ -7,8 +7,8 @@ description: Make a visual change to Arakun's GPUI interface the way the project
 
 ## Use the design system
 
-Colors, grays, text sizes, radii and fonts come from `src/theme.rs` and
-`src/ui.rs`. Never write a value by hand where the system has a name.
+Colors, grays, text sizes, radii and fonts come from `core/src/theme.rs` and
+`core/src/ui.rs`. Never write a value by hand where the system has a name.
 
 | Need | Use |
 | --- | --- |
@@ -19,7 +19,7 @@ Colors, grays, text sizes, radii and fonts come from `src/theme.rs` and
 | Text size | `ui::TEXT_XS` .. `TEXT_LG`, `TEXT_TITLE`, or `.ty(Type::…)` |
 | Radius, heights | `ui::RADIUS_*`, `BUTTON_H`, `INPUT_H`, `CONTROL_H`, `TOOLBAR_H`, `PAGE_PAD` |
 | Font | `theme::FONT_SANS`, `theme::FONT_MONO` |
-| Building blocks | `ui::button`, `icon_button`, `card`, `field`, `segmented`, `modal_panel`, `page_title`, and `src/ui/kit.rs` |
+| Building blocks | `ui::button`, `icon_button`, `card`, `field`, `segmented`, `modal_panel`, `page_title`, and `core/src/ui/kit.rs` |
 
 Read the code around you and reuse its components before writing new ones. The
 Design system tab (Settings → Design system → Open) shows every token and

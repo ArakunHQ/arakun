@@ -727,9 +727,7 @@ pub fn mark_thread_read(id: &str) -> Result<(), Problem> {
 
 /// `ARAKUN_GITHUB=readonly`: notifications are read but never marked read on
 /// GitHub. `arakun dev` sets it for the test Arakun.
-pub fn read_only() -> bool {
-    std::env::var("ARAKUN_GITHUB").is_ok_and(|v| v == "readonly")
-}
+pub use arakun_core::host::github_read_only as read_only;
 
 // ---------------------------------------------------------------------------
 // The command line

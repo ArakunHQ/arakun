@@ -21,7 +21,7 @@
 # DEST/sdk/        what CEF_PATH points at while building (through the .cef-sdk link that
 #                  .cargo/config.toml names)
 #   archive.json, include/, libcef.so (an empty stub: the app never links the real one,
-#   so a cef symbol missing from src/browser/loader.rs fails the link instead of
+#   so a cef symbol missing from core/src/browser/loader.rs fails the link instead of
 #   silently adding libcef.so to the binary's startup dependencies)
 set -eu
 

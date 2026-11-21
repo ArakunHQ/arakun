@@ -541,11 +541,9 @@ impl TeamsView {
                 .pt(ui::sp(6.))
                 .child(Self::section("Teams"))
                 .child(
-                    ui::icon_button("teams-new", "add01", 14.)
-                        .tooltip(ui::tip("New team"))
-                        .on_click(
-                            cx.listener(|this, _, window, cx| this.show(Pane::NewTeam, window, cx)),
-                        ),
+                    ui::icon_button("teams-new", "add01", 14., "New team").on_click(
+                        cx.listener(|this, _, window, cx| this.show(Pane::NewTeam, window, cx)),
+                    ),
                 ),
         );
         if creating {
@@ -922,8 +920,7 @@ impl TeamsView {
                         .flex_1(),
                     )
                     .child(
-                        ui::icon_button(("teams-notice-team", i), "cancel01", 12.)
-                            .tooltip(ui::tip("Dismiss"))
+                        ui::icon_button(("teams-notice-team", i), "cancel01", 12., "Dismiss")
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.hub.update(cx, |h, cx| h.dismiss_notice(&id, cx))
                             })),
@@ -1368,14 +1365,20 @@ impl TeamsView {
                         .border_color(theme::border())
                         .bg(theme::raised())
                         .child(
-                            ui::icon_button(("teams-reply", index), "arrow-turn-backward", 13.)
-                                .tooltip(ui::tip("Reply"))
-                                .on_click(cx.listener(move |this, _, window, cx| {
+                            ui::icon_button(
+                                ("teams-reply", index),
+                                "arrow-turn-backward",
+                                13.,
+                                "Reply",
+                            )
+                            .on_click(cx.listener(
+                                move |this, _, window, cx| {
                                     this.reply_to = Some(id.clone());
                                     let handle = this.composer.read(cx).focus_handle(cx);
                                     window.focus(&handle, cx);
                                     cx.notify();
-                                })),
+                                },
+                            )),
                         ),
                 )
             })
@@ -1508,11 +1511,11 @@ impl TeamsView {
                     ),
                 )
                 .child(
-                    ui::icon_button(("teams-notice", i), "cancel01", 12.)
-                        .tooltip(ui::tip("Dismiss"))
-                        .on_click(cx.listener(move |this, _, _, cx| {
+                    ui::icon_button(("teams-notice", i), "cancel01", 12., "Dismiss").on_click(
+                        cx.listener(move |this, _, _, cx| {
                             this.hub.update(cx, |h, cx| h.dismiss_notice(&id, cx))
-                        })),
+                        }),
+                    ),
                 )
                 .into_any_element(),
             );
@@ -1641,8 +1644,7 @@ impl TeamsView {
                         .child(snippet(&r.body.text)),
                 )
                 .child(
-                    ui::icon_button("teams-reply-cancel", "cancel01", 12.)
-                        .tooltip(ui::tip("Cancel reply (Esc)"))
+                    ui::icon_button("teams-reply-cancel", "cancel01", 12., "Cancel reply (Esc)")
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.reply_to = None;
                             cx.notify();
@@ -1840,8 +1842,7 @@ impl Render for TeamsView {
                 })
                 .when(registered, |d| {
                     d.child(
-                        ui::icon_button("teams-refresh", "refresh01", 13.)
-                            .tooltip(ui::tip("Read everything again"))
+                        ui::icon_button("teams-refresh", "refresh01", 13., "Read everything again")
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.hub.update(cx, |h, cx| h.refresh(cx))
                             })),
@@ -2013,8 +2014,7 @@ impl Render for TeamsView {
                                 crate::redact::text(&e).into_owned(),
                             )
                             .child(
-                                ui::icon_button("teams-info-dismiss", "cancel01", 12.)
-                                    .tooltip(ui::tip("Dismiss"))
+                                ui::icon_button("teams-info-dismiss", "cancel01", 12., "Dismiss")
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.hub.update(cx, |h, cx| {
                                             h.info = None;
@@ -2030,8 +2030,7 @@ impl Render for TeamsView {
                                 crate::redact::text(&e).into_owned(),
                             )
                             .child(
-                                ui::icon_button("teams-error-dismiss", "cancel01", 12.)
-                                    .tooltip(ui::tip("Dismiss"))
+                                ui::icon_button("teams-error-dismiss", "cancel01", 12., "Dismiss")
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.hub.update(cx, |h, cx| {
                                             h.error = None;

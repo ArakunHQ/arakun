@@ -199,7 +199,7 @@ impl CommitDialog {
             can,
         )
         .when(self.writing, |d| {
-            d.child(ui::spinner("commit-writing", 12., theme::content()))
+            d.child(ui::spinner(12., theme::content()))
         })
         .tooltip(ui::tip_text(tip))
         .when(can, |d| {
@@ -276,7 +276,7 @@ impl Render for CommitDialog {
                         } else {
                             theme::content()
                         };
-                        d.child(ui::spinner(("commit-spin", all as usize), 12., color))
+                        d.child(ui::spinner(12., color))
                     })
                     .on_click(cx.listener(move |this, _, _, cx| this.submit(all, cx)))
             };
@@ -796,7 +796,7 @@ impl PullRequestDialog {
             can,
         )
         .when(self.writing, |d| {
-            d.child(ui::spinner("pull-request-writing", 12., theme::content()))
+            d.child(ui::spinner(12., theme::content()))
         })
         .tooltip(ui::tip_text(tip))
         .when(can, |d| {
@@ -983,9 +983,7 @@ impl Render for PullRequestDialog {
                                     ready,
                                 )
                                 .when(self.busy == Some(false), |d| {
-                                    d.child(ui::spinner(
-                                        "pull-request-spin",
-                                        12.,
+                                    d.child(ui::spinner(12.,
                                         theme::background(),
                                     ))
                                 })
@@ -1230,9 +1228,7 @@ impl Render for ConfirmDialog {
                                         kind,
                                         enabled,
                                     )
-                                    .when(self.busy, |d| {
-                                        d.child(ui::spinner("git-confirm-spin", 12., spin_color))
-                                    })
+                                    .when(self.busy, |d| d.child(ui::spinner(12., spin_color)))
                                     .on_click(cx.listener(|this, _, _, cx| this.submit(cx))),
                                 )
                             }),

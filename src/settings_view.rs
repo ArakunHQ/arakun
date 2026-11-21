@@ -1970,9 +1970,7 @@ impl SettingsDialog {
             .flex_none()
             .items_center()
             .gap(crate::ui::sp(6.))
-            .when(busy, |d| {
-                d.child(ui::spinner("set-voice-busy", 12., theme::mix(0.5)))
-            })
+            .when(busy, |d| d.child(ui::spinner(12., theme::mix(0.5))))
             .child(
                 ui::button(
                     "set-voice-test",

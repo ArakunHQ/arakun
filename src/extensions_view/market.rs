@@ -830,17 +830,12 @@ impl ExtensionsView {
             let state: AnyElement = if loading {
                 match error.clone() {
                     Some(e) => note(e, Tone::Danger).into_any_element(),
-                    None => ui::loading(
-                        "ext-market-loading",
-                        match self.market {
-                            Market::Plugins => self.catalog_wait(),
-                            Market::Registry if self.ms.everything => {
-                                "Asking the MCP Registry…".into()
-                            }
-                            Market::Registry => "Gathering what each company publishes…".into(),
-                            Market::Skills => "Asking skills.sh…".into(),
-                        },
-                    )
+                    None => ui::loading(match self.market {
+                        Market::Plugins => self.catalog_wait(),
+                        Market::Registry if self.ms.everything => "Asking the MCP Registry…".into(),
+                        Market::Registry => "Gathering what each company publishes…".into(),
+                        Market::Skills => "Asking skills.sh…".into(),
+                    })
                     .into_any_element(),
                 }
             } else if self.market == Market::Skills && self.ms.skills_error.is_some() {
@@ -1035,8 +1030,7 @@ impl ExtensionsView {
                 .justify_center()
                 .h(px(ROW_H))
                 .child(if self.ms.registry_loading {
-                    ui::spinner("ext-registry-more-busy", 14., theme::text_faint())
-                        .into_any_element()
+                    ui::spinner(14., theme::text_faint()).into_any_element()
                 } else {
                     ui::button("ext-registry-more", "Load more", ButtonKind::Outline, true)
                         .on_click(cx.listener(|this, _, _, cx| this.search_registry(true, cx)))
@@ -1246,9 +1240,7 @@ impl ExtensionsView {
                             )
                         },
                     )
-                    .when(busy, |d| {
-                        d.child(ui::spinner("ext-market-busy", 13., theme::text_faint()))
-                    })
+                    .when(busy, |d| d.child(ui::spinner(13., theme::text_faint())))
                     .child(div().flex_1())
                     .child(
                         div()
@@ -1277,12 +1269,7 @@ impl ExtensionsView {
             Item::Server(_) => None,
         };
         if busy_name.is_some() && self.op.as_deref() == busy_name {
-            return ui::spinner(
-                SharedString::from(format!("ext-card-busy-{}", item.key())),
-                14.,
-                theme::text_faint(),
-            )
-            .into_any_element();
+            return ui::spinner(14., theme::text_faint()).into_any_element();
         }
         let target = item.clone();
         ui::button(
@@ -1615,7 +1602,7 @@ impl ExtensionsView {
                             .flex()
                             .items_center()
                             .gap(crate::ui::sp(8.))
-                            .child(ui::spinner("ext-detail-busy", 14., theme::text_faint()))
+                            .child(ui::spinner(14., theme::text_faint()))
                             .child("Installing…")
                             .into_any_element()
                     } else {
@@ -1717,7 +1704,7 @@ impl ExtensionsView {
                     .gap(crate::ui::sp(8.))
                     .ty(Type::Body)
                     .text_color(theme::text_subtle())
-                    .child(ui::spinner("ext-skill-looking", 14., theme::text_faint()))
+                    .child(ui::spinner(14., theme::text_faint()))
                     .child("Reading it on GitHub…")
                     .into_any_element(),
             ),
@@ -1737,7 +1724,7 @@ impl ExtensionsView {
                 .flex()
                 .items_center()
                 .gap(crate::ui::sp(8.))
-                .child(ui::spinner("ext-detail-busy", 14., theme::text_faint()))
+                .child(ui::spinner(14., theme::text_faint()))
                 .child("Installing…")
                 .into_any_element()
         } else {

@@ -383,7 +383,7 @@ impl Render for PilotDialog {
                                     free,
                                 )
                                 .when(self.busy, |d| {
-                                    d.child(ui::spinner("pilot-spin", 12., theme::background()))
+                                    d.child(ui::spinner(12., theme::background()))
                                 })
                                 .on_click(cx.listener(|this, _, _, cx| this.connect(cx))),
                             ),

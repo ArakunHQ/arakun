@@ -2171,10 +2171,7 @@ impl CloudflareView {
                 )
                 .into_any_element(),
             None => center()
-                .child(ui::loading(
-                    "cf-loading",
-                    "Reading your Cloudflare account…",
-                ))
+                .child(ui::loading("Reading your Cloudflare account…"))
                 .into_any_element(),
         }
     }

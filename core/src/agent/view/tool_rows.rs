@@ -293,7 +293,7 @@ impl ThreadView {
                         .py(crate::ui::sp(4.))
                         .cursor_pointer()
                         .child(if streaming {
-                            pulse(("thought-pulse", ix), self.active, label)
+                            pulse(self.active, label)
                         } else {
                             label.into_any_element()
                         })
@@ -438,7 +438,7 @@ impl ThreadView {
                     .text_color(theme::text_faint())
                     .into_any_element()
             } else {
-                spinner(("tool-spin", ix), self.active, 14., theme::mix(0.4))
+                spinner(self.active, 14., theme::mix(0.4))
             })
         } else {
             None

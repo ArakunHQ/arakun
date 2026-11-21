@@ -1254,7 +1254,6 @@ impl ThreadView {
                     .py(crate::ui::sp(4.))
                     .text_size(px(crate::ui::TEXT_LG))
                     .child(shimmer(
-                        ("thinking", ix),
                         self.active,
                         "Thinking…",
                         theme::text_faint(),
@@ -1277,12 +1276,7 @@ impl ThreadView {
                     .bg(theme::fill_raised())
                     .text_size(px(crate::ui::TEXT_MD))
                     .text_color(theme::text_muted())
-                    .child(spinner(
-                        ("retry-spin", ix),
-                        self.active,
-                        12.,
-                        theme::text_subtle(),
-                    ))
+                    .child(spinner(self.active, 12., theme::text_subtle()))
                     .child(div().min_w_0().truncate().child(retry.to_string())),
             );
         }
@@ -1396,7 +1390,7 @@ impl ThreadView {
                     places,
                 } => {
                     let ix = base + notices_from + k;
-                    col = col.child(notice_row(ix, text, *error, *mark));
+                    col = col.child(notice_row(text, *error, *mark));
                     if let Some(places) = self.notice_places(ix, places, cx) {
                         col = col.child(
                             div()
@@ -1693,7 +1687,7 @@ impl ThreadView {
             .py(crate::ui::sp(4.))
             .text_size(px(crate::ui::TEXT_LG))
             .text_color(theme::text_subtle())
-            .child(beacon("live-beacon", state, color))
+            .child(beacon(state, color))
             .child(div().flex_none().child(kind.label()))
             .child(div().text_color(theme::text_faint()).child("·"))
             .child(
@@ -2227,13 +2221,13 @@ fn compaction_divider(removed: u64, before: Option<u64>, after: Option<u64>) -> 
         .into_any_element()
 }
 
-fn notice_row(ix: usize, text: &str, error: bool, mark: Option<NoticeMark>) -> AnyElement {
+fn notice_row(text: &str, error: bool, mark: Option<NoticeMark>) -> AnyElement {
     let glyph = match (error, mark) {
         (true, _) => icon("alert-circle", 14.)
             .text_color(red().opacity(0.85))
             .into_any_element(),
         (false, Some(NoticeMark::Busy)) => {
-            crate::ui::spinner(("notice-busy", ix), 14., theme::mix(0.45)).into_any_element()
+            crate::ui::spinner(14., theme::mix(0.45)).into_any_element()
         }
         (false, Some(NoticeMark::Passed)) => icon("checkmark-circle02", 14.)
             .text_color(theme::success())

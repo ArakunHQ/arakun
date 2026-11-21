@@ -227,7 +227,7 @@ impl Render for AccountDialog {
                             .gap(crate::ui::sp(8.))
                             .text_size(px(ui::TEXT_SM))
                             .text_color(theme::text_subtle())
-                            .child(ui::spinner("acct-loading", 12., theme::mix(0.5)))
+                            .child(ui::spinner(12., theme::mix(0.5)))
                             .child("Reading usage…"),
                     );
                 }
@@ -309,9 +309,7 @@ impl Render for AccountDialog {
                 }))
                 .child(
                     ui::button("acct-refresh", "Refresh", ButtonKind::Ghost, !busy)
-                        .when(busy, |d| {
-                            d.child(ui::spinner("acct-refresh-spin", 11., theme::mix(0.6)))
-                        })
+                        .when(busy, |d| d.child(ui::spinner(11., theme::mix(0.6))))
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.account.update(cx, |a, cx| a.refresh(cx))
                         })),
@@ -489,7 +487,7 @@ pub fn rail_card(
         .child(icon("gauge", 14.).text_color(theme::text_faint()))
         .child(div().flex_1().truncate().child("Usage"))
         .when(account.busy() && show_droid, |d| {
-            d.child(ui::spinner("rail-usage-spin", 10., theme::text_faint()))
+            d.child(ui::spinner(10., theme::text_faint()))
         })
         .when(
             account.error().is_some() && !account.busy() && show_droid,

@@ -579,16 +579,15 @@ impl Shell {
             .p(ui::sp(12.))
             .child(ui::overline("Checking this machine").pb(ui::sp(8.)));
         match &o.agents {
-            None => found = found.child(scan_row("scan-agents", None, "Agents", "Looking")),
+            None => found = found.child(scan_row(None, "Agents", "Looking")),
             Some(rows) => {
-                for (i, row) in rows.iter().enumerate() {
+                for row in rows {
                     let says = match row.state {
                         Readiness::Ready => "Ready",
                         Readiness::OnFirstUse => "Set up at its first session",
                         Readiness::Missing => "Not installed",
                     };
                     found = found.child(scan_row(
-                        ("scan-agent", i),
                         Some(row.state != Readiness::Missing),
                         row.agent.label(),
                         says,
@@ -602,7 +601,7 @@ impl Shell {
             Some(GitHub::SignedOut) => (Some(false), "Signed out"),
             Some(GitHub::NoGh) => (Some(false), "The GitHub CLI is not installed"),
         };
-        found = found.child(scan_row("scan-github", gh_found, "GitHub", gh_says));
+        found = found.child(scan_row(gh_found, "GitHub", gh_says));
         let start = ui::button("onboarding-start", "Start", ButtonKind::Primary, true)
             .on_click(cx.listener(|this, _, window, cx| this.onboarding_move(1, window, cx)));
         div()
@@ -952,8 +951,7 @@ impl Shell {
 
     fn onboarding_agents(&self, o: &Onboarding, cx: &mut Context<Self>) -> AnyElement {
         let Some(rows) = &o.agents else {
-            return ui::loading("onboarding-agents-loading", "Looking for agents")
-                .into_any_element();
+            return ui::loading("Looking for agents").into_any_element();
         };
         let picked = crate::model::default_agent();
         let usable = rows
@@ -1152,7 +1150,7 @@ impl Shell {
     fn onboarding_connect(&self, o: &Onboarding, cx: &mut Context<Self>) -> AnyElement {
         use crate::telemetry_dialog::{DETAILS_URL, POINTS, point};
         let github = match o.github {
-            None => ui::spinner("onboarding-gh-spin", 14., theme::text_faint()).into_any_element(),
+            None => ui::spinner(14., theme::text_faint()).into_any_element(),
             Some(GitHub::Connected) => ui::badge("Connected", ui::Tone::Success).into_any_element(),
             Some(found) => {
                 let again = ui::button(
@@ -1463,15 +1461,9 @@ fn palette_tile(i: usize, p: &theme::Palette, on: bool, cx: &mut Context<Shell>)
 
 /// One line of the welcome's check: a tick, a spinner or an empty ring,
 /// what was looked for, and what was found.
-fn scan_row(
-    id: impl Into<ElementId>,
-    found: Option<bool>,
-    name: &'static str,
-    says: &'static str,
-) -> gpui::Div {
-    let id = id.into();
+fn scan_row(found: Option<bool>, name: &'static str, says: &'static str) -> gpui::Div {
     let mark = match found {
-        None => ui::spinner(id, 14., theme::text_faint()).into_any_element(),
+        None => ui::spinner(14., theme::text_faint()).into_any_element(),
         Some(true) => ui::icon("checkmark-circle02", 14.)
             .text_color(theme::success())
             .into_any_element(),

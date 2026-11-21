@@ -341,7 +341,7 @@ impl Render for ImportDialog {
                 .justify_center()
                 .text_size(px(ui::TEXT_MD))
                 .text_color(theme::text_subtle())
-                .child(ui::spinner("import-spin", 14., theme::mix(0.5)))
+                .child(ui::spinner(14., theme::mix(0.5)))
                 .child("Looking for sessions…")
                 .into_any_element()
         } else if self.found.is_empty() {

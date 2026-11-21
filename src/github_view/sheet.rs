@@ -258,8 +258,7 @@ impl GitHubView {
             (None, None) => {
                 top = top.child(match &problem {
                     Some(p) => self.detail_problem(item.as_ref(), p, cx),
-                    None => ui::loading("gh-item-loading", "Reading the pull request…")
-                        .into_any_element(),
+                    None => ui::loading("Reading the pull request…").into_any_element(),
                 });
             }
         }
@@ -470,9 +469,7 @@ impl GitHubView {
                             .text_color(theme::text_muted())
                             .child(crumb),
                     )
-                    .when(reading, |d| {
-                        d.child(ui::spinner("gh-reading", 12., theme::text_faint()))
-                    }),
+                    .when(reading, |d| d.child(ui::spinner(12., theme::text_faint()))),
             )
             .when(review, |d| {
                 d.child(
@@ -809,7 +806,7 @@ impl GitHubView {
                         .items_center()
                         .gap(crate::ui::sp(8.))
                         .pl(crate::ui::sp(18.))
-                        .child(ui::spinner("gh-decision-sending", 12., theme::text_faint()))
+                        .child(ui::spinner(12., theme::text_faint()))
                         .child(ui::text(
                             Type::Label,
                             theme::text_muted(),
@@ -1153,8 +1150,7 @@ impl GitHubView {
                                     })
                                     .cursor_pointer()
                                     .child(if self.task_sending {
-                                        ui::spinner("gh-task-sending", 11., theme::working())
-                                            .into_any_element()
+                                        ui::spinner(11., theme::working()).into_any_element()
                                     } else {
                                         icon("sparkles", 12.)
                                             .text_color(if can_task {

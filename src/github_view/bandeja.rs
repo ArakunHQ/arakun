@@ -503,7 +503,7 @@ impl GitHubView {
                             .items_center()
                             .justify_center()
                             .size(px(ui::ICON_BUTTON))
-                            .child(ui::spinner("gh-busy", 13., theme::text_faint()))
+                            .child(ui::spinner(13., theme::text_faint()))
                             .into_any_element()
                     } else {
                         ui::icon_button("gh-menu", "more-horizontal", 15., "Refresh, mark read, notices")
@@ -631,7 +631,7 @@ impl GitHubView {
                 && self.pilot.read(cx).board_problem().is_none()
                 && self.pilot.read(cx).config().is_some());
         if loading {
-            return ui::loading("gh-loading", "Reading your queue…").into_any_element();
+            return ui::loading("Reading your queue…").into_any_element();
         }
         let connected = self.pilot.read(cx).config().is_some();
         div()

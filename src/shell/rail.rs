@@ -183,11 +183,7 @@ fn pending_env_row(id: usize, name: String) -> gpui::Stateful<gpui::Div> {
                 .items_center()
                 .justify_center()
                 .size(px(14.))
-                .child(ui::spinner(
-                    ("env-pending-spin", id),
-                    12.,
-                    theme::text_faint(),
-                )),
+                .child(ui::spinner(12., theme::text_faint())),
         )
         .child(div().flex_1().min_w_0().truncate().child(name))
         .child(

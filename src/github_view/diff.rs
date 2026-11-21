@@ -95,9 +95,7 @@ impl GitHubView {
             .filter(|d| super::diff_is_current(&d.tip, &p.head_ref_oid, &p.base_ref_name))
             .map(|d| &d.state);
         match diff {
-            None | Some(DiffState::Loading) => {
-                ui::loading("gh-diff-loading", "Reading the diff…").into_any_element()
-            }
+            None | Some(DiffState::Loading) => ui::loading("Reading the diff…").into_any_element(),
             Some(DiffState::Failed(e)) => div()
                 .px(crate::ui::sp(18.))
                 .py(crate::ui::sp(14.))
@@ -564,9 +562,7 @@ impl GitHubView {
             .border_color(theme::border_subtle())
             .bg(theme::background());
         match self.check_logs.get(&job) {
-            None | Some(CheckLog::Loading) => {
-                block.child(ui::loading(("gh-check-log", job), "Reading the log…"))
-            }
+            None | Some(CheckLog::Loading) => block.child(ui::loading("Reading the log…")),
             Some(CheckLog::Failed(e)) => block
                 .gap(crate::ui::sp(8.))
                 .child(ui::text(Type::Caption, theme::error().into(), e.clone()))

@@ -1993,7 +1993,7 @@ impl Render for UsageView {
             );
 
         let body: AnyElement = match &self.records {
-            None => ui::loading("usage-loading", "Reading agent usage history…").into_any_element(),
+            None => ui::loading("Reading agent usage history…").into_any_element(),
             Some(_) => self.render_body(&s, cx),
         };
         div()

@@ -303,6 +303,22 @@ impl Shell {
 
     /// Does what a row of a composer or rail menu does.
     pub(super) fn menu_run(&mut self, key: MenuKey, window: &mut Window, cx: &mut Context<Self>) {
+        let focused = self
+            .menu_cursor
+            .and_then(|i| self.menu_keys(cx).get(i).cloned());
+        self.menu_run_key(key, window, cx);
+        // A pick can add or drop rows (another model may have no reasoning
+        // levels), so the cursor follows its action, not its old index.
+        if let Some(focused) = focused {
+            self.menu_cursor = self
+                .menu_keys(cx)
+                .iter()
+                .position(|k| same_action(k, &focused));
+        }
+        cx.notify();
+    }
+
+    fn menu_run_key(&mut self, key: MenuKey, window: &mut Window, cx: &mut Context<Self>) {
         use crate::agent::Setting;
         match key {
             MenuKey::Choice(agent, s, id, enabled) => {
@@ -340,7 +356,6 @@ impl Shell {
                 self.open_usage_tab(window, cx);
             }
         }
-        cx.notify();
     }
 
     /// `agent`'s reasoning levels, when there are two or more to pick from.
@@ -625,6 +640,7 @@ impl Shell {
                         .px(crate::ui::sp(8.))
                         .rounded(ui::menu_row_radius())
                         .cursor_pointer()
+                        .map(crate::ui::focusable)
                         .text_size(px(ui::TEXT_MD))
                         .text_color(theme::text())
                         .hover(|d| d.bg(theme::fill_hover()))
@@ -720,9 +736,8 @@ impl Shell {
             })
     }
 
-    /// The reasoning level as a row of bars, one per level, lit up to the
-    /// current one. Auto and Off light none; clicking the lit top bar goes
-    /// back to the first of them.
+    /// The reasoning level: Auto and Off as small buttons, then a bar per
+    /// level, lit up to the current one, and its name.
     fn render_effort_row(
         &self,
         agent: AgentKind,
@@ -732,23 +747,92 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         use crate::agent::Setting;
-        let auto = options
-            .iter()
-            .find(|o| effort_is_zero(&o.id))
-            .map(|o| o.id.clone());
-        let label = options
-            .iter()
-            .find(|o| o.id == now)
-            .map_or_else(|| "Auto".to_string(), |o| effort_short(&o.id, &o.name));
-        let levels: Vec<_> = options
-            .into_iter()
-            .filter(|o| !effort_is_zero(&o.id))
-            .collect();
+        let (zeros, levels): (Vec<_>, Vec<_>) =
+            options.into_iter().partition(|o| effort_is_zero(&o.id));
         let lit = levels.iter().position(|o| o.id == now);
+        let label = lit.map(|i| effort_short(&levels[i].id, &levels[i].name));
+        let tip = |o: &crate::agent::SettingOption| {
+            o.disabled
+                .clone()
+                .or_else(|| effort_tip(&o.id).map(str::to_string))
+                .unwrap_or_else(|| o.name.clone())
+        };
+        let zero_buttons: Vec<_> = zeros
+            .into_iter()
+            .enumerate()
+            .map(|(i, o)| {
+                let enabled = o.disabled.is_none();
+                let on = o.id == now;
+                div()
+                    .id(("model-effort-zero", i))
+                    .flex_none()
+                    .px(crate::ui::sp(6.))
+                    .py(crate::ui::sp(1.))
+                    .rounded(crate::ui::rad(ui::RADIUS_SM))
+                    .text_size(px(ui::TEXT_SM))
+                    .text_color(if on {
+                        theme::text()
+                    } else {
+                        theme::text_subtle()
+                    })
+                    .when(on, |d| d.bg(theme::fill_selected()))
+                    .when(!enabled, |d| d.opacity(0.4))
+                    .when(enabled && !on, |d| {
+                        d.cursor_pointer().hover(|s| s.text_color(theme::text()))
+                    })
+                    .child(effort_short(&o.id, &o.name))
+                    .tooltip(ui::tip_text(tip(&o)))
+                    .when_some(o.disabled.clone(), |d, why| d.aria_description(why))
+                    .when(enabled, |d| {
+                        let key = MenuKey::Choice(agent, Setting::Effort, o.id.clone(), true);
+                        d.on_click(cx.listener(move |this, _, window, cx| {
+                            this.menu_run(key.clone(), window, cx)
+                        }))
+                    })
+                    .into_any_element()
+            })
+            .collect();
+        let bars: Vec<_> = levels
+            .into_iter()
+            .enumerate()
+            .map(|(i, o)| {
+                let enabled = o.disabled.is_none();
+                let on = lit.is_some_and(|l| i <= l);
+                div()
+                    .id(("model-effort", i))
+                    .flex_1()
+                    .h(px(18.))
+                    .flex()
+                    .items_center()
+                    .when(enabled, |d| d.cursor_pointer())
+                    .child(
+                        div()
+                            .w_full()
+                            .h(px(6.))
+                            .rounded_full()
+                            .bg(if on {
+                                theme::active()
+                            } else {
+                                theme::fill_selected()
+                            })
+                            .when(!enabled, |d| d.opacity(0.4)),
+                    )
+                    .tooltip(ui::tip_text(tip(&o)))
+                    .when_some(o.disabled.clone(), |d, why| d.aria_description(why))
+                    .when(enabled, |d| {
+                        let key = MenuKey::Choice(agent, Setting::Effort, o.id.clone(), true);
+                        d.on_click(cx.listener(move |this, _, window, cx| {
+                            this.menu_run(key.clone(), window, cx)
+                        }))
+                    })
+                    .into_any_element()
+            })
+            .collect();
+        let has_bars = !bars.is_empty();
         div()
             .flex()
             .items_center()
-            .gap(crate::ui::sp(10.))
+            .gap(crate::ui::sp(8.))
             .h(px(ui::MENU_ROW_H))
             .px(crate::ui::sp(8.))
             .rounded(ui::menu_row_radius())
@@ -762,57 +846,20 @@ impl Shell {
                     .flex()
                     .items_center()
                     .gap(crate::ui::sp(3.))
-                    .children(levels.into_iter().enumerate().map(|(i, o)| {
-                        let enabled = o.disabled.is_none();
-                        let on = lit.is_some_and(|l| i <= l);
-                        // The top lit bar steps back to Auto, when there is one.
-                        let target = match (&auto, lit == Some(i)) {
-                            (Some(a), true) => a.clone(),
-                            _ => o.id.clone(),
-                        };
-                        let key = MenuKey::Choice(agent, Setting::Effort, target, enabled);
-                        let tip = o
-                            .disabled
-                            .clone()
-                            .or_else(|| effort_tip(&o.id).map(str::to_string))
-                            .unwrap_or_else(|| o.name.clone());
-                        div()
-                            .id(("model-effort", i))
-                            .flex_1()
-                            .h(px(18.))
-                            .flex()
-                            .items_center()
-                            .when(enabled, |d| d.cursor_pointer())
-                            .child(
-                                div()
-                                    .w_full()
-                                    .h(px(6.))
-                                    .rounded_full()
-                                    .bg(if on {
-                                        theme::active()
-                                    } else {
-                                        theme::fill_selected()
-                                    })
-                                    .when(!enabled, |d| d.opacity(0.4)),
-                            )
-                            .tooltip(ui::tip_text(tip))
-                            .when_some(o.disabled.clone(), |d, why| d.aria_description(why))
-                            .when(enabled, |d| {
-                                d.on_click(cx.listener(move |this, _, window, cx| {
-                                    this.menu_run(key.clone(), window, cx)
-                                }))
-                            })
-                    })),
+                    .children(zero_buttons)
+                    .children(bars),
             )
-            .child(
-                div()
-                    .flex_none()
-                    .w(px(40.))
-                    .text_right()
-                    .text_size(px(ui::TEXT_SM))
-                    .text_color(theme::text_muted())
-                    .child(label),
-            )
+            .when(has_bars, |d| {
+                d.child(
+                    div()
+                        .flex_none()
+                        .w(px(40.))
+                        .text_right()
+                        .text_size(px(ui::TEXT_SM))
+                        .text_color(theme::text_muted())
+                        .children(label),
+                )
+            })
             .into_any_element()
     }
 
@@ -1364,6 +1411,17 @@ fn effort_short(id: &str, name: &str) -> String {
     }
 }
 
+/// Whether two menu rows do the same thing, whatever state they show now.
+fn same_action(a: &MenuKey, b: &MenuKey) -> bool {
+    match (a, b) {
+        (MenuKey::Choice(a1, s1, id1, _), MenuKey::Choice(a2, s2, id2, _)) => {
+            a1 == a2 && s1 == s2 && id1 == id2
+        }
+        (MenuKey::Fast(a1, _), MenuKey::Fast(a2, _)) => a1 == a2,
+        _ => a == b,
+    }
+}
+
 /// Whether a reasoning level is the bottom of the meter, lighting no bars.
 fn effort_is_zero(id: &str) -> bool {
     matches!(id, "default" | "auto" | "none" | "off")
@@ -1423,6 +1481,20 @@ mod tests {
         }
         assert_eq!(effort_short("turbo", "Turbo"), "Turbo");
         assert_eq!(effort_tip("turbo"), None);
+    }
+
+    #[test]
+    fn the_cursor_follows_the_action_not_its_state() {
+        use crate::agent::Setting;
+        let c = AgentKind::Claude;
+        let pick = |id: &str, on| MenuKey::Choice(c, Setting::Effort, id.into(), on);
+        assert!(same_action(&pick("high", true), &pick("high", false)));
+        assert!(!same_action(&pick("high", true), &pick("low", true)));
+        assert!(same_action(
+            &MenuKey::Fast(c, true),
+            &MenuKey::Fast(c, false)
+        ));
+        assert!(!same_action(&MenuKey::Effort(c), &MenuKey::Reset(c)));
     }
 
     #[test]

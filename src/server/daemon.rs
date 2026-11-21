@@ -1521,6 +1521,38 @@ impl Daemon {
 
     /// Runs `f` over a session's entries and directory: the live thread's, or
     /// the transcript's when its agent is not running.
+    /// A session whose agent is not running (yet) has said no commands, so the
+    /// app's `/` popup gets the skills of its folder, as it shows for a local
+    /// one. The agent's own list replaces them once it runs.
+    fn send_folder_skills(&self, client: ClientId, session: &str, cx: &mut Context<Self>) {
+        let Some(record) = self.store.session(session) else {
+            return;
+        };
+        if !matches!(record.agent, AgentKind::Claude | AgentKind::WorkersAi) {
+            return;
+        }
+        let (session, cwd) = (session.to_string(), record.place.clone());
+        cx.spawn(async move |this, cx| {
+            let skills = cx
+                .background_spawn(crate::guard::task(async move {
+                    agent::claude_ext::skill_choices(&cwd)
+                }))
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                // The agent's own list went out meanwhile; this one is older.
+                let known = this
+                    .live
+                    .get(&session)
+                    .is_some_and(|l| l.thread.read(cx).commands_known());
+                if !known {
+                    let msg = wire::commands_message(&session, &skills);
+                    this.transport.send(client, msg);
+                }
+            });
+        })
+        .detach();
+    }
+
     fn with_entries<R>(&self, id: &str, cx: &App, f: impl FnOnce(&[Entry], &Path) -> R) -> R {
         match self.live.get(id) {
             Some(live) => {
@@ -2052,8 +2084,9 @@ impl Daemon {
                     }
                 }
                 self.transport.send(client, reply);
-                if let Some(commands) = commands {
-                    self.transport.send(client, commands);
+                match commands {
+                    Some(commands) => self.transport.send(client, commands),
+                    None => self.send_folder_skills(client, &session, cx),
                 }
             }
             ClientMsg::Close { session: None } => self.stop_watching(client, cx),

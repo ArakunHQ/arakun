@@ -1027,6 +1027,23 @@ pub(crate) fn agent_skills(cwd: &Path, personal: bool) -> Vec<Skill> {
         .collect()
 }
 
+/// The skills Claude Code would offer in `cwd`, as `/` commands: what the
+/// popup shows before a session has said what it has.
+pub(crate) fn skill_choices(cwd: &Path) -> Vec<super::Choice> {
+    as_choices(agent_skills(cwd, true))
+}
+
+fn as_choices(skills: Vec<Skill>) -> Vec<super::Choice> {
+    skills
+        .into_iter()
+        .map(|s| super::Choice {
+            id: s.name.clone(),
+            name: s.name,
+            description: (!s.description.is_empty()).then_some(s.description),
+        })
+        .collect()
+}
+
 fn skills_in(roots: Vec<SkillRoot>) -> Vec<Skill> {
     let mut out = Vec::new();
     for (source, root, prefix) in roots {
@@ -1521,6 +1538,28 @@ mod tests {
             .collect();
         assert_eq!(names, [("deploy", "Ship it"), ("review", "")]);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn skills_become_slash_choices_without_empty_descriptions() {
+        let skill = |name: &str, description: &str| Skill {
+            name: name.into(),
+            description: description.into(),
+            source: "project".into(),
+            path: PathBuf::new(),
+        };
+        let choices = as_choices(vec![skill("deploy", "Ship it"), skill("review", "")]);
+        let got: Vec<_> = choices
+            .iter()
+            .map(|c| (c.id.as_str(), c.name.as_str(), c.description.as_deref()))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("deploy", "deploy", Some("Ship it")),
+                ("review", "review", None)
+            ]
+        );
     }
 
     #[test]

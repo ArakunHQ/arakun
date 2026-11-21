@@ -338,29 +338,30 @@ that keeps one on purpose goes on its allow-list.
   Commits inside the pull request are not checked, because they do not reach `main`. To
   check them as you write them, turn on the [Git hooks](#git-hooks).
 - **Open it as a draft** (`gh pr create --draft`, or "Create draft pull request" on
-  GitHub). Nobody is asked to review a draft, so you can push while CI and CodeRabbit
-  run: CodeRabbit reviews drafts too, so its comments are usually waiting when the
+  GitHub). Nobody is asked to review a draft, so you can push while CI and cubic (the
+  review bot) run: cubic reviews drafts too, so its comments are usually waiting when the
   checks are. Once the required checks pass, mark it ready with `gh pr ready` or the
   button on GitHub. `tools/wait-checks.sh` waits for them, and for the macOS job only
   when the diff touches macOS code. Don't wait for the other checks (macOS for other
   changes, CodeQL), which can queue for a long time. Don't wait for the **Human approval**
   status either: for a pull request from outside the team it is required, but it only
   resolves after a person approves, and marking ready is what asks for the review. It
-  stays a merge gate, not a pre-ready one. When CodeRabbit finishes, people are asked to review
-  unless CodeRabbit approved and every review thread is resolved. A pull request from
+  stays a merge gate, not a pre-ready one. When cubic finishes, people are asked to review
+  unless cubic approved and every review thread is resolved. A pull request from
   outside the team always needs a
-  maintainer's approval: a workflow dismisses CodeRabbit's, and the **Human approval**
+  maintainer's approval: a workflow dismisses cubic's, and the **Human approval**
   status waits for a person.
-- **Answer every CodeRabbit comment.** Fix it and push, or reply with the reason you
-  won't. CodeRabbit reviews each push and resolves the comments it sees fixed. It
-  approves only once its blocking comments are resolved. When a commit you pushed
-  fixes a comment it left open, resolve that thread yourself, right after the push.
-  Only resolve what you fixed: leave a comment you declined open for the reviewer. If
-  CodeRabbit approves with comments still open, a workflow dismisses its approval and
-  asks a person, who resolves them and approves. `@coderabbitai resolve` and
-  `@coderabbitai approve` don't work on your own pull request. Its review rules are in
-  [.coderabbit.yaml](.coderabbit.yaml). If you change a rule in this guide, check the
-  instructions there too.
+- **Answer every cubic comment.** Fix it and push, or reply with the reason you
+  won't. cubic reviews each push and resolves the comments it sees fixed. It labels
+  each comment P0 to P3, and approves a routine change only once its P0 and P1
+  comments are resolved. When a commit you pushed fixes a comment it left open,
+  resolve that thread yourself, right after the push. Only resolve what you fixed:
+  leave a comment you declined open for the reviewer. If cubic approves with comments
+  still open, a workflow dismisses its approval and asks a person, who resolves them
+  and approves. To have cubic review again, comment `@cubic-dev-ai review`. Its review
+  rules are in [cubic.yaml](cubic.yaml); cubic reads that file from `main`, so a
+  change to it takes effect once merged. If you change a rule in this guide, check the
+  rules there too.
 - **Keep the branch up to date** with `main`, and make sure the required checks pass before you
   ask for a review. If a check fails and you think it is not your change, say so in the pull
   request.

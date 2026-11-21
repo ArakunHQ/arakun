@@ -12,6 +12,7 @@
 
 pub mod anim;
 pub mod cli;
+pub mod export;
 pub mod raster;
 pub mod scenes;
 pub mod script;

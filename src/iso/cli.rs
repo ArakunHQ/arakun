@@ -6,7 +6,7 @@ use std::time::Instant;
 
 use tiny_skia::{Color, FillRule, Paint, PathBuilder, Pixmap, PixmapPaint, Transform};
 
-use super::raster::{self, Fit};
+use super::export;
 use super::script::ScriptScene;
 use super::svg::{Palette, Rgb};
 use super::{Rect, Seg};
@@ -133,11 +133,7 @@ fn out_path(o: &Opts, ext: &str, tag: &str) -> PathBuf {
 }
 
 fn extent(scene: &ScriptScene) -> Result<Rect, String> {
-    let mut frames = Vec::new();
-    for i in 0..=48 {
-        frames.push(scene.frame(i as f32 / 48.)?);
-    }
-    super::rest_bounds(frames.into_iter()).ok_or_else(|| "the scene draws nothing".into())
+    export::extent(&|t, tau| scene.frame_at(t, tau), scene.meta.seconds)
 }
 
 /// One frame `w` px wide, as tall as the scene needs.
@@ -149,13 +145,7 @@ fn frame_pixmap(
     pal: &Palette,
     w: u32,
 ) -> Result<Pixmap, String> {
-    let pad = w as f32 * 0.04;
-    let aspect = (ext[3] - ext[1]) / (ext[2] - ext[0]).max(1.);
-    let h = ((w as f32 - 2. * pad) * aspect + 2. * pad).ceil() as u32;
-    let fit = Fit::new(ext, w as f32, h as f32, pad).ok_or("the scene has no size")?;
-    let items = super::shoot(&scene.frame_at(t, tau)?, ext);
-    raster::frame(&items, pal, w, h, fit, (w as f32 / 1000.).max(1.) * 1.25)
-        .ok_or_else(|| "could not draw".into())
+    export::pixmap(&|t, tau| scene.frame_at(t, tau), ext, t, tau, pal, w)
 }
 
 /// Writes `text` small in the corner of a sheet cell.
@@ -279,13 +269,19 @@ fn svg(o: &Opts) -> Result<String, String> {
     );
     pal.soft = scene.meta.soft;
     let ext = extent(&scene)?;
-    let items = super::shoot(&scene.frame(o.at)?, ext);
+    let svg = export::svg(
+        &scene.meta.name,
+        &|t, tau| scene.frame_at(t, tau),
+        ext,
+        o.at,
+        o.at * scene.meta.seconds,
+        &pal,
+    )?;
     let p = out_path(o, "svg", &format!("{:03}", (o.at * 1000.).round() as u32));
     if let Some(dir) = p.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
-    std::fs::write(&p, super::svg::frame(&scene.meta.name, &items, &pal, 16.))
-        .map_err(|e| e.to_string())?;
+    std::fs::write(&p, svg).map_err(|e| e.to_string())?;
     Ok(p.display().to_string())
 }
 
@@ -300,17 +296,9 @@ fn anim(o: &Opts) -> Result<String, String> {
     pal.soft = scene.meta.soft;
     let ext = extent(&scene)?;
     let secs = scene.meta.seconds;
-    let n = ((secs * o.fps).round() as usize).max(2);
-    let mut frames = Vec::with_capacity(n);
-    let mut cams = Vec::with_capacity(n);
-    for i in 0..n {
-        let t = i as f32 / n as f32;
-        let nodes = scene
-            .frame_at(t, t * secs)
-            .map_err(|e| format!("at t {t:.3}: {e}"))?;
-        cams.push(super::lens(&nodes, ext));
-        frames.push(super::shoot(&nodes, ext));
-    }
+    let frame = |t, tau| scene.frame_at(t, tau);
+    let (frames, cams) = export::samples(&frame, ext, secs, o.fps)?;
+    let n = frames.len();
     let p = out_path(o, "svg", "loop");
     if let Some(dir) = p.parent() {
         let _ = std::fs::create_dir_all(dir);

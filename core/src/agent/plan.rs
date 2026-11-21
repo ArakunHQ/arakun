@@ -17,6 +17,7 @@ use anyhow::{Context as _, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use super::thread::LimitStatus;
 use super::{AgentKind, cli_login};
 
 /// Also read through CLIProxyAPI (`cliproxy`), with each account's own token.
@@ -744,14 +745,16 @@ fn parse_headers(headers: &Value) -> PlanUsage {
         .into_iter()
         .filter_map(|(key, label)| {
             let used: f64 = get(&format!("{key}-utilization"))?.parse().ok()?;
-            let status = get(&format!("{key}-status")).unwrap_or_default();
+            let status = get(&format!("{key}-status"))
+                .filter(|s| !s.is_empty())
+                .map(|s| LimitStatus::parse(&s));
             Some(Window {
                 label: label.to_string(),
                 percent: percent(&Value::from(used)),
-                severity: match status.as_str() {
-                    "" | "allowed" => "normal",
-                    "rejected" => "critical",
-                    _ => "warning",
+                severity: match status {
+                    None | Some(LimitStatus::Allowed) => "normal",
+                    Some(LimitStatus::Rejected) => "critical",
+                    Some(LimitStatus::AllowedWarning | LimitStatus::Unknown) => "warning",
                 }
                 .to_string(),
                 resets_at: get(&format!("{key}-reset")).and_then(|r| r.parse().ok()),

@@ -1,6 +1,6 @@
 //! A transcript as plain text, for the commands that print one in a terminal.
 
-use super::{Entry, ToolCall, ToolContent, ToolStatus};
+use super::{Entry, PlanStatus, ToolCall, ToolContent, ToolStatus};
 
 const USER_CHARS: usize = 1000;
 const THOUGHT_CHARS: usize = 300;
@@ -44,10 +44,10 @@ fn render_entry(e: &Entry) -> Option<String> {
         Entry::Plan { entries } => {
             let mut out = "plan:".to_string();
             for p in entries {
-                let mark = match p.status.as_str() {
-                    "completed" => "x",
-                    "in_progress" => "~",
-                    _ => " ",
+                let mark = match p.status {
+                    PlanStatus::Completed => "x",
+                    PlanStatus::InProgress => "~",
+                    PlanStatus::Pending | PlanStatus::Unknown => " ",
                 };
                 out.push_str(&format!("\n  [{mark}] {}", p.content));
             }
@@ -166,12 +166,12 @@ mod tests {
                     PlanEntry {
                         content: "find it".into(),
                         priority: String::new(),
-                        status: "completed".into(),
+                        status: PlanStatus::Completed,
                     },
                     PlanEntry {
                         content: "fix it".into(),
                         priority: String::new(),
-                        status: "pending".into(),
+                        status: PlanStatus::Pending,
                     },
                 ],
             },

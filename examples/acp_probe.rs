@@ -147,7 +147,7 @@ impl Printer {
                 Entry::Plan { entries } => {
                     let sig = entries
                         .iter()
-                        .map(|p| format!("{}:{}", p.status, p.content))
+                        .map(|p| format!("{:?}:{}", p.status, p.content))
                         .collect::<Vec<_>>()
                         .join(" | ");
                     if self.tools[i] != sig {

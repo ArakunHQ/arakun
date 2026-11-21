@@ -1709,6 +1709,7 @@ fn render_markdown(
         None,
         None,
         None,
+        None,
     )
 }
 

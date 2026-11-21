@@ -1101,6 +1101,8 @@ struct Ctx<'a> {
     fade: Option<(&'a Fade, *const Inline)>,
     /// The folder relative image paths start from.
     base: Option<&'a Path>,
+    /// Copies of images on the server the session runs on, by link.
+    fetched: Option<&'a HashMap<String, PathBuf>>,
     selection: Option<Range<usize>>,
     /// Annotated ranges, highlighted until their note is sent or removed.
     marks: &'a [Range<usize>],
@@ -1386,7 +1388,7 @@ impl Ctx<'_> {
             let (url, label) = (url.to_string(), label.clone());
             move || image_link(&url, &label)
         };
-        let Some(source) = image_source(url, self.base) else {
+        let Some(source) = image_source(url, self.base, self.fetched) else {
             return link().into_any_element();
         };
         let file = match &source {
@@ -1709,6 +1711,7 @@ pub fn render(
     selection: Option<Range<usize>>,
     marks: &[Range<usize>],
     base: Option<&Path>,
+    fetched: Option<&HashMap<String, PathBuf>>,
     fade: Option<&Fade>,
     find: Option<Find>,
 ) -> AnyElement {
@@ -1722,6 +1725,7 @@ pub fn render(
             .filter(|f| !f.0.is_empty())
             .and_then(|f| Some((f, last_inline(blocks)? as *const Inline))),
         base,
+        fetched,
         selection,
         next: Cell::new(0),
     };
@@ -1761,22 +1765,57 @@ pub fn pieces<'a>(blocks: &'a [Block], out: &mut Vec<&'a str>) {
 }
 
 /// Where an image comes from: a web address as is, a path made absolute.
-/// `None` for paths that do not exist.
-fn image_source(url: &str, base: Option<&Path>) -> Option<ImageRef> {
+/// For a session on a server, `fetched` holds the copies of its files, by the
+/// url as written: a file at the same path here is another one. `None` for a
+/// path with no file (yet).
+fn image_source(
+    url: &str,
+    base: Option<&Path>,
+    fetched: Option<&HashMap<String, PathBuf>>,
+) -> Option<ImageRef> {
+    let clean = url.trim().trim_start_matches('<').trim_end_matches('>');
+    if clean.starts_with("http://") || clean.starts_with("https://") {
+        return Some(ImageRef::Web(SharedString::from(clean.to_string())));
+    }
+    match fetched {
+        Some(fetched) => fetched.get(url).cloned().map(ImageRef::File),
+        None => image_path(url, base)
+            .filter(|p| p.is_file())
+            .map(ImageRef::File),
+    }
+}
+
+/// The file an image link names: absolute, `~/` in the home folder, or
+/// relative to `base`. `None` for web addresses and data.
+pub fn image_path(url: &str, base: Option<&Path>) -> Option<PathBuf> {
     let url = url.trim().trim_start_matches('<').trim_end_matches('>');
-    if url.starts_with("http://") || url.starts_with("https://") {
-        return Some(ImageRef::Web(SharedString::from(url.to_string())));
+    if url.starts_with("http://") || url.starts_with("https://") || url.starts_with("data:") {
+        return None;
     }
     let path = url.strip_prefix("file://").unwrap_or(url);
     let path = match path.strip_prefix("~/") {
         Some(rest) => std::env::home_dir()?.join(rest),
         None => PathBuf::from(path),
     };
-    let path = match base {
+    Some(match base {
         Some(base) if path.is_relative() => base.join(path),
         _ => path,
-    };
-    path.is_file().then_some(ImageRef::File(path))
+    })
+}
+
+/// The links of the images in `src` that name files, as written.
+pub fn image_files(src: &str) -> Vec<String> {
+    let opts = Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
+    let mut out: Vec<String> = Vec::new();
+    for event in Parser::new_ext(src, opts) {
+        if let Event::Start(Tag::Image { dest_url, .. }) = event
+            && image_path(&dest_url, None).is_some()
+            && !out.iter().any(|u| *u == *dest_url)
+        {
+            out.push(dest_url.to_string());
+        }
+    }
+    out
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -1943,6 +1982,44 @@ pub fn summary(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn image_files_are_the_images_that_name_files() {
+        let text = "![a](shot.png) and ![b](https://x.dev/b.png)\n\n\
+            ![c](<my shot.png>) ![d](data:image/png;base64,AA) ![a again](shot.png)\n\n\
+            `![e](code.png)` [link](page.png)";
+        assert_eq!(image_files(text), ["shot.png", "my shot.png"]);
+        let base = Path::new("/srv/repo");
+        assert_eq!(
+            image_path("shot.png", Some(base)),
+            Some(PathBuf::from("/srv/repo/shot.png"))
+        );
+        assert_eq!(
+            image_path("/tmp/a.png", Some(base)),
+            Some(PathBuf::from("/tmp/a.png"))
+        );
+        assert_eq!(image_path("https://x.dev/a.png", Some(base)), None);
+    }
+
+    #[test]
+    fn a_servers_session_shows_only_the_copies_fetched_for_it() {
+        let dir = std::env::temp_dir();
+        let name = "arakun-md-fetched-test.png";
+        std::fs::write(dir.join(name), b"x").unwrap();
+        let copy = PathBuf::from("/tmp/copy.png");
+        let fetched = HashMap::from([("shot.png".to_string(), copy.clone())]);
+        assert_eq!(
+            image_source("shot.png", Some(&dir), Some(&fetched)),
+            Some(ImageRef::File(copy))
+        );
+        // The file of that name here is not the server's.
+        assert_eq!(image_source(name, Some(&dir), Some(&fetched)), None);
+        assert!(matches!(
+            image_source("https://x.io/a.png", Some(&dir), Some(&fetched)),
+            Some(ImageRef::Web(_))
+        ));
+        std::fs::remove_file(dir.join(name)).unwrap();
+    }
 
     #[test]
     fn bare_urls_leave_out_trailing_punctuation() {
@@ -2181,12 +2258,12 @@ mod tests {
         let name = "arakun-md-image-test.png";
         std::fs::write(dir.join(name), b"x").unwrap();
         assert_eq!(
-            image_source(name, Some(&dir)),
+            image_source(name, Some(&dir), None),
             Some(ImageRef::File(dir.join(name)))
         );
-        assert_eq!(image_source("missing-arakun.png", Some(&dir)), None);
+        assert_eq!(image_source("missing-arakun.png", Some(&dir), None), None);
         assert!(matches!(
-            image_source("https://x.io/a.png", None),
+            image_source("https://x.io/a.png", None, None),
             Some(ImageRef::Web(_))
         ));
     }

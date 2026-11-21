@@ -253,6 +253,15 @@ pub enum ClientMsg {
         #[serde(default)]
         from: usize,
     },
+    /// An image the session's agent named by its path, for the app to show:
+    /// the file is on the server. Answered with `image`.
+    Image {
+        session: String,
+        path: String,
+        /// The entry that named it last when asked, told back with the answer.
+        #[serde(default)]
+        at: usize,
+    },
     /// Makes a folder already on the server one sessions can start in. `~/`
     /// stands for the home folder there. Answered with `place_added`.
     AddPlace {

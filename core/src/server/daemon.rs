@@ -2492,6 +2492,27 @@ impl Daemon {
                 };
                 self.transport.send(client, reply);
             }
+            ClientMsg::Image { session, path, at } => {
+                if self.store.session(&session).is_none() {
+                    self.transport.send(client, gone(&session));
+                    return;
+                }
+                let file =
+                    self.with_entries(&session, cx, |all, cwd| wire::named_image(all, cwd, &path));
+                // A slow disk or mount holds up this answer only.
+                cx.spawn(async move |this, cx| {
+                    let reply = cx
+                        .background_spawn(crate::guard::task(async move {
+                            wire::image_message(&session, &path, at, file.as_deref()).to_string()
+                        }))
+                        .await;
+                    // Empty when reading it panicked: there is nothing to say.
+                    if !reply.is_empty() {
+                        let _ = this.update(cx, |this, _| this.transport.send(client, reply));
+                    }
+                })
+                .detach();
+            }
             ClientMsg::Transcript { session, from } => {
                 let Some(record) = self.store.session(&session) else {
                     self.transport.send(client, gone(&session));

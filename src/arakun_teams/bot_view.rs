@@ -11,7 +11,7 @@ use gpui::{
 };
 
 use super::super::bot::{self, Answer, BotMeta, Range, RangeError, Run, RunState, Step, Verdict};
-use super::super::decisions::{self, Acceptance};
+use super::super::decisions::{self, Acceptance, Reversal};
 use super::super::hub::{Delivery, Msg};
 use super::{AVATAR, Pane, TeamsView, clock};
 use crate::agent::AgentKind as Agent;
@@ -37,6 +37,36 @@ pub(super) struct BotState {
     pub my_login: String,
     /// Answers this user turned down on this device.
     pub rejected: HashSet<String>,
+    /// Answers whose range holds a message edited after them, by answer ID.
+    pub stale: HashMap<String, Stale>,
+    /// Answers whose decision a member reversed, by answer ID.
+    pub reversed: HashMap<String, Reversal>,
+}
+
+/// A message in an answer's range that was edited after the answer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct Stale {
+    /// Its number in the range.
+    pub n: usize,
+    pub login: String,
+    pub id: String,
+}
+
+/// The first message of a bot answer's range edited after the answer.
+pub(super) fn stale_of(messages: &[Msg], answer: &Msg) -> Option<Stale> {
+    let meta = bot::meta(answer)?;
+    let after = answer.seq?;
+    let range = bot::select_range(messages, &meta.range[1]).ok()?;
+    range.lines.iter().find_map(|l| {
+        let m = messages.iter().find(|m| m.id == l.id)?;
+        let e = m.edited.as_ref()?;
+        // An edit still on its way is newer than anything stored.
+        e.seq.is_none_or(|s| s > after).then(|| Stale {
+            n: l.n,
+            login: m.login.clone(),
+            id: m.id.clone(),
+        })
+    })
 }
 
 /// "Karlo", "Karlo and Dani", "Karlo, Dani and Rik".
@@ -60,6 +90,46 @@ fn sentence(s: &str) -> String {
         out.push('.');
     }
     out
+}
+
+/// A failed run's title and sentence: how far it got when it ran in
+/// parts, and a usage limit in plain words when it hit one.
+fn failed_text(run: &Run, why: &str) -> (String, String) {
+    let now = super::now();
+    let minute = crate::platform::local_time(now).map_or(0, |t| t.hour * 60 + t.minute);
+    let device = super::super::hub::device_name();
+    failed_text_at((run.done, run.parts), why, &device, now, minute as u32)
+}
+
+fn failed_text_at(
+    (done, parts): (usize, usize),
+    why: &str,
+    device: &str,
+    now: u64,
+    minute: u32,
+) -> (String, String) {
+    let title = if parts > 0 && done < parts {
+        format!("@bot stopped after {done} of {parts} parts")
+    } else {
+        "@bot stopped".to_string()
+    };
+    let body = match bot::usage_limit(why, now, minute) {
+        Some(limit) => {
+            let which = if limit.weekly { "weekly" } else { "5 h" };
+            let device = crate::redact::value(device);
+            match limit.resets_at {
+                Some(at) => format!(
+                    "Claude Code on {device} hit its {which} limit. It resets {}. Nothing was decided.",
+                    super::until_from(at, now)
+                ),
+                None => {
+                    format!("Claude Code on {device} hit its {which} limit. Nothing was decided.")
+                }
+            }
+        }
+        None => format!("{} Nothing was decided.", sentence(why)),
+    };
+    (title, body)
 }
 
 /// "read 23 messages", "read 214 messages, in 4 parts".
@@ -130,6 +200,16 @@ impl TeamsView {
             .map(|m| (m.id.clone(), decisions::acceptances(messages, &m.id)))
             .filter(|(_, a)| !a.is_empty())
             .collect();
+        let stale: HashMap<String, Stale> = messages
+            .iter()
+            .filter(|m| m.body.kind == "bot")
+            .filter_map(|m| Some((m.id.clone(), stale_of(messages, m)?)))
+            .collect();
+        let reversed: HashMap<String, Reversal> = messages
+            .iter()
+            .filter(|m| m.delivery == Delivery::Sent && bot::meta(m).is_some())
+            .filter_map(|m| Some((m.id.clone(), decisions::reversal(messages, &m.id)?)))
+            .collect();
         let me = hub.me();
         let accepting = messages
             .iter()
@@ -138,6 +218,8 @@ impl TeamsView {
             .map(String::from)
             .collect();
         BotState {
+            stale,
+            reversed,
             draft,
             hint,
             runs,
@@ -435,6 +517,9 @@ impl TeamsView {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let mut sections: Vec<AnyElement> = Vec::new();
+        if let Some(st) = bot.stale.get(&m.id) {
+            sections.push(self.render_stale(index, st, &meta.range[1], index_of, team_channel, cx));
+        }
         if let (Some(parts), Some(read)) = (meta.parts.filter(|p| *p > 1), meta.read) {
             sections.push(
                 div()
@@ -622,6 +707,97 @@ impl TeamsView {
             .into_any_element()
     }
 
+    /// "Based on an earlier version": a message in the range changed after
+    /// the answer. Jump to it, or ask @bot again on the same range.
+    fn render_stale(
+        &self,
+        index: usize,
+        st: &Stale,
+        ask_id: &str,
+        index_of: &HashMap<&str, usize>,
+        team_channel: (&str, &str),
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let target = index_of.get(st.id.as_str()).copied();
+        let id = st.id.clone();
+        let (t, c, ask) = (
+            team_channel.0.to_string(),
+            team_channel.1.to_string(),
+            ask_id.to_string(),
+        );
+        let running = self
+            .hub
+            .read(cx)
+            .bot
+            .runs
+            .iter()
+            .any(|r| r.ask_id == ask_id && matches!(r.state, RunState::Running(_)));
+        div()
+            .flex()
+            .items_center()
+            .gap(ui::sp(8.))
+            .py(ui::sp(12.))
+            .ty(Type::Label)
+            .font_weight(FontWeight::NORMAL)
+            .text_color(theme::text_muted())
+            .child(icon("pencil-edit01", 14.).text_color(theme::attention()))
+            .child(
+                div()
+                    .flex()
+                    .flex_1()
+                    .min_w_0()
+                    .flex_wrap()
+                    .items_center()
+                    .gap(ui::sp(4.))
+                    .child(
+                        div()
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(theme::text())
+                            .child("Based on an earlier version."),
+                    )
+                    .child(format!("{} edited message", st.login))
+                    .child(
+                        ui::text(Type::Caption, theme::text(), st.n.to_string())
+                            .px(ui::sp(4.))
+                            .rounded(ui::rad(ui::RADIUS_SM))
+                            .bg(theme::fill_selected())
+                            .font_family(theme::FONT_MONO),
+                    )
+                    .child("after this answer."),
+            )
+            .children(target.map(|row| {
+                ui::button(
+                    ("teams-stale-see", index),
+                    "See the edit",
+                    ButtonKind::Ghost,
+                    true,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| this.jump_to(row, id.clone(), cx)))
+            }))
+            .child(
+                ui::button(
+                    ("teams-stale-again", index),
+                    if running { "Asking…" } else { "Ask again" },
+                    ButtonKind::Outline,
+                    !running,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.hub.update(cx, |h, cx| {
+                        // The project the first answer read, if that run is
+                        // still here; else the one the window shows now.
+                        let project = h
+                            .bot
+                            .runs
+                            .iter()
+                            .find(|r| r.ask_id == ask)
+                            .map_or_else(|| h.bot.project.clone(), |r| r.project.clone());
+                        h.start_bot(&t, &c, &ask, project, cx)
+                    })
+                })),
+            )
+            .into_any_element()
+    }
+
     /// The decision @bot proposes, and what this user can do with it.
     #[allow(clippy::too_many_arguments)]
     fn render_proposed(
@@ -772,6 +948,31 @@ impl TeamsView {
             .map(|a| decisions::title_of(&a.decision))
             .unwrap_or_default();
         let (t, id) = (team_id.to_string(), m.id.clone());
+        let reversed = bot.reversed.get(&m.id);
+        let (icon_name, color, line) = match reversed {
+            Some(r) => {
+                let why = if r.reason.is_empty() {
+                    String::new()
+                } else {
+                    format!(" {}", sentence(&r.reason))
+                };
+                (
+                    "undo",
+                    theme::attention(),
+                    format!("Reversed. {} reversed “{title}”.{why}", r.login),
+                )
+            }
+            None => (
+                "tick-double02",
+                theme::success(),
+                format!("Decided. {} accepted “{title}”.", names(&who)),
+            ),
+        };
+        let lead = if reversed.is_some() {
+            "Reversed.".len()
+        } else {
+            "Decided.".len()
+        };
         div()
             .flex()
             .items_center()
@@ -787,19 +988,19 @@ impl TeamsView {
             .ty(Type::Label)
             .font_weight(FontWeight::NORMAL)
             .text_color(theme::text_muted())
-            .child(icon("tick-double02", 14.).text_color(theme::success()))
+            .child(icon(icon_name, 14.).text_color(color))
             .child(
-                div().flex_1().min_w_0().child(
-                    gpui::StyledText::new(format!("Decided. {} accepted “{title}”.", names(&who)))
-                        .with_highlights([(
-                            0.."Decided.".len(),
-                            gpui::HighlightStyle {
-                                font_weight: Some(FontWeight::MEDIUM),
-                                color: Some(theme::text()),
-                                ..Default::default()
-                            },
-                        )]),
-                ),
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .child(gpui::StyledText::new(line).with_highlights([(
+                        0..lead,
+                        gpui::HighlightStyle {
+                            font_weight: Some(FontWeight::MEDIUM),
+                            color: Some(theme::text()),
+                            ..Default::default()
+                        },
+                    )])),
             )
             .child(
                 ui::button(
@@ -837,55 +1038,57 @@ impl TeamsView {
             .border_1()
             .border_color(theme::border_subtle())
             .bg(theme::fill_raised());
-        let card =
-            match &run.state {
-                RunState::Running(step) => {
-                    let done = match step {
-                        Step::Summarizing { part, .. } => part.saturating_sub(1),
-                        Step::Reading => run.parts,
-                    };
-                    let progress =
-                        (run.parts > 0).then(|| {
+        let card = match &run.state {
+            RunState::Running(step) => {
+                let done = match step {
+                    Step::Summarizing { part, .. } => part.saturating_sub(1),
+                    Step::Reading => run.parts,
+                };
+                let progress = (run.parts > 0).then(|| {
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(ui::sp(8.))
+                        .ty(Type::Caption)
+                        .font_family(theme::FONT_MONO)
+                        .text_color(theme::text_faint())
+                        .child(
                             div()
                                 .flex()
-                                .items_center()
-                                .gap(ui::sp(8.))
-                                .ty(Type::Caption)
-                                .font_family(theme::FONT_MONO)
-                                .text_color(theme::text_faint())
-                                .child(div().flex().gap(ui::sp(2.)).children((0..run.parts).map(
-                                    |i| {
-                                        div().w(px(3.)).h(px(10.)).rounded(ui::rad(1.)).bg(
-                                            if i < done {
-                                                theme::text_muted()
-                                            } else {
-                                                theme::fill_selected()
-                                            },
-                                        )
-                                    },
-                                )))
-                                .child(format!("{done} of {} parts", run.parts))
-                        });
-                    card.child(ui::spinner(("teams-bot-spin", row), 14., theme::accent()))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .ty(Type::Body)
-                                .text_color(theme::text())
-                                .child(run.label()),
-                        )
-                        .children(progress)
-                        .child(
-                            ui::button(("teams-bot-stop", row), "Stop", ButtonKind::Ghost, true)
-                                .tooltip(ui::tip("Stop @bot. Nothing is posted"))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.hub.update(cx, |h, cx| h.stop_bot(&ask, cx));
+                                .gap(ui::sp(2.))
+                                .children((0..run.parts).map(|i| {
+                                    div().w(px(3.)).h(px(10.)).rounded(ui::rad(1.)).bg(
+                                        if i < done {
+                                            theme::text_muted()
+                                        } else {
+                                            theme::fill_selected()
+                                        },
+                                    )
                                 })),
                         )
-                }
-                RunState::Failed(why) => card
-                    .child(icon("cancel-circle", 14.).text_color(theme::error()))
+                        .child(format!("{done} of {} parts", run.parts))
+                });
+                card.child(ui::spinner(("teams-bot-spin", row), 14., theme::accent()))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .ty(Type::Body)
+                            .text_color(theme::text())
+                            .child(run.label()),
+                    )
+                    .children(progress)
+                    .child(
+                        ui::button(("teams-bot-stop", row), "Stop", ButtonKind::Ghost, true)
+                            .tooltip(ui::tip("Stop @bot. Nothing is posted"))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.hub.update(cx, |h, cx| h.stop_bot(&ask, cx));
+                            })),
+                    )
+            }
+            RunState::Failed(why) => {
+                let (title, body) = failed_text(run, why);
+                card.child(icon("cancel-circle", 14.).text_color(theme::error()))
                     .child(
                         div()
                             .flex()
@@ -894,16 +1097,12 @@ impl TeamsView {
                             .flex_1()
                             .min_w_0()
                             .child(
-                                ui::text(Type::Body, theme::text(), "@bot stopped")
+                                ui::text(Type::Body, theme::text(), title)
                                     .font_weight(FontWeight::MEDIUM),
                             )
                             .child(
-                                ui::text(
-                                    Type::Label,
-                                    theme::text_subtle(),
-                                    format!("{} Nothing was decided.", sentence(why)),
-                                )
-                                .font_weight(FontWeight::NORMAL),
+                                ui::text(Type::Label, theme::text_subtle(), body)
+                                    .font_weight(FontWeight::NORMAL),
                             ),
                     )
                     .child(
@@ -923,8 +1122,9 @@ impl TeamsView {
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.hub.update(cx, |h, cx| h.stop_bot(&ask, cx));
                             })),
-                    ),
-            };
+                    )
+            }
+        };
         let read = read_note(Some(run.read), (run.parts > 1).then_some(run.parts));
         div()
             .flex()
@@ -951,6 +1151,72 @@ impl TeamsView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_answer_goes_stale_when_its_range_is_edited_after_it() {
+        use super::super::super::bot::{Answer, Outcome};
+        use super::super::super::crypto::Body;
+        use super::super::super::hub::{Edited, apply_edits};
+        let m = |id: &str, seq: u64, gid: u64, body: Body| Msg {
+            id: id.into(),
+            seq: Some(seq),
+            at: seq,
+            github_id: gid,
+            login: format!("u{gid}"),
+            body,
+            delivery: Delivery::Sent,
+            edited: None,
+        };
+        let mut all = vec![
+            m("a", 1, 1, Body::text("idea", None)),
+            m("q", 2, 2, Body::text("@bot decide", Some("a".into()))),
+        ];
+        let range = bot::select_range(&all, "q").unwrap();
+        let outcome = Outcome {
+            answer: Answer {
+                ideas: Vec::new(),
+                verified: Vec::new(),
+                assumed: Vec::new(),
+                unchecked: Vec::new(),
+                decision: "Do it.".into(),
+            },
+            parts: 0,
+        };
+        let mut answer = m("bot", 3, 2, bot::bot_body(&range, 2, &outcome));
+        answer.github_id = 2;
+        all.push(answer.clone());
+        assert_eq!(stale_of(&all, &answer), None);
+        let mut edit = Body::text("a better idea", Some("a".into()));
+        edit.kind = "edit".into();
+        all.push(m("e", 4, 1, edit));
+        apply_edits(&mut all);
+        assert!(matches!(all[0].edited, Some(Edited { seq: Some(4), .. })));
+        assert_eq!(
+            stale_of(&all, &answer),
+            Some(Stale {
+                n: 1,
+                login: "u1".into(),
+                id: "a".into()
+            })
+        );
+    }
+
+    #[test]
+    fn a_failed_run_says_how_far_it_got_and_when_the_limit_resets() {
+        let now = 1_800_000_000;
+        let why = "Claude Code stopped: Claude AI usage limit reached|1800002400";
+        let (title, body) = failed_text_at((9, 23), why, "karlo-desktop", now, 0);
+        assert_eq!(title, "@bot stopped after 9 of 23 parts");
+        assert_eq!(
+            body,
+            "Claude Code on karlo-desktop hit its 5 h limit. It resets in 40 minutes. Nothing was decided."
+        );
+        let (title, body) = failed_text_at((3, 3), "the answer is too long to post", "x", now, 0);
+        assert_eq!(title, "@bot stopped");
+        assert_eq!(body, "The answer is too long to post. Nothing was decided.");
+        let (title, _) = failed_text_at((0, 0), why, "x", now, 0);
+        assert_eq!(title, "@bot stopped");
+    }
 
     #[test]
     fn names_read_as_a_list() {

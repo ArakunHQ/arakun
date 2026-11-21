@@ -19,8 +19,8 @@ use gpui::{AppContext as _, Context, Entity, Task};
 
 use super::Teams;
 use super::api::{
-    ApiError, Call, DeviceRow, Endorsement, InviteRow, Me, MemberRow, PendingRow, Role, Stored,
-    TeamDetail, TeamRow,
+    ApiError, Call, DeviceRow, Endorsement, InviteRow, Me, MemberRow, PendingRow, Remind, Role,
+    Stored, TeamDetail, TeamInvite, TeamRow, WaitingRow,
 };
 use super::crypto::{self, Body, Envelope, TeamKey, WireMessage};
 use super::socket::{self, Dial, Link};
@@ -33,6 +33,10 @@ const ENDORSE_POLL: Duration = Duration::from_secs(5);
 const REFRESH: Duration = Duration::from_secs(20);
 /// A team's device lists are read again at most this often for an unknown sender.
 const DEVICES_AGAIN: Duration = Duration::from_secs(5);
+/// Unread counts of channels not open here are read again at most this often
+/// while the tab shows, and at most every [`UNREAD_FOCUS`] when it gets focus.
+const UNREAD_AGAIN: Duration = Duration::from_secs(60);
+const UNREAD_FOCUS: Duration = Duration::from_secs(5);
 /// What a device code starts with, so a paste of something else is told apart.
 const CODE_PREFIX: &str = "arakun-device";
 const MAX_ENVELOPES: usize = 500;
@@ -81,6 +85,13 @@ pub struct TeamState {
     pub untrusted: Vec<String>,
     pub channels: Vec<ChannelInfo>,
     pub pending: Vec<PendingRow>,
+    /// The team's open invites, for its admins; `None` when the server
+    /// could not list them.
+    pub invites: Option<Vec<TeamInvite>>,
+    /// When each epoch's key was made, as far as the server says.
+    pub epoch_made: HashMap<u64, u64>,
+    /// Who sent this device its first key of the team: who let it in.
+    pub approved_by: Option<String>,
     /// This device holds no key of the team yet: an admin's device has to
     /// seal one to it.
     pub keyless: bool,
@@ -124,6 +135,67 @@ pub struct Msg {
     pub login: String,
     pub body: Body,
     pub delivery: Delivery,
+    /// The newest edit its sender made, once one applies: `body.text`
+    /// then holds the edited text.
+    pub edited: Option<Edited>,
+}
+
+/// An edit applied to a text message.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Edited {
+    /// The `edit` message.
+    pub id: String,
+    pub seq: Option<u64>,
+    pub at: u64,
+    /// The text as first sent.
+    pub original: String,
+}
+
+/// Applies every `edit` to the text message it names: only one by the same
+/// sender, of a `text` message, the newest by `seq` winning. One still on
+/// its way shows at once; one that failed does not.
+pub fn apply_edits(messages: &mut [Msg]) {
+    for m in messages.iter_mut() {
+        if let Some(e) = m.edited.take() {
+            m.body.text = e.original;
+        }
+    }
+    let mut edits: Vec<(Option<u64>, usize)> = messages
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| {
+            m.body.kind == "edit"
+                && m.body.reply_to.is_some()
+                && !matches!(m.delivery, Delivery::Failed(_))
+        })
+        .map(|(i, m)| (m.seq, i))
+        .collect();
+    edits.sort_by_key(|(seq, i)| (seq.is_none(), seq.unwrap_or(0), *i));
+    for (_, i) in edits {
+        let e = &messages[i];
+        let (id, seq, at, gid) = (e.id.clone(), e.seq, e.at, e.github_id);
+        let (target, text) = (
+            e.body.reply_to.clone().unwrap_or_default(),
+            e.body.text.clone(),
+        );
+        let Some(t) = messages.iter_mut().find(|m| m.id == target) else {
+            continue;
+        };
+        if t.body.kind != "text" || t.github_id != gid {
+            continue;
+        }
+        let original = t
+            .edited
+            .take()
+            .map_or_else(|| t.body.text.clone(), |e| e.original);
+        t.body.text = text;
+        t.edited = Some(Edited {
+            id,
+            seq,
+            at,
+            original,
+        });
+    }
 }
 
 impl ChannelState {
@@ -160,6 +232,9 @@ pub struct ChannelState {
     outbox: BTreeMap<String, String>,
     link: Option<Link>,
     seen_ids: HashSet<String>,
+    /// Who has this channel open now, by GitHub ID, as the server last said.
+    /// Empty while the socket is down: nobody is known to be here then.
+    pub here: Vec<u64>,
 }
 
 /// Only ordered history may cross a retention gap. A later live frame
@@ -244,15 +319,23 @@ pub struct Hub {
     pub info: Option<String>,
     /// Actions under way, by a key such as `approve:<team>:<id>`.
     pub busy: HashSet<String>,
-    /// Invites sent from here in this run, by team: the login and when. The
-    /// server has no list of a team's open invites to read back.
-    pub sent: Vec<(String, String, u64)>,
+    /// Teams this user asked to join, as the server lists them.
+    pub waiting: Vec<WaitingRow>,
+    /// A reminder to a team's admins may go again from this time, after the
+    /// server said it was too soon.
+    pub remind_after: HashMap<String, u64>,
     /// Who invited this user to a team, from invites accepted in this run.
     pub inviters: HashMap<String, String>,
     /// Teams an admin let this user into during this run: their chat says so.
     pub joined: HashSet<String>,
     /// @bot's runs and what this user did with its answers, on this device.
     pub bot: super::bot::Bots,
+    /// The channel the tab shows, by channel key: what arrives there is read.
+    viewing: Option<String>,
+    /// Unread counts of channels with no socket here, from their history.
+    unread_read: HashMap<String, usize>,
+    /// When those were last read.
+    unread_at: Option<Instant>,
     /// The team the last "Start a team" made, once the server named it, even
     /// when setting it up failed after: the Team tab opens that one.
     pub created: Option<String>,
@@ -312,6 +395,9 @@ impl Hub {
             error: None,
             busy: HashSet::new(),
             bot: super::bot::Bots::default(),
+            viewing: None,
+            unread_read: HashMap::new(),
+            unread_at: None,
             events: tx,
             generation: 0,
             roster_version: 0,
@@ -324,7 +410,8 @@ impl Hub {
             _poll: None,
             _tick: None,
             info: None,
-            sent: Vec::new(),
+            waiting: Vec::new(),
+            remind_after: HashMap::new(),
             inviters: HashMap::new(),
             joined: HashSet::new(),
             created: None,
@@ -402,10 +489,14 @@ impl Hub {
         self.error = None;
         self.info = None;
         self.busy.clear();
-        self.sent.clear();
+        self.waiting.clear();
+        self.remind_after.clear();
         self.inviters.clear();
         self.joined.clear();
         self.bot.clear();
+        self.viewing = None;
+        self.unread_read.clear();
+        self.unread_at = None;
         self.created = None;
         self._poll = None;
         self._tick = None;
@@ -694,13 +785,37 @@ impl Hub {
         let version = self.roster_version;
         self.run(
             cx,
-            |net| Ok((net.call().teams()?, net.call().invites()?)),
+            |net| {
+                let teams = net.call().teams()?;
+                let invites = net.call().invites()?;
+                // An older server has no list of requests; the teams file
+                // still remembers this device's.
+                let waiting = net.call().waiting().ok();
+                Ok((teams, invites, waiting))
+            },
             move |hub, result, cx| match result {
                 _ if version < hub.applied_roster => {}
-                Ok((teams, invites)) => {
+                Ok((teams, invites, waiting)) => {
                     hub.applied_roster = version;
                     hub.load = Load::Ready;
                     let ids: HashSet<&str> = teams.iter().map(|t| t.team_id.as_str()).collect();
+                    if let Some(waiting) = waiting {
+                        // A request the server no longer has, of a team this
+                        // user is not in, was turned down.
+                        let open: HashSet<&str> =
+                            waiting.iter().map(|w| w.team_id.as_str()).collect();
+                        let dropped: Vec<String> = hub
+                            .kept
+                            .asked()
+                            .keys()
+                            .filter(|t| !open.contains(t.as_str()) && !ids.contains(t.as_str()))
+                            .cloned()
+                            .collect();
+                        for t in dropped {
+                            hub.kept.forget_ask(&t);
+                        }
+                        hub.waiting = waiting;
+                    }
                     let asked: Vec<String> = hub
                         .kept
                         .asked()
@@ -743,13 +858,58 @@ impl Hub {
         );
     }
 
-    /// Teams this user asked to join and is waiting on, with their names.
+    /// Teams this user asked to join and is waiting on, with their names:
+    /// the server's list, oldest first, then any only this device remembers.
     pub fn asked(&self) -> Vec<(String, String)> {
-        self.kept
-            .asked()
+        let mut out: Vec<(String, String)> = self
+            .waiting
             .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect()
+            .map(|w| (w.team_id.clone(), w.team_name.clone()))
+            .collect();
+        for (k, v) in self.kept.asked() {
+            if !out.iter().any(|(t, _)| t == k) {
+                out.push((k.clone(), v.clone()));
+            }
+        }
+        out
+    }
+
+    /// The server's word on a request to join, when it has one.
+    pub fn waiting_for(&self, team_id: &str) -> Option<&WaitingRow> {
+        self.waiting.iter().find(|w| w.team_id == team_id)
+    }
+
+    /// Reminds a team's admins of this user's request. Too soon, and the
+    /// button waits for the time the server gives.
+    pub fn remind(&mut self, team_id: &str, cx: &mut Context<Self>) {
+        let busy = format!("remind:{team_id}");
+        if !self.busy.insert(busy.clone()) {
+            return;
+        }
+        self.error = None;
+        self.info = None;
+        let team_id = team_id.to_string();
+        self.run(
+            cx,
+            {
+                let team_id = team_id.clone();
+                move |net| net.call().remind(&team_id)
+            },
+            move |hub, result, _| {
+                hub.busy.remove(&busy);
+                match result {
+                    Ok(Remind::Sent) => {
+                        if let Some(w) = hub.waiting.iter_mut().find(|w| w.team_id == team_id) {
+                            w.reminded_at = Some(now());
+                        }
+                    }
+                    Ok(Remind::TooSoon(at)) => {
+                        hub.remind_after.insert(team_id, at);
+                    }
+                    Err(e) => hub.error = Some(format!("Could not send the reminder: {e}")),
+                }
+            },
+        );
     }
 
     /// One team: its members and their devices, its channels, this device's
@@ -876,6 +1036,9 @@ impl Hub {
                 untrusted: read.untrusted,
                 channels,
                 pending: read.pending,
+                invites: read.invites,
+                epoch_made: read.epoch_made,
+                approved_by: read.approved_by,
                 keyless,
                 problem,
                 devices_read: Instant::now(),
@@ -1241,19 +1404,69 @@ impl Hub {
                 let team_id = team_id.clone();
                 move |net| net.call().invite(&team_id, &login).map(|()| login)
             },
-            move |hub, result, _| {
+            move |hub, result, cx| {
                 hub.busy.remove(&busy);
                 match result {
-                    Ok(login) => {
-                        hub.sent
-                            .retain(|(t, l, _)| !(*t == team_id && l.eq_ignore_ascii_case(&login)));
-                        hub.sent.push((team_id, login, now()));
-                    }
+                    // The invited list comes back from the server.
+                    Ok(_) => hub.load_team(&team_id, cx),
                     Err(ApiError::Status(409, _)) => {
                         hub.error =
                             Some("They are a member already, or waiting for approval.".into())
                     }
                     Err(e) => hub.error = Some(format!("Could not invite: {e}")),
+                }
+            },
+        );
+    }
+
+    /// Takes back an invite nobody answered yet.
+    pub fn withdraw(&mut self, team_id: &str, invite_id: &str, cx: &mut Context<Self>) {
+        let busy = format!("withdraw:{invite_id}");
+        if !self.busy.insert(busy.clone()) {
+            return;
+        }
+        self.error = None;
+        self.info = None;
+        let (team_id, invite_id) = (team_id.to_string(), invite_id.to_string());
+        self.run(
+            cx,
+            {
+                let team_id = team_id.clone();
+                move |net| net.call().withdraw(&team_id, &invite_id)
+            },
+            move |hub, result, cx| {
+                hub.busy.remove(&busy);
+                match result {
+                    Ok(()) => hub.load_team(&team_id, cx),
+                    Err(e) => hub.error = Some(format!("Could not withdraw the invite: {e}")),
+                }
+            },
+        );
+    }
+
+    /// Turns an invite down: it goes away for good.
+    pub fn decline(&mut self, invite: &InviteRow, cx: &mut Context<Self>) {
+        let busy = format!("decline:{}", invite.invite_id);
+        if !self.busy.insert(busy.clone()) {
+            return;
+        }
+        self.error = None;
+        self.info = None;
+        let id = invite.invite_id.clone();
+        self.run(
+            cx,
+            {
+                let id = id.clone();
+                move |net| net.call().decline(&id)
+            },
+            move |hub, result, cx| {
+                hub.busy.remove(&busy);
+                match result {
+                    Ok(()) => {
+                        hub.invites.retain(|i| i.invite_id != id);
+                        hub.refresh(cx);
+                    }
+                    Err(e) => hub.error = Some(format!("Could not decline: {e}")),
                 }
             },
         );
@@ -1610,6 +1823,7 @@ impl Hub {
             outbox: BTreeMap::new(),
             link: None,
             seen_ids: HashSet::new(),
+            here: Vec::new(),
         });
         state.link_id = link_id;
         state.link = Some(link);
@@ -1633,6 +1847,11 @@ impl Hub {
                 c.history_round += 1;
                 c.reading = false;
                 c.status = status;
+                // A new socket hears who is here right away; until then
+                // the last list may be stale.
+                if !connected {
+                    c.here.clear();
+                }
                 if refused {
                     c.link = None;
                     c.loading = false;
@@ -1653,6 +1872,12 @@ impl Hub {
                         if first_gap {
                             self.catch_up(key, cx);
                         }
+                    }
+                }
+                Some("presence") => {
+                    if let Some(here) = presence(&v) {
+                        let c = self.channels.get_mut(key).expect("looked up above");
+                        c.here = here;
                     }
                 }
                 Some("error") => {
@@ -1799,6 +2024,7 @@ impl Hub {
                 login: t.login(gid),
                 body,
                 delivery: Delivery::Sent,
+                edited: None,
             };
             match c.messages.iter().position(|m| m.id == msg.id) {
                 Some(i) => c.messages[i] = msg,
@@ -1808,6 +2034,7 @@ impl Hub {
         // Sent ones by seq; what is still on its way stays at the end.
         c.messages
             .sort_by_key(|m| (m.seq.is_none(), m.seq.unwrap_or(0), m.at));
+        apply_edits(&mut c.messages);
         let team_id = c.team_id.clone();
         let channel_id = c.channel_id.clone();
         c.bot_waiting.extend(asked);
@@ -1824,6 +2051,9 @@ impl Hub {
                 .unwrap_or_else(|| self.bot.project.clone());
             self.start_bot(&team_id, &channel_id, &id, project, cx);
         }
+        if self.viewing.as_deref() == Some(key) {
+            self.mark_read(key, cx);
+        }
         if unknown_seen
             && self
                 .team
@@ -1837,6 +2067,129 @@ impl Hub {
         }
     }
 
+    // ---- unread ---------------------------------------------------------------
+
+    /// The channel the tab shows now, if any: its messages count as read.
+    pub fn set_viewing(&mut self, key: Option<String>, cx: &mut Context<Self>) {
+        if self.viewing == key {
+            return;
+        }
+        self.viewing = key.clone();
+        if let Some(key) = key {
+            self.unread_read.remove(&key);
+            self.mark_read(&key, cx);
+        }
+        cx.notify();
+    }
+
+    fn mark_read(&mut self, key: &str, cx: &mut Context<Self>) {
+        let Some(c) = self.channels.get(key) else {
+            return;
+        };
+        // A channel read only through history has no live frame yet.
+        if self
+            .kept
+            .mark_read(key, c.history.newest.max(c.history.through))
+        {
+            self.save(cx);
+        }
+    }
+
+    /// Messages from others after the last one this device showed. Channels
+    /// with a socket count what they hold; the rest what history said.
+    pub fn unread(&self, team_id: &str, channel_id: &str) -> usize {
+        let key = channel_key(team_id, channel_id);
+        if self.viewing.as_deref() == Some(key.as_str()) {
+            return 0;
+        }
+        let me = self.github_id();
+        match self.channels.get(&key) {
+            Some(c) if !c.loading => {
+                let after = self.kept.last_read(&key).unwrap_or(0);
+                c.messages
+                    .iter()
+                    .filter(|m| m.seq.is_some_and(|s| s > after))
+                    .filter(|m| m.github_id != me && counts_as_unread(&m.body.kind))
+                    .count()
+            }
+            _ => self.unread_read.get(&key).copied().unwrap_or(0),
+        }
+    }
+
+    /// Reads the unread counts of channels with no socket here, from one
+    /// history page each: on focus (`soon`), else at most every
+    /// [`UNREAD_AGAIN`].
+    pub fn refresh_unread(&mut self, soon: bool, cx: &mut Context<Self>) {
+        let wait = if soon { UNREAD_FOCUS } else { UNREAD_AGAIN };
+        if self.unread_at.is_some_and(|at| at.elapsed() < wait) || self.team.is_empty() {
+            return;
+        }
+        self.unread_at = Some(Instant::now());
+        let me = self.github_id();
+        let mut asks = Vec::new();
+        for (team_id, t) in &self.team {
+            let mine: HashSet<String> = t
+                .devices
+                .get(&me)
+                .into_iter()
+                .flatten()
+                .map(|d| d.device_id.clone())
+                .collect();
+            let keys: HashMap<u64, TeamKey> = self.kept.keys(team_id).into_iter().collect();
+            for ch in &t.channels {
+                let key = channel_key(team_id, &ch.id);
+                if self.channels.contains_key(&key) {
+                    continue;
+                }
+                let after = self.kept.last_read(&key).unwrap_or(0);
+                asks.push((
+                    key,
+                    team_id.clone(),
+                    ch.id.clone(),
+                    after,
+                    mine.clone(),
+                    keys.clone(),
+                ));
+            }
+        }
+        if asks.is_empty() {
+            return;
+        }
+        self.run(
+            cx,
+            move |net| {
+                let mut out = Vec::new();
+                for (key, team_id, channel_id, after, mine, keys) in asks {
+                    // One channel failing (an old server, a removed channel)
+                    // leaves its count as it was.
+                    let Ok(page) = net.call().history(&team_id, &channel_id, after) else {
+                        continue;
+                    };
+                    let n = page
+                        .iter()
+                        .filter(|s| !mine.contains(&s.message.device_id))
+                        .filter(|s| {
+                            keys.get(&s.message.epoch)
+                                .and_then(|k| {
+                                    crypto::open_message(&team_id, &channel_id, &s.message, k).ok()
+                                })
+                                .is_none_or(|b| counts_as_unread(&b.kind))
+                        })
+                        .count();
+                    out.push((key, n));
+                }
+                Ok(out)
+            },
+            |hub, result, _| {
+                if let Ok(counts) = result {
+                    for (key, n) in counts {
+                        hub.unread_read.insert(key, n);
+                    }
+                }
+            },
+        );
+    }
+
     /// Sends a text message, replying to `reply_to` when given. One that
     /// mentions @bot runs it once the server has stored it.
     pub fn send(
@@ -1848,6 +2201,24 @@ impl Hub {
         cx: &mut Context<Self>,
     ) -> bool {
         let mut body = Body::text(text, reply_to);
+        if super::bot::mentions_bot(&body.text) {
+            body.mentions = vec!["bot".into()];
+        }
+        self.send_body(team_id, channel_id, body, cx)
+    }
+
+    /// Edits one of this user's text messages: a new `edit` message that
+    /// names it. Its mentions never run @bot again.
+    pub fn edit(
+        &mut self,
+        team_id: &str,
+        channel_id: &str,
+        id: &str,
+        text: String,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let mut body = Body::text(text, Some(id.to_string()));
+        body.kind = "edit".into();
         if super::bot::mentions_bot(&body.text) {
             body.mentions = vec!["bot".into()];
         }
@@ -1909,7 +2280,9 @@ impl Hub {
             login: me.map(|m| m.login).unwrap_or_default(),
             body,
             delivery: Delivery::Sending,
+            edited: None,
         });
+        apply_edits(&mut c.messages);
         c.outbox.insert(id, frame.clone());
         if c.status == socket::Status::Connected
             && let Some(link) = &c.link
@@ -1943,6 +2316,44 @@ impl Hub {
             self.bot.asked.remove(id);
         }
     }
+}
+
+/// Kinds that show as a message of their own, and so count as unread.
+/// Acceptances show under their answer.
+fn counts_as_unread(kind: &str) -> bool {
+    matches!(kind, "text" | "bot" | "decision")
+}
+
+/// An unread count as the channel list shows it.
+pub fn unread_label(n: usize) -> Option<String> {
+    match n {
+        0 => None,
+        1..=99 => Some(n.to_string()),
+        _ => Some("99+".into()),
+    }
+}
+
+/// The GitHub IDs of a `presence` frame, each once.
+fn presence(v: &serde_json::Value) -> Option<Vec<u64>> {
+    let mut here: Vec<u64> = v["here"]
+        .as_array()?
+        .iter()
+        .filter_map(serde_json::Value::as_u64)
+        .collect();
+    here.sort_unstable();
+    here.dedup();
+    Some(here)
+}
+
+/// A team's members for the "Here now" list: who has the channel open
+/// first, each group in the team's order, with whether they are here.
+pub fn here_now<'a>(members: &'a [MemberRow], here: &[u64]) -> Vec<(&'a MemberRow, bool)> {
+    let mut out: Vec<(&MemberRow, bool)> = members
+        .iter()
+        .map(|m| (m, here.contains(&m.github_id)))
+        .collect();
+    out.sort_by_key(|(_, on)| !on);
+    out
 }
 
 const NO_KEY: &str = "This device does not hold the team's current key yet.";
@@ -2303,6 +2714,9 @@ struct TeamRead {
     keys: Vec<(u64, TeamKey)>,
     bad_envelopes: usize,
     pending: Vec<PendingRow>,
+    invites: Option<Vec<TeamInvite>>,
+    epoch_made: HashMap<u64, u64>,
+    approved_by: Option<String>,
 }
 
 fn read_team(
@@ -2334,7 +2748,25 @@ fn read_team(
         .collect();
     let mut keys = Vec::new();
     let mut bad = 0;
-    for e in call.envelopes(team_id)? {
+    let dated = call.dated_envelopes(team_id)?;
+    let mut epoch_made = HashMap::new();
+    for d in &dated {
+        if let Some(at) = d.made_at {
+            epoch_made.insert(d.envelope.epoch, at);
+        }
+    }
+    // Who sealed this device's oldest key: the admin who let it in.
+    let approved_by = dated
+        .iter()
+        .min_by_key(|d| d.envelope.epoch)
+        .and_then(|d| {
+            devices
+                .iter()
+                .find(|(_, ds)| ds.iter().any(|x| x.device_id == d.envelope.from))
+        })
+        .and_then(|(gid, _)| detail.members.iter().find(|m| m.github_id == *gid))
+        .map(|m| m.login.clone());
+    for e in dated.into_iter().map(|d| d.envelope) {
         if held.contains(&e.epoch) {
             continue;
         }
@@ -2348,10 +2780,11 @@ fn read_team(
             Err(_) => bad += 1,
         }
     }
-    let pending = if admin {
-        call.pending(team_id)?
+    let (pending, invites) = if admin {
+        // An older server has no list of open invites.
+        (call.pending(team_id)?, call.team_invites(team_id).ok())
     } else {
-        Vec::new()
+        (Vec::new(), None)
     };
     Ok(TeamRead {
         detail,
@@ -2360,6 +2793,9 @@ fn read_team(
         keys,
         bad_envelopes: bad,
         pending,
+        invites,
+        epoch_made,
+        approved_by,
     })
 }
 
@@ -2454,6 +2890,78 @@ mod tests {
         c.live(44);
         assert_eq!(c.through, 44);
         assert!(!c.gap());
+    }
+
+    #[test]
+    fn reads_presence_and_puts_who_is_here_first() {
+        let v = serde_json::json!({ "type": "presence", "here": [9, 3, 9, "x"] });
+        assert_eq!(presence(&v), Some(vec![3, 9]));
+        assert_eq!(presence(&serde_json::json!({ "type": "presence" })), None);
+        let m = |id: u64, login: &str| MemberRow {
+            github_id: id,
+            login: login.into(),
+            role: Role::Member,
+            joined_at: 0,
+            first_key_epoch: None,
+        };
+        let members = vec![m(1, "karlo"), m(2, "rik"), m(3, "dani")];
+        let got: Vec<(&str, bool)> = here_now(&members, &[3, 1])
+            .into_iter()
+            .map(|(m, on)| (m.login.as_str(), on))
+            .collect();
+        assert_eq!(got, vec![("karlo", true), ("dani", true), ("rik", false)]);
+    }
+
+    #[test]
+    fn edits_apply_by_the_same_sender_newest_first() {
+        let m = |id: &str, seq: u64, gid: u64, body: Body| Msg {
+            id: id.into(),
+            seq: Some(seq),
+            at: seq,
+            github_id: gid,
+            login: "x".into(),
+            body,
+            delivery: Delivery::Sent,
+            edited: None,
+        };
+        let edit = |text: &str, of: &str| {
+            let mut b = Body::text(text, Some(of.into()));
+            b.kind = "edit".into();
+            b
+        };
+        let mut all = vec![
+            m("a", 1, 7, Body::text("first", None)),
+            m("e2", 4, 7, edit("third", "a")),
+            m("e1", 3, 7, edit("second", "a")),
+            // Someone else's edit, and an edit of a non-text message.
+            m("x", 5, 8, edit("forged", "a")),
+            m("b", 2, 8, Body::text("bot", None)),
+        ];
+        all[4].body.kind = "bot".into();
+        all.push(m("y", 6, 8, edit("nope", "b")));
+        apply_edits(&mut all);
+        assert_eq!(all[0].body.text, "third");
+        let e = all[0].edited.as_ref().unwrap();
+        assert_eq!(
+            (e.id.as_str(), e.seq, e.original.as_str()),
+            ("e2", Some(4), "first")
+        );
+        assert_eq!(all[4].body.text, "bot");
+        assert!(all[4].edited.is_none());
+        // Applying again changes nothing.
+        apply_edits(&mut all);
+        assert_eq!(all[0].body.text, "third");
+        assert_eq!(all[0].edited.as_ref().unwrap().original, "first");
+    }
+
+    #[test]
+    fn unread_counts_cap_at_99() {
+        assert_eq!(unread_label(0), None);
+        assert_eq!(unread_label(7).as_deref(), Some("7"));
+        assert_eq!(unread_label(99).as_deref(), Some("99"));
+        assert_eq!(unread_label(200).as_deref(), Some("99+"));
+        assert!(counts_as_unread("text") && counts_as_unread("bot"));
+        assert!(!counts_as_unread("decision_accept"));
     }
 
     #[test]
@@ -2615,6 +3123,9 @@ mod tests {
             untrusted: vec![],
             channels: vec![],
             pending: vec![],
+            invites: None,
+            epoch_made: HashMap::new(),
+            approved_by: None,
             keyless: false,
             problem: None,
             devices_read: Instant::now(),

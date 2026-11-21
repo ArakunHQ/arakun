@@ -1349,11 +1349,13 @@ forward through tabs, `Ctrl+Cmd+F` toggles full screen, and `Cmd+H`, `Cmd+M` and
   recalls earlier prompts; paste or drop images to attach them. While the agent works,
   `Enter` queues the message, `Ctrl+Enter` stops the turn and sends it now, and `Esc`
   stops the turn. A queued message has a button to send it now too
-- In the composer's agent and model menu: `↑` / `↓` move through the right column,
-  `←` / `→` move between agents (on the Reasoning row they step the level), `Enter`
-  picks and `Esc` closes. Picking a model of the agent in use or a reasoning level
-  keeps the menu open, so you can set the reasoning next. In a running session, only a model pick, a click on an
-  agent row or Continue with hands the session to another agent; reasoning and fast
+- In the composer's agent and model menu: the strip of agent icons at the bottom shows
+  an agent's models and reasoning, and a dot marks the agent in use. `↑` / `↓` move
+  through the models and the rows below them, `←` / `→` move between agents (on the
+  Reasoning row they step the level), `Enter` picks and `Esc` closes. Picking a model
+  of the agent in use or a reasoning level keeps the menu open, so you can set the
+  reasoning next. In a running session, only picking one of another agent's models or
+  Continue with hands the session to another agent; reasoning and fast
   mode for another agent are kept for when you switch to it. Picking a different
   model for that agent clears the reasoning level kept for it, so pick the level
   again after the model

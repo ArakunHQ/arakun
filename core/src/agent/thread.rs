@@ -701,6 +701,9 @@ pub struct Thread {
     /// The session runs on a server: this thread shows it, and what the user
     /// does goes out as [`ThreadEvent::Remote`].
     remote: bool,
+    /// Copies of the images a server's session names, by link as written:
+    /// the files are on the server, not here.
+    fetched_images: HashMap<String, PathBuf>,
     native: native::State,
     cwd: PathBuf,
     meta: SessionMeta,
@@ -1200,6 +1203,7 @@ impl Thread {
             kind,
             backend,
             remote: false,
+            fetched_images: HashMap::new(),
             native: native::State::default(),
             session_id: meta.session_id.clone(),
             title_locked: !meta.title.is_empty(),
@@ -2233,6 +2237,16 @@ impl Thread {
         self.queue = queue;
         self.queue_paused = paused && !self.queue.is_empty();
         self.meta_changed(cx);
+    }
+
+    pub fn fetched_images(&self) -> &HashMap<String, PathBuf> {
+        &self.fetched_images
+    }
+
+    /// A copy of an image the server's session names arrived.
+    pub fn image_fetched(&mut self, link: String, file: PathBuf, cx: &mut Context<Self>) {
+        self.fetched_images.insert(link, file);
+        cx.notify();
     }
 
     /// What the user did did not reach the server: the questionnaire can be

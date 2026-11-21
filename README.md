@@ -384,7 +384,7 @@ sees the project's skills.
 <summary>When the GitHub tab reads GitHub, and what it stores</summary>
 
 Arakun reads GitHub in the background only after you open the tab once, and stops while
-`gh` is missing or signed out. It keeps the watch list, the filter choice and whether you
+`gh` is missing or signed out. It keeps the watch list, the filter choice, the comment order and whether you
 opened the tab in `github.json` next to its state, drafts in `github/drafts/` beside
 them, and the profile pictures it shows in `github/avatars/` (each downloaded again
 after a week).
@@ -536,6 +536,14 @@ after a week).
   room. Right-click a title for Ungroup, which removes the segment and keeps its
   pieces in the one above. In Customize › Sidebar, a segment can be set to start
   folded or not to say what is inside; a new one is born titled and collapsible.
+- **Isometric.** Animated isometric scenes: the project's `iso/*.rhai` scripts, then
+  the starters that ship with Arakun. New scene asks what to draw and starts a session
+  that writes it as a new file in `iso/`; Change starts a session that edits the scene
+  on screen. A starter is copied into `iso/` first. The tab shows each save as the
+  agent writes it. Export PNG, Export SVG and Export animated SVG save the scene in
+  the look on screen: a 1600 px wide frame, one frame, or the whole loop.
+  Agents in any project read the guide with `arakun iso docs` and the shipped scenes
+  with `arakun iso example [name]`.
 - **Automations.** Scheduled shell commands or agent prompts per project.
 
 ### Make it yours

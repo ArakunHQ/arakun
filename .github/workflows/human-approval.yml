@@ -3,7 +3,7 @@ name: Human approval
 # Sets the "Human approval" commit status, which the main ruleset requires.
 # It stays pending on a pull request from outside the team until someone on
 # the team approves its head commit, and passes at once for the team. The
-# Reviewers workflow dismisses CodeRabbit's approval of such a pull request,
+# Reviewers workflow dismisses cubic's approval of such a pull request,
 # but only after the approval, so it can't stop a merge in between; this
 # status does.
 #

@@ -48,6 +48,8 @@ struct Conn {
     /// It sends several sessions to one connection (`open` with `keep`), as
     /// its inbox says. One from before sends the last one opened only.
     watches_several: bool,
+    /// It is from before it sent images: none are asked of it.
+    no_images: bool,
 }
 
 impl Conn {
@@ -58,6 +60,7 @@ impl Conn {
             sessions: Vec::new(),
             places: Vec::new(),
             watches_several: false,
+            no_images: false,
         }
     }
 }
@@ -99,6 +102,23 @@ struct Following {
     /// The prompts waiting there for the running turn, as its last `state`
     /// said: the server keeps the queue.
     queue: RemoteQueue,
+    /// The images its agent named that are on the server, by link as written.
+    images: HashMap<String, ImageCopy>,
+}
+
+/// An image a server's session names, as asked of the server.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct ImageCopy {
+    /// The last entry that named it when it was asked for. An entry after it
+    /// naming it again may mean a new image under the same name: it is asked
+    /// for again.
+    at: usize,
+    /// The copy here, once one came: the newest answer's.
+    file: Option<PathBuf>,
+    /// The `at` of the answer `file` came from.
+    file_at: usize,
+    /// Asked and not answered yet.
+    waiting: bool,
 }
 
 /// A server session's queue, as its `state` says it. An older server says
@@ -133,6 +153,12 @@ impl Following {
     fn read_again(&mut self) {
         (self.asking, self.asked, self.again) = (true, 0, None);
         (self.refill, self.broken) = (Some(Vec::new()), None);
+        // Answers the old connection never brought are asked for again; the
+        // copies that came stay on show.
+        self.images.retain(|_, i| !i.waiting || i.file.is_some());
+        for i in self.images.values_mut() {
+            i.waiting = false;
+        }
     }
 }
 
@@ -674,8 +700,19 @@ fn project_for(
 fn show_following(f: &Following, thread: &Entity<Thread>, cx: &mut App) {
     let (status, transcript) = (thread_status(f.status), transcript_of(f));
     let why = f.broken.clone();
+    // Copies that came for a view of it closed since.
+    let fetched: Vec<(String, PathBuf)> = f
+        .images
+        .iter()
+        .filter_map(|(l, i)| Some((l.clone(), i.file.clone()?)))
+        .collect();
     thread.update(cx, |t, cx| {
         t.show_transcript(transcript, status, cx);
+        for (link, file) in fetched {
+            if t.fetched_images().get(&link) != Some(&file) {
+                t.image_fetched(link, file, cx);
+            }
+        }
         if let Some(why) = why {
             t.post_notice(why, true, cx);
         }
@@ -812,6 +849,55 @@ fn save_inboxes(link: &mut ServersLink, cx: &mut Context<Shell>) {
             }
         });
     }));
+}
+
+/// The images `entries` name to ask the server for, each with the last entry
+/// naming it: the ones not asked for yet, and the ones named again since they
+/// were. The files are the server's: one at the same path here is another.
+fn images_to_ask(entries: &[Entry], asked: &HashMap<String, ImageCopy>) -> Vec<(String, usize)> {
+    let mut last: Vec<(String, usize)> = Vec::new();
+    for (at, e) in entries.iter().enumerate() {
+        let Entry::Agent { text } = e else { continue };
+        for link in crate::agent::markdown::image_files(text) {
+            match last.iter_mut().find(|(l, _)| *l == link) {
+                Some(seen) => seen.1 = at,
+                None => last.push((link, at)),
+            }
+        }
+    }
+    last.retain(|(link, at)| asked.get(link).is_none_or(|i| *at > i.at));
+    last
+}
+
+/// Keeps the image an `image` answer carries in `dir`, named by its bytes so
+/// a changed image is never mistaken for the one shown before.
+fn keep_image(msg: &Value, dir: &Path) -> Option<PathBuf> {
+    use base64::Engine as _;
+    use sha2::Digest as _;
+    let ext = match msg["mime"].as_str()? {
+        "image/png" => "png",
+        "image/jpeg" => "jpg",
+        "image/gif" => "gif",
+        "image/webp" => "webp",
+        _ => return None,
+    };
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(msg["data"].as_str()?)
+        .ok()?;
+    let digest = sha2::Sha256::digest(&bytes);
+    let name: String = digest.iter().take(16).map(|b| format!("{b:02x}")).collect();
+    let file = dir.join(format!("{name}.{ext}"));
+    if !file.is_file() {
+        std::fs::create_dir_all(dir).ok()?;
+        crate::durable::write_private(&file, &bytes).ok()?;
+    }
+    Some(file)
+}
+
+/// Where the copies of servers' images are kept. They are fetched again
+/// after a restart, so a temporary folder is enough.
+fn images_dir() -> PathBuf {
+    std::env::temp_dir().join("arakun-server-images")
 }
 
 impl Shell {
@@ -1399,6 +1485,7 @@ impl Shell {
             broken: None,
             by: Vec::new(),
             queue: RemoteQueue::default(),
+            images: HashMap::new(),
         };
         let followed = follow_in(&mut link.following, who, fresh, conn.watches_several);
         close_follows(link, followed.close);
@@ -2898,6 +2985,13 @@ impl Shell {
             }
             // Archive is asked from the sidebar: said there too. The
             // refusal names `settle_env` itself, so it is about that.
+            // A server from before it sent images: they stay links.
+            _ if older_server_refused(&message, &["image"]) => {
+                if let Some(conn) = link.conns.get_mut(id) {
+                    conn.no_images = true;
+                }
+                true
+            }
             _ if older_server_refused(&message, &["settle_env"]) => {
                 self.notify(
                     crate::island::AlertKind::Warning,
@@ -3127,6 +3221,15 @@ impl Shell {
                 {
                     show_following(f, &thread, cx);
                 }
+                if f.refill.is_none() && !conn.no_images {
+                    for (link, at) in images_to_ask(&f.entries, &f.images) {
+                        let copy = f.images.entry(link.clone()).or_default();
+                        (copy.at, copy.waiting) = (at, true);
+                        conn.client.send(&json!({
+                            "type": "image", "session": f.session, "path": link, "at": at,
+                        }));
+                    }
+                }
             }
             "subagents" => {
                 let Some(f) = following else { return };
@@ -3137,6 +3240,33 @@ impl Shell {
                 if let Some(thread) = thread_of(&self.projects, &f.env_path, &f.session) {
                     show_following(f, &thread, cx);
                 }
+            }
+            "image" => {
+                let Some(f) = following else { return };
+                let path = text(msg, "path");
+                let at = msg["at"].as_u64().unwrap_or(0) as usize;
+                let Some(copy) = f.images.get_mut(&path) else {
+                    return;
+                };
+                if at >= copy.at {
+                    copy.waiting = false;
+                }
+                if msg["missing"] == true {
+                    return;
+                }
+                let (server, session, msg) = (f.server.clone(), f.session.clone(), msg.clone());
+                // Decoding and writing it to disk hold up nothing else.
+                let kept = cx.background_spawn(crate::guard::task_or(
+                    async move { keep_image(&msg, &images_dir()) },
+                    |_| None,
+                ));
+                cx.spawn(async move |this, cx| {
+                    let Some(file) = kept.await else { return };
+                    let _ = this.update(cx, |this, cx| {
+                        this.servers_image_kept(&server, &session, path, at, file, cx);
+                    });
+                })
+                .detach();
             }
             "rewind_plan" => {
                 let Some(thread) = self.server_thread(id, &text(msg, "id")) else {
@@ -3203,6 +3333,41 @@ impl Shell {
                 }
             }
             _ => {}
+        }
+    }
+}
+
+impl Shell {
+    /// A copy of a server's image is on disk: the session shows it, unless
+    /// it is no longer followed or a newer answer for it came first.
+    fn servers_image_kept(
+        &mut self,
+        server: &str,
+        session: &str,
+        link: String,
+        at: usize,
+        file: PathBuf,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(link_state) = &mut self.servers else {
+            return;
+        };
+        let Some(f) = link_state
+            .following
+            .iter_mut()
+            .find(|f| f.server == server && f.session == session)
+        else {
+            return;
+        };
+        let Some(copy) = f.images.get_mut(&link) else {
+            return;
+        };
+        if copy.file.is_some() && at < copy.file_at {
+            return;
+        }
+        (copy.file, copy.file_at) = (Some(file.clone()), at);
+        if let Some(thread) = thread_of(&self.projects, &f.env_path, &f.session) {
+            thread.update(cx, |t, cx| t.image_fetched(link, file, cx));
         }
     }
 }
@@ -3331,6 +3496,82 @@ mod tests {
 
     fn pair(k: Setting, v: &str) -> (String, String) {
         (k.key().to_string(), v.to_string())
+    }
+
+    #[test]
+    fn images_are_asked_for_once_and_again_when_named_again() {
+        let agent = |text: &str| Entry::Agent { text: text.into() };
+        let mut entries = vec![
+            agent("![a](shot.png)\n\n![c](https://x.dev/c.png)"),
+            agent("![again](shot.png)\n\n![d](/srv/out/d.png)"),
+        ];
+        let mut asked = HashMap::new();
+        assert_eq!(
+            images_to_ask(&entries, &asked),
+            [
+                ("shot.png".to_string(), 1),
+                ("/srv/out/d.png".to_string(), 1)
+            ]
+        );
+        for (link, at) in images_to_ask(&entries, &asked) {
+            asked.insert(
+                link,
+                ImageCopy {
+                    at,
+                    waiting: true,
+                    ..ImageCopy::default()
+                },
+            );
+        }
+        assert_eq!(images_to_ask(&entries, &asked), []);
+        // A later turn shows the same name: it may be a new image.
+        entries.push(agent("Redrawn:\n\n![a](shot.png)"));
+        assert_eq!(
+            images_to_ask(&entries, &asked),
+            [("shot.png".to_string(), 2)]
+        );
+    }
+
+    #[test]
+    fn a_reconnect_asks_again_for_the_images_still_waited_for() {
+        let mut f = following("srv", "s1", Vec::new());
+        let copy = |file: Option<&str>, waiting| ImageCopy {
+            at: 0,
+            file: file.map(PathBuf::from),
+            file_at: 0,
+            waiting,
+        };
+        f.images.insert("lost.png".into(), copy(None, true));
+        f.images
+            .insert("kept.png".into(), copy(Some("/tmp/k.png"), true));
+        f.images.insert("none.png".into(), copy(None, false));
+        f.read_again();
+        assert!(!f.images.contains_key("lost.png"));
+        assert_eq!(f.images["kept.png"], copy(Some("/tmp/k.png"), false));
+        assert_eq!(f.images["none.png"], copy(None, false));
+    }
+
+    #[test]
+    fn an_image_answer_is_kept_by_its_bytes() {
+        use base64::Engine as _;
+        let dir = std::env::temp_dir().join(format!("arakun-servers-kept-{}", std::process::id()));
+        let b64 = |b: &[u8]| base64::engine::general_purpose::STANDARD.encode(b);
+        let answer =
+            |data: &[u8]| json!({ "type": "image", "mime": "image/png", "data": b64(data) });
+        let one = keep_image(&answer(b"one"), &dir).unwrap();
+        assert_eq!(std::fs::read(&one).unwrap(), b"one");
+        assert_eq!(one.extension().unwrap(), "png");
+        // A changed image gets a file of its own, which the view loads afresh.
+        let two = keep_image(&answer(b"two"), &dir).unwrap();
+        assert_ne!(one, two);
+        assert_eq!(keep_image(&answer(b"one"), &dir).unwrap(), one);
+        assert_eq!(
+            keep_image(&json!({ "type": "image", "missing": true }), &dir),
+            None
+        );
+        let svg = json!({ "type": "image", "mime": "image/svg+xml", "data": b64(b"<svg/>") });
+        assert_eq!(keep_image(&svg, &dir), None);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
@@ -3665,6 +3906,7 @@ mod tests {
             broken: None,
             by,
             queue: RemoteQueue::default(),
+            images: HashMap::new(),
         }
     }
 

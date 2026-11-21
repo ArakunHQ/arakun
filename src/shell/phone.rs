@@ -887,6 +887,11 @@ impl Shell {
                     wire::error("Install from the Marketplace tab of this computer."),
                 );
             }
+            // What the app asks of a server. A phone loads the signed links
+            // its entries carry instead.
+            ClientMsg::Image { .. } => {
+                self.phone_send(client, wire::error("images come through their links"));
+            }
             // The desktop's projects are added in its own window, not from a device.
             ClientMsg::AddPlace { .. }
             | ClientMsg::Clone { .. }

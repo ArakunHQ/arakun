@@ -57,16 +57,18 @@ Every commit message and pull request title follows
   ready with `gh pr ready`, never before. That script waits for the required checks, and
   for macOS only when the diff touches macOS code; don't wait for the rest. The required
   **Human approval** status is a merge gate, not part of this wait: it only resolves once
-  a person approves, and marking ready is what asks for the review. CodeRabbit reviews
-  drafts too, so its review is often done before the checks. Once the pull request is
-  ready and CodeRabbit has finished, the reviewers are asked unless CodeRabbit approved
-  and every review thread is resolved.
-- Answer every CodeRabbit comment: fix it and push, or reply with the reason you
-  won't. Resolve a thread on GitHub once the pushed commit fixes it; leave the ones
-  you declined open for the reviewer. Don't post `@coderabbitai resolve` or `approve`.
-  A workflow dismisses CodeRabbit's approval when a thread is still open, so resolve
-  the fixed ones right after you push. If you change a rule here or in
-  CONTRIBUTING.md, check the instructions in `.coderabbit.yaml` too.
+  a person approves, and marking ready is what asks for the review. cubic, the review
+  bot, reviews drafts too, so its review is often done before the checks. Once the
+  pull request is ready and cubic has finished, the reviewers are asked unless cubic
+  approved and every review thread is resolved. A pull request from outside the team
+  always needs a person: the workflow dismisses cubic's approval of it.
+- Answer every cubic comment: fix it and push, or reply with the reason you won't.
+  Resolve a thread on GitHub once the pushed commit fixes it; leave the ones you
+  declined open for the reviewer. Never resolve a thread you didn't fix to get cubic's
+  approval. A workflow dismisses cubic's approval when a thread is still open, so
+  resolve the fixed ones right after you push. cubic may push its own fixes to your
+  branch, so pull before you push. If you change a rule here or in
+  CONTRIBUTING.md, check the rules in `cubic.yaml` too.
 
 ### Stacked pull requests
 

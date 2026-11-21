@@ -651,6 +651,10 @@ impl ThreadView {
                 selection,
                 self.marks.get(&ix).map_or(&[][..], Vec::as_slice),
                 Some(self.thread.read(cx).cwd()),
+                // A server's files are not here: only their copies are shown.
+                Some(self.thread.read(cx))
+                    .filter(|t| t.is_remote())
+                    .map(|t| t.fetched_images()),
                 fade,
                 self.find_for(ix).filter(|_| ix != PLAN_SURFACE),
             ))

@@ -1674,7 +1674,7 @@ impl TeamsView {
             Some(at) => format!("{device} · asked {}", ago(at)),
             None => format!("{device} · asked to join"),
         };
-        let wait_until = w.remind_after.filter(|at| *at > now());
+        let wait_until = remind_wait(w.remind_after, w.reminded_at, now());
         let remind = w.remind.map(|team| {
             let who = admins
                 .first()
@@ -1696,7 +1696,12 @@ impl TeamsView {
             )
         });
         let remind_note = match (wait_until, w.reminded_at) {
-            (Some(at), _) => Some(format!("You can remind them again {}.", until(at))),
+            (Some(at), Some(sent)) => Some(format!(
+                "Reminded {}. You can remind them again {}.",
+                ago(sent),
+                until(at)
+            )),
+            (Some(at), None) => Some(format!("You can remind them again {}.", until(at))),
             (None, Some(at)) => Some(format!("Reminded {}.", ago(at))),
             _ => None,
         };
@@ -4427,6 +4432,18 @@ fn ago_from(at: u64, now: u64) -> String {
     }
 }
 
+/// How long the server takes no second reminder from the same person
+/// (`REMIND_EVERY` in teams/src/teams.ts).
+const REMIND_EVERY: u64 = 60 * 60;
+
+/// Until when Remind waits, if it still does: the time the server gave when
+/// it refused one, or an hour after the last one it took, whichever is later.
+fn remind_wait(remind_after: Option<u64>, reminded_at: Option<u64>, now: u64) -> Option<u64> {
+    remind_after
+        .max(reminded_at.map(|at| at.saturating_add(REMIND_EVERY)))
+        .filter(|at| *at > now)
+}
+
 /// Whether a reversal or an edit has no row of its own: an edit never has,
 /// a reversal unless it was refused. [`accept_shown_under`] decides for an
 /// acceptance.
@@ -4657,6 +4674,20 @@ mod tests {
         assert_eq!(until_from(100 + 250, 100), "in 5 minutes");
         assert_eq!(until_from(100 + 3 * 3600, 100), "in 3 hours");
         assert_eq!(until_from(50, 100), "in a moment");
+    }
+
+    #[test]
+    fn remind_waits_an_hour_after_the_last_reminder() {
+        // Never reminded, never refused.
+        assert_eq!(remind_wait(None, None, 5000), None);
+        // Just reminded: the button waits before the server has to refuse.
+        assert_eq!(remind_wait(None, Some(5000), 5000), Some(8600));
+        assert_eq!(remind_wait(None, Some(5000), 8599), Some(8600));
+        assert_eq!(remind_wait(None, Some(5000), 8600), None);
+        // The server's own time wins when it is later, and ends too.
+        assert_eq!(remind_wait(Some(9000), Some(5000), 5000), Some(9000));
+        assert_eq!(remind_wait(Some(6000), Some(5000), 5000), Some(8600));
+        assert_eq!(remind_wait(Some(9000), None, 9000), None);
     }
 
     #[test]

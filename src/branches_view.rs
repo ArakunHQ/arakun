@@ -47,6 +47,8 @@ const COMPACT_W: f32 = 640.;
 const AUTHOR_W: f32 = 150.;
 const TIME_W: f32 = 32.;
 const CARD_W: f32 = 340.;
+/// About the card's height, to tell if it fits under its row.
+const CARD_H: f32 = 240.;
 
 const CLAUDE: u32 = 0xD97757;
 const DROID: u32 = 0x8B7CF6;
@@ -137,6 +139,9 @@ pub struct BranchesView {
     /// scroll the row the arrow keys moved to into view.
     list_y: Rc<Cell<f32>>,
     focus: FocusHandle,
+    /// The two folds, reachable with Tab.
+    more_focus: FocusHandle,
+    folded_focus: FocusHandle,
     scroll: ScrollHandle,
     /// `owner/name` of the GitHub repository to read pull requests from.
     repo: gpui::Entity<TextInput>,
@@ -195,6 +200,8 @@ impl BranchesView {
             width: Rc::new(Cell::new(1200.)),
             list_y: Rc::new(Cell::new(0.)),
             focus: cx.focus_handle(),
+            more_focus: cx.focus_handle().tab_index(0).tab_stop(true),
+            folded_focus: cx.focus_handle().tab_index(0).tab_stop(true),
             scroll: ScrollHandle::new(),
             _load: None,
         }
@@ -631,6 +638,53 @@ impl BranchesView {
             ))
     }
 
+    /// A fold that opens with a click, or with Enter or Space once Tab
+    /// reached it.
+    #[allow(clippy::too_many_arguments)]
+    fn disclosure(
+        &self,
+        id: &'static str,
+        focus: &FocusHandle,
+        open: bool,
+        label: String,
+        lead: f32,
+        height: f32,
+        cx: &mut Context<Self>,
+        flip: fn(&mut Self),
+    ) -> gpui::Stateful<Div> {
+        ui::labelled(div().id(id), Role::Button, label.clone())
+            .aria_expanded(open)
+            .track_focus(focus)
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap(crate::ui::sp(6.))
+            .h(px(height))
+            .rounded(crate::ui::rad(ui::RADIUS))
+            .text_size(px(ui::TEXT_SM))
+            .text_color(theme::text_subtle())
+            .cursor_pointer()
+            .hover(|s| s.text_color(theme::content()))
+            .focus_visible(|s| s.text_color(theme::content()).bg(theme::fill_hover()))
+            .child(div().flex_none().w(px(lead)))
+            .child(
+                icon(if open { "arrow-up01" } else { "arrow-down01" }, 12.)
+                    .text_color(theme::text_subtle()),
+            )
+            .child(label)
+            .on_key_down(cx.listener(move |this, ev: &KeyDownEvent, _, cx| {
+                if matches!(ev.keystroke.key.as_str(), "enter" | "space") {
+                    flip(this);
+                    cx.stop_propagation();
+                    cx.notify();
+                }
+            }))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                flip(this);
+                cx.notify();
+            }))
+    }
+
     /// The branches not in the default one that got no lane: a fold above
     /// the history, opened into a row per branch.
     fn render_folded(
@@ -645,38 +699,21 @@ impl BranchesView {
         if n == 0 {
             return None;
         }
-        let toggle = div()
-            .id("history-folded")
-            .flex()
-            .items_center()
-            .gap(crate::ui::sp(6.))
-            .h(px(32.))
-            .rounded(crate::ui::rad(ui::RADIUS))
-            .text_size(px(ui::TEXT_SM))
-            .text_color(theme::text_subtle())
-            .cursor_pointer()
-            .hover(|s| s.text_color(theme::content()))
-            .child(div().flex_none().w(px(gutter - 18.)))
-            .child(
-                icon(
-                    if self.show_folded {
-                        "arrow-up01"
-                    } else {
-                        "arrow-down01"
-                    },
-                    12.,
-                )
-                .text_color(theme::text_subtle()),
-            )
-            .child(if n == 1 {
-                "1 more branch not in main".to_string()
-            } else {
-                format!("{n} more branches not in main")
-            })
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.show_folded = !this.show_folded;
-                cx.notify();
-            }));
+        let label = if n == 1 {
+            "1 more branch not in main".to_string()
+        } else {
+            format!("{n} more branches not in main")
+        };
+        let toggle = self.disclosure(
+            "history-folded",
+            &self.folded_focus,
+            self.show_folded,
+            label,
+            gutter - 18.,
+            32.,
+            cx,
+            |this| this.show_folded = !this.show_folded,
+        );
         let rows = self.show_folded.then(|| {
             div().flex().flex_col().children(h.folded.iter().map(|&bi| {
                 let b = &map.branches[bi];
@@ -762,29 +799,21 @@ impl BranchesView {
                 list.child(self.render_row(&info, r, active == Some(r), compact, gutter, now, cx));
         }
         if more > 0 {
-            list = list.child(
-                div()
-                    .id("history-more")
-                    .flex()
-                    .items_center()
-                    .gap(crate::ui::sp(6.))
-                    .h(px(ROW_H))
-                    .text_size(px(ui::TEXT_SM))
-                    .text_color(theme::text_subtle())
-                    .cursor_pointer()
-                    .hover(|s| s.text_color(theme::content()))
-                    .child(div().flex_none().w(px(gutter)))
-                    .child(icon("arrow-down01", 12.).text_color(theme::text_subtle()))
-                    .child(if more == 1 {
-                        "1 more commit".to_string()
-                    } else {
-                        format!("{more} more commits")
-                    })
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.show_all = true;
-                        cx.notify();
-                    })),
-            );
+            let label = if more == 1 {
+                "1 more commit".to_string()
+            } else {
+                format!("{more} more commits")
+            };
+            list = list.child(self.disclosure(
+                "history-more",
+                &self.more_focus,
+                false,
+                label,
+                gutter,
+                ROW_H,
+                cx,
+                |this| this.show_all = true,
+            ));
         }
         let rows = shown + usize::from(more > 0);
         let graph = Graph::new(map, h, shown, more > 0);
@@ -804,8 +833,13 @@ impl BranchesView {
             .h(px(rows as f32 * ROW_H)),
         );
         if let (Some(r), Some(card)) = (active, card) {
-            // Under its row; above it near the end, so it stays in view.
-            let card = if r + 6 < rows || r < 6 {
+            // Under its row, unless the view ends before the card would:
+            // then above it, where there is room.
+            let view = self.scroll.bounds();
+            let row_y = self.list_y.get() + r as f32 * ROW_H;
+            let below = row_y + ROW_H + CARD_H <= f32::from(view.bottom());
+            let above = row_y - CARD_H >= f32::from(view.top());
+            let card = if below || !above {
                 card.top(px((r + 1) as f32 * ROW_H + 2.))
             } else {
                 card.bottom(px((rows - r) as f32 * ROW_H + 2.))
@@ -1609,9 +1643,16 @@ fn row_info<'a>(
         .filter(|l| tip && !l.merged)
         .map(|l| &map.branches[l.branch]);
     let merged = h.merged_at(r).map(|l| &map.branches[l.branch]);
+    // A main commit's branch: by its PR number, else the branch it merged
+    // (a merge commit, or a branch with no lane).
     let pr_branch = pr_number
         .and_then(|n| by_pr.get(&n))
-        .map(|&i| &map.branches[i]);
+        .map(|&i| &map.branches[i])
+        .or_else(|| {
+            map.branches
+                .iter()
+                .find(|b| !side && b.merged_by.as_deref() == Some(commit.sha.as_str()))
+        });
     let pr = match (side, tip) {
         (_, Some(b)) => b.pr.as_ref(),
         (true, None) => None,

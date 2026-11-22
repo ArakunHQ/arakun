@@ -388,10 +388,29 @@ fn escape(s: &str) -> String {
         .replace('"', "&quot;")
 }
 
-/// One message as a data entry. Long ones are cut, so a part always holds one.
+/// `s` escaped, cut where the escaped text would pass `max` characters, and
+/// whether it was cut. Never inside an entity.
+fn escape_within(s: &str, max: usize) -> (String, bool) {
+    let mut out = String::new();
+    let mut used = 0;
+    let mut buf = [0; 4];
+    for ch in s.chars() {
+        let one = escape(ch.encode_utf8(&mut buf));
+        used += one.chars().count();
+        if used > max {
+            return (out, true);
+        }
+        out.push_str(&one);
+    }
+    (out, false)
+}
+
+/// One message as a data entry. Long ones are cut, so a part always holds
+/// one. The cut counts escaped characters: quotes alone would otherwise grow
+/// one message past a part, and past the whole context.
 fn entry(l: &Line) -> String {
-    let mut text: String = l.text.chars().take(MESSAGE_CHARS).collect();
-    if text.len() < l.text.len() {
+    let (mut text, cut) = escape_within(&l.text, MESSAGE_CHARS);
+    if cut {
         text.push_str(" […cut]");
     }
     let reply = l
@@ -404,10 +423,9 @@ fn entry(l: &Line) -> String {
         format!(" kind=\"{}\"", escape(&l.kind))
     };
     format!(
-        "<message n=\"{}\" from=\"@{}\"{reply}{kind}>\n{}\n</message>\n",
+        "<message n=\"{}\" from=\"@{}\"{reply}{kind}>\n{text}\n</message>\n",
         l.n,
         escape(&l.login),
-        escape(&text)
     )
 }
 
@@ -1430,6 +1448,33 @@ mod tests {
         let huge = long_lines(1, 100_000);
         assert!(entry(&huge[0]).chars().count() < MESSAGE_CHARS + 100);
         assert!(entry(&huge[0]).contains("[…cut]"));
+    }
+
+    #[test]
+    fn a_message_of_quotes_is_cut_after_escaping() {
+        // Each quote is six characters once escaped.
+        let mut quotes = long_lines(1, 1);
+        quotes[0].text = "\"".repeat(MESSAGE_CHARS);
+        let e = entry(&quotes[0]);
+        assert!(e.chars().count() < MESSAGE_CHARS + 100);
+        assert!(e.contains("&quot; […cut]"));
+        assert!(!e.contains("&quot […cut]"));
+        // So a range past the context always has more than one part.
+        let mut six = long_lines(6, 1);
+        for l in &mut six {
+            l.text = "\"".repeat(MESSAGE_CHARS);
+        }
+        match plan(&six, CONTEXT_CHARS, PART_CHARS, MAX_PARTS) {
+            Plan::Parts(parts) => assert_eq!(parts.len(), 2),
+            p => panic!("{p:?}"),
+        }
+        assert_eq!(
+            plan(&quotes, CONTEXT_CHARS, PART_CHARS, MAX_PARTS),
+            Plan::Whole
+        );
+        // A short message is left as it is.
+        assert_eq!(escape_within("a<b", 10), ("a&lt;b".into(), false));
+        assert_eq!(escape_within("a<b", 4), ("a".into(), true));
     }
 
     /// Answers from a list, and keeps the prompts it was given.

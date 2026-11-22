@@ -870,7 +870,7 @@ impl ThreadView {
             (status, color)
         };
         let status_icon = if sheet.worker.is_some() {
-            ui::spinner("ssh-working", 14., color).into_any_element()
+            ui::spinner(14., color).into_any_element()
         } else {
             icon("computer-terminal01", 15.)
                 .text_color(color)

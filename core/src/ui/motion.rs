@@ -14,7 +14,9 @@ use std::task::{Poll, Waker};
 use std::time::{Duration, Instant};
 
 use gpui::{
-    Animation, AnimationElement, AnimationExt as _, App, ElementId, IntoElement, Styled, px,
+    Animation, AnimationElement, AnimationExt as _, AnyElement, App, Bounds, Element, ElementId,
+    EntityId, GlobalElementId, InspectorElementId, IntoElement, LayoutId, Pixels, Styled, Window,
+    px,
 };
 
 /// Tooltips and small menus: there before the hand has stopped.
@@ -184,8 +186,8 @@ pub fn apply(cx: &mut App) {
 pub const LOOP_FPS: f32 = 15.;
 
 thread_local! {
-    /// A loop was drawn since the clock last ticked.
-    static LOOPING: Cell<bool> = const { Cell::new(false) };
+    /// The views that drew a loop since the clock last ticked.
+    static LOOP_VIEWS: RefCell<Vec<EntityId>> = const { RefCell::new(Vec::new()) };
     static CLOCK_STARTED: Cell<bool> = const { Cell::new(false) };
     /// The sleeping clock's waker.
     static PARKED: RefCell<Option<Waker>> = const { RefCell::new(None) };
@@ -195,7 +197,7 @@ thread_local! {
 /// timer running, and `mark_looping` wakes it.
 fn loop_drawn() -> impl Future<Output = ()> {
     poll_fn(|task| {
-        if LOOPING.with(|l| l.get()) {
+        if LOOP_VIEWS.with(|v| !v.borrow().is_empty()) {
             Poll::Ready(())
         } else {
             PARKED.with(|p| *p.borrow_mut() = Some(task.waker().clone()));
@@ -204,9 +206,14 @@ fn loop_drawn() -> impl Future<Output = ()> {
     })
 }
 
-/// Records that a loop was drawn, and wakes the clock if it is parked.
-fn mark_looping() {
-    LOOPING.with(|l| l.set(true));
+/// Records that `view` drew a loop, and wakes the clock if it is parked.
+fn mark_looping(view: EntityId) {
+    LOOP_VIEWS.with(|v| {
+        let mut v = v.borrow_mut();
+        if !v.contains(&view) {
+            v.push(view);
+        }
+    });
     let waker = PARKED.with(|p| p.borrow_mut().take());
     if let Some(waker) = waker {
         waker.wake();
@@ -216,16 +223,16 @@ fn mark_looping() {
 /// The clock every loop reads, so loops side by side move together.
 static EPOCH: OnceLock<Instant> = OnceLock::new();
 
-/// How far (0 to 1) a loop of `period` is now, and a request for the next
-/// tick of the loop clock. Call it while rendering. 0 and no request while
-/// motion is reduced.
-pub fn loop_t(period: Duration) -> f32 {
+/// Draws a loop of `period`: `draw` gets how far (0 to 1) the loop is now,
+/// and the view it is drawn in redraws on the next tick of the loop clock.
+/// Only that view redraws, so the rest of the window keeps its cached
+/// drawing. 0 and no redraw while motion is reduced.
+pub fn looping<E: IntoElement>(period: Duration, draw: impl FnOnce(f32) -> E) -> AnyElement {
     if reduced() {
-        return 0.;
+        return draw(0.).into_any_element();
     }
-    mark_looping();
     let secs = EPOCH.get_or_init(Instant::now).elapsed().as_secs_f64();
-    phase(secs, period)
+    Looping(draw(phase(secs, period)).into_any_element()).into_any_element()
 }
 
 /// `secs` into a loop of `period`, from 0 up to (not including) 1.
@@ -237,10 +244,74 @@ fn phase(secs: f64, period: Duration) -> f32 {
     (secs / p).fract() as f32
 }
 
-/// Redraws the windows [`LOOP_FPS`] times a second while a loop was drawn
-/// since the last tick, so every loop on screen shares one timer and a
-/// window with none stays still. Otherwise the clock sleeps without a timer
-/// until [`loop_t`] wakes it.
+/// An element drawn as it is, that tells the loop clock which view it is in.
+/// Laid out with its view, so only a loop actually on screen keeps the clock
+/// going.
+struct Looping(AnyElement);
+
+impl IntoElement for Looping {
+    type Element = Self;
+
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl Element for Looping {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
+        mark_looping(window.current_view());
+        (self.0.request_layout(window, cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.0.prepaint(window, cx);
+    }
+
+    fn paint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut (),
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.0.paint(window, cx);
+    }
+}
+
+/// Redraws the views that drew a loop since the last tick, [`LOOP_FPS`]
+/// times a second, so every loop on screen shares one timer. It notifies
+/// those views instead of refreshing the windows: a refresh turns off every
+/// view's cache, and redrawing whole windows 15 times a second made every
+/// other animation stutter. With no loop drawn, the clock sleeps without a
+/// timer until [`looping`] wakes it.
 fn start_loop_clock(cx: &mut App) {
     if CLOCK_STARTED.with(|s| s.replace(true)) {
         return;
@@ -251,10 +322,15 @@ fn start_loop_clock(cx: &mut App) {
             loop_drawn().await;
             loop {
                 cx.background_executor().timer(tick).await;
-                if !LOOPING.with(|l| l.replace(false)) {
+                let views = LOOP_VIEWS.with(|v| std::mem::take(&mut *v.borrow_mut()));
+                if views.is_empty() {
                     break;
                 }
-                cx.update(|cx| cx.refresh_windows());
+                cx.update(|cx| {
+                    for view in views {
+                        cx.notify(view);
+                    }
+                });
             }
         }
     })
@@ -347,8 +423,9 @@ mod tests {
             }
         }
 
-        LOOPING.with(|l| l.set(false));
+        LOOP_VIEWS.with(|v| v.borrow_mut().clear());
         PARKED.with(|p| *p.borrow_mut() = None);
+        let view = EntityId::from(1u64);
         let count = Arc::new(WakeCount(AtomicUsize::new(0)));
         let waker = Waker::from(count.clone());
         let mut cx = Context::from_waker(&waker);
@@ -356,13 +433,15 @@ mod tests {
 
         assert_eq!(drawn.as_mut().poll(&mut cx), Poll::Pending);
         assert_eq!(count.0.load(Ordering::Relaxed), 0);
-        mark_looping();
+        mark_looping(view);
         assert_eq!(count.0.load(Ordering::Relaxed), 1);
         assert_eq!(drawn.as_mut().poll(&mut cx), Poll::Ready(()));
-        mark_looping();
+        mark_looping(view);
         assert_eq!(count.0.load(Ordering::Relaxed), 1);
+        // A view with two loops redraws once a tick.
+        assert_eq!(LOOP_VIEWS.with(|v| v.borrow().clone()), vec![view]);
 
-        LOOPING.with(|l| l.set(false));
+        LOOP_VIEWS.with(|v| v.borrow_mut().clear());
         let mut drawn = std::pin::pin!(loop_drawn());
         assert_eq!(drawn.as_mut().poll(&mut cx), Poll::Pending);
         PARKED.with(|p| *p.borrow_mut() = None);

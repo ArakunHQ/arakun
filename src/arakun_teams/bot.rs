@@ -912,7 +912,8 @@ pub struct Limit {
 /// Whether `why` is Claude Code hitting a usage limit, and when it resets.
 /// The CLI says "Claude AI usage limit reached|<unix time>" or "…limit
 /// reached ∙ resets 3pm"; a bare clock time is the next one in local time,
-/// `now_minute` being the local minute of the day `now` falls in.
+/// `now_minute` being the local minute of the day `now` falls in. A time
+/// followed by "(UTC)" is the next one in UTC.
 pub fn usage_limit(why: &str, now: u64, now_minute: u32) -> Option<Limit> {
     let lower = why.to_ascii_lowercase();
     let limit = lower.contains("usage limit")
@@ -930,12 +931,19 @@ pub fn usage_limit(why: &str, now: u64, now_minute: u32) -> Option<Limit> {
             digits.parse::<u64>().ok()
         })
         .filter(|at| *at > 1_000_000_000);
-    let clock = lower
-        .split_once("resets ")
-        .and_then(|(_, rest)| clock_minute(rest.split_whitespace().next().unwrap_or_default()));
+    let clock = lower.split_once("resets ").and_then(|(_, rest)| {
+        let target = clock_minute(rest.split_whitespace().next().unwrap_or_default())?;
+        // Any other zone the CLI names is the user's own, so local is right.
+        let from = if rest.contains("(utc)") {
+            (now / 60 % (24 * 60)) as u32
+        } else {
+            now_minute
+        };
+        Some((target, from))
+    });
     let resets_at = stamp.or_else(|| {
-        let target = clock?;
-        let ahead = (i64::from(target) - i64::from(now_minute)).rem_euclid(24 * 60);
+        let (target, from) = clock?;
+        let ahead = (i64::from(target) - i64::from(from)).rem_euclid(24 * 60);
         Some(now - now % 60 + ahead as u64 * 60)
     });
     Some(Limit { weekly, resets_at })
@@ -1291,8 +1299,20 @@ mod tests {
         let at = usage_limit("5-hour limit reached ∙ resets 3pm", now, 14 * 60).unwrap();
         assert_eq!(at.resets_at, Some(now - now % 60 + 3600));
         // 11pm now, resets 1:30am: tomorrow.
-        let at = usage_limit("You've hit your limit · resets 1:30am (UTC)", now, 23 * 60).unwrap();
+        let at = usage_limit("You've hit your limit · resets 1:30am", now, 23 * 60).unwrap();
         assert_eq!(at.resets_at, Some(now - now % 60 + 150 * 60));
+        // `now` is 08:00 UTC. A time in UTC is measured against that, not
+        // against the local 11pm: 1:30am UTC is 17 and a half hours away.
+        assert_eq!(now / 60 % (24 * 60), 8 * 60);
+        let at = usage_limit("You've hit your limit · resets 1:30am (UTC)", now, 23 * 60).unwrap();
+        assert_eq!(at.resets_at, Some(now - now % 60 + 1050 * 60));
+        // Another zone's name is the user's own zone.
+        let at = usage_limit(
+            "limit reached ∙ resets 3pm (Europe/Amsterdam)",
+            now,
+            14 * 60,
+        );
+        assert_eq!(at.unwrap().resets_at, Some(now - now % 60 + 3600));
         let weekly = usage_limit("Weekly limit reached", now, 0).unwrap();
         assert!(weekly.weekly);
         assert_eq!(weekly.resets_at, None);

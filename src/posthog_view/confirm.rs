@@ -2,6 +2,7 @@
 //! project and change, and only sends once the flag key is typed.
 
 use super::*;
+use gpui::AnimationExt as _;
 
 /// What one confirmation dialog shows.
 pub(super) struct Confirm {
@@ -151,8 +152,18 @@ impl PostHogView {
             .items_center()
             .justify_center()
             .p(ui::sp(12.))
-            .bg(gpui::black().opacity(0.4))
-            .child(panel)
+            .child(ui::motion::enter(
+                panel,
+                (id, 3usize),
+                ui::motion::From::Below,
+                10.,
+                ui::motion::BASE,
+            ))
+            .with_animation(
+                (id, 4usize),
+                gpui::Animation::new(ui::motion::BASE),
+                |d, t| d.bg(gpui::black().opacity(0.4 * ui::motion::ease_out(t))),
+            )
             .into_any_element()
     }
 }

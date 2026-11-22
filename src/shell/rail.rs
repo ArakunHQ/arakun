@@ -641,7 +641,7 @@ impl Shell {
     /// the foot of the rail: in the list, the rows would jump when it goes
     /// and a late click on Undo would land on one of them.
     fn render_removed_note(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let (what, _) = self.builder.removed.clone()?;
+        let (what, id) = self.builder.removed.clone()?;
         Some(
             div()
                 .id("rail-removed")
@@ -678,6 +678,10 @@ impl Shell {
                     ui::button("rail-removed-undo", "Undo", ui::ButtonKind::Ghost, true)
                         .on_click(cx.listener(|this, _, _, cx| this.undo_sidebar(false, cx))),
                 )
+                .map(|d| {
+                    // Keyed by the removal, so a new one arrives again.
+                    ui::motion::rise(d, ("rail-removed-in", id as usize), 6., ui::motion::FAST)
+                })
                 .into_any_element(),
         )
     }

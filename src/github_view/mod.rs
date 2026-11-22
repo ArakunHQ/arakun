@@ -2798,7 +2798,10 @@ impl Render for GitHubView {
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(|this, _, _, cx| this.close_sheet(cx)),
-                    ),
+                    )
+                    .map(|d| {
+                        crate::ui::motion::fade_in(d, "gh-sheet-dim-in", crate::ui::motion::BASE)
+                    }),
             )
             .child(
                 div()
@@ -2818,7 +2821,15 @@ impl Render for GitHubView {
                     .child(Pane::cached(
                         &self.card_pane,
                         StyleRefinement::default().size_full(),
-                    )),
+                    ))
+                    .map(|d| {
+                        crate::ui::motion::enter_from_right(
+                            d,
+                            "gh-sheet-in",
+                            24.,
+                            crate::ui::motion::BASE,
+                        )
+                    }),
             )
         });
         let root = root.when_some(self.focus_at, |d, at| {
@@ -2842,7 +2853,16 @@ impl Render for GitHubView {
                 gpui::anchored()
                     .position(at)
                     .snap_to_window_with_margin(px(8.))
-                    .child(self.render_focus_menu(cx)),
+                    .child(crate::ui::motion::enter(
+                        div().child(self.render_focus_menu(cx)),
+                        (
+                            "gh-focus-menu-in",
+                            ((at.x.as_f32() as usize) << 16) ^ at.y.as_f32() as usize,
+                        ),
+                        crate::ui::motion::From::Above,
+                        4.,
+                        crate::ui::motion::FAST,
+                    )),
             ))
         });
         root.when_some(self.menu_at, |d, at| {
@@ -2867,7 +2887,16 @@ impl Render for GitHubView {
                 gpui::anchored()
                     .position(at)
                     .snap_to_window_with_margin(px(8.))
-                    .child(self.render_menu(cx)),
+                    .child(crate::ui::motion::enter(
+                        div().child(self.render_menu(cx)),
+                        (
+                            "gh-menu-in",
+                            ((at.x.as_f32() as usize) << 16) ^ at.y.as_f32() as usize,
+                        ),
+                        crate::ui::motion::From::Above,
+                        4.,
+                        crate::ui::motion::FAST,
+                    )),
             ))
         })
     }

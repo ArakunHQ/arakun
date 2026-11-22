@@ -472,7 +472,16 @@ impl Render for CreateEnvDialog {
                                     this.base_open = false;
                                     cx.notify();
                                 }))
-                        })),
+                        }))
+                        .map(|d| {
+                            ui::motion::enter(
+                                d,
+                                "env-base-menu-in",
+                                ui::motion::From::Above,
+                                4.,
+                                ui::motion::FAST,
+                            )
+                        }),
                 )
             });
 

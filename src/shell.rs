@@ -4497,8 +4497,23 @@ impl Render for Shell {
                         .pt(relative(0.10))
                         .px(crate::ui::sp(12.))
                         .occlude()
-                        .bg(gpui::black().opacity(0.4))
-                        .child(dialog),
+                        .child(ui::motion::enter(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .items_center()
+                                .w_full()
+                                .child(dialog),
+                            "update-dialog-in",
+                            ui::motion::From::Below,
+                            10.,
+                            ui::motion::BASE,
+                        ))
+                        .with_animation(
+                            "update-backdrop-in",
+                            gpui::Animation::new(ui::motion::BASE),
+                            |d, t| d.bg(gpui::black().opacity(0.4 * ui::motion::ease_out(t))),
+                        ),
                 )
             })
             .when(self.env_menu_open, |d| {

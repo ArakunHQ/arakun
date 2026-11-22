@@ -1587,11 +1587,11 @@ impl Hub {
 
     pub fn invite(&mut self, team_id: &str, login: String, cx: &mut Context<Self>) {
         // The field is cleared already, so say why nothing went out.
-        let Some(scope) = self.roster(team_id) else {
+        if self.roster(team_id).is_none() {
             self.error = Some(format!("The team is still loading. Invite @{login} again."));
             cx.notify();
             return;
-        };
+        }
         if !self.team[team_id].role.is_admin() {
             return;
         }
@@ -1610,9 +1610,8 @@ impl Hub {
             },
             move |hub, result, cx| {
                 hub.busy.remove(&busy);
-                if hub.roster(&team_id) != Some(scope) {
-                    return;
-                }
+                // The server has acted or refused by now, whatever the roster
+                // did meanwhile: the error and the reload hold for any roster.
                 match result {
                     // Listed at once: a team read already under way does not
                     // know of it, and an older server lists no invites.
@@ -1684,9 +1683,6 @@ impl Hub {
             },
             move |hub, result, cx| {
                 hub.busy.remove(&busy);
-                if hub.roster(&team_id) != Some(scope) {
-                    return;
-                }
                 match result {
                     Ok(()) => {
                         // Gone at once, so Withdraw is not offered again.
@@ -1912,7 +1908,6 @@ impl Hub {
                 move |net| net.call().reject(&team_id, github_id, &request_id)
             },
             move |hub, result, cx| match result {
-                _ if hub.roster(&team_id) != Some(scope) => {}
                 Ok(()) => hub.load_team(&team_id, cx),
                 Err(e) => hub.error = Some(format!("Could not turn the request down: {e}")),
             },
@@ -1947,7 +1942,6 @@ impl Hub {
                 move |net| net.call().remove_member(&team_id, github_id)
             },
             move |hub, result, cx| match result {
-                _ if hub.roster(&team_id) != Some(scope) => {}
                 Ok(()) => hub.refresh(cx),
                 Err(ApiError::Status(409, _)) => {
                     hub.error = Some("The last owner can't leave the team.".into())

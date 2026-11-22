@@ -32,6 +32,14 @@ fn colors() -> Option<&'static Colors> {
         .as_ref()
 }
 
+/// Loads the grammars and the theme ahead of the first highlight. That load
+/// takes a noticeable moment, and a render would otherwise pay it. Concurrent
+/// first use is safe: a caller that comes during the warm-up waits on the
+/// `OnceLock` for this one load instead of starting another.
+pub fn warm() {
+    colors();
+}
+
 /// Highlights `lines` as the language of `path` (by extension). State runs across
 /// the given lines, so a whole file highlights exactly and a diff (a subsequence
 /// of file lines) degrades gracefully. None without a known language.
@@ -167,6 +175,14 @@ mod tests {
         assert!(highlight_lang("", &lines).is_some());
         assert!(highlight_lang("console", &["echo hi".to_string()]).is_some());
         assert!(highlight_lang("nosuchlang", &lines).is_none());
+    }
+
+    #[test]
+    fn warm_races_a_first_highlight() {
+        let warming = std::thread::spawn(warm);
+        assert!(highlight("x.rs", &["fn main() {}".to_string()]).is_some());
+        warming.join().unwrap();
+        assert!(colors().is_some());
     }
 
     #[test]

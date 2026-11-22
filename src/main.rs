@@ -354,6 +354,13 @@ fn main() {
             shell.sync_island(window, cx);
             #[cfg(feature = "team")]
             shell.sync_team(window, cx);
+            // After the first frame, so warming the syntax colors doesn't
+            // compete with it, and off the UI thread, so no render waits on it.
+            window.on_next_frame(|_, cx| {
+                cx.background_executor()
+                    .spawn(async { highlight::warm() })
+                    .detach();
+            });
         });
         // A click on one of Arakun's notifications shows what it was about, as
         // "View" on the island does. Outside a bundle they come from osascript.

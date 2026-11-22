@@ -71,6 +71,9 @@ pub struct FolderPicker {
     browsing: Option<PathBuf>,
     /// The pending read of `browsing`; replacing it drops the older one.
     _listing: Option<Task<()>>,
+    /// The rows were cleared for a new folder and its first read is not back
+    /// yet, so an empty list means "not read", not "no folders".
+    reading: bool,
     selected: usize,
     scroll: UniformListScrollHandle,
     /// A chosen folder that is not a repository yet, waiting for "Initialize".
@@ -104,6 +107,7 @@ impl FolderPicker {
             rows: Vec::new(),
             browsing: None,
             _listing: None,
+            reading: false,
             selected: 0,
             scroll: UniformListScrollHandle::new(),
             confirm_init: None,
@@ -204,7 +208,7 @@ impl FolderPicker {
         let query = self.query(cx);
         if is_path_query(&query) {
             let (dir, filter) = split_path_query(&query);
-            let delay = if self.browsing.as_ref() == Some(&dir) {
+            let delay = if self.browsing.as_ref() == Some(&dir) && !self.reading {
                 // The rows on screen are this folder's: narrow them now so Enter
                 // before the next read still picks from what the filter shows.
                 self.rows.retain(|r| folder_matches(&r.name, &filter));
@@ -212,7 +216,10 @@ impl FolderPicker {
                 LIST_DEBOUNCE
             } else {
                 // A new folder (opening it, Tab, a typed `/`) lists at once.
+                // So does one whose first read is still out: there is nothing
+                // on screen to narrow.
                 self.rows.clear();
+                self.reading = true;
                 Duration::ZERO
             };
             self.browsing = Some(dir.clone());
@@ -220,6 +227,7 @@ impl FolderPicker {
         } else {
             self.browsing = None;
             self._listing = None;
+            self.reading = false;
             let q = query.trim().to_lowercase();
             let mut scored: Vec<(i64, &Repo)> = self
                 .repos
@@ -297,6 +305,7 @@ impl FolderPicker {
                     return;
                 }
                 this.rows = rows;
+                this.reading = false;
                 this.selected = this.selected.min(this.rows.len().saturating_sub(1));
                 cx.notify();
             });
@@ -324,7 +333,9 @@ impl FolderPicker {
             return;
         }
         let Some(row) = self.rows.get(index).cloned() else {
-            if self.browsing.is_some() {
+            // Before the first read is back, an empty list is not "no
+            // folders": adding the browsed folder would skip its subfolders.
+            if self.browsing.is_some() && !self.reading {
                 self.pick_current_folder(cx);
             }
             return;
@@ -604,6 +615,8 @@ impl Render for FolderPicker {
         };
         let count: SharedString = if self.scanning && !path_mode {
             "Scanning…".into()
+        } else if self.reading && self.rows.is_empty() {
+            "Reading…".into()
         } else if path_mode {
             plural(self.rows.len(), "folder").into()
         } else {
@@ -632,6 +645,8 @@ impl Render for FolderPicker {
         let list: gpui::AnyElement = if rows.is_empty() {
             let msg = if self.scanning && !path_mode {
                 "Looking for git repositories in your home folder…"
+            } else if self.reading {
+                "Reading this folder…"
             } else if path_mode {
                 if cfg!(target_os = "macos") {
                     "No folders here. Press ⌘↩ to add this folder."

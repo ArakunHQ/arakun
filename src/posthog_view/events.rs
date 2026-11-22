@@ -1173,6 +1173,7 @@ impl EventsTab {
                     .overflow_y_scroll()
                     .child(body),
             )
+            .map(|d| ui::motion::enter_from_right(d, "ph-ev-drawer-in", 24., ui::motion::BASE))
             .into_any_element()
     }
 }
@@ -1244,11 +1245,15 @@ impl Render for EventsTab {
                             .child(div().relative().child(filters).when_some(picker, |d, p| {
                                 d.child(
                                     gpui::deferred(
-                                        div()
-                                            .absolute()
-                                            .top(px(ui::BUTTON_H + 6.))
-                                            .left_0()
-                                            .child(p),
+                                        div().absolute().top(px(ui::BUTTON_H + 6.)).left_0().child(
+                                            ui::motion::enter(
+                                                div().child(p),
+                                                "ph-ev-picker-in",
+                                                ui::motion::From::Above,
+                                                4.,
+                                                ui::motion::FAST,
+                                            ),
+                                        ),
                                     )
                                     .with_priority(1),
                                 )

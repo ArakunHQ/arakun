@@ -1067,7 +1067,16 @@ impl Render for DoopView {
                     gpui::anchored()
                         .position(at)
                         .snap_to_window_with_margin(px(8.))
-                        .child(self.render_menu(cx)),
+                        .child(crate::ui::motion::enter(
+                            div().child(self.render_menu(cx)),
+                            (
+                                "doop-menu-in",
+                                ((at.x.as_f32() as usize) << 16) ^ at.y.as_f32() as usize,
+                            ),
+                            crate::ui::motion::From::Above,
+                            4.,
+                            crate::ui::motion::FAST,
+                        )),
                 ))
             })
     }

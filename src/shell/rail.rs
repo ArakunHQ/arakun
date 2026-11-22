@@ -666,6 +666,15 @@ impl Shell {
                     ui::button("rail-removed-undo", "Undo", ui::ButtonKind::Ghost, true)
                         .on_click(cx.listener(|this, _, _, cx| this.undo_sidebar(false, cx))),
                 )
+                .map(|d| {
+                    ui::motion::enter(
+                        d,
+                        "rail-removed-in",
+                        ui::motion::From::Below,
+                        6.,
+                        ui::motion::FAST,
+                    )
+                })
                 .into_any_element(),
         )
     }

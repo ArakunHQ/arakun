@@ -93,6 +93,32 @@ pub fn enter<E: IntoElement + Styled + 'static>(
     })
 }
 
+/// Fades `el` in. For backdrops, which dim the app rather than travel.
+pub fn fade_in<E: IntoElement + Styled + 'static>(
+    el: E,
+    id: impl Into<ElementId>,
+    duration: Duration,
+) -> AnimationElement<E> {
+    el.with_animation(id, Animation::new(duration), |el, t| {
+        el.opacity(ease_out(t))
+    })
+}
+
+/// Fades `el` in while it slides `distance` px in from the right: sheets and
+/// drawers held to the right edge. Moves it with its right margin, which
+/// shifts an element placed by its right inset.
+pub fn enter_from_right<E: IntoElement + Styled + 'static>(
+    el: E,
+    id: impl Into<ElementId>,
+    distance: f32,
+    duration: Duration,
+) -> AnimationElement<E> {
+    el.with_animation(id, Animation::new(duration), move |el, t| {
+        let (opacity, offset) = enter_at(t, From::Below, distance);
+        el.opacity(opacity).mr(px(-offset))
+    })
+}
+
 /// Whether Arakun reduces motion: as the system says, or always, or never.
 /// Settings › Appearance, `reduce_motion` in the state file.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]

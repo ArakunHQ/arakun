@@ -254,6 +254,15 @@ impl Shell {
                             ),
                         ),
                 )
+                .map(|d| {
+                    ui::motion::enter(
+                        d,
+                        "survey-card-in",
+                        ui::motion::From::Below,
+                        10.,
+                        ui::motion::BASE,
+                    )
+                })
                 .into_any_element(),
         )
     }

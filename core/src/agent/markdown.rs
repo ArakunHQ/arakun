@@ -1980,6 +1980,7 @@ pub fn render_preview(image: ImageRef, window: &mut Window, cx: &mut App) -> Any
                 .child("·")
                 .child("Esc to close"),
         )
+        .map(|d| crate::ui::motion::fade_in(d, "image-preview-in", crate::ui::motion::FAST))
         .into_any_element()
 }
 

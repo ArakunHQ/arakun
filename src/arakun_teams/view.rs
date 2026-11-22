@@ -2134,6 +2134,8 @@ impl TeamsView {
             .into_any_element()
     }
 
+    // A row needs the message, its place and its quote, and what every row
+    // shares: a struct for them would be built once per row and read once.
     #[allow(clippy::too_many_arguments)]
     fn render_message(
         &self,

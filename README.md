@@ -745,8 +745,11 @@ one for usage counts, and a button for feedback:
   full text in the Inbox. Surveys made in PostHog show up only with usage counts on,
   at most once per launch. Arakun fetches them from PostHog only with usage counts
   on, in an anonymous request with the project token and no id. With usage counts
-  off, the feedback forms use the questions built into Arakun. A bug, feature or UX
-  report may become a public GitHub issue, without paths, links, keys or emails.
+  off, the feedback forms use the questions built into Arakun. Each answer you send
+  also opens a ticket in the Arakun team's private support inbox (PostHog Support),
+  with the email you left, if any, so the team can reply. A person on the team may
+  turn a bug, feature or UX report into a public GitHub issue, without paths, links,
+  keys or emails.
 
 Each event carries Arakun's version, the OS and the CPU architecture. On first launch,
 what happens before you answer the question waits in memory: it is sent if you turn

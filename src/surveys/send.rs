@@ -9,6 +9,7 @@ use serde_json::{Map, Value, json};
 
 use super::ids;
 use super::model::{Answer, Body, Question, Survey, kind_of};
+use super::support;
 use crate::telemetry::{self, Refused, Source};
 
 /// Whether the answer to `q` must not get a scrubbed copy.
@@ -96,11 +97,11 @@ pub fn submit(
     src: Source,
     extra: &[(&str, Value)],
 ) -> Result<(), Refused> {
-    telemetry::send_feedback(
-        telemetry::events::SURVEY_SENT,
-        src,
-        response_props(s, answers, src, extra),
-    )
+    let props = response_props(s, answers, src, extra);
+    telemetry::send_feedback(telemetry::events::SURVEY_SENT, src, props.clone())?;
+    // Only once consent passed, so the ticket follows the event's rules.
+    support::open(s, &props);
+    Ok(())
 }
 
 /// A popover survey was shown. Counted as usage, so it needs that consent.

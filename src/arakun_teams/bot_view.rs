@@ -424,7 +424,11 @@ impl TeamsView {
         let answer = meta.as_ref().and_then(|x| x.answer.clone());
         let accepted = bot.decided.get(&m.id).cloned().unwrap_or_default();
         let mine = accepted.iter().any(|a| a.github_id == bot.me);
-        let folded = mine && answer.is_some() && !self.unfolded.contains(&m.id);
+        // A stale answer stays open: the fold has no room for its notice.
+        let folded = mine
+            && answer.is_some()
+            && !self.unfolded.contains(&m.id)
+            && !bot.stale.contains_key(&m.id);
         let read = if folded {
             None
         } else {

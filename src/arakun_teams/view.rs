@@ -196,6 +196,8 @@ pub struct TeamsView {
     confirm_remove: Option<(String, u64)>,
     /// "They don't" was pressed for this device in the compare panel.
     mismatch: Option<String>,
+    /// The device being compared on Your devices, which has no side panel.
+    comparing: Option<String>,
     copied: bool,
     focus: FocusHandle,
     _subs: Vec<Subscription>,
@@ -285,6 +287,7 @@ impl TeamsView {
             _flash: None,
             confirm_remove: None,
             mismatch: None,
+            comparing: None,
             copied: false,
             focus: cx.focus_handle(),
             _subs: subs,
@@ -309,6 +312,7 @@ impl TeamsView {
         self.pane = Pane::None;
         self.reply_to = None;
         self.confirm_remove = None;
+        self.comparing = None;
         self.flash = None;
         self._flash = None;
         self.copied = false;
@@ -1805,8 +1809,9 @@ impl TeamsView {
             .as_ref()
             .is_some_and(|c| devices.iter().any(|d| d.device_id == c.id));
         let mut rows = Self::rows();
-        for d in &devices {
+        for (i, d) in devices.iter().enumerate() {
             let this_one = d.device_id == mine;
+            let id = d.device_id.clone();
             rows = rows.child(
                 Self::person_row(
                     icon("computer", 16.).text_color(theme::text_subtle()),
@@ -1820,9 +1825,79 @@ impl TeamsView {
                 )
                 .when(this_one, |r| {
                     r.child(ui::badge("This device", Tone::Neutral))
+                })
+                .when(hub.mismatched(&d.device_id), |r| {
+                    r.child(ui::badge("Does not match", Tone::Danger))
+                })
+                .when(hub.verified(&d.device_id), |r| {
+                    r.child(ui::badge("Checked", Tone::Success))
+                })
+                // A device marked as not matching blocks a new team's keys,
+                // and without a team there is no channel to compare it from.
+                .when(!this_one, |r| {
+                    r.child(
+                        ui::button(
+                            ("teams-device-compare", i),
+                            "Compare",
+                            ButtonKind::Ghost,
+                            true,
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.comparing = Some(id.clone());
+                            this.mismatch = None;
+                            cx.notify();
+                        })),
+                    )
                 }),
             );
         }
+        let my_login = hub.me().map(|m| m.login.clone()).unwrap_or_default();
+        let compare = self
+            .comparing
+            .as_ref()
+            .and_then(|id| devices.iter().find(|d| d.device_id == *id && *id != mine))
+            .map(|d| self.render_compare_device(&my_login, d, cx))
+            .map(|(title, body)| {
+                Self::card().child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(ui::sp(12.))
+                        .p(ui::sp(16.))
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .gap(ui::sp(8.))
+                                .child(
+                                    div()
+                                        .min_w_0()
+                                        .truncate()
+                                        .ty(Type::Body)
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(theme::text())
+                                        .child(title),
+                                )
+                                .child(
+                                    ui::icon_button(
+                                        "teams-device-compare-close",
+                                        "cancel01",
+                                        14.,
+                                        "Close",
+                                    )
+                                    .on_click(cx.listener(
+                                        |this, _, _, cx| {
+                                            this.comparing = None;
+                                            this.mismatch = None;
+                                            cx.notify();
+                                        },
+                                    )),
+                                ),
+                        )
+                        .child(body),
+                )
+            });
         let page = Self::page()
             .child(ui::page_title(
                 "Your devices",
@@ -1832,6 +1907,7 @@ impl TeamsView {
                 ),
             ))
             .child(Self::card().child(rows))
+            .children(compare)
             .child(ui::text(Type::Heading, theme::text(), "Add a device"))
             .child(ui::text(
                 Type::Body,
@@ -2973,8 +3049,24 @@ impl TeamsView {
                 Self::footnote("That device is not in this team any more.").into_any_element(),
             );
         };
+        self.render_compare_device(&login, &device, cx)
+    }
+
+    /// The compare numbers for a device, found in a team or, on Your
+    /// devices, among this user's own.
+    fn render_compare_device(
+        &self,
+        login: &str,
+        device: &DeviceRow,
+        cx: &mut Context<Self>,
+    ) -> (String, AnyElement) {
+        let hub = self.hub.read(cx);
+        let device_id = device.device_id.as_str();
+        let me = hub.me().map(|m| m.login.as_str());
+        // Your own device has no one else to ask.
+        let own = me.is_some_and(|me| me.eq_ignore_ascii_case(login));
         // One of your own devices shows your login: mask it in redacted mode.
-        let login = shown_login(&login, hub.me().map(|m| m.login.as_str()));
+        let login = shown_login(login, me);
         let name = crate::redact::text(&device.name).into_owned();
         let numbers = hub.public_keys().and_then(|mine| {
             super::crypto::compare_numbers(mine, (&device.sig_pub, &device.enc_pub))
@@ -3032,9 +3124,15 @@ impl TeamsView {
             .child(ui::text(
                 Type::Body,
                 theme::text_subtle(),
-                format!(
-                    "Ask {login} to open Compare on {name}. If both show the same numbers, it is theirs."
-                ),
+                if own {
+                    format!(
+                        "On {name}, open Your devices and press Compare for this device. If both show the same numbers, it is yours."
+                    )
+                } else {
+                    format!(
+                        "Ask {login} to open Compare on {name}. If both show the same numbers, it is theirs."
+                    )
+                },
             ))
             .child(grid)
             .children(if verified {
@@ -3051,7 +3149,11 @@ impl TeamsView {
                             div()
                                 .flex_1()
                                 .min_w_0()
-                                .child(format!("You checked {name} with {login}. It is theirs.")),
+                                .child(if own {
+                                    format!("You checked {name}. It is yours.")
+                                } else {
+                                    format!("You checked {name} with {login}. It is theirs.")
+                                }),
                         )
                         .into_any_element(),
                 )
@@ -3061,9 +3163,15 @@ impl TeamsView {
                 ui::text(
                     Type::Label,
                     theme::error().into(),
-                    format!(
-                        "The numbers differ: {name} may not be {login}'s. Tell {login} and a team admin, and read its messages with care."
-                    ),
+                    if own {
+                        format!(
+                            "The numbers differ: {name} may not be yours. It gets no team keys from this device until they match."
+                        )
+                    } else {
+                        format!(
+                            "The numbers differ: {name} may not be {login}'s. Tell {login} and a team admin, and read its messages with care."
+                        )
+                    },
                 )
                 .font_weight(FontWeight::NORMAL)
                 .into_any_element(),

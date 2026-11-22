@@ -42,6 +42,8 @@ pub struct Teams {
     phase: Phase,
     error: Option<SharedString>,
     _task: Option<Task<()>>,
+    /// A `/me` request is on its way, so a second one would only double it.
+    asking: bool,
     /// Asks `/me` again after it failed for a reason other than a 401, such as
     /// starting offline, so the Teams tab can still show in this run.
     retry: Option<Task<()>>,
@@ -56,6 +58,13 @@ fn next_retry(after: Duration) -> Duration {
     (after * 2).min(LAST_RETRY)
 }
 
+/// A request is on its way, or a retry waits for its turn (`retry` stays set
+/// from the first failure until an answer). Asking now as well would send a
+/// second request, and a second failure would double the wait again.
+fn already_asking(asking: bool, retry: bool) -> bool {
+    asking || retry
+}
+
 impl Teams {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let base = api::base_url();
@@ -65,38 +74,23 @@ impl Teams {
             me: None,
             loaded: false,
             phase: Phase::Idle,
-            error: None,
+            error: base.err().map(Into::into),
             _task: None,
+            asking: false,
             retry: None,
             retry_after: FIRST_RETRY,
         };
-        let base = match base {
-            Ok(base) => base,
-            Err(e) => {
-                return Self {
-                    loaded: true,
-                    error: Some(e.into()),
-                    ..this
-                };
-            }
-        };
+        // The keyring is read even when the server's address is wrong, so a
+        // stored session still shows and Sign out can clear it.
         cx.spawn(async move |this, cx| {
-            let found = cx
-                .background_spawn(async move {
-                    let session = load_session()?;
-                    let me = match fixture() {
-                        Some(path) => read_fixture(&path),
-                        None => api::me(&base, &session),
-                    };
-                    Some((session, me))
-                })
-                .await;
+            let found = cx.background_spawn(async move { load_session() }).await;
             let _ = this.update(cx, |this, cx| {
+                // Signed in is known from here on; the server's answer comes later.
                 this.loaded = true;
-                if let Some((session, me)) = found {
-                    this.session = Some(session);
-                    this.apply_me(me, cx);
+                if this.session.is_none() {
+                    this.session = found;
                 }
+                this.ask_me(cx);
                 cx.notify();
             });
         })
@@ -132,17 +126,33 @@ impl Teams {
 
     /// Asks the server again who is signed in, when it could not say before.
     pub fn refresh_if_unknown(&mut self, cx: &mut Context<Self>) {
-        let (Some(session), Ok(base)) = (self.session.clone(), self.base.clone()) else {
-            return;
-        };
         if self.me.is_some() || self.phase != Phase::Idle || fixture().is_some() {
             return;
         }
+        if already_asking(self.asking, self.retry.is_some()) {
+            return;
+        }
+        self.ask_me(cx);
+    }
+
+    /// Asks the server who the session belongs to. Does nothing signed out, or
+    /// when the server's address is wrong.
+    fn ask_me(&mut self, cx: &mut Context<Self>) {
+        let (Some(session), Ok(base)) = (self.session.clone(), self.base.clone()) else {
+            return;
+        };
+        self.asking = true;
         self._task = Some(cx.spawn(async move |this, cx| {
             let me = cx
-                .background_spawn(async move { api::me(&base, &session) })
+                .background_spawn(async move {
+                    match fixture() {
+                        Some(path) => read_fixture(&path),
+                        None => api::me(&base, &session),
+                    }
+                })
                 .await;
             let _ = this.update(cx, |this, cx| {
+                this.asking = false;
                 this.apply_me(me, cx);
                 cx.notify();
             });
@@ -178,7 +188,8 @@ impl Teams {
         self.retry_after = next_retry(wait);
         self.retry = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(wait).await;
-            let _ = this.update(cx, |this, cx| this.refresh_if_unknown(cx));
+            // Not `refresh_if_unknown`: that one waits for this very retry.
+            let _ = this.update(cx, |this, cx| this.ask_me(cx));
         }));
     }
 
@@ -246,6 +257,7 @@ impl Teams {
         self.error = None;
         self.phase = Phase::Idle;
         self._task = None;
+        self.asking = false;
         self.stop_retrying();
         cx.notify();
         if fixture().is_some() {
@@ -422,6 +434,15 @@ mod tests {
             after = next_retry(after);
         }
         assert_eq!(waits, [15, 30, 60, 120, 240, 480, 600, 600]);
+    }
+
+    #[test]
+    fn me_is_not_asked_twice_at_once() {
+        assert!(!already_asking(false, false));
+        // The first request after start, with Settings opening during it.
+        assert!(already_asking(true, false));
+        // A retry waits, or its request is on its way.
+        assert!(already_asking(false, true));
     }
 
     #[test]

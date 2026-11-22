@@ -142,8 +142,19 @@ pub(super) fn heading_button(
     id: impl Into<gpui::ElementId>,
     tip: &'static str,
 ) -> gpui::Stateful<gpui::Div> {
+    heading_icon_button(id, "add01", tip)
+}
+
+/// A segment heading's button with `name`'s icon, sized like its +.
+pub(super) fn heading_icon_button(
+    id: impl Into<gpui::ElementId>,
+    name: &str,
+    tip: impl Into<SharedString>,
+) -> gpui::Stateful<gpui::Div> {
+    let tip = tip.into();
     div()
         .id(id)
+        .map(|d| ui::labelled(d, gpui::Role::Button, tip.clone()))
         .group("rail-heading-add")
         .flex()
         .flex_none()
@@ -153,9 +164,9 @@ pub(super) fn heading_button(
         .rounded(crate::ui::rad(6.))
         .cursor_pointer()
         .hover(|s| s.bg(theme::fill_selected()))
-        .tooltip(ui::tip(tip))
+        .tooltip(ui::tip_text(tip))
         .child(hover_icon(
-            "add01",
+            name,
             14.,
             theme::text_subtle(),
             theme::content(),

@@ -56,6 +56,38 @@ pub enum Quiet {
     Hidden,
 }
 
+/// The order of the sessions in the sidebar tree, within each project or,
+/// without project headings, across all of them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Sort {
+    /// The session used last on top.
+    #[default]
+    Latest,
+    /// By title, A to Z.
+    Title,
+    /// Environment by environment, as the projects list shows them.
+    Environment,
+}
+
+impl Sort {
+    pub const ALL: [Sort; 3] = [Sort::Latest, Sort::Title, Sort::Environment];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Sort::Latest => "Latest",
+            Sort::Title => "A–Z",
+            Sort::Environment => "By environment",
+        }
+    }
+
+    /// The order after this one, for the tree heading's button.
+    pub fn next(self) -> Self {
+        let i = Self::ALL.iter().position(|s| *s == self).unwrap_or(0);
+        Self::ALL[(i + 1) % Self::ALL.len()]
+    }
+}
+
 /// How a title too long for its row shows in the sidebar. Tabs always cut.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -104,6 +136,7 @@ impl Preset {
                 group: true,
                 quiet: Quiet::Folded,
                 titles: LongTitles::Cut,
+                sort: Sort::Latest,
             },
             Preset::Classic => TabLayout {
                 sessions_in: SessionsIn::TitleBar,
@@ -112,6 +145,7 @@ impl Preset {
                 group: true,
                 quiet: Quiet::Open,
                 titles: LongTitles::Cut,
+                sort: Sort::Latest,
             },
             Preset::Everything => TabLayout {
                 sessions_in: SessionsIn::Both,
@@ -120,6 +154,7 @@ impl Preset {
                 group: true,
                 quiet: Quiet::Open,
                 titles: LongTitles::Cut,
+                sort: Sort::Latest,
             },
         }
     }
@@ -142,6 +177,7 @@ pub const SIDEBAR_W: f32 = 248.;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Opt {
     Group,
+    Sort,
     Quiet,
     Titles,
 }
@@ -156,6 +192,7 @@ pub struct TabLayout {
     pub group: bool,
     pub quiet: Quiet,
     pub titles: LongTitles,
+    pub sort: Sort,
 }
 
 impl Default for TabLayout {
@@ -196,7 +233,7 @@ impl TabLayout {
     /// or wrap, and nothing to pin from; without groups nothing folds.
     pub fn applies(&self, opt: Opt) -> bool {
         match opt {
-            Opt::Group | Opt::Titles => self.tree(),
+            Opt::Group | Opt::Sort | Opt::Titles => self.tree(),
             Opt::Quiet => self.tree() && self.group,
         }
     }
@@ -276,6 +313,8 @@ mod tests {
         let read: TabLayout = serde_json::from_str(r#"{"bar_shows":"project"}"#).unwrap();
         assert_eq!(read.bar_shows, BarShows::Project);
         assert_eq!(read.sessions_in, SessionsIn::Sidebar);
+        // A file from before sorting puts the latest session on top.
+        assert_eq!(read.sort, Sort::Latest);
     }
 
     #[test]
@@ -289,10 +328,22 @@ mod tests {
         assert!(!bar_only.applies(Opt::Group));
         assert!(!bar_only.applies(Opt::Quiet));
         assert!(!bar_only.applies(Opt::Titles));
+        assert!(!bar_only.applies(Opt::Sort));
 
         let flat = Preset::Focused.layout().with(|l| l.group = false);
         assert!(flat.applies(Opt::Titles));
         assert!(!flat.applies(Opt::Quiet));
         assert!(Preset::Focused.layout().applies(Opt::Quiet));
+    }
+
+    #[test]
+    fn the_sort_button_goes_round_every_order() {
+        let mut s = Sort::default();
+        assert_eq!(s, Sort::Latest);
+        for _ in 0..Sort::ALL.len() {
+            s = s.next();
+        }
+        assert_eq!(s, Sort::Latest);
+        assert_eq!(Sort::Latest.next(), Sort::Title);
     }
 }

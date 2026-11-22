@@ -540,7 +540,7 @@ impl SurveyDialog {
                     .gap(ui::sp(2.))
                     .children(choices.iter().enumerate().map(|(i, c)| {
                         let choice = c.clone();
-                        ui::choice_row(("survey-choice", i), picked == Some(c.as_str()))
+                        ui::choice_row(("survey-choice", i), c.clone(), picked == Some(c.as_str()))
                             .child(c.clone())
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.flow.pick(&choice);
@@ -652,7 +652,15 @@ impl Focusable for SurveyDialog {
 
 impl Render for SurveyDialog {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let panel = ui::modal_panel("survey", 440.)
+        // Screen readers name the dialog by what it asks right now.
+        let title = if self.flow.is_sent() {
+            THANKS.to_string()
+        } else {
+            self.flow
+                .question()
+                .map_or_else(|| self.flow.survey().name.clone(), |q| q.text.clone())
+        };
+        let panel = ui::modal_panel("survey", 440., title)
             .track_focus(&self.focus)
             .on_key_down(cx.listener(|_, ev: &gpui::KeyDownEvent, _, cx| {
                 if ev.keystroke.key == "escape" {

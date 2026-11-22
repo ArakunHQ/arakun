@@ -71,8 +71,8 @@ mod sidebar_builder;
 mod site;
 mod subagents;
 mod subnav;
-mod switching;
 mod survey_card;
+mod switching;
 #[cfg(feature = "coderlabs")]
 mod tasks;
 #[cfg(feature = "team")]

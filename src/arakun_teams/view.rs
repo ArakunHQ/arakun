@@ -3751,32 +3751,51 @@ fn ago_from(at: u64, now: u64) -> String {
 
 /// The divider over a day's messages: today, yesterday, or the date.
 fn day_label(at: u64) -> String {
+    let date = |at| crate::platform::local_time(at).map(|t| (t.year, t.month, t.day));
+    let (Some(day), Some(today)) = (date(at), date(now())) else {
+        return String::new();
+    };
+    day_label_on(day, today)
+}
+
+/// `day_label` for a date seen on the date `today`, both as (year, month
+/// from 0, day).
+fn day_label_on(day: (i32, i32, i32), today: (i32, i32, i32)) -> String {
     const MONTHS: [&str; 12] = [
         "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
     ];
-    let now = now();
-    let (Some(t), Some(today), Some(yesterday)) = (
-        crate::platform::local_time(at),
-        crate::platform::local_time(now),
-        crate::platform::local_time(now.saturating_sub(86_400)),
-    ) else {
-        return String::new();
-    };
-    let day = (t.year, t.month, t.day);
-    if day == (today.year, today.month, today.day) {
+    let (year, month, date) = day;
+    if day == today {
         "Today".into()
-    } else if day == (yesterday.year, yesterday.month, yesterday.day) {
+    } else if day == day_before(today) {
         "Yesterday".into()
-    } else if t.year == today.year {
-        format!("{} {}", MONTHS[t.month.clamp(0, 11) as usize], t.day)
+    } else if year == today.0 {
+        format!("{} {date}", MONTHS[month.clamp(0, 11) as usize])
     } else {
-        format!(
-            "{} {}, {}",
-            MONTHS[t.month.clamp(0, 11) as usize],
-            t.day,
-            t.year
-        )
+        format!("{} {date}, {year}", MONTHS[month.clamp(0, 11) as usize])
     }
+}
+
+/// The date before a date, by the calendar. A day is not always 24 hours:
+/// the local time 24 hours back is two dates back in the first hour after a
+/// 23-hour day.
+fn day_before((year, month, date): (i32, i32, i32)) -> (i32, i32, i32) {
+    if date > 1 {
+        return (year, month, date - 1);
+    }
+    let (year, month) = if month == 0 {
+        (year - 1, 11)
+    } else {
+        (year, month - 1)
+    };
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let days = match month {
+        1 if leap => 29,
+        1 => 28,
+        3 | 5 | 8 | 10 => 30,
+        _ => 31,
+    };
+    (year, month, days)
 }
 
 /// When something happened: the time today, else the day and the time.
@@ -3938,6 +3957,23 @@ mod tests {
         assert_eq!(ago_from(0, 100_000), "yesterday");
         assert_eq!(ago_from(0, 3 * 86_400), "3 days ago");
         assert_eq!(ago_from(50, 10), "just now");
+    }
+
+    #[test]
+    fn yesterday_is_the_calendar_day_before() {
+        assert_eq!(day_before((2026, 2, 30)), (2026, 2, 29));
+        assert_eq!(day_before((2026, 2, 1)), (2026, 1, 28));
+        assert_eq!(day_before((2024, 2, 1)), (2024, 1, 29));
+        assert_eq!(day_before((2026, 4, 1)), (2026, 3, 30));
+        assert_eq!(day_before((2026, 0, 1)), (2025, 11, 31));
+        // The day the clocks go forward has 23 hours. Whatever the hour on
+        // the day after, the short day is yesterday, not the one before it.
+        let today = (2026, 2, 30);
+        assert_eq!(day_label_on(today, today), "Today");
+        assert_eq!(day_label_on((2026, 2, 29), today), "Yesterday");
+        assert_eq!(day_label_on((2026, 2, 28), today), "Mar 28");
+        assert_eq!(day_label_on((2025, 11, 31), (2026, 0, 1)), "Yesterday");
+        assert_eq!(day_label_on((2025, 11, 30), (2026, 0, 1)), "Dec 30, 2025");
     }
 
     #[test]

@@ -305,6 +305,7 @@ dependencies = [
  "qrcode",
  "raw-window-handle",
  "rayon",
+ "regex",
  "rhai",
  "ring",
  "rusqlite",

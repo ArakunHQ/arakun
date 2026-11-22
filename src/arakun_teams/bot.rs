@@ -4,8 +4,11 @@
 //!
 //! It runs on the asking member's machine, on their own Claude Code, and only
 //! reads: it has no tool that edits files or runs commands, and file reads
-//! stay inside the project. The chat is untrusted input: it reaches the model
-//! as delimited data, and the model is told it is data, not instructions.
+//! stay inside a private copy of the project without its secret-looking and
+//! git-ignored files. The chat is untrusted input: it reaches the model as
+//! delimited data, and the model is told it is data, not instructions. Since
+//! the chat can still steer the run, keys and tokens are taken out of the
+//! answer before it is posted (see [`super::bot_guard`]).
 //!
 //! The answer is strict JSON ([`Answer`]), checked before it is posted. It
 //! goes out as a `kind: "bot"` message whose `bot.answer` carries it, so other
@@ -658,6 +661,8 @@ pub fn review(
             "No project was open in Arakun, so no code or docs were checked.".into(),
         );
     }
+    // Whatever the chat talked the run into, no key or token is posted.
+    super::bot_guard::clean_answer(&mut answer, Some(cwd));
     Ok(Outcome {
         answer,
         parts: summaries.map_or(0, |s| s.len()),
@@ -1118,20 +1123,28 @@ impl Hub {
             let work = cx.background_spawn({
                 let (job, stop) = (job.clone(), stop.clone());
                 async move {
-                    let (cwd, temp) = match project {
-                        Some(p) => (p, false),
-                        None => (
-                            private_dir().map_err(|e| format!("no folder to run in: {e}"))?,
-                            true,
-                        ),
-                    };
-                    let progress = move |s: Step| {
-                        let _ = tx.unbounded_send(s);
-                    };
-                    let out = review(&ClaudeCode, &job, &cwd, &stop, &progress);
-                    if temp {
-                        let _ = std::fs::remove_dir_all(&cwd);
-                    }
+                    // The run reads a copy of the project without its secrets,
+                    // never the project itself.
+                    let dir = private_dir().map_err(|e| format!("no folder to run in: {e}"))?;
+                    let cwd = crate::platform::canonicalize(&dir).unwrap_or(dir);
+                    let copied = project
+                        .as_deref()
+                        .map(|p| super::bot_guard::mirror(p, &cwd))
+                        .transpose();
+                    let out = copied.and_then(|copied| {
+                        let progress = move |s: Step| {
+                            let _ = tx.unbounded_send(s);
+                        };
+                        let mut out = review(&ClaudeCode, &job, &cwd, &stop, &progress)?;
+                        if let Some(m) = copied.filter(|m| m.too_big > 0) {
+                            out.answer.unchecked.push(format!(
+                                "{} files of the project were too large to read.",
+                                m.too_big
+                            ));
+                        }
+                        Ok(out)
+                    });
+                    let _ = std::fs::remove_dir_all(&cwd);
                     out
                 }
             });
@@ -1777,6 +1790,22 @@ mod tests {
         let fake = Fake::new(vec![Ok(GOOD.into())]);
         let a = go(&fake, &j).0.unwrap().answer;
         assert!(a.unchecked[0].contains("No project was open"));
+    }
+
+    #[test]
+    fn a_key_the_chat_asked_for_is_not_posted() {
+        let leaky = GOOD.replace(
+            "\"decision\":\"",
+            "\"decision\":\"The .env says API_TOKEN=ab12cd34ef56gh78. ",
+        );
+        let fake = Fake::new(vec![Ok(leaky)]);
+        let a = go(&fake, &job()).0.unwrap().answer;
+        assert!(
+            a.decision.contains("API_TOKEN=[redacted]"),
+            "{}",
+            a.decision
+        );
+        assert!(!a.decision.contains("ab12cd34"));
     }
 
     #[test]

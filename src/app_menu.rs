@@ -1,8 +1,8 @@
 //! The macOS menu bar: the app menu (Settings, Services, Hide, Quit), the
-//! shell's main commands, Edit, and the Window menu. macOS shows each item's
-//! shortcut from the bindings in main.rs and input.rs, and Cmd+Q, Cmd+H and
-//! Cmd+M only exist through it. Ctrl+Cmd+F, the older full screen chord, is
-//! bound here too, so it works over the terminal.
+//! shell's main commands, Edit, Window, and Help with Send Feedback. macOS
+//! shows each item's shortcut from the bindings in main.rs and input.rs, and
+//! Cmd+Q, Cmd+H and Cmd+M only exist through it. Ctrl+Cmd+F, the older full
+//! screen chord, is bound here too, so it works over the terminal.
 
 use gpui::{App, KeyBinding, Menu, MenuItem, OsAction, SystemMenuType, Window};
 
@@ -112,6 +112,12 @@ pub fn install(cx: &mut App) {
                 MenuItem::action("Minimize", Minimize),
                 MenuItem::action("Zoom", Zoom),
             ],
+            disabled: false,
+        },
+        // Named "Help" so macOS adds its menu search to it.
+        Menu {
+            name: "Help".into(),
+            items: vec![MenuItem::action("Send Feedback…", shell::SendFeedback)],
             disabled: false,
         },
     ]);

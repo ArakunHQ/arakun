@@ -79,6 +79,7 @@ mod site_view;
 mod state;
 mod stored;
 mod subnav;
+mod survey_dialog;
 mod surveys;
 mod tab_layout;
 #[cfg(feature = "coderlabs")]

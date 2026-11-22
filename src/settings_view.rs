@@ -75,6 +75,8 @@ pub enum SettingsEvent {
     RestartToUpdate,
     OpenAccount,
     OpenExtensions,
+    /// Close Settings and open the feedback form.
+    SendFeedback,
     #[cfg(feature = "coderlabs")]
     OpenTasks,
     #[cfg(feature = "coderlabs")]
@@ -276,7 +278,7 @@ impl Section {
                 "elevenlabs speech speak tts read aloud audio sound api key questions tone"
             }
             Section::Privacy => {
-                "telemetry analytics usage counts crash reports privacy posthog data redacted redact hide streamer stream demo screen share sharing incognito"
+                "telemetry analytics usage counts crash reports privacy posthog data redacted redact hide streamer stream demo screen share sharing incognito feedback bug report idea"
             }
             #[cfg(feature = "coderlabs")]
             Section::CoderSpace => "tasks sign in sign out email",
@@ -1232,6 +1234,16 @@ impl SettingsDialog {
                             .into_any_element(),
                     );
                 }
+                rows.push(
+                    row(
+                        "Feedback",
+                        "A bug, an idea or anything else, sent to the Arakun team when you press Send.",
+                        ui::button("set-feedback", "Send Feedback…", ButtonKind::Outline, true)
+                            .on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::SendFeedback)))
+                            .into_any_element(),
+                    )
+                    .into_any_element(),
+                );
                 stack(vec![
                     titled("On screen", vec![redacted]),
                     titled("Sent to Arakun", rows),

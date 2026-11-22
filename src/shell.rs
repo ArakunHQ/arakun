@@ -172,7 +172,8 @@ gpui::actions!(
         ZoomOut,
         ZoomReset,
         CustomizeSidebar,
-        OpenCustomize
+        OpenCustomize,
+        SendFeedback
     ]
 );
 
@@ -204,6 +205,8 @@ enum Modal {
     New(Entity<new_dialog::NewDialog>),
     /// Connecting arakun-pilot, or changing its settings.
     Pilot(Entity<crate::github_view::connect::PilotDialog>),
+    /// A PostHog survey, drawn natively (`survey_dialog`).
+    Survey(Entity<crate::survey_dialog::SurveyDialog>),
 }
 
 #[derive(Clone, Copy)]
@@ -2639,6 +2642,74 @@ impl Shell {
         cx.notify();
     }
 
+    /// Shows a survey over the app. `extra` fills response properties the
+    /// survey leaves empty, such as the error a survey is about.
+    pub fn open_survey(
+        &mut self,
+        survey: crate::surveys::model::Survey,
+        src: crate::telemetry::Source,
+        extra: Vec<(String, serde_json::Value)>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::survey_dialog::{SurveyDialog, SurveyEvent};
+        use crate::surveys::{ids, send, store};
+        if matches!(self.modal, Some((Modal::Survey(_), _))) {
+            return;
+        }
+        if self.modal.is_some() {
+            self.close_modal(window, cx);
+        }
+        // The built-in forms can be sent any number of times; others once.
+        let builtin = [&ids::USER, &ids::AGENT, &ids::ERROR]
+            .iter()
+            .any(|b| b.survey_id == survey.id);
+        let dialog = cx.new(|cx| SurveyDialog::new(survey, src, extra, window, cx));
+        let sub = cx.subscribe_in(
+            &dialog,
+            window,
+            move |this, dialog, ev: &SurveyEvent, window, cx| match ev {
+                SurveyEvent::Sent => {
+                    if !builtin {
+                        store::mark(&dialog.read(cx).survey().id, store::Seen::Answered);
+                    }
+                }
+                SurveyEvent::Dismissed => {
+                    let d = dialog.read(cx);
+                    if !d.is_sent() && src == crate::telemetry::Source::Popover {
+                        store::mark(&d.survey().id, store::Seen::Dismissed);
+                        send::dismissed(d.survey());
+                    }
+                    this.close_modal(window, cx);
+                }
+                // The dialog shows why and keeps the answers.
+                SurveyEvent::Failed(why) => eprintln!("arakun: feedback not sent: {why}"),
+                // Behind the dialog, which stays open to finish the survey.
+                SurveyEvent::OpenUrl(url) => {
+                    if this.has_projects() {
+                        this.open_browser_tab(url.clone(), window, cx);
+                    } else {
+                        cx.open_url(url);
+                    }
+                }
+            },
+        );
+        self.modal = Some((Modal::Survey(dialog), sub));
+        cx.notify();
+    }
+
+    fn send_feedback(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::surveys::{ids, store};
+        let survey = store::builtin(&ids::USER);
+        self.open_survey(
+            survey,
+            crate::telemetry::Source::User,
+            Vec::new(),
+            window,
+            cx,
+        );
+    }
+
     fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // Replacing a dialog that is still saving would lose its result.
         if self.modal_busy(cx) {
@@ -2784,6 +2855,10 @@ impl Shell {
                 SettingsEvent::OpenAccount => {
                     this.close_modal(window, cx);
                     this.open_account(window, cx);
+                }
+                SettingsEvent::SendFeedback => {
+                    this.close_modal(window, cx);
+                    this.send_feedback(window, cx);
                 }
                 SettingsEvent::OpenExtensions => {
                     this.close_modal(window, cx);
@@ -4040,6 +4115,7 @@ impl Render for Shell {
             Modal::Telemetry(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),
             Modal::Pilot(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),
             Modal::New(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),
+            Modal::Survey(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),
         });
         let viewport_h = window.viewport_size().height.as_f32();
         let floating_sheet = self.render_floating_sheet(cx);
@@ -4211,6 +4287,9 @@ impl Render for Shell {
             .on_action(cx.listener(|this, _: &ToggleSubagents, _, cx| this.toggle_subagents(cx)))
             .on_action(
                 cx.listener(|this, _: &OpenSettings, window, cx| this.open_settings(window, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &SendFeedback, window, cx| this.send_feedback(window, cx)),
             )
             .on_action(cx.listener(|_, _: &ToggleDance, _, cx| {
                 crate::mascot::toggle_dancing();

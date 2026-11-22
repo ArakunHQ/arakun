@@ -1278,6 +1278,14 @@ impl Shell {
             Target::Settings,
         );
         add(
+            "send-feedback",
+            "message01",
+            "Send Feedback…",
+            &[],
+            "A bug, an idea or anything else, sent to the Arakun team.",
+            Target::SendFeedback,
+        );
+        add(
             "extensions",
             "store01",
             "Marketplace: plugins, skills & MCP",
@@ -1470,6 +1478,7 @@ impl Shell {
             Target::ToggleSubagents => self.toggle_subagents(cx),
             Target::Account => self.open_account(window, cx),
             Target::Settings => self.open_settings(window, cx),
+            Target::SendFeedback => self.send_feedback(window, cx),
             Target::Extensions => self.open_extensions_tab(window, cx),
             #[cfg(feature = "coderlabs")]
             Target::Tasks => self.open_tasks_tab(window, cx),

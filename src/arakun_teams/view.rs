@@ -786,7 +786,14 @@ impl TeamsView {
                     .text_color(theme::text_subtle())
                     .child(label.into()),
             )
-            .child(div().text_color(theme::text()).text_right().child(value))
+            // A long value wraps under itself instead of pushing the label out.
+            .child(
+                div()
+                    .min_w_0()
+                    .text_color(theme::text())
+                    .text_right()
+                    .child(value),
+            )
     }
 
     fn footnote(text: impl Into<SharedString>) -> gpui::Div {
@@ -2842,8 +2849,12 @@ impl TeamsView {
                             plural(devices, "device", "devices")
                         ),
                     ))
-                    .child(Self::fact("The server sees", "Who is in the team, and when"))
-                    .child(Self::fact("The server can't see", "Messages, names, files")),
+                    // As "What the server sees" in teams/PROTOCOL.md has it.
+                    .child(Self::fact(
+                        "The server sees",
+                        "Team and device names, GitHub logins, who is in the team, and when",
+                    ))
+                    .child(Self::fact("The server can't see", "Messages and channel names")),
             )
             .child(
                 div()

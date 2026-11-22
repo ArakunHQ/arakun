@@ -725,6 +725,9 @@ mod tests {
         let start = Instant::now();
         let mut orphan = fixture("/bin/sleep 30 &");
         let (mut witness, lease) = std::os::unix::net::UnixStream::pair().unwrap();
+        // Before the run: once the group is killed the other end is closed, and
+        // macOS refuses SO_RCVTIMEO on such a socket with EINVAL.
+        witness.set_read_timeout(Some(timeout)).unwrap();
         // The fixture's descendants keep the lease until they exit. EOF proves
         // disconnect killed the group rather than just returning to the UI.
         unsafe {
@@ -737,7 +740,6 @@ mod tests {
         }
         let err = execute(orphan, &cancel, Duration::from_millis(50), 16).unwrap_err();
         assert!(err.contains("timed out"));
-        witness.set_read_timeout(Some(timeout)).unwrap();
         assert_eq!(witness.read(&mut [0]).unwrap(), 0);
         assert!(start.elapsed() < timeout);
     }

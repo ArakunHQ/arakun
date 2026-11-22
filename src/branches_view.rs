@@ -639,7 +639,7 @@ impl BranchesView {
     }
 
     /// A fold that opens with a click, or with Enter or Space once Tab
-    /// reached it.
+    /// reached it (GPUI turns those keys on a focused element into a click).
     #[allow(clippy::too_many_arguments)]
     fn disclosure(
         &self,
@@ -672,13 +672,6 @@ impl BranchesView {
                     .text_color(theme::text_subtle()),
             )
             .child(label)
-            .on_key_down(cx.listener(move |this, ev: &KeyDownEvent, _, cx| {
-                if matches!(ev.keystroke.key.as_str(), "enter" | "space") {
-                    flip(this);
-                    cx.stop_propagation();
-                    cx.notify();
-                }
-            }))
             .on_click(cx.listener(move |this, _, _, cx| {
                 flip(this);
                 cx.notify();

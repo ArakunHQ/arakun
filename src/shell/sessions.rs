@@ -21,7 +21,7 @@ use crate::state;
 
 /// Sends an agent's error to crash reports with where it failed. The folder
 /// check tells a deleted project apart from a broken agent.
-fn report_agent_error(t: &Thread, at: FailedAt, msg: &str) {
+fn report_agent_error(t: &Thread, at: FailedAt, msg: &str) -> Option<String> {
     use serde_json::Value;
     let mut props = vec![
         ("agent", Value::from(t.kind().id())),
@@ -34,7 +34,7 @@ fn report_agent_error(t: &Thread, at: FailedAt, msg: &str) {
     if let Some(code) = at.code() {
         props.push(("code", code.into()));
     }
-    crate::telemetry::error("AgentError", msg, &props);
+    crate::telemetry::error("AgentError", msg, &props)
 }
 
 /// Sends `thread`'s failure if crash reports have not had it yet. `closing`
@@ -45,7 +45,28 @@ pub(super) fn report_failure(thread: &Entity<Thread>, closing: bool, cx: &mut Ap
         return;
     };
     if let ThreadStatus::Error(msg) = thread.read(cx).status() {
-        report_agent_error(thread.read(cx), at, &msg);
+        let event = report_agent_error(thread.read(cx), at, &msg);
+        thread.update(cx, |t, _| t.set_error_event(event));
+    }
+}
+
+impl Shell {
+    /// Opens the error survey for `thread`'s failure, from the footer button
+    /// of the session's view or of a subagent's.
+    pub(super) fn tell_us(
+        &mut self,
+        thread: &Entity<Thread>,
+        error_event: Option<String>,
+        agent: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // The category, never the message: see `telemetry::error`.
+        let category = match thread.read(cx).status() {
+            ThreadStatus::Error(m) => Some(crate::telemetry::category(&m).to_string()),
+            _ => None,
+        };
+        self.open_error_feedback(error_event, Some(agent), category, window, cx)
     }
 }
 
@@ -361,12 +382,14 @@ impl Shell {
         cx: &mut Context<Self>,
     ) {
         let view = cx.new(|cx| ThreadView::new(thread.clone(), window, cx));
+        view.update(cx, |v, _| v.set_can_tell_us(!crate::telemetry::blocked()));
         let (path, sid): (PathBuf, SharedString) = (env_path.to_path_buf(), id.to_string().into());
         let events = cx.subscribe_in(&thread, window, move |this, thread, ev, window, cx| {
             this.thread_event(&path, &sid, thread, ev, window, cx)
         });
         let env = env_path.to_path_buf();
         let sid_for_notes: SharedString = id.to_string().into();
+        let thread_for_feedback = thread.clone();
         let view_events = cx.subscribe_in(
             &view,
             window,
@@ -377,6 +400,13 @@ impl Shell {
                 ThreadViewEvent::OpenSubagent(subagent) => {
                     this.open_subagent(sid_for_notes.clone(), subagent.clone(), window, cx)
                 }
+                ThreadViewEvent::TellUs { error_event, agent } => this.tell_us(
+                    &thread_for_feedback,
+                    error_event.clone(),
+                    agent.clone(),
+                    window,
+                    cx,
+                ),
                 ThreadViewEvent::AddNote {
                     surface,
                     range,

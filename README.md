@@ -725,7 +725,8 @@ run without changing that file.
 Arakun sends nothing until you say so. On first launch it asks whether to send crash
 reports and anonymous usage counts to Arakun's PostHog project, so we can see what
 breaks and what gets used: as a step of the setup, or in a dialog when you skip the
-setup or already have a project. Settings › Privacy has a switch for each:
+setup or already have a project. Settings › Privacy has a switch for crash reports and
+one for usage counts, and a button for feedback:
 
 - **Crash reports:** a panic's message and stack trace. When an agent stops with an
   error: the agent's name and version number, a fixed category such as "rate
@@ -737,6 +738,15 @@ setup or already have a project. Settings › Privacy has a switch for each:
   session started (with the agent), agent turn finished (with the agent, how it
   stopped and how many seconds it took), project added, environment created, a
   built-in view opened (with its name) and a browser tab opened.
+- **Feedback:** what you write when you press Send on a feedback form or after an
+  agent error or a crash. It is sent even with crash reports and usage counts off,
+  because pressing Send is your yes. An agent can also send feedback with
+  `arakun feedback`, but only with usage counts on, and you get a notice with the
+  full text in the Inbox. Surveys made in PostHog show up only with usage counts on,
+  at most once per launch. Arakun fetches them from PostHog only with usage counts
+  on, in an anonymous request with the project token and no id. With usage counts
+  off, the feedback forms use the questions built into Arakun. A bug, feature or UX
+  report may become a public GitHub issue, without paths, links, keys or emails.
 
 Each event carries Arakun's version, the OS and the CPU architecture. On first launch,
 what happens before you answer the question waits in memory: it is sent if you turn
@@ -756,7 +766,7 @@ trace. That file stays on your machine; attach it when you report a crash. It ke
 most recent panics, up to about 256 KB. A panic in background work no longer closes
 Arakun: what was running shows an error, and the log says "Arakun carried on".
 
-`DO_NOT_TRACK=1` or `ARAKUN_TELEMETRY=0` turn both off and skip the question;
+`DO_NOT_TRACK=1` or `ARAKUN_TELEMETRY=0` turn both off, block all feedback and skip the question;
 `ARAKUN_TELEMETRY=1` turns both on. Debug builds send nothing unless
 `ARAKUN_TELEMETRY=1` is set, and the test Arakun of `arakun dev` never does. A build
 made with `ARAKUN_POSTHOG_KEY=` (empty) sends nothing at all.
@@ -1185,6 +1195,7 @@ arakun page screenshot            # PNG of the environment's browser tab
 arakun notify "done"              # desktop notification
 arakun shrink -- cargo test       # run it and print a summary: failures, collapsed logs,
                                   # JSON outline; the whole output goes to a file it names
+arakun feedback --kind bug "..."  # tell the Arakun team about a problem (agents use it; needs usage telemetry on)
 arakun notices --unseen           # notices you haven't read yet
 arakun usage tools --days 7       # which tools' results used the tokens of Workers AI turns
 arakun seat add work < token.txt  # save a Claude seat (a `claude setup-token` token)

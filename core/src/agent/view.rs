@@ -215,6 +215,12 @@ pub enum ThreadViewEvent {
     },
     /// An Agent call's subagent was asked for, by its id; `None` asks for the list.
     OpenSubagent(Option<String>),
+    /// "Tell us what happened" under an agent's error: the report sent for it,
+    /// if any, and the agent.
+    TellUs {
+        error_event: Option<String>,
+        agent: String,
+    },
 }
 
 /// Ctrl+F over the conversation: prompts, replies, and thoughts.
@@ -258,6 +264,7 @@ pub struct ThreadView {
     thread: Entity<Thread>,
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     ssh: ssh::State,
+    can_tell_us: bool,
     ask: Option<AskState>,
     /// The parsed spec-mode plan on screen, keyed by its text.
     plan_md: RefCell<Option<(String, Rc<Vec<Block>>)>>,
@@ -308,6 +315,12 @@ pub struct ThreadView {
 }
 
 impl ThreadView {
+    /// Whether a failed session offers "Tell us what happened". The shell turns
+    /// it off when feedback cannot be sent.
+    pub fn set_can_tell_us(&mut self, on: bool) {
+        self.can_tell_us = on;
+    }
+
     pub fn new(thread: Entity<Thread>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let turns = turns_of(thread.read(cx).entries());
         let seen = thread.read(cx).entries().len();
@@ -340,6 +353,7 @@ impl ThreadView {
             thread,
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             ssh: ssh::State::default(),
+            can_tell_us: true,
             ask: None,
             plan_md: RefCell::new(None),
             list,

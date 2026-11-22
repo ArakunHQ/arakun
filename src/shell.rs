@@ -71,6 +71,7 @@ mod sidebar_builder;
 mod site;
 mod subagents;
 mod subnav;
+mod survey_card;
 mod switching;
 #[cfg(feature = "coderlabs")]
 mod tasks;
@@ -172,7 +173,8 @@ gpui::actions!(
         ZoomOut,
         ZoomReset,
         CustomizeSidebar,
-        OpenCustomize
+        OpenCustomize,
+        SendFeedback
     ]
 );
 
@@ -204,6 +206,8 @@ enum Modal {
     New(Entity<new_dialog::NewDialog>),
     /// Connecting arakun-pilot, or changing its settings.
     Pilot(Entity<crate::github_view::connect::PilotDialog>),
+    /// A PostHog survey, drawn natively (`survey_dialog`).
+    Survey(Entity<crate::survey_dialog::SurveyDialog>),
 }
 
 #[derive(Clone, Copy)]
@@ -343,6 +347,8 @@ pub struct Shell {
     _caret_focus: Subscription,
     _composer_blur: Subscription,
     modal: Option<(Modal, Subscription)>,
+    /// The popover survey card and what its clock knows (`shell::survey_card`).
+    survey: survey_card::CardState,
     /// Refreshes the open palette when GitHub brings in more.
     palette_watch: Option<Subscription>,
     /// Each project's `owner/name` on GitHub (None when it has none), by
@@ -394,6 +400,8 @@ pub struct Shell {
     /// The `update-policy` feature flag's dialog (`shell::updates`), over
     /// everything else, dialogs included.
     update_dialog: Option<(Entity<crate::update_dialog::UpdateDialog>, Subscription)>,
+    /// Reports agents sent with `arakun feedback`, per environment.
+    feedback_limits: crate::surveys::agent::RateLimit,
     /// The pages last marked visible, so tab switches can tell when to update CEF.
     shown_browsers: Vec<gpui::EntityId>,
     /// Answers `arakun <command>` from the control socket.
@@ -600,6 +608,13 @@ struct InboxItem {
 const DOCK_MIN_H: f32 = 120.;
 /// What the dock leaves above it for the work, however tall it was dragged.
 const DOCK_ROOM_ABOVE: f32 = 160.;
+
+/// Whether to ask after a crash. Not on first launch, before the answer to the
+/// consent question, and not when nothing can be sent: the notice would lead
+/// to a dead end.
+fn crash_notice_wanted(should_ask: bool, blocked: bool) -> bool {
+    !should_ask && !blocked
+}
 
 /// The tallest the dock can be in a window `viewport_h` tall: its bottom edge
 /// is one gap above the window's.
@@ -1006,6 +1021,7 @@ impl Shell {
             _caret_focus: caret_focus,
             _composer_blur: composer_blur,
             modal: None,
+            survey: survey_card::CardState::new(Instant::now()),
             palette_watch: None,
             repo_slugs: Default::default(),
             repo_slugs_read: None,
@@ -1157,6 +1173,7 @@ impl Shell {
             clear_armed: false,
             restarting: false,
             update_dialog: None,
+            feedback_limits: Default::default(),
             _runs: runs_subs,
             _quit: [
                 cx.on_app_quit(|this, cx| {
@@ -2604,6 +2621,29 @@ impl Shell {
         }
     }
 
+    /// After a run that ended without a clean exit, asks what happened. Not on
+    /// the first launch, which has nothing to ask about yet.
+    pub fn ask_after_crash(&mut self, cx: &mut Context<Self>) {
+        let Some(event) = crate::crash::last_run_ended_badly() else {
+            return;
+        };
+        if !crash_notice_wanted(crate::telemetry::should_ask(), crate::telemetry::blocked()) {
+            return;
+        }
+        let open = island::Open::Feedback {
+            error_event: event,
+            agent: None,
+            category: None,
+        };
+        self.notify(
+            crate::island::AlertKind::Warning,
+            "Arakun quit unexpectedly. Tell us what happened?",
+            "",
+            Some(open),
+            cx,
+        );
+    }
+
     /// Asks once, on first launch, whether to send crash reports and usage
     /// counts; nothing is sent before the answer.
     pub fn ask_telemetry(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -2637,6 +2677,75 @@ impl Shell {
         );
         self.modal = Some((Modal::Telemetry(dialog), sub));
         cx.notify();
+    }
+
+    /// Shows a survey over the app. `extra` fills response properties the
+    /// survey leaves empty, such as the error a survey is about.
+    pub fn open_survey(
+        &mut self,
+        survey: crate::surveys::model::Survey,
+        src: crate::telemetry::Source,
+        extra: Vec<(String, serde_json::Value)>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::survey_dialog::{SurveyDialog, SurveyEvent};
+        use crate::surveys::{ids, send, store};
+        match survey_card::decide(self.modal.is_some() || self.onboarding.is_some(), src) {
+            survey_card::Ask::Open => {}
+            survey_card::Ask::Drop => return,
+            // One request at a time: a newer one replaces an older.
+            survey_card::Ask::Defer => {
+                self.survey.pending = Some(survey_card::PendingAsk { survey, src, extra });
+                return;
+            }
+        }
+        // The built-in forms can be sent any number of times; others once.
+        let builtin = ids::is_builtin(&survey.id);
+        let dialog = cx.new(|cx| SurveyDialog::new(survey, src, extra, window, cx));
+        let sub = cx.subscribe_in(
+            &dialog,
+            window,
+            move |this, dialog, ev: &SurveyEvent, window, cx| match ev {
+                SurveyEvent::Sent => {
+                    if !builtin {
+                        store::mark(&dialog.read(cx).survey().id, store::Seen::Answered);
+                    }
+                }
+                SurveyEvent::Dismissed => {
+                    let d = dialog.read(cx);
+                    if !d.is_sent() && src == crate::telemetry::Source::Popover {
+                        store::mark(&d.survey().id, store::Seen::Dismissed);
+                        send::dismissed(d.survey());
+                    }
+                    this.close_modal(window, cx);
+                }
+                // The dialog shows why and keeps the answers.
+                SurveyEvent::Failed(why) => eprintln!("arakun: feedback not sent: {why}"),
+                // Behind the dialog, which stays open to finish the survey.
+                SurveyEvent::OpenUrl(url) => {
+                    if this.has_projects() {
+                        this.open_browser_tab(url.clone(), window, cx);
+                    } else {
+                        cx.open_url(url);
+                    }
+                }
+            },
+        );
+        self.modal = Some((Modal::Survey(dialog), sub));
+        cx.notify();
+    }
+
+    fn send_feedback(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::surveys::{ids, store};
+        let survey = store::builtin(&ids::USER);
+        self.open_survey(
+            survey,
+            crate::telemetry::Source::User,
+            Vec::new(),
+            window,
+            cx,
+        );
     }
 
     fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -2784,6 +2893,12 @@ impl Shell {
                 SettingsEvent::OpenAccount => {
                     this.close_modal(window, cx);
                     this.open_account(window, cx);
+                }
+                SettingsEvent::SendFeedback => {
+                    // Their own choice goes first, not a notice's earlier request.
+                    this.survey.pending = None;
+                    this.close_modal(window, cx);
+                    this.send_feedback(window, cx);
                 }
                 SettingsEvent::OpenExtensions => {
                     this.close_modal(window, cx);
@@ -3252,6 +3367,7 @@ impl Shell {
         } else {
             window.focus(&self.focus, cx);
         }
+        self.open_pending_survey(window, cx);
         cx.notify();
     }
 
@@ -4044,6 +4160,7 @@ impl Render for Shell {
             Modal::Telemetry(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),
             Modal::Pilot(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),
             Modal::New(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),
+            Modal::Survey(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),
         });
         let viewport_h = window.viewport_size().height.as_f32();
         let floating_sheet = self.render_floating_sheet(cx);
@@ -4216,6 +4333,9 @@ impl Render for Shell {
             .on_action(
                 cx.listener(|this, _: &OpenSettings, window, cx| this.open_settings(window, cx)),
             )
+            .on_action(
+                cx.listener(|this, _: &SendFeedback, window, cx| this.send_feedback(window, cx)),
+            )
             .on_action(cx.listener(|_, _: &ToggleDance, _, cx| {
                 crate::mascot::toggle_dancing();
                 cx.notify();
@@ -4263,6 +4383,8 @@ impl Render for Shell {
             })
             .capture_key_down(cx.listener(|this, ev: &gpui::KeyDownEvent, window, cx| {
                 let k = &ev.keystroke;
+                // A survey never pops up while someone is typing.
+                this.survey.last_typed = Instant::now();
                 // The update dialog's Enter and Space press its own buttons.
                 if this.menu.is_some()
                     && this.update_dialog.is_none()
@@ -4460,6 +4582,7 @@ impl Render for Shell {
                 )
                 .child(self.render_env_menu(viewport_h, cx))
             })
+            .when_some(self.render_survey_card(cx), |d, card| d.child(card))
             .when_some(crate::agent::markdown::preview(), |d, image| {
                 d.child(crate::agent::markdown::render_preview(image, window, cx))
             })
@@ -4727,6 +4850,13 @@ fn drop_envs(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn no_crash_notice_when_nothing_can_be_sent() {
+        assert!(crash_notice_wanted(false, false));
+        assert!(!crash_notice_wanted(true, false));
+        assert!(!crash_notice_wanted(false, true));
+    }
 
     /// The dock's sizes before corners and spacing became settings. At the
     /// default scales it must look exactly as it did.

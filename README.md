@@ -724,7 +724,8 @@ run without changing that file.
 Arakun sends nothing until you say so. On first launch it asks whether to send crash
 reports and anonymous usage counts to Arakun's PostHog project, so we can see what
 breaks and what gets used: as a step of the setup, or in a dialog when you skip the
-setup or already have a project. Settings › Privacy has a switch for each:
+setup or already have a project. Settings › Privacy has a switch for crash reports and
+one for usage counts, and a button for feedback:
 
 - **Crash reports:** a panic's message and stack trace. When an agent stops with an
   error: the agent's name and version number, a fixed category such as "rate
@@ -741,8 +742,10 @@ setup or already have a project. Settings › Privacy has a switch for each:
   because pressing Send is your yes. An agent can also send feedback with
   `arakun feedback`, but only with usage counts on, and you get a notice with the
   full text in the Inbox. Surveys made in PostHog show up only with usage counts on,
-  at most once per launch. A bug, feature or UX report may become a public GitHub
-  issue, without paths, links, keys or emails.
+  at most once per launch. Arakun fetches them from PostHog only with usage counts
+  on, in an anonymous request with the project token and no id. With usage counts
+  off, the feedback forms use the questions built into Arakun. A bug, feature or UX
+  report may become a public GitHub issue, without paths, links, keys or emails.
 
 Each event carries Arakun's version, the OS and the CPU architecture. On first launch,
 what happens before you answer the question waits in memory: it is sent if you turn

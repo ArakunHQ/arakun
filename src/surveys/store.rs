@@ -324,11 +324,21 @@ fn record(retry: &mut Option<(Instant, Duration)>, ok: bool, now: Instant) {
 /// When the next try may start, and how long the last wait was.
 static RETRY: Mutex<Option<(Instant, Duration)>> = Mutex::new(None);
 
+/// Whether surveys may be fetched from PostHog at all.
+fn should_fetch(blocked: bool, usage: bool) -> bool {
+    !blocked && usage
+}
+
 /// Fetches the surveys in the background, at most every 6 hours. A failure
 /// keeps the cache. Nothing is fetched when telemetry is blocked, which covers
-/// tests, debug builds and `arakun dev`.
+/// tests, debug builds and `arakun dev`, or when usage counts are off: the
+/// request is a kind of usage telemetry. The built-in forms then use their
+/// compiled-in questions.
 pub fn refresh() {
-    if crate::telemetry::blocked() {
+    if !should_fetch(
+        crate::telemetry::blocked(),
+        crate::telemetry::effective().usage,
+    ) {
         return;
     }
     let dir = dir();
@@ -635,6 +645,14 @@ mod tests {
             s.kind = SurveyType::Popover;
             assert!(pick(&[s], &SeenMap::new(), &moment()).is_none());
         }
+    }
+
+    #[test]
+    fn surveys_are_fetched_only_with_usage_on() {
+        assert!(should_fetch(false, true));
+        assert!(!should_fetch(false, false));
+        assert!(!should_fetch(true, true));
+        assert!(!should_fetch(true, false));
     }
 
     #[test]

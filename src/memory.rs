@@ -636,9 +636,20 @@ pub fn context(project: &Store, global: &Store, name: &str, now: u64) -> String 
 
 /// How agents are told to use memory; the index follows it.
 pub const PROTOCOL: &str = "\
-Memory (`arakun mem --help`): cross-session notes (sessions are recorded automatically; skip summaries). \
-Use `arakun mem get <id>` / `search <words>`, save sparingly (`save \"<title>\" --kind <gotcha|bugfix|decision|convention|config|pattern|discovery|preference> [--global] [--topic t] --body \"<text>\"`; use `--global` for user-wide preferences), \
-or update/remove with `--topic` / `forget <id>`.";
+Memory (`arakun mem --help`): cross-session notes for you and later agents (sessions, commits and changed files are recorded automatically, so never write session summaries).
+- Read `arakun mem get <id>` before working in an area the index mentions; run `arakun mem search <words>` when the user mentions earlier work, a task resembles something solved before, or you hit an error that may be known.
+- Save sparingly, right when you learn it: only what a later session would otherwise get wrong or spend time rediscovering, with a short searchable title and What/Why/Where text: `arakun mem save \"<title>\" --kind <kind> [--files a,b] [--topic area/name] --body \"<text>\"`.
+- Kinds:
+  - `gotcha`: non-obvious trap (env vars, ordering, commands that must run a certain way)
+  - `bugfix`: root cause and fix
+  - `decision`: what was chosen and why
+  - `convention`: how this project wants things done
+  - `config`: project or environment configuration
+  - `pattern`: recurring architecture or code pattern
+  - `discovery`: non-obvious finding about the codebase
+- When the user corrects you or states how they want things, save it with `--kind preference`, and add `--global` when it is about them rather than this project.
+- Do not save what the code, the git log or the session record already says, raw output, or temporary state.
+- If an entry is wrong or outdated, update it with the same `--topic` or remove it with `arakun mem forget <id>`.";
 
 /// The memory part of a session's system prompt for work in `dir`.
 pub fn prompt_for(dir: &Path) -> String {
@@ -654,11 +665,6 @@ pub fn prompt_for(dir: &Path) -> String {
 }
 
 fn prompt(project: &Store, global: &Store, name: &str, now: u64) -> String {
-    if project.items.is_empty() && global.items.is_empty() {
-        return format!(
-            "Memory: `arakun mem --help` (save durable project gotchas with `arakun mem save` and user-wide preferences with `--kind preference --global`; nothing saved yet for {name})."
-        );
-    }
     format!("{PROTOCOL}\n\n{}", context(project, global, name, now))
 }
 
@@ -1526,5 +1532,19 @@ mod tests {
         assert!(load(&file).items.is_empty());
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "{torn");
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn protocol_keeps_preference_global_and_do_not_save_rules() {
+        assert!(PROTOCOL.contains("--kind preference"));
+        assert!(PROTOCOL.contains("--global"));
+        assert!(PROTOCOL.contains("Do not save"));
+        assert!(PROTOCOL.contains("arakun mem get <id>"));
+        assert!(PROTOCOL.contains("arakun mem search <words>"));
+        assert!(PROTOCOL.contains("arakun mem forget <id>"));
+        let empty = Store::default();
+        let text = prompt(&empty, &empty, "demo", 0);
+        assert!(text.starts_with(PROTOCOL));
+        assert!(text.contains("Nothing saved yet for demo."));
     }
 }

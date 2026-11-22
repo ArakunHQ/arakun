@@ -230,8 +230,6 @@ fn start_sender() {
 }
 
 /// Where a survey response comes from.
-// Later tasks construct every variant; until then only tests do.
-#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Source {
     User,
@@ -423,8 +421,9 @@ fn release_held(send: bool) {
 pub fn quit() {
     let minutes = LAUNCHED.get().map_or(0, |t| t.elapsed().as_secs() / 60);
     capture_with(events::APP_QUIT, &[], &[("minutes_open", minutes)]);
-    flush();
+    // Before the flush: a kill during its wait must not look like a crash.
     crate::crash::mark_clean_exit();
+    flush();
 }
 
 /// Reports an error Arakun handled, such as an agent that stopped with one:

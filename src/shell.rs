@@ -2614,8 +2614,6 @@ impl Shell {
         }
     }
 
-    /// Asks once, on first launch, whether to send crash reports and usage
-    /// counts; nothing is sent before the answer.
     /// After a run that ended without a clean exit, asks what happened. Not on
     /// the first launch, which has nothing to ask about yet.
     pub fn ask_after_crash(&mut self, cx: &mut Context<Self>) {
@@ -2639,6 +2637,8 @@ impl Shell {
         );
     }
 
+    /// Asks once, on first launch, whether to send crash reports and usage
+    /// counts; nothing is sent before the answer.
     pub fn ask_telemetry(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // The setup asks it as one of its steps, and again here when it
         // closes without an answer.

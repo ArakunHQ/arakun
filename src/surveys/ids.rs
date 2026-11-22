@@ -10,10 +10,8 @@ pub const KINDS: [&str; 4] = ["bug", "feature", "ux", "other"];
 
 /// One survey Arakun knows about.
 pub struct Builtin {
-    /// The survey id. A build can point at another survey with the env var.
+    /// The survey id. A build can point at another survey with `ARAKUN_SURVEY_<NAME>`.
     pub survey_id: &'static str,
-    /// The build-time variable that overrides `survey_id`.
-    pub env_var: &'static str,
     /// The id of the single-choice kind question, if the survey has one.
     pub kind_question: Option<&'static str>,
     /// Every question, in the order PostHog shows them.
@@ -42,6 +40,8 @@ pub enum FallbackBody {
 
 const KIND_TEXT: &str = "What kind of feedback is it?";
 const KIND_CHOICES: &[&str] = &["Bug", "Feature request", "UX", "Other"];
+// Choices map to `KINDS` by position, so the lengths must match.
+const _: () = assert!(KIND_CHOICES.len() == KINDS.len());
 
 /// Feedback a person writes from the app. The third question is an optional
 /// email and must never reach a public place such as a GitHub issue.
@@ -50,7 +50,6 @@ pub const USER: Builtin = Builtin {
         Some(v) => v,
         None => "01a200ad-5d58-0000-35ae-dc63b34e34b9",
     },
-    env_var: "ARAKUN_SURVEY_USER",
     kind_question: Some("c08d98b6-2f22-454e-ba14-e548802e645c"),
     questions: &[
         Fallback {
@@ -82,7 +81,6 @@ pub const AGENT: Builtin = Builtin {
         Some(v) => v,
         None => "01a200ad-5f88-0000-364b-2b778e447d4d",
     },
-    env_var: "ARAKUN_SURVEY_AGENT",
     kind_question: Some("ce6cdbfc-07dc-4126-aeca-3246f24ac967"),
     questions: &[
         Fallback {
@@ -109,7 +107,6 @@ pub const ERROR: Builtin = Builtin {
         Some(v) => v,
         None => "01a200ad-6257-0000-3340-f5cbf139dda4",
     },
-    env_var: "ARAKUN_SURVEY_ERROR",
     kind_question: None,
     questions: &[
         Fallback {

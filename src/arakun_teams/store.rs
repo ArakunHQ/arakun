@@ -304,6 +304,11 @@ fn write_entry(account: &str, text: &str) -> Result<(), String> {
 #[cfg(target_os = "macos")]
 fn read_entry(account: &str) -> Result<Option<String>, String> {
     if account == DEVICE_ACCOUNT || account.starts_with("teams-device@") {
+        // Builds that kept this entry with `keyring::store` put it in the
+        // Keychain. Reading Arakun's own item there does not ask the person.
+        if let Some(text) = mac::read(account)? {
+            return Ok(Some(text));
+        }
         // Older macOS builds used secret-tool if it was installed. Don't
         // write there; a missing helper is normal on a stock Mac.
         return match secret_service_entry(account) {

@@ -49,6 +49,7 @@ impl PostHogView {
             .map(|s| s.email)
             .filter(|e| !e.is_empty())
             .unwrap_or_else(|| p.session.clone());
+        let account = crate::redact::value(&account);
         format!("{} · {} · {account}", p.name, p.host)
     }
 

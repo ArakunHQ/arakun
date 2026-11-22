@@ -26,6 +26,7 @@ const RESTART_EVERY: Duration = Duration::from_secs(20);
 enum Cmd {
     Send(ToIsland),
     PeerClosed,
+    Disconnect,
 }
 
 #[cfg(test)]
@@ -37,7 +38,7 @@ impl TestReceiver {
         loop {
             match self.0.try_recv()? {
                 Cmd::Send(m) => return Ok(m),
-                Cmd::PeerClosed => {}
+                Cmd::PeerClosed | Cmd::Disconnect => {}
             }
         }
     }
@@ -46,16 +47,28 @@ impl TestReceiver {
 #[cfg(test)]
 pub(crate) fn test_channel() -> (Sender, TestReceiver) {
     let (tx, rx) = mpsc::channel();
-    (Sender(tx), TestReceiver(rx))
+    (Sender::new(tx), TestReceiver(rx))
 }
 
-/// Sender handle to the island link thread; dropping it closes the link.
+struct SenderInner(mpsc::Sender<Cmd>);
+
+impl Drop for SenderInner {
+    fn drop(&mut self) {
+        let _ = self.0.send(Cmd::Disconnect);
+    }
+}
+
+/// Sender handle to the island link thread; dropping the last clone closes the link.
 #[derive(Clone)]
-pub struct Sender(mpsc::Sender<Cmd>);
+pub struct Sender(Arc<SenderInner>);
 
 impl Sender {
+    fn new(tx: mpsc::Sender<Cmd>) -> Self {
+        Self(Arc::new(SenderInner(tx)))
+    }
+
     pub fn send(&self, msg: ToIsland) -> bool {
-        self.0.send(Cmd::Send(msg)).is_ok()
+        self.0.0.send(Cmd::Send(msg)).is_ok()
     }
 }
 
@@ -80,7 +93,7 @@ pub fn connect(
     if let Err(e) = spawned {
         eprintln!("arakun: no island link: {e}");
     }
-    (Sender(tx), presses, up)
+    (Sender::new(tx), presses, up)
 }
 
 fn run(
@@ -118,8 +131,8 @@ fn run(
             match rx.recv_timeout(until.saturating_duration_since(Instant::now())) {
                 Ok(Cmd::Send(msg @ ToIsland::Feed { .. })) => feed = Some(msg),
                 Ok(Cmd::Send(_) | Cmd::PeerClosed) => {}
+                Ok(Cmd::Disconnect) | Err(RecvTimeoutError::Disconnected) => return,
                 Err(RecvTimeoutError::Timeout) => break,
-                Err(RecvTimeoutError::Disconnected) => return,
             }
         }
         wait = (wait * 2).min(MOST_WAIT);
@@ -186,7 +199,7 @@ fn session(
                     break true;
                 }
             }
-            Err(_) => break false,
+            Ok(Cmd::Disconnect) | Err(_) => break false,
         }
     };
     let _ = stream.shutdown(Shutdown::Both);

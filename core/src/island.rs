@@ -136,9 +136,9 @@ const POINTER_NEAR: Duration = Duration::from_millis(16);
 #[cfg(target_os = "macos")]
 const POINTER_FAR: Duration = Duration::from_millis(60);
 #[cfg(target_os = "macos")]
-const POINTER_STILL: Duration = Duration::from_millis(250);
+const POINTER_STILL: Duration = Duration::from_millis(120);
 #[cfg(target_os = "macos")]
-const POINTER_IDLE: Duration = Duration::from_millis(500);
+const POINTER_IDLE: Duration = Duration::from_millis(180);
 #[cfg(target_os = "macos")]
 const POINTER_STILL_AFTER: Duration = Duration::from_secs(2);
 #[cfg(target_os = "macos")]
@@ -1880,6 +1880,8 @@ impl Island {
             self.peek = true;
             if self.call.is_some() {
                 self.refresh(cx);
+            } else if self.alerts.front().is_some() && self.tick_asleep.replace(false) {
+                let _ = self.tick_wake.unbounded_send(());
             }
             cx.notify();
         }

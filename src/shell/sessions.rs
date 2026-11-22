@@ -572,6 +572,7 @@ impl Shell {
                     if status == Status::Working {
                         s.settled = false;
                     }
+                    self.feed_island(window, cx);
                     cx.notify();
                 }
             }

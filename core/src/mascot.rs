@@ -1850,7 +1850,7 @@ impl Render for Mascot {
         self.rendered = true;
         self.active = self.awake || window.is_window_active();
         let frame = self.step(now, dt);
-        if self.wants_frame() {
+        if self.wants_frame() || matches!(self.next_wait(), crate::frame_timer::Next::After(_)) {
             self.wake.wake();
         }
         let color = self.color.unwrap_or_else(theme::brand_paper);

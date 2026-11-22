@@ -57,13 +57,13 @@ impl Shell {
             // background one in five seconds keeps the sidebar and the
             // phone's statuses close; coming to the front scans within one.
             let mut skipped = 0;
-            let mut has_sessions = false;
+            let mut has_active = false;
             loop {
                 let Ok(active) = this.update_in(cx, |_, window, _| window.is_window_active())
                 else {
                     break;
                 };
-                if active || skipped >= 4 {
+                if !has_active || active || skipped >= 4 {
                     skipped = 0;
                     let found = cx
                         .background_spawn(crate::guard::task(async {
@@ -73,7 +73,12 @@ impl Shell {
                                 .collect::<Vec<_>>()
                         }))
                         .await;
-                    has_sessions = !found.is_empty();
+                    has_active = found.iter().any(|(_, m)| {
+                        matches!(
+                            headless::status(m),
+                            headless::Status::Working | headless::Status::NeedsInput
+                        )
+                    });
                     if this
                         .update_in(cx, |this, window, cx| this.sync_headless(found, window, cx))
                         .is_err()
@@ -83,7 +88,7 @@ impl Shell {
                 } else {
                     skipped += 1;
                 }
-                let wait = if has_sessions {
+                let wait = if has_active {
                     Duration::from_secs(1)
                 } else {
                     Duration::from_secs(10)

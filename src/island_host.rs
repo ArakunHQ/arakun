@@ -588,7 +588,12 @@ mod host {
                         cx.background_executor().timer(WATCH_EVERY).await;
                         continue;
                     };
-                    let has_sessions = !scan.sessions.is_empty();
+                    let has_active = scan.sessions.iter().any(|(_, s, _)| {
+                        matches!(
+                            s,
+                            crate::headless::Status::Working | crate::headless::Status::NeedsInput
+                        )
+                    });
                     let Ok(mut seen) = this.update(cx, |host, _| host.watch.update(&scan)) else {
                         break;
                     };
@@ -601,7 +606,7 @@ mod host {
                     if this.update(cx, |host, cx| host.headless(seen, cx)).is_err() {
                         break;
                     }
-                    let wait = if has_sessions {
+                    let wait = if has_active {
                         WATCH_EVERY
                     } else {
                         Duration::from_secs(10)

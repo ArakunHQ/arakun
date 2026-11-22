@@ -346,6 +346,9 @@ impl TeamsView {
                     None,
                 )
                 .into_any_element()
+            } else if reading {
+                // What is missing may be in a channel not read yet.
+                ui::loading("Reading the team's channels…").into_any_element()
             } else if filter == Filter::Reversed && query.is_empty() {
                 ui::text(Type::Body, theme::text_subtle(), "Nothing was reversed.")
                     .px(ui::sp(4.))

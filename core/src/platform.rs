@@ -1047,8 +1047,8 @@ impl ProcessTree {
         let _ = cmd;
     }
 
-    /// [`prepare_made`](Self::prepare_made) for a short command with a time limit
-    /// (git, gh): its own process group, so the limit can stop the whole tree, but
+    /// [`prepare_made`](Self::prepare_made) for a command with a short time limit
+    /// (git and gh polls): its own process group, so the limit can stop the whole tree, but
     /// no parent-death signal. That signal needs `pre_exec`, and a command with
     /// `pre_exec` is started with a full `fork()` of arakun instead of
     /// `posix_spawn`. The fork holds the process's memory map while it copies a
@@ -1197,6 +1197,10 @@ const STOP_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
 ///
 /// Make `cmd` with [`command`] or [`agent_command`]; this leaves its window and priority
 /// as they are.
+/// The longest limit [`output_until`] starts without a fork (see
+/// [`ProcessTree::prepare_short`]).
+const SHORT_LIMIT: std::time::Duration = std::time::Duration::from_secs(120);
+
 pub fn output_within(
     cmd: &mut Command,
     input: Option<&[u8]>,
@@ -1234,7 +1238,14 @@ pub fn output_until(
     })
     .stdout(Stdio::piped())
     .stderr(Stdio::piped());
-    ProcessTree::prepare_short(cmd);
+    // A short limit (git and gh polls) skips the fork that the parent-death signal
+    // costs; a long one (a push, a clone, a host command) keeps the signal, so a
+    // hung command doesn't outlive a crashed arakun. Those start rarely.
+    if limit <= SHORT_LIMIT {
+        ProcessTree::prepare_short(cmd);
+    } else {
+        ProcessTree::prepare_made(cmd);
+    }
     let mut child = cmd.spawn()?;
     let tree = ProcessTree::adopt(&child);
     if let (Some(bytes), Some(mut stdin)) = (input, child.stdin.take()) {

@@ -124,8 +124,8 @@ copy of it, rename it back, and start a version that can read it.
   the commit takes (the staged changes, or every change, new files too, when nothing
   is staged; up to 60,000 characters of diff and the first 300 files) in the style of
   the last commit subjects. As in the pull request dialog, only the agent of the
-  environment's latest session gets the diff: when it isn't set up, no other agent is
-  asked and the dialog says why.
+  environment's latest session (with no session yet, the agent its next one would use)
+  gets the diff: when it isn't set up, no other agent is asked and the dialog says why.
   You edit the message before you commit. Closing the dialog while it writes stops the
   agent.
 
@@ -283,8 +283,8 @@ sees the project's skills.
   that off, pushes the branch first when it has commits GitHub doesn't, and then shows
   the new pull request in the GitHub tab. "Open GitHub's form" opens the page in your
   browser instead, to write the description there. "Write with <agent>" has the agent
-  of the environment's latest session (after "Continue with", the one it went on with)
-  write the title and the description from the branch's commits, its diff (up to 60,000
+  of the environment's latest session (after "Continue with", the one it went on with;
+  with no session yet, the agent its next one would use) write the title and the description from the branch's commits, its diff (up to 60,000
   characters) and the template. Only that agent gets the diff, since you already chose
   that provider for this code: when it isn't set up here, no other agent is asked, not
   even the one picked for naming branches, the description stays the template or the

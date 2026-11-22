@@ -2372,10 +2372,11 @@ impl Shell {
     fn teams_changed(&mut self, cx: &mut Context<Self>) {
         use crate::sidebar::View;
         if self.teams.read(cx).enabled() && self.sidebar.is_new(View::Teams) {
-            self.change_sidebar(cx, |s| {
-                s.place(View::Teams);
-                s.known.push(View::Teams);
-            });
+            // Not through `change_sidebar`: the user did not make this change,
+            // so Undo in Customize must not get a step for it.
+            self.sidebar.place(View::Teams);
+            self.sidebar.known.push(View::Teams);
+            self.sidebar.save();
         }
         cx.notify();
     }

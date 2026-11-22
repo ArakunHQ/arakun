@@ -1,4 +1,4 @@
-//! The Workspace panel: its Sessions, Explorer and Changes tabs, or the
+//! The Workspace panel: its Sessions, Explorer, Changes and Session tabs, or the
 //! Customize panel in their place while it is open.
 
 use super::*;
@@ -111,7 +111,7 @@ impl Shell {
             .child(
                 icon_button("panel-search", "search01", 14., "Search sessions (Ctrl+K)").on_click(
                     cx.listener(|this, _, window, cx| {
-                        this.panel_tab = PanelTab::Sessions;
+                        this.set_panel_tab(PanelTab::Sessions, cx);
                         this.env_menu_open = false;
                         let field = this.session_query.clone();
                         window.focus(&field.focus_handle(cx), cx);
@@ -126,6 +126,17 @@ impl Shell {
             );
 
         let changed_files = env.changes.len();
+        let subagents = self
+            .active_thread(cx)
+            .map_or(0, |t| t.read(cx).subagents().len());
+        // The tab shows once the session on screen has subagents or a pull
+        // request, and stays while it is the one open.
+        let mut shown_tabs = vec![PanelTab::Sessions, PanelTab::Explorer, PanelTab::Changes];
+        if subagents > 0 || self.panel_tab == PanelTab::Session || self.session_has_pr(cx) {
+            shown_tabs.push(PanelTab::Session);
+        }
+        // Four tabs at the panel's usual width: a little less air in each.
+        let tab_pad = if shown_tabs.len() > 3 { 6. } else { 8. };
         let tabs = div()
             .flex()
             .flex_none()
@@ -134,6 +145,8 @@ impl Shell {
             .px(crate::ui::sp(8.))
             .child(
                 div()
+                    .id("panel-tabs")
+                    .role(gpui::Role::TabList)
                     .flex()
                     .flex_1()
                     // Or its labels' full widths hold it open past the panel.
@@ -144,82 +157,102 @@ impl Shell {
                     .gap(crate::ui::sp(2.))
                     .rounded(crate::ui::rad(8.))
                     .bg(theme::fill_hover())
-                    .children(
-                        [PanelTab::Sessions, PanelTab::Explorer, PanelTab::Changes]
-                            .into_iter()
-                            .map(|tab| {
-                                let active = tab == self.panel_tab;
-                                let label = match tab {
-                                    PanelTab::Sessions => "Sessions",
-                                    PanelTab::Explorer => "Explorer",
-                                    PanelTab::Changes => "Changes",
-                                };
-                                div()
-                                    .id(label)
-                                    .flex()
-                                    // Sized from their labels, so a tab with a
-                                    // count gets the room for it. On a narrow
-                                    // panel the labels shorten rather than push
-                                    // the last tab out.
-                                    .flex_auto()
-                                    .min_w_0()
-                                    .items_center()
-                                    .justify_center()
-                                    .gap(crate::ui::sp(6.))
-                                    .h_full()
-                                    .px(crate::ui::sp(8.))
-                                    // 2 px inside an 8 px track: parallel to it.
-                                    .rounded(ui::nested(ui::RADIUS, 2.))
-                                    .text_size(px(ui::TEXT_SM))
-                                    .line_height(px(12.))
-                                    .cursor_pointer()
-                                    .when(active, |d| {
-                                        d.bg(theme::selection()).text_color(theme::content())
-                                    })
-                                    .when(!active, |d| {
-                                        d.text_color(theme::text_subtle()).hover(|s| {
-                                            s.bg(theme::hover()).text_color(theme::content())
-                                        })
-                                    })
-                                    .child(div().min_w_0().truncate().child(label))
-                                    // The line counts are inside the tab; its label only says how many files.
-                                    .when(tab == PanelTab::Changes && changed_files > 0, |d| {
-                                        d.child(
-                                            div()
-                                                .flex()
-                                                .flex_none()
-                                                .items_center()
-                                                .h(px(16.))
-                                                .px(crate::ui::sp(4.))
-                                                .rounded(crate::ui::rad(crate::ui::RADIUS_SM))
-                                                .bg(theme::fill_selected())
-                                                .text_size(px(crate::ui::TEXT_XS))
-                                                .line_height(px(16.))
-                                                .font_weight(FontWeight::MEDIUM)
-                                                .text_color(theme::text_muted())
-                                                .child(changed_files.to_string()),
-                                        )
-                                    })
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.panel_tab = tab;
-                                        match tab {
-                                            PanelTab::Explorer => {
-                                                this.ensure_explorer(cx);
-                                                this.refresh_visible(cx);
-                                            }
-                                            PanelTab::Changes => this.refresh_visible(cx),
-                                            PanelTab::Sessions => {}
-                                        }
-                                        cx.notify();
-                                    }))
-                            }),
-                    ),
+                    .children(shown_tabs.into_iter().map(|tab| {
+                        let active = tab == self.panel_tab;
+                        let label = match tab {
+                            PanelTab::Sessions => "Sessions",
+                            PanelTab::Explorer => "Explorer",
+                            PanelTab::Changes => "Changes",
+                            PanelTab::Session => "Session",
+                        };
+                        let count = match tab {
+                            PanelTab::Changes => changed_files,
+                            PanelTab::Session => subagents,
+                            PanelTab::Sessions | PanelTab::Explorer => 0,
+                        };
+                        div()
+                            .id(label)
+                            // Session shows only an icon: its name comes from here.
+                            .role(gpui::Role::Tab)
+                            .aria_label(label)
+                            .aria_selected(active)
+                            .flex()
+                            // Sized from their labels, so a tab with a
+                            // count gets the room for it. On a narrow
+                            // panel the labels shorten rather than push
+                            // the last tab out.
+                            .flex_auto()
+                            .min_w_0()
+                            .items_center()
+                            .justify_center()
+                            .gap(crate::ui::sp(6.))
+                            .h_full()
+                            .px(crate::ui::sp(tab_pad))
+                            // 2 px inside an 8 px track: parallel to it.
+                            .rounded(ui::nested(ui::RADIUS, 2.))
+                            .text_size(px(ui::TEXT_SM))
+                            .line_height(px(12.))
+                            .cursor_pointer()
+                            .when(active, |d| {
+                                d.bg(theme::selection()).text_color(theme::content())
+                            })
+                            .when(!active, |d| {
+                                d.text_color(theme::text_subtle())
+                                    .hover(|s| s.bg(theme::hover()).text_color(theme::content()))
+                            })
+                            // Four labels don't fit the panel's usual width:
+                            // Session, the tab that comes and goes, is an icon.
+                            .map(|d| {
+                                if tab == PanelTab::Session {
+                                    d.flex_none()
+                                        .tooltip(ui::tip("Pull request and subagents (Ctrl+Alt+S)"))
+                                        .child(icon("bot", 14.).text_color(if active {
+                                            theme::content()
+                                        } else {
+                                            theme::text_subtle()
+                                        }))
+                                } else {
+                                    d.child(div().min_w_0().truncate().child(label))
+                                }
+                            })
+                            // The line counts are inside the tab; its label only says how many files.
+                            .when(count > 0, |d| {
+                                d.child(
+                                    div()
+                                        .flex()
+                                        .flex_none()
+                                        .items_center()
+                                        .h(px(16.))
+                                        .px(crate::ui::sp(4.))
+                                        .rounded(crate::ui::rad(crate::ui::RADIUS_SM))
+                                        .bg(theme::fill_selected())
+                                        .text_size(px(crate::ui::TEXT_XS))
+                                        .line_height(px(16.))
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .text_color(theme::text_muted())
+                                        .child(count.to_string()),
+                                )
+                            })
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.set_panel_tab(tab, cx);
+                                match tab {
+                                    PanelTab::Explorer => {
+                                        this.ensure_explorer(cx);
+                                        this.refresh_visible(cx);
+                                    }
+                                    PanelTab::Changes => this.refresh_visible(cx),
+                                    PanelTab::Sessions | PanelTab::Session => {}
+                                }
+                                cx.notify();
+                            }))
+                    })),
             );
 
         let body: AnyElement = match self.panel_tab {
             PanelTab::Sessions => self.render_sessions(env, cx).into_any_element(),
             PanelTab::Explorer => self.render_explorer(cx).into_any_element(),
             PanelTab::Changes => self.render_changes(cx).into_any_element(),
+            PanelTab::Session => self.render_subagents(cx).into_any_element(),
         };
 
         self.side_card()

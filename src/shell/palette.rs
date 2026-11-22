@@ -1222,9 +1222,9 @@ impl Shell {
             add(
                 "toggle-subagents",
                 "bot",
-                "Toggle session panel",
+                "Toggle session tab",
                 &["Ctrl", "Alt", "S"],
-                "The session's pull request and subagents.",
+                "The session's pull request and subagents, in the Workspace panel.",
                 Target::ToggleSubagents,
             );
         }
@@ -1424,10 +1424,10 @@ impl Shell {
             ),
             (
                 Setting::Subagents,
-                "Session panel",
+                "Session tab",
                 "Layout",
-                "The session's pull request and subagents.",
-                self.subagents_open,
+                "The session's pull request and subagents, in the Workspace panel.",
+                self.subagents_shown(),
             ),
         ];
         for (s, name, path, blurb, on) in rows {

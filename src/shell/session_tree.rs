@@ -3,7 +3,7 @@
 //! state. It takes the place of the projects and environments list.
 
 use super::*;
-use crate::tab_layout::{LongTitles, Quiet, StateMark, TabLayout};
+use crate::tab_layout::{LongTitles, Quiet, Sort, StateMark, TabLayout};
 
 /// Height of a session row whose title fits on one line.
 const ROW_H: f32 = 30.;
@@ -144,9 +144,10 @@ pub(super) fn project_open(
     }
 }
 
-/// A project in the tree, as `Shell::tree_listing` lays it out.
+/// A project in the tree, as `Shell::tree_listing` lays it out. Without
+/// project headings, one of these with no project holds every row.
 struct TreeProject {
-    pi: usize,
+    pi: Option<usize>,
     rows: Vec<Row>,
     /// Its rows show under it.
     open: bool,
@@ -170,6 +171,7 @@ fn pick_range(
 
 /// One session in the tree.
 struct Row {
+    pi: usize,
     ei: usize,
     /// Its place in its environment's list.
     si: usize,
@@ -178,11 +180,23 @@ struct Row {
     agent: crate::agent::AgentKind,
     state: RowState,
     pr: Option<u64>,
+    /// Unix seconds of its last activity.
+    updated: u64,
+}
+
+/// Puts `rows` in the order `sort` asks for. The sort is stable, so rows
+/// that tie keep the environments' order.
+fn sort_rows(rows: &mut [Row], sort: Sort) {
+    match sort {
+        Sort::Latest => rows.sort_by_key(|r| std::cmp::Reverse(r.updated)),
+        Sort::Title => rows.sort_by_cached_key(|r| r.title.to_lowercase()),
+        Sort::Environment => {}
+    }
 }
 
 impl Shell {
-    /// The sessions of project `pi` the tree lists, in sidebar order:
-    /// archived ones only while archived sessions are shown.
+    /// The sessions of project `pi` the tree lists, in the projects list's
+    /// order: archived ones only while archived sessions are shown.
     fn tree_rows(&self, pi: usize, cx: &App) -> Vec<Row> {
         let Some(project) = self.projects.get(pi) else {
             return Vec::new();
@@ -201,6 +215,7 @@ impl Shell {
                     continue;
                 }
                 rows.push(Row {
+                    pi,
                     ei,
                     si,
                     id: s.id.clone(),
@@ -208,30 +223,47 @@ impl Shell {
                     agent: s.agent,
                     state: RowState::of(s.shown_status(), ci),
                     pr,
+                    updated: s.updated,
                 });
             }
         }
         rows
     }
 
-    /// What the tree shows, project by project: each project's rows, whether
-    /// they show under it, and the most urgent state among them. `query`
+    /// What the tree shows, project by project: each project's rows in the
+    /// chosen order, whether they show under it, and the most urgent state
+    /// among them. Without project headings, every row in one list. `query`
     /// narrows to the titles it matches and opens every project.
     fn tree_listing(&self, query: Option<&str>, cx: &App) -> Vec<TreeProject> {
         let layout = crate::tab_layout::current();
-        let mut out = Vec::new();
-        for (pi, project) in self.projects.iter().enumerate() {
+        let rows_of = |pi: usize| {
             let mut rows = self.tree_rows(pi, cx);
             if let Some(q) = query {
                 rows.retain(|r| r.title.to_lowercase().contains(q));
-                if rows.is_empty() {
-                    continue;
-                }
             }
+            rows
+        };
+        if !layout.group {
+            let mut rows: Vec<Row> = (0..self.projects.len()).flat_map(rows_of).collect();
+            sort_rows(&mut rows, layout.sort);
+            return vec![TreeProject {
+                pi: None,
+                rows,
+                open: true,
+                urgent: None,
+            }];
+        }
+        let mut out = Vec::new();
+        for (pi, project) in self.projects.iter().enumerate() {
+            let mut rows = rows_of(pi);
+            if query.is_some() && rows.is_empty() {
+                continue;
+            }
+            sort_rows(&mut rows, layout.sort);
             let busy = rows.iter().any(|r| r.state.busy());
             let here = pi == self.active_project;
             let user = self.tree_open.get(&project.path).copied();
-            let open = if query.is_some() || !layout.group {
+            let open = if query.is_some() {
                 true
             } else {
                 match project_open(layout.quiet, busy, here, user) {
@@ -245,7 +277,7 @@ impl Shell {
                 .filter(|s| *s != RowState::Idle)
                 .min_by_key(|s| s.rank());
             out.push(TreeProject {
-                pi,
+                pi: Some(pi),
                 rows,
                 open,
                 urgent,
@@ -526,7 +558,7 @@ impl Shell {
             urgent,
         } in self.tree_listing(query.as_deref(), cx)
         {
-            if layout.group {
+            if let Some(pi) = pi {
                 list = list.child(self.render_tree_project(
                     pi,
                     rows.len(),
@@ -539,7 +571,7 @@ impl Shell {
             if open {
                 for row in rows {
                     let selected = open_id.as_ref() == Some(&row.id);
-                    list = list.child(self.render_tree_row(pi, row, selected, &layout, cx));
+                    list = list.child(self.render_tree_row(row, selected, &layout, cx));
                 }
             }
         }
@@ -592,12 +624,34 @@ impl Shell {
             .text_size(px(ui::TEXT_SM))
             .text_color(theme::text_subtle())
             .child(div().flex_1().min_w_0().child("Sessions"))
+            .child(self.tree_sort_button("tree-sort", cx))
             // As the titled segment's +: with the tree in place of the
             // project switcher, this is where a project is added too.
             .child(
                 icon_button("tree-new", "add01", 14., "New session or project")
                     .on_click(cx.listener(|this, _, window, cx| this.open_new_dialog(window, cx))),
             )
+    }
+
+    /// Switches the tree to the next order. It says the order in use, as
+    /// the icon alone can't.
+    pub(super) fn tree_sort_button(
+        &self,
+        id: &'static str,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let layout = crate::tab_layout::current();
+        let next = layout.with(|l| l.sort = l.sort.next());
+        super::rail::heading_icon_button(
+            id,
+            "sorting01",
+            format!("Sort sessions: {}", layout.sort.label()),
+        )
+        .on_click(cx.listener(move |this, _, _, cx| {
+            cx.stop_propagation();
+            this.drop_pick();
+            this.apply_tab_layout(next, None, cx)
+        }))
     }
 
     fn render_tree_project(
@@ -712,13 +766,13 @@ impl Shell {
 
     fn render_tree_row(
         &self,
-        pi: usize,
         row: Row,
         selected: bool,
         layout: &TabLayout,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let Row {
+            pi,
             ei,
             si,
             id,
@@ -726,6 +780,7 @@ impl Shell {
             agent,
             state,
             pr,
+            updated: _,
         } = row;
         let pinned = layout.pinned_bar() && self.is_pinned(&id);
         let env_path = self.projects[pi].environments[ei].path.clone();
@@ -922,6 +977,38 @@ mod tests {
         // An anchor the tree no longer shows picks the row alone.
         assert_eq!(pick_range(&ids, Some(&id("gone")), &id("c")), vec![id("c")]);
         assert_eq!(pick_range(&ids, None, &id("b")), vec![id("b")]);
+    }
+
+    #[test]
+    fn sessions_sort_latest_first_by_title_or_as_listed() {
+        let row = |id: &str, title: &str, updated: u64| Row {
+            pi: 0,
+            ei: 0,
+            si: 0,
+            id: id.to_string().into(),
+            title: title.to_string().into(),
+            agent: crate::agent::AgentKind::Claude,
+            state: RowState::Idle,
+            pr: None,
+            updated,
+        };
+        let rows = || {
+            vec![
+                row("a", "zebra", 10),
+                row("b", "mango", 30),
+                row("c", "Apple", 20),
+                row("d", "kiwi", 30),
+            ]
+        };
+        let ids = |sort| {
+            let mut r = rows();
+            sort_rows(&mut r, sort);
+            r.into_iter().map(|r| r.id.to_string()).collect::<Vec<_>>()
+        };
+        // A tie keeps the listed order.
+        assert_eq!(ids(Sort::Latest), ["b", "d", "c", "a"]);
+        assert_eq!(ids(Sort::Title), ["c", "d", "b", "a"]);
+        assert_eq!(ids(Sort::Environment), ["a", "b", "c", "d"]);
     }
 
     #[test]

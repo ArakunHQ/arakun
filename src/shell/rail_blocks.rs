@@ -496,6 +496,13 @@ impl Shell {
         // Folded, the segment still says what it holds and whether something
         // inside wants the user.
         let peek = folded.then(|| self.folded_peek(section, cx)).flatten();
+        let holds_tree = !arranging
+            && !folded
+            && crate::tab_layout::current().tree()
+            && section
+                .items
+                .iter()
+                .any(|i| matches!(i.piece, Piece::Projects { .. }));
         // Arranging, every segment shows its title so it can be selected.
         let title = ((section.show_title || arranging) && !narrow).then(|| {
             let collapsible = section.collapsible;
@@ -563,6 +570,11 @@ impl Shell {
                         )
                         .text_color(theme::text_faint()),
                     )
+                })
+                // The tree's own heading gives way to this one, and so does
+                // its sort button.
+                .when(holds_tree, |d| {
+                    d.child(self.tree_sort_button("rail-section-sort", cx))
                 })
                 .when_some(section.action, |d, a| {
                     d.child(

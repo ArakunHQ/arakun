@@ -644,8 +644,11 @@ the sidebar with projects and worktrees, as before) and **Everything** (the tree
 every open tab). A state file from before this setting opens on Classic, so nobody's
 window changes after an update; pick Focused to switch. Then each option can change:
 Sessions live in (Sidebar, Title bar, Both), Title bar shows (Pinned, This project, All
-open), State (Icon, Dot, Word), Group by project, Projects with nothing running (Open,
-Folded, Hidden), Long titles (Cut, Two lines) and Sidebar width. Options that mean
+open), State (Icon, Dot, Word), Group by project, Sort sessions (Latest, A–Z, By
+environment), Projects with nothing running (Open, Folded, Hidden), Long titles (Cut,
+Two lines) and Sidebar width. Sort sessions starts on Latest, the session used last on
+top of its project, or of the whole tree without project headings; the sort button in
+the tree's heading switches to the next order. Options that mean
 nothing with the others are off: with sessions only in the title bar there is nothing
 to pin from or fold. Moving to pinned tabs pins every open session first. The choice is
 kept in `state.json` as `tabs`.

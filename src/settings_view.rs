@@ -271,7 +271,7 @@ impl Section {
                 "raccoon mascot animation motion new session dynamic island notch top bar agents alerts background close hide tray sidebar usage card plans browser web page drive click type scripts"
             }
             Section::Appearance => {
-                "tabs sessions pinned pin title bar tree sidebar width group project classic focused everything fold folded hidden long titles two lines state icon dot word theme palette color scheme colors accent tint corners radius rounded round sharp spacing gap padding compact roomy density window custom share night graphite midnight forest rose diff colors colorblind high contrast glass blur transparent translucent grays gray text size font scale design system mode dark light zoom bigger smaller reduce motion animation accessibility still"
+                "tabs sessions pinned pin title bar tree sidebar width group project classic focused everything fold folded hidden long titles two lines sort sorting order latest newest recent alphabetical a-z state icon dot word theme palette color scheme colors accent tint corners radius rounded round sharp spacing gap padding compact roomy density window custom share night graphite midnight forest rose diff colors colorblind high contrast glass blur transparent translucent grays gray text size font scale design system mode dark light zoom bigger smaller reduce motion animation accessibility still"
             }
             Section::Project => {
                 "setup script install new environment worktree check command test lint build verify \
@@ -1919,7 +1919,7 @@ impl SettingsDialog {
     /// Tabs and sessions: three presets on top, then the options they set.
     fn render_tabs_and_sessions(&self, cx: &mut Context<Self>) -> AnyElement {
         use crate::tab_layout::{
-            BarShows, LongTitles, Opt, Preset, Quiet, SessionsIn, StateMark, TabLayout,
+            BarShows, LongTitles, Opt, Preset, Quiet, SessionsIn, Sort, StateMark, TabLayout,
         };
         let layout = crate::tab_layout::current();
         let chosen = layout.preset();
@@ -2044,6 +2044,15 @@ impl SettingsDialog {
             .collect(),
             cx,
         );
+        let sort = seg(
+            "tabs-sort",
+            layout.applies(Opt::Sort),
+            Sort::ALL
+                .into_iter()
+                .map(|v| (v.label(), layout.sort == v, true, with(&|t| t.sort = v)))
+                .collect(),
+            cx,
+        );
         let group_on = layout.applies(Opt::Group);
         let grouped = with(&|t| t.group = !layout.group);
         let group_switch = div()
@@ -2132,6 +2141,10 @@ impl SettingsDialog {
                 row("State", "How a working, waiting or failed session shows", state)
                     .into_any_element(),
                 dim(group_on, row("Group by project", "Each project heads its own sessions", group_switch)),
+                dim(
+                    layout.applies(Opt::Sort),
+                    row("Sort sessions", "In the sidebar tree; Latest puts the last used on top", sort),
+                ),
                 dim(
                     layout.applies(Opt::Quiet),
                     row("Projects with nothing running", "In the sidebar tree", quiet),

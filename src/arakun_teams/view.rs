@@ -554,7 +554,7 @@ impl TeamsView {
                     .gap(ui::sp(8.))
                     .px(ui::sp(8.))
                     .h(px(ui::MENU_ROW_H))
-                    .child(ui::spinner("teams-creating", 12., theme::text_faint()))
+                    .child(ui::spinner(12., theme::text_faint()))
                     .child(ui::text(
                         Type::Body,
                         theme::text_subtle(),
@@ -834,7 +834,7 @@ impl TeamsView {
     fn render_team(&self, team_id: &str, cx: &mut Context<Self>) -> AnyElement {
         let hub = self.hub.read(cx);
         let Some(t) = hub.team.get(team_id) else {
-            return ui::loading("teams-team-loading", "Reading the team…").into_any_element();
+            return ui::loading("Reading the team…").into_any_element();
         };
         let me = hub.me().map_or(0, |m| m.github_id);
         let admin = t.role.is_admin();
@@ -888,7 +888,7 @@ impl TeamsView {
                     .items_center()
                     .gap(ui::sp(10.))
                     .p(ui::sp(12.))
-                    .child(ui::spinner("teams-keyless", 14., theme::text_faint()))
+                    .child(ui::spinner(14., theme::text_faint()))
                     .child(ui::text(
                         Type::Body,
                         theme::text(),
@@ -1393,7 +1393,7 @@ impl TeamsView {
     ) -> AnyElement {
         let hub = self.hub.read(cx);
         let Some(t): Option<&TeamState> = hub.team.get(team_id) else {
-            return ui::loading("teams-channel-loading", "Reading the team…").into_any_element();
+            return ui::loading("Reading the team…").into_any_element();
         };
         let key = hub::channel_key(team_id, channel_id);
         let c: Option<&ChannelState> = hub.channels.get(&key);
@@ -1547,7 +1547,7 @@ impl TeamsView {
             )
             .into_any_element()
         } else if loading && messages.is_empty() {
-            ui::loading("teams-history", "Reading the channel…").into_any_element()
+            ui::loading("Reading the channel…").into_any_element()
         } else if messages.is_empty() && hidden + locked == 0 {
             ui::empty_state(
                 "message01",
@@ -1788,7 +1788,7 @@ impl TeamsView {
                         .flex()
                         .items_center()
                         .gap(ui::sp(8.))
-                        .child(ui::spinner("teams-endorse-wait", 12., theme::text_faint()))
+                        .child(ui::spinner(12., theme::text_faint()))
                         .child(ui::text(Type::Caption, theme::text_faint(), "Waiting for approval…")),
                 ),
         )
@@ -1811,7 +1811,7 @@ impl Render for TeamsView {
         if self.drafts.owner != Self::owner(teams)
             || self.drafts.owner != hub.me().map(|me| me.github_id)
         {
-            return Self::centered(ui::loading("teams-account", "Loading account…"));
+            return Self::centered(ui::loading("Loading account…"));
         }
         let device = hub.device.clone();
         let load = hub.load.clone();
@@ -1920,7 +1920,7 @@ impl Render for TeamsView {
         } else {
             match (&device, &load) {
                 (DeviceState::Starting, _) => {
-                    Self::centered(ui::loading("teams-starting", "Setting up this device…"))
+                    Self::centered(ui::loading("Setting up this device…"))
                 }
                 (DeviceState::Unendorsed { code, id }, _) => {
                     let (code, id) = (code.clone(), id.clone());
@@ -1938,9 +1938,7 @@ impl Render for TeamsView {
                     &crate::redact::text(e),
                     Some(retry("teams-retry-load", cx)),
                 )),
-                (_, Load::Loading) if empty => {
-                    Self::centered(ui::loading("teams-loading", "Reading your teams…"))
-                }
+                (_, Load::Loading) if empty => Self::centered(ui::loading("Reading your teams…")),
                 _ => {
                     let pane = match self.pane.clone() {
                         Pane::NewTeam => self.render_new_team(cx),

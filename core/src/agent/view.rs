@@ -145,6 +145,17 @@ fn rel_path(path: &Path, cwd: &Path) -> String {
         .to_string()
 }
 
+/// Drops parsed messages whose entry is gone or no longer a message. A shrink
+/// resets the view, but a sync can replace entries in place without one.
+fn keep_docs_of<T>(docs: &mut HashMap<usize, T>, entries: &[Entry]) {
+    docs.retain(|&ix, _| {
+        matches!(
+            entries.get(ix),
+            Some(Entry::Agent { .. } | Entry::Thought { .. })
+        )
+    });
+}
+
 fn turns_of(entries: &[Entry]) -> Vec<Range<usize>> {
     let mut turns = Vec::new();
     let mut start = 0;
@@ -445,6 +456,7 @@ impl ThreadView {
                 let t = self.thread.read(cx);
                 let (len, at_work) = (t.entries().len(), t.is_busy());
                 self.entrances.entries_now(len, at_work, Instant::now());
+                keep_docs_of(&mut self.markdown, self.thread.read(cx).entries());
                 self.sync_turns(*from, cx)
             }
             ThreadEvent::Reset => {
@@ -2393,6 +2405,22 @@ mod tests {
             "type": "tool", "id": title, "title": title, "kind": "other", "status": "completed",
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn docs_of_removed_or_replaced_entries_are_dropped() {
+        let mut docs: HashMap<usize, ()> = [(0, ()), (1, ()), (2, ()), (5, ())].into();
+        let entries = [
+            agent("kept"),
+            tool("Read"),
+            Entry::Thought {
+                text: "kept too".into(),
+            },
+        ];
+        keep_docs_of(&mut docs, &entries);
+        let mut left: Vec<usize> = docs.into_keys().collect();
+        left.sort();
+        assert_eq!(left, [0, 2]);
     }
 
     #[test]

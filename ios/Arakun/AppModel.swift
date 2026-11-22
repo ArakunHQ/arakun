@@ -52,6 +52,15 @@ final class AppModel {
 
     var deviceName: String { UIDevice.current.model }
 
+    /// A `-demo` launch, for screenshots: it asks nothing. Always false in a release build.
+    nonisolated static var isDemoLaunch: Bool {
+        #if DEBUG
+        ProcessInfo.processInfo.arguments.contains("-demo")
+        #else
+        false
+        #endif
+    }
+
     // ---- connection --------------------------------------------------------
 
     func connect() {

@@ -49,6 +49,7 @@ struct InboxView: View {
                     Menu {
                         if let c = model.credentials { Text("Paired through \(c.host)") }
                         Button("Reconnect", systemImage: "arrow.clockwise") { model.reconnectNow() }
+                        Toggle("Send crash reports", isOn: Binding(get: { Telemetry.consent == true }, set: Telemetry.set))
                         Button("Unpair this phone", systemImage: "link.badge.minus", role: .destructive) { confirmUnpair = true }
                     } label: {
                         Icon("more-horizontal", size: 22).foregroundStyle(Color.textMuted)

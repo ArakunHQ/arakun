@@ -7,6 +7,8 @@ struct ArakunApp: App {
 
     init() {
         Appearance.apply()
+        // Early, so a crash report left by the last run goes out.
+        Telemetry.apply()
     }
 
     var body: some Scene {
@@ -30,6 +32,8 @@ struct ArakunApp: App {
 
 struct RootView: View {
     @Environment(AppModel.self) private var model
+    /// The one question about crash reports, until it has an answer.
+    @State private var askCrashReports = Telemetry.consent == nil && !AppModel.isDemoLaunch
 
     var body: some View {
         Group {
@@ -54,5 +58,11 @@ struct RootView: View {
         .tint(.amberInk)
         .background(Color.ground.ignoresSafeArea())
         .animation(.smooth, value: model.credentials == nil)
+        .alert("Send crash reports?", isPresented: $askCrashReports) {
+            Button("Send crash reports") { Telemetry.set(true) }
+            Button("Don't send", role: .cancel) { Telemetry.set(false) }
+        } message: {
+            Text("When Arakun crashes, it can send where in its code it happened, so we can fix it. Never your sessions, messages or code. Change it any time in the More menu.")
+        }
     }
 }

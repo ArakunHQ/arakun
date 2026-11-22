@@ -76,3 +76,16 @@ paste the link). The credentials stay in the Keychain on this device only.
 
 Not yet: photos, diffs, session settings, plan limits and push notifications (the
 phone page's push is Web Push; native push needs APNs support on the computer).
+
+## Crash reports
+
+The app asks once, on first launch, whether to send crash reports, and the More menu
+changes the answer. Only after a yes does `Arakun/Telemetry.swift` start PostHog's SDK
+(pinned in `project.yml`), with its exception autocapture and nothing else: no
+screens, taps, sessions or person profile, and no location. Reports go to the
+desktop's PostHog project as `$exception` events. Debug builds send nothing.
+
+The SDK installs its crash handlers only when the project's "Enable exception
+autocapture" setting in PostHog is on. Stack traces are unsymbolicated until the
+build uploads its dSYMs to PostHog. The App Store privacy label must list Crash Data,
+not linked to the user and not used for tracking.

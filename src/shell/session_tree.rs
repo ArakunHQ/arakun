@@ -161,6 +161,11 @@ impl Shell {
             return Vec::new();
         };
         let repo = self.ci.read(cx).repo(&project.path);
+        let on_screen: Vec<SharedString> = self
+            .sessions_on_screen()
+            .into_iter()
+            .map(|(_, id)| id)
+            .collect();
         let mut rows = Vec::new();
         for (ei, env) in project.environments.iter().enumerate() {
             // The checks of the main checkout's branch are not any one session's.
@@ -170,7 +175,8 @@ impl Shell {
                 .map(|(s, _)| s);
             let pr = own.and_then(|r| r.pr_of(&env.branch)).map(|p| p.number);
             for s in &env.sessions {
-                if s.settled && !self.show_settled {
+                // An archived session still on screen keeps its row.
+                if s.settled && !self.show_settled && !on_screen.contains(&s.id) {
                     continue;
                 }
                 rows.push(Row {
@@ -231,7 +237,8 @@ impl Shell {
                 }
             }
         }
-        list.into_any_element()
+        // Rows picked with Ctrl or Shift get the bar that acts on them.
+        list.children(self.render_pick_bar(cx)).into_any_element()
     }
 
     /// "Sessions", and the + that starts one in the project on screen.
@@ -350,6 +357,7 @@ impl Shell {
             state,
             pr,
         } = row;
+        let env_path = self.projects[pi].environments[ei].path.clone();
         let title: SharedString = if title.is_empty() {
             "Untitled session".into()
         } else {
@@ -420,7 +428,25 @@ impl Shell {
                     .text_color(state.word_color())
                     .child(text)
             }))
-            .on_click(cx.listener(move |this, _, window, cx| {
+            .when(self.is_picked(&env_path), |d| {
+                d.bg(theme::selection_strong())
+            })
+            // Ctrl (Cmd) or Shift picks the session's worktree, as in the
+            // projects list; a plain click opens the session.
+            .on_click(cx.listener(move |this, ev: &gpui::ClickEvent, window, cx| {
+                let m = ev.modifiers();
+                if m.secondary() || m.shift {
+                    if let Some(path) = this
+                        .projects
+                        .get(pi)
+                        .and_then(|p| p.environments.get(ei))
+                        .map(|e| e.path.clone())
+                    {
+                        this.toggle_pick(&path, cx);
+                    }
+                    return;
+                }
+                this.drop_pick();
                 this.open_session_at(pi, ei, opens.clone(), window, cx)
             }))
             .on_mouse_down(

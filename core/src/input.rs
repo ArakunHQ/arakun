@@ -288,7 +288,11 @@ impl TextInput {
 
     fn home(&mut self, _: &Home, _: &mut Window, cx: &mut Context<Self>) {
         let to = match (&self.multiline, &self.last_wrapped) {
-            (Some(_), Some(w)) => w.rows[w.row_of(self.cursor_offset())].start,
+            // No rows only if shaping failed; stay put rather than panic.
+            (Some(_), Some(w)) => w
+                .rows
+                .get(w.row_of(self.cursor_offset()))
+                .map_or(self.cursor_offset(), |r| r.start),
             (Some(_), None) => line_start(&self.content, self.cursor_offset()),
             (None, _) => 0,
         };

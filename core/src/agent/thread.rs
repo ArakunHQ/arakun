@@ -1767,10 +1767,17 @@ impl Thread {
         self.post_marked_notice(text, error, None, cx);
     }
 
-    fn fail(&mut self, at: FailedAt, message: String, cx: &mut Context<Self>) {
+    /// Notes a new failure. The report of an earlier one is not this one's, so
+    /// feedback must not link it.
+    fn record_failure(&mut self, at: FailedAt) {
         self.status_detail = None;
         self.failed_at = Some(at);
         self.failure_unreported = true;
+        self.error_event = None;
+    }
+
+    fn fail(&mut self, at: FailedAt, message: String, cx: &mut Context<Self>) {
+        self.record_failure(at);
         self.set_status(ThreadStatus::Error(message), cx);
     }
 
@@ -4594,6 +4601,17 @@ mod tests {
         let old: SessionMeta = serde_json::from_str(old).unwrap();
         assert_eq!((old.seat.as_deref(), old.seat_key.as_deref()), (None, None));
         assert!(!serde_json::to_string(&old).unwrap().contains("seat"));
+    }
+
+    #[test]
+    fn a_new_failure_forgets_the_earlier_report() {
+        let mut t = Thread::new(AgentKind::Claude, "/p".into(), None);
+        t.record_failure(FailedAt::Disconnected);
+        t.set_error_event(Some("first".into()));
+        assert_eq!(t.error_event(), Some("first"));
+        t.record_failure(FailedAt::Exited(Some(1)));
+        assert_eq!(t.error_event(), None);
+        assert_eq!(t.failed_at, Some(FailedAt::Exited(Some(1))));
     }
 
     #[test]

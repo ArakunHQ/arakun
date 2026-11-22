@@ -676,7 +676,10 @@ after a week).
   read the open project's code and docs and search the web, and nothing else. To
   answer, Claude Code sends the messages and the code it reads to its model service
   (Anthropic, or the one you set it up with), as any Claude Code session does; the
-  Teams server still sees only sealed messages. A long range is summed up in parts
+  Teams server still sees only sealed messages. What it searches the web for leaves
+  your machine too, to the search service. It writes those searches itself, so a
+  message written to steer it could put text from the project in one: don't ask it
+  with a project open whose text must not get out. A long range is summed up in parts
   first, and the answer says so. The answer judges each
   idea (Works, Works with conditions, Won't work) with numbered citations that jump to
   the message, lists what it verified in code, docs or on the web, what it assumed and

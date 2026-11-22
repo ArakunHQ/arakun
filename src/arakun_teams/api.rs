@@ -264,11 +264,21 @@ pub fn github_user(login: &str) -> Result<Option<GithubUser>, ApiError> {
     )?;
     match status {
         404 => Ok(None),
-        200 => serde_json::from_str(&body)
-            .map(Some)
-            .map_err(|_| ApiError::Unreadable),
+        200 => read_github_user(&body),
         s => Err(ApiError::Status(s, github_error(&body))),
     }
+}
+
+/// The account in GitHub's answer, when it is a person's. The same path
+/// answers for an organization, which the server refuses to invite.
+fn read_github_user(body: &str) -> Result<Option<GithubUser>, ApiError> {
+    let v: serde_json::Value = serde_json::from_str(body).map_err(|_| ApiError::Unreadable)?;
+    if v["type"] != "User" {
+        return Ok(None);
+    }
+    serde_json::from_value(v)
+        .map(Some)
+        .map_err(|_| ApiError::Unreadable)
 }
 
 // ---- teams (teams/PROTOCOL.md) ------------------------------------------------
@@ -873,6 +883,30 @@ mod tests {
                 "[2606:4700::2]:443"
             ]
         );
+    }
+
+    #[test]
+    fn only_a_persons_account_is_a_github_user() {
+        let user = r#"{"login":"rik","name":"Rik","type":"User"}"#;
+        assert_eq!(
+            read_github_user(user).unwrap().unwrap(),
+            GithubUser {
+                login: "rik".into(),
+                name: Some("Rik".into()),
+            }
+        );
+        // The server invites only what GitHub calls a user.
+        for other in [
+            r#"{"login":"ArakunHQ","name":null,"type":"Organization"}"#,
+            r#"{"login":"some-bot","type":"Bot"}"#,
+            r#"{"login":"rik"}"#,
+        ] {
+            assert_eq!(read_github_user(other).unwrap(), None, "{other}");
+        }
+        assert!(matches!(
+            read_github_user("<html>"),
+            Err(ApiError::Unreadable)
+        ));
     }
 
     fn answer(json: &str) -> TokenAnswer {

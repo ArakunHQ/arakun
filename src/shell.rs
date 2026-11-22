@@ -2355,14 +2355,15 @@ impl Shell {
         cx.notify();
     }
 
-    /// Opens (or focuses) the Teams tab.
+    /// Opens (or focuses) the Teams tab. Teams belongs to the account, not to
+    /// a project: with none, it shows in the welcome's place.
     pub(super) fn open_teams_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.has_projects() {
-            self.pick_project_for("The Teams tab", Self::open_teams_tab, window, cx);
-            return;
+        if self.has_projects() {
+            self.show_view_tab("Teams", TabKind::Teams, |k| matches!(k, TabKind::Teams));
+            self.note_active_tab(cx);
+        } else {
+            self.show_alone(Some(home::Alone::Teams), cx);
         }
-        self.show_view_tab("Teams", TabKind::Teams, |k| matches!(k, TabKind::Teams));
-        self.note_active_tab(cx);
         self.teams_view.update(cx, |v, cx| v.focus(window, cx));
         cx.notify();
     }

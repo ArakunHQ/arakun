@@ -208,6 +208,7 @@ impl Shell {
                 self.github_view.clone().into_any_element()
             }
             Alone::Servers => self.servers_view.clone().into_any_element(),
+            Alone::Teams => self.teams_view.clone().into_any_element(),
             Alone::Usage => {
                 self.usage_shown.set(true);
                 self.usage_view.clone().into_any_element()
@@ -274,6 +275,7 @@ impl Shell {
 pub(super) enum Alone {
     GitHub,
     Servers,
+    Teams,
     Usage,
 }
 

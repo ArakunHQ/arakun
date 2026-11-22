@@ -7,9 +7,10 @@
 #
 # It waits for the checks main's ruleset requires, apart from "Human approval",
 # which waits for a review that only comes after `gh pr ready`. It also waits
-# for the macOS job when the diff touches macOS code. Other checks, such as the
-# macOS job for other changes and CodeQL, can still be running: they take a
-# shared runner pool, and waiting for them cost up to 100 minutes a pull request.
+# for the macOS job when the pull request changes macOS code or a Rust file that
+# has some. Other checks, such as the macOS job for other changes and CodeQL,
+# can still be running: they take a shared runner pool, and waiting for them
+# cost up to 100 minutes a pull request.
 #
 # The required checks come from the ruleset, not from the checks already on
 # the pull request, so it does not stop early before they have started.
@@ -47,22 +48,40 @@ head_sha() {
 }
 
 # macOS builds code behind cfg(target_os = "macos") and macOS-only files, and
-# a new dependency or toolchain can break only there. Only .rs files count, so
-# docs that quote the cfg don't. Context lines count too, so a change next to
-# its cfg is seen. A change inside a macOS function but far from its cfg is
-# not; such files are named *mac*. The greps read all their input: an early
-# exit could kill the writer with SIGPIPE and, under pipefail, hide a match.
+# a new dependency (any Cargo.toml, core/ and server/ too) or toolchain can
+# break only there. Only .rs files count, so docs that quote the cfg don't.
+# Context lines count too, so a change next to its cfg is seen. A change inside
+# a macOS function can sit far from its cfg, so each changed Rust file that is
+# still there is read whole, as it is at the pull request's head, not as it is
+# in this checkout. The greps read all their input: an early exit could kill
+# the writer with SIGPIPE and, under pipefail, hide a match.
 classify() {
-  local files diff hit reason=""
+  local files diff hit rust file url source reason=""
+  local mac_cfg='target_os *= *"macos"|target_vendor *= *"apple"'
   if ! files=$(gh pr diff "$pr" --name-only); then
     reason="could not list the changed files"
-  elif hit=$(grep -iE 'macos|(^|/)mac(\.rs$|/)|^Cargo\.(toml|lock)$|(^|/)build\.rs$|^rust-toolchain\.toml$' <<< "$files" | sed -n 1p) && [ -n "$hit" ]; then
+  elif hit=$(grep -iE 'macos|(^|/)mac(\.rs$|/)|(^|/)Cargo\.(toml|lock)$|(^|/)build\.rs$|^rust-toolchain\.toml$' <<< "$files" | sed -n 1p) && [ -n "$hit" ]; then
     reason="$hit changed"
   elif ! diff=$(gh pr diff "$pr"); then
     reason="could not read the diff"
   elif awk '/^diff --git / { rs = ($NF ~ /\.rs$/); next } rs && /^[-+ ]/ && !/^(\+\+\+|---) /' <<< "$diff" |
-    grep -E 'target_os *= *"macos"|target_vendor *= *"apple"' > /dev/null; then
+    grep -E "$mac_cfg" > /dev/null; then
     reason="the diff changes code near target_os = \"macos\""
+  elif ! rust=$(gh api --paginate "repos/{owner}/{repo}/pulls/$pr/files" \
+    --jq '.[] | select(.status != "removed" and (.filename | endswith(".rs")))
+          | "\(.filename)\t\(.contents_url)"'); then
+    reason="could not list the changed Rust files"
+  else
+    while IFS=$'\t' read -r file url; do
+      [ -n "$url" ] || continue
+      if ! source=$(gh api -H "Accept: application/vnd.github.raw+json" "$url"); then
+        reason="could not read $file at the pull request's head"
+        break
+      elif grep -E "$mac_cfg" > /dev/null <<< "$source"; then
+        reason="$file has macOS code"
+        break
+      fi
+    done <<< "$rust"
   fi
   if [ -n "$reason" ]; then
     echo "Waiting for the macOS job too: $reason."

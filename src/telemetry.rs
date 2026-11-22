@@ -602,7 +602,7 @@ fn event_json(name: &str, mut props: Map<String, Value>) -> Value {
 }
 
 /// A random version 4 UUID, which PostHog keeps as the event's id.
-fn uuid_v4() -> String {
+pub(crate) fn uuid_v4() -> String {
     let mut b = [0u8; 16];
     // A failed read leaves zeros: still well formed, and PostHog drops a
     // repeat, so nothing worse than a lost event.
@@ -636,7 +636,7 @@ pub fn timestamp(unix_ms: u64) -> String {
 
 /// A random id for this install, made on first use. Deleting the file starts
 /// a new one.
-fn install_id() -> String {
+pub(crate) fn install_id() -> String {
     static ID: OnceLock<String> = OnceLock::new();
     ID.get_or_init(|| {
         let path = crate::platform::app_dir().join("telemetry-id");

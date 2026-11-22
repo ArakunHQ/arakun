@@ -44,7 +44,7 @@ impl Focusable for TelemetryDialog {
 
 /// What is and is not sent, as an icon and a sentence each. The setup's step
 /// (`shell::onboarding`) shows the same ones.
-pub const POINTS: [(&str, &str); 3] = [
+pub const POINTS: [(&str, &str); 4] = [
     (
         "alert-circle",
         "Crashes with their stack trace, and the kind of error when an agent stops. A crash's message loses paths, links and keys; its other words are sent.",
@@ -52,6 +52,10 @@ pub const POINTS: [(&str, &str); 3] = [
     (
         "activity01",
         "Counts such as sessions started, with the agent's name.",
+    ),
+    (
+        "message01",
+        "Feedback you choose to send, even with these off. Bug reports may become a public GitHub issue, without paths, links or keys.",
     ),
     (
         "view-off",

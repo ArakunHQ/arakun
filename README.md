@@ -736,6 +736,13 @@ setup or already have a project. Settings › Privacy has a switch for each:
   session started (with the agent), agent turn finished (with the agent, how it
   stopped and how many seconds it took), project added, environment created, a
   built-in view opened (with its name) and a browser tab opened.
+- **Feedback:** what you write when you press Send on a feedback form or after an
+  agent error or a crash. It is sent even with crash reports and usage counts off,
+  because pressing Send is your yes. An agent can also send feedback with
+  `arakun feedback`, but only with usage counts on, and you get a notice with the
+  full text in the Inbox. Surveys made in PostHog show up only with usage counts on,
+  at most once per launch. A bug, feature or UX report may become a public GitHub
+  issue, without paths, links, keys or emails.
 
 Each event carries Arakun's version, the OS and the CPU architecture. On first launch,
 what happens before you answer the question waits in memory: it is sent if you turn
@@ -755,7 +762,7 @@ trace. That file stays on your machine; attach it when you report a crash. It ke
 most recent panics, up to about 256 KB. A panic in background work no longer closes
 Arakun: what was running shows an error, and the log says "Arakun carried on".
 
-`DO_NOT_TRACK=1` or `ARAKUN_TELEMETRY=0` turn both off and skip the question;
+`DO_NOT_TRACK=1` or `ARAKUN_TELEMETRY=0` turn both off, block all feedback and skip the question;
 `ARAKUN_TELEMETRY=1` turns both on. Debug builds send nothing unless
 `ARAKUN_TELEMETRY=1` is set, and the test Arakun of `arakun dev` never does. A build
 made with `ARAKUN_POSTHOG_KEY=` (empty) sends nothing at all.

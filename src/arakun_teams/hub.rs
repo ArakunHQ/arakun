@@ -235,6 +235,17 @@ impl ChannelState {
         self.locked.len()
     }
 
+    /// How many stored messages from `first` to `last` this device could
+    /// not open: sealed with a key it does not hold, or from a device it
+    /// does not know yet.
+    pub(super) fn unopened_between(&self, first: u64, last: u64) -> usize {
+        unopened(
+            self.locked.iter().chain(&self.unknown).map(|s| s.seq),
+            first,
+            last,
+        )
+    }
+
     /// Whether the channel has a socket, connected or still dialing.
     pub fn linked(&self) -> bool {
         self.link.is_some()
@@ -3354,6 +3365,10 @@ pub fn trusted_devices(gid: u64, rows: &[DeviceRow]) -> Vec<DeviceRow> {
         .collect()
 }
 
+fn unopened(seqs: impl Iterator<Item = u64>, first: u64, last: u64) -> usize {
+    seqs.filter(|seq| (first..=last).contains(seq)).count()
+}
+
 /// How many history pages an unread count reads at most. The label stops
 /// at "99+", so more only matters when a page holds little that counts.
 const UNREAD_PAGES: usize = 5;
@@ -4270,6 +4285,13 @@ mod tests {
             (missing[0].epoch, &missing[0].device.device_id),
             (6, &latest.device_id)
         );
+    }
+
+    #[test]
+    fn only_unopened_messages_inside_the_range_count() {
+        assert_eq!(unopened([3, 5, 9, 12].into_iter(), 5, 9), 2);
+        assert_eq!(unopened([3, 12].into_iter(), 5, 9), 0);
+        assert_eq!(unopened(std::iter::empty(), 0, u64::MAX), 0);
     }
 
     #[test]

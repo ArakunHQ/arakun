@@ -229,6 +229,16 @@ pub fn draft_range(messages: &[Msg], reply_to: Option<&str>) -> Result<Range, Ra
     range_of(&stored, DRAFT_ID)
 }
 
+/// What the answer says under "not checked" when the range holds messages
+/// this device could not open.
+fn unopened_note(n: usize) -> String {
+    if n == 1 {
+        "1 message in the range could not be opened on this device and was not read.".into()
+    } else {
+        format!("{n} messages in the range could not be opened on this device and were not read.")
+    }
+}
+
 // ---- the answer ------------------------------------------------------------------
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -924,6 +934,9 @@ pub struct Run {
     pub ids: Vec<String>,
     /// The project it reads, as it was when the question was sent.
     pub project: Option<PathBuf>,
+    /// The answer of a review that finished and could not be posted. Try
+    /// again posts it, with no second review.
+    answer: Option<Body>,
     stop: Arc<AtomicBool>,
 }
 
@@ -1087,15 +1100,29 @@ impl Hub {
             done: 0,
             ids: Vec::new(),
             project: project.clone(),
+            answer: None,
             stop: Arc::new(AtomicBool::new(false)),
         };
         let key = channel_key(team_id, channel_id);
+        let mut unopened = 0;
         let range = match self.channels.get(&key) {
             None => Err("the channel is not open".to_string()),
             Some(c) if c.loading => {
                 Err("the channel is still being read. Try again in a moment".into())
             }
-            Some(c) => select_range(&c.messages, ask_id).map_err(|e| e.to_string()),
+            Some(c) => select_range(&c.messages, ask_id)
+                .map_err(|e| e.to_string())
+                .inspect(|range| {
+                    // The range is what this device could open. What it could
+                    // not, in between, the answer must not pass over in silence.
+                    let seq = |id: &str| c.messages.iter().find(|m| m.id == id)?.seq;
+                    if let (Some(first), Some(last)) = (
+                        seq(range.first_id()),
+                        range.lines.iter().rev().find_map(|l| seq(&l.id)),
+                    ) {
+                        unopened = c.unopened_between(first, last);
+                    }
+                }),
         };
         let (Some(me), Ok(range)) = (self.me().cloned(), range.clone()) else {
             run.state = RunState::Failed(range.err().unwrap_or_else(|| "not signed in".into()));
@@ -1136,6 +1163,9 @@ impl Hub {
                             let _ = tx.unbounded_send(s);
                         };
                         let mut out = review(&ClaudeCode, &job, &cwd, &stop, &progress)?;
+                        if unopened > 0 {
+                            out.answer.unchecked.push(unopened_note(unopened));
+                        }
                         if let Some(m) = copied.filter(|m| m.too_big > 0) {
                             out.answer.unchecked.push(format!(
                                 "{} files of the project were too large to read.",
@@ -1175,9 +1205,13 @@ impl Hub {
                     if size > BODY_BYTES {
                         return Err("the answer is too long to post".into());
                     }
-                    if hub.send_body(&team_id, &channel_id, body, cx) {
+                    if hub.send_body(&team_id, &channel_id, body.clone(), cx) {
                         Ok(())
                     } else {
+                        // The review is done: Try again only has to post it.
+                        if let Some(r) = hub.bot_run(&ask_id, &stop) {
+                            r.answer = Some(body);
+                        }
                         Err(hub
                             .error
                             .clone()
@@ -1205,11 +1239,27 @@ impl Hub {
             .find(|r| r.ask_id == ask_id && Arc::ptr_eq(&r.stop, stop))
     }
 
-    /// Runs a failed one again.
+    /// Runs a failed one again. A review that finished and only failed to
+    /// post is posted again as it is: a second review would cost the asker
+    /// another run and could answer differently.
     pub fn retry_bot(&mut self, ask_id: &str, cx: &mut Context<Self>) {
-        if let Some(r) = self.bot.runs.iter().find(|r| r.ask_id == ask_id).cloned() {
+        let Some(r) = self.bot.runs.iter().find(|r| r.ask_id == ask_id).cloned() else {
+            return;
+        };
+        let Some(body) = r.answer else {
             self.start_bot(&r.team_id, &r.channel_id, ask_id, r.project, cx);
+            return;
+        };
+        if self.send_body(&r.team_id, &r.channel_id, body, cx) {
+            self.bot.runs.retain(|r| r.ask_id != ask_id);
+        } else if let Some(run) = self.bot.runs.iter_mut().find(|r| r.ask_id == ask_id) {
+            run.state = RunState::Failed(
+                self.error
+                    .clone()
+                    .unwrap_or_else(|| "could not post the answer".into()),
+            );
         }
+        cx.notify();
     }
 
     /// Stops a run, or drops a failed one. Nothing is posted.
@@ -1829,6 +1879,12 @@ mod tests {
     }
 
     #[test]
+    fn unopened_messages_are_named_in_the_answer() {
+        assert!(unopened_note(1).starts_with("1 message in the range could not be opened"));
+        assert!(unopened_note(4).starts_with("4 messages in the range could not be opened"));
+    }
+
+    #[test]
     fn reads_claude_codes_json_result() {
         let ok = r#"{"type":"result","subtype":"success","is_error":false,"result":" {\"a\":1} "}"#;
         assert_eq!(claude_result(ok).unwrap(), "{\"a\":1}");
@@ -1856,6 +1912,7 @@ mod tests {
             done: 0,
             ids: Vec::new(),
             project: None,
+            answer: None,
             stop: Arc::new(AtomicBool::new(false)),
         };
         assert_eq!(r.label(), "@bot is reading 23 messages…");

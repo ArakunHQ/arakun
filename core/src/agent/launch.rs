@@ -405,9 +405,9 @@ const HINT: &str = "You are running inside arakun, a desktop app where the user 
          - `arakun check` runs the project's check command, if the user set one. arakun also runs it after \
          each of your turns that edits files and sends you the output when it fails.\n\
          - `arakun fetch <url>` prints a web page as Markdown (`--html` for HTML, `--links` for its links), \
-         loaded in a real browser on Cloudflare (Browser Run), so sites that block curl still answer; \
-         `arakun crawl [--limit N] [--depth N] <url>` reads a whole site the same way. Prefer them to curl \
-         for reading the web; at most one fetch every 10 s.\n\
+         rendered in Cloudflare Browser Run for JavaScript pages; `arakun crawl [--limit N] [--depth N] <url>` \
+         crawls a site the same way (honoring robots.txt and Content Signals). Don't use them to work around \
+         a site's 403, 429 or bot challenge; if a site refuses, stop and tell the user.\n\
          - `arakun shrink -- <command>` runs a command and prints a summary of its output: the \
          failures and result line of a test run, a log's repeated lines collapsed, JSON's outline, \
          a table's header and a few rows. It saves the whole output to a file and prints its path, \

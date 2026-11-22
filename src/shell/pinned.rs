@@ -26,6 +26,9 @@ pub(super) struct Fit {
     pub left: usize,
     pub right: usize,
     pub width: f32,
+    /// "N more" goes after the tabs left of the island: there is no island,
+    /// or no room for it right of the island.
+    pub more_left: bool,
 }
 
 impl Fit {
@@ -61,18 +64,22 @@ pub(super) fn fit_tabs(n: usize, left: f32, right: Option<f32>) -> Fit {
                 left: l,
                 right: r,
                 width: w,
+                more_left: right.is_none(),
             };
         }
         w -= 2.;
     }
-    let (l, r) = match right {
-        Some(room) => place(MIN_TAB_W, left, Some(room - MORE_W)),
-        None => place(MIN_TAB_W, left - MORE_W, None),
+    // "N more" ends the half it fits in: right of the island when it can.
+    let (more_left, (l, r)) = match right {
+        Some(room) if room >= MORE_W => (false, place(MIN_TAB_W, left, Some(room - MORE_W))),
+        Some(room) => (true, place(MIN_TAB_W, left - MORE_W, Some(room))),
+        None => (true, place(MIN_TAB_W, left - MORE_W, None)),
     };
     Fit {
         left: l,
         right: r,
         width: MIN_TAB_W,
+        more_left,
     }
 }
 
@@ -234,7 +241,12 @@ impl Shell {
         if !self.has_projects() || !crate::tab_layout::current().pinned_bar() {
             return;
         }
-        let mut changed = self.strip.pin_lone();
+        // Only the first session of a fresh window pins itself; after that
+        // an unpinned bar is the user's choice.
+        let mut changed = !self.pins_seeded && self.strip.pin_lone();
+        if self.strip.tabs.iter().any(|t| t.pinned) {
+            self.pins_seeded = true;
+        }
         let keep = self.split_other().map(|i| self.strip.tabs[i].id);
         let strays = self.strip.strays(keep);
         if !strays.is_empty() {
@@ -258,12 +270,12 @@ impl Shell {
             return false;
         }
         let keep = self.split_other().map(|i| self.strip.tabs[i].id);
-        !self.strip.strays(keep).is_empty()
-            || (!self.strip.tabs.iter().any(|t| t.pinned)
-                && self
-                    .strip
-                    .active()
-                    .is_some_and(|t| t.session_id().is_some()))
+        let any_pinned = self.strip.tabs.iter().any(|t| t.pinned);
+        let lone = self
+            .strip
+            .active()
+            .is_some_and(|t| t.session_id().is_some());
+        !self.strip.strays(keep).is_empty() || (!self.pins_seeded && (any_pinned || lone))
     }
 
     /// A tab's state, for the mark a pinned tab shows.
@@ -553,7 +565,8 @@ mod tests {
             Fit {
                 left: 3,
                 right: 0,
-                width: TAB_W
+                width: TAB_W,
+                more_left: true,
             }
         );
         // Left of the island first, then right of it.
@@ -574,6 +587,12 @@ mod tests {
         let fit = fit_tabs(20, 400., Some(400.));
         assert_eq!(fit.left, fits(400., MIN_TAB_W));
         assert_eq!(fit.right, fits(400. - MORE_W, MIN_TAB_W));
+        assert!(!fit.more_left);
+        // No room for it right of the island: it ends the left half instead.
+        let fit = fit_tabs(20, 400., Some(60.));
+        assert!(fit.more_left);
+        assert_eq!(fit.left, fits(400. - MORE_W, MIN_TAB_W));
+        assert_eq!(fit.right, 0);
     }
 
     #[test]

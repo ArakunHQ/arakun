@@ -212,21 +212,25 @@ impl Shell {
             return;
         }
         let gap = if at.x < bounds.center().x { i } else { next };
+        self.tab_drop_over = Some(bounds);
         if self.tab_drop != Some(gap) {
             self.tab_drop = Some(gap);
             cx.notify();
         }
     }
 
-    /// The pointer left the tab bar (`bounds`): no gap is marked.
+    /// The pointer left the tab bar (`bounds`), or the tab that marked the
+    /// gap for empty bar: no gap is marked, so a drop there lands at the end.
     pub(super) fn bar_drag_out(
         &mut self,
         bounds: gpui::Bounds<Pixels>,
         at: Point<Pixels>,
         cx: &mut Context<Self>,
     ) {
-        if self.tab_drop.is_some() && !bounds.contains(&at) {
+        let off_tab = self.tab_drop_over.is_none_or(|b| !b.contains(&at));
+        if self.tab_drop.is_some() && (!bounds.contains(&at) || off_tab) {
             self.tab_drop = None;
+            self.tab_drop_over = None;
             cx.notify();
         }
     }

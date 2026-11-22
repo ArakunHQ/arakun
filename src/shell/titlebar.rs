@@ -161,11 +161,48 @@ impl Shell {
             _ => Vec::new(),
         };
         *self.bar_more.borrow_mut() = more.clone();
-        // The space the island takes, after the tabs left of it.
+        // The space the island takes, after the tabs left of it and "N more"
+        // when it goes there.
         let notch_gap = fit.zip(right_room).map(|(fit, right)| {
-            let used = fit.left as f32 * (fit.width + 2.);
+            let more = if fit.more_left && !more.is_empty() {
+                pinned::MORE_W + 2.
+            } else {
+                0.
+            };
+            let used = fit.left as f32 * (fit.width + 2.) + more;
             (f32::from(area.size.width) - right - used - 2.).max(0.)
         });
+        let mut more_button = (!more.is_empty()).then(|| {
+            let n = more.len();
+            div()
+                .id("tab-more")
+                .map(|d| ui::labelled(d, gpui::Role::Button, format!("{n} more pinned tabs")))
+                .flex()
+                .flex_none()
+                .items_center()
+                .gap(crate::ui::sp(4.))
+                .h(px(ui::TAB_H))
+                .min_w(px(pinned::MORE_W))
+                .px(crate::ui::sp(8.))
+                .rounded(crate::ui::rad(8.))
+                .cursor_pointer()
+                .text_size(px(ui::TEXT_MD))
+                .text_color(theme::text_subtle())
+                .hover(|s| s.bg(theme::hover()).text_color(theme::content()))
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .child(format!("{n} more"))
+                .child(icon("arrow-down01", 12.))
+                .on_click(cx.listener(|this, ev: &gpui::ClickEvent, _, cx| {
+                    let at = ev.position();
+                    this.menu = Some(ContextMenu {
+                        target: MenuTarget::MoreTabs,
+                        at: point(at.x - px(120.), px(44.)),
+                    });
+                    cx.notify();
+                }))
+                .into_any_element()
+        });
+
         // Tabs past the bar's width scroll instead of running under the title and the
         // window buttons. Pinned tabs fit instead, and the part of the bar
         // they leave empty moves the window.
@@ -248,8 +285,11 @@ impl Shell {
             // before it.
             let next = order.get(pos + 1).copied().unwrap_or(i + 1);
             let last = pos + 1 == shown;
-            if notch_gap.is_some() && fit.is_some_and(|f| f.left == pos) {
-                list = list.child(div().flex_none().w(px(notch_gap.unwrap_or(0.))));
+            if let Some(gap) = notch_gap.filter(|_| fit.is_some_and(|f| f.left == pos)) {
+                if fit.is_some_and(|f| f.more_left) {
+                    list = list.children(more_button.take());
+                }
+                list = list.child(div().flex_none().w(px(gap)));
             }
             let starts_run = labelled
                 && pos
@@ -428,36 +468,15 @@ impl Shell {
                 ),
             );
         }
-        if !more.is_empty() {
-            let n = more.len();
-            list = list.child(
-                div()
-                    .id("tab-more")
-                    .map(|d| ui::labelled(d, gpui::Role::Button, format!("{n} more pinned tabs")))
-                    .flex()
-                    .flex_none()
-                    .items_center()
-                    .gap(crate::ui::sp(4.))
-                    .h(px(ui::TAB_H))
-                    .px(crate::ui::sp(8.))
-                    .rounded(crate::ui::rad(8.))
-                    .cursor_pointer()
-                    .text_size(px(ui::TEXT_MD))
-                    .text_color(theme::text_subtle())
-                    .hover(|s| s.bg(theme::hover()).text_color(theme::content()))
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .child(format!("{n} more"))
-                    .child(icon("arrow-down01", 12.))
-                    .on_click(cx.listener(|this, ev: &gpui::ClickEvent, _, cx| {
-                        let at = ev.position();
-                        this.menu = Some(ContextMenu {
-                            target: MenuTarget::MoreTabs,
-                            at: point(at.x - px(120.), px(44.)),
-                        });
-                        cx.notify();
-                    })),
-            );
+        // No tab right of the island: "N more" still keeps clear of it.
+        if let Some(gap) = notch_gap.filter(|_| fit.is_some_and(|f| f.left >= shown)) {
+            if fit.is_some_and(|f| f.more_left) {
+                list = list.children(more_button.take());
+            } else if more_button.is_some() {
+                list = list.child(div().flex_none().w(px(gap)));
+            }
         }
+        list = list.children(more_button.take());
         strip = strip.when(pinned_bar, |d| d.flex_1()).child(list);
 
         strip = strip.child(

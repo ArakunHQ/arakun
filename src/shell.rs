@@ -525,6 +525,11 @@ pub struct Shell {
     /// The gap in the tab bar a dragged tab would drop into: before the tab
     /// at this index, or after the last one.
     tab_drop: Option<usize>,
+    /// The tab whose side marked `tab_drop`.
+    tab_drop_over: Option<Bounds<Pixels>>,
+    /// The session on screen pinned itself, or something was pinned: after
+    /// that, nothing pins by itself in this window.
+    pins_seeded: bool,
     /// Projects the user folded (false) or opened (true) in the sidebar's
     /// tree of sessions, over what `tab_layout::Quiet` does by itself.
     tree_open: std::collections::HashMap<std::path::PathBuf, bool>,
@@ -1120,6 +1125,8 @@ impl Shell {
             lifted: None,
             lifted_tab: None,
             tab_drop: None,
+            tab_drop_over: None,
+            pins_seeded: false,
             tree_open: std::collections::HashMap::new(),
             tree_hover: None,
             tree_filter,

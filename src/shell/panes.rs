@@ -77,7 +77,15 @@ impl Shell {
         )
         .on_action(cx.listener(|this, _: &MoveTabLeft, _, cx| this.move_active_tab(-1, cx)))
         .on_action(cx.listener(|this, _: &MoveTabRight, _, cx| this.move_active_tab(1, cx)))
-        .on_action(cx.listener(|this, _: &TogglePin, _, cx| this.toggle_pin_here(cx)))
+        .on_action(cx.listener(|this, _: &TogglePin, window, cx| {
+            // In the composer, with no tree row under the pointer, the key is
+            // the composer's: on macOS Option+P types π.
+            if this.tree_hover.is_none() && this.composer_focus.is_focused(window) {
+                cx.propagate();
+                return;
+            }
+            this.toggle_pin_here(cx)
+        }))
     }
 
     /// The tabs the title bar shows, by index, in its order.

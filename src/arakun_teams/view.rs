@@ -3161,7 +3161,11 @@ impl TeamsView {
         let joined = hub.joined.contains(team_id);
         let team_name = t.detail.name.clone();
         let blocked = hub.seal_blocked(team_id);
-        let approved_by = t.approved_by.clone();
+        // It can be this user, from another device: masked like any login.
+        let approved_by = t
+            .approved_by
+            .as_deref()
+            .map(|l| shown_login(l, hub.me().map(|m| m.login.as_str())));
         // Each notice goes where its device was added among the messages.
         let added: HashMap<String, u64> = t
             .devices

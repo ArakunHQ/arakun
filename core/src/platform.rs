@@ -1047,6 +1047,24 @@ impl ProcessTree {
         let _ = cmd;
     }
 
+    /// [`prepare_made`](Self::prepare_made) for a short command with a time limit
+    /// (git, gh): its own process group, so the limit can stop the whole tree, but
+    /// no parent-death signal. That signal needs `pre_exec`, and a command with
+    /// `pre_exec` is started with a full `fork()` of arakun instead of
+    /// `posix_spawn`. The fork holds the process's memory map while it copies a
+    /// large address space, and the window stalls on its next page fault: up to
+    /// seconds, with git and gh running every few seconds. A short command ends by
+    /// itself or at its limit, so outliving a crashed arakun briefly is harmless.
+    pub fn prepare_short(cmd: &mut Command) {
+        #[cfg(not(windows))]
+        {
+            use std::os::unix::process::CommandExt as _;
+            cmd.process_group(0);
+        }
+        #[cfg(windows)]
+        let _ = cmd;
+    }
+
     /// The tree rooted at `child`, which was spawned from a [`prepare`](Self::prepare)d command.
     pub fn adopt(child: &std::process::Child) -> Self {
         #[cfg(windows)]
@@ -1216,7 +1234,7 @@ pub fn output_until(
     })
     .stdout(Stdio::piped())
     .stderr(Stdio::piped());
-    ProcessTree::prepare_made(cmd);
+    ProcessTree::prepare_short(cmd);
     let mut child = cmd.spawn()?;
     let tree = ProcessTree::adopt(&child);
     if let (Some(bytes), Some(mut stdin)) = (input, child.stdin.take()) {

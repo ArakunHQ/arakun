@@ -2057,7 +2057,10 @@ impl Thread {
                 if fresh
                     && matches!(
                         t.kind,
-                        AgentKind::Codex | AgentKind::Devin | AgentKind::Cursor
+                        AgentKind::Codex
+                            | AgentKind::Devin
+                            | AgentKind::Cursor
+                            | AgentKind::Antigravity
                     )
                 {
                     let raw = v["configOptions"].clone();
@@ -2066,7 +2069,8 @@ impl Thread {
                         match kind {
                             AgentKind::Codex => super::catalog::remember_codex_options(&raw),
                             AgentKind::Devin => super::catalog::remember_devin_options(&raw),
-                            _ => super::catalog::remember_cursor_options(&raw),
+                            AgentKind::Cursor => super::catalog::remember_cursor_options(&raw),
+                            _ => super::catalog::remember_antigravity_options(&raw),
                         }
                     }))
                     .detach();

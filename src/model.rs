@@ -447,6 +447,8 @@ pub struct Environment {
     pub devin_settings: Vec<(crate::agent::Setting, String)>,
     /// The same for Cursor.
     pub cursor_settings: Vec<(crate::agent::Setting, String)>,
+    /// The same for Antigravity.
+    pub antigravity_settings: Vec<(crate::agent::Setting, String)>,
     /// The same for Workers AI.
     pub workers_ai_settings: Vec<(crate::agent::Setting, String)>,
     pub explorer: Explorer,
@@ -919,6 +921,7 @@ impl Environment {
             codex_settings: Vec::new(),
             devin_settings: Vec::new(),
             cursor_settings: Vec::new(),
+            antigravity_settings: Vec::new(),
             workers_ai_settings: Vec::new(),
             sync: git::Sync::default(),
             pr: None,

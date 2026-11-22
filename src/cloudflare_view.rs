@@ -552,6 +552,7 @@ impl CloudflareView {
             AgentKind::Codex => "Starts a Codex session with what Arakun sees",
             AgentKind::Devin => "Starts a Devin session with what Arakun sees",
             AgentKind::Cursor => "Starts a Cursor session with what Arakun sees",
+            AgentKind::Antigravity => "Starts an Antigravity session with what Arakun sees",
             AgentKind::WorkersAi => "Starts a Workers AI session with what Arakun sees",
         };
         ui::button_with(
@@ -686,6 +687,7 @@ impl CloudflareView {
             AgentKind::Codex => "Cloudflare MCP for Codex",
             AgentKind::Devin => "Cloudflare MCP for Devin",
             AgentKind::Cursor => "Cloudflare MCP for Cursor",
+            AgentKind::Antigravity => "Cloudflare MCP for Antigravity",
             AgentKind::WorkersAi => "Cloudflare MCP",
         })
         .child(
@@ -2104,11 +2106,14 @@ impl CloudflareView {
                     .flex()
                     .gap(crate::ui::sp(10.))
                     // Workers AI has no MCP client; Arakun cannot connect Devin's
-                    // or Cursor's yet.
+                    // or Cursor's or Antigravity's yet.
                     .when(
                         !matches!(
                             self.agent,
-                            AgentKind::WorkersAi | AgentKind::Devin | AgentKind::Cursor
+                            AgentKind::WorkersAi
+                                | AgentKind::Devin
+                                | AgentKind::Cursor
+                                | AgentKind::Antigravity
                         ),
                         |d| d.child(self.render_mcp(cx)),
                     )
@@ -2305,6 +2310,7 @@ fn agent_name(agent: AgentKind) -> &'static str {
         AgentKind::Codex => "Codex",
         AgentKind::Devin => "Devin",
         AgentKind::Cursor => "Cursor",
+        AgentKind::Antigravity => "Antigravity",
         AgentKind::WorkersAi => "Workers AI",
     }
 }

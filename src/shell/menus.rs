@@ -209,6 +209,11 @@ impl Shell {
                 let label = self.setting_value_label(Setting::Mode, cx)?;
                 Some((label, false))
             }
+            // Antigravity's modes come from agy; what each may do without
+            // asking is agy's own setting.
+            AgentKind::Antigravity => self
+                .setting_value_label(Setting::Mode, cx)
+                .map(|l| (l, false)),
             // It asks before commands and edits; `arakun agent new` sessions don't.
             AgentKind::WorkersAi => None,
             AgentKind::Droid => {
@@ -503,7 +508,8 @@ impl Shell {
             | AgentKind::OpenCode
             | AgentKind::Codex
             | AgentKind::Devin
-            | AgentKind::Cursor => vec![Setting::Mode],
+            | AgentKind::Cursor
+            | AgentKind::Antigravity => vec![Setting::Mode],
             AgentKind::WorkersAi => Vec::new(),
             AgentKind::Droid => [Setting::Mode, Setting::Autonomy]
                 .into_iter()

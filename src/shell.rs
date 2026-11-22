@@ -2834,6 +2834,10 @@ impl Shell {
                     this.close_modal(window, cx);
                     this.sign_out(AgentKind::Cursor, window, cx);
                 }
+                SettingsEvent::AntigravitySignIn => {
+                    this.close_modal(window, cx);
+                    this.sign_in(crate::agent::AgentKind::Antigravity, window, cx);
+                }
                 SettingsEvent::OpenCodeSignIn => {
                     this.close_modal(window, cx);
                     this.sign_in(AgentKind::OpenCode, window, cx);
@@ -4481,9 +4485,11 @@ pub(crate) fn agent_icon(agent: AgentKind, size: f32) -> AnyElement {
             .into_any_element(),
         AgentKind::Droid => ui::factory_logo(size).into_any_element(),
         AgentKind::OpenCode => ui::opencode_logo(size).into_any_element(),
-        AgentKind::Codex | AgentKind::Devin | AgentKind::Cursor | AgentKind::WorkersAi => {
-            agent.icon(size)
-        }
+        AgentKind::Codex
+        | AgentKind::Devin
+        | AgentKind::Cursor
+        | AgentKind::Antigravity
+        | AgentKind::WorkersAi => agent.icon(size),
     }
 }
 

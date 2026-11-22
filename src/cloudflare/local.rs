@@ -82,7 +82,9 @@ fn mcp_files(agent: AgentKind) -> Vec<PathBuf> {
             vec![config.join("opencode.json"), config.join("opencode.jsonc")]
         }
         AgentKind::Codex => vec![codex_home().join("config.toml")],
-        AgentKind::WorkersAi | AgentKind::Devin | AgentKind::Cursor => Vec::new(),
+        AgentKind::WorkersAi | AgentKind::Devin | AgentKind::Cursor | AgentKind::Antigravity => {
+            Vec::new()
+        }
     }
 }
 
@@ -111,9 +113,12 @@ fn read_mcp_server(agent: AgentKind) -> Option<String> {
             let toml = std::fs::read_to_string(codex_home().join("config.toml")).ok()?;
             return codex_mcp_server(&toml);
         }
-        // arakun's own agent has no MCP client. Devin and Cursor have one,
+        // arakun's own agent has no MCP client. Devin, Cursor and Antigravity
+        // have one,
         // but Arakun does not read or change their MCP config yet.
-        AgentKind::WorkersAi | AgentKind::Devin | AgentKind::Cursor => return None,
+        AgentKind::WorkersAi | AgentKind::Devin | AgentKind::Cursor | AgentKind::Antigravity => {
+            return None;
+        }
     };
     let v: Value = crate::durable::load_json(file)?;
     v["mcpServers"].as_object()?.iter().find_map(|(name, s)| {
@@ -260,7 +265,9 @@ pub fn mcp_status(agent: AgentKind) -> Mcp {
         AgentKind::Claude => "claude",
         AgentKind::OpenCode => "opencode",
         AgentKind::Codex => "codex",
-        AgentKind::WorkersAi | AgentKind::Devin | AgentKind::Cursor => return Mcp::Missing,
+        AgentKind::WorkersAi | AgentKind::Devin | AgentKind::Cursor | AgentKind::Antigravity => {
+            return Mcp::Missing;
+        }
     };
     let bin = match agent {
         AgentKind::Codex => crate::agent::codex_cli(),
@@ -282,7 +289,10 @@ pub fn mcp_status(agent: AgentKind) -> Mcp {
             opencode_line_status(&String::from_utf8_lossy(&o.stdout), &name)
         }
         (Ok(o), AgentKind::Codex) => codex_list_status(&String::from_utf8_lossy(&o.stdout), &name),
-        (Ok(_), AgentKind::WorkersAi | AgentKind::Devin | AgentKind::Cursor) => Mcp::Missing,
+        (
+            Ok(_),
+            AgentKind::WorkersAi | AgentKind::Devin | AgentKind::Cursor | AgentKind::Antigravity,
+        ) => Mcp::Missing,
         (Err(_), _) => Mcp::Added,
     }
 }
@@ -401,7 +411,9 @@ pub fn mcp_connect_command(agent: AgentKind, state: &Mcp) -> String {
             codex_connect_command(&codex_program(), state, name.as_deref())
         }
         // Not supported: the shell tells the user instead of running this.
-        AgentKind::WorkersAi | AgentKind::Devin | AgentKind::Cursor => String::new(),
+        AgentKind::WorkersAi | AgentKind::Devin | AgentKind::Cursor | AgentKind::Antigravity => {
+            String::new()
+        }
     }
 }
 

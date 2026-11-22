@@ -365,6 +365,9 @@ pub struct EnvState {
     /// Cursor settings for the next session, as (key, value).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cursor_settings: Vec<(String, String)>,
+    /// Antigravity settings for the next session, as (key, value).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub antigravity_settings: Vec<(String, String)>,
     /// Workers AI settings for the next session, as (key, value).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub workers_ai_settings: Vec<(String, String)>,
@@ -888,6 +891,11 @@ pub fn snapshot_with(
                             .iter()
                             .map(|(s, v)| (s.key().to_string(), v.clone()))
                             .collect(),
+                        antigravity_settings: e
+                            .antigravity_settings
+                            .iter()
+                            .map(|(s, v)| (s.key().to_string(), v.clone()))
+                            .collect(),
                         workers_ai_settings: e
                             .workers_ai_settings
                             .iter()
@@ -1049,6 +1057,11 @@ pub fn restore(state: State) -> (Vec<Project>, usize, Layout, TabStrip) {
                         .collect();
                     env.cursor_settings = e
                         .cursor_settings
+                        .into_iter()
+                        .filter_map(|(k, v)| Setting::from_key(&k).map(|s| (s, v)))
+                        .collect();
+                    env.antigravity_settings = e
+                        .antigravity_settings
                         .into_iter()
                         .filter_map(|(k, v)| Setting::from_key(&k).map(|s| (s, v)))
                         .collect();

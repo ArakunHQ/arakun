@@ -34,6 +34,7 @@ pub enum SettingsEvent {
     DevinSignOut,
     CursorSignIn,
     CursorSignOut,
+    AntigravitySignIn,
     OpenUsage,
     /// Close Settings and open the Customize panel.
     OpenCustomize,
@@ -136,6 +137,7 @@ enum Section {
     OpenCode,
     Devin,
     Cursor,
+    Antigravity,
 }
 
 impl Section {
@@ -156,6 +158,7 @@ impl Section {
         Section::OpenCode,
         Section::Devin,
         Section::Cursor,
+        Section::Antigravity,
     ];
 
     fn group(self) -> Group {
@@ -175,6 +178,7 @@ impl Section {
             Section::OpenCode => Some(AgentKind::OpenCode),
             Section::Devin => Some(AgentKind::Devin),
             Section::Cursor => Some(AgentKind::Cursor),
+            Section::Antigravity => Some(AgentKind::Antigravity),
             _ => None,
         }
     }
@@ -196,6 +200,7 @@ impl Section {
             Section::OpenCode => "OpenCode",
             Section::Devin => "Devin",
             Section::Cursor => "Cursor",
+            Section::Antigravity => "Antigravity",
         }
     }
 
@@ -216,7 +221,8 @@ impl Section {
             | Section::Droid
             | Section::OpenCode
             | Section::Devin
-            | Section::Cursor => "bot",
+            | Section::Cursor
+            | Section::Antigravity => "bot",
         }
     }
 
@@ -245,6 +251,9 @@ impl Section {
             Section::OpenCode => "The providers OpenCode signs in to, OpenCode Go among them.",
             Section::Devin => "Devin's sign-in: your Devin account or a Windsurf API key.",
             Section::Cursor => "Cursor's sign-in: your Cursor account or a Cursor API key.",
+            Section::Antigravity => {
+                "Antigravity's sign-in: your Google account or a Gemini API key."
+            }
         }
     }
 
@@ -291,6 +300,7 @@ impl Section {
             Section::OpenCode => "opencode go zen provider api key models sign in logout",
             Section::Devin => "devin cognition windsurf api key sign in logout",
             Section::Cursor => "cursor cursor-agent api key sign in logout",
+            Section::Antigravity => "antigravity agy google gemini api key sign in",
         }
     }
 
@@ -450,6 +460,10 @@ pub struct SettingsDialog {
     cursor: bool,
     /// The variable with Cursor's API key, when the environment has one.
     cursor_env: Option<&'static str>,
+    /// Whether agy keeps its sign-in in a file; a keyring sign-in reads as `false`.
+    antigravity: bool,
+    /// `GEMINI_API_KEY`, when the environment has it.
+    antigravity_env: Option<&'static str>,
     input: Entity<TextInput>,
     section: Section,
     voice: voice::Settings,
@@ -625,6 +639,8 @@ impl SettingsDialog {
             devin_env: crate::agent::devin_env_key(),
             cursor: crate::agent::cursor_signed_in(),
             cursor_env: crate::agent::cursor_env_key(),
+            antigravity: crate::agent::antigravity_signed_in(),
+            antigravity_env: crate::agent::antigravity_env_key(),
             input,
             section,
             voice,
@@ -918,6 +934,16 @@ impl SettingsDialog {
         }
     }
 
+    /// agy's own sign-in comes first; the key is named by its variable. With no
+    /// file, agy may still be signed in through the system keyring.
+    fn antigravity_status(&self) -> String {
+        match (self.antigravity, self.antigravity_env) {
+            (true, _) => "Signed in".into(),
+            (false, Some(var)) => format!("API key · {var}"),
+            (false, None) => "No sign-in found".into(),
+        }
+    }
+
     /// Whether an agent's section gets the green dot: it can run, through a
     /// sign-in or a key. `false` for the other sections.
     fn signed_in(&self, s: Section) -> bool {
@@ -928,6 +954,7 @@ impl SettingsDialog {
             Section::OpenCode => !self.opencode.is_empty(),
             Section::Devin => self.devin || self.devin_env.is_some(),
             Section::Cursor => self.cursor || self.cursor_env.is_some(),
+            Section::Antigravity => self.antigravity || self.antigravity_env.is_some(),
             _ => false,
         }
     }
@@ -1382,6 +1409,28 @@ impl SettingsDialog {
                     ],
                 )])
             }
+            // agy signs out from its own session (`/logout`), so there is only
+            // a Sign in button.
+            Section::Antigravity => stack(vec![titled(
+                "Account",
+                vec![
+                    row(
+                        self.antigravity_status(),
+                        if self.antigravity {
+                            "The same sign-in the agy CLI uses. Arakun only checks that it is there."
+                        } else if self.antigravity_env.is_some() {
+                            "Sessions can use the API key in the environment. Sign in to use your Google account instead."
+                        } else {
+                            "Runs agy acp --login in a terminal; paste the code from the browser. agy may already be signed in through the system keyring, which Arakun doesn't read."
+                        },
+                        ui::button("set-antigravity-in", "Sign in", ButtonKind::Outline, true)
+                            .on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::AntigravitySignIn)))
+                            .into_any_element(),
+                    )
+                    .into_any_element(),
+                    no_sign_in_row(AgentKind::Antigravity),
+                ],
+            )]),
             Section::Droid => stack(vec![
                 titled(
                     "Factory",

@@ -498,7 +498,7 @@ pub fn refresh_opencode() {
     }
 }
 
-// ---- Codex's, Devin's and Cursor's options --------------------------------
+// ---- Codex's, Devin's, Cursor's and Antigravity's options ------------------
 
 /// An agent's config options as a fresh session starts with them, kept as raw
 /// JSON and parsed, and on disk in `file` next to Droid's cache.
@@ -653,6 +653,35 @@ pub fn refresh_cursor() {
     match fetch_options(AgentKind::Cursor) {
         Ok((_, raw)) => remember_cursor_options(&raw),
         Err(e) => eprintln!("arakun: cursor options: {e:#}"),
+    }
+}
+
+/// Antigravity's config options (mode, model and thinking level) as a fresh
+/// session starts with them.
+static ANTIGRAVITY: RawOptions = RawOptions::new("antigravity-options.json");
+
+/// The options a fresh Antigravity session starts with; empty until one has run.
+pub fn antigravity_options() -> Arc<Vec<ConfigOption>> {
+    ANTIGRAVITY.options()
+}
+
+/// Keeps what a fresh Antigravity session reported, when it changed. Blocking;
+/// run it off the main thread.
+pub fn remember_antigravity_options(raw: &Value) {
+    ANTIGRAVITY.remember(raw)
+}
+
+/// Asks Antigravity for its options when none are cached and `agy` is
+/// installed: a session that never gets a prompt, so it costs no tokens.
+/// Signed out, `agy acp` refuses the session, so nothing is kept and the next
+/// refresh asks again. Blocking; run it off the main thread.
+pub fn refresh_antigravity() {
+    if !antigravity_options().is_empty() || launch::agy_bin().is_err() {
+        return;
+    }
+    match fetch_options(AgentKind::Antigravity) {
+        Ok((_, raw)) => remember_antigravity_options(&raw),
+        Err(e) => eprintln!("arakun: antigravity options: {e:#}"),
     }
 }
 

@@ -293,7 +293,8 @@ impl Shell {
                             Some(AgentKind::OpenCode) => Some(AgentKind::Codex),
                             Some(AgentKind::Codex) => Some(AgentKind::Devin),
                             Some(AgentKind::Devin) => Some(AgentKind::Cursor),
-                            Some(AgentKind::Cursor) => Some(AgentKind::WorkersAi),
+                            Some(AgentKind::Cursor) => Some(AgentKind::Antigravity),
+                            Some(AgentKind::Antigravity) => Some(AgentKind::WorkersAi),
                             Some(AgentKind::WorkersAi) => None,
                         };
                         cx.notify();

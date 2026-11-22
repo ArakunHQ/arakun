@@ -17,6 +17,8 @@ pub enum AgentKind {
     Devin,
     /// The Cursor CLI (`cursor-agent`), which speaks ACP itself (`cursor-agent acp`).
     Cursor,
+    /// Google's Antigravity CLI (`agy`), which speaks ACP itself (`agy acp`).
+    Antigravity,
     /// Cloudflare Workers AI, run by arakun itself (`workers_ai.rs`).
     #[serde(rename = "workers-ai")]
     WorkersAi,
@@ -53,8 +55,8 @@ pub struct AgentSpec {
     pub adapter: Option<&'static str>,
     /// The variable whose command starts the agent instead.
     pub override_var: Option<&'static str>,
-    /// Whether the sidebar's usage card can show its plan's limits. Codex and
-    /// Cursor wait until their plans' limits are read.
+    /// Whether the sidebar's usage card can show its plan's limits. Codex,
+    /// Cursor and Antigravity wait until their plans' limits are read.
     pub plan: bool,
 }
 
@@ -168,6 +170,27 @@ const CURSOR: AgentSpec = AgentSpec {
     plan: false,
 };
 
+const ANTIGRAVITY: AgentSpec = AgentSpec {
+    label: "Antigravity",
+    id: "antigravity",
+    aliases: &["agy", "google-antigravity"],
+    cli: "Antigravity",
+    install_url: "https://antigravity.google/docs/install?tab=cli",
+    // `agy acp --login` rather than plain `agy`: it only signs in and exits,
+    // and works without a browser on this computer.
+    login: Some(&["acp", "--login"]),
+    // agy signs out from inside its own session (`/logout`).
+    logout: None,
+    login_hint: "Run `agy acp --login` in a terminal and sign in with Google \
+                 (or set GEMINI_API_KEY and pick the Gemini API in agy), then retry.",
+    // Arakun checks only whether agy's sign-in file is there.
+    sign_in_hosts: &[],
+    sign_in_notice: "Arakun has no account of its own and never asks you to approve access. Sign in runs the agy CLI's own login. Arakun only checks that agy's sign-in file is there and never reads it.",
+    adapter: None,
+    override_var: Some("ARAKUN_ANTIGRAVITY_ACP"),
+    plan: false,
+};
+
 const WORKERS_AI: AgentSpec = AgentSpec {
     label: "Workers AI",
     id: "workers-ai",
@@ -188,13 +211,14 @@ const WORKERS_AI: AgentSpec = AgentSpec {
 
 impl AgentKind {
     /// Every agent, in the order pickers show them.
-    pub const ALL: [AgentKind; 7] = [
+    pub const ALL: [AgentKind; 8] = [
         AgentKind::Claude,
         AgentKind::Droid,
         AgentKind::OpenCode,
         AgentKind::Codex,
         AgentKind::Devin,
         AgentKind::Cursor,
+        AgentKind::Antigravity,
         AgentKind::WorkersAi,
     ];
 
@@ -209,6 +233,7 @@ impl AgentKind {
             AgentKind::Codex => &CODEX,
             AgentKind::Devin => &DEVIN,
             AgentKind::Cursor => &CURSOR,
+            AgentKind::Antigravity => &ANTIGRAVITY,
             AgentKind::WorkersAi => &WORKERS_AI,
         }
     }
@@ -284,7 +309,7 @@ impl AgentKind {
     }
 
     /// The same logos the shell draws: Claude's starburst, Factory's mark for Droid,
-    /// OpenCode's, Codex's, Devin's and Cursor's own; Workers AI gets the Cloudflare tab's globe.
+    /// OpenCode's, Codex's, Devin's, Cursor's and Antigravity's own; Workers AI gets the Cloudflare tab's globe.
     pub fn icon(self, size: f32) -> AnyElement {
         match self {
             AgentKind::Claude => img("providers/claude.svg")
@@ -296,6 +321,7 @@ impl AgentKind {
             AgentKind::Codex => ui::codex_logo(size).into_any_element(),
             AgentKind::Devin => ui::devin_logo(size).into_any_element(),
             AgentKind::Cursor => ui::cursor_logo(size).into_any_element(),
+            AgentKind::Antigravity => ui::antigravity_logo(size).into_any_element(),
             AgentKind::WorkersAi => ui::icon("internet", size)
                 .text_color(crate::theme::content())
                 .into_any_element(),
@@ -321,6 +347,7 @@ mod tests {
         }
         assert_eq!(AgentKind::parse("Devin"), Some(AgentKind::Devin));
         assert_eq!(AgentKind::parse("cursor-agent"), Some(AgentKind::Cursor));
+        assert_eq!(AgentKind::parse("agy"), Some(AgentKind::Antigravity));
         assert_eq!(AgentKind::parse("ChatGPT"), Some(AgentKind::Codex));
         assert_eq!(AgentKind::parse("nobody"), None);
         assert_eq!(AgentKind::from_id("nobody"), AgentKind::Droid);

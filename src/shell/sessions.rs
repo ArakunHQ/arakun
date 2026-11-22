@@ -101,6 +101,7 @@ pub(super) struct QueuedPrompt {
     codex_settings: Vec<(Setting, String)>,
     devin_settings: Vec<(Setting, String)>,
     cursor_settings: Vec<(Setting, String)>,
+    antigravity_settings: Vec<(Setting, String)>,
     workers_ai_settings: Vec<(Setting, String)>,
 }
 
@@ -710,6 +711,7 @@ impl Shell {
             codex_settings: env.codex_settings.clone(),
             devin_settings: env.devin_settings.clone(),
             cursor_settings: env.cursor_settings.clone(),
+            antigravity_settings: env.antigravity_settings.clone(),
             workers_ai_settings: env.workers_ai_settings.clone(),
         }
     }
@@ -732,6 +734,7 @@ impl Shell {
         env.codex_settings = p.codex_settings;
         env.devin_settings = p.devin_settings;
         env.cursor_settings = p.cursor_settings;
+        env.antigravity_settings = p.antigravity_settings;
         env.workers_ai_settings = p.workers_ai_settings;
         let text = crate::agent::attach::move_mentions(&p.text, &p.from, env_path);
         let title = summary(&text);
@@ -995,6 +998,7 @@ impl Shell {
         env.codex_settings = p.codex_settings;
         env.devin_settings = p.devin_settings;
         env.cursor_settings = p.cursor_settings;
+        env.antigravity_settings = p.antigravity_settings;
         env.workers_ai_settings = p.workers_ai_settings;
         let picks = server_picks(env, p.agent);
         let note = self.rename_notes.remove(env_path);
@@ -1264,6 +1268,7 @@ impl Shell {
             (AgentKind::Codex, Some(env)) => codex_draft(env),
             (AgentKind::Devin, Some(env)) => devin_draft(env),
             (AgentKind::Cursor, Some(env)) => cursor_draft(env),
+            (AgentKind::Antigravity, Some(env)) => antigravity_draft(env),
             (AgentKind::WorkersAi, Some(env)) => env.workers_ai_settings.clone(),
             _ => Vec::new(),
         };
@@ -1496,6 +1501,9 @@ impl Shell {
             cx.background_spawn(crate::guard::task(async { catalog::refresh_cursor() }))
                 .await;
             let _ = this.update(cx, |_, cx| cx.notify());
+            cx.background_spawn(crate::guard::task(async { catalog::refresh_antigravity() }))
+                .await;
+            let _ = this.update(cx, |_, cx| cx.notify());
         })
         .detach();
     }
@@ -1648,9 +1656,14 @@ impl Shell {
                 }
                 Some((current, choices))
             }
-            AgentKind::Codex => {
-                let options = catalog::codex_options();
-                let draft = codex_draft(env);
+            // Antigravity's thinking levels may be per model too, so it goes
+            // the way Codex does.
+            AgentKind::Codex | AgentKind::Antigravity => {
+                let (options, draft) = if agent == AgentKind::Codex {
+                    (catalog::codex_options(), codex_draft(env))
+                } else {
+                    (catalog::antigravity_options(), antigravity_draft(env))
+                };
                 let picked =
                     |s: Setting| draft.iter().find(|(d, _)| *d == s).map(|(_, v)| v.clone());
                 // Reasoning levels are per model: the cached ones are the default model's.
@@ -1716,6 +1729,7 @@ impl Shell {
             | AgentKind::Codex
             | AgentKind::Devin
             | AgentKind::Cursor
+            | AgentKind::Antigravity
             | AgentKind::WorkersAi => crate::agent::acp_label(s, &current, &options),
         })
     }
@@ -1779,6 +1793,7 @@ impl Shell {
             AgentKind::Codex => &mut env.codex_settings,
             AgentKind::Devin => &mut env.devin_settings,
             AgentKind::Cursor => &mut env.cursor_settings,
+            AgentKind::Antigravity => &mut env.antigravity_settings,
             AgentKind::WorkersAi => &mut env.workers_ai_settings,
         };
         put_in_draft(
@@ -1925,6 +1940,7 @@ impl Shell {
                 AgentKind::Codex => env.codex_settings.retain(|(s, _)| !model_menu(s)),
                 AgentKind::Devin => env.devin_settings.retain(|(s, _)| !model_menu(s)),
                 AgentKind::Cursor => env.cursor_settings.retain(|(s, _)| !model_menu(s)),
+                AgentKind::Antigravity => env.antigravity_settings.retain(|(s, _)| !model_menu(s)),
                 AgentKind::WorkersAi => env.workers_ai_settings.retain(|(s, _)| !model_menu(s)),
             }
         }
@@ -1944,12 +1960,17 @@ impl Shell {
                         .filter(|(_, v)| !v.is_empty())
                         .collect()
                 }
-                AgentKind::Claude | AgentKind::Codex | AgentKind::Devin | AgentKind::Cursor => {
+                AgentKind::Claude
+                | AgentKind::Codex
+                | AgentKind::Devin
+                | AgentKind::Cursor
+                | AgentKind::Antigravity => {
                     let options = match agent {
                         AgentKind::Claude => catalog::claude_options(),
                         AgentKind::Codex => catalog::codex_options(),
                         AgentKind::Devin => catalog::devin_options(),
-                        _ => catalog::cursor_options(),
+                        AgentKind::Cursor => catalog::cursor_options(),
+                        _ => catalog::antigravity_options(),
                     };
                     [Setting::Model, Setting::Effort, Setting::Fast]
                         .into_iter()
@@ -2575,6 +2596,12 @@ pub(super) fn cursor_draft(env: &model::Environment) -> Vec<(Setting, String)> {
     offered_draft(&env.cursor_settings, &catalog::cursor_options())
 }
 
+/// The Antigravity settings an environment's next session starts with, the
+/// model first: the thinking levels on offer may depend on it.
+pub(super) fn antigravity_draft(env: &model::Environment) -> Vec<(Setting, String)> {
+    offered_draft(&env.antigravity_settings, &catalog::antigravity_options())
+}
+
 /// `picked`, the model first, without a model the agent no longer offers.
 fn offered_draft(
     picked: &[(Setting, String)],
@@ -2657,6 +2684,7 @@ pub(super) fn agent_draft(env: &model::Environment, agent: AgentKind) -> &[(Sett
         AgentKind::Codex => &env.codex_settings,
         AgentKind::Devin => &env.devin_settings,
         AgentKind::Cursor => &env.cursor_settings,
+        AgentKind::Antigravity => &env.antigravity_settings,
         AgentKind::WorkersAi => &env.workers_ai_settings,
     }
 }

@@ -1343,6 +1343,14 @@ impl Shell {
             "Opens a terminal with Cursor's login.",
             Target::SignIn(AgentKind::Cursor),
         );
+        add(
+            "signin-antigravity",
+            "square-lock02",
+            "Sign in to Antigravity",
+            &[],
+            "Opens a terminal with agy's Google sign-in.",
+            Target::SignIn(AgentKind::Antigravity),
+        );
         // The settings pilot read last (every minute, off this thread's
         // drawing): the palette never waits on the disk.
         let p = self.pilot.read(cx);

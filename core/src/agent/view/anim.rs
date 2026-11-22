@@ -1,9 +1,10 @@
 //! How the transcript moves: the live beacon, spinners and shimmer that loop
 //! while the agent works, and the way entries and folds arrive.
 //!
-//! Loops run on the app's loop clock (`motion::looping`), which redraws at
-//! `motion::LOOP_FPS` rather than the display's rate, keeps loops side by
-//! side in step, and holds them still when the system reduces motion.
+//! Loops run on the app's motion clock (`motion::looping`), which redraws at
+//! `motion::LOOP_FPS`, or at its full rate on ticks that draw a frame anyway,
+//! rather than at the display's rate. It keeps loops side by side in step,
+//! and holds them still when the system reduces motion.
 //! Arrivals are keyed by entry, not by element: the list drops an element's
 //! state when it scrolls away, and an old reply must not replay its entrance.
 

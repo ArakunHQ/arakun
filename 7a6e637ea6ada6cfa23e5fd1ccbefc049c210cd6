@@ -1,0 +1,19 @@
+core/src/input.rs
+  s_65c3c81a6a73fd::t_957e26887780ca 291-295
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "7a6e637ea6ada6cfa23e5fd1ccbefc049c210cd6",
+  "prompts": {},
+  "sessions": {
+    "s_65c3c81a6a73fd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2563d4c4-ac55-4fd7-b363-514efdbbde58",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Rik Visser <rik@rivi.software>"
+    }
+  }
+}

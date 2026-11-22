@@ -1,0 +1,19 @@
+Cargo.lock
+  s_2e2901974907a5::t_6ad1e788a03d23 2343,2345,6893,6895
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "cb9d5d78083ecb3a3a72fd041e6fee599a7ccb7b",
+  "prompts": {},
+  "sessions": {
+    "s_2e2901974907a5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c764e950-0ed3-4fcf-ba0a-25258f5b565d",
+        "model": "unknown"
+      },
+      "human_author": "Rik Visser <rik@rivi.software>"
+    }
+  }
+}

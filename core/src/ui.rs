@@ -117,6 +117,15 @@ pub fn cursor_logo(size: f32) -> Svg {
         .text_color(theme::content())
 }
 
+/// Antigravity's mark (Google's, from the ACP registry), tinted like the text around it.
+pub fn antigravity_logo(size: f32) -> Svg {
+    svg()
+        .path("providers/antigravity.svg")
+        .size(px(size))
+        .flex_none()
+        .text_color(theme::content())
+}
+
 /// What a hovered icon-only button shows: one line in a small dark card.
 struct Tip(SharedString);
 
@@ -944,13 +953,14 @@ pub fn menu_item(
         .child(div().flex_1().min_w_0().truncate().child(label))
 }
 
-/// Small spinning loader for busy buttons and rows. It turns on the loop
-/// clock (`motion::loop_t`), so spinners side by side turn together.
+/// Small spinning loader for busy buttons and rows. It runs on the loop
+/// clock (`motion::looping`), so spinners side by side turn together.
 pub fn spinner(size: f32, color: Hsla) -> impl IntoElement {
-    let t = motion::loop_t(std::time::Duration::from_millis(900));
-    icon("loading03", size)
-        .text_color(color)
-        .with_transformation(gpui::Transformation::rotate(gpui::percentage(t)))
+    motion::looping(std::time::Duration::from_millis(900), |t| {
+        icon("loading03", size)
+            .text_color(color)
+            .with_transformation(gpui::Transformation::rotate(gpui::percentage(t)))
+    })
 }
 
 #[cfg(test)]

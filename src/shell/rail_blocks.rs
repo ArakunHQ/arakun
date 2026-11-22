@@ -330,6 +330,9 @@ impl Shell {
     /// folded segment or the narrowed rail. Only then does the project list
     /// leave what waits or runs to it.
     pub(super) fn active_list_shown(&self) -> bool {
+        if crate::tab_layout::current().tree() {
+            return false;
+        }
         let Some((s, _)) = self.sidebar.find(&Piece::active()) else {
             return false;
         };
@@ -493,6 +496,13 @@ impl Shell {
         // Folded, the segment still says what it holds and whether something
         // inside wants the user.
         let peek = folded.then(|| self.folded_peek(section, cx)).flatten();
+        let holds_tree = !arranging
+            && !folded
+            && crate::tab_layout::current().tree()
+            && section
+                .items
+                .iter()
+                .any(|i| matches!(i.piece, Piece::Projects { .. }));
         // Arranging, every segment shows its title so it can be selected.
         let title = ((section.show_title || arranging) && !narrow).then(|| {
             let collapsible = section.collapsible;
@@ -560,6 +570,11 @@ impl Shell {
                         )
                         .text_color(theme::text_faint()),
                     )
+                })
+                // The tree's own heading gives way to this one, and so does
+                // its sort button.
+                .when(holds_tree, |d| {
+                    d.child(self.tree_sort_button("rail-section-sort", cx))
                 })
                 .when_some(section.action, |d, a| {
                     d.child(
@@ -638,6 +653,31 @@ impl Shell {
             .into_any_element()
     }
 
+    /// Help sits in the Settings row as a small button when both are in
+    /// segment `si`. Arranging, each keeps its own row so it can be moved.
+    fn help_beside_settings(&self, si: usize) -> bool {
+        !self.arranging()
+            && self.sidebar.sections.get(si).is_some_and(|s| {
+                s.items.iter().any(|i| i.piece == Piece::Help)
+                    && s.items.iter().any(|i| i.piece == Piece::Settings)
+            })
+    }
+
+    /// The Help menu's button at the end of the Settings row.
+    fn help_button(&self, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
+        icon_button("rail-help", "help-circle", 14., "Help").on_click(cx.listener(
+            |this, ev: &gpui::ClickEvent, _, cx| {
+                // The Settings row under it must not open too.
+                cx.stop_propagation();
+                this.menu = Some(ContextMenu {
+                    target: MenuTarget::Help,
+                    at: ev.position(),
+                });
+                cx.notify();
+            },
+        ))
+    }
+
     fn render_item(
         &self,
         path: crate::sidebar::Path,
@@ -686,6 +726,10 @@ impl Shell {
             Piece::View { view } => view_id(*view).to_string(),
             _ => format!("rail-item-{}-{}", path.0, path.1),
         });
+        // Built before `row`, which holds on to `cx`.
+        let mut help =
+            (!narrow && item.piece == Piece::Settings && self.help_beside_settings(path.0))
+                .then(|| self.help_button(cx));
         // A plain row: icon, name, then what goes at its end.
         let row = |end: Option<AnyElement>| {
             div()
@@ -783,6 +827,31 @@ impl Shell {
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.open_pin(open.clone(), window, cx)
                     }))
+                    .into_any_element()
+            }
+            // A menu button: named for screen readers, which never see the
+            // icon-only rail's text, and reached with Tab.
+            Piece::Help if !narrow && self.help_beside_settings(path.0) => return None,
+            Piece::Help => row(None)
+                .map(|d| ui::labelled(d, gpui::Role::Button, name.clone()))
+                .map(ui::focusable)
+                .on_click(cx.listener(|this, ev: &gpui::ClickEvent, _, cx| {
+                    this.menu = Some(ContextMenu {
+                        target: MenuTarget::Help,
+                        at: ev.position(),
+                    });
+                    cx.notify();
+                }))
+                .into_any_element(),
+            Piece::Settings if help.is_some() => {
+                let end = div()
+                    .flex()
+                    .items_center()
+                    .gap(crate::ui::sp(4.))
+                    .children(shortcut(&item.piece))
+                    .children(help.take());
+                row(Some(end.into_any_element()))
+                    .on_click(cx.listener(|this, _, window, cx| this.open_settings(window, cx)))
                     .into_any_element()
             }
             Piece::Settings => row(shortcut(&item.piece))
@@ -888,13 +957,22 @@ impl Shell {
             } => {
                 if narrow {
                     self.render_projects_narrow(cx).into_any_element()
+                } else if crate::tab_layout::current().tree() {
+                    // A segment that shows its title heads the tree already.
+                    let titled = self
+                        .sidebar
+                        .sections
+                        .get(path.0)
+                        .is_some_and(|s| s.show_title || self.arranging());
+                    self.render_session_tree(false, !titled, cx)
                 } else {
                     self.render_projects_block(*envs, *changes, *only_open, cx)
                         .into_any_element()
                 }
             }
             Piece::Active => {
-                if narrow {
+                // The tree lists every session already, with its state.
+                if narrow || crate::tab_layout::current().tree() {
                     return None;
                 }
                 self.render_active_block(cx)?

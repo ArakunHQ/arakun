@@ -108,7 +108,16 @@ impl ThreadView {
                                 button("sel-note", "comment-add01", "Add to message").on_click(
                                     cx.listener(|this, _, window, cx| this.start_note(window, cx)),
                                 ),
-                            ),
+                            )
+                            .map(|d| {
+                                crate::ui::motion::enter(
+                                    d,
+                                    "selection-menu-in",
+                                    crate::ui::motion::From::Below,
+                                    4.,
+                                    crate::ui::motion::FAST,
+                                )
+                            }),
                     ),
             )
             .with_priority(1)
@@ -202,7 +211,16 @@ impl ThreadView {
                                                 this.finish_note(true, window, cx)
                                             })),
                                     ),
-                            ),
+                            )
+                            .map(|d| {
+                                crate::ui::motion::enter(
+                                    d,
+                                    "note-box-in",
+                                    crate::ui::motion::From::Above,
+                                    4.,
+                                    crate::ui::motion::FAST,
+                                )
+                            }),
                     ),
             )
             .with_priority(1)

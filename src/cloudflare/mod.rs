@@ -16,7 +16,6 @@ pub mod tail;
 
 use std::path::PathBuf;
 use std::process::Stdio;
-use std::sync::OnceLock;
 use std::time::Duration;
 
 use serde_json::{Value, json};
@@ -647,46 +646,20 @@ fn first_line(s: &str) -> &str {
     s.trim().lines().next().unwrap_or_default()
 }
 
-/// One client for every call, so connections (and their TLS) are reused.
-fn agent() -> &'static ureq::Agent {
-    static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
-    AGENT.get_or_init(|| {
-        ureq::Agent::config_builder()
-            .timeout_global(Some(Duration::from_secs(25)))
-            .http_status_as_error(false)
-            .user_agent("arakun")
-            .build()
-            .into()
-    })
-}
-
 /// What Cloudflare answers 401/403 with when the token is no good.
 const REFUSED: &str = "Cloudflare refused the sign-in";
 
 fn call(token: &str, method: &str, url: &str, body: Option<&Value>) -> Result<Value, String> {
-    let request = ureq::http::Request::builder()
-        .method(method)
-        .uri(url)
-        .header("Authorization", format!("Bearer {token}"))
-        .header("Content-Type", "application/json");
-    let sent = match body {
-        Some(b) => request
-            .body(b.to_string())
-            .map_err(|e| e.to_string())
-            .and_then(|r| agent().run(r).map_err(|e| e.to_string())),
-        None => request
-            .body(())
-            .map_err(|e| e.to_string())
-            .and_then(|r| agent().run(r).map_err(|e| e.to_string())),
-    };
-    let mut response = sent?;
-    let status = response.status().as_u16();
-    let text = response
-        .body_mut()
-        .with_config()
-        .limit(32 * 1024 * 1024)
-        .read_to_string()
-        .map_err(|e| e.to_string())?;
+    let reply = crate::http::json_call(
+        crate::http::agent(Duration::from_secs(25)),
+        method,
+        url,
+        Some(token),
+        body.map(Value::to_string),
+        32 * 1024 * 1024,
+    )?;
+    let status = reply.status;
+    let text = reply.text();
     let v: Value = serde_json::from_str(&text).map_err(|_| {
         if status == 401 {
             REFUSED.to_string()

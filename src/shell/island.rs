@@ -74,6 +74,13 @@ pub(super) enum Open {
     Install(crate::agent::AgentKind),
     /// Settings, at Branches.
     BranchSettings,
+    /// The error feedback form, linked to the error report that was sent (if
+    /// any), with the agent and the fixed category of its error.
+    Feedback {
+        error_event: Option<String>,
+        agent: Option<String>,
+        category: Option<String>,
+    },
     /// A link a teammate's find points at, in the system browser.
     #[cfg(feature = "team")]
     Url(String),
@@ -101,6 +108,23 @@ impl Open {
             Open::Usage => "open:usage".into(),
             Open::Install(kind) => format!("open:install:{}", kind.id()).into(),
             Open::BranchSettings => "open:settings:branches".into(),
+            Open::Feedback {
+                error_event: None,
+                agent: None,
+                category: None,
+            } => "open:feedback".into(),
+            // None is an empty part: ids and categories hold no ":".
+            Open::Feedback {
+                error_event,
+                agent,
+                category,
+            } => format!(
+                "open:feedback:{}:{}:{}",
+                error_event.as_deref().unwrap_or(""),
+                agent.as_deref().unwrap_or(""),
+                category.as_deref().unwrap_or("")
+            )
+            .into(),
             #[cfg(feature = "team")]
             Open::Url(url) => format!("open:url:{url}").into(),
             #[cfg(feature = "team")]
@@ -136,6 +160,20 @@ impl Open {
             ("usage", "") => Some(Open::Usage),
             ("install", id) => crate::agent::AgentKind::parse(id).map(Open::Install),
             ("settings", "branches") => Some(Open::BranchSettings),
+            ("feedback", "") => Some(Open::Feedback {
+                error_event: None,
+                agent: None,
+                category: None,
+            }),
+            ("feedback", rest) => {
+                let mut part = rest.splitn(3, ':');
+                let mut next = || part.next().filter(|p| !p.is_empty()).map(str::to_string);
+                Some(Open::Feedback {
+                    error_event: next(),
+                    agent: next(),
+                    category: next(),
+                })
+            }
             #[cfg(feature = "team")]
             ("team", "") => Some(Open::Team),
             #[cfg(feature = "team")]
@@ -290,6 +328,11 @@ impl Shell {
             Some(Open::Cloudflare) => self.open_cloudflare_tab(window, cx),
             Some(Open::Usage) => self.open_usage_tab(window, cx),
             Some(Open::Install(kind)) => cx.open_url(kind.install_url()),
+            Some(Open::Feedback {
+                error_event,
+                agent,
+                category,
+            }) => self.open_error_feedback(error_event, agent, category, window, cx),
             Some(Open::BranchSettings) => {
                 // An open dialog stays, with what was typed in it.
                 if let Some((super::Modal::Settings(dialog), _)) = &self.modal {
@@ -305,6 +348,28 @@ impl Shell {
             Some(Open::Team) => self.open_team_tab(window, cx),
             None => {}
         }
+    }
+
+    /// The error form, with what links its answer to the error.
+    pub(super) fn open_error_feedback(
+        &mut self,
+        error_event: Option<String>,
+        agent: Option<String>,
+        category: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use serde_json::Value;
+        let extra = [
+            ("error_event", error_event),
+            ("agent", agent),
+            ("category", category),
+        ]
+        .into_iter()
+        .filter_map(|(k, v)| Some((k.to_string(), Value::from(v?))))
+        .collect();
+        let survey = crate::surveys::store::builtin(&crate::surveys::ids::ERROR);
+        self.open_survey(survey, crate::telemetry::Source::Error, extra, window, cx);
     }
 
     /// The project at `root` in front, if it is still open.
@@ -345,6 +410,22 @@ impl Shell {
         brand: &str,
         cx: &mut Context<Self>,
     ) {
+        self.notify_full(kind, title, body, "", open, image, brand, cx);
+    }
+
+    /// `notify_from` that also keeps `full` (the whole text, when `body` is
+    /// only its start) in the Inbox.
+    pub(super) fn notify_full(
+        &self,
+        kind: AlertKind,
+        title: &str,
+        body: &str,
+        full: &str,
+        open: Option<Open>,
+        image: Option<&std::path::Path>,
+        brand: &str,
+        cx: &mut Context<Self>,
+    ) {
         let key = open.map(|o| o.key()).unwrap_or_default();
         let alert = isl::Alert {
             key: key.clone(),
@@ -358,7 +439,7 @@ impl Shell {
                 .into(),
             brand: brand.to_string().into(),
         };
-        if !self.show_alert(alert, cx) {
+        if !self.show_alert_full(alert, full, cx) {
             super::sessions::send_notification(&key, title, body, kind == AlertKind::Failure, cx);
         }
     }
@@ -376,14 +457,19 @@ impl Shell {
     /// connected; `false` and the caller tells it some other way. Every notice
     /// the shell shows goes through here, so the Inbox misses none.
     pub(super) fn show_alert(&self, alert: isl::Alert, cx: &mut Context<Self>) -> bool {
-        self.record(&alert, cx);
+        self.show_alert_full(alert, "", cx)
+    }
+
+    fn show_alert_full(&self, alert: isl::Alert, full: &str, cx: &mut Context<Self>) -> bool {
+        self.record(&alert, full, cx);
         self.island
             .as_ref()
             .is_some_and(|link| send_alert(&link.tx, &link.up, alert))
     }
 
-    fn record(&self, alert: &isl::Alert, cx: &mut Context<Self>) {
-        let notice = crate::notices::Notice::from_alert(alert, model::unix_now());
+    fn record(&self, alert: &isl::Alert, full: &str, cx: &mut Context<Self>) {
+        let mut notice = crate::notices::Notice::from_alert(alert, model::unix_now());
+        notice.body = crate::notices::cap_body(full);
         let mut history = self.notices.borrow_mut();
         if history.push(notice) {
             crate::notices::store(&mut history);
@@ -761,6 +847,21 @@ mod tests {
             Open::Install(crate::agent::AgentKind::Droid),
             Open::Install(crate::agent::AgentKind::WorkersAi),
             Open::BranchSettings,
+            Open::Feedback {
+                error_event: None,
+                agent: None,
+                category: None,
+            },
+            Open::Feedback {
+                error_event: Some("0190-ab".into()),
+                agent: Some("claude".into()),
+                category: Some("rate limited".into()),
+            },
+            Open::Feedback {
+                error_event: None,
+                agent: Some("droid".into()),
+                category: None,
+            },
             #[cfg(feature = "team")]
             Open::Url("https://example.com/x/y?v=2".into()),
             #[cfg(feature = "team")]

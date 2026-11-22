@@ -28,7 +28,7 @@ use crate::account::Account;
 use crate::agent::log::render_log;
 use crate::agent::{
     self, AgentKind, Entry, Setting, SettingOption, Thread, ThreadEvent, ThreadStatus, Transcript,
-    catalog, marketplace, workers_ai,
+    catalog, marketplace, mirror, workers_ai,
 };
 use crate::clone_source;
 use crate::model::{Status, unix_now};
@@ -774,6 +774,7 @@ impl Daemon {
             catalog::refresh_codex();
             catalog::refresh_devin();
             catalog::refresh_cursor();
+            catalog::refresh_antigravity();
         })));
         let account = cx.new(Account::new);
         let account_events = cx.observe(&account, |this, _, cx| this.usage_changed(cx));
@@ -2655,6 +2656,11 @@ impl Daemon {
                     cx,
                 );
             }
+            ClientMsg::Mirror(snapshot) => {
+                let places: Vec<PathBuf> =
+                    self.store.places.iter().map(|p| p.path.clone()).collect();
+                self.answer_off_thread(client, move || mirror::apply(snapshot, &places), cx);
+            }
             ClientMsg::Visible { visible } => {
                 if visible {
                     self.hidden.remove(&client);
@@ -3961,16 +3967,18 @@ fn draft_choices(
         | AgentKind::OpenCode
         | AgentKind::Codex
         | AgentKind::Devin
-        | AgentKind::Cursor => {
+        | AgentKind::Cursor
+        | AgentKind::Antigravity => {
             let options = match agent {
                 AgentKind::Claude => catalog::claude_options(),
                 AgentKind::Codex => catalog::codex_options(),
                 AgentKind::Devin => catalog::devin_options(),
                 AgentKind::Cursor => catalog::cursor_options(),
+                AgentKind::Antigravity => catalog::antigravity_options(),
                 _ => catalog::opencode_options(),
             };
-            // OpenCode's and Codex's reasoning levels are per model: the cached
-            // ones are the default model's.
+            // OpenCode's, Codex's and maybe Antigravity's reasoning levels are
+            // per model: the cached ones are the default model's.
             if agent != AgentKind::Claude
                 && s == Setting::Effort
                 && let Some(model) = pick(Setting::Model)

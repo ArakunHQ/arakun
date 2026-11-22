@@ -2000,6 +2000,7 @@ const AGENTS = [
   ["codex", "Codex"],
   ["devin", "Devin"],
   ["cursor", "Cursor"],
+  ["antigravity", "Antigravity"],
 ];
 
 // The New session form starts on the place used last, with the agent that place picks.

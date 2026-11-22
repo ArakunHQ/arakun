@@ -8,8 +8,8 @@ use std::collections::HashMap;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, BorderStyle, Bounds, FontWeight, Hsla, InteractiveElement as _, IntoElement,
-    ParentElement as _, PathBuilder, Pixels, Point, StatefulInteractiveElement as _, Styled as _,
-    Window, canvas, div, point, px, quad, relative, size,
+    ParentElement as _, PathBuilder, Pixels, Point, SharedString, StatefulInteractiveElement as _,
+    Styled as _, Window, canvas, div, point, px, quad, relative, size,
 };
 use serde_json::Value;
 
@@ -1161,7 +1161,13 @@ fn place(
 // Rendering
 
 /// The code block's shell, with the diagram where the code would be.
-fn card(ix: usize, icon_name: &str, title: String, source: &str, body: AnyElement) -> AnyElement {
+fn card(
+    ix: usize,
+    icon_name: &str,
+    title: String,
+    source: SharedString,
+    body: AnyElement,
+) -> AnyElement {
     div()
         .id(("diagram", ix))
         .flex()
@@ -1193,13 +1199,13 @@ fn card(ix: usize, icon_name: &str, title: String, source: &str, body: AnyElemen
                         .text_color(theme::text_muted())
                         .child(title),
                 )
-                .child(copy_button(("diagram-copy", ix), source.to_string())),
+                .child(copy_button(("diagram-copy", ix), source)),
         )
         .child(body)
         .into_any_element()
 }
 
-pub fn render(ix: usize, diagram: &Diagram, source: &str) -> AnyElement {
+pub fn render(ix: usize, diagram: &Diagram, source: SharedString) -> AnyElement {
     match diagram {
         Diagram::Chart(c) => {
             let title = c.title.clone().unwrap_or_else(|| "Chart".into());

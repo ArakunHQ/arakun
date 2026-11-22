@@ -42,22 +42,83 @@ pub fn mcp_configured(agent: AgentKind) -> Mcp {
 /// OpenCode's global `opencode.json`/`opencode.jsonc` (its `mcp` key), Codex's
 /// `~/.codex/config.toml`.
 pub fn mcp_server(agent: AgentKind) -> Option<String> {
+    // The Cloudflare view asks every few seconds whether this changed. Parse
+    // the config only when one of its files did: `~/.claude.json` alone is
+    // often over 100 KB.
+    type Stamps = Vec<Option<(std::time::SystemTime, u64)>>;
+    type Seen = HashMap<AgentKind, (Stamps, Option<String>)>;
+    static SEEN: std::sync::Mutex<Option<Seen>> = std::sync::Mutex::new(None);
+    let stamps: Stamps = mcp_files(agent)
+        .iter()
+        .map(|f| {
+            let m = std::fs::metadata(f).ok()?;
+            Some((m.modified().ok()?, m.len()))
+        })
+        .collect();
+    if let Some((seen, found)) = SEEN
+        .lock()
+        .ok()
+        .and_then(|g| g.as_ref().and_then(|m| m.get(&agent)).cloned())
+        && seen == stamps
+    {
+        return found;
+    }
+    let found = read_mcp_server(agent);
+    if let Ok(mut g) = SEEN.lock() {
+        g.get_or_insert_with(HashMap::new)
+            .insert(agent, (stamps, found.clone()));
+    }
+    found
+}
+
+/// The files `agent`'s MCP servers are configured in.
+fn mcp_files(agent: AgentKind) -> Vec<PathBuf> {
+    let home = crate::platform::home();
+    match agent {
+        AgentKind::Droid => vec![home.join(".factory").join("mcp.json")],
+        AgentKind::Claude => vec![home.join(".claude.json")],
+        AgentKind::OpenCode => {
+            let config = opencode_config_dir();
+            vec![config.join("opencode.json"), config.join("opencode.jsonc")]
+        }
+        AgentKind::Codex => vec![codex_home().join("config.toml")],
+        AgentKind::WorkersAi | AgentKind::Devin | AgentKind::Cursor | AgentKind::Antigravity => {
+            Vec::new()
+        }
+    }
+}
+
+fn codex_home() -> PathBuf {
+    std::env::var_os("CODEX_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .unwrap_or_else(|| crate::platform::home().join(".codex"))
+}
+
+fn opencode_config_dir() -> PathBuf {
+    std::env::var_os("XDG_CONFIG_HOME")
+        .map(std::path::PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .unwrap_or_else(|| crate::platform::home().join(".config"))
+        .join("opencode")
+}
+
+fn read_mcp_server(agent: AgentKind) -> Option<String> {
     let home = crate::platform::home();
     let file = match agent {
         AgentKind::Droid => home.join(".factory").join("mcp.json"),
         AgentKind::Claude => home.join(".claude.json"),
         AgentKind::OpenCode => return opencode_mcp_server(),
         AgentKind::Codex => {
-            let home = std::env::var_os("CODEX_HOME")
-                .map(PathBuf::from)
-                .filter(|p| p.is_absolute())
-                .unwrap_or_else(|| home.join(".codex"));
-            let toml = std::fs::read_to_string(home.join("config.toml")).ok()?;
+            let toml = std::fs::read_to_string(codex_home().join("config.toml")).ok()?;
             return codex_mcp_server(&toml);
         }
-        // arakun's own agent has no MCP client. Devin and Cursor have one,
+        // arakun's own agent has no MCP client. Devin, Cursor and Antigravity
+        // have one,
         // but Arakun does not read or change their MCP config yet.
-        AgentKind::WorkersAi | AgentKind::Devin | AgentKind::Cursor => return None,
+        AgentKind::WorkersAi | AgentKind::Devin | AgentKind::Cursor | AgentKind::Antigravity => {
+            return None;
+        }
     };
     let v: Value = crate::durable::load_json(file)?;
     v["mcpServers"].as_object()?.iter().find_map(|(name, s)| {
@@ -72,11 +133,7 @@ pub fn mcp_server(agent: AgentKind) -> Option<String> {
 /// OpenCode keeps remote servers as `mcp.<name> = {type: "remote", url, enabled}`.
 /// A `.jsonc` with comments in it does not parse here and counts as missing.
 fn opencode_mcp_server() -> Option<String> {
-    let config = std::env::var_os("XDG_CONFIG_HOME")
-        .map(std::path::PathBuf::from)
-        .filter(|p| p.is_absolute())
-        .unwrap_or_else(|| crate::platform::home().join(".config"))
-        .join("opencode");
+    let config = opencode_config_dir();
     ["opencode.json", "opencode.jsonc"].iter().find_map(|f| {
         let v: Value = crate::durable::load_json(config.join(f))?;
         v["mcp"].as_object()?.iter().find_map(|(name, s)| {
@@ -208,7 +265,9 @@ pub fn mcp_status(agent: AgentKind) -> Mcp {
         AgentKind::Claude => "claude",
         AgentKind::OpenCode => "opencode",
         AgentKind::Codex => "codex",
-        AgentKind::WorkersAi | AgentKind::Devin | AgentKind::Cursor => return Mcp::Missing,
+        AgentKind::WorkersAi | AgentKind::Devin | AgentKind::Cursor | AgentKind::Antigravity => {
+            return Mcp::Missing;
+        }
     };
     let bin = match agent {
         AgentKind::Codex => crate::agent::codex_cli(),
@@ -230,7 +289,10 @@ pub fn mcp_status(agent: AgentKind) -> Mcp {
             opencode_line_status(&String::from_utf8_lossy(&o.stdout), &name)
         }
         (Ok(o), AgentKind::Codex) => codex_list_status(&String::from_utf8_lossy(&o.stdout), &name),
-        (Ok(_), AgentKind::WorkersAi | AgentKind::Devin | AgentKind::Cursor) => Mcp::Missing,
+        (
+            Ok(_),
+            AgentKind::WorkersAi | AgentKind::Devin | AgentKind::Cursor | AgentKind::Antigravity,
+        ) => Mcp::Missing,
         (Err(_), _) => Mcp::Added,
     }
 }
@@ -349,7 +411,9 @@ pub fn mcp_connect_command(agent: AgentKind, state: &Mcp) -> String {
             codex_connect_command(&codex_program(), state, name.as_deref())
         }
         // Not supported: the shell tells the user instead of running this.
-        AgentKind::WorkersAi | AgentKind::Devin | AgentKind::Cursor => String::new(),
+        AgentKind::WorkersAi | AgentKind::Devin | AgentKind::Cursor | AgentKind::Antigravity => {
+            String::new()
+        }
     }
 }
 

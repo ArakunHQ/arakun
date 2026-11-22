@@ -3,7 +3,8 @@
 //!
 //! The caret is driven from paint. Each frame it is drawn, it asks for the next
 //! frame only while it moves or fades, and sets a timer for the still parts in
-//! between, so an idle caret costs nothing.
+//! between, so an idle caret costs nothing. A glide asks for the display's next
+//! frame; a blink's fade waits for the motion clock's tick.
 
 use std::time::{Duration, Instant};
 
@@ -141,7 +142,8 @@ impl Caret {
         }
         let idle = now - self.held;
         match next_change(idle) {
-            Some(Duration::ZERO) => window.request_animation_frame(),
+            // A fade, so on the motion clock rather than at the display's rate.
+            Some(Duration::ZERO) => crate::ui::motion::redraw_on_tick(window),
             Some(wait) => {
                 let wake = now + wait;
                 if self.wake.is_none_or(|w| w <= now || w > wake) {

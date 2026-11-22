@@ -387,6 +387,15 @@ impl ThreadView {
                     button("search-close", "cancel01")
                         .on_click(cx.listener(|this, _, window, cx| this.close_search(window, cx))),
                 )
+                .map(|d| {
+                    crate::ui::motion::enter(
+                        d,
+                        "search-bar-in",
+                        crate::ui::motion::From::Above,
+                        4.,
+                        crate::ui::motion::FAST,
+                    )
+                })
                 .into_any_element(),
         )
     }

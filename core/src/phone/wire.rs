@@ -863,6 +863,30 @@ pub struct InboxSession<'a> {
     pub asks: Option<Value>,
 }
 
+/// Hashes what the line shows, so a caller can tell the inbox changed
+/// without building it. Every field is named: a new one must be added here.
+impl std::hash::Hash for InboxSession<'_> {
+    fn hash<H: std::hash::Hasher>(&self, h: &mut H) {
+        let Self {
+            id,
+            title,
+            agent,
+            status: st,
+            updated,
+            added,
+            removed,
+            project,
+            env,
+            place,
+            pr,
+            asks,
+        } = self;
+        (id, title, agent, status(*st), updated, added, removed).hash(h);
+        (project, env, place, pr).hash(h);
+        asks.as_ref().map(Value::to_string).hash(h);
+    }
+}
+
 pub fn inbox_session(s: InboxSession) -> Value {
     json!({
         "id": s.id, "title": s.title, "agent": s.agent, "status": status(s.status),
@@ -883,6 +907,22 @@ pub struct InboxPlace<'a> {
     pub repo: Option<&'a Path>,
     /// Its `origin`, by which the app finds the same project on its side.
     pub origin: Option<&'a str>,
+}
+
+/// Hashes what the place shows, as for [`InboxSession`].
+impl std::hash::Hash for InboxPlace<'_> {
+    fn hash<H: std::hash::Hasher>(&self, h: &mut H) {
+        let Self {
+            path,
+            project,
+            env,
+            branch,
+            agent,
+            repo,
+            origin,
+        } = self;
+        (path, project, env, branch, agent, repo, origin).hash(h);
+    }
 }
 
 pub fn inbox_place(p: InboxPlace) -> Value {
@@ -1660,5 +1700,39 @@ mod tests {
 
         // A message without them is not read as none.
         assert!(read_subagents(&json!({ "type": "subagents", "id": "s1" })).is_err());
+    }
+
+    #[test]
+    fn an_inbox_line_hashes_what_it_shows() {
+        use std::hash::{DefaultHasher, Hash, Hasher};
+        let line = |status, asks: Option<&str>| {
+            let mut h = DefaultHasher::new();
+            InboxSession {
+                id: "s1",
+                title: "Fix it",
+                agent: "Claude",
+                status,
+                updated: 5,
+                added: 1,
+                removed: 2,
+                project: "app",
+                env: "main",
+                place: Path::new("/work"),
+                pr: None,
+                asks: asks.map(|t| json!({ "kind": "permission", "text": t })),
+            }
+            .hash(&mut h);
+            h.finish()
+        };
+        assert_eq!(line(Status::Idle, None), line(Status::Idle, None));
+        assert_ne!(line(Status::Idle, None), line(Status::Working, None));
+        assert_ne!(
+            line(Status::Idle, None),
+            line(Status::Idle, Some("Run ls?"))
+        );
+        assert_ne!(
+            line(Status::Idle, Some("Run ls?")),
+            line(Status::Idle, Some("Run rm?"))
+        );
     }
 }

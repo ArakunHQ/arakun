@@ -58,6 +58,8 @@ pub enum ExtensionsEvent {
     ConnectServers,
     /// A message for the paired server with this id (the phone's `ClientMsg`).
     Server(String, serde_json::Value),
+    /// Something changed on this computer: the paired servers get what they lack.
+    Mirror,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -337,6 +339,8 @@ impl ExtensionsView {
             return;
         }
         self.cwd = Some(cwd);
+        self.ms.repo_has = None;
+        self.load_repo_has(cx);
         self.claude = None;
         self.claude_at = None;
         self.droid = None;
@@ -421,7 +425,19 @@ impl ExtensionsView {
                     return;
                 }
                 this.claude_loading = false;
+                // A sign-in finished while watching (it runs in a terminal):
+                // the servers get it now, not at the next install.
+                let waiting = |c: &ClaudeExtensions| {
+                    c.servers
+                        .iter()
+                        .filter(|s| s.health == claude_ext::Health::NeedsAuth)
+                        .count()
+                };
+                let signed_in = this.claude.as_ref().map(waiting) > Some(waiting(&found));
                 this.claude = Some(found);
+                if signed_in {
+                    cx.emit(ExtensionsEvent::Mirror);
+                }
                 this.claude_at = Some(Instant::now());
                 cx.notify();
             });
@@ -484,7 +500,7 @@ impl ExtensionsView {
     fn run_op(
         &mut self,
         name: String,
-        done: &'static str,
+        done: impl Into<String>,
         job: impl FnOnce() -> anyhow::Result<()> + Send + 'static,
         then: Option<String>,
         cx: &mut Context<Self>,
@@ -496,6 +512,7 @@ impl ExtensionsView {
         self.error = None;
         self.notice = None;
         self.confirm_remove = None;
+        let done = done.into();
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_spawn(crate::guard::task(async move { job() }))
@@ -511,6 +528,8 @@ impl ExtensionsView {
                             cx.emit(ExtensionsEvent::Run(command));
                         }
                         this.load_claude(cx);
+                        this.load_repo_has(cx);
+                        cx.emit(ExtensionsEvent::Mirror);
                     }
                     Err(e) => this.error = Some(format!("{}: {e:#}", display_name(&name)).into()),
                 }

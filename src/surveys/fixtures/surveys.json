@@ -1,0 +1,19 @@
+{"surveys":[
+{"id":"01a200ad-5d58-0000-35ae-dc63b34e34b9","name":"Arakun user feedback","type":"api","start_date":"2026-11-22T10:00:00.000000Z","end_date":null,"archived":false,"conditions":null,
+ "questions":[
+  {"id":"c08d98b6-2f22-454e-ba14-e548802e645c","type":"single_choice","question":"What kind of feedback is it?","description":"","descriptionContentType":"text","optional":false,"buttonText":"Next","choices":["Bug","Feature request","UX","Other"],"shuffleOptions":false,"branching":{"type":"next_question"}},
+  {"id":"8875e82f-96f5-4071-b532-0402de7119fe","type":"open","question":"What's on your mind?","description":"","optional":false,"buttonText":"Next"},
+  {"id":"9404c016-db43-474c-96fd-4d0319bce760","type":"open","question":"Can we follow up? Leave an email","description":"","optional":true,"buttonText":"Send"}
+ ]},
+{"id":"01a200ad-5f88-0000-364b-2b778e447d4d","name":"Arakun agent feedback","type":"api","start_date":"2026-11-22T10:00:00.000000Z","end_date":null,"archived":false,"conditions":null,
+ "questions":[
+  {"id":"ce6cdbfc-07dc-4126-aeca-3246f24ac967","type":"single_choice","question":"What kind of feedback is it?","description":"","optional":false,"buttonText":"Next","choices":["Bug","Feature request","UX","Other"]},
+  {"id":"2a877015-575c-46de-93dd-787fdc7a52ae","type":"open","question":"Feedback","description":"","optional":false,"buttonText":"Send"}
+ ]},
+{"id":"01a200ad-6257-0000-3340-f5cbf139dda4","name":"Arakun error feedback","type":"popover","start_date":"2026-11-22T10:00:00.000000Z","end_date":null,"archived":false,
+ "conditions":{"url":"","urlMatchType":"icontains","seenSurveyWaitPeriodInDays":7,"events":{"repeatedActivation":false,"values":[{"name":"$exception"}]}},
+ "questions":[
+  {"id":"17c2138e-79f3-4590-b91c-cc8b442026be","type":"open","question":"What were you doing when it happened?","description":"","optional":false,"buttonText":"Next"},
+  {"id":"4364e5db-a705-480b-85c2-3c46c88eb247","type":"rating","question":"How bad was it?","description":"","optional":true,"buttonText":"Send","display":"number","scale":5,"lowerBoundLabel":"Minor","upperBoundLabel":"Blocking"}
+ ]}
+]}

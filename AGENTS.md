@@ -55,8 +55,8 @@ Every commit message and pull request title follows
 - Always open a pull request as a draft: `gh pr create --draft --body-file -`. Run the
   checks below, wait for the checks it needs with `tools/wait-checks.sh`, then mark it
   ready with `gh pr ready`, never before. That script waits for the required checks, for
-  macOS only when the diff touches macOS code, and for Android only when the diff touches
-  what the Android job builds; don't wait for the rest. The required
+  macOS only when the diff touches macOS code, and for iOS or Android only when the diff
+  touches what that job builds; don't wait for the rest. The required
   **Human approval** status is a merge gate, not part of this wait: it only resolves once
   a person approves, and marking ready is what asks for the review. cubic, the review
   bot, reviews drafts too, so its review is often done before the checks. The
@@ -72,6 +72,10 @@ Every commit message and pull request title follows
   resolve the fixed ones right after you push. cubic may push its own fixes to your
   branch, so pull before you push. If you change a rule here or in
   CONTRIBUTING.md, check the rules in `cubic.yaml` too.
+
+- A version bump pull request also adds the changelog entry,
+  `release-notes/v<version>.md`; CI fails it otherwise. Write it with the
+  `release-notes` skill.
 
 ### Stacked pull requests
 
@@ -116,6 +120,10 @@ cargo test --locked --no-default-features <module>   # only the modules you touc
 (cd relay && npx tsc --noEmit)
 # teams/ changed
 (cd teams && npm ci && npm run check)
+# ios/ changed (macOS with Xcode; brew install xcodegen)
+(cd ios/ArakunKit && swift test)
+(cd ios && xcodegen generate && xcodebuild build -quiet -project Arakun.xcodeproj \
+  -scheme Arakun -destination "generic/platform=iOS Simulator" CODE_SIGNING_ALLOWED=NO)
 # android/ changed
 (cd android && ./gradlew :kit:test :app:testDebugUnitTest :app:lintDebug :app:assembleDebug)
 ```
@@ -149,6 +157,10 @@ request that also fixes the new lints.
   Workspace panel, notice (the glossary under "Words in the interface" in
   CONTRIBUTING.md). `src/words_lint.rs` fails the tests on a retired word.
 - Code for one platform goes behind `cfg(...)`, and the other platforms must still build.
+- The iOS app (`ios/`): `ios/ArakunKit` must match `core/src/phone` and `phone/` on the
+  wire. Pairing credentials stay in the Keychain, never in `UserDefaults` or logs. Views
+  take colors, fonts and corners from `ios/Arakun/Theme.swift`. The `-demo` mode stays
+  behind `#if DEBUG`.
 - Do not add or change code behind the private `team` or `coderlabs` features.
 - Comments say why, not what. Docs and comments use plain, short sentences.
 - If you change a command, flag, shortcut or storage path, update the README (and

@@ -29,6 +29,7 @@ pub enum Target {
     ToggleSubagents,
     Account,
     Settings,
+    SendFeedback,
     Extensions,
     #[cfg(feature = "coderlabs")]
     Tasks,

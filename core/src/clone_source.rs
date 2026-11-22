@@ -21,6 +21,17 @@ pub struct CloneSource {
     pub shorthand: bool,
 }
 
+/// What a repository is known by on every machine: `owner/repo` on GitHub,
+/// whatever the protocol, else its URL.
+pub fn repo_key(origin: &str) -> Option<String> {
+    let source = parse_clone_source(origin)?;
+    Some(if source.on_github {
+        source.label.to_lowercase()
+    } else {
+        source.label.to_string()
+    })
+}
+
 /// A repository to clone, from a URL, an scp-style address, a pasted
 /// `git clone …` or `gh repo clone …` line, or a GitHub `owner/repo`.
 pub fn parse_clone_source(query: &str) -> Option<CloneSource> {

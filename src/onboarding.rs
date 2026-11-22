@@ -107,13 +107,14 @@ pub fn set_done() {
 
 /// The agents that need something on the machine, in the order shown.
 /// Workers AI is left out: it has no CLI to find.
-pub const AGENTS: [AgentKind; 6] = [
+pub const AGENTS: [AgentKind; 7] = [
     AgentKind::Claude,
     AgentKind::Codex,
     AgentKind::OpenCode,
     AgentKind::Droid,
     AgentKind::Devin,
     AgentKind::Cursor,
+    AgentKind::Antigravity,
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -134,7 +135,7 @@ pub struct AgentRow {
 
 /// Claude Code and Codex run through an adapter that Arakun installs with npm
 /// and that brings the agent's own binary; `has` is that adapter. OpenCode,
-/// Droid, Devin and Cursor are the user's own CLIs; `has` is the CLI.
+/// Droid, Devin, Cursor and Antigravity are the user's own CLIs; `has` is the CLI.
 fn readiness(agent: AgentKind, has: bool, npm: bool) -> Readiness {
     let through_npm = matches!(agent, AgentKind::Claude | AgentKind::Codex);
     match (has, through_npm && npm) {
@@ -157,6 +158,7 @@ pub fn find_agents() -> Vec<AgentRow> {
                 AgentKind::Droid => crate::agent::droid_bin().is_ok(),
                 AgentKind::Devin => crate::agent::devin_bin().is_ok(),
                 AgentKind::Cursor => crate::agent::cursor_bin().is_ok(),
+                AgentKind::Antigravity => crate::agent::agy_bin().is_ok(),
                 AgentKind::WorkersAi => false,
             };
             AgentRow {
@@ -175,6 +177,10 @@ pub fn install_link(agent: AgentKind) -> (&'static str, &'static str) {
         AgentKind::Droid => ("Get Droid", AgentKind::Droid.install_url()),
         AgentKind::Devin => ("Get the Devin CLI", AgentKind::Devin.install_url()),
         AgentKind::Cursor => ("Get the Cursor CLI", AgentKind::Cursor.install_url()),
+        AgentKind::Antigravity => (
+            "Get the Antigravity CLI",
+            AgentKind::Antigravity.install_url(),
+        ),
         AgentKind::WorkersAi => ("", ""),
     }
 }

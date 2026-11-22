@@ -209,14 +209,30 @@ fn parse_plugins(v: &Value, manifests: &HashMap<String, Manifest>) -> Vec<Plugin
 
 /// Installs a plugin for your user; it is on in every project.
 pub fn install_plugin(cwd: &Path, id: &str) -> Result<()> {
+    install_plugin_as(cwd, id, "user")
+}
+
+/// Installs a plugin in Claude Code's `scope` (`user`, `project` or `local`);
+/// the last two are for the folder `cwd`.
+pub fn install_plugin_as(cwd: &Path, id: &str, scope: &str) -> Result<()> {
     let bin = launch::which("claude").ok_or_else(|| anyhow!("claude is not on PATH"))?;
-    run(
+    super::claude_ext::run_cli(
         &bin,
-        cwd,
-        &["plugin", "install", id, "-s", "user"],
+        &scope_dir(cwd, scope),
+        &["plugin", "install", id, "-s", scope],
         INSTALL_TIMEOUT,
     )
     .map(|_| ())
+}
+
+/// Where a `scope` install runs: a folder that is gone falls back to home only
+/// for the user's, since the others write into the folder itself.
+fn scope_dir(cwd: &Path, scope: &str) -> PathBuf {
+    if scope == "user" {
+        workdir(cwd)
+    } else {
+        cwd.to_path_buf()
+    }
 }
 
 /// `1266133` → `1.3M`.
@@ -717,14 +733,15 @@ pub fn config(install: &Install, values: &HashMap<String, String>) -> Result<Val
 }
 
 /// The command the config amounts to, for the user to read before installing (secrets masked).
-pub fn preview(name: &str, install: &Install) -> String {
+/// `scope` is Claude Code's: `user`, `project` or `local`.
+pub fn preview(name: &str, install: &Install, scope: &str) -> String {
     match install {
         Install::Remote {
             transport,
             url,
             headers,
         } => {
-            let mut s = format!("claude mcp add --transport {transport} -s user {name} {url}");
+            let mut s = format!("claude mcp add --transport {transport} -s {scope} {name} {url}");
             for h in headers {
                 s.push_str(&format!(
                     " -H \"{}: {}\"",
@@ -737,7 +754,7 @@ pub fn preview(name: &str, install: &Install) -> String {
         Install::Local {
             command, args, env, ..
         } => {
-            let mut s = format!("claude mcp add -s user {name}");
+            let mut s = format!("claude mcp add -s {scope} {name}");
             for e in env {
                 s.push_str(&format!(
                     " -e {}={}",
@@ -758,12 +775,26 @@ pub fn install_server(
     install: &Install,
     values: &HashMap<String, String>,
 ) -> Result<bool> {
+    install_server_as(cwd, name, install, values, "user")
+}
+
+/// Adds the server in Claude Code's `scope` (`user`, `project` or `local`);
+/// says whether it wants a sign-in next.
+pub fn install_server_as(
+    cwd: &Path,
+    name: &str,
+    install: &Install,
+    values: &HashMap<String, String>,
+    scope: &str,
+) -> Result<bool> {
     let config = config(install, values)?;
     let bin = launch::which("claude").ok_or_else(|| anyhow!("claude is not on PATH"))?;
-    run(
+    // On stdin, not in the arguments: the config can hold keys.
+    super::claude_ext::run_cli_input(
         &bin,
-        cwd,
-        &["mcp", "add-json", name, &config.to_string(), "-s", "user"],
+        &scope_dir(cwd, scope),
+        &["mcp", "add-json", name, "-", "-s", scope],
+        config.to_string().as_bytes(),
         CLI_TIMEOUT,
     )?;
     Ok(matches!(install, Install::Remote { headers, .. } if headers.is_empty()))
@@ -948,7 +979,10 @@ mod tests {
             c["env"],
             json!({"GCS_BUCKET": "b", "GCS_PRIVATE_KEY": "k", "GCS_MAKE_PUBLIC": "false"})
         );
-        assert!(preview("remote-filesystem", &fs.installs[0]).contains("-e GCS_PRIVATE_KEY=••••"));
+        let shown = preview("remote-filesystem", &fs.installs[0], "local");
+        assert!(shown.contains("-e GCS_PRIVATE_KEY=••••"));
+        // It shows the scope the install uses.
+        assert!(shown.contains("-s local"));
     }
 
     #[test]

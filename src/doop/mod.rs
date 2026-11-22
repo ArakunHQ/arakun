@@ -449,17 +449,15 @@ impl Attempt {
 // Calls.
 
 /// One client for every call, so connections (and their TLS) are reused.
-pub(crate) fn agent() -> &'static ureq::Agent {
+fn agent() -> &'static ureq::Agent {
     static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
     AGENT.get_or_init(|| {
-        ureq::Agent::config_builder()
+        crate::http::builder()
             .timeout_global(Some(Duration::from_secs(30)))
-            .http_status_as_error(false)
             // A redirect could lead off the instance, to an address the
             // checks on the instance never saw: the answer is taken as it is.
             .max_redirects(0)
             .max_redirects_will_error(false)
-            .user_agent(concat!("arakun/", env!("ARAKUN_VERSION")))
             .build()
             .into()
     })
@@ -471,25 +469,9 @@ pub(crate) fn run(
     body: Option<String>,
     limit: u64,
 ) -> Result<(u16, Vec<u8>), Error> {
-    let sent = match body {
-        Some(b) => request
-            .body(b)
-            .map_err(|e| e.to_string())
-            .and_then(|r| agent().run(r).map_err(|e| e.to_string())),
-        None => request
-            .body(())
-            .map_err(|e| e.to_string())
-            .and_then(|r| agent().run(r).map_err(|e| e.to_string())),
-    };
-    let mut response = sent.map_err(|e| Error::Failed(format!("Couldn't reach Doop: {e}")))?;
-    let status = response.status().as_u16();
-    let bytes = response
-        .body_mut()
-        .with_config()
-        .limit(limit)
-        .read_to_vec()
-        .unwrap_or_default();
-    Ok((status, bytes))
+    let reply = crate::http::run(agent(), request, body, limit)
+        .map_err(|e| Error::Failed(format!("Couldn't reach Doop: {e}")))?;
+    Ok((reply.status, reply.bytes))
 }
 
 fn request(method: &str, params: Value) -> Value {
@@ -498,11 +480,7 @@ fn request(method: &str, params: Value) -> Value {
 
 /// One JSON-RPC message to `<host>/mcp`. The token goes in the header only.
 fn post(host: &str, token: &str, message: &Value) -> Result<(u16, String), Error> {
-    let builder = ureq::http::Request::builder()
-        .method("POST")
-        .uri(mcp_url(host))
-        .header("Authorization", format!("Bearer {token}"))
-        .header("Content-Type", "application/json")
+    let builder = crate::http::request("POST", &mcp_url(host), Some(token))
         .header("Accept", "application/json, text/event-stream");
     let (status, bytes) = run(builder, Some(message.to_string()), 32 * 1024 * 1024)?;
     Ok((status, String::from_utf8_lossy(&bytes).into_owned()))

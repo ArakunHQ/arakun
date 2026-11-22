@@ -12,6 +12,7 @@ use super::*;
 use serde_json::json;
 
 use crate::agent::marketplace::{self, Input, Install, PluginEntry, RegistryServer};
+use crate::agent::mirror::{self, RepoHas, RepoItem, Where};
 use crate::agent::publishers;
 use crate::agent::skills_sh::{self, SkillEntry, SkillSource};
 
@@ -89,6 +90,11 @@ pub(super) struct MarketState {
     rows_for: std::cell::RefCell<Synced>,
     pub(super) last_width: std::cell::Cell<f32>,
     pub(super) check_pending: std::cell::Cell<bool>,
+    /// Where Install puts things on this computer: for the user, or in the
+    /// environment's repository.
+    pub(super) at: Where,
+    /// What that repository has already, read off the main thread.
+    pub(super) repo_has: Option<RepoHas>,
 }
 
 impl ExtensionsView {
@@ -202,15 +208,19 @@ impl ExtensionsView {
             _ => None,
         };
         let e = entry.clone();
+        let at = self.ms.at;
+        let Some(dir) = self.install_dir() else {
+            return;
+        };
         self.run_op(
             entry.name.clone(),
-            "is installed for every project",
+            format!("is installed {}", at.done()),
             move || {
                 let found = match found {
                     Some(f) => f,
                     None => skills_sh::locate(&e)?,
                 };
-                skills_sh::install(&e, &found, &skills_sh::skills_root()).map(|_| ())
+                mirror::install_skill(&e, &found, at, &dir)
             },
             None,
             cx,
@@ -365,11 +375,24 @@ impl ExtensionsView {
             self.install_remote(name, id, msg, done, cx);
             return;
         }
-        let Some(cwd) = self.cwd.clone() else { return };
+        let Some(cwd) = self.install_dir() else {
+            return;
+        };
+        let at = self.ms.at;
         self.run_op(
             name,
-            "is installed and on in every project",
-            move || marketplace::install_plugin(&cwd, &id),
+            format!("is installed and on {}", at.done()),
+            move || {
+                marketplace::install_plugin_as(&cwd, &id, at.claude())?;
+                if at != Where::User {
+                    mirror::remember_repo_install(
+                        &cwd,
+                        at == Where::Shared,
+                        RepoItem::Plugin { id },
+                    );
+                }
+                Ok(())
+            },
             None,
             cx,
         );
@@ -469,6 +492,27 @@ impl ExtensionsView {
             cx.notify();
             return;
         }
+        // A shared install writes them into the repo's .mcp.json, which is committed.
+        if self.targets.target.is_none() && self.ms.at == Where::Shared {
+            let keys: Vec<&str> = ins
+                .fields
+                .iter()
+                .filter(|(i, _)| looks_secret(i))
+                .filter(|(i, _)| values.get(&i.name).is_some_and(|v| !v.trim().is_empty()))
+                .map(|(i, _)| i.name.as_str())
+                .collect();
+            if !keys.is_empty() {
+                self.error = Some(
+                    format!(
+                        "“This repo, shared” would commit {} to the repo. Pick “This repo, just me” or “Every repo” for a server that needs a key.",
+                        keys.join(", ")
+                    )
+                    .into(),
+                );
+                cx.notify();
+                return;
+            }
+        }
         if self.targets.target.is_some() {
             // Its sign-in opens a browser, so it is done on that machine.
             let mut done = format!("was added{} for every project there.", self.on_target());
@@ -484,12 +528,27 @@ impl ExtensionsView {
             }
             return;
         }
-        let Some(cwd) = self.cwd.clone() else { return };
+        let Some(cwd) = self.install_dir() else {
+            return;
+        };
+        let at = self.ms.at;
+        let n = self.server_name(&n, sign_in);
+        let login = claude_ext::login_command(&n);
         self.ms.installing = None;
         self.run_op(
-            name,
-            "was added for every project",
-            move || marketplace::install_server(&cwd, &n, &method, &values).map(|_| ()),
+            n.clone(),
+            format!("was added {}", at.done()),
+            move || {
+                marketplace::install_server_as(&cwd, &n, &method, &values, at.claude())?;
+                if at != Where::User {
+                    mirror::remember_repo_install(
+                        &cwd,
+                        at == Where::Shared,
+                        RepoItem::Server { name: n },
+                    );
+                }
+                Ok(())
+            },
             sign_in.then_some(login),
             cx,
         );
@@ -620,6 +679,21 @@ impl ExtensionsView {
     }
 
     fn installed(&self, item: &Item) -> bool {
+        // In a repository, what it has: its files, and Claude's list for it.
+        if self.targets.target.is_none() && self.ms.at != Where::User {
+            let at = self.ms.at;
+            let Some(has) = &self.ms.repo_has else {
+                return false;
+            };
+            return match item {
+                Item::Plugin(p) => has.plugin(at, &p.id),
+                Item::Server(s) => {
+                    let name = s.short_name();
+                    has.server(at, &name) || has.server(at, &mirror::suffixed(&name, &has.slug))
+                }
+                Item::Skill(k) => has.skill(&k.skill_id),
+            };
+        }
         match item {
             // A server's list says what is installed there; Claude's files here
             // know of an install the list was read before.
@@ -1557,6 +1631,9 @@ impl ExtensionsView {
                     .child(description),
             )
         });
+        if let Some(picker) = self.render_where(cx) {
+            panel = panel.child(picker);
+        }
         match &item {
             Item::Plugin(p) => {
                 let busy = self.op.as_ref() == Some(&p.name);
@@ -1611,7 +1688,7 @@ impl ExtensionsView {
                             Some("download04"),
                             match self.target_server() {
                                 Some(s) => format!("Install on {}", s.name),
-                                None => "Install for every project".to_string(),
+                                None => self.install_label().to_string(),
                             },
                             ButtonKind::Primary,
                             self.op.is_none(),
@@ -1731,7 +1808,7 @@ impl ExtensionsView {
             ui::button_with(
                 "ext-detail-install",
                 Some("download04"),
-                "Install for every project",
+                self.install_label(),
                 ButtonKind::Primary,
                 self.op.is_none() && !matches!(located, Some(Located::Failed(_))),
             )
@@ -1751,6 +1828,88 @@ impl ExtensionsView {
     }
 
     /// How to install the picked registry server: the way, what it needs, the command.
+    /// The name an MCP server is added as. One that signs in and goes into a
+    /// repository has the repository after its name (`github-acme-web`), so
+    /// its sign-in is its own: Claude keeps one per name and address.
+    fn server_name(&self, name: &str, sign_in: bool) -> String {
+        if self.targets.target.is_some() || self.ms.at == Where::User || !sign_in {
+            return name.to_string();
+        }
+        let slug = match &self.ms.repo_has {
+            Some(has) => has.slug.clone(),
+            // Not read yet: the folder's name, without asking git here.
+            None => self
+                .cwd
+                .as_ref()
+                .and_then(|d| d.file_name())
+                .map(|f| f.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+        };
+        mirror::suffixed(name, &slug)
+    }
+
+    /// Reads what the environment's repository has, when Install goes there.
+    pub(super) fn load_repo_has(&mut self, cx: &mut Context<Self>) {
+        if self.ms.at == Where::User {
+            return;
+        }
+        let Some(dir) = self.cwd.clone() else { return };
+        cx.spawn(async move |this, cx| {
+            let d = dir.clone();
+            let has = cx
+                .background_spawn(crate::guard::task_or_default(async move {
+                    mirror::repo_has(&d)
+                }))
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                if this.cwd.as_ref() == Some(&dir) {
+                    this.ms.repo_has = Some(has);
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// The folder a per-repository install goes into: the environment's.
+    fn install_dir(&self) -> Option<PathBuf> {
+        self.cwd.clone()
+    }
+
+    fn install_label(&self) -> &'static str {
+        match self.ms.at {
+            Where::User => "Install for every project",
+            Where::Shared | Where::Mine => "Install in this repo",
+        }
+    }
+
+    /// Picks where Install puts things on this computer.
+    fn render_where(&self, cx: &mut Context<Self>) -> Option<Div> {
+        if self.targets.target.is_some() || self.cwd.is_none() {
+            return None;
+        }
+        let mut picker = ui::segmented();
+        for (i, at) in Where::ALL.into_iter().enumerate() {
+            picker = picker.child(
+                ui::segment(("ext-where", i), None, at.label(), self.ms.at == at).on_click(
+                    cx.listener(move |this, _, _, cx| {
+                        this.ms.at = at;
+                        this.load_repo_has(cx);
+                        cx.notify();
+                    }),
+                ),
+            );
+        }
+        Some(
+            div()
+                .flex()
+                .flex_col()
+                .gap(crate::ui::sp(6.))
+                .child(ui::overline("Install in"))
+                .child(div().flex().child(picker)),
+        )
+    }
+
     fn render_install_form(&self, installed: bool, cx: &mut Context<Self>) -> Option<Div> {
         let ins = self.ms.installing.as_ref()?;
         let s = &ins.server;
@@ -1879,9 +2038,13 @@ impl ExtensionsView {
                             .ty(Type::Caption)
                             .text_color(theme::text_subtle())
                             .child(format!(
-                                "Added as “{}”{}, for every project. It runs{}:",
-                                s.short_name(),
+                                "Added as “{}”{}, {}. It runs{}:",
+                                self.server_name(&s.short_name(), sign_in),
                                 self.on_target(),
+                                match self.targets.target {
+                                    Some(_) => Where::User.done(),
+                                    None => self.ms.at.done(),
+                                },
                                 if self.targets.target.is_some() {
                                     " there"
                                 } else {
@@ -1897,7 +2060,14 @@ impl ExtensionsView {
                             .bg(theme::background())
                             .ty(Type::Mono)
                             .text_color(theme::text_muted())
-                            .child(marketplace::preview(&s.short_name(), method)),
+                            .child(marketplace::preview(
+                                &self.server_name(&s.short_name(), sign_in),
+                                method,
+                                match self.targets.target {
+                                    Some(_) => Where::User.claude(),
+                                    None => self.ms.at.claude(),
+                                },
+                            )),
                     ),
             )
             .child(
@@ -1918,6 +2088,16 @@ impl ExtensionsView {
             ),
         )
     }
+}
+
+/// Whether a field holds a key. Registry entries do not always mark one as
+/// secret, so its name counts too.
+fn looks_secret(input: &Input) -> bool {
+    let name = input.name.to_lowercase();
+    input.secret
+        || ["key", "token", "secret", "password", "auth", "credential"]
+            .iter()
+            .any(|w| name.contains(w))
 }
 
 /// Lines in the virtual list: the featured strip, the lines of cards, "Load more".

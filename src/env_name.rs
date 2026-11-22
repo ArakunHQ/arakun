@@ -336,6 +336,8 @@ fn program(agent: AgentKind) -> Result<PathBuf> {
         AgentKind::OpenCode => agent::opencode_bin(),
         AgentKind::Devin => agent::devin_bin(),
         AgentKind::Cursor => agent::cursor_bin(),
+        // agy has no one-shot mode to answer with.
+        AgentKind::Antigravity => bail!("Antigravity cannot name branches"),
         AgentKind::WorkersAi => bail!("Workers AI has no CLI to run"),
     }
 }
@@ -459,6 +461,7 @@ fn plan(agent: AgentKind, model: &str, dir: &Path) -> Result<Plan> {
             plan.args.push("--print".into());
             plan.prompt_file = Some(prompt);
         }
+        AgentKind::Antigravity => bail!("Antigravity cannot name branches"),
         AgentKind::WorkersAi => bail!("Workers AI has no CLI to run"),
     }
     Ok(plan)

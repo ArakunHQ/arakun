@@ -23,6 +23,7 @@ pub mod log;
 mod loops;
 pub mod markdown;
 pub mod marketplace;
+pub mod mirror;
 pub mod notes;
 pub mod opencode_plan;
 pub mod plan;
@@ -47,11 +48,11 @@ pub mod workers_ai;
 
 pub use kind::AgentKind;
 pub use launch::{
-    adapter_install, child_path_env, claude_cli, claude_code_binary, codex_cli, codex_env_key,
-    codex_sign_in, cursor_bin, cursor_env_key, cursor_signed_in, devin_bin, devin_env_key,
-    devin_signed_in, droid_bin, install_adapter, login_command, logout_command,
-    opencode_all_models, opencode_bin, opencode_go_login_command, opencode_models,
-    opencode_providers, which,
+    adapter_install, agy_bin, antigravity_env_key, antigravity_signed_in, child_path_env,
+    claude_cli, claude_code_binary, codex_cli, codex_env_key, codex_sign_in, cursor_bin,
+    cursor_env_key, cursor_signed_in, devin_bin, devin_env_key, devin_signed_in, droid_bin,
+    install_adapter, login_command, logout_command, opencode_all_models, opencode_bin,
+    opencode_go_login_command, opencode_models, opencode_providers, which,
 };
 pub use markdown::{copy_with_feedback, was_copied};
 pub use selection::{TextMap, mark_color};

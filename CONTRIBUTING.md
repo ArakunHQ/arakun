@@ -93,9 +93,11 @@ off, and do not add code behind them.
 CI runs the checks below that a pull request can affect. A change to docs, `iso/` or
 `tools/` (apart from `tools/rustfmt.sh` and the layout audit) alone skips the Rust
 jobs, the relay job runs only when `relay/`, `phone/` or CI itself changes, the teams
-job only when `teams/` or CI itself changes, the Android job only when `android/`,
-`phone/`, the mascot's drawing, the fonts or CI itself changes, cargo-deny runs only when `Cargo.toml`,
-`Cargo.lock` or `deny.toml` changes, and zizmor runs only when `.github/` changes.
+job only when `teams/` or CI itself changes, the iOS job only when `ios/`, `phone/`,
+the mascot's drawing or the fonts in `assets/`, or CI itself changes (a change to `ios/`
+alone skips the Rust jobs), the Android job likewise for `android/`, cargo-deny runs only
+when `Cargo.toml`, `Cargo.lock` or `deny.toml` changes, and zizmor runs only when
+`.github/` changes.
 
 CI is the gate, not your machine. Before you push, run the quick checks for what you
 changed: `tools/rustfmt.sh --check` and clippy for Rust, and the tests of the modules
@@ -122,6 +124,11 @@ cargo deny check
 
 # teams/ changed
 (cd teams && npm ci && npx tsc --noEmit && npx vitest run)
+
+# ios/ changed (macOS with Xcode; brew install xcodegen)
+(cd ios/ArakunKit && swift test)
+(cd ios && xcodegen generate && xcodebuild build -quiet -project Arakun.xcodeproj \
+  -scheme Arakun -destination "generic/platform=iOS Simulator" CODE_SIGNING_ALLOWED=NO)
 
 # android/ changed (JDK 17 and the Android SDK)
 (cd android && ./gradlew :kit:test :app:testDebugUnitTest :app:lintDebug :app:assembleDebug)
@@ -189,8 +196,9 @@ lefthook install
 - **On commit:** clippy if Rust files changed, the relay's types if `relay/` changed,
   the teams Worker's types if `teams/` changed, and the phone tests if `phone/` or
   `core/src/phone/` changed. They check the files on disk, not only what you staged.
-- **On push:** `cargo test`, the relay tests, the teams tests and the Android app's
-  tests, lint and build, if the commits you push change those parts.
+- **On push:** `cargo test`, the relay tests, the teams tests, on macOS the iOS
+  protocol tests (`swift test` in `ios/ArakunKit`), and the Android app's tests, lint
+  and build, if the commits you push change those parts.
 - **On the commit message:** the Conventional Commits check (see
   [Pull requests](#pull-requests)).
 
@@ -212,8 +220,9 @@ tools/bench/bench.py compare target/bench/before.json target/bench/after.json --
 tools/bench/bench.py agent --tasks fix-bug --model haiku    # Claude Code on a task, in Arakun
 ```
 
-`perf` plays scenarios (palette, sidebar, zoom, scrolling, a terminal flood) in a test
-Arakun (`arakun dev`, Linux and macOS) and reads the time GPUI took for each frame.
+`perf` plays scenarios (palette, sidebar, zoom, scrolling, a terminal flood, on Linux a session
+at work) in a test Arakun (`arakun dev`, Linux and macOS) and reads the time GPUI took
+for each frame.
 `agent` gives Claude Code the coding tasks in `tools/bench/tasks/`, in Arakun and, with
 `--runner arakun,claude`, as bare `claude -p`, and scores each run with tests the
 agent never saw. It uses your Claude account or API key, so it costs money. The
@@ -251,6 +260,17 @@ tools/bench/releases.sh v0.10.0 v0.11.1       # the same on your own Linux machi
   on.
 - **Docs.** If you change a command, a flag, a shortcut or a storage path, update the
   README (and [docs/windows.md](docs/windows.md) if it is different on Windows).
+
+### The iOS app
+
+- `ios/ArakunKit` is the phone page's protocol in Swift: a change to its encryption,
+  framing or messages must match `core/src/phone` and `phone/`, and its tests read
+  `phone/test/vectors`.
+- Pairing credentials stay in the Keychain (`ios/Arakun/Keychain.swift`), never in
+  `UserDefaults` or logs.
+- Views take colors, fonts and corners from `ios/Arakun/Theme.swift`, never
+  hand-written values.
+- The `-demo` mode is behind `#if DEBUG` and must not reach a release build.
 
 ### UI changes
 
@@ -350,9 +370,9 @@ that keeps one on purpose goes on its allow-list.
   review bot) run: cubic reviews drafts too, so its comments are usually waiting when the
   checks are. Once the required checks pass, mark it ready with `gh pr ready` or the
   button on GitHub. `tools/wait-checks.sh` waits for them, for the macOS job only
-  when the diff touches macOS code, and for the Android job only when the diff touches
-  what it builds (the paths under "Checks"). Don't wait for the other checks (macOS for other
-  changes, CodeQL), which can queue for a long time. Don't wait for the **Human approval**
+  when the diff touches macOS code, and for the iOS or Android job only when the diff
+  touches what that job builds (the paths under "Checks"). Don't wait for the other checks
+  (macOS for other changes, CodeQL), which can queue for a long time. Don't wait for the **Human approval**
   status either: for a pull request from outside the team it is required, but it only
   resolves after a person approves, and marking ready is what asks for the review. It
   stays a merge gate, not a pre-ready one. The Reviewers workflow asks people to review
@@ -377,6 +397,10 @@ that keeps one on purpose goes on its allow-list.
 - **Keep the branch up to date** with `main`, and make sure the required checks pass before you
   ask for a review. If a check fails and you think it is not your change, say so in the pull
   request.
+- **A version bump** also adds the release's changelog entry,
+  `release-notes/v<version>.md`, written for people who use the app. The **Changelog
+  entry** check fails the pull request without it. See
+  [release-notes/README.md](release-notes/README.md).
 - **Stack pull requests** when one step needs another that is not merged yet. See
   [Stacked pull requests](#stacked-pull-requests).
 - **Coding agents are welcome.** Arakun is a tool for working with them, after all. You

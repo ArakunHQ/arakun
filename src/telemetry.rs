@@ -21,6 +21,12 @@
 //! panicking thread, since the process may not outlive it. The panic hook
 //! itself is `crash`'s, which also keeps a crash log on this machine whatever
 //! the answer was.
+//!
+//! Feedback is different. A survey response the user sends on purpose (user
+//! and error feedback) goes out even if usage is off, because pressing Send is
+//! the consent (`feedback_allowed`). Agent feedback and popover surveys still
+//! need usage. `DO_NOT_TRACK` and `ARAKUN_TELEMETRY=0` block all of it, and a
+//! response never waits in `hold`.
 
 use std::cell::Cell;
 use std::collections::VecDeque;
@@ -124,7 +130,7 @@ fn env() -> EnvChoice {
 }
 
 /// Whether this process may never send anything, whatever the user chose.
-fn blocked() -> bool {
+pub(crate) fn blocked() -> bool {
     cfg!(test)
         || KEY.is_empty()
         || crate::dev::size().is_some()
@@ -208,14 +214,123 @@ fn apply(choice: Consent) {
     USAGE.store(choice.usage, Ordering::Relaxed);
     // What was queued while a choice was on is not sent once it is off.
     lock(&queue().events).retain(|e| allowed(e, choice));
-    if (choice.crashes || choice.usage)
-        && STARTED.set(()).is_ok()
+    if choice.crashes || choice.usage {
+        start_sender();
+    }
+}
+
+fn start_sender() {
+    if STARTED.set(()).is_ok()
         && let Err(e) = std::thread::Builder::new()
             .name("telemetry".into())
             .spawn(send_loop)
     {
         eprintln!("arakun: telemetry not started: {e}");
     }
+}
+
+/// Where a survey response comes from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Source {
+    User,
+    Error,
+    Agent,
+    Popover,
+}
+
+impl Source {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Source::User => "user",
+            Source::Error => "error",
+            Source::Agent => "agent",
+            Source::Popover => "popover",
+        }
+    }
+
+    /// Whether the person pressed Send themselves, which is their consent.
+    fn on_purpose(self) -> bool {
+        matches!(self, Source::User | Source::Error)
+    }
+}
+
+/// Why a response was not sent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Refused {
+    /// `DO_NOT_TRACK` or `ARAKUN_TELEMETRY=0`.
+    Blocked,
+    NoUsage,
+    DevBuild,
+}
+
+impl std::fmt::Display for Refused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Refused::Blocked => "Telemetry is turned off by DO_NOT_TRACK or ARAKUN_TELEMETRY=0.",
+            Refused::NoUsage => "Usage telemetry is off, so this was not sent.",
+            Refused::DevBuild => "Debug builds and arakun dev send nothing.",
+        })
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Blocked {
+    No,
+    Env,
+    Dev,
+}
+
+fn blocked_by() -> Blocked {
+    if env() == EnvChoice::Off {
+        Blocked::Env
+    } else if blocked() {
+        Blocked::Dev
+    } else {
+        Blocked::No
+    }
+}
+
+/// The consent table for survey responses, apart from the live state so a
+/// test can reach every row.
+fn feedback_decision(src: Source, blocked: Blocked, consent: Consent) -> Result<(), Refused> {
+    match blocked {
+        Blocked::Env => return Err(Refused::Blocked),
+        Blocked::Dev => return Err(Refused::DevBuild),
+        Blocked::No => {}
+    }
+    if src.on_purpose() || consent.usage {
+        Ok(())
+    } else {
+        Err(Refused::NoUsage)
+    }
+}
+
+/// Whether a response from `src` may be sent now.
+pub fn feedback_allowed(src: Source) -> Result<(), Refused> {
+    feedback_decision(src, blocked_by(), effective())
+}
+
+/// A top-level field on a queued event, set only by `send_feedback`. It is
+/// outside `properties` so no caller of `capture` can forge it, and it is
+/// stripped before the event is posted (`payload`).
+const FEEDBACK_MARK: &str = "arakun_feedback_source";
+
+/// The event for a response from `src`. The source comes from the parameter,
+/// whatever `props` says.
+fn feedback_event(event: &str, src: Source, mut props: Map<String, Value>) -> Value {
+    props.insert("source".into(), src.as_str().into());
+    let mut e = event_json(event, props);
+    e[FEEDBACK_MARK] = src.as_str().into();
+    e
+}
+
+/// Sends a survey response. It never waits in `hold`: user and error feedback
+/// goes out even while the first-launch question is open.
+pub fn send_feedback(event: &str, src: Source, props: Map<String, Value>) -> Result<(), Refused> {
+    feedback_allowed(src)?;
+    enqueue(feedback_event(event, src, props));
+    start_sender();
+    Ok(())
 }
 
 /// Queues a usage event. `props` must say nothing about the user's work: a
@@ -227,6 +342,12 @@ pub fn capture(event: &str, props: &[(&str, &str)]) {
 /// `capture` with counts too, sent as numbers so PostHog can sum and
 /// average them.
 pub fn capture_with(event: &str, props: &[(&str, &str)], counts: &[(&str, u64)]) {
+    // A response must go through `send_feedback`, which checks its source.
+    debug_assert!(event != events::SURVEY_SENT, "use send_feedback");
+    if event == events::SURVEY_SENT {
+        return;
+    }
+    note_event(event);
     let usage = USAGE.load(Ordering::Relaxed);
     if !usage && !HOLDING.load(Ordering::Relaxed) {
         return;
@@ -244,6 +365,32 @@ pub fn capture_with(event: &str, props: &[(&str, &str)], counts: &[(&str, u64)])
     } else {
         hold(event);
     }
+}
+
+/// Most event names kept; a popover survey names a handful.
+const SEEN_EVENTS_MAX: usize = 256;
+
+fn seen_names() -> &'static Mutex<std::collections::HashSet<String>> {
+    static SEEN: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+    SEEN.get_or_init(Default::default)
+}
+
+/// Remembers a name, never its properties, and before the consent check: a
+/// survey can ask for an event that was not sent.
+fn note_event(name: &str) {
+    let mut set = seen_names().lock().unwrap_or_else(|e| e.into_inner());
+    if set.len() < SEEN_EVENTS_MAX {
+        set.insert(name.to_string());
+    }
+}
+
+/// The names of the events captured since launch, whether or not they were
+/// sent. Popover surveys use it for their event conditions.
+pub(crate) fn seen_events() -> std::collections::HashSet<String> {
+    seen_names()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
 }
 
 fn held() -> &'static Mutex<Vec<Value>> {
@@ -274,6 +421,8 @@ fn release_held(send: bool) {
 pub fn quit() {
     let minutes = LAUNCHED.get().map_or(0, |t| t.elapsed().as_secs() / 60);
     capture_with(events::APP_QUIT, &[], &[("minutes_open", minutes)]);
+    // Before the flush: a kill during its wait must not look like a crash.
+    crate::crash::mark_clean_exit();
     flush();
 }
 
@@ -282,9 +431,11 @@ pub fn quit() {
 /// `message` is sent (`category`), never its text: an agent's error can hold
 /// a project's name or a credential no scrubbing would recognise. `props` must
 /// hold only fixed labels, numbers and flags for the same reason.
-pub fn error(kind: &'static str, message: &str, props: &[(&str, Value)]) {
+///
+/// Returns the event's id, or None when nothing was sent.
+pub fn error(kind: &'static str, message: &str, props: &[(&str, Value)]) -> Option<String> {
     if !CRASHES.load(Ordering::Relaxed) {
-        return;
+        return None;
     }
     let mut map: Map<String, Value> = props
         .iter()
@@ -299,7 +450,10 @@ pub fn error(kind: &'static str, message: &str, props: &[(&str, Value)]) {
             "mechanism": {"type": "generic", "handled": true, "synthetic": false},
         }]),
     );
-    enqueue(event_json("$exception", map));
+    let event = event_json("$exception", map);
+    let id = event["uuid"].as_str().map(str::to_string);
+    enqueue(event);
+    id
 }
 
 /// Sends what is queued, waiting at most a couple of seconds.
@@ -316,6 +470,11 @@ fn flush() {
 fn allowed(event: &Value, choice: Consent) -> bool {
     if event["event"] == "$exception" {
         choice.crashes
+    } else if event["event"] == events::SURVEY_SENT {
+        // Feedback the person sent on purpose is its own consent, but only
+        // when `send_feedback` marked it so.
+        let src = event[FEEDBACK_MARK].as_str();
+        matches!(src, Some("user" | "error")) || choice.usage
     } else {
         choice.usage
     }
@@ -329,7 +488,7 @@ fn current() -> Consent {
 }
 
 /// What an agent's error was, as one of a few fixed labels.
-fn category(message: &str) -> &'static str {
+pub(crate) fn category(message: &str) -> &'static str {
     let m = message.to_ascii_lowercase();
     let has = |words: &[&str]| words.iter().any(|w| m.contains(w));
     if has(&[
@@ -397,6 +556,7 @@ pub mod events {
     pub const ONBOARDING_FINISHED: &str = "onboarding finished";
     pub const APP_QUIT: &str = "app quit";
     pub const UPDATE_ASKED: &str = "update asked";
+    pub const SURVEY_SENT: &str = "survey sent";
 }
 
 // ---- events -----------------------------------------------------------------
@@ -432,12 +592,32 @@ fn event_json(name: &str, mut props: Map<String, Value>) -> Value {
         .map_or(0, |d| d.as_millis() as u64);
     json!({
         "event": name,
+        "uuid": uuid_v4(),
         "distinct_id": install_id(),
         "properties": props,
         // When it happened: an event can wait for the first answer, or for
         // the next batch, before it is sent.
         "timestamp": timestamp(now),
     })
+}
+
+/// A random version 4 UUID, which PostHog keeps as the event's id.
+pub(crate) fn uuid_v4() -> String {
+    let mut b = [0u8; 16];
+    // A failed read leaves zeros: still well formed, and PostHog drops a
+    // repeat, so nothing worse than a lost event.
+    let _ = getrandom::fill(&mut b);
+    b[6] = (b[6] & 0x0f) | 0x40;
+    b[8] = (b[8] & 0x3f) | 0x80;
+    let h: String = b.iter().map(|x| format!("{x:02x}")).collect();
+    format!(
+        "{}-{}-{}-{}-{}",
+        &h[..8],
+        &h[8..12],
+        &h[12..16],
+        &h[16..20],
+        &h[20..]
+    )
 }
 
 /// `unix_ms` as RFC 3339 in UTC, as PostHog's capture API takes it.
@@ -456,7 +636,7 @@ pub fn timestamp(unix_ms: u64) -> String {
 
 /// A random id for this install, made on first use. Deleting the file starts
 /// a new one.
-fn install_id() -> String {
+pub(crate) fn install_id() -> String {
     static ID: OnceLock<String> = OnceLock::new();
     ID.get_or_init(|| {
         let path = crate::platform::app_dir().join("telemetry-id");
@@ -493,7 +673,7 @@ pub(crate) fn flags_id() -> String {
     .clone()
 }
 
-fn home() -> String {
+pub(crate) fn home() -> String {
     static HOME: OnceLock<String> = OnceLock::new();
     HOME.get_or_init(|| crate::platform::home().to_string_lossy().into_owned())
         .clone()
@@ -552,6 +732,21 @@ thread_local! {
     static SENDING: Cell<bool> = const { Cell::new(false) };
 }
 
+/// The request body: the events without the marker, which is ours alone.
+fn payload(batch: &[&Value]) -> Value {
+    let batch: Vec<Value> = batch
+        .iter()
+        .map(|e| {
+            let mut e = (*e).clone();
+            if let Some(o) = e.as_object_mut() {
+                o.remove(FEEDBACK_MARK);
+            }
+            e
+        })
+        .collect();
+    json!({"api_key": KEY, "batch": batch})
+}
+
 /// Posts `batch`; on failure the events are dropped, as reports are best effort.
 fn send(batch: &[Value], agent: &ureq::Agent) {
     // The answer may have changed since these were queued.
@@ -560,42 +755,35 @@ fn send(batch: &[Value], agent: &ureq::Agent) {
     if batch.is_empty() {
         return;
     }
-    let body = json!({"api_key": KEY, "batch": batch}).to_string();
+    let body = payload(&batch).to_string();
     SENDING.with(|s| s.set(true));
-    let _ = agent
-        .post(format!("{}/batch/", HOST.trim_end_matches('/')))
-        .header("Content-Type", "application/json")
-        .send(body);
+    let url = format!("{}/batch/", HOST.trim_end_matches('/'));
+    let _ = crate::http::json_call(agent, "POST", &url, None, Some(body), 64 * 1024);
     SENDING.with(|s| s.set(false));
 }
 
-fn agent_with(timeout: Duration) -> ureq::Agent {
-    ureq::Agent::config_builder()
-        .timeout_global(Some(timeout))
-        .user_agent(concat!("arakun/", env!("ARAKUN_VERSION")))
-        .build()
-        .into()
-}
-
 fn agent() -> &'static ureq::Agent {
-    static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
-    AGENT.get_or_init(|| agent_with(Duration::from_secs(10)))
+    crate::http::agent(Duration::from_secs(10))
 }
 
 /// For a dying process or one quitting: it must not hang there.
 fn quick_agent() -> &'static ureq::Agent {
-    static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
-    AGENT.get_or_init(|| agent_with(Duration::from_secs(2)))
+    crate::http::agent(Duration::from_secs(2))
 }
 
 // ---- panics -----------------------------------------------------------------
 
 /// Sends a panic right away, from the panicking thread, if the user agreed
-/// to crash reports. `props` come from `panic_props`.
-pub fn send_panic(props: Map<String, Value>) {
+/// to crash reports. `props` come from `panic_props`. Returns the event's id
+/// when it was sent.
+pub fn send_panic(props: Map<String, Value>) -> Option<String> {
     if CRASHES.load(Ordering::Relaxed) && !SENDING.with(Cell::get) {
-        send(&[event_json("$exception", props)], quick_agent());
+        let event = event_json("$exception", props);
+        let id = event["uuid"].as_str().map(str::to_string);
+        send(&[event], quick_agent());
+        return id;
     }
+    None
 }
 
 /// What is known about the panic on this thread, for the crash log and for
@@ -821,6 +1009,12 @@ mod tests {
     const HOME: &str = "/home/ann";
 
     #[test]
+    fn seen_events_keeps_names_even_when_nothing_is_sent() {
+        capture_with("seen-events-probe", &[("secret", "x")], &[]);
+        assert!(seen_events().contains("seen-events-probe"));
+    }
+
+    #[test]
     fn scrub_keeps_plain_words() {
         let s = "initialize failed: connection refused (os error 111)";
         assert_eq!(scrub(s, HOME), s);
@@ -952,6 +1146,142 @@ mod tests {
         assert!(allowed(&crash, only_crashes));
         assert!(!allowed(&usage, only_crashes));
         assert!(!allowed(&crash, Consent::NONE));
+    }
+
+    #[test]
+    fn user_sends_without_usage() {
+        for src in [Source::User, Source::Error] {
+            for consent in [Consent::NONE, Consent::ALL] {
+                assert_eq!(feedback_decision(src, Blocked::No, consent), Ok(()));
+            }
+        }
+    }
+
+    #[test]
+    fn agent_needs_usage() {
+        for src in [Source::Agent, Source::Popover] {
+            let crashes_only = Consent {
+                crashes: true,
+                usage: false,
+            };
+            assert_eq!(
+                feedback_decision(src, Blocked::No, Consent::NONE),
+                Err(Refused::NoUsage)
+            );
+            assert_eq!(
+                feedback_decision(src, Blocked::No, crashes_only),
+                Err(Refused::NoUsage)
+            );
+            assert_eq!(feedback_decision(src, Blocked::No, Consent::ALL), Ok(()));
+        }
+    }
+
+    #[test]
+    fn blocked_refuses_all() {
+        for src in [Source::User, Source::Error, Source::Agent, Source::Popover] {
+            assert_eq!(
+                feedback_decision(src, Blocked::Env, Consent::ALL),
+                Err(Refused::Blocked)
+            );
+            assert_eq!(
+                feedback_decision(src, Blocked::Dev, Consent::ALL),
+                Err(Refused::DevBuild)
+            );
+        }
+    }
+
+    #[test]
+    fn feedback_is_refused_in_tests() {
+        assert_eq!(feedback_allowed(Source::User), Err(Refused::DevBuild));
+    }
+
+    fn marked(src: Source) -> Value {
+        let mut e = event_json(events::SURVEY_SENT, Map::new());
+        e[FEEDBACK_MARK] = src.as_str().into();
+        e
+    }
+
+    #[test]
+    fn feedback_event_passes_send_filter() {
+        for src in [Source::User, Source::Error] {
+            assert!(allowed(&marked(src), Consent::NONE), "{src:?}");
+        }
+        for src in [Source::Agent, Source::Popover] {
+            assert!(!allowed(&marked(src), Consent::NONE), "{src:?}");
+            assert!(allowed(&marked(src), Consent::ALL), "{src:?}");
+        }
+    }
+
+    #[test]
+    fn unmarked_user_response_is_filtered_without_usage() {
+        let props = json!({"source": "user"}).as_object().unwrap().clone();
+        let e = event_json(events::SURVEY_SENT, props);
+        assert!(!allowed(&e, Consent::NONE));
+    }
+
+    #[test]
+    fn capture_cannot_send_survey_sent() {
+        USAGE.store(true, Ordering::Relaxed);
+        let r = std::panic::catch_unwind(|| {
+            capture(
+                events::SURVEY_SENT,
+                &[("source", "user"), ("tag", "cap-test")],
+            );
+        });
+        USAGE.store(false, Ordering::Relaxed);
+        let _ = r;
+        let found = lock(&queue().events)
+            .iter()
+            .any(|e| e["properties"]["tag"] == "cap-test");
+        assert!(!found);
+    }
+
+    #[test]
+    fn send_feedback_source_comes_from_parameter() {
+        let props = json!({"source": "user"}).as_object().unwrap().clone();
+        // In tests everything is refused as a dev build, so decide directly.
+        let e = feedback_event(events::SURVEY_SENT, Source::Agent, props);
+        assert_eq!(e["properties"]["source"], "agent");
+        assert_eq!(e[FEEDBACK_MARK], "agent");
+        assert!(!allowed(&e, Consent::NONE));
+    }
+
+    #[test]
+    fn marker_never_reaches_the_payload() {
+        let batch = [marked(Source::User)];
+        let refs: Vec<&Value> = batch.iter().collect();
+        let body = payload(&refs);
+        assert!(!body.to_string().contains(FEEDBACK_MARK));
+        assert!(batch[0].get(FEEDBACK_MARK).is_some());
+    }
+
+    #[test]
+    fn events_have_a_v4_uuid() {
+        let id = uuid_v4();
+        let b = id.as_bytes();
+        assert_eq!(id.len(), 36);
+        assert_eq!(b[14], b'4');
+        assert!(matches!(b[19], b'8' | b'9' | b'a' | b'b'));
+        assert_ne!(id, uuid_v4());
+        assert_eq!(
+            event_json("x", Map::new())["uuid"].as_str().map(str::len),
+            Some(36)
+        );
+    }
+
+    #[test]
+    fn error_returns_event_uuid() {
+        assert_eq!(error("AgentError", "boom", &[]), None);
+        CRASHES.store(true, Ordering::Relaxed);
+        let id = error("AgentError", "boom", &[]);
+        CRASHES.store(false, Ordering::Relaxed);
+        let id = id.expect("sent");
+        assert_eq!(id.len(), 36);
+        // Take it back out: the queue is shared with other tests.
+        let mut events = lock(&queue().events);
+        let before = events.len();
+        events.retain(|e| e["uuid"] != id.as_str());
+        assert_eq!(events.len(), before - 1);
     }
 
     #[test]

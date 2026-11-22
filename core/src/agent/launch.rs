@@ -1,7 +1,8 @@
 //! Finding (and, for Claude and Codex, installing) the entry point of each agent:
 //! ACP adapters for Claude and Codex, Factory's native `stream-jsonrpc` for Droid
-//! unless `ARAKUN_DROID_ACP=1`, and the ACP servers OpenCode, Devin and Cursor
-//! have themselves (`opencode acp`, `devin acp`, `cursor-agent acp`).
+//! unless `ARAKUN_DROID_ACP=1`, and the ACP servers OpenCode, Devin, Cursor and
+//! Antigravity have themselves (`opencode acp`, `devin acp`, `cursor-agent acp`,
+//! `agy acp`).
 
 use std::ffi::OsString;
 use std::io::Write as _;
@@ -84,12 +85,16 @@ fn extra_dirs() -> Vec<PathBuf> {
 }
 
 /// Where the CLIs land on Windows when the installer's PATH change has not reached arakun
-/// yet: Factory's installer, `npm install -g`, and Claude Code's native installer.
+/// yet: Factory's installer, `npm install -g`, Claude Code's native installer and
+/// Antigravity's.
 #[cfg(windows)]
 fn extra_dirs() -> Vec<PathBuf> {
     let mut dirs = vec![home().join(".local").join("bin"), home().join("bin")];
     if let Some(appdata) = std::env::var_os("APPDATA") {
         dirs.push(PathBuf::from(appdata).join("npm"));
+    }
+    if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+        dirs.push(PathBuf::from(local).join("agy").join("bin"));
     }
     dirs
 }
@@ -113,6 +118,7 @@ pub fn cli_bin(kind: AgentKind) -> Option<PathBuf> {
         AgentKind::Codex => codex_cli(),
         AgentKind::Devin => devin_bin().ok(),
         AgentKind::Cursor => cursor_bin().ok(),
+        AgentKind::Antigravity => agy_bin().ok(),
     }
 }
 
@@ -381,6 +387,7 @@ const HINT: &str = "You are running inside arakun, a desktop app where the user 
          The `arakun` command on your PATH controls its window, acting on this project:\n\
          - `arakun browse -s <url>` shows a web page (for example a dev server you started) beside the chat.\n\
          - `arakun open -s <file[:line]>` shows a file beside the chat, at that line.\n\
+         - `arakun feedback --kind <bug|feature|ux|other> \"<text>\"` tells the Arakun team about a problem or a missing feature in Arakun itself (not in the user's project). Never include code, paths or secrets.\n\
          - `arakun run <command>` starts a long-running command (dev server, watcher) in a terminal \
          the user can see, instead of blocking your own shell. To wait until it is up, put \
          `--port <n>` and/or `--ready <text>` before the command (`arakun run --port 5173 npm run dev`): \
@@ -398,9 +405,9 @@ const HINT: &str = "You are running inside arakun, a desktop app where the user 
          - `arakun check` runs the project's check command, if the user set one. arakun also runs it after \
          each of your turns that edits files and sends you the output when it fails.\n\
          - `arakun fetch <url>` prints a web page as Markdown (`--html` for HTML, `--links` for its links), \
-         loaded in a real browser on Cloudflare (Browser Run), so sites that block curl still answer; \
-         `arakun crawl [--limit N] [--depth N] <url>` reads a whole site the same way. Prefer them to curl \
-         for reading the web; at most one fetch every 10 s.\n\
+         rendered in Cloudflare Browser Run for JavaScript pages; `arakun crawl [--limit N] [--depth N] <url>` \
+         crawls a site the same way (honoring robots.txt and Content Signals). Don't use them to work around \
+         a site's 403, 429 or bot challenge; if a site refuses, stop and tell the user.\n\
          - `arakun shrink -- <command>` runs a command and prints a summary of its output: the \
          failures and result line of a test run, a log's repeated lines collapsed, JSON's outline, \
          a table's header and a few rows. It saves the whole output to a file and prints its path, \
@@ -482,6 +489,40 @@ fn devin_credentials(xdg_data: Option<OsString>, home: &Path) -> PathBuf {
         .unwrap_or_else(|| home.join(".local").join("share"))
         .join("devin")
         .join("credentials.toml")
+}
+
+/// The user's `agy`. Arakun does not install it: Google's installer also sets
+/// up its updates. `ARAKUN_AGY_BIN` picks another binary.
+pub fn agy_bin() -> Result<PathBuf> {
+    let name = std::env::var("ARAKUN_AGY_BIN").unwrap_or_else(|_| "agy".into());
+    which(&name).ok_or_else(|| {
+        anyhow!(
+            "`{name}` was not found on PATH or in ~/.local/bin. Install the Antigravity CLI first ({}).",
+            AgentKind::Antigravity.install_url()
+        )
+    })
+}
+
+/// Whether agy keeps a sign-in file: `~/.gemini/antigravity-cli/antigravity-oauth-token`.
+/// agy uses that file only when there is no system keyring, and Arakun does
+/// not read the keyring, so `false` may still be signed in.
+pub fn antigravity_signed_in() -> bool {
+    antigravity_token(&home()).is_file()
+}
+
+fn antigravity_token(home: &Path) -> PathBuf {
+    home.join(".gemini")
+        .join("antigravity-cli")
+        .join("antigravity-oauth-token")
+}
+
+/// `GEMINI_API_KEY` when the environment has it, for agy's Gemini API sign-in.
+/// Names it, never reads the key out.
+pub fn antigravity_env_key() -> Option<&'static str> {
+    const VAR: &str = "GEMINI_API_KEY";
+    std::env::var_os(VAR)
+        .is_some_and(|v| !v.is_empty())
+        .then_some(VAR)
 }
 
 /// The variable with Devin's API key when the environment has one. Names it,
@@ -953,6 +994,17 @@ pub fn resolve(
                 unset: Vec::new(),
             },
         },
+        // Like Devin, Antigravity takes no system prompt from arakun; it reads
+        // the project's AGENTS.md itself.
+        AgentKind::Antigravity => match custom {
+            Some(spec) => spec?,
+            None => LaunchSpec {
+                program: agy_bin()?,
+                args: vec!["acp".into()],
+                env: Vec::new(),
+                unset: Vec::new(),
+            },
+        },
         // Nothing to start: it runs in arakun (`Connection::in_process`).
         AgentKind::WorkersAi => LaunchSpec {
             program: PathBuf::from("arakun"),
@@ -1177,6 +1229,7 @@ mod tests {
             AgentKind::OpenCode,
             AgentKind::Devin,
             AgentKind::Cursor,
+            AgentKind::Antigravity,
             AgentKind::WorkersAi,
         ] {
             assert_eq!(adapter_install(kind), None);
@@ -1285,6 +1338,24 @@ mod tests {
             devin_credentials(Some("relative".into()), home),
             Path::new("/home/u/.local/share/devin/credentials.toml")
         );
+    }
+
+    #[test]
+    fn antigravity_token_is_under_gemini() {
+        assert_eq!(
+            antigravity_token(Path::new("/home/u")),
+            Path::new("/home/u/.gemini/antigravity-cli/antigravity-oauth-token")
+        );
+    }
+
+    #[test]
+    fn antigravity_signs_in_with_acp_login() {
+        let spec = AgentKind::Antigravity.spec();
+        assert_eq!(
+            command_line(Path::new("/home/u/.local/bin/agy"), spec.login.unwrap()),
+            ["/home/u/.local/bin/agy", "acp", "--login"]
+        );
+        assert_eq!(spec.logout, None);
     }
 
     #[test]

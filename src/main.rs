@@ -10,6 +10,7 @@ mod ascii_face;
 mod attach_picker;
 mod automations_view;
 mod background;
+mod branch_history;
 mod branches;
 mod branches_view;
 #[cfg(feature = "coderlabs")]
@@ -41,6 +42,7 @@ mod github;
 mod github_view;
 mod headless;
 mod history;
+mod http;
 mod island_host;
 mod iso;
 mod iso_view;
@@ -78,6 +80,9 @@ mod site_view;
 mod state;
 mod stored;
 mod subnav;
+mod survey_dialog;
+mod surveys;
+mod tab_layout;
 #[cfg(feature = "coderlabs")]
 mod tasks_view;
 #[cfg(feature = "team")]
@@ -151,6 +156,8 @@ fn main() {
     platform::detach_own_console();
     // After the CLI: `arakun <command>` runs in agents' shells and reports nothing.
     crash::install();
+    // After install, so a panic from here on leaves the marker; reads the last run's first.
+    crash::mark_running();
     // Sends only what the user agreed to; the first launch asks (`ask_telemetry`).
     telemetry::init();
     telemetry::capture(telemetry::events::APP_LAUNCHED, &[]);
@@ -229,6 +236,11 @@ fn main() {
             bind("ctrl-pageup", shell::PrevTab, "Shell"),
             bind("ctrl-shift-pagedown", shell::MoveTabRight, "Shell"),
             bind("ctrl-shift-pageup", shell::MoveTabLeft, "Shell"),
+            bind(
+                "alt-p",
+                shell::TogglePin,
+                "Shell && !Terminal && !TextInput",
+            ),
             bind("ctrl-alt-t", shell::ReopenClosedTab, "Shell && !Terminal"),
             bind("ctrl-1", shell::SelectTab1, "Shell"),
             bind("ctrl-2", shell::SelectTab2, "Shell"),
@@ -351,7 +363,9 @@ fn main() {
             // The setup asks about reports itself; the dialog is for everyone else.
             shell.onboard_if_new(window, cx);
             shell.ask_telemetry(window, cx);
+            shell.ask_after_crash(cx);
             shell.sync_island(window, cx);
+            shell.start_survey_card(window, cx);
             #[cfg(feature = "team")]
             shell.sync_team(window, cx);
             // After the first frame, so warming the syntax colors doesn't

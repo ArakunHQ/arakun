@@ -30,11 +30,6 @@ pub struct State {
     pub rail_w: f32,
     #[serde(default = "panel_w")]
     pub panel_w: f32,
-    /// The Session panel (pull request and subagents), beside the chat.
-    #[serde(default)]
-    pub subagents_open: bool,
-    #[serde(default = "subagents_w")]
-    pub subagents_w: f32,
     #[serde(default = "yes")]
     pub arcade: bool,
     /// `theme::DiffPalette` id.
@@ -72,6 +67,17 @@ pub struct State {
     /// Where the window was when the app last saved, so it opens there again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window: Option<WindowState>,
+    /// The reopened tabs in the order the strip showed them, by `tab_key`.
+    /// Each environment keeps its own tabs too; this says how they mix.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tab_order: Vec<String>,
+    /// How sessions and tabs show (`tab_layout`). Missing in files from
+    /// before it; see `TabLayout::for_state_without_it`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tabs: Option<crate::tab_layout::TabLayout>,
+    /// There was no state file: this is a new install.
+    #[serde(skip)]
+    pub fresh: bool,
 }
 
 /// The window's place and size in screen points, as `gpui::WindowBounds`.
@@ -246,15 +252,10 @@ fn panel_w() -> f32 {
     PANEL_W
 }
 
-fn subagents_w() -> f32 {
-    SUBAGENTS_W
-}
-
 pub const DOCK_HEIGHT: f32 = 260.;
 /// Default widths of the side cards; the state file carries the dragged ones.
 pub const RAIL_W: f32 = 200.;
 pub const PANEL_W: f32 = 260.;
-pub const SUBAGENTS_W: f32 = 360.;
 
 /// Window layout that is not tied to a project.
 #[derive(Clone)]
@@ -265,8 +266,6 @@ pub struct Layout {
     pub panel_open: bool,
     pub rail_w: f32,
     pub panel_w: f32,
-    pub subagents_open: bool,
-    pub subagents_w: f32,
     pub arcade: bool,
     pub diff_palette: crate::theme::DiffPalette,
     pub glass: bool,
@@ -354,6 +353,9 @@ pub struct EnvState {
     /// Cursor settings for the next session, as (key, value).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cursor_settings: Vec<(String, String)>,
+    /// Antigravity settings for the next session, as (key, value).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub antigravity_settings: Vec<(String, String)>,
     /// Workers AI settings for the next session, as (key, value).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub workers_ai_settings: Vec<(String, String)>,
@@ -362,6 +364,10 @@ pub struct EnvState {
     /// Ids of the sessions open as tabs, in order.
     #[serde(default)]
     pub open: Vec<String>,
+    /// Those of them pinned to the title bar. Missing in files from before
+    /// pins: every open session counts as pinned, so none disappears.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pinned: Option<Vec<String>>,
     #[serde(default)]
     pub active_tab: usize,
     /// URLs of the browser tabs, which reopen after the session tabs.
@@ -484,6 +490,49 @@ fn reopened_index(strip: &TabStrip, e: &Environment, id: u64) -> Option<usize> {
     } else {
         None
     }
+}
+
+/// What names a tab that reopens after a restart, across the whole strip: a
+/// session by its id, a browser tab by its environment and its place among
+/// that environment's saved pages. `None` for a tab that does not reopen.
+fn tab_key(strip: &TabStrip, i: usize) -> Option<String> {
+    let tab = &strip.tabs[i];
+    match &tab.kind {
+        TabKind::Session { id, .. } => Some(format!("session:{id}")),
+        _ if is_saved_browser(tab) => {
+            let env = tab.env.as_deref()?;
+            let n = strip.tabs[..i]
+                .iter()
+                .filter(|t| t.is_in(env) && is_saved_browser(t))
+                .count();
+            Some(format!("browser:{n}:{}", env.display()))
+        }
+        _ => None,
+    }
+}
+
+fn tab_order(strip: &TabStrip) -> Vec<String> {
+    (0..strip.tabs.len())
+        .filter_map(|i| tab_key(strip, i))
+        .collect()
+}
+
+/// Puts the reopened tabs back in the order `order` saved. Tabs it does not
+/// name keep their place among each other, after the ones it does.
+fn apply_tab_order(strip: &mut TabStrip, order: &[String]) {
+    if order.is_empty() {
+        return;
+    }
+    let rank: Vec<usize> = (0..strip.tabs.len())
+        .map(|i| {
+            tab_key(strip, i)
+                .and_then(|k| order.iter().position(|o| *o == k))
+                .unwrap_or(usize::MAX)
+        })
+        .collect();
+    let mut tabs: Vec<(usize, Tab)> = rank.into_iter().zip(strip.tabs.drain(..)).collect();
+    tabs.sort_by_key(|(r, _)| *r);
+    strip.tabs = tabs.into_iter().map(|(_, t)| t).collect();
 }
 
 /// The split, kept with the environment whose two tabs it shows.
@@ -648,7 +697,12 @@ fn file() -> PathBuf {
 }
 
 pub fn load() -> State {
-    load_from(&file())
+    let path = file();
+    let fresh = !path.exists();
+    State {
+        fresh,
+        ..load_from(&path)
+    }
 }
 
 /// A file this build can't read (say, from a newer Arakun that knows more
@@ -661,7 +715,6 @@ fn load_from(path: &Path) -> State {
         panel_open: true,
         rail_w: RAIL_W,
         panel_w: PANEL_W,
-        subagents_w: SUBAGENTS_W,
         arcade: true,
         ..Default::default()
     })
@@ -825,6 +878,11 @@ pub fn snapshot_with(
                             .iter()
                             .map(|(s, v)| (s.key().to_string(), v.clone()))
                             .collect(),
+                        antigravity_settings: e
+                            .antigravity_settings
+                            .iter()
+                            .map(|(s, v)| (s.key().to_string(), v.clone()))
+                            .collect(),
                         workers_ai_settings: e
                             .workers_ai_settings
                             .iter()
@@ -859,6 +917,13 @@ pub fn snapshot_with(
                                 _ => None,
                             })
                             .collect(),
+                        pinned: Some(
+                            tabs_of(strip, e)
+                                .into_iter()
+                                .filter(|t| t.pinned)
+                                .filter_map(|t| t.session_id().map(|id| id.to_string()))
+                                .collect(),
+                        ),
                         active_tab: active_session_tab(strip, e),
                         browsers: tabs_of(strip, e)
                             .into_iter()
@@ -885,8 +950,6 @@ pub fn snapshot_with(
         panel_open: layout.panel_open,
         rail_w: layout.rail_w,
         panel_w: layout.panel_w,
-        subagents_open: layout.subagents_open,
-        subagents_w: layout.subagents_w,
         arcade: layout.arcade,
         diff_palette: layout.diff_palette.id().to_string(),
         glass: layout.glass,
@@ -909,6 +972,9 @@ pub fn snapshot_with(
         reduce_motion: crate::ui::motion::choice().id().to_string(),
         background: crate::background::enabled(),
         window: layout.window,
+        tab_order: tab_order(strip),
+        tabs: Some(crate::tab_layout::current()),
+        fresh: false,
     };
     serde_json::to_vec_pretty(&state).unwrap_or_default()
 }
@@ -921,6 +987,13 @@ pub fn restore(state: State) -> (Vec<Project>, usize, Layout, TabStrip) {
     let last_agent = state.last_agent.clone();
     crate::island::set_enabled(!state.island_off);
     crate::background::set_enabled(state.background);
+    // A new install starts on the sidebar tree, which needs a wider sidebar.
+    let fresh = state.fresh && state.tabs.is_none();
+    crate::tab_layout::set(
+        state
+            .tabs
+            .unwrap_or_else(|| crate::tab_layout::TabLayout::for_state_without_it(!state.fresh)),
+    );
     crate::ui::motion::restore(crate::ui::motion::Reduce::from_id(&state.reduce_motion));
     let projects: Vec<Project> = state
         .projects
@@ -972,6 +1045,11 @@ pub fn restore(state: State) -> (Vec<Project>, usize, Layout, TabStrip) {
                         .into_iter()
                         .filter_map(|(k, v)| Setting::from_key(&k).map(|s| (s, v)))
                         .collect();
+                    env.antigravity_settings = e
+                        .antigravity_settings
+                        .into_iter()
+                        .filter_map(|(k, v)| Setting::from_key(&k).map(|s| (s, v)))
+                        .collect();
                     env.workers_ai_settings = e
                         .workers_ai_settings
                         .into_iter()
@@ -1011,14 +1089,16 @@ pub fn restore(state: State) -> (Vec<Project>, usize, Layout, TabStrip) {
                         .iter()
                         .filter_map(|id| {
                             let s = &env.sessions[env.session_index(id)?];
-                            Some(Tab::of(
+                            let mut tab = Tab::of(
                                 &env.path,
                                 s.title.clone(),
                                 TabKind::Session {
                                     agent: s.agent,
                                     id: s.id.clone(),
                                 },
-                            ))
+                            );
+                            tab.pinned = e.pinned.as_ref().is_none_or(|p| p.contains(id));
+                            Some(tab)
                         })
                         .collect();
                     let sessions_open = tabs.len();
@@ -1088,6 +1168,7 @@ pub fn restore(state: State) -> (Vec<Project>, usize, Layout, TabStrip) {
             }
         })
         .collect();
+    apply_tab_order(&mut strip, &state.tab_order);
     let active = state.active_project.min(projects.len().saturating_sub(1));
     // The strip opens on the tab of the environment that was on screen.
     if let Some(shown) = projects
@@ -1112,10 +1193,12 @@ pub fn restore(state: State) -> (Vec<Project>, usize, Layout, TabStrip) {
         dock_height: state.dock_height,
         rail_open: state.rail_open,
         panel_open: state.panel_open,
-        rail_w: state.rail_w,
+        rail_w: if fresh {
+            state.rail_w.max(crate::tab_layout::SIDEBAR_W)
+        } else {
+            state.rail_w
+        },
         panel_w: state.panel_w,
-        subagents_open: state.subagents_open,
-        subagents_w: state.subagents_w,
         arcade: state.arcade,
         diff_palette: crate::theme::DiffPalette::from_id(&state.diff_palette),
         glass: state.glass,
@@ -1371,8 +1454,6 @@ mod tests {
             panel_open: false,
             rail_w: RAIL_W,
             panel_w: PANEL_W,
-            subagents_open: false,
-            subagents_w: SUBAGENTS_W,
             arcade: false,
             diff_palette: crate::theme::DiffPalette::Default,
             glass: false,
@@ -1406,8 +1487,6 @@ mod tests {
             panel_open: true,
             rail_w: RAIL_W,
             panel_w: PANEL_W,
-            subagents_open: false,
-            subagents_w: SUBAGENTS_W,
             arcade: false,
             diff_palette: crate::theme::DiffPalette::Default,
             glass: false,
@@ -1440,8 +1519,6 @@ mod tests {
             panel_open: true,
             rail_w: RAIL_W,
             panel_w: PANEL_W,
-            subagents_open: false,
-            subagents_w: SUBAGENTS_W,
             arcade: false,
             diff_palette: crate::theme::DiffPalette::Default,
             glass: false,
@@ -1477,8 +1554,6 @@ mod tests {
             panel_open: true,
             rail_w: RAIL_W,
             panel_w: PANEL_W,
-            subagents_open: false,
-            subagents_w: SUBAGENTS_W,
             arcade: false,
             diff_palette: crate::theme::DiffPalette::Default,
             glass: false,
@@ -1511,8 +1586,6 @@ mod tests {
             panel_open: true,
             rail_w: RAIL_W,
             panel_w: PANEL_W,
-            subagents_open: false,
-            subagents_w: SUBAGENTS_W,
             arcade: false,
             diff_palette: crate::theme::DiffPalette::Default,
             glass: false,
@@ -1549,8 +1622,6 @@ mod tests {
             panel_open: true,
             rail_w: RAIL_W,
             panel_w: PANEL_W,
-            subagents_open: false,
-            subagents_w: SUBAGENTS_W,
             arcade: false,
             diff_palette: crate::theme::DiffPalette::Default,
             glass: false,
@@ -1572,6 +1643,85 @@ mod tests {
             1,
             "empty drafts are not written"
         );
+    }
+
+    #[test]
+    fn tab_order_survives_a_restart() {
+        let mut project = new_project(Path::new("/tmp/arakun-order-test"));
+        let a = PathBuf::from("/tmp/arakun-order-test");
+        let b = PathBuf::from("/tmp/arakun-order-test-2");
+        project.environments[0].sessions = vec![
+            Session::new("s1".into(), "One".into(), AgentKind::Droid),
+            Session::new("s2".into(), "Two".into(), AgentKind::Droid),
+        ];
+        let mut other = Environment::new(b.clone(), None, false);
+        other.sessions = vec![Session::new("s3".into(), "Three".into(), AgentKind::Droid)];
+        project.environments.push(other);
+        let session = |env: &Path, id: &str| {
+            Tab::of(
+                env,
+                id.to_string(),
+                TabKind::Session {
+                    agent: AgentKind::Droid,
+                    id: id.to_string().into(),
+                },
+            )
+        };
+        let page = Tab::of(
+            &a,
+            "Docs",
+            TabKind::Browser {
+                url: "https://example.com".into(),
+            },
+        );
+        // Mixed across environments, a page between two sessions: the
+        // per-environment lists alone would put them back as s1 s2 docs s3.
+        let mut strip = TabStrip {
+            tabs: vec![
+                session(&a, "s2"),
+                session(&b, "s3"),
+                page,
+                session(&a, "s1"),
+            ],
+            ..Default::default()
+        };
+        strip.tabs[0].pinned = true;
+        let layout = Layout {
+            dock_open: false,
+            dock_height: DOCK_HEIGHT,
+            rail_open: true,
+            panel_open: true,
+            rail_w: RAIL_W,
+            panel_w: PANEL_W,
+            arcade: false,
+            diff_palette: crate::theme::DiffPalette::Default,
+            glass: false,
+            contrast: crate::theme::Contrast::System,
+            grays: crate::theme::Grays::Crisp,
+            type_scale: crate::ui::TypeScale::Compact,
+            rail_usage: [true, true, true, true],
+            ui_zoom: 100,
+            window: None,
+        };
+        let bytes = snapshot_with(std::slice::from_ref(&project), &strip, 0, layout);
+        let (_, _, _, strip) = restore(serde_json::from_slice(&bytes).unwrap());
+        let titles: Vec<&str> = strip.tabs.iter().map(|t| t.title.as_ref()).collect();
+        assert_eq!(titles, ["Two", "Three", "https://example.com", "One"]);
+        let pinned: Vec<bool> = strip.tabs.iter().map(|t| t.pinned).collect();
+        assert_eq!(pinned, [true, false, false, false]);
+
+        // A file from before the order was kept: each environment's tabs in turn.
+        let mut old: State = serde_json::from_slice(&bytes).unwrap();
+        old.tab_order.clear();
+        for e in &mut old.projects[0].envs {
+            e.pinned = None;
+        }
+        let (_, _, _, strip) = restore(old);
+        let titles: Vec<&str> = strip.tabs.iter().map(|t| t.title.as_ref()).collect();
+        assert_eq!(titles, ["Two", "One", "https://example.com", "Three"]);
+        // From before pins, every open session stays in the bar.
+        let pinned: Vec<bool> = strip.tabs.iter().map(|t| t.pinned).collect();
+        assert_eq!(pinned, [true, true, false, true]);
     }
 
     #[test]
@@ -1616,8 +1766,6 @@ mod tests {
             panel_open: true,
             rail_w: RAIL_W,
             panel_w: PANEL_W,
-            subagents_open: false,
-            subagents_w: SUBAGENTS_W,
             arcade: false,
             diff_palette: crate::theme::DiffPalette::Default,
             glass: false,

@@ -275,6 +275,7 @@ impl Shell {
             Piece::active(),
             Piece::User,
             Piece::Usage,
+            Piece::Help,
             Piece::Settings,
             Piece::Mascot,
         ]

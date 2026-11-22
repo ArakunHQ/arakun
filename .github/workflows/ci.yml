@@ -54,6 +54,7 @@ jobs:
       rust: ${{ steps.diff.outputs.rust }}
       relay: ${{ steps.diff.outputs.relay }}
       teams: ${{ steps.diff.outputs.teams }}
+      ios: ${{ steps.diff.outputs.ios }}
       android: ${{ steps.diff.outputs.android }}
     steps:
       - name: Sort the changed files
@@ -69,13 +70,13 @@ jobs:
         run: |
           if [ "$MAIN_PASSED" = true ]; then
             echo "::notice::CI already passed on main for $AFTER, so every job skips"
-            { echo rust=false; echo relay=false; echo teams=false; echo android=false; } >> "$GITHUB_OUTPUT"
+            { echo rust=false; echo relay=false; echo teams=false; echo ios=false; echo android=false; } >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
           everything() {
             echo "::notice::$1, so every job runs"
-            { echo rust=true; echo relay=true; echo teams=true; echo android=true; } >> "$GITHUB_OUTPUT"
+            { echo rust=true; echo relay=true; echo teams=true; echo ios=true; echo android=true; } >> "$GITHUB_OUTPUT"
             exit 0
           }
 
@@ -100,22 +101,25 @@ jobs:
           rust=false
           relay=false
           teams=false
+          ios=false
           android=false
           while IFS= read -r f; do
             [ -n "$f" ] || continue
             case "$f" in
               # How CI itself runs: test everything with it.
-              .github/workflows/ci.yml | .github/actions/*) rust=true relay=true teams=true android=true ;;
+              .github/workflows/ci.yml | .github/actions/*) rust=true relay=true teams=true ios=true android=true ;;
               # The relay job also runs the phone tests.
               relay/*) relay=true ;;
               teams/*) teams=true ;;
               # The app embeds phone/ (rust_embed) and tests against its vectors,
-              # as the Android app's protocol tests do.
-              phone/*) rust=true relay=true android=true ;;
+              # as the iOS and Android apps' protocol tests do.
+              phone/*) rust=true relay=true ios=true android=true ;;
+              # The iOS app alone: nothing the Rust build reads.
+              ios/*) ios=true ;;
               # The Android app alone: nothing the Rust build reads.
               android/*) android=true ;;
-              # The Android app takes the mascot's drawing and the fonts from assets/.
-              assets/brand/mascot.json | assets/fonts/*) rust=true android=true ;;
+              # The iOS and Android apps read the mascot's drawing and the fonts from assets/.
+              assets/brand/mascot.json | assets/fonts/*) rust=true ios=true android=true ;;
               # The browser job prepares CEF with it.
               tools/install-cef.sh) rust=true ;;
               # The Clippy job runs it to check the formatting.
@@ -126,15 +130,15 @@ jobs:
               tools/layout_audit.py | tools/layout-audit-fixtures/*) rust=true ;;
               # Nothing the Rust build or its tests read. Anything not listed
               # here, such as a new top-level folder, runs the Rust jobs.
-              docs/* | iso/* | tools/* | .claude/* | .github/* | LICENSE | NOTICE | .gitignore | deny.toml) ;;
+              docs/* | iso/* | tools/* | .claude/* | .github/* | LICENSE | NOTICE | .gitignore | deny.toml | cubic.yaml) ;;
               */*) rust=true ;;
               *.md) ;;
               *) rust=true ;;
             esac
           done <<< "$files"
 
-          echo "rust=$rust relay=$relay teams=$teams android=$android"
-          { echo "rust=$rust"; echo "relay=$relay"; echo "teams=$teams"; echo "android=$android"; } >> "$GITHUB_OUTPUT"
+          echo "rust=$rust relay=$relay teams=$teams ios=$ios android=$android"
+          { echo "rust=$rust"; echo "relay=$relay"; echo "teams=$teams"; echo "ios=$ios"; echo "android=$android"; } >> "$GITHUB_OUTPUT"
 
   # Clippy and the tests build different artifacts (metadata vs. code), so they
   # run side by side instead of one after the other.
@@ -483,10 +487,51 @@ jobs:
       - run: npx tsc --noEmit
       - run: npx vitest run
 
+  # The iOS app (ios/): its protocol package's tests, which check the Swift
+  # crypto against phone/test/vectors, and an unsigned build for the
+  # simulator, so a change to the app or what it reads cannot break it
+  # unnoticed. Not a required check: it runs only when those files change,
+  # and tools/wait-checks.sh waits for it then. On GitHub's macOS runners, as
+  # the macOS job, because Depot's are few. ios-release.yml signs and uploads.
+  ios:
+    name: iOS (Swift tests and simulator build)
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.ios != 'false' }}
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Xcode
+        run: xcodebuild -version
+
+      - name: swift test
+        working-directory: ios/ArakunKit
+        run: swift test
+
+      # The .xcodeproj is generated, not checked in.
+      - name: xcodegen
+        working-directory: ios
+        run: |
+          brew install xcodegen
+          xcodegen generate
+
+      - name: Build for the simulator
+        working-directory: ios
+        run: >-
+          xcodebuild build -quiet
+          -project Arakun.xcodeproj -scheme Arakun
+          -destination "generic/platform=iOS Simulator"
+          -derivedDataPath build
+          CODE_SIGNING_ALLOWED=NO
+
   # The Android app (android/): the protocol's tests, which check the Kotlin
   # crypto against phone/test/vectors and play a relay over a real socket, then
-  # the app's lint and a debug build. Not a required check: it runs only when
-  # those files change, and tools/wait-checks.sh waits for it then.
+  # the app's tests, lint, a debug build and an unsigned release bundle. Not a
+  # required check: it runs only when those files change, and
+  # tools/wait-checks.sh waits for it then. android-release.yml signs and uploads.
   android:
     name: Android (Kotlin tests, lint and build)
     needs: changes

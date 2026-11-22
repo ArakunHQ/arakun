@@ -371,6 +371,17 @@ impl ExtensionsView {
         cx.notify();
     }
 
+    /// A server added things by itself (a mirror): what it said is old.
+    pub fn server_changed(&mut self, server: &str, cx: &mut Context<Self>) {
+        if let Some(r) = self.targets.remote.get_mut(server) {
+            r.changed();
+            if self.targets.target.as_deref() == Some(server) {
+                self.ask_remote(false, cx);
+            }
+            cx.notify();
+        }
+    }
+
     /// An error a server sent. Taken (true) when it is about what Discover
     /// asked and Discover was waiting on that server.
     pub fn server_error(&mut self, server: &str, msg: &Value, cx: &mut Context<Self>) -> bool {

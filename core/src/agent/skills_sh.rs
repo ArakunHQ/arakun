@@ -24,7 +24,7 @@ const MAX_BYTES: u64 = 25 << 20;
 /// SKILL.md files read to match a skill by its front matter, when no folder has its name.
 const MAX_PROBES: usize = 25;
 
-#[derive(Clone, Debug, PartialEq, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SkillEntry {
     /// `owner/repo/skill`.
     pub id: String,
@@ -367,7 +367,7 @@ fn check_size(found: &SkillSource) -> Result<()> {
 }
 
 /// The skill's folder name: one plain path component.
-fn folder_name(skill: &str) -> Result<&str> {
+pub(super) fn folder_name(skill: &str) -> Result<&str> {
     let ok = !skill.is_empty()
         && !skill.starts_with('.')
         && skill

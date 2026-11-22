@@ -6,8 +6,8 @@
 
 use tiny_skia::{
     Color, FillRule, GradientStop, LineCap, LineJoin, LinearGradient, Paint as SkPaint,
-    PathBuilder, Pixmap, PixmapPaint, Point, RadialGradient, SpreadMode, Stroke, StrokeDash,
-    Transform,
+    PathBuilder, Pixmap, PixmapMut, PixmapPaint, PixmapRef, Point, RadialGradient, SpreadMode,
+    Stroke, StrokeDash, Transform,
 };
 
 use super::svg::{Palette, Rgb};
@@ -50,10 +50,6 @@ fn color(c: Rgb, alpha: f32) -> Color {
 
 /// Paints `items` on the palette's ground into a `w`×`h` pixmap. `line` is
 /// the stroke width in pixels (1.25 points times the display scale).
-///
-/// A run of items on one layer that is fading is drawn opaque into a pixmap
-/// of its own and laid down once at the layer's opacity, the way a browser
-/// fades a `<g opacity>`.
 pub fn frame(
     items: &[Item],
     palette: &Palette,
@@ -62,58 +58,105 @@ pub fn frame(
     fit: Fit,
     line: f32,
 ) -> Option<Pixmap> {
-    let mut pixmap = Pixmap::new(w.max(1), h.max(1))?;
-    pixmap.fill(color(palette.ground, 1.));
-    let mut rest = items;
-    while let Some(first) = rest.first() {
-        let n = rest.iter().take_while(|i| i.layer == first.layer).count();
-        let (run, tail) = rest.split_at(n);
-        rest = tail;
-        if first.alpha <= 0. {
-            continue;
+    let mut frames = Frames::default();
+    frames.draw(items, palette, w, h, fit, line)?;
+    frames.frame
+}
+
+/// The buffers for drawing one frame after another. A playing scene draws
+/// dozens of frames a second, and a fresh full-size pixmap for each one
+/// costs an allocation and a page-zeroing pass that the next fill repeats.
+#[derive(Default)]
+pub struct Frames {
+    frame: Option<Pixmap>,
+    /// Scratch for a fading layer, sized to the largest one so far.
+    layer: Vec<u8>,
+}
+
+impl Frames {
+    /// [`frame`], drawn into the buffer of the last call when the size is
+    /// the same. A run of items on one layer that is fading is drawn opaque
+    /// into a pixmap of its own and laid down once at the layer's opacity,
+    /// the way a browser fades a `<g opacity>`.
+    pub fn draw(
+        &mut self,
+        items: &[Item],
+        palette: &Palette,
+        w: u32,
+        h: u32,
+        fit: Fit,
+        line: f32,
+    ) -> Option<&Pixmap> {
+        let (w, h) = (w.max(1), h.max(1));
+        if self
+            .frame
+            .as_ref()
+            .is_none_or(|p| p.width() != w || p.height() != h)
+        {
+            self.frame = Some(Pixmap::new(w, h)?);
         }
-        if first.alpha >= 1. {
-            for item in run {
-                draw(&mut pixmap, item, palette, fit, line, (0., 0.));
+        let pixmap = self.frame.as_mut()?;
+        pixmap.fill(color(palette.ground, 1.));
+        let mut rest = items;
+        while let Some(first) = rest.first() {
+            let n = rest.iter().take_while(|i| i.layer == first.layer).count();
+            let (run, tail) = rest.split_at(n);
+            rest = tail;
+            if first.alpha <= 0. {
+                continue;
             }
-            continue;
+            if first.alpha >= 1. {
+                let mut target = pixmap.as_mut();
+                for item in run {
+                    draw(&mut target, item, palette, fit, line, (0., 0.));
+                }
+                continue;
+            }
+            let Some(b) = super::bounds(run) else {
+                continue;
+            };
+            let pad = line * 2.;
+            let x0 = ((fit.ox + b[0] * fit.k - pad).floor()).max(0.);
+            let y0 = ((fit.oy + b[1] * fit.k - pad).floor()).max(0.);
+            let x1 = ((fit.ox + b[2] * fit.k + pad).ceil()).min(w as f32);
+            let y1 = ((fit.oy + b[3] * fit.k + pad).ceil()).min(h as f32);
+            if x1 <= x0 || y1 <= y0 {
+                continue;
+            }
+            let (lw, lh) = ((x1 - x0) as u32, (y1 - y0) as u32);
+            let len = lw as usize * lh as usize * 4;
+            // Cleared to transparent; growing it is the only allocation.
+            self.layer.clear();
+            self.layer.resize(len, 0);
+            let Some(mut layer) = PixmapMut::from_bytes(&mut self.layer, lw, lh) else {
+                continue;
+            };
+            for item in run {
+                draw(&mut layer, item, palette, fit, line, (x0, y0));
+            }
+            let Some(layer) = PixmapRef::from_bytes(&self.layer, lw, lh) else {
+                continue;
+            };
+            let paint = PixmapPaint {
+                opacity: first.alpha,
+                ..PixmapPaint::default()
+            };
+            pixmap.draw_pixmap(
+                x0 as i32,
+                y0 as i32,
+                layer,
+                &paint,
+                Transform::identity(),
+                None,
+            );
         }
-        let Some(b) = super::bounds(run) else {
-            continue;
-        };
-        let pad = line * 2.;
-        let x0 = ((fit.ox + b[0] * fit.k - pad).floor()).max(0.);
-        let y0 = ((fit.oy + b[1] * fit.k - pad).floor()).max(0.);
-        let x1 = ((fit.ox + b[2] * fit.k + pad).ceil()).min(w as f32);
-        let y1 = ((fit.oy + b[3] * fit.k + pad).ceil()).min(h as f32);
-        if x1 <= x0 || y1 <= y0 {
-            continue;
-        }
-        let Some(mut layer) = Pixmap::new((x1 - x0) as u32, (y1 - y0) as u32) else {
-            continue;
-        };
-        for item in run {
-            draw(&mut layer, item, palette, fit, line, (x0, y0));
-        }
-        let paint = PixmapPaint {
-            opacity: first.alpha,
-            ..PixmapPaint::default()
-        };
-        pixmap.draw_pixmap(
-            x0 as i32,
-            y0 as i32,
-            layer.as_ref(),
-            &paint,
-            Transform::identity(),
-            None,
-        );
+        self.frame.as_ref()
     }
-    Some(pixmap)
 }
 
 /// One item, opaque, with the pixmap's origin at `origin` of the frame.
 fn draw(
-    pixmap: &mut Pixmap,
+    pixmap: &mut PixmapMut,
     item: &Item,
     palette: &Palette,
     fit: Fit,
@@ -363,6 +406,37 @@ mod tests {
             pm.pixels().iter().any(|p| p.red() < 128),
             "some ink was drawn"
         );
+    }
+
+    #[test]
+    fn reused_buffers_match_fresh_ones() {
+        let pal = Palette {
+            ink: [0.16; 3],
+            ground: [1.; 3],
+            accent: [0.11, 0.69, 0.61],
+            dark: false,
+            soft: false,
+        };
+        let mut frames = Frames::default();
+        // A size change in the middle, and frames where layers fade, so a
+        // leftover of the previous frame or layer would show.
+        for (i, (w, h)) in [(400, 300), (400, 300), (320, 260), (320, 260)]
+            .into_iter()
+            .enumerate()
+        {
+            for scene in crate::iso::scenes::ALL {
+                let mut items = crate::iso::render(&(scene.build)(i as f32 / 4.));
+                for (j, item) in items.iter_mut().enumerate() {
+                    item.alpha = [1., 0.5, 0.25][j % 3];
+                    item.layer = j as u32;
+                }
+                let ext = crate::iso::bounds(&items).unwrap();
+                let fit = Fit::new(ext, w as f32, h as f32, 10.).unwrap();
+                let fresh = frame(&items, &pal, w, h, fit, 1.25).unwrap();
+                let reused = frames.draw(&items, &pal, w, h, fit, 1.25).unwrap();
+                assert!(fresh.data() == reused.data(), "frame {i} differs");
+            }
+        }
     }
 }
 

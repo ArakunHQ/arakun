@@ -34,6 +34,7 @@ pub enum SettingsEvent {
     DevinSignOut,
     CursorSignIn,
     CursorSignOut,
+    AntigravitySignIn,
     OpenUsage,
     /// Close Settings and open the Customize panel.
     OpenCustomize,
@@ -42,6 +43,13 @@ pub enum SettingsEvent {
     Island(bool),
     /// The whole UI's zoom, in percent.
     Zoom(u32),
+    /// How sessions and tabs show, and the preset it came from, if any.
+    TabLayout(
+        crate::tab_layout::TabLayout,
+        Option<crate::tab_layout::Preset>,
+    ),
+    /// The sidebar's width, in points.
+    SidebarWidth(f32),
     ReduceMotion(crate::ui::motion::Reduce),
     /// An extension view turned on or off in the sidebar.
     SidebarView(crate::sidebar::View, bool),
@@ -68,6 +76,8 @@ pub enum SettingsEvent {
     RestartToUpdate,
     OpenAccount,
     OpenExtensions,
+    /// Close Settings and open the feedback form.
+    SendFeedback,
     #[cfg(feature = "coderlabs")]
     OpenTasks,
     #[cfg(feature = "coderlabs")]
@@ -129,6 +139,7 @@ enum Section {
     OpenCode,
     Devin,
     Cursor,
+    Antigravity,
 }
 
 impl Section {
@@ -149,6 +160,7 @@ impl Section {
         Section::OpenCode,
         Section::Devin,
         Section::Cursor,
+        Section::Antigravity,
     ];
 
     fn group(self) -> Group {
@@ -168,6 +180,7 @@ impl Section {
             Section::OpenCode => Some(AgentKind::OpenCode),
             Section::Devin => Some(AgentKind::Devin),
             Section::Cursor => Some(AgentKind::Cursor),
+            Section::Antigravity => Some(AgentKind::Antigravity),
             _ => None,
         }
     }
@@ -189,6 +202,7 @@ impl Section {
             Section::OpenCode => "OpenCode",
             Section::Devin => "Devin",
             Section::Cursor => "Cursor",
+            Section::Antigravity => "Antigravity",
         }
     }
 
@@ -209,7 +223,8 @@ impl Section {
             | Section::Droid
             | Section::OpenCode
             | Section::Devin
-            | Section::Cursor => "bot",
+            | Section::Cursor
+            | Section::Antigravity => "bot",
         }
     }
 
@@ -217,7 +232,7 @@ impl Section {
         match self {
             Section::General => "How Arakun behaves when nothing is going on.",
             Section::Appearance => {
-                "Zoom here. Colors, shape and the sidebar are edited beside the app, not in this dialog."
+                "Tabs and sessions, and zoom. Colors, shape and the sidebar are edited beside the app, not in this dialog."
             }
             Section::Project => {
                 "The open project's commands, base branch and sandbox, on this computer."
@@ -238,6 +253,9 @@ impl Section {
             Section::OpenCode => "The providers OpenCode signs in to, OpenCode Go among them.",
             Section::Devin => "Devin's sign-in: your Devin account or a Windsurf API key.",
             Section::Cursor => "Cursor's sign-in: your Cursor account or a Cursor API key.",
+            Section::Antigravity => {
+                "Antigravity's sign-in: your Google account or a Gemini API key."
+            }
         }
     }
 
@@ -253,7 +271,7 @@ impl Section {
                 "raccoon mascot animation motion new session dynamic island notch top bar agents alerts background close hide tray sidebar usage card plans browser web page drive click type scripts"
             }
             Section::Appearance => {
-                "theme palette color scheme colors accent tint corners radius rounded round sharp spacing gap padding compact roomy density window custom share night graphite midnight forest rose diff colors colorblind high contrast glass blur transparent translucent grays gray text size font scale design system mode dark light zoom bigger smaller reduce motion animation accessibility still"
+                "tabs sessions pinned pin title bar tree sidebar width group project classic focused everything fold folded hidden long titles two lines sort sorting order latest newest recent alphabetical a-z state icon dot word theme palette color scheme colors accent tint corners radius rounded round sharp spacing gap padding compact roomy density window custom share night graphite midnight forest rose diff colors colorblind high contrast glass blur transparent translucent grays gray text size font scale design system mode dark light zoom bigger smaller reduce motion animation accessibility still"
             }
             Section::Project => {
                 "setup script install new environment worktree check command test lint build verify \
@@ -269,7 +287,7 @@ impl Section {
                 "elevenlabs speech speak tts read aloud audio sound api key questions tone"
             }
             Section::Privacy => {
-                "telemetry analytics usage counts crash reports privacy posthog data redacted redact hide streamer stream demo screen share sharing incognito"
+                "telemetry analytics usage counts crash reports privacy posthog data redacted redact hide streamer stream demo screen share sharing incognito feedback bug report idea"
             }
             #[cfg(feature = "coderlabs")]
             Section::CoderSpace => "tasks sign in sign out email",
@@ -284,6 +302,7 @@ impl Section {
             Section::OpenCode => "opencode go zen provider api key models sign in logout",
             Section::Devin => "devin cognition windsurf api key sign in logout",
             Section::Cursor => "cursor cursor-agent api key sign in logout",
+            Section::Antigravity => "antigravity agy google gemini api key sign in",
         }
     }
 
@@ -364,6 +383,11 @@ const SHORTCUTS: &[Shortcut] = &[
     ("Tabs and panes", "Ctrl+W", "Close tab"),
     (
         "Tabs and panes",
+        "Alt+P",
+        "Pin or unpin a session in the title bar (with sessions in the sidebar)",
+    ),
+    (
+        "Tabs and panes",
         "Alt+← / Alt+→",
         "Back / forward through tabs",
     ),
@@ -438,6 +462,10 @@ pub struct SettingsDialog {
     cursor: bool,
     /// The variable with Cursor's API key, when the environment has one.
     cursor_env: Option<&'static str>,
+    /// Whether agy keeps its sign-in in a file; a keyring sign-in reads as `false`.
+    antigravity: bool,
+    /// `GEMINI_API_KEY`, when the environment has it.
+    antigravity_env: Option<&'static str>,
     input: Entity<TextInput>,
     section: Section,
     voice: voice::Settings,
@@ -467,6 +495,8 @@ pub struct SettingsDialog {
     setup_input: Entity<TextInput>,
     check_input: Entity<TextInput>,
     base_input: Entity<TextInput>,
+    /// The sidebar's width, which the Tabs and sessions part sets too.
+    pub rail_w: f32,
     _subs: [Subscription; 7],
 }
 
@@ -611,6 +641,8 @@ impl SettingsDialog {
             devin_env: crate::agent::devin_env_key(),
             cursor: crate::agent::cursor_signed_in(),
             cursor_env: crate::agent::cursor_env_key(),
+            antigravity: crate::agent::antigravity_signed_in(),
+            antigravity_env: crate::agent::antigravity_env_key(),
             input,
             section,
             voice,
@@ -628,6 +660,7 @@ impl SettingsDialog {
             check_input,
             base_input,
             look,
+            rail_w: crate::state::RAIL_W,
             confirm_nightly: false,
             pane_scroll: gpui::ScrollHandle::new(),
             _subs: [
@@ -903,6 +936,16 @@ impl SettingsDialog {
         }
     }
 
+    /// agy's own sign-in comes first; the key is named by its variable. With no
+    /// file, agy may still be signed in through the system keyring.
+    fn antigravity_status(&self) -> String {
+        match (self.antigravity, self.antigravity_env) {
+            (true, _) => "Signed in".into(),
+            (false, Some(var)) => format!("API key · {var}"),
+            (false, None) => "No sign-in found".into(),
+        }
+    }
+
     /// Whether an agent's section gets the green dot: it can run, through a
     /// sign-in or a key. `false` for the other sections.
     fn signed_in(&self, s: Section) -> bool {
@@ -913,6 +956,7 @@ impl SettingsDialog {
             Section::OpenCode => !self.opencode.is_empty(),
             Section::Devin => self.devin || self.devin_env.is_some(),
             Section::Cursor => self.cursor || self.cursor_env.is_some(),
+            Section::Antigravity => self.antigravity || self.antigravity_env.is_some(),
             _ => false,
         }
     }
@@ -1217,6 +1261,16 @@ impl SettingsDialog {
                             .into_any_element(),
                     );
                 }
+                rows.push(
+                    row(
+                        "Feedback",
+                        "A bug, an idea or anything else, sent to the Arakun team when you press Send.",
+                        ui::button("set-feedback", "Send Feedback…", ButtonKind::Outline, true)
+                            .on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::SendFeedback)))
+                            .into_any_element(),
+                    )
+                    .into_any_element(),
+                );
                 stack(vec![
                     titled("On screen", vec![redacted]),
                     titled("Sent to Arakun", rows),
@@ -1367,6 +1421,28 @@ impl SettingsDialog {
                     ],
                 )])
             }
+            // agy signs out from its own session (`/logout`), so there is only
+            // a Sign in button.
+            Section::Antigravity => stack(vec![titled(
+                "Account",
+                vec![
+                    row(
+                        self.antigravity_status(),
+                        if self.antigravity {
+                            "The same sign-in the agy CLI uses. Arakun only checks that it is there."
+                        } else if self.antigravity_env.is_some() {
+                            "Sessions can use the API key in the environment. Sign in to use your Google account instead."
+                        } else {
+                            "Runs agy acp --login in a terminal; paste the code from the browser. agy may already be signed in through the system keyring, which Arakun doesn't read."
+                        },
+                        ui::button("set-antigravity-in", "Sign in", ButtonKind::Outline, true)
+                            .on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::AntigravitySignIn)))
+                            .into_any_element(),
+                    )
+                    .into_any_element(),
+                    no_sign_in_row(AgentKind::Antigravity),
+                ],
+            )]),
             Section::Droid => stack(vec![
                 titled(
                     "Factory",
@@ -1829,6 +1905,7 @@ impl SettingsDialog {
             .into_any_element()
         };
         stack(vec![
+            self.render_tabs_and_sessions(cx),
             group(vec![
                 row("Colors", "", value(self.look.colors.clone())).into_any_element(),
                 row("Shape", "", value(self.look.shape.clone())).into_any_element(),
@@ -1837,6 +1914,253 @@ impl SettingsDialog {
             open,
             titled("Window", vec![zoom, motion]),
         ])
+    }
+
+    /// Tabs and sessions: three presets on top, then the options they set.
+    fn render_tabs_and_sessions(&self, cx: &mut Context<Self>) -> AnyElement {
+        use crate::tab_layout::{
+            BarShows, LongTitles, Opt, Preset, Quiet, SessionsIn, Sort, StateMark, TabLayout,
+        };
+        let layout = crate::tab_layout::current();
+        let chosen = layout.preset();
+        let tiles = div()
+            .id("tabs-presets")
+            .role(gpui::Role::RadioGroup)
+            .aria_label("Tabs and sessions preset")
+            .flex()
+            .gap(crate::ui::sp(12.))
+            .children(
+                Preset::ALL
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, p)| preset_tile(i, p, chosen == Some(p), cx)),
+            );
+        let note = match chosen {
+            Some(p) => format!("Set by {}", p.label()),
+            None => "Arranged by you".to_string(),
+        };
+        // A segmented control for one option; off when the other options
+        // make it mean nothing.
+        let seg = |id: &'static str,
+                   on: bool,
+                   choices: Vec<(&'static str, bool, bool, TabLayout)>,
+                   cx: &mut Context<Self>| {
+            let mut s = ui::segmented();
+            for (i, (label, picked, allowed, next)) in choices.into_iter().enumerate() {
+                let live = on && allowed;
+                s = s.child(
+                    ui::segment((id, i), None, label, picked)
+                        .when(!live, |d| d.opacity(0.4))
+                        .when(live, |d| {
+                            d.on_click(cx.listener(move |this, _, _, cx| {
+                                // The window widens a sidebar too narrow for the tree.
+                                if next.tree() && !layout.tree() {
+                                    this.rail_w = this.rail_w.max(crate::tab_layout::SIDEBAR_W);
+                                }
+                                cx.emit(SettingsEvent::TabLayout(next, None));
+                                cx.notify();
+                            }))
+                        }),
+                );
+            }
+            s.into_any_element()
+        };
+        let with = |f: &dyn Fn(&mut TabLayout)| layout.with(f);
+        let sessions_in = seg(
+            "tabs-sessions-in",
+            true,
+            [
+                ("Sidebar", SessionsIn::Sidebar),
+                ("Title bar", SessionsIn::TitleBar),
+                ("Both", SessionsIn::Both),
+            ]
+            .into_iter()
+            .map(|(l, v)| {
+                (
+                    l,
+                    layout.sessions_in == v,
+                    true,
+                    with(&|t| t.sessions_in = v),
+                )
+            })
+            .collect(),
+            cx,
+        );
+        let bar_shows = seg(
+            "tabs-bar-shows",
+            true,
+            [
+                ("Pinned", BarShows::Pinned),
+                ("This project", BarShows::Project),
+                ("All open", BarShows::AllOpen),
+            ]
+            .into_iter()
+            .map(|(l, v)| {
+                (
+                    l,
+                    layout.bar_shows == v,
+                    layout.allows_bar(v),
+                    with(&|t| t.bar_shows = v),
+                )
+            })
+            .collect(),
+            cx,
+        );
+        let state = seg(
+            "tabs-state",
+            true,
+            [
+                ("Icon", StateMark::Icon),
+                ("Dot", StateMark::Dot),
+                ("Word", StateMark::Word),
+            ]
+            .into_iter()
+            .map(|(l, v)| (l, layout.state == v, true, with(&|t| t.state = v)))
+            .collect(),
+            cx,
+        );
+        let quiet = seg(
+            "tabs-quiet",
+            layout.applies(Opt::Quiet),
+            [
+                ("Open", Quiet::Open),
+                ("Folded", Quiet::Folded),
+                ("Hidden", Quiet::Hidden),
+            ]
+            .into_iter()
+            .map(|(l, v)| (l, layout.quiet == v, true, with(&|t| t.quiet = v)))
+            .collect(),
+            cx,
+        );
+        let titles = seg(
+            "tabs-titles",
+            layout.applies(Opt::Titles),
+            [
+                ("Cut", LongTitles::Cut),
+                ("Two lines", LongTitles::TwoLines),
+            ]
+            .into_iter()
+            .map(|(l, v)| (l, layout.titles == v, true, with(&|t| t.titles = v)))
+            .collect(),
+            cx,
+        );
+        let sort = seg(
+            "tabs-sort",
+            layout.applies(Opt::Sort),
+            Sort::ALL
+                .into_iter()
+                .map(|v| (v.label(), layout.sort == v, true, with(&|t| t.sort = v)))
+                .collect(),
+            cx,
+        );
+        let group_on = layout.applies(Opt::Group);
+        let grouped = with(&|t| t.group = !layout.group);
+        let group_switch = div()
+            .id("tabs-group")
+            .map(crate::ui::focusable)
+            .role(gpui::Role::Switch)
+            .aria_label("Group by project")
+            .aria_toggled(crate::ui::toggled(layout.group))
+            .child(ui::switch(layout.group))
+            .when(!group_on, |d| d.opacity(0.4))
+            .when(group_on, |d| {
+                d.cursor_pointer().on_click(cx.listener(move |_, _, _, cx| {
+                    cx.emit(SettingsEvent::TabLayout(grouped, None));
+                    cx.notify();
+                }))
+            })
+            .into_any_element();
+        let width = {
+            const MIN: f32 = 160.;
+            const MAX: f32 = 320.;
+            let w = self.rail_w.clamp(MIN, MAX);
+            let this = cx.entity();
+            div()
+                .flex()
+                .flex_none()
+                .items_center()
+                .gap(crate::ui::sp(12.))
+                .child(div().w(px(200.)).child(ui::slider(
+                    "tabs-sidebar-w",
+                    (w - MIN) / (MAX - MIN),
+                    ui::blend_track(theme::fill_selected(), theme::text_faint()),
+                    theme::text(),
+                    move |t, _, cx| {
+                        let w = (MIN + t.clamp(0., 1.) * (MAX - MIN)).round();
+                        this.update(cx, |d, cx| {
+                            if d.rail_w != w {
+                                d.rail_w = w;
+                                cx.emit(SettingsEvent::SidebarWidth(w));
+                                cx.notify();
+                            }
+                        });
+                    },
+                )))
+                .child(
+                    div()
+                        .w(px(32.))
+                        .text_size(px(ui::TEXT_SM))
+                        .text_color(theme::text())
+                        .child(format!("{w:.0}")),
+                )
+                .into_any_element()
+        };
+        let dim = |on: bool, r: gpui::Div| r.when(!on, |d| d.opacity(0.6)).into_any_element();
+        div()
+            .flex()
+            .flex_col()
+            .gap(crate::ui::sp(8.))
+            .child(ui::overline("Tabs and sessions").px(crate::ui::sp(4.)))
+            .child(
+                div()
+                    .px(crate::ui::sp(4.))
+                    .text_size(px(ui::TEXT_SM))
+                    .text_color(theme::text_subtle())
+                    .child("Start from a preset, then change what you like. Changes show in the window at once."),
+            )
+            .child(tiles)
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .px(crate::ui::sp(4.))
+                    .pt(crate::ui::sp(8.))
+                    .child(div().flex_1().child(ui::overline("Options")))
+                    .child(
+                        div()
+                            .text_size(px(ui::TEXT_XS))
+                            .text_color(theme::text_faint())
+                            .child(note),
+                    ),
+            )
+            .child(group(vec![
+                row("Sessions live in", "Where every session of every project is listed", sessions_in)
+                    .into_any_element(),
+                row("Title bar shows", "Pinned: only what you pull up from the sidebar", bar_shows)
+                    .into_any_element(),
+                row("State", "How a working, waiting or failed session shows", state)
+                    .into_any_element(),
+                dim(group_on, row("Group by project", "Each project heads its own sessions", group_switch)),
+                dim(
+                    layout.applies(Opt::Sort),
+                    row("Sort sessions", "In the sidebar tree; Latest puts the last used on top", sort),
+                ),
+                dim(
+                    layout.applies(Opt::Quiet),
+                    row("Projects with nothing running", "In the sidebar tree", quiet),
+                ),
+                dim(
+                    layout.applies(Opt::Titles),
+                    row("Long titles", "In the sidebar; tabs always cut", titles),
+                ),
+                row(
+                    "Sidebar width",
+                    "The tree needs about 240 to show a title and its state",
+                    width,
+                )
+                .into_any_element(),
+            ]))
+            .into_any_element()
     }
 
     /// The open project's setup script, check and base branch, saved as they are typed.
@@ -2144,6 +2468,126 @@ fn titled(caption: &str, rows: Vec<AnyElement>) -> AnyElement {
         .gap(crate::ui::sp(8.))
         .child(ui::overline(caption).px(crate::ui::sp(4.)))
         .child(group(rows))
+        .into_any_element()
+}
+
+/// A preset of Tabs and sessions: a small drawing of the window it makes,
+/// its name and what it does.
+fn preset_tile(
+    i: usize,
+    p: crate::tab_layout::Preset,
+    chosen: bool,
+    cx: &mut Context<SettingsDialog>,
+) -> AnyElement {
+    use crate::tab_layout::Preset;
+    let bar = |n: usize| {
+        div()
+            .flex()
+            .gap(crate::ui::sp(3.))
+            .children((0..n).map(|_| {
+                div()
+                    .w(px(14.))
+                    .h(px(4.))
+                    .rounded(crate::ui::rad(2.))
+                    .bg(theme::text_faint())
+            }))
+    };
+    let lines = |n: usize| {
+        div()
+            .flex()
+            .flex_col()
+            .gap(crate::ui::sp(4.))
+            .children((0..n).map(|k| {
+                div()
+                    .h(px(2.))
+                    .w(px(if k % 3 == 0 { 34. } else { 26. }))
+                    .bg(theme::text_faint())
+            }))
+    };
+    let (tree, left_tabs, right_tabs) = match p {
+        Preset::Focused => (5, 2, 0),
+        Preset::Classic => (2, 2, 2),
+        Preset::Everything => (7, 2, 2),
+    };
+    let drawing = div()
+        .flex()
+        .gap(crate::ui::sp(8.))
+        .h(px(64.))
+        .p(crate::ui::sp(8.))
+        .rounded(crate::ui::rad(6.))
+        .bg(theme::fill_raised())
+        .child(lines(tree))
+        .child(
+            div()
+                .flex_1()
+                .flex()
+                .flex_col()
+                .gap(crate::ui::sp(6.))
+                .child(
+                    div()
+                        .flex()
+                        .justify_between()
+                        .child(bar(left_tabs))
+                        .child(bar(right_tabs)),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .rounded(crate::ui::rad(3.))
+                        .bg(theme::fill_selected()),
+                ),
+        );
+    div()
+        .id(("tabs-preset", i))
+        .map(crate::ui::focusable)
+        .map(|d| ui::labelled(d, gpui::Role::RadioButton, p.label()))
+        .aria_toggled(crate::ui::toggled(chosen))
+        .flex_1()
+        .min_w_0()
+        .flex()
+        .flex_col()
+        .gap(crate::ui::sp(8.))
+        .p(crate::ui::sp(10.))
+        .rounded(crate::ui::rad(ui::RADIUS_LG))
+        .border_1()
+        .border_color(if chosen {
+            theme::active()
+        } else {
+            theme::border()
+        })
+        .cursor_pointer()
+        .hover(|s| s.bg(theme::fill_hover()))
+        .child(drawing)
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .child(
+                    div()
+                        .flex_1()
+                        .text_size(px(ui::TEXT_MD))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(theme::text())
+                        .child(p.label()),
+                )
+                .when(chosen, |d| {
+                    d.child(icon("tick02", 14.).text_color(theme::active()))
+                }),
+        )
+        .child(
+            div()
+                .text_size(px(ui::TEXT_SM))
+                .text_color(theme::text_subtle())
+                .child(p.blurb()),
+        )
+        .on_click(cx.listener(move |this, _, _, cx| {
+            // The window widens a sidebar too narrow for the tree; say so here too.
+            if let Some(min) = p.min_sidebar_w() {
+                this.rail_w = this.rail_w.max(min);
+            }
+            cx.emit(SettingsEvent::TabLayout(p.layout(), Some(p)));
+            cx.notify();
+        }))
         .into_any_element()
 }
 

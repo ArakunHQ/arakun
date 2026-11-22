@@ -1,0 +1,6 @@
+*.xcodeproj
+Arakun/Info.plist
+ArakunKit/.build
+ArakunKit/.swiftpm
+build/
+DerivedData/

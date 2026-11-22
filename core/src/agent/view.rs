@@ -145,6 +145,17 @@ fn rel_path(path: &Path, cwd: &Path) -> String {
         .to_string()
 }
 
+/// Drops parsed messages from `from` on whose entry is no longer a message. A
+/// shrink resets the view, but a sync can replace entries in place without one.
+/// Entries before `from` did not change, so a streamed chunk visits only the tail.
+fn keep_docs_of<T>(docs: &mut HashMap<usize, T>, entries: &[Entry], from: usize) {
+    for (ix, entry) in entries.iter().enumerate().skip(from) {
+        if !matches!(entry, Entry::Agent { .. } | Entry::Thought { .. }) {
+            docs.remove(&ix);
+        }
+    }
+}
+
 fn turns_of(entries: &[Entry]) -> Vec<Range<usize>> {
     let mut turns = Vec::new();
     let mut start = 0;
@@ -204,6 +215,12 @@ pub enum ThreadViewEvent {
     },
     /// An Agent call's subagent was asked for, by its id; `None` asks for the list.
     OpenSubagent(Option<String>),
+    /// "Tell us what happened" under an agent's error: the report sent for it,
+    /// if any, and the agent.
+    TellUs {
+        error_event: Option<String>,
+        agent: String,
+    },
 }
 
 /// Ctrl+F over the conversation: prompts, replies, and thoughts.
@@ -247,6 +264,7 @@ pub struct ThreadView {
     thread: Entity<Thread>,
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     ssh: ssh::State,
+    can_tell_us: bool,
     ask: Option<AskState>,
     /// The parsed spec-mode plan on screen, keyed by its text.
     plan_md: RefCell<Option<(String, Rc<Vec<Block>>)>>,
@@ -297,6 +315,12 @@ pub struct ThreadView {
 }
 
 impl ThreadView {
+    /// Whether a failed session offers "Tell us what happened". The shell turns
+    /// it off when feedback cannot be sent.
+    pub fn set_can_tell_us(&mut self, on: bool) {
+        self.can_tell_us = on;
+    }
+
     pub fn new(thread: Entity<Thread>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let turns = turns_of(thread.read(cx).entries());
         let seen = thread.read(cx).entries().len();
@@ -329,6 +353,7 @@ impl ThreadView {
             thread,
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             ssh: ssh::State::default(),
+            can_tell_us: true,
             ask: None,
             plan_md: RefCell::new(None),
             list,
@@ -445,6 +470,7 @@ impl ThreadView {
                 let t = self.thread.read(cx);
                 let (len, at_work) = (t.entries().len(), t.is_busy());
                 self.entrances.entries_now(len, at_work, Instant::now());
+                keep_docs_of(&mut self.markdown, self.thread.read(cx).entries(), *from);
                 self.sync_turns(*from, cx)
             }
             ThreadEvent::Reset => {
@@ -1047,8 +1073,10 @@ impl ThreadView {
                 None => footer,
             }
         };
+        // Fades and entrances: on the motion clock, not at the display's rate,
+        // since text streams in for as long as the agent writes.
         if std::mem::take(&mut self.fading) {
-            window.request_animation_frame();
+            crate::ui::motion::redraw_on_tick(window);
         }
         div()
             .id(("turn", ix))
@@ -2393,6 +2421,35 @@ mod tests {
             "type": "tool", "id": title, "title": title, "kind": "other", "status": "completed",
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn docs_of_removed_or_replaced_entries_are_dropped() {
+        let entries = [
+            agent("kept"),
+            tool("Read"),
+            Entry::Thought {
+                text: "kept too".into(),
+            },
+        ];
+        let docs = || -> HashMap<usize, ()> { [(0, ()), (1, ()), (2, ())].into() };
+        let left = |mut docs: HashMap<usize, ()>| {
+            let mut left: Vec<usize> = docs.drain().map(|(ix, _)| ix).collect();
+            left.sort();
+            left
+        };
+
+        let mut all = docs();
+        keep_docs_of(&mut all, &entries, 0);
+        assert_eq!(left(all), [0, 2]);
+
+        let mut tail = docs();
+        keep_docs_of(&mut tail, &entries, 2);
+        assert_eq!(left(tail), [0, 1, 2]);
+
+        let mut past_the_end = docs();
+        keep_docs_of(&mut past_the_end, &entries, 9);
+        assert_eq!(left(past_the_end), [0, 1, 2]);
     }
 
     #[test]

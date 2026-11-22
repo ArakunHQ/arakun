@@ -10,7 +10,7 @@ description: Benchmark Arakun with tools/bench/bench.py - frame times, CPU and m
 
 | Suite | What it runs | What it measures |
 | --- | --- | --- |
-| `perf` | A test Arakun (`arakun dev`) on a fixed scratch project, with `ZED_MEASUREMENTS=1` so GPUI logs each frame's draw time. Scenarios: idle, palette, sidebar, zoom, scroll, terminal | Time to first frame, frames drawn, p50/p95/p99/max frame time, frames over 16.7 ms, CPU % and memory |
+| `perf` | A test Arakun (`arakun dev`) on a fixed scratch project, with `ZED_MEASUREMENTS=1` so GPUI logs each frame's draw time. Scenarios: idle, palette, sidebar, zoom, scroll, terminal, working (Linux only: a fake agent, `fake_acp.py`, holds a session at work in a focused window) | Time to first frame, frames drawn, p50/p95/p99/max frame time, frames over 16.7 ms, CPU % and memory |
 | `agent` | Each task in `tools/bench/tasks/` copied to a scratch git repo, its prompt given to Claude Code, then a hidden check run | Pass rate, time, turns, tokens, cost. Runner `arakun` runs the session in a test Arakun; `claude` runs bare `claude -p` as the baseline |
 
 ## Perf: check a change for regressions

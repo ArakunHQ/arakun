@@ -3,7 +3,10 @@
 //
 //   node src/arakun_teams/testdata/vectors.mjs > src/arakun_teams/testdata/vectors.json
 //       makes new WebCrypto vectors (keys, a signature, an envelope, a message
-//       and a channel name); the `rust` part of the old file is kept.
+//       and a channel name). The device keys are new each time, so the old
+//       `rust` part no longer holds and is left out (`rust: null`). Make it
+//       again and put what it prints in the file as `rust`:
+//         cargo test --locked --no-default-features print_rust_vectors -- --ignored --nocapture
 //   node src/arakun_teams/testdata/vectors.mjs --check
 //       checks the `rust` part (values crypto.rs made, see its tests) with
 //       WebCrypto, as the Worker would: exits 1 if one does not hold.
@@ -82,13 +85,6 @@ async function open(teamKey, nonce, ad, ct) {
 }
 
 async function make() {
-  const old = (() => {
-    try {
-      return JSON.parse(readFileSync(new URL("vectors.json", here), "utf8"));
-    } catch {
-      return {};
-    }
-  })();
   const githubId = 9001;
   const teamId = "01JD0000000000000000000000";
   const channelId = "01JD0000000000000000000001";
@@ -129,7 +125,8 @@ async function make() {
       name: "general",
       sealed: { v: 1, epoch, nonce: n, ct: await seal(teamKey, nonce, `arakun-teams/v1/channel|${teamId}|${channelId}|${channelId}`, "general") },
     },
-    rust: old.rust ?? null,
+    // Signed and sealed with the keys of the file this replaces: see the top.
+    rust: null,
   };
 }
 

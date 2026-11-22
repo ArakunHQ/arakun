@@ -70,6 +70,9 @@ const HIDE_Y: f32 = 140.;
 /// How long a spy over the edge lasts before it comes back up, and a hide.
 const SPY_FOR: f64 = 3.;
 const HIDE_FOR: f64 = 0.5;
+/// No input for this long and an idle raccoon settles still instead of
+/// fidgeting; dozing and sleeping still follow on their own schedule.
+const IDLE_REST: f64 = 8.;
 /// No input for this long and the raccoon starts nodding off, then sleeps.
 const DOZE_AFTER: f64 = 90.;
 const SLEEP_AFTER: f64 = 150.;
@@ -413,7 +416,7 @@ impl Spring {
         self.x += self.v * dt;
     }
 
-    fn settled(&self, target: f32, eps: f32) -> bool {
+    pub fn settled(&self, target: f32, eps: f32) -> bool {
         (self.x - target).abs() < eps && self.v.abs() < eps * 4.
     }
 }
@@ -965,6 +968,7 @@ impl Mascot {
     }
 
     fn idle(&mut self, p: &mut Pose, now: f64) {
+        let quiet = now - self.last_input;
         let spying = self.away.filter(|_| now < self.spy_until);
         match (spying, self.away) {
             (Some(d), _) => self.spy(p, now, d),
@@ -974,9 +978,16 @@ impl Mascot {
                     .cursor(now)
                     .unwrap_or([d[0] * 0.7, d[1].min(0.4) * 0.7])
             }
-            (None, None) => p.look = self.cursor(now).unwrap_or_else(|| self.wander_at(now)),
+            (None, None) => {
+                p.look = self.cursor(now).unwrap_or_else(|| {
+                    if quiet > IDLE_REST {
+                        [0., 0.]
+                    } else {
+                        self.wander_at(now)
+                    }
+                })
+            }
         }
-        let quiet = now - self.last_input;
         if quiet > SLEEP_AFTER {
             self.enter(State::Sleeping, now);
             self.auto_sleep = true;
@@ -985,6 +996,9 @@ impl Mascot {
         if quiet > DOZE_AFTER {
             p.eye[1] = 0.45;
             p.ears = [[-0.2, 0.92]; 2];
+            return;
+        }
+        if quiet > IDLE_REST {
             return;
         }
         if spying.is_none() && self.act.is_none() && now > self.next_act {
@@ -1236,14 +1250,37 @@ impl Mascot {
         }
     }
 
+    /// Next posture transition deadline after `IDLE_REST`, compared against the
+    /// last rendered frame so a timer wake slightly past a deadline never skips it.
+    fn idle_deadline(last_input: f64, last_frame: f64) -> f64 {
+        let rest = last_input + IDLE_REST;
+        let doze = last_input + DOZE_AFTER;
+        let sleep = last_input + SLEEP_AFTER;
+        if last_frame < rest {
+            rest
+        } else if last_frame < doze {
+            doze
+        } else if last_frame < sleep {
+            sleep
+        } else {
+            f64::INFINITY
+        }
+    }
+
     /// When an idle raccoon next has something to do, so frames can stop until then.
     fn next_event(&self) -> f64 {
+        let now = self.now();
+        let last = self.last_frame.unwrap_or(0.);
+        if now - self.last_input > IDLE_REST {
+            return Self::idle_deadline(self.last_input, last);
+        }
         let mut t = self
             .next_blink
             .min(self.next_act)
+            .min(self.last_input + IDLE_REST)
             .min(self.last_input + DOZE_AFTER)
             .min(self.last_input + SLEEP_AFTER);
-        if self.pointer.is_none() || self.now() - self.last_move > 2.5 {
+        if self.pointer.is_none() || now - self.last_move > 2.5 {
             t = t.min(self.next_wander);
         }
         t
@@ -1266,7 +1303,12 @@ impl Mascot {
             return true;
         }
         if self.state == State::Sleeping && !self.moving && !self.pointer_dirty {
-            return now - self.last_frame.unwrap_or(0.) > 0.1;
+            // Small mascots (sidebar and island) omit the Zzz prop, so once
+            // settled in Sleeping they have nothing left to repaint.
+            if self.small {
+                return false;
+            }
+            return now - self.last_frame.unwrap_or(0.) > 0.2;
         }
         self.moving
             || self.pointer_dirty
@@ -1352,7 +1394,9 @@ impl Mascot {
                     .all(|(s, &t)| s.settled(t, 0.002))
                 && self.nose.settled(p.nose, 0.002));
 
-        if p.blink && p.eyes == Eyes::Open && p.eye[1] > 0.4 && now > self.next_blink {
+        let allow_blink = self.state != State::Idle || now - self.last_input <= IDLE_REST;
+        if allow_blink && p.blink && p.eyes == Eyes::Open && p.eye[1] > 0.4 && now > self.next_blink
+        {
             self.blink_t = Some(now);
             self.next_blink = now + self.rnd(2.2, 5.5);
         }
@@ -1777,9 +1821,11 @@ impl Render for Mascot {
         let dt = self.last_frame.map_or(1. / 60., |l| (now - l).min(0.05)) as f32;
         self.last_frame = Some(now);
         self.rendered = true;
-        self.wake.wake();
         self.active = self.awake || window.is_window_active();
         let frame = self.step(now, dt);
+        if self.wants_frame() {
+            self.wake.wake();
+        }
         let color = self.color.unwrap_or_else(theme::brand_paper);
         let (weak, click) = (cx.weak_entity(), cx.weak_entity());
         let bounds = self.bounds.clone();
@@ -1937,5 +1983,17 @@ mod tests {
         assert_eq!(code_line(CODE_PERIOD * 2.5), (2, 0.5));
         // A clock that runs backwards never asks for a line before the first.
         assert_eq!(code_line(-3.), (0, 0.));
+    }
+
+    #[test]
+    fn idle_deadlines_stay_due_until_a_frame_renders_past_them() {
+        // Timer wakes 0.3s after rest/doze/sleep: each deadline stays due until rendered.
+        assert_eq!(Mascot::idle_deadline(0., 7.9), IDLE_REST);
+        assert!(8.3 >= Mascot::idle_deadline(0., 7.9));
+        assert_eq!(Mascot::idle_deadline(0., 8.3), DOZE_AFTER);
+        assert!(DOZE_AFTER + 0.3 >= Mascot::idle_deadline(0., 8.3));
+        assert_eq!(Mascot::idle_deadline(0., DOZE_AFTER + 0.3), SLEEP_AFTER);
+        assert!(SLEEP_AFTER + 0.3 >= Mascot::idle_deadline(0., DOZE_AFTER + 0.3));
+        assert_eq!(Mascot::idle_deadline(0., SLEEP_AFTER + 0.3), f64::INFINITY);
     }
 }

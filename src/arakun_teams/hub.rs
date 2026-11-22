@@ -2928,11 +2928,13 @@ impl Hub {
                         let polled = match unread_poll(after, newest, known) {
                             Next::Done(p) => p,
                             Next::Read(after) => {
-                                let Ok(page) = net.call().history(&team_id, &channel_id, after)
-                                else {
+                                let Ok(n) = unread_since(
+                                    after,
+                                    |seq| net.call().history(&team_id, &channel_id, seq),
+                                    |s| counts(&channel_id, s),
+                                ) else {
                                     continue;
                                 };
-                                let n = page.iter().filter(|s| counts(&channel_id, s)).count();
                                 Polled::Count(n, newest)
                             }
                             Next::Keep => continue,
@@ -3328,6 +3330,33 @@ pub fn trusted_devices(gid: u64, rows: &[DeviceRow]) -> Vec<DeviceRow> {
         .filter(|d| trusted.contains(d.device_id.as_str()))
         .cloned()
         .collect()
+}
+
+/// How many history pages an unread count reads at most. The label stops
+/// at "99+", so more only matters when a page holds little that counts.
+const UNREAD_PAGES: usize = 5;
+
+/// Counts the stored messages after `after` that `counts` says are unread.
+/// The first page can be full of what does not count (this user's own
+/// messages, edits, acceptances), so it reads on until the count passes what
+/// the label shows, history ends or [`UNREAD_PAGES`] were read.
+fn unread_since(
+    mut after: u64,
+    mut read: impl FnMut(u64) -> Result<Vec<Stored>, ApiError>,
+    counts: impl Fn(&Stored) -> bool,
+) -> Result<usize, ApiError> {
+    let mut n = 0;
+    for _ in 0..UNREAD_PAGES {
+        let page = read(after)?;
+        n += page.iter().filter(|s| counts(s)).count();
+        let last = page.last().map(|s| s.seq);
+        match last {
+            // A page that does not advance would be read again forever.
+            Some(seq) if page.len() >= 200 && n < 100 && seq > after => after = seq,
+            _ => break,
+        }
+    }
+    Ok(n)
 }
 
 fn history_since(
@@ -4219,6 +4248,62 @@ mod tests {
             (missing[0].epoch, &missing[0].device.device_id),
             (6, &latest.device_id)
         );
+    }
+
+    #[test]
+    fn an_unread_count_reads_past_a_page_of_what_does_not_count() {
+        let stored = |seq: u64, device: &str| Stored {
+            seq,
+            at: seq,
+            message: WireMessage {
+                id: seq.to_string(),
+                device_id: device.into(),
+                epoch: 1,
+                nonce: String::new(),
+                ct: String::new(),
+                sig: String::new(),
+            },
+        };
+        // 200 of this user's own messages, then three from someone else.
+        let history: Vec<Stored> = (1..=203)
+            .map(|seq| stored(seq, if seq <= 200 { "mine" } else { "theirs" }))
+            .collect();
+        let mut asked = Vec::new();
+        let read = |after: u64| {
+            asked.push(after);
+            Ok(history
+                .iter()
+                .filter(|s| s.seq > after)
+                .take(200)
+                .cloned()
+                .collect())
+        };
+        let n = unread_since(0, read, |s| s.message.device_id != "mine").unwrap();
+        assert_eq!(n, 3);
+        assert_eq!(asked, [0, 200]);
+
+        // Enough for the label after one page: no second read.
+        let mut asked = 0;
+        let full = |after: u64| {
+            asked += 1;
+            Ok((after + 1..=after + 200)
+                .map(|seq| stored(seq, "theirs"))
+                .collect())
+        };
+        assert_eq!(unread_since(0, full, |_| true).unwrap(), 200);
+        assert_eq!(asked, 1);
+
+        // History with nothing that counts stops at the cap.
+        let mut asked = 0;
+        let endless = |after: u64| {
+            asked += 1;
+            Ok((after + 1..=after + 200)
+                .map(|seq| stored(seq, "mine"))
+                .collect())
+        };
+        assert_eq!(unread_since(0, endless, |_| false).unwrap(), 0);
+        assert_eq!(asked, UNREAD_PAGES);
+        assert!(unread_since(0, |_| Err(ApiError::Unreadable), |_| true).is_err());
     }
 
     #[test]

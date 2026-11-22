@@ -21,6 +21,8 @@ use crate::ui::{self, ButtonKind, Type};
 
 /// Shown before Send on forms a person opened to report something.
 pub const PUBLIC: &str = "Bug reports may become a public GitHub issue.";
+/// On the error form when no crash report was sent to link the answer to.
+pub const NO_REPORT: &str = "No crash report was sent, so describe what you were doing.";
 pub const THANKS: &str = "Thanks. Sent to the Arakun team.";
 /// What PostHog records when a link question's button is clicked.
 const LINK_CLICKED: &str = "link clicked";
@@ -101,6 +103,8 @@ pub struct Flow {
     history: Vec<usize>,
     error: Option<String>,
     sent: bool,
+    /// An error form with no error event to link to.
+    unlinked: bool,
 }
 
 impl Flow {
@@ -115,7 +119,19 @@ impl Flow {
             history: Vec::new(),
             error: None,
             sent: false,
+            unlinked: false,
         }
+    }
+
+    /// Marks an error form as having no report behind it.
+    pub fn unlinked(mut self, yes: bool) -> Self {
+        self.unlinked = yes && self.src == Source::Error;
+        self
+    }
+
+    /// Tells an error form's reader why there is nothing to link, on its first question.
+    pub fn no_report_note(&self) -> Option<&'static str> {
+        (self.unlinked && !self.sent && self.at == 0).then_some(NO_REPORT)
     }
 
     pub fn survey(&self) -> &Survey {
@@ -368,7 +384,7 @@ impl SurveyDialog {
             inputs.insert(i, input);
         }
         let this = Self {
-            flow: Flow::new(survey, src),
+            flow: Flow::new(survey, src).unlinked(!extra.iter().any(|(k, _)| k == "error_event")),
             extra,
             focus,
             inputs,
@@ -673,6 +689,7 @@ impl Render for SurveyDialog {
             (_, false) => "Next".to_string(),
         };
         let notice = self.flow.public_notice();
+        let no_report = self.flow.no_report_note();
         let error = self.flow.error().map(str::to_string);
         let body = self.body(&q, cx);
         panel
@@ -683,6 +700,9 @@ impl Render for SurveyDialog {
                     .flex_col()
                     .gap(ui::sp(12.))
                     .p(ui::sp(16.))
+                    .when_some(no_report, |d, n| {
+                        d.child(ui::text(Type::Caption, theme::text_subtle(), n))
+                    })
                     .child(body)
                     .when_some(notice, |d, n| {
                         d.child(ui::text(Type::Caption, theme::text_subtle(), n))
@@ -866,6 +886,24 @@ mod tests {
             assert!(f.is_last());
             assert_eq!(f.public_notice(), None);
         }
+    }
+
+    #[test]
+    fn no_report_note_when_no_uuid() {
+        let s = survey(vec![
+            q("a", Body::Open, false, Branching::Next),
+            q("b", Body::Open, true, Branching::Next),
+        ]);
+        let f = Flow::new(s.clone(), Source::Error).unlinked(true);
+        assert_eq!(
+            f.no_report_note(),
+            Some("No crash report was sent, so describe what you were doing.")
+        );
+        assert_eq!(Flow::new(s.clone(), Source::Error).no_report_note(), None);
+        assert_eq!(
+            Flow::new(s, Source::User).unlinked(true).no_report_note(),
+            None
+        );
     }
 
     #[test]

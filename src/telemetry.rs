@@ -424,6 +424,7 @@ pub fn quit() {
     let minutes = LAUNCHED.get().map_or(0, |t| t.elapsed().as_secs() / 60);
     capture_with(events::APP_QUIT, &[], &[("minutes_open", minutes)]);
     flush();
+    crate::crash::mark_clean_exit();
 }
 
 /// Reports an error Arakun handled, such as an agent that stopped with one:
@@ -488,7 +489,7 @@ fn current() -> Consent {
 }
 
 /// What an agent's error was, as one of a few fixed labels.
-fn category(message: &str) -> &'static str {
+pub(crate) fn category(message: &str) -> &'static str {
     let m = message.to_ascii_lowercase();
     let has = |words: &[&str]| words.iter().any(|w| m.contains(w));
     if has(&[
@@ -786,11 +787,16 @@ fn quick_agent() -> &'static ureq::Agent {
 // ---- panics -----------------------------------------------------------------
 
 /// Sends a panic right away, from the panicking thread, if the user agreed
-/// to crash reports. `props` come from `panic_props`.
-pub fn send_panic(props: Map<String, Value>) {
+/// to crash reports. `props` come from `panic_props`. Returns the event's id
+/// when it was sent.
+pub fn send_panic(props: Map<String, Value>) -> Option<String> {
     if CRASHES.load(Ordering::Relaxed) && !SENDING.with(Cell::get) {
-        send(&[event_json("$exception", props)], quick_agent());
+        let event = event_json("$exception", props);
+        let id = event["uuid"].as_str().map(str::to_string);
+        send(&[event], quick_agent());
+        return id;
     }
+    None
 }
 
 /// What is known about the panic on this thread, for the crash log and for

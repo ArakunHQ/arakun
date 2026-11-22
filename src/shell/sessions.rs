@@ -21,7 +21,7 @@ use crate::state;
 
 /// Sends an agent's error to crash reports with where it failed. The folder
 /// check tells a deleted project apart from a broken agent.
-fn report_agent_error(t: &Thread, at: FailedAt, msg: &str) {
+fn report_agent_error(t: &Thread, at: FailedAt, msg: &str) -> Option<String> {
     use serde_json::Value;
     let mut props = vec![
         ("agent", Value::from(t.kind().id())),
@@ -34,7 +34,7 @@ fn report_agent_error(t: &Thread, at: FailedAt, msg: &str) {
     if let Some(code) = at.code() {
         props.push(("code", code.into()));
     }
-    crate::telemetry::error("AgentError", msg, &props);
+    crate::telemetry::error("AgentError", msg, &props)
 }
 
 /// Sends `thread`'s failure if crash reports have not had it yet. `closing`
@@ -45,7 +45,8 @@ pub(super) fn report_failure(thread: &Entity<Thread>, closing: bool, cx: &mut Ap
         return;
     };
     if let ThreadStatus::Error(msg) = thread.read(cx).status() {
-        report_agent_error(thread.read(cx), at, &msg);
+        let event = report_agent_error(thread.read(cx), at, &msg);
+        thread.update(cx, |t, _| t.set_error_event(event));
     }
 }
 
@@ -366,6 +367,7 @@ impl Shell {
         });
         let env = env_path.to_path_buf();
         let sid_for_notes: SharedString = id.to_string().into();
+        let thread_for_feedback = thread.clone();
         let view_events = cx.subscribe_in(
             &view,
             window,
@@ -375,6 +377,20 @@ impl Shell {
                 }
                 ThreadViewEvent::OpenSubagent(subagent) => {
                     this.open_subagent(sid_for_notes.clone(), subagent.clone(), window, cx)
+                }
+                ThreadViewEvent::TellUs { error_event, agent } => {
+                    // The category, never the message: see `telemetry::error`.
+                    let category = match thread_for_feedback.read(cx).status() {
+                        ThreadStatus::Error(m) => Some(crate::telemetry::category(&m).to_string()),
+                        _ => None,
+                    };
+                    this.open_error_feedback(
+                        error_event.clone(),
+                        Some(agent.clone()),
+                        category,
+                        window,
+                        cx,
+                    )
                 }
                 ThreadViewEvent::AddNote {
                     surface,

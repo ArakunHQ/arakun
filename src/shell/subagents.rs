@@ -267,7 +267,7 @@ impl Shell {
                 ThreadViewEvent::OpenSubagent(id) => {
                     this.open_subagent(sid.clone(), id.clone(), window, cx)
                 }
-                ThreadViewEvent::AddNote { .. } => {}
+                ThreadViewEvent::AddNote { .. } | ThreadViewEvent::TellUs { .. } => {}
             },
         );
         self.subagent_view = Some(SubagentView {

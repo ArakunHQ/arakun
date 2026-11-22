@@ -155,6 +155,8 @@ fn main() {
     platform::detach_own_console();
     // After the CLI: `arakun <command>` runs in agents' shells and reports nothing.
     crash::install();
+    // After install, so a panic from here on leaves the marker; reads the last run's first.
+    crash::mark_running();
     // Sends only what the user agreed to; the first launch asks (`ask_telemetry`).
     telemetry::init();
     telemetry::capture(telemetry::events::APP_LAUNCHED, &[]);
@@ -360,6 +362,7 @@ fn main() {
             // The setup asks about reports itself; the dialog is for everyone else.
             shell.onboard_if_new(window, cx);
             shell.ask_telemetry(window, cx);
+            shell.ask_after_crash(cx);
             shell.sync_island(window, cx);
             shell.start_survey_card(window, cx);
             #[cfg(feature = "team")]

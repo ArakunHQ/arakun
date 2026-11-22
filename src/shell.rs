@@ -2616,6 +2616,29 @@ impl Shell {
 
     /// Asks once, on first launch, whether to send crash reports and usage
     /// counts; nothing is sent before the answer.
+    /// After a run that ended without a clean exit, asks what happened. Not on
+    /// the first launch, which has nothing to ask about yet.
+    pub fn ask_after_crash(&mut self, cx: &mut Context<Self>) {
+        let Some(event) = crate::crash::last_run_ended_badly() else {
+            return;
+        };
+        if crate::telemetry::should_ask() {
+            return;
+        }
+        let open = island::Open::Feedback {
+            error_event: event,
+            agent: None,
+            category: None,
+        };
+        self.notify(
+            crate::island::AlertKind::Warning,
+            "Arakun quit unexpectedly. Tell us what happened?",
+            "",
+            Some(open),
+            cx,
+        );
+    }
+
     pub fn ask_telemetry(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // The setup asks it as one of its steps, and again here when it
         // closes without an answer.

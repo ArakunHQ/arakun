@@ -215,6 +215,12 @@ pub enum ThreadViewEvent {
     },
     /// An Agent call's subagent was asked for, by its id; `None` asks for the list.
     OpenSubagent(Option<String>),
+    /// "Tell us what happened" under an agent's error: the report sent for it,
+    /// if any, and the agent.
+    TellUs {
+        error_event: Option<String>,
+        agent: String,
+    },
 }
 
 /// Ctrl+F over the conversation: prompts, replies, and thoughts.

@@ -784,6 +784,9 @@ pub struct Thread {
     failed_at: Option<FailedAt>,
     /// Whether crash reports have yet to hear of [`Self::failed_at`].
     failure_unreported: bool,
+    /// The id of the crash report sent for the current error, for the form
+    /// that asks what happened.
+    error_event: Option<String>,
     /// The running turn seems to be going in circles.
     stuck: Option<Stuck>,
     /// Patterns the user chose to keep going past this turn.
@@ -1271,6 +1274,7 @@ impl Thread {
             failure: None,
             failed_at: None,
             failure_unreported: false,
+            error_event: None,
             auto_allow: false,
             handoff: None,
             handoff_sent: false,
@@ -2143,6 +2147,14 @@ impl Thread {
         }
         self.failure_unreported = false;
         Some(at)
+    }
+
+    pub fn set_error_event(&mut self, event: Option<String>) {
+        self.error_event = event;
+    }
+
+    pub fn error_event(&self) -> Option<&str> {
+        self.error_event.as_deref()
     }
 
     pub fn needs_login(&self) -> bool {

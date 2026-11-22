@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::thread::ThreadId;
 
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
 
 /// Past this size the older half of the log is dropped.
 const MAX_LOG: u64 = 256 * 1024;
@@ -43,9 +43,79 @@ pub fn install() {
         let entry = entry(&props, &crate::telemetry::timestamp(now), fatal);
         // Best effort: a full disk must not turn one panic into two.
         let _ = append(&log_path(), &entry, MAX_LOG);
-        crate::telemetry::send_panic(props);
+        let sent = crate::telemetry::send_panic(props);
+        // Only a crash whose report went out can be linked to an answer.
+        if let (true, Some(event)) = (fatal, sent)
+            && enabled()
+        {
+            let _ = write_marker(&app_dir(), Some(&event));
+        }
         previous(info);
     }));
+}
+
+fn app_dir() -> PathBuf {
+    crate::platform::app_dir()
+}
+
+/// The file that exists while Arakun runs. A clean exit deletes it, so one
+/// left behind means the last run ended badly.
+fn marker_path(dir: &Path) -> PathBuf {
+    dir.join("running")
+}
+
+/// Tests and `arakun dev` never write it: they are killed all the time. A
+/// debug build can turn it on to try the notice by hand.
+fn enabled() -> bool {
+    if cfg!(test) {
+        return false;
+    }
+    crate::dev::size().is_none()
+        || (cfg!(debug_assertions) && std::env::var_os("ARAKUN_CRASH_MARKER").is_some())
+}
+
+/// `{"event": uuid}` when a fatal panic's report was sent, else empty.
+fn write_marker(dir: &Path, event: Option<&str>) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    let text = event.map_or(String::new(), |e| json!({ "event": e }).to_string());
+    std::fs::write(marker_path(dir), text)
+}
+
+fn clear_marker(dir: &Path) {
+    let _ = std::fs::remove_file(marker_path(dir));
+}
+
+/// Outer `Some` if the marker exists; inner the crash report's event id.
+fn read_marker(dir: &Path) -> Option<Option<String>> {
+    let text = std::fs::read_to_string(marker_path(dir)).ok()?;
+    let event = serde_json::from_str::<Value>(&text)
+        .ok()
+        .and_then(|v| v["event"].as_str().map(str::to_string));
+    Some(event)
+}
+
+static PREVIOUS: OnceLock<Option<Option<String>>> = OnceLock::new();
+
+/// Whether the last run ended without a clean exit, and the event id of its
+/// crash report if one was sent. Read from the marker once, before
+/// `mark_running` replaces it.
+pub fn last_run_ended_badly() -> Option<Option<String>> {
+    PREVIOUS.get_or_init(|| read_marker(&app_dir())).clone()
+}
+
+/// Marks this run as started. Call it once at startup.
+pub fn mark_running() {
+    let _ = last_run_ended_badly();
+    if enabled() {
+        let _ = write_marker(&app_dir(), None);
+    }
+}
+
+/// Marks this run as ended on purpose (quit, close, restart).
+pub fn mark_clean_exit() {
+    if enabled() {
+        clear_marker(&app_dir());
+    }
 }
 
 /// One panic as the log shows it, ending in a blank line.
@@ -124,7 +194,6 @@ fn append(path: &Path, entry: &str, max: u64) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
     fn props() -> Map<String, Value> {
         let value = json!({
@@ -160,6 +229,42 @@ mod tests {
         assert_eq!(lines[4], "    std::thread::spawn");
         assert!(text.ends_with("\n\n"));
         assert!(entry(&props(), "now", true).contains(". Arakun closed.\n"));
+    }
+
+    fn temp(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("arakun-marker-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
+    #[test]
+    fn marker_absent_after_clean_exit() {
+        let dir = temp("clean");
+        write_marker(&dir, None).unwrap();
+        clear_marker(&dir);
+        assert_eq!(read_marker(&dir), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn marker_present_after_kill() {
+        let dir = temp("kill");
+        write_marker(&dir, None).unwrap();
+        assert_eq!(read_marker(&dir), Some(None));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn marker_carries_panic_uuid() {
+        let dir = temp("uuid");
+        write_marker(&dir, Some("0190-abc")).unwrap();
+        assert_eq!(read_marker(&dir), Some(Some("0190-abc".to_string())));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn tests_never_write_the_real_marker() {
+        assert!(!enabled());
     }
 
     #[test]

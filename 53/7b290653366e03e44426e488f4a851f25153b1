@@ -1,0 +1,25 @@
+tools/release-notes.py
+  s_956af3fde82b62::t_cb5160ed3fabae 1-157
+.github/workflows/release-notes.yml
+  s_956af3fde82b62::t_232f0dede77f3e 1-41
+.github/workflows/release.yml
+  s_956af3fde82b62::t_00f6566054f6d0 7-10,182,277-281,1040-1041,1046-1048,1134-1136
+release-notes/README.md
+  s_956af3fde82b62::t_5824faa796a144 1-52
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "537b290653366e03e44426e488f4a851f25153b1",
+  "prompts": {},
+  "sessions": {
+    "s_956af3fde82b62": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "26563e2b-d80c-4279-9189-8ce84270a66c",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Rik Visser <rik@rivi.software>"
+    }
+  }
+}

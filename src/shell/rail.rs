@@ -155,6 +155,7 @@ pub(super) fn heading_icon_button(
     div()
         .id(id)
         .map(|d| ui::labelled(d, gpui::Role::Button, tip.clone()))
+        .map(ui::focusable)
         .group("rail-heading-add")
         .flex()
         .flex_none()

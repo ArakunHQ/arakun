@@ -58,6 +58,10 @@ impl Shell {
                 self.server_send_raw(id, msg);
                 return;
             }
+            ExtensionsEvent::Mirror => {
+                self.servers_mirror_all(cx);
+                return;
+            }
             _ => {}
         }
         if !self.has_projects() {
@@ -71,7 +75,8 @@ impl Shell {
             ExtensionsEvent::Open(path) => self.open_file_beside(&env_path, path, None, window, cx),
             ExtensionsEvent::Toggled(..)
             | ExtensionsEvent::ConnectServers
-            | ExtensionsEvent::Server(..) => {}
+            | ExtensionsEvent::Server(..)
+            | ExtensionsEvent::Mirror => {}
         }
     }
 }

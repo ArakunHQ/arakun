@@ -598,9 +598,16 @@ after a week).
 - **Marketplace.** Plugins, MCP servers and skills to add, and the MCP servers, plugins,
   skills and permission rules the agents load now. Discover › Skills searches
   [skills.sh](https://skills.sh); Install copies the skill's folder from its GitHub
-  repository into `~/.claude/skills`, where Claude Code and Workers AI find it. It uses
+  repository into `~/.claude/skills`, where Claude Code and Workers AI find it, or into
+  the repo's `.claude/skills` when "Install in" (below) picks this repo. It uses
   your `gh` sign-in (or `GH_TOKEN`) when there is one, since GitHub answers few
-  requests without one. Skills install on this computer only, not on a paired server. Under Arakun › Extensions (or Settings ›
+  requests without one. "Install in" picks where Install puts a plugin, skill or MCP
+  server on this computer: every repo (your user), this repo shared (its committed
+  `.claude/settings.json`, `.mcp.json` or `.claude/skills`), or this repo just for you
+  (Claude Code's `local` scope; a skill goes in `.claude/skills` and is listed in
+  `.git/info/exclude`). An MCP server that signs in gets the repo in its name when it is
+  installed in a repo (`github-acme-web` in acme/web), so each repo has its own sign-in. Paired servers
+  get what you install by the mirror (see Servers). Under Arakun › Extensions (or Settings ›
   General › Sidebar) you turn on the tabs the sidebar shows besides Inbox, Runs, Branches and Marketplace: GitHub, Notes,
   Memory, Usage, Cloudflare, PostHog, Doop, Isometric, Phone, Servers and Automations. The
   palette and Customize › Sidebar list only the tabs that are on. A new install starts
@@ -1303,6 +1310,16 @@ The link is good for two minutes and pairs one device. There are two ways to use
   the plugins its marketplaces offer, and Install adds a plugin or MCP server for
   Claude Code there, for every project. An MCP server that wants a sign-in is signed
   in to on that machine (`claude mcp login <name>`), since that opens a browser.
+  Every paired server also mirrors this computer: when it connects, and after each
+  install here, it adds the plugins (and their marketplaces), the user MCP servers,
+  the skills from skills.sh and the MCP sign-ins it lacks. What you installed in a repo
+  just for you is added to the server's folders that have the same `origin`; what you
+  shared with the repo goes with git. It never removes anything,
+  and keeps a sign-in of its own that lasts longer. Over plain http only plugins
+  and skills go. A server on macOS does not take sign-ins, which Claude keeps in the
+  Keychain there. The skills installed from skills.sh are listed in
+  `skills-installed.json` in arakun's folder, and what was installed in a repo in
+  `repo-installs.json`.
   To add a folder on a server, press the folder button on it in the Servers tab,
   or right-click one of its environments. Clone runs that machine's git, with its
   logins, and puts the repository in the folder that holds most of the server's

@@ -900,7 +900,8 @@ impl Shell {
             // the Marketplace tab of this computer for that.
             ClientMsg::Market
             | ClientMsg::InstallPlugin { .. }
-            | ClientMsg::InstallServer { .. } => {
+            | ClientMsg::InstallServer { .. }
+            | ClientMsg::Mirror(_) => {
                 self.phone_send(
                     client,
                     wire::error("Install from the Marketplace tab of this computer."),

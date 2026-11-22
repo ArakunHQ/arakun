@@ -477,6 +477,48 @@ impl TeamsView {
         }
     }
 
+    /// `arakun peer-review <goal>` from an agent in this environment: runs the
+    /// review this device paired in Teams and answers with its recommendation.
+    pub fn peer_request(
+        &self,
+        project: Option<&std::path::Path>,
+        args: &[String],
+        done: futures::channel::oneshot::Sender<crate::control::Reply>,
+        cx: &mut Context<Self>,
+    ) {
+        self.hub.update(cx, |h, cx| {
+            let scope = h
+                .peer_review
+                .as_ref()
+                .filter(|g| g.live())
+                .and_then(|g| h.channels.get(&g.channel));
+            let (Some(c), Some(project), [goal]) = (scope, project, args) else {
+                let _ = done.send(crate::control::Reply::err(
+                    "Pair one review in the Teams channel for this environment first.",
+                ));
+                return;
+            };
+            if Some(project) != h.bot.project.as_deref() {
+                let _ = done.send(crate::control::Reply::err(
+                    "This environment does not own the paired review.",
+                ));
+                return;
+            }
+            let (team, channel) = (c.team_id.clone(), c.channel_id.clone());
+            match h.review_command(&team, &channel, &format!("review {goal}"), cx) {
+                Ok(()) => {
+                    h.peer_review
+                        .as_mut()
+                        .expect("request reserved a grant")
+                        .caller = Some(done)
+                }
+                Err(e) => {
+                    let _ = done.send(crate::control::Reply::err(e));
+                }
+            }
+        });
+    }
+
     /// Opens the first channel once there is one and nothing else was picked,
     /// opens a team just created, keeps the pane on things that still exist,
     /// and asks for the pictures of everyone the tab can show.
@@ -904,6 +946,19 @@ impl TeamsView {
                     .update(cx, |h, cx| h.edit(&team, &channel, &id, text, cx));
             if sent {
                 self.stop_editing(cx);
+            }
+            return;
+        }
+        if text == "/agents" || text.starts_with("/agents ") {
+            let result = self.hub.update(cx, |hub, cx| {
+                hub.review_command(&team, &channel, text["/agents".len()..].trim(), cx)
+            });
+            match result {
+                Ok(()) => self.composer.update(cx, |i, cx| i.set_text("", cx)),
+                Err(why) => self.hub.update(cx, |h, cx| {
+                    h.error = Some(why);
+                    cx.notify();
+                }),
             }
             return;
         }
@@ -2687,6 +2742,9 @@ impl TeamsView {
             "decision" => Some("decision"),
             "decision_accept" => Some("accepted"),
             "decision_reverse" => Some("reversed"),
+            "agent_review" => {
+                Some(super::coord::Event::read(&m.body).map_or("Agent review", |e| e.label()))
+            }
             other => Some(other),
         }
         .map(|k| ui::badge(k.to_string(), Tone::Info));
@@ -3168,6 +3226,20 @@ impl TeamsView {
             .unwrap_or_else(|| "locked channel".into());
         let status = c.map_or(socket::Status::Connecting, |c| c.status.clone());
         let messages: Vec<Msg> = c.map(|c| c.messages.clone()).unwrap_or_default();
+        let peer_hint = hub
+            .peer_review
+            .as_ref()
+            .filter(|g| g.channel == key && g.live())
+            .map(|g| {
+                format!(
+                    "Paired with @{} · /agents review <goal> · /agents off",
+                    t.login(g.peer)
+                )
+            })
+            .unwrap_or_else(|| {
+                "Pair agents: /agents pair @login · one Claude turn, shared text only ($0.10 limit)"
+                    .into()
+            });
         let loading = c.is_none_or(|c| c.loading);
         let (hidden, locked) = c.map_or((0, 0), |c| (c.hidden, c.locked()));
         let keyless = t.keyless;
@@ -3428,6 +3500,11 @@ impl TeamsView {
                 },
             )
             .child(list)
+            .child(div().px(ui::sp(16.)).child(ui::text(
+                Type::Caption,
+                theme::text_subtle(),
+                peer_hint,
+            )))
             .child(self.render_composer(
                 can_send,
                 keyless,

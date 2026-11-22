@@ -561,6 +561,8 @@ pub struct Body {
     pub bot: Option<serde_json::Value>,
     #[serde(default)]
     pub decision: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coordination: Option<serde_json::Value>,
 }
 
 impl Body {
@@ -572,6 +574,7 @@ impl Body {
             mentions: Vec::new(),
             bot: None,
             decision: None,
+            coordination: None,
         }
     }
 }

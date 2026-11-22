@@ -443,6 +443,8 @@ Usage:
                              of main (they can break) or releases
   arakun mem …                 memory agents keep across sessions: save, search,
                              get, context, list, forget (arakun mem help)
+  arakun peer-review <goal>    use one review paired in Teams for this environment
+                             and print the team's recommendation
   arakun github draft <owner/repo>#<n> --verdict <v> --body-file <file|-> [--head <sha>] [--agent <name>]
                              save a review as a draft for the GitHub tab (v:
                              approve, request-changes or comment; - reads stdin;
@@ -842,6 +844,8 @@ fn cli(args: Vec<String>) -> Cli {
         }
         "notify" if !rest.is_empty() => request("notify", vec![rest.join(" ")]),
         "notify" => return stopped(first, Stop::Usage),
+        "peer-review" if !rest.is_empty() => request("peer-review", vec![rest.join(" ")]),
+        "peer-review" => return stopped(first, Stop::Usage),
         "ls" => request("ls", Vec::new()),
         "show" if rest.is_empty() => request("show", Vec::new()),
         "show" => return usage("arakun show"),
@@ -1048,6 +1052,9 @@ fn run_args(rest: &[String]) -> Result<Vec<String>, Stop> {
 /// How long the client waits for an answer: `arakun page` waits for loads and
 /// clicks, each bounded on the app's side; `arakun run --ready` for its timeout.
 fn reply_wait(req: &Request) -> Duration {
+    if req.cmd == "peer-review" {
+        return Duration::from_secs(16 * 60);
+    }
     let run = (req.cmd == "run" && req.args.len() > 1).then(|| {
         req.args
             .get(3)
@@ -1465,6 +1472,7 @@ fn usage_of(cmd: &str) -> Option<&'static str> {
         "island" => ISLAND_USAGE,
         "rename" => "arakun rename <branch>",
         "notify" => "arakun notify [--] <message…>",
+        "peer-review" => "arakun peer-review <goal>",
         "ls" => "arakun ls",
         "feedback" => "arakun feedback --kind <bug|feature|ux|other> <text…|->",
         "restart" => "arakun restart",
@@ -1475,7 +1483,16 @@ fn usage_of(cmd: &str) -> Option<&'static str> {
 
 /// Commands whose arguments are only a payload, without flags of their own.
 const NO_FLAGS: &[&str] = &[
-    "browse", "palette", "open", "island", "rename", "notify", "ls", "restart", "add",
+    "browse",
+    "palette",
+    "open",
+    "island",
+    "rename",
+    "notify",
+    "peer-review",
+    "ls",
+    "restart",
+    "add",
 ];
 
 /// Why a command's arguments stop it before it runs.

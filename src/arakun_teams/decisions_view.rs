@@ -192,6 +192,7 @@ impl TeamsView {
                         on,
                     )
                     .id(("teams-decision", i))
+                    .map(ui::focusable)
                     .cursor_pointer()
                     .hover(|s| s.bg(theme::fill_hover()))
                     .when(on, |r| r.child(Self::outline_pill("Open")))

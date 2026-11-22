@@ -233,6 +233,7 @@ impl TeamsView {
     pub(super) fn render_bot_chip(&self, cx: &mut Context<Self>) -> AnyElement {
         div()
             .id("teams-bot")
+            .map(ui::focusable)
             .flex()
             .flex_none()
             .items_center()
@@ -326,6 +327,7 @@ impl TeamsView {
                 let id = m.id.clone();
                 div()
                     .id(("teams-bot-unfold", index))
+                    .map(ui::focusable)
                     .cursor_pointer()
                     .ty(Type::Body)
                     .text_color(theme::text())
@@ -545,6 +547,7 @@ impl TeamsView {
                     let url = v.source.clone();
                     div()
                         .id(SharedString::from(format!("teams-source-{index}-{k}")))
+                        .map(ui::focusable)
                         .cursor_pointer()
                         .hover(|s| s.text_color(theme::link()))
                         .tooltip(ui::tip("Open the page"))

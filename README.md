@@ -1073,8 +1073,10 @@ commands cost the tokens.
 
 Optional tools: `git` (Changes, worktrees, branches), `gh` (CI, GitHub tab), `bwrap`
 (headless agents on Linux), `secret-tool` from libsecret (stored logins on Linux), `gdbus`
-from GLib (`libglib2.0-bin` on Debian; Teams on Linux checks with it whether the keyring is
-locked or has no device yet), `tailscale` (phone over Tailscale), `cf` (Cloudflare tab).
+from GLib (`libglib2.0-bin` on Debian), `tailscale` (phone over Tailscale), `cf`
+(Cloudflare tab). Teams on Linux does not work without `secret-tool`, which keeps the
+session and the device keys, and on its first run it needs `gdbus` too, to tell a locked
+keyring from one with no device yet.
 
 ## Build from source
 

@@ -91,12 +91,13 @@ struct SessionView: View {
             .padding(.top, 10)
             .padding(.bottom, 6)
             .background(Color.ground)
+            // The hairline first, so the raccoon perched across it is drawn over it.
+            .overlay(alignment: .top) { Rectangle().fill(Color.line).frame(height: 1) }
             .overlay(alignment: .topTrailing) {
                 // Perched on the edge, over the last lines: it shows how the session is doing.
                 Mascot(mood: mood(s), width: 52)
                     .offset(x: -20, y: -50)
             }
-            .overlay(alignment: .top) { Rectangle().fill(Color.line).frame(height: 1) }
         }
         .navigationTitle(s?.title.isEmpty == false ? s!.title : "Session")
         .navigationBarTitleDisplayMode(.inline)

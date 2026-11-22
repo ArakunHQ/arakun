@@ -859,6 +859,8 @@ impl TeamsView {
                 // A chip that sits flush with the bar's padding until hovered.
                 div()
                     .id("teams-team-name")
+                    .map(|d| ui::labelled(d, gpui::Role::Button, "Teams, devices, a new team"))
+                    .map(ui::focusable)
                     .flex()
                     .items_center()
                     .min_w_0()
@@ -906,7 +908,9 @@ impl TeamsView {
                     .text_color(theme::text_subtle())
                     .when(encryption_open, |d| d.bg(theme::fill_selected()))
                     .when(in_channel, |d| {
-                        d.cursor_pointer()
+                        ui::labelled(d, gpui::Role::Button, "Encryption")
+                            .map(ui::focusable)
+                            .cursor_pointer()
                             .hover(|s| s.bg(theme::fill_hover()).text_color(theme::text()))
                             .on_click(
                                 cx.listener(|this, _, _, cx| {
@@ -943,6 +947,8 @@ impl TeamsView {
                 d.child(
                     div()
                         .id("teams-people")
+                        .map(|d| ui::labelled(d, gpui::Role::Button, "The team's people"))
+                        .map(ui::focusable)
                         .flex()
                         .items_center()
                         .gap(ui::sp(4.))
@@ -2025,9 +2031,12 @@ impl TeamsView {
         for (i, (cid, cname)) in channels.into_iter().enumerate() {
             let on = cid == channel_id;
             let (t2, c2) = (tid.clone(), cid.clone());
+            let cname = cname.unwrap_or_else(|| "locked channel".into());
             list = list.child(
                 div()
                     .id(("teams-channel", i))
+                    .map(|d| ui::labelled(d, gpui::Role::Button, format!("Open {cname}")))
+                    .map(ui::focusable)
                     .flex()
                     .items_center()
                     .gap(ui::sp(8.))
@@ -2048,13 +2057,7 @@ impl TeamsView {
                     } else {
                         theme::text_faint()
                     }))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .child(cname.unwrap_or_else(|| "locked channel".into())),
-                    )
+                    .child(div().flex_1().min_w_0().truncate().child(cname))
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.show(Pane::Channel(t2.clone(), c2.clone()), window, cx)
                     })),
@@ -2157,6 +2160,8 @@ impl TeamsView {
                 let qid = q.id.clone();
                 div()
                     .id(("teams-quote", index))
+                    .map(|d| ui::labelled(d, gpui::Role::Button, "Jump to the message"))
+                    .map(ui::focusable)
                     .flex()
                     .items_center()
                     .gap(ui::sp(6.))
@@ -2236,6 +2241,8 @@ impl TeamsView {
                         .child(
                             div()
                                 .id(("teams-resend", index))
+                                .map(|d| ui::labelled(d, gpui::Role::Button, "Send again"))
+                                .map(ui::focusable)
                                 .cursor_pointer()
                                 .ty(Type::Caption)
                                 .text_color(theme::link())
@@ -2530,6 +2537,8 @@ impl TeamsView {
                             .child(div().flex_1())
                             .child(
                                 square("teams-send")
+                                    .map(|d| ui::labelled(d, gpui::Role::Button, "Send (Enter)"))
+                                    .when(ready, ui::focusable)
                                     .bg(if ready {
                                         theme::content()
                                     } else {
@@ -2993,9 +3002,12 @@ impl TeamsView {
         }
         for (i, (login, d, verified)) in devices.into_iter().enumerate() {
             let id = d.device_id.clone();
+            let label = format!("Compare {}", crate::redact::text(&d.name));
             list = list.child(
                 div()
                     .id(("teams-pick-device", i))
+                    .map(|d| ui::labelled(d, gpui::Role::Button, label))
+                    .map(ui::focusable)
                     .flex()
                     .items_center()
                     .gap(ui::sp(8.))

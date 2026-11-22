@@ -56,11 +56,12 @@ pre-push:
       glob: *teams
       run: cd teams && (test node_modules/.package-lock.json -nt package-lock.json || npm ci) && npm test
 
-    # The Android app's protocol against the phone's vectors, and its lint.
+    # The Android app's tests (its protocol against the phone's vectors too), lint and build.
     # Needs JDK 17 and the Android SDK, as android/README.md says.
     - name: android
-      glob: ["android/*", "android/**/*", "phone/test/vectors/*", "assets/brand/mascot.json", "assets/fonts/*"]
-      run: cd android && ./gradlew --quiet :kit:test :app:lintDebug
+      # The paths ci.yml's changes job sends to the Android job.
+      glob: ["android/*", "android/**/*", "phone/*", "phone/**/*", "assets/brand/mascot.json", "assets/fonts/*", ".github/workflows/ci.yml", ".github/actions/*", ".github/actions/**/*"]
+      run: cd android && ./gradlew --quiet :kit:test :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
 
 commit-msg:
   jobs:

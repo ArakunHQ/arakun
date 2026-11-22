@@ -59,7 +59,10 @@ head_sha() {
 classify() {
   local files diff hit rust file url source reason=""
   local mac_cfg='target_os *= *"macos"|target_vendor *= *"apple"'
-  if ! files=$(gh pr diff "$pr" --name-only); then
+  # A rename lists its old path too, as ci.yml's changes job does: moving a
+  # file out of android/ still runs the Android job.
+  if ! files=$(gh api --paginate "repos/{owner}/{repo}/pulls/$pr/files" \
+    --jq '.[] | .filename, (.previous_filename // empty)'); then
     reason="could not list the changed files"
   elif hit=$(grep -iE 'macos|(^|/)mac(\.rs$|/)|(^|/)Cargo\.(toml|lock)$|(^|/)build\.rs$|^rust-toolchain\.toml$' <<< "$files" | sed -n 1p) && [ -n "$hit" ]; then
     reason="$hit changed"

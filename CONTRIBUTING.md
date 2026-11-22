@@ -124,7 +124,7 @@ cargo deny check
 (cd teams && npm ci && npx tsc --noEmit && npx vitest run)
 
 # android/ changed (JDK 17 and the Android SDK)
-(cd android && ./gradlew :kit:test :app:lintDebug :app:assembleDebug)
+(cd android && ./gradlew :kit:test :app:testDebugUnitTest :app:lintDebug :app:assembleDebug)
 
 # .github/ changed (brew install zizmor, or pipx install zizmor)
 zizmor .github
@@ -189,7 +189,7 @@ lefthook install
   the teams Worker's types if `teams/` changed, and the phone tests if `phone/` or
   `core/src/phone/` changed. They check the files on disk, not only what you staged.
 - **On push:** `cargo test`, the relay tests, the teams tests and the Android app's
-  tests and lint, if the commits you push change those parts.
+  tests, lint and build, if the commits you push change those parts.
 - **On the commit message:** the Conventional Commits check (see
   [Pull requests](#pull-requests)).
 
@@ -348,8 +348,9 @@ that keeps one on purpose goes on its allow-list.
   GitHub). Nobody is asked to review a draft, so you can push while CI and cubic (the
   review bot) run: cubic reviews drafts too, so its comments are usually waiting when the
   checks are. Once the required checks pass, mark it ready with `gh pr ready` or the
-  button on GitHub. `tools/wait-checks.sh` waits for them, and for the macOS job only
-  when the diff touches macOS code. Don't wait for the other checks (macOS for other
+  button on GitHub. `tools/wait-checks.sh` waits for them, for the macOS job only
+  when the diff touches macOS code, and for the Android job only when the diff touches
+  what it builds (the paths under "Checks"). Don't wait for the other checks (macOS for other
   changes, CodeQL), which can queue for a long time. Don't wait for the **Human approval**
   status either: for a pull request from outside the team it is required, but it only
   resolves after a person approves, and marking ready is what asks for the review. It

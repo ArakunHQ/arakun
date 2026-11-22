@@ -1250,23 +1250,36 @@ impl Mascot {
         }
     }
 
+    /// Next posture transition deadline after `IDLE_REST`, compared against the
+    /// last rendered frame so a timer wake slightly past a deadline never skips it.
+    fn idle_deadline(last_input: f64, last_frame: f64) -> f64 {
+        let rest = last_input + IDLE_REST;
+        let doze = last_input + DOZE_AFTER;
+        let sleep = last_input + SLEEP_AFTER;
+        if last_frame < rest {
+            rest
+        } else if last_frame < doze {
+            doze
+        } else if last_frame < sleep {
+            sleep
+        } else {
+            f64::INFINITY
+        }
+    }
+
     /// When an idle raccoon next has something to do, so frames can stop until then.
     fn next_event(&self) -> f64 {
         let now = self.now();
-        let doze = self.last_input + DOZE_AFTER;
-        let sleep = self.last_input + SLEEP_AFTER;
+        let last = self.last_frame.unwrap_or(0.);
         if now - self.last_input > IDLE_REST {
-            // Once settled, wait only for the next posture transition (doze or sleep)
-            // instead of waking the window for random fidgets.
-            return if now < doze {
-                doze
-            } else if now < sleep {
-                sleep
-            } else {
-                f64::INFINITY
-            };
+            return Self::idle_deadline(self.last_input, last);
         }
-        let mut t = self.next_blink.min(self.next_act).min(doze).min(sleep);
+        let mut t = self
+            .next_blink
+            .min(self.next_act)
+            .min(self.last_input + IDLE_REST)
+            .min(self.last_input + DOZE_AFTER)
+            .min(self.last_input + SLEEP_AFTER);
         if self.pointer.is_none() || now - self.last_move > 2.5 {
             t = t.min(self.next_wander);
         }
@@ -1970,5 +1983,17 @@ mod tests {
         assert_eq!(code_line(CODE_PERIOD * 2.5), (2, 0.5));
         // A clock that runs backwards never asks for a line before the first.
         assert_eq!(code_line(-3.), (0, 0.));
+    }
+
+    #[test]
+    fn idle_deadlines_stay_due_until_a_frame_renders_past_them() {
+        // Timer wakes 0.3s after rest/doze/sleep: each deadline stays due until rendered.
+        assert_eq!(Mascot::idle_deadline(0., 7.9), IDLE_REST);
+        assert!(8.3 >= Mascot::idle_deadline(0., 7.9));
+        assert_eq!(Mascot::idle_deadline(0., 8.3), DOZE_AFTER);
+        assert!(DOZE_AFTER + 0.3 >= Mascot::idle_deadline(0., 8.3));
+        assert_eq!(Mascot::idle_deadline(0., DOZE_AFTER + 0.3), SLEEP_AFTER);
+        assert!(SLEEP_AFTER + 0.3 >= Mascot::idle_deadline(0., DOZE_AFTER + 0.3));
+        assert_eq!(Mascot::idle_deadline(0., SLEEP_AFTER + 0.3), f64::INFINITY);
     }
 }

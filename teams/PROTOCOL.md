@@ -236,10 +236,13 @@ with envelopes: the previous epoch while the rotation is pending, the current on
 after it. So an older epoch is refused only after the new epoch's envelopes exist,
 and nothing is stored under an epoch whose key may never reach the members: two
 removals before a rotation skip an epoch, and nothing is ever sealed with it. The
-removed member holds the previous epoch's key, so the Arakun client seals nothing
-new with it: until the rotation ends it does not send, and shows that the rotation
-is pending (`rotation_pending`). A removed member keeps what they already read,
-and once the rotation ends, never what comes after.
+removed member holds the key of that newest epoch with envelopes, so an Arakun
+client that knows of the rotation (`rotation_pending`) seals nothing new with it:
+until the rotation ends it does not send, and shows that the rotation is pending.
+A device learns of it when it next reads the team, 20 seconds later at most in
+Arakun; until then it may still send with that key, and the server accepts it. A
+removed member keeps what they already read, and once the rotation ends, never
+what comes after.
 
 ## Channels and messages
 

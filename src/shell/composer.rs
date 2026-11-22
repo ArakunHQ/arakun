@@ -789,7 +789,7 @@ impl Shell {
             if !text.is_empty() {
                 text.push_str("\n\n");
             }
-            text.push_str(&crate::agent::attach::wrap_paste(p));
+            text.push_str(&crate::agent::attach::wrap_paste(&p.text));
         }
         if !notes.is_empty() {
             if !text.is_empty() {
@@ -956,11 +956,7 @@ impl Shell {
         let pastes: Vec<(usize, usize)> = self
             .pastes
             .get(&env.path)
-            .map(|v| {
-                v.iter()
-                    .map(|p| (p.lines().count(), p.chars().count()))
-                    .collect()
-            })
+            .map(|v| v.iter().map(|p| (p.lines, p.chars)).collect())
             .unwrap_or_default();
         let paste_row: Option<AnyElement> = (!pastes.is_empty()).then(|| {
             div()

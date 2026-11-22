@@ -505,7 +505,7 @@ pub struct Shell {
     /// The project check's state per session id.
     checks: std::collections::HashMap<String, checks::CheckLoop>,
     /// Large pastes waiting in each environment's composer, sent with the draft.
-    pastes: std::collections::HashMap<std::path::PathBuf, Vec<String>>,
+    pastes: std::collections::HashMap<std::path::PathBuf, Vec<paste::Paste>>,
     /// Annotations and review comments waiting in each environment's composer.
     notes: std::collections::HashMap<std::path::PathBuf, Vec<crate::agent::notes::ChatNote>>,
     review_draft: Option<notes::ReviewDraft>,

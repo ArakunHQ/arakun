@@ -230,6 +230,8 @@ fn start_sender() {
 }
 
 /// Where a survey response comes from.
+// Later tasks construct every variant; until then only tests do.
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Source {
     User,
@@ -310,18 +312,25 @@ pub fn feedback_allowed(src: Source) -> Result<(), Refused> {
     feedback_decision(src, blocked_by(), effective())
 }
 
+/// A top-level field on a queued event, set only by `send_feedback`. It is
+/// outside `properties` so no caller of `capture` can forge it, and it is
+/// stripped before the event is posted (`payload`).
+const FEEDBACK_MARK: &str = "arakun_feedback_source";
+
+/// The event for a response from `src`. The source comes from the parameter,
+/// whatever `props` says.
+fn feedback_event(event: &str, src: Source, mut props: Map<String, Value>) -> Value {
+    props.insert("source".into(), src.as_str().into());
+    let mut e = event_json(event, props);
+    e[FEEDBACK_MARK] = src.as_str().into();
+    e
+}
+
 /// Sends a survey response. It never waits in `hold`: user and error feedback
 /// goes out even while the first-launch question is open.
-pub fn send_feedback(event: &str, props: Map<String, Value>) -> Result<(), Refused> {
-    let src = props.get("source").and_then(Value::as_str);
-    let src = match src {
-        Some("user") => Source::User,
-        Some("error") => Source::Error,
-        Some("agent") => Source::Agent,
-        _ => Source::Popover,
-    };
+pub fn send_feedback(event: &str, src: Source, props: Map<String, Value>) -> Result<(), Refused> {
     feedback_allowed(src)?;
-    enqueue(event_json(event, props));
+    enqueue(feedback_event(event, src, props));
     start_sender();
     Ok(())
 }
@@ -335,6 +344,11 @@ pub fn capture(event: &str, props: &[(&str, &str)]) {
 /// `capture` with counts too, sent as numbers so PostHog can sum and
 /// average them.
 pub fn capture_with(event: &str, props: &[(&str, &str)], counts: &[(&str, u64)]) {
+    // A response must go through `send_feedback`, which checks its source.
+    debug_assert!(event != events::SURVEY_SENT, "use send_feedback");
+    if event == events::SURVEY_SENT {
+        return;
+    }
     let usage = USAGE.load(Ordering::Relaxed);
     if !usage && !HOLDING.load(Ordering::Relaxed) {
         return;
@@ -430,8 +444,9 @@ fn allowed(event: &Value, choice: Consent) -> bool {
     if event["event"] == "$exception" {
         choice.crashes
     } else if event["event"] == events::SURVEY_SENT {
-        // Feedback the person sent on purpose is its own consent.
-        let src = event["properties"]["source"].as_str();
+        // Feedback the person sent on purpose is its own consent, but only
+        // when `send_feedback` marked it so.
+        let src = event[FEEDBACK_MARK].as_str();
         matches!(src, Some("user" | "error")) || choice.usage
     } else {
         choice.usage
@@ -690,6 +705,21 @@ thread_local! {
     static SENDING: Cell<bool> = const { Cell::new(false) };
 }
 
+/// The request body: the events without the marker, which is ours alone.
+fn payload(batch: &[&Value]) -> Value {
+    let batch: Vec<Value> = batch
+        .iter()
+        .map(|e| {
+            let mut e = (*e).clone();
+            if let Some(o) = e.as_object_mut() {
+                o.remove(FEEDBACK_MARK);
+            }
+            e
+        })
+        .collect();
+    json!({"api_key": KEY, "batch": batch})
+}
+
 /// Posts `batch`; on failure the events are dropped, as reports are best effort.
 fn send(batch: &[Value], agent: &ureq::Agent) {
     // The answer may have changed since these were queued.
@@ -698,7 +728,7 @@ fn send(batch: &[Value], agent: &ureq::Agent) {
     if batch.is_empty() {
         return;
     }
-    let body = json!({"api_key": KEY, "batch": batch}).to_string();
+    let body = payload(&batch).to_string();
     SENDING.with(|s| s.set(true));
     let _ = agent
         .post(format!("{}/batch/", HOST.trim_end_matches('/')))
@@ -1139,21 +1169,64 @@ mod tests {
         assert_eq!(feedback_allowed(Source::User), Err(Refused::DevBuild));
     }
 
+    fn marked(src: Source) -> Value {
+        let mut e = event_json(events::SURVEY_SENT, Map::new());
+        e[FEEDBACK_MARK] = src.as_str().into();
+        e
+    }
+
     #[test]
     fn feedback_event_passes_send_filter() {
-        let sent = |src: &str| {
-            event_json(
+        for src in [Source::User, Source::Error] {
+            assert!(allowed(&marked(src), Consent::NONE), "{src:?}");
+        }
+        for src in [Source::Agent, Source::Popover] {
+            assert!(!allowed(&marked(src), Consent::NONE), "{src:?}");
+            assert!(allowed(&marked(src), Consent::ALL), "{src:?}");
+        }
+    }
+
+    #[test]
+    fn unmarked_user_response_is_filtered_without_usage() {
+        let props = json!({"source": "user"}).as_object().unwrap().clone();
+        let e = event_json(events::SURVEY_SENT, props);
+        assert!(!allowed(&e, Consent::NONE));
+    }
+
+    #[test]
+    fn capture_cannot_send_survey_sent() {
+        USAGE.store(true, Ordering::Relaxed);
+        let r = std::panic::catch_unwind(|| {
+            capture(
                 events::SURVEY_SENT,
-                json!({ "source": src }).as_object().unwrap().clone(),
-            )
-        };
-        for src in ["user", "error"] {
-            assert!(allowed(&sent(src), Consent::NONE), "{src}");
-        }
-        for src in ["agent", "popover"] {
-            assert!(!allowed(&sent(src), Consent::NONE), "{src}");
-            assert!(allowed(&sent(src), Consent::ALL), "{src}");
-        }
+                &[("source", "user"), ("tag", "cap-test")],
+            );
+        });
+        USAGE.store(false, Ordering::Relaxed);
+        let _ = r;
+        let found = lock(&queue().events)
+            .iter()
+            .any(|e| e["properties"]["tag"] == "cap-test");
+        assert!(!found);
+    }
+
+    #[test]
+    fn send_feedback_source_comes_from_parameter() {
+        let props = json!({"source": "user"}).as_object().unwrap().clone();
+        // In tests everything is refused as a dev build, so decide directly.
+        let e = feedback_event(events::SURVEY_SENT, Source::Agent, props);
+        assert_eq!(e["properties"]["source"], "agent");
+        assert_eq!(e[FEEDBACK_MARK], "agent");
+        assert!(!allowed(&e, Consent::NONE));
+    }
+
+    #[test]
+    fn marker_never_reaches_the_payload() {
+        let batch = [marked(Source::User)];
+        let refs: Vec<&Value> = batch.iter().collect();
+        let body = payload(&refs);
+        assert!(!body.to_string().contains(FEEDBACK_MARK));
+        assert!(batch[0].get(FEEDBACK_MARK).is_some());
     }
 
     #[test]
@@ -1178,10 +1251,11 @@ mod tests {
         CRASHES.store(false, Ordering::Relaxed);
         let id = id.expect("sent");
         assert_eq!(id.len(), 36);
-        let queued = lock(&queue().events)
-            .iter()
-            .any(|e| e["uuid"] == id.as_str());
-        assert!(queued);
+        // Take it back out: the queue is shared with other tests.
+        let mut events = lock(&queue().events);
+        let before = events.len();
+        events.retain(|e| e["uuid"] != id.as_str());
+        assert_eq!(events.len(), before - 1);
     }
 
     #[test]

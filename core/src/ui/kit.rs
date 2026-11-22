@@ -1563,19 +1563,19 @@ pub fn lead_icon(name: &str, tint: Tint) -> gpui::Div {
 
 /// A working session: a ring with a turning arc in the working blue.
 pub fn lead_spinner() -> AnyElement {
-    let t = super::motion::loop_t(std::time::Duration::from_millis(1100));
-    div()
-        .flex()
-        .flex_none()
-        .items_center()
-        .justify_center()
-        .size(px(16.))
-        .child(
-            icon("loading03", 15.)
-                .text_color(theme::working())
-                .with_transformation(gpui::Transformation::rotate(gpui::percentage(t))),
-        )
-        .into_any_element()
+    super::motion::looping(std::time::Duration::from_millis(1100), |t| {
+        div()
+            .flex()
+            .flex_none()
+            .items_center()
+            .justify_center()
+            .size(px(16.))
+            .child(
+                icon("loading03", 15.)
+                    .text_color(theme::working())
+                    .with_transformation(gpui::Transformation::rotate(gpui::percentage(t))),
+            )
+    })
 }
 
 /// An idle session: an empty ring.

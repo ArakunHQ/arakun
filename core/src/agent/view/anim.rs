@@ -1,7 +1,7 @@
 //! How the transcript moves: the live beacon, spinners and shimmer that loop
 //! while the agent works, and the way entries and folds arrive.
 //!
-//! Loops read the app's loop clock (`motion::loop_t`), which redraws at
+//! Loops run on the app's loop clock (`motion::looping`), which redraws at
 //! `motion::LOOP_FPS` rather than the display's rate, keeps loops side by
 //! side in step, and holds them still when the system reduces motion.
 //! Arrivals are keyed by entry, not by element: the list drops an element's
@@ -69,16 +69,17 @@ pub(super) fn beacon(state: Beacon, color: Hsla) -> AnyElement {
         .bg(color);
     let mut b = div().relative().flex_none().size(px(BEACON_BOX));
     if let Some(period) = state.period() {
-        let (size, opacity) = ring_at(motion::loop_t(period));
-        let ring = div()
-            .absolute()
-            .rounded_full()
-            .border_1()
-            .top(offset(size))
-            .left(offset(size))
-            .size(px(size))
-            .border_color(color.opacity(opacity));
-        b = b.child(ring);
+        b = b.child(motion::looping(period, |t| {
+            let (size, opacity) = ring_at(t);
+            div()
+                .absolute()
+                .rounded_full()
+                .border_1()
+                .top(offset(size))
+                .left(offset(size))
+                .size(px(size))
+                .border_color(color.opacity(opacity))
+        }));
     }
     b.child(dot).into_any_element()
 }
@@ -91,10 +92,11 @@ pub(super) fn spinner(moving: bool, size: f32, color: Hsla) -> AnyElement {
         .left_0()
         .text_color(color);
     let arc = if moving {
-        let t = motion::loop_t(SPIN);
-        arc.with_transformation(Transformation::rotate(radians(t * std::f32::consts::TAU)))
+        motion::looping(SPIN, |t| {
+            arc.with_transformation(Transformation::rotate(radians(t * std::f32::consts::TAU)))
+        })
     } else {
-        arc
+        arc.into_any_element()
     };
     div()
         .relative()
@@ -116,10 +118,15 @@ pub(super) fn spinner(moving: bool, size: f32, color: Hsla) -> AnyElement {
 /// up to `peak`, two text roles so the Grays setting holds. Plain, at
 /// `base`, while `moving` is off.
 pub(super) fn shimmer(moving: bool, text: &str, base: Hsla, peak: Hsla) -> AnyElement {
-    let t = if moving { motion::loop_t(SHIMMER) } else { 0. };
-    StyledText::new(SharedString::from(text.to_string()))
-        .with_runs(shimmer_runs(text, t, base, peak))
-        .into_any_element()
+    let draw = |t| {
+        StyledText::new(SharedString::from(text.to_string()))
+            .with_runs(shimmer_runs(text, t, base, peak))
+    };
+    if moving {
+        motion::looping(SHIMMER, draw)
+    } else {
+        draw(0.).into_any_element()
+    }
 }
 
 /// The band's brightness at char `i` of `n`, `t` (0 to 1) into a sweep. The
@@ -158,9 +165,9 @@ pub(super) fn pulse(moving: bool, el: Div) -> AnyElement {
     if !moving {
         return el.opacity(0.9).into_any_element();
     }
-    let t = motion::loop_t(PULSE);
-    el.opacity(0.625 + 0.275 * (t * std::f32::consts::TAU).cos())
-        .into_any_element()
+    motion::looping(PULSE, |t| {
+        el.opacity(0.625 + 0.275 * (t * std::f32::consts::TAU).cos())
+    })
 }
 
 /// A chevron that springs between pointing right (closed) and down (open).

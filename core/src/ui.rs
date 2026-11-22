@@ -944,13 +944,14 @@ pub fn menu_item(
         .child(div().flex_1().min_w_0().truncate().child(label))
 }
 
-/// Small spinning loader for busy buttons and rows. It turns on the loop
-/// clock (`motion::loop_t`), so spinners side by side turn together.
+/// Small spinning loader for busy buttons and rows. It runs on the loop
+/// clock (`motion::looping`), so spinners side by side turn together.
 pub fn spinner(size: f32, color: Hsla) -> impl IntoElement {
-    let t = motion::loop_t(std::time::Duration::from_millis(900));
-    icon("loading03", size)
-        .text_color(color)
-        .with_transformation(gpui::Transformation::rotate(gpui::percentage(t)))
+    motion::looping(std::time::Duration::from_millis(900), |t| {
+        icon("loading03", size)
+            .text_color(color)
+            .with_transformation(gpui::Transformation::rotate(gpui::percentage(t)))
+    })
 }
 
 #[cfg(test)]

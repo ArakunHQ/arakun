@@ -215,8 +215,9 @@ pub struct IsoView {
     generation: u64,
     /// Where in the loop, 0..1.
     t: f32,
-    /// The ambient clock, in seconds: it runs while anything is shown,
-    /// also when the guide holds the story still.
+    /// The ambient clock, in seconds: it runs while the video plays or the
+    /// guide is on, also when the guide holds the story still. Paused, it
+    /// stops.
     tau: f32,
     playing: bool,
     /// Step by step instead of a video: the guide's place and where it is
@@ -747,13 +748,17 @@ fn draw_frame(
 impl Render for IsoView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let seconds = self.entries.get(self.scene).map_or(1., Entry::seconds);
-        // Both modes keep the ambient clock going while the tab draws.
+        // Both modes keep the ambient clock going while the tab draws. A
+        // paused scene holds it still: a finished frame notifies the view,
+        // and a clock that moved would ask for another frame forever.
         let now = Instant::now();
         let dt = self
             .last_frame
             .map_or(0., |l| (now - l).as_secs_f32().min(0.1));
         self.last_frame = Some(now);
-        self.tau += dt;
+        if self.playing || self.guide.is_some() {
+            self.tau += dt;
+        }
         if let Some(g) = &mut self.guide {
             let steps = self.entries.get(self.scene).and_then(Entry::steps);
             let d = g.to - g.at;

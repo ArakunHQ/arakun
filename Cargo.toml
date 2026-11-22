@@ -152,6 +152,18 @@ debug = 1
 lto = "thin"
 codegen-units = 1
 
+# What tools/install.sh builds by default: the release profile without its slowest
+# parts. One codegen unit and LTO keep one core busy for minutes on every change to
+# the app crate; this profile splits the work and keeps incremental state, so
+# rebuilding after an edit takes seconds instead of about six minutes on a 24-thread
+# machine. The binary is somewhat larger and slower than a release's. Releases and CI
+# keep `--release`.
+[profile.release-local]
+inherits = "release"
+lto = false
+codegen-units = 16
+incremental = true
+
 # Leaves debug info in the object files instead of copying it into each binary. A
 # change relinks the app, its tests and the examples: on Linux this cut an incremental
 # `cargo test` build from about 55 s to 7 s. macOS does this by default. Cargo leaves

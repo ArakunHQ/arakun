@@ -34,8 +34,20 @@ pub struct Commit {
     pub author: String,
     pub title: String,
     pub who: Who,
+    /// Who wrote it with the author, from the first Co-Authored-By trailer
+    /// ("Claude Opus 5.5"), without the email.
+    pub coauthor: Option<String>,
+    /// Files changed, lines added and removed; None when git did not say.
+    pub stat: Option<Stat>,
     /// On some remote.
     pub pushed: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Stat {
+    pub files: u32,
+    pub added: u32,
+    pub removed: u32,
 }
 
 impl Commit {
@@ -206,6 +218,10 @@ pub struct Map {
     pub main_ref: String,
     /// First-parent history of the default branch, newest first.
     pub main_commits: Vec<Commit>,
+    /// Commits on the default branch's first-parent line, all of them.
+    pub main_total: u64,
+    /// Version tags, as (commit sha, tag name).
+    pub tags: Vec<(String, String)>,
     pub branches: Vec<Branch>,
     /// Why there are no pull requests (no GitHub remote, gh signed out...).
     pub prs_error: Option<String>,
@@ -250,7 +266,8 @@ fn default_ref(dir: &Path) -> Option<String> {
         .map(str::to_string)
 }
 
-const FORMAT: &str = "--format=%H%x1f%ct%x1f%an%x1f%s%x1f%(trailers:key=Co-authored-by,valueonly,separator=%x2c)%x1e";
+// Each record starts with \x1e, so `--shortstat`'s line ends up in its own record.
+const FORMAT: &str = "--format=%x1e%H%x1f%ct%x1f%an%x1f%s%x1f%(trailers:key=Co-authored-by,valueonly,separator=%x1d)%x1f";
 
 /// Claude or Droid when a trailer or the author names them.
 pub fn who(author: &str, trailers: &str) -> Who {
@@ -264,6 +281,36 @@ pub fn who(author: &str, trailers: &str) -> Who {
     }
 }
 
+/// The name in the first Co-Authored-By trailer: "Claude Opus 5.5" from
+/// "Claude Opus 5.5 <noreply@anthropic.com>". Trailers are split by \x1d.
+pub fn coauthor(trailers: &str) -> Option<String> {
+    trailers
+        .split(['\x1d', '\n'])
+        .map(|t| t.split('<').next().unwrap_or_default().trim())
+        .find(|n| !n.is_empty())
+        .map(str::to_string)
+}
+
+/// " 3 files changed, 121 insertions(+), 19 deletions(-)" as numbers.
+pub fn parse_stat(text: &str) -> Option<Stat> {
+    let line = text
+        .lines()
+        .map(str::trim)
+        .find(|l| l.contains("changed"))?;
+    let mut stat = Stat::default();
+    for part in line.split(',') {
+        let mut words = part.split_whitespace();
+        let n: u32 = words.next()?.parse().ok()?;
+        match words.next().unwrap_or_default() {
+            w if w.starts_with("file") => stat.files = n,
+            w if w.starts_with("insertion") => stat.added = n,
+            w if w.starts_with("deletion") => stat.removed = n,
+            _ => {}
+        }
+    }
+    Some(stat)
+}
+
 pub(crate) fn parse_log(text: &str) -> Vec<Commit> {
     text.split('\x1e')
         .filter_map(|rec| {
@@ -274,8 +321,11 @@ pub(crate) fn parse_log(text: &str) -> Vec<Commit> {
             let author = p.next().unwrap_or_default().to_string();
             let title = p.next().unwrap_or_default().to_string();
             let trailers = p.next().unwrap_or_default();
+            let stat = parse_stat(p.next().unwrap_or_default());
             (!sha.is_empty()).then(|| Commit {
                 who: who(&author, trailers),
+                coauthor: coauthor(trailers),
+                stat,
                 sha,
                 time,
                 author,
@@ -287,7 +337,7 @@ pub(crate) fn parse_log(text: &str) -> Vec<Commit> {
 }
 
 fn log(dir: &Path, args: &[&str]) -> Vec<Commit> {
-    let mut full = vec!["log", FORMAT];
+    let mut full = vec!["log", FORMAT, "--shortstat"];
     full.extend_from_slice(args);
     git::read(dir, &full)
         .map(|t| parse_log(&t))
@@ -512,6 +562,19 @@ fn merged_by(
         .map(|c| c.sha.clone())
 }
 
+/// `for-each-ref` lines of tags as (commit, tag): an annotated tag's commit
+/// is in the second column, a lightweight one's in the first.
+fn parse_tags(text: &str) -> Vec<(String, String)> {
+    text.lines()
+        .filter_map(|l| {
+            let mut p = l.split('\t');
+            let (object, peeled, name) = (p.next()?, p.next()?, p.next()?);
+            let sha = if peeled.is_empty() { object } else { peeled };
+            (!name.is_empty()).then(|| (sha.to_string(), name.to_string()))
+        })
+        .collect()
+}
+
 /// Reads the branch map of the repository at `dir` (any of its worktrees).
 pub fn load(dir: &Path) -> Map {
     let now = crate::model::unix_now();
@@ -567,6 +630,20 @@ pub fn load(dir: &Path) -> Map {
             prs.join().unwrap_or_else(|_| Err("gh crashed".into())),
         )
     });
+    let main_total = git::read(dir, &["rev-list", "--count", "--first-parent", &main_ref])
+        .ok()
+        .and_then(|n| n.trim().parse().ok())
+        .unwrap_or(main_commits.len() as u64);
+    let tags = git::read(
+        dir,
+        &[
+            "for-each-ref",
+            "--format=%(objectname)%09%(*objectname)%09%(refname:short)",
+            "refs/tags",
+        ],
+    )
+    .map(|t| parse_tags(&t))
+    .unwrap_or_default();
     let (pr_list, prs_error) = match gh {
         Ok(l) => (l, None),
         Err(e) => (Vec::new(), Some(e)),
@@ -721,6 +798,8 @@ pub fn load(dir: &Path) -> Map {
         main,
         main_ref,
         main_commits,
+        main_total,
+        tags,
         branches,
         prs_error,
         github: github_repo(dir),
@@ -747,13 +826,49 @@ mod tests {
             Who::Droid
         );
         assert_eq!(who("alice", ""), Who::Person);
-        let log = "a1\x1f100\x1falice\x1fFix\x1fClaude <noreply@anthropic.com>\x1e\nb2\x1f90\x1fbob\x1fZoom (#12)\x1f\x1e\n";
+        let log = "\x1ea1\x1f100\x1falice\x1fFix\x1fClaude Opus 5.5 <noreply@anthropic.com>\x1dcubic <bot@cubic.dev>\x1f\n\n 1 file changed, 121 insertions(+), 19 deletions(-)\n\x1eb2\x1f90\x1fbob\x1fZoom (#12)\x1f\x1f\n";
         let c = parse_log(log);
         assert_eq!(c.len(), 2);
         assert_eq!(
             (c[0].who, c[1].who, c[1].title.as_str(), c[1].time),
             (Who::Claude, Who::Person, "Zoom (#12)", 90)
         );
+        assert_eq!(c[0].coauthor.as_deref(), Some("Claude Opus 5.5"));
+        assert_eq!(
+            c[0].stat,
+            Some(Stat {
+                files: 1,
+                added: 121,
+                removed: 19
+            })
+        );
+        assert_eq!((c[1].coauthor.as_deref(), c[1].stat), (None, None));
+    }
+
+    #[test]
+    fn tags_point_at_their_commit() {
+        assert_eq!(
+            parse_tags("t1\tc1\tv0.14.1\nc2\t\tnightly\n"),
+            vec![
+                ("c1".to_string(), "v0.14.1".to_string()),
+                ("c2".to_string(), "nightly".to_string())
+            ]
+        );
+    }
+
+    #[test]
+    fn stats_and_coauthors_read_alone() {
+        assert_eq!(
+            parse_stat(" 3 files changed, 4 deletions(-)"),
+            Some(Stat {
+                files: 3,
+                added: 0,
+                removed: 4
+            })
+        );
+        assert_eq!(parse_stat(""), None);
+        assert_eq!(coauthor("cubic <bot@cubic.dev>").as_deref(), Some("cubic"));
+        assert_eq!(coauthor(""), None);
     }
 
     #[test]
@@ -805,6 +920,8 @@ mod tests {
             author: String::new(),
             title: String::new(),
             who: Who::Person,
+            coauthor: None,
+            stat: None,
             pushed,
         };
         let b = Branch {
@@ -914,6 +1031,8 @@ mod tests {
             author: String::new(),
             title: title.into(),
             who: Who::Person,
+            coauthor: None,
+            stat: None,
             pushed: true,
         };
         let main = vec![c("m2", "CI más rápido (#14)"), c("m1", "Usage (#13)")];

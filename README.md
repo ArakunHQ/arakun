@@ -746,8 +746,9 @@ one for usage counts, and a button for feedback:
   at most once per launch. Arakun fetches them from PostHog only with usage counts
   on, in an anonymous request with the project token and no id. With usage counts
   off, the feedback forms use the questions built into Arakun. Each answer you send
-  also opens a ticket in the Arakun team's private support inbox (PostHog Support),
-  with the email you left, if any, so the team can reply. A person on the team may
+  also tries to open a ticket in the Arakun team's private support inbox (PostHog
+  Support), with the email you left, if any, so the team can reply. If that fails,
+  the answer still arrives, just without a ticket. A person on the team may
   turn a bug, feature or UX report into a public GitHub issue, without paths, links,
   keys or emails.
 

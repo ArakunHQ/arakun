@@ -2703,6 +2703,8 @@ impl Shell {
                 cx,
             )
         });
+        let rail_w = self.rail_w;
+        dialog.update(cx, |d, _| d.rail_w = rail_w);
         let sub = cx.subscribe_in(
             &dialog,
             window,
@@ -2733,6 +2735,14 @@ impl Shell {
                     this.save(cx);
                 }
                 SettingsEvent::Zoom(pct) => this.zoom_to(*pct, window, cx),
+                SettingsEvent::TabLayout(layout, preset) => {
+                    this.apply_tab_layout(*layout, *preset, cx)
+                }
+                SettingsEvent::SidebarWidth(w) => {
+                    this.rail_w = w.clamp(RAIL_W_RANGE.start, RAIL_W_RANGE.end);
+                    this.save(cx);
+                    cx.notify();
+                }
                 SettingsEvent::SidebarView(view, on) => {
                     this.extensions_view
                         .update(cx, |v, cx| v.set_view(*view, *on, cx));

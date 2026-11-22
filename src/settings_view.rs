@@ -42,6 +42,13 @@ pub enum SettingsEvent {
     Island(bool),
     /// The whole UI's zoom, in percent.
     Zoom(u32),
+    /// How sessions and tabs show, and the preset it came from, if any.
+    TabLayout(
+        crate::tab_layout::TabLayout,
+        Option<crate::tab_layout::Preset>,
+    ),
+    /// The sidebar's width, in points.
+    SidebarWidth(f32),
     ReduceMotion(crate::ui::motion::Reduce),
     /// An extension view turned on or off in the sidebar.
     SidebarView(crate::sidebar::View, bool),
@@ -217,7 +224,7 @@ impl Section {
         match self {
             Section::General => "How Arakun behaves when nothing is going on.",
             Section::Appearance => {
-                "Zoom here. Colors, shape and the sidebar are edited beside the app, not in this dialog."
+                "Tabs and sessions, and zoom. Colors, shape and the sidebar are edited beside the app, not in this dialog."
             }
             Section::Project => {
                 "The open project's commands, base branch and sandbox, on this computer."
@@ -253,7 +260,7 @@ impl Section {
                 "raccoon mascot animation motion new session dynamic island notch top bar agents alerts background close hide tray sidebar usage card plans browser web page drive click type scripts"
             }
             Section::Appearance => {
-                "theme palette color scheme colors accent tint corners radius rounded round sharp spacing gap padding compact roomy density window custom share night graphite midnight forest rose diff colors colorblind high contrast glass blur transparent translucent grays gray text size font scale design system mode dark light zoom bigger smaller reduce motion animation accessibility still"
+                "tabs sessions pinned pin title bar tree sidebar width group project classic focused everything fold folded hidden long titles two lines state icon dot word theme palette color scheme colors accent tint corners radius rounded round sharp spacing gap padding compact roomy density window custom share night graphite midnight forest rose diff colors colorblind high contrast glass blur transparent translucent grays gray text size font scale design system mode dark light zoom bigger smaller reduce motion animation accessibility still"
             }
             Section::Project => {
                 "setup script install new environment worktree check command test lint build verify \
@@ -472,6 +479,8 @@ pub struct SettingsDialog {
     setup_input: Entity<TextInput>,
     check_input: Entity<TextInput>,
     base_input: Entity<TextInput>,
+    /// The sidebar's width, which the Tabs and sessions part sets too.
+    pub rail_w: f32,
     _subs: [Subscription; 7],
 }
 
@@ -633,6 +642,7 @@ impl SettingsDialog {
             check_input,
             base_input,
             look,
+            rail_w: crate::state::RAIL_W,
             confirm_nightly: false,
             pane_scroll: gpui::ScrollHandle::new(),
             _subs: [
@@ -1834,6 +1844,7 @@ impl SettingsDialog {
             .into_any_element()
         };
         stack(vec![
+            self.render_tabs_and_sessions(cx),
             group(vec![
                 row("Colors", "", value(self.look.colors.clone())).into_any_element(),
                 row("Shape", "", value(self.look.shape.clone())).into_any_element(),
@@ -1842,6 +1853,229 @@ impl SettingsDialog {
             open,
             titled("Window", vec![zoom, motion]),
         ])
+    }
+
+    /// Tabs and sessions: three presets on top, then the options they set.
+    fn render_tabs_and_sessions(&self, cx: &mut Context<Self>) -> AnyElement {
+        use crate::tab_layout::{
+            BarShows, LongTitles, Opt, Preset, Quiet, SessionsIn, StateMark, TabLayout,
+        };
+        let layout = crate::tab_layout::current();
+        let chosen = layout.preset();
+        let tiles = div().flex().gap(crate::ui::sp(12.)).children(
+            Preset::ALL
+                .into_iter()
+                .enumerate()
+                .map(|(i, p)| preset_tile(i, p, chosen == Some(p), cx)),
+        );
+        let note = match chosen {
+            Some(p) => format!("Set by {}", p.label()),
+            None => "Arranged by you".to_string(),
+        };
+        // A segmented control for one option; off when the other options
+        // make it mean nothing.
+        let seg = |id: &'static str,
+                   on: bool,
+                   choices: Vec<(&'static str, bool, bool, TabLayout)>,
+                   cx: &mut Context<Self>| {
+            let mut s = ui::segmented();
+            for (i, (label, picked, allowed, next)) in choices.into_iter().enumerate() {
+                let live = on && allowed;
+                s = s.child(
+                    ui::segment((id, i), None, label, picked)
+                        .when(!live, |d| d.opacity(0.4))
+                        .when(live, |d| {
+                            d.on_click(cx.listener(move |_, _, _, cx| {
+                                cx.emit(SettingsEvent::TabLayout(next, None));
+                                cx.notify();
+                            }))
+                        }),
+                );
+            }
+            s.into_any_element()
+        };
+        let with = |f: &dyn Fn(&mut TabLayout)| layout.with(f);
+        let sessions_in = seg(
+            "tabs-sessions-in",
+            true,
+            [
+                ("Sidebar", SessionsIn::Sidebar),
+                ("Title bar", SessionsIn::TitleBar),
+                ("Both", SessionsIn::Both),
+            ]
+            .into_iter()
+            .map(|(l, v)| {
+                (
+                    l,
+                    layout.sessions_in == v,
+                    true,
+                    with(&|t| t.sessions_in = v),
+                )
+            })
+            .collect(),
+            cx,
+        );
+        let bar_shows = seg(
+            "tabs-bar-shows",
+            true,
+            [
+                ("Pinned", BarShows::Pinned),
+                ("This project", BarShows::Project),
+                ("All open", BarShows::AllOpen),
+            ]
+            .into_iter()
+            .map(|(l, v)| {
+                (
+                    l,
+                    layout.bar_shows == v,
+                    layout.allows_bar(v),
+                    with(&|t| t.bar_shows = v),
+                )
+            })
+            .collect(),
+            cx,
+        );
+        let state = seg(
+            "tabs-state",
+            true,
+            [
+                ("Icon", StateMark::Icon),
+                ("Dot", StateMark::Dot),
+                ("Word", StateMark::Word),
+            ]
+            .into_iter()
+            .map(|(l, v)| (l, layout.state == v, true, with(&|t| t.state = v)))
+            .collect(),
+            cx,
+        );
+        let quiet = seg(
+            "tabs-quiet",
+            layout.applies(Opt::Quiet),
+            [
+                ("Open", Quiet::Open),
+                ("Folded", Quiet::Folded),
+                ("Hidden", Quiet::Hidden),
+            ]
+            .into_iter()
+            .map(|(l, v)| (l, layout.quiet == v, true, with(&|t| t.quiet = v)))
+            .collect(),
+            cx,
+        );
+        let titles = seg(
+            "tabs-titles",
+            layout.applies(Opt::Titles),
+            [
+                ("Cut", LongTitles::Cut),
+                ("Two lines", LongTitles::TwoLines),
+            ]
+            .into_iter()
+            .map(|(l, v)| (l, layout.titles == v, true, with(&|t| t.titles = v)))
+            .collect(),
+            cx,
+        );
+        let group_on = layout.applies(Opt::Group);
+        let grouped = with(&|t| t.group = !layout.group);
+        let group_switch = div()
+            .id("tabs-group")
+            .role(gpui::Role::Switch)
+            .aria_label("Group by project")
+            .aria_toggled(crate::ui::toggled(layout.group))
+            .child(ui::switch(layout.group))
+            .when(!group_on, |d| d.opacity(0.4))
+            .when(group_on, |d| {
+                d.cursor_pointer().on_click(cx.listener(move |_, _, _, cx| {
+                    cx.emit(SettingsEvent::TabLayout(grouped, None));
+                    cx.notify();
+                }))
+            })
+            .into_any_element();
+        let width = {
+            const MIN: f32 = 160.;
+            const MAX: f32 = 320.;
+            let w = self.rail_w.clamp(MIN, MAX);
+            let this = cx.entity();
+            div()
+                .flex()
+                .flex_none()
+                .items_center()
+                .gap(crate::ui::sp(12.))
+                .child(div().w(px(200.)).child(ui::slider(
+                    "tabs-sidebar-w",
+                    (w - MIN) / (MAX - MIN),
+                    ui::blend_track(theme::fill_selected(), theme::text_faint()),
+                    theme::text(),
+                    move |t, _, cx| {
+                        let w = (MIN + t.clamp(0., 1.) * (MAX - MIN)).round();
+                        this.update(cx, |d, cx| {
+                            if d.rail_w != w {
+                                d.rail_w = w;
+                                cx.emit(SettingsEvent::SidebarWidth(w));
+                                cx.notify();
+                            }
+                        });
+                    },
+                )))
+                .child(
+                    div()
+                        .w(px(32.))
+                        .text_size(px(ui::TEXT_SM))
+                        .text_color(theme::text())
+                        .child(format!("{w:.0}")),
+                )
+                .into_any_element()
+        };
+        let dim = |on: bool, r: gpui::Div| r.when(!on, |d| d.opacity(0.6)).into_any_element();
+        div()
+            .flex()
+            .flex_col()
+            .gap(crate::ui::sp(8.))
+            .child(ui::overline("Tabs and sessions").px(crate::ui::sp(4.)))
+            .child(
+                div()
+                    .px(crate::ui::sp(4.))
+                    .text_size(px(ui::TEXT_SM))
+                    .text_color(theme::text_subtle())
+                    .child("Start from a preset, then change what you like. Changes show in the window at once."),
+            )
+            .child(tiles)
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .px(crate::ui::sp(4.))
+                    .pt(crate::ui::sp(8.))
+                    .child(div().flex_1().child(ui::overline("Options")))
+                    .child(
+                        div()
+                            .text_size(px(ui::TEXT_XS))
+                            .text_color(theme::text_faint())
+                            .child(note),
+                    ),
+            )
+            .child(group(vec![
+                row("Sessions live in", "Where every session of every project is listed", sessions_in)
+                    .into_any_element(),
+                row("Title bar shows", "Pinned: only what you pull up from the sidebar", bar_shows)
+                    .into_any_element(),
+                row("State", "How a working, waiting or failed session shows", state)
+                    .into_any_element(),
+                dim(group_on, row("Group by project", "Each project heads its own sessions", group_switch)),
+                dim(
+                    layout.applies(Opt::Quiet),
+                    row("Projects with nothing running", "In the sidebar tree", quiet),
+                ),
+                dim(
+                    layout.applies(Opt::Titles),
+                    row("Long titles", "In the sidebar; tabs always cut", titles),
+                ),
+                row(
+                    "Sidebar width",
+                    "The tree needs about 240 to show a title and its state",
+                    width,
+                )
+                .into_any_element(),
+            ]))
+            .into_any_element()
     }
 
     /// The open project's setup script, check and base branch, saved as they are typed.
@@ -2149,6 +2383,125 @@ fn titled(caption: &str, rows: Vec<AnyElement>) -> AnyElement {
         .gap(crate::ui::sp(8.))
         .child(ui::overline(caption).px(crate::ui::sp(4.)))
         .child(group(rows))
+        .into_any_element()
+}
+
+/// A preset of Tabs and sessions: a small drawing of the window it makes,
+/// its name and what it does.
+fn preset_tile(
+    i: usize,
+    p: crate::tab_layout::Preset,
+    chosen: bool,
+    cx: &mut Context<SettingsDialog>,
+) -> AnyElement {
+    use crate::tab_layout::Preset;
+    let bar = |n: usize| {
+        div()
+            .flex()
+            .gap(crate::ui::sp(3.))
+            .children((0..n).map(|_| {
+                div()
+                    .w(px(14.))
+                    .h(px(4.))
+                    .rounded(crate::ui::rad(2.))
+                    .bg(theme::text_faint())
+            }))
+    };
+    let lines = |n: usize| {
+        div()
+            .flex()
+            .flex_col()
+            .gap(crate::ui::sp(4.))
+            .children((0..n).map(|k| {
+                div()
+                    .h(px(2.))
+                    .w(px(if k % 3 == 0 { 34. } else { 26. }))
+                    .bg(theme::text_faint())
+            }))
+    };
+    let (tree, left_tabs, right_tabs) = match p {
+        Preset::Focused => (5, 2, 0),
+        Preset::Classic => (2, 2, 2),
+        Preset::Everything => (7, 2, 2),
+    };
+    let drawing = div()
+        .flex()
+        .gap(crate::ui::sp(8.))
+        .h(px(64.))
+        .p(crate::ui::sp(8.))
+        .rounded(crate::ui::rad(6.))
+        .bg(theme::fill_raised())
+        .child(lines(tree))
+        .child(
+            div()
+                .flex_1()
+                .flex()
+                .flex_col()
+                .gap(crate::ui::sp(6.))
+                .child(
+                    div()
+                        .flex()
+                        .justify_between()
+                        .child(bar(left_tabs))
+                        .child(bar(right_tabs)),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .rounded(crate::ui::rad(3.))
+                        .bg(theme::fill_selected()),
+                ),
+        );
+    div()
+        .id(("tabs-preset", i))
+        .map(|d| ui::labelled(d, gpui::Role::RadioButton, p.label()))
+        .aria_toggled(crate::ui::toggled(chosen))
+        .flex_1()
+        .min_w_0()
+        .flex()
+        .flex_col()
+        .gap(crate::ui::sp(8.))
+        .p(crate::ui::sp(10.))
+        .rounded(crate::ui::rad(ui::RADIUS_LG))
+        .border_1()
+        .border_color(if chosen {
+            theme::active()
+        } else {
+            theme::border()
+        })
+        .cursor_pointer()
+        .hover(|s| s.bg(theme::fill_hover()))
+        .child(drawing)
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .child(
+                    div()
+                        .flex_1()
+                        .text_size(px(ui::TEXT_MD))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(theme::text())
+                        .child(p.label()),
+                )
+                .when(chosen, |d| {
+                    d.child(icon("tick02", 14.).text_color(theme::active()))
+                }),
+        )
+        .child(
+            div()
+                .text_size(px(ui::TEXT_SM))
+                .text_color(theme::text_subtle())
+                .child(p.blurb()),
+        )
+        .on_click(cx.listener(move |this, _, _, cx| {
+            // The window widens a sidebar too narrow for the tree; say so here too.
+            if let Some(min) = p.min_sidebar_w() {
+                this.rail_w = this.rail_w.max(min);
+            }
+            cx.emit(SettingsEvent::TabLayout(p.layout(), Some(p)));
+            cx.notify();
+        }))
         .into_any_element()
 }
 

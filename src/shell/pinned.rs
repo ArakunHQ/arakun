@@ -123,6 +123,33 @@ impl Shell {
         over.then(|| f32::from(window.viewport_size().width) / 2.)
     }
 
+    /// Uses `layout` from Settings. Moving to a pinned bar pins every open
+    /// session first, so no tab disappears; a preset that needs the tree
+    /// widens a sidebar too narrow for it.
+    pub(super) fn apply_tab_layout(
+        &mut self,
+        layout: crate::tab_layout::TabLayout,
+        preset: Option<crate::tab_layout::Preset>,
+        cx: &mut Context<Self>,
+    ) {
+        let was = crate::tab_layout::current();
+        if layout.pinned_bar() && !was.pinned_bar() {
+            for t in &mut self.strip.tabs {
+                if t.session_id().is_some() {
+                    t.pinned = true;
+                }
+            }
+        }
+        crate::tab_layout::set(layout);
+        if let Some(min) = preset.and_then(|p| p.min_sidebar_w())
+            && self.rail_w < min
+        {
+            self.rail_w = min;
+        }
+        self.save(cx);
+        cx.notify();
+    }
+
     /// The project and environment that hold session `id`.
     pub(super) fn session_place(&self, id: &str) -> Option<(usize, usize)> {
         self.projects.iter().enumerate().find_map(|(pi, p)| {

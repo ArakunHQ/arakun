@@ -75,12 +75,13 @@ copy of it, rename it back, and start a version that can read it.
 
 ### Workspace
 
-- **Sessions in the sidebar.** A new install lists every session of every project in
-  the sidebar, under its project, archived ones aside (the archived toggle shows
-  them). Each row has a mark for its state: a ring while it works, `!` when it needs
+- **Sessions in the sidebar.** With Focused (Settings › Appearance › Tabs and sessions;
+  a new install starts on it), the sidebar lists every session of every project, under
+  its project, archived ones aside (the archived toggle shows them). Each row has a mark for its state: a ring while it works, `!` when it needs
   you, a cross when it failed or its checks failed, a check when its checks passed, a
   faint dot when idle. The end of the row says what wants you, or the pull request's
-  number. By default a project with nothing running folds; the project on screen and
+  number. By default a project with nothing running folds (Settings can keep it open or
+  hide it); the project on screen and
   any project with a session that works or needs you stay open. Click a project to
   fold or open it. `Ctrl`+click or `Shift`+click picks rows, as described below. This
   list takes the place of the Active list and the project's worktrees below. A state
@@ -627,6 +628,19 @@ How the app looks is changed in the **Customize** panel, at the right of the win
 the workspace panel is, so the work stays in view while you change it. Open it from the
 palette (`Customize`), View › Customize… or Settings › Appearance › Open Customize, which
 only sums up what is chosen. It opens without a project too.
+
+Settings › Appearance › Tabs and sessions sets where sessions and tabs show. Three
+presets set everything at once: **Focused** (sessions in the sidebar tree, pinned tabs
+in the title bar; a new install starts here), **Classic** (every open tab in one row,
+the sidebar with projects and worktrees, as before) and **Everything** (the tree and
+every open tab). A state file from before this setting opens on Classic, so nobody's
+window changes after an update; pick Focused to switch. Then each option can change:
+Sessions live in (Sidebar, Title bar, Both), Title bar shows (Pinned, This project, All
+open), State (Icon, Dot, Word), Group by project, Projects with nothing running (Open,
+Folded, Hidden), Long titles (Cut, Two lines) and Sidebar width. Options that mean
+nothing with the others are off: with sessions only in the title bar there is nothing
+to pin from or fold. Moving to pinned tabs pins every open session first. The choice is
+kept in `state.json` as `tabs`.
 
 Settings › Appearance › Reduce motion holds the mascot, spinners and the island still (its
 working dots, its change of shape and its alert cards), and shows menus and dialogs

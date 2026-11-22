@@ -1390,6 +1390,10 @@ impl Shell {
         self.projects[pi].active_env = ei;
         self.env_menu_open = false;
         self.completion = None;
+        // A paired review belongs to one environment: following a tab to
+        // another one moves Teams too, which ends that grant.
+        self.teams_view
+            .update(cx, |v, cx| v.set_project(path.clone(), cx));
         self.refresh_visible(cx);
         if self.panel_tab == PanelTab::Explorer {
             self.ensure_explorer(cx);

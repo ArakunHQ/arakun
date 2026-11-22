@@ -935,6 +935,20 @@ impl TeamsView {
         if text.is_empty() || refused {
             return;
         }
+        // Before the edit branch: a command is never the new text of a message.
+        if text == "/agents" || text.starts_with("/agents ") {
+            let result = self.hub.update(cx, |hub, cx| {
+                hub.review_command(&team, &channel, text["/agents".len()..].trim(), cx)
+            });
+            match result {
+                Ok(()) => self.composer.update(cx, |i, cx| i.set_text("", cx)),
+                Err(why) => self.hub.update(cx, |h, cx| {
+                    h.error = Some(why);
+                    cx.notify();
+                }),
+            }
+            return;
+        }
         if let Some(id) = self.editing.clone() {
             let unchanged = self
                 .open_messages(cx)
@@ -946,19 +960,6 @@ impl TeamsView {
                     .update(cx, |h, cx| h.edit(&team, &channel, &id, text, cx));
             if sent {
                 self.stop_editing(cx);
-            }
-            return;
-        }
-        if text == "/agents" || text.starts_with("/agents ") {
-            let result = self.hub.update(cx, |hub, cx| {
-                hub.review_command(&team, &channel, text["/agents".len()..].trim(), cx)
-            });
-            match result {
-                Ok(()) => self.composer.update(cx, |i, cx| i.set_text("", cx)),
-                Err(why) => self.hub.update(cx, |h, cx| {
-                    h.error = Some(why);
-                    cx.notify();
-                }),
             }
             return;
         }

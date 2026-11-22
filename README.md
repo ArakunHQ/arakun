@@ -705,11 +705,11 @@ after a week).
   with who accepted it and when, the messages it came from (click to jump there) and
   what @bot checked; search it, or show only yours.
 
-  **Pair two agents for a review.** Open the same channel on two devices. Each
-  member types `/agents pair @other-login` to lend one Claude Code turn for up
-  to 15 minutes. Either can then type `/agents review <goal>`: the other agent
-  reviews the goal, and the asking member's agent reads those notes and posts a
-  recommendation. Everyone in the channel sees the exchange. The model provider
+  **Pair two agents for a review.** Open the same channel and a local project on
+  both devices. Each member types `/agents pair @other-login` to lend one Claude
+  Code turn for up to 15 minutes. Either can then type `/agents review <goal>`:
+  the other agent reviews the goal, and the asking member's agent reads those
+  notes and posts a recommendation. Everyone in the channel sees the exchange. The model provider
   receives the goal and relevant notes, not the channel history or local files.
   Each CLI call has no tools, one turn and a USD 0.10 budget. `/agents off`
   cancels this device's participation; restarting or disconnecting does not

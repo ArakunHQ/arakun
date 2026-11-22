@@ -286,12 +286,13 @@ A message on the wire:
 
 ```json
 { "kind": "text" | "bot" | "decision" | "decision_accept" | "decision_reverse"
-          | "edit",
+          | "edit" | "agent_review",
   "text": "...", "reply_to": "<message id>" | null,
   "mentions": ["bot"],
   "bot": { "range": ["<first id>", "<last id>"], "via": <github_id>,
            "cites": { "1": "<message id>", "2": "..." } } | null,
-  "decision": { "of": "<bot message id>" } | null }
+  "decision": { "of": "<bot message id>" } | null,
+  "coordination": { "step": "ready" | "request" | "notes" | "done" | "blocked", ... } | null }
 ```
 
   - `text`: the user's message, or the bot's answer.

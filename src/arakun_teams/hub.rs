@@ -2349,8 +2349,22 @@ impl Hub {
                 cx.spawn(async move |this, cx| {
                     let result = cx.background_spawn(async move { super::bot::review_peer(&turn.prompt, &stop) }).await;
                     let _ = this.update(cx, |hub, cx| {
-                        if !hub.peer_review.as_ref().is_some_and(|g| g.ticket == ticket && g.live())
-                            || hub.review_epoch(&team, &channel) != Some(epoch) { return; }
+                        if !hub.peer_review.as_ref().is_some_and(|g| g.ticket == ticket && g.live()) {
+                            return;
+                        }
+                        // The grant is spent: a channel that can't take the answer now
+                        // (a gap, a rotation, a lost socket) ends it, and says so.
+                        if hub.review_epoch(&team, &channel) != Some(epoch) {
+                            if let Some(caller) = hub.peer_review.as_mut().and_then(|g| g.caller.take()) {
+                                let _ = caller.send(crate::control::Reply::err(
+                                    "The channel changed before the review could be posted. Pair again.",
+                                ));
+                            }
+                            hub.peer_review = None;
+                            hub.error = Some("The paired review ended: the channel changed before its answer could be posted.".into());
+                            cx.notify();
+                            return;
+                        }
                         let body = match result {
                             Ok(s) if coord::valid_text(s.trim()) => turn.response.body(s.trim().into(), Some(id)),
                             _ => PeerEvent::Blocked.body("Could not finish this review within its limits. A member can take over.".into(), Some(id)),
@@ -2450,6 +2464,11 @@ impl Hub {
                 .as_mut()
                 .filter(|g| g.channel == key && g.epoch == epoch && g.live())
                 .ok_or("Pair this device with a member first.")?;
+            // A ready from a peer who has since left the channel names a
+            // grant that is likely gone; ask them to pair again instead.
+            if !self.channels[&key].here.contains(&g.peer) {
+                return Err("The other member is not in this channel now. Ask them to open it and pair again.".into());
+            }
             let other = self.channels[&key]
                 .messages
                 .iter()

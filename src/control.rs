@@ -949,7 +949,7 @@ fn island_args(rest: &[String]) -> Option<Vec<String>> {
 /// (`arakun run du -s .`); elsewhere anywhere, as `arakun open file -s` reads.
 fn side_flag(cmd: &str, args: &[String]) -> (bool, Vec<String>) {
     let is_flag = |a: &String| matches!(a.as_str(), "-s" | "--side");
-    if matches!(cmd, "run" | "notify" | "agent" | "feedback") {
+    if matches!(cmd, "run" | "notify" | "agent" | "feedback" | "peer-review") {
         let lead = args.iter().take_while(|a| is_flag(a)).count();
         return (lead > 0, args[lead..].to_vec());
     }
@@ -1943,6 +1943,10 @@ mod tests {
         assert_eq!(
             side_flag("notify", &s(&["use", "-s"])),
             (false, s(&["use", "-s"]))
+        );
+        assert_eq!(
+            side_flag("peer-review", &s(&["check", "-s", "--side"])),
+            (false, s(&["check", "-s", "--side"]))
         );
         assert_eq!(side_flag("open", &s(&["a.rs", "-s"])), (true, s(&["a.rs"])));
         assert_eq!(side_flag("browse", &s(&["--side", "x"])), (true, s(&["x"])));

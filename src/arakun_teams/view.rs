@@ -166,8 +166,9 @@ pub struct TeamsView {
     team_menu: bool,
     /// The team picked last, for the bar over pages of no team (your devices).
     last_team: Option<String>,
-    /// The field for a new channel shows in the channel list.
-    adding_channel: bool,
+    /// The team the field for a new channel is for: it shows in that team's
+    /// channel list, and what is typed in it never goes to another team.
+    adding_channel: Option<String>,
     /// "Create team" was pressed: the team the server names for it
     /// (`Hub::created`) opens once it arrives. Any other team arriving
     /// meanwhile, say from an approved invite, is not it.
@@ -235,8 +236,15 @@ impl TeamsView {
             on(cx, &channel_name, |this, ev, cx| match ev {
                 InputEvent::Submit => this.create_channel(cx),
                 InputEvent::Cancel => {
-                    this.adding_channel = false;
+                    this.adding_channel = None;
                     cx.notify();
+                }
+                // Typed on a team's page, which has the field without opening it.
+                InputEvent::Changed
+                    if this.adding_channel.is_none()
+                        && !this.channel_name.read(cx).text().is_empty() =>
+                {
+                    this.adding_channel = this.selected_team().map(str::to_string);
                 }
                 _ => {}
             }),
@@ -258,7 +266,7 @@ impl TeamsView {
             side: None,
             team_menu: false,
             last_team: None,
-            adding_channel: false,
+            adding_channel: None,
             creating: false,
             accepting: None,
             team_name,
@@ -493,6 +501,11 @@ impl TeamsView {
             self.keep_draft(cx);
             self.pane = pane;
         }
+        // A new channel's name typed for one team does not follow to the next.
+        if self.adding_channel.is_some() && self.adding_channel.as_deref() != self.selected_team() {
+            self.adding_channel = None;
+            self.channel_name.update(cx, |i, cx| i.set_text("", cx));
+        }
         if let Some(field) = field {
             let handle = field.read(cx).focus_handle(cx);
             window.focus(&handle, cx);
@@ -545,7 +558,13 @@ impl TeamsView {
     }
 
     fn create_channel(&mut self, cx: &mut Context<Self>) {
-        let Some(team) = self.selected_team().map(str::to_string) else {
+        let Some(team) = new_channel_team(self.adding_channel.as_deref(), self.selected_team())
+        else {
+            // The pane moved to another team under the field (its team went
+            // away): the name was not typed for this one.
+            self.adding_channel = None;
+            self.channel_name.update(cx, |i, cx| i.set_text("", cx));
+            cx.notify();
             return;
         };
         let name = self
@@ -561,7 +580,7 @@ impl TeamsView {
         // A refusal (the team waits for a new key) keeps the name to send later.
         if self.hub.read(cx).seal_blocked(&team).is_none() {
             self.channel_name.update(cx, |i, cx| i.set_text("", cx));
-            self.adding_channel = false;
+            self.adding_channel = None;
         }
         self.hub
             .update(cx, |h, cx| h.create_channel(&team, name, cx));
@@ -1898,6 +1917,7 @@ impl TeamsView {
             .collect();
         let making = hub.busy.contains(&format!("channel:{team_id}"));
         let tid = team_id.to_string();
+        let add_to = team_id.to_string();
         let mut list =
             div()
                 .flex()
@@ -1906,9 +1926,11 @@ impl TeamsView {
                 .child(Self::column_title("Channels").when(admin, |d| {
                     d.child(
                         ui::icon_button("teams-add-channel", "add01", 12., "New channel").on_click(
-                            cx.listener(|this, _, window, cx| {
-                                this.adding_channel = !this.adding_channel;
-                                if this.adding_channel {
+                            cx.listener(move |this, _, window, cx| {
+                                let open = this.adding_channel.as_deref() == Some(&*add_to);
+                                this.adding_channel = (!open).then(|| add_to.clone());
+                                if !open {
+                                    this.channel_name.update(cx, |i, cx| i.set_text("", cx));
                                     let handle = this.channel_name.read(cx).focus_handle(cx);
                                     window.focus(&handle, cx);
                                 }
@@ -1955,7 +1977,7 @@ impl TeamsView {
                     })),
             );
         }
-        if self.adding_channel || making {
+        if self.adding_channel.as_deref() == Some(team_id) || making {
             list = list.child(
                 div()
                     .flex()
@@ -3518,6 +3540,12 @@ fn device_line(d: &DeviceRow) -> gpui::Div {
         )
 }
 
+/// The team a new channel goes to: the one on show, when the field was
+/// opened or typed in for it. A name typed for another team makes nothing.
+fn new_channel_team(field: Option<&str>, shown: Option<&str>) -> Option<String> {
+    shown.filter(|t| field == Some(*t)).map(str::to_string)
+}
+
 /// A login as the sheet shows it. The signed-in user's own one is masked in
 /// redacted mode, as on the Invites page: next to "You" it tells a screen
 /// share whose account this is. Other people's logins stay, the team is them.
@@ -3714,6 +3742,15 @@ mod tests {
         // With a team, the team menu has it.
         assert!(!Pane::None.offers_start(false, true));
         assert!(!Pane::Invites.offers_start(false, true));
+    }
+
+    #[test]
+    fn a_new_channel_goes_only_to_the_team_its_field_is_for() {
+        assert_eq!(new_channel_team(Some("a"), Some("a")), Some("a".into()));
+        // Typed for team a, then the sheet moved to team b.
+        assert_eq!(new_channel_team(Some("a"), Some("b")), None);
+        assert_eq!(new_channel_team(None, Some("b")), None);
+        assert_eq!(new_channel_team(Some("a"), None), None);
     }
 
     #[test]

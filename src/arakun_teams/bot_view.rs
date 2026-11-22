@@ -95,32 +95,43 @@ fn sentence(s: &str) -> String {
 /// A failed run's title and sentence: how far it got when it ran in
 /// parts, and a usage limit in plain words when it hit one.
 fn failed_text(run: &Run, why: &str) -> (String, String) {
-    let now = super::now();
-    let minute = crate::platform::local_time(now).map_or(0, |t| t.hour * 60 + t.minute);
+    // "resets 3pm" names no day. Read against when the run started, it stays
+    // the same 3pm on every render, and does not become tomorrow's after it.
+    let minute = crate::platform::local_time(run.started).map_or(0, |t| t.hour * 60 + t.minute);
     let device = super::super::hub::device_name();
-    failed_text_at((run.done, run.parts), why, &device, now, minute as u32)
+    failed_text_at(
+        (run.done, run.parts),
+        why,
+        &device,
+        (run.started, minute as u32),
+        super::now(),
+    )
 }
 
+/// `started` is when the run started and the local minute of that day.
 fn failed_text_at(
     (done, parts): (usize, usize),
     why: &str,
     device: &str,
+    (started, minute): (u64, u32),
     now: u64,
-    minute: u32,
 ) -> (String, String) {
     let title = if parts > 0 && done < parts {
         format!("@bot stopped after {done} of {parts} parts")
     } else {
         "@bot stopped".to_string()
     };
-    let body = match bot::usage_limit(why, now, minute) {
+    let body = match bot::usage_limit(why, started, minute) {
         Some(limit) => {
             let which = if limit.weekly { "weekly" } else { "5 h" };
             let device = crate::redact::value(device);
             match limit.resets_at {
-                Some(at) => format!(
+                Some(at) if at > now => format!(
                     "Claude Code on {device} hit its {which} limit. It resets {}. Nothing was decided.",
                     super::until_from(at, now)
+                ),
+                Some(_) => format!(
+                    "Claude Code on {device} hit its {which} limit, which has reset. Nothing was decided."
                 ),
                 None => {
                     format!("Claude Code on {device} hit its {which} limit. Nothing was decided.")
@@ -1228,16 +1239,35 @@ mod tests {
     fn a_failed_run_says_how_far_it_got_and_when_the_limit_resets() {
         let now = 1_800_000_000;
         let why = "Claude Code stopped: Claude AI usage limit reached|1800002400";
-        let (title, body) = failed_text_at((9, 23), why, "karlo-desktop", now, 0);
+        let (title, body) = failed_text_at((9, 23), why, "karlo-desktop", (now, 0), now);
         assert_eq!(title, "@bot stopped after 9 of 23 parts");
         assert_eq!(
             body,
             "Claude Code on karlo-desktop hit its 5 h limit. It resets in 40 minutes. Nothing was decided."
         );
-        let (title, body) = failed_text_at((3, 3), "the answer is too long to post", "x", now, 0);
+        // Once that time has passed, it says so instead of "in a moment".
+        let (_, body) = failed_text_at((9, 23), why, "karlo-desktop", (now, 0), now + 2400);
+        assert_eq!(
+            body,
+            "Claude Code on karlo-desktop hit its 5 h limit, which has reset. Nothing was decided."
+        );
+        // A clock time is the next one after the run started, at 2pm here,
+        // however much later it is read.
+        let clock = "5-hour limit reached ∙ resets 3pm";
+        let at = |later: u64| failed_text_at((0, 0), clock, "x", (now, 14 * 60), now + later).1;
+        assert_eq!(
+            at(600),
+            "Claude Code on x hit its 5 h limit. It resets in 50 minutes. Nothing was decided."
+        );
+        assert_eq!(
+            at(2 * 3600),
+            "Claude Code on x hit its 5 h limit, which has reset. Nothing was decided."
+        );
+        let (title, body) =
+            failed_text_at((3, 3), "the answer is too long to post", "x", (now, 0), now);
         assert_eq!(title, "@bot stopped");
         assert_eq!(body, "The answer is too long to post. Nothing was decided.");
-        let (title, _) = failed_text_at((0, 0), why, "x", now, 0);
+        let (title, _) = failed_text_at((0, 0), why, "x", (now, 0), now);
         assert_eq!(title, "@bot stopped");
     }
 

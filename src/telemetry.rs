@@ -124,7 +124,7 @@ fn env() -> EnvChoice {
 }
 
 /// Whether this process may never send anything, whatever the user chose.
-fn blocked() -> bool {
+pub(crate) fn blocked() -> bool {
     cfg!(test)
         || KEY.is_empty()
         || crate::dev::size().is_some()
@@ -569,7 +569,7 @@ fn send(batch: &[Value], agent: &ureq::Agent) {
     SENDING.with(|s| s.set(false));
 }
 
-fn agent_with(timeout: Duration) -> ureq::Agent {
+pub(crate) fn agent_with(timeout: Duration) -> ureq::Agent {
     ureq::Agent::config_builder()
         .timeout_global(Some(timeout))
         .user_agent(concat!("arakun/", env!("ARAKUN_VERSION")))

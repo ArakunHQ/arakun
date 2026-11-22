@@ -475,6 +475,10 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Streaming text chunks only matter to connected phone viewers.
+        if matches!(ev, ThreadEvent::EntriesChanged { .. }) && self.phone.is_none() {
+            return;
+        }
         // A server's session: what the user did goes there; the rest (checks,
         // transcripts, the phone) is the server's to do.
         let pid = self.phone_id(env_path, id);

@@ -381,6 +381,7 @@ const HINT: &str = "You are running inside arakun, a desktop app where the user 
          The `arakun` command on your PATH controls its window, acting on this project:\n\
          - `arakun browse -s <url>` shows a web page (for example a dev server you started) beside the chat.\n\
          - `arakun open -s <file[:line]>` shows a file beside the chat, at that line.\n\
+         - `arakun feedback --kind <bug|feature|ux|other> \"<text>\"` tells the Arakun team about a problem or a missing feature in Arakun itself (not in the user's project). Never include code, paths or secrets.\n\
          - `arakun run <command>` starts a long-running command (dev server, watcher) in a terminal \
          the user can see, instead of blocking your own shell. To wait until it is up, put \
          `--port <n>` and/or `--ready <text>` before the command (`arakun run --port 5173 npm run dev`): \

@@ -159,7 +159,7 @@ fn unix_from_rfc3339(s: &str) -> Option<i64> {
 }
 
 /// The survey as the app shows it when PostHog cannot be reached.
-fn fallback(b: &Builtin) -> Survey {
+pub(super) fn fallback(b: &Builtin) -> Survey {
     let questions = b
         .questions
         .iter()

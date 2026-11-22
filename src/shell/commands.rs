@@ -233,8 +233,49 @@ impl Shell {
                 );
                 Reply::ok("")
             }
+            "feedback" => self.agent_feedback(&req, &env_path, cx),
             other => Reply::err(format!("unknown command `{other}` (see arakun help)")),
         }
+    }
+
+    /// `arakun feedback`: sends an agent's report to the Arakun team and tells
+    /// the user in a notice. The checks are in `surveys::agent`.
+    fn agent_feedback(&mut self, req: &Request, env_path: &Path, cx: &mut Context<Self>) -> Reply {
+        use crate::surveys::{agent, ids, send, store};
+        let [kind, text, name] = req.args.as_slice() else {
+            return Reply::err("usage: arakun feedback --kind <bug|feature|ux|other> <text…|->");
+        };
+        let survey = store::builtin(&ids::AGENT);
+        let prepared = match agent::agent_feedback(
+            &survey,
+            kind,
+            text,
+            name,
+            env_path,
+            Instant::now(),
+            &mut self.feedback_limits,
+            || crate::telemetry::feedback_allowed(crate::telemetry::Source::Agent),
+        ) {
+            Ok(p) => p,
+            Err(e) => return Reply::err(e),
+        };
+        let extra = [("agent", prepared.agent.clone().into())];
+        if let Err(refused) = send::submit(
+            &survey,
+            &prepared.answers,
+            crate::telemetry::Source::Agent,
+            &extra,
+        ) {
+            return Reply::err(refused.to_string());
+        }
+        self.notify(
+            AlertKind::Info,
+            &format!("{} sent feedback", agent_label(&prepared.agent)),
+            &prepared.first_line,
+            None,
+            cx,
+        );
+        Reply::ok("sent to the Arakun team")
     }
 
     /// `arakun run --ready/--port`: starts the command like `arakun run`, then
@@ -673,8 +714,31 @@ pub(super) fn run_waiting(output: &str) -> bool {
         .is_some_and(|l| l.trim() == crate::platform::RUN_SHELL_HINT)
 }
 
+/// The name of an agent as the interface writes it: `Claude Code` for `claude`.
+fn agent_label(id: &str) -> String {
+    use crate::agent::AgentKind;
+    [
+        AgentKind::Claude,
+        AgentKind::Droid,
+        AgentKind::OpenCode,
+        AgentKind::Codex,
+        AgentKind::Devin,
+        AgentKind::WorkersAi,
+    ]
+    .into_iter()
+    .find(|k| k.id() == id)
+    .map_or_else(|| "An agent".into(), |k| k.label().to_string())
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn agent_label_names_known_agents() {
+        assert_eq!(super::agent_label("claude"), "Claude Code");
+        assert_eq!(super::agent_label("codex"), "Codex");
+        assert_eq!(super::agent_label("agent"), "An agent");
+    }
+
     #[test]
     fn run_status_reads_the_last_exit_line() {
         assert_eq!(super::run_status("building\n"), None);

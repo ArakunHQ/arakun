@@ -400,6 +400,8 @@ pub struct Shell {
     /// The `update-policy` feature flag's dialog (`shell::updates`), over
     /// everything else, dialogs included.
     update_dialog: Option<(Entity<crate::update_dialog::UpdateDialog>, Subscription)>,
+    /// Reports agents sent with `arakun feedback`, per environment.
+    feedback_limits: crate::surveys::agent::RateLimit,
     /// The pages last marked visible, so tab switches can tell when to update CEF.
     shown_browsers: Vec<gpui::EntityId>,
     /// Answers `arakun <command>` from the control socket.
@@ -1164,6 +1166,7 @@ impl Shell {
             clear_armed: false,
             restarting: false,
             update_dialog: None,
+            feedback_limits: Default::default(),
             _runs: runs_subs,
             _quit: [
                 cx.on_app_quit(|this, cx| {

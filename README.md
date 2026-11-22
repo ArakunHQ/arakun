@@ -1180,6 +1180,7 @@ arakun page screenshot            # PNG of the environment's browser tab
 arakun notify "done"              # desktop notification
 arakun shrink -- cargo test       # run it and print a summary: failures, collapsed logs,
                                   # JSON outline; the whole output goes to a file it names
+arakun feedback --kind bug "..."  # tell the Arakun team about a problem (agents use it; needs usage telemetry on)
 arakun notices --unseen           # notices you haven't read yet
 arakun usage tools --days 7       # which tools' results used the tokens of Workers AI turns
 arakun seat add work < token.txt  # save a Claude seat (a `claude setup-token` token)

@@ -85,6 +85,7 @@ pub(super) struct Roster {
     membership: u64,
     epoch: u64,
     keyed_epoch: Option<u64>,
+    rotation_pending: bool,
 }
 
 pub struct TeamState {
@@ -527,7 +528,12 @@ impl Hub {
     pub(super) fn roster(&self, team: &str) -> Option<Roster> {
         let state = self.team.get(team)?;
         let row = self.teams.iter().find(|r| r.team_id == team)?;
-        if row.epoch != state.detail.epoch || row.role != state.role {
+        // A rotation can finish within one epoch, and it changes which keys
+        // are live, so it counts too.
+        if row.epoch != state.detail.epoch
+            || row.role != state.role
+            || row.rotation_pending != state.detail.rotation_pending
+        {
             return None;
         }
         Some(Roster {
@@ -535,6 +541,7 @@ impl Hub {
             membership: *self.membership.get(team)?,
             epoch: row.epoch,
             keyed_epoch: state.detail.keyed_epoch,
+            rotation_pending: row.rotation_pending,
         })
     }
 

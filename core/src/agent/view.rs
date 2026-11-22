@@ -145,15 +145,15 @@ fn rel_path(path: &Path, cwd: &Path) -> String {
         .to_string()
 }
 
-/// Drops parsed messages whose entry is gone or no longer a message. A shrink
-/// resets the view, but a sync can replace entries in place without one.
-fn keep_docs_of<T>(docs: &mut HashMap<usize, T>, entries: &[Entry]) {
-    docs.retain(|&ix, _| {
-        matches!(
-            entries.get(ix),
-            Some(Entry::Agent { .. } | Entry::Thought { .. })
-        )
-    });
+/// Drops parsed messages from `from` on whose entry is no longer a message. A
+/// shrink resets the view, but a sync can replace entries in place without one.
+/// Entries before `from` did not change, so a streamed chunk visits only the tail.
+fn keep_docs_of<T>(docs: &mut HashMap<usize, T>, entries: &[Entry], from: usize) {
+    for (ix, entry) in entries.iter().enumerate().skip(from) {
+        if !matches!(entry, Entry::Agent { .. } | Entry::Thought { .. }) {
+            docs.remove(&ix);
+        }
+    }
 }
 
 fn turns_of(entries: &[Entry]) -> Vec<Range<usize>> {
@@ -456,7 +456,7 @@ impl ThreadView {
                 let t = self.thread.read(cx);
                 let (len, at_work) = (t.entries().len(), t.is_busy());
                 self.entrances.entries_now(len, at_work, Instant::now());
-                keep_docs_of(&mut self.markdown, self.thread.read(cx).entries());
+                keep_docs_of(&mut self.markdown, self.thread.read(cx).entries(), *from);
                 self.sync_turns(*from, cx)
             }
             ThreadEvent::Reset => {
@@ -2409,7 +2409,6 @@ mod tests {
 
     #[test]
     fn docs_of_removed_or_replaced_entries_are_dropped() {
-        let mut docs: HashMap<usize, ()> = [(0, ()), (1, ()), (2, ()), (5, ())].into();
         let entries = [
             agent("kept"),
             tool("Read"),
@@ -2417,10 +2416,24 @@ mod tests {
                 text: "kept too".into(),
             },
         ];
-        keep_docs_of(&mut docs, &entries);
-        let mut left: Vec<usize> = docs.into_keys().collect();
-        left.sort();
-        assert_eq!(left, [0, 2]);
+        let docs = || -> HashMap<usize, ()> { [(0, ()), (1, ()), (2, ())].into() };
+        let left = |mut docs: HashMap<usize, ()>| {
+            let mut left: Vec<usize> = docs.drain().map(|(ix, _)| ix).collect();
+            left.sort();
+            left
+        };
+
+        let mut all = docs();
+        keep_docs_of(&mut all, &entries, 0);
+        assert_eq!(left(all), [0, 2]);
+
+        let mut tail = docs();
+        keep_docs_of(&mut tail, &entries, 2);
+        assert_eq!(left(tail), [0, 1, 2]);
+
+        let mut past_the_end = docs();
+        keep_docs_of(&mut past_the_end, &entries, 9);
+        assert_eq!(left(past_the_end), [0, 1, 2]);
     }
 
     #[test]

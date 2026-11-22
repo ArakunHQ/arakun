@@ -1073,8 +1073,10 @@ impl ThreadView {
                 None => footer,
             }
         };
+        // Fades and entrances: on the motion clock, not at the display's rate,
+        // since text streams in for as long as the agent writes.
         if std::mem::take(&mut self.fading) {
-            window.request_animation_frame();
+            crate::ui::motion::redraw_on_tick(window);
         }
         div()
             .id(("turn", ix))

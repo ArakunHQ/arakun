@@ -460,9 +460,9 @@ after a week).
   each account's answers on disk (cleared when its key is replaced or removed) and
   reads again only when they are 15 minutes old or you refresh.
   Changing something in PostHog always asks you to type the flag key first. On a
-  flag, stage enable, disable or a 10% rollout step, then review it; it needs
-  `feature_flag:write`, and PostHog refuses it if someone else changed the flag
-  since. On a running experiment, **End experiment** freezes its results and leaves
+  flag, stage enable or disable (or a 10% rollout step, for release conditions in
+  PostHog's classic format), then review it; it needs `feature_flag:write`, and
+  PostHog refuses it if someone else changed the flag since. On a running experiment, **End experiment** freezes its results and leaves
   the flag as it is; **Ship**, offered only for a variant the results call a
   winner, also gives that variant to everyone the flag already matches. Both need
   `experiment:write`. To try the tab without a key (Linux and macOS), start a test

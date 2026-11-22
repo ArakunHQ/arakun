@@ -75,7 +75,7 @@ impl PostHogView {
             id: "ph-exp-confirm",
             title: format!("{}?", e.action.label()),
             lines: vec![
-                format!("{} · {}", e.project.name, e.project.host),
+                self.destination(&e.project),
                 e.action.effect(),
                 "It needs a key with experiment:write.".into(),
             ],
@@ -139,7 +139,7 @@ impl PostHogView {
                 }))
                 .await;
             this.update(cx, |this, cx| {
-                this.done_sending(seq, &p);
+                this.done_sending(seq, &p, cx);
                 if this.current.as_ref() != Some(&p) {
                     return;
                 }

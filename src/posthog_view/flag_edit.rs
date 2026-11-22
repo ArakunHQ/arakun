@@ -52,7 +52,7 @@ impl PostHogView {
         }
         let current = self.flag_unchanged(&e.flag);
         let mut lines = vec![
-            format!("{} · {}", e.target.name, e.target.host),
+            self.destination(&e.target),
             e.summary(),
             "This changes the flag for everyone who evaluates it. It needs a key with \
              feature_flag:write."
@@ -166,7 +166,7 @@ impl PostHogView {
                 }))
                 .await;
             this.update(cx, |this, cx| {
-                this.done_sending(seq, &project);
+                this.done_sending(seq, &project, cx);
                 if this.current.as_ref() != Some(&project) {
                     return;
                 }

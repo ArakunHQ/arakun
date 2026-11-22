@@ -30,13 +30,26 @@ impl PostHogView {
 
     /// Change `seq` got its answer. When its project is no longer the one on
     /// screen, its saved overview is dropped so the next visit reads it again.
-    pub(super) fn done_sending(&mut self, seq: u64, project: &Project) {
+    pub(super) fn done_sending(&mut self, seq: u64, project: &Project, cx: &mut Context<Self>) {
         if self.sending == Some(seq) {
             self.sending = None;
+            // A dialog open elsewhere waits on this one.
+            cx.notify();
         }
         if self.current.as_ref() != Some(project) {
             posthog::forget_cached(project);
         }
+    }
+
+    /// "Project · host · account", so two accounts that see a project of the
+    /// same name can't be mistaken for each other.
+    pub(super) fn destination(&self, p: &Project) -> String {
+        let account = self
+            .session_of(p)
+            .map(|s| s.email)
+            .filter(|e| !e.is_empty())
+            .unwrap_or_else(|| p.session.clone());
+        format!("{} · {} · {account}", p.name, p.host)
     }
 
     /// `cancel` runs on Cancel, the close button and Escape; `submit` on the

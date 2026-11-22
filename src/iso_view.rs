@@ -647,55 +647,101 @@ struct FrameKey {
     scale: f32,
 }
 
-/// The image on screen and what it shows. The previous image leaves the
-/// sprite atlas when the next one replaces it.
-type Shown = Rc<RefCell<Option<(FrameKey, Arc<RenderImage>)>>>;
+/// The stage's frames, shared by the view and the frame being drawn.
+type Shown = Rc<RefCell<Stage>>;
 
-/// Rasterizes `items` with tiny-skia at the display's pixel density and
-/// paints the result over `bounds`.
+#[derive(Default)]
+struct Stage {
+    /// The image on screen and what it shows.
+    shown: Option<(FrameKey, Arc<RenderImage>)>,
+    /// A frame is being drawn on the background executor.
+    drawing: bool,
+    /// The buffers, while no frame is being drawn with them.
+    frames: Option<raster::Frames>,
+    /// Images replaced since the last paint. They leave the sprite atlas on
+    /// the next paint, once nothing shows them any more.
+    retired: Vec<Arc<RenderImage>>,
+}
+
+/// Paints the newest frame over `bounds`, and starts drawing the one `key`
+/// asks for when it differs. Rasterizing a full-size frame takes
+/// milliseconds, so it runs on the background executor and the stage shows
+/// the previous frame until it lands. While one is drawing no other starts:
+/// when drawing is slower than the display, frames are skipped, not queued.
+#[allow(clippy::too_many_arguments)]
 fn paint(
-    items: &[Item],
+    items: Vec<Item>,
     extent: Rect,
-    palette: &Palette,
+    palette: Palette,
     key: FrameKey,
     shown: &Shown,
+    view: gpui::WeakEntity<IsoView>,
     bounds: Bounds<Pixels>,
     window: &mut Window,
+    cx: &mut gpui::App,
 ) {
-    let scale = key.scale;
-    let (w, h) = key.size;
-    if w == 0 || h == 0 {
-        return;
+    let mut stage = shown.borrow_mut();
+    for old in stage.retired.drain(..) {
+        let _ = window.drop_image(old);
     }
-    let mut shown = shown.borrow_mut();
-    let image = match shown.as_ref() {
-        Some((k, image)) if *k == key => image.clone(),
-        _ => {
-            let Some(fit) = Fit::new(extent, w as f32, h as f32, 32. * scale) else {
+    let (w, h) = key.size;
+    if w > 0
+        && h > 0
+        && !stage.drawing
+        && stage.shown.as_ref().is_none_or(|(k, _)| *k != key)
+        && let Some(fit) = Fit::new(extent, w as f32, h as f32, 32. * key.scale)
+    {
+        stage.drawing = true;
+        let mut frames = stage.frames.take().unwrap_or_default();
+        let task = cx.background_spawn(async move {
+            let image = draw_frame(&mut frames, &items, &palette, w, h, fit, 1.25 * key.scale);
+            (frames, image)
+        });
+        let shown = shown.clone();
+        cx.spawn(async move |cx| {
+            let (frames, image) = task.await;
+            let mut stage = shown.borrow_mut();
+            stage.drawing = false;
+            stage.frames = Some(frames);
+            let Some(image) = image else {
                 return;
             };
-            let Some(pixmap) = raster::frame(items, palette, w, h, fit, 1.25 * scale) else {
-                return;
-            };
-            // The ground is opaque, so premultiplied RGBA is plain RGBA; GPUI wants BGRA.
-            let mut data = pixmap.take();
-            for px in data.as_chunks_mut::<4>().0 {
-                px.swap(0, 2);
+            if let Some((_, old)) = stage.shown.replace((key, image)) {
+                stage.retired.push(old);
             }
-            let Some(buffer) = image::RgbaImage::from_raw(w, h, data) else {
-                return;
-            };
-            let image = Arc::new(RenderImage::new(vec![image::Frame::new(buffer)]));
-            if let Some((_, old)) = shown.replace((key, image.clone())) {
-                let _ = window.drop_image(old);
-            }
-            image
-        }
-    };
-    // Inside the stage's 1 px border, following the radius setting like the
-    // stage does, so the picture's corners stay on its border.
-    let corners = gpui::Corners::all(ui::nested(ui::RADIUS_LG, 1.));
-    let _ = window.paint_image(bounds, bounds, corners, image, 0, false);
+            drop(stage);
+            let _ = view.update(cx, |_, cx| cx.notify());
+        })
+        .detach();
+    }
+    if let Some((_, image)) = &stage.shown {
+        // Inside the stage's 1 px border, following the radius setting like
+        // the stage does, so the picture's corners stay on its border.
+        let corners = gpui::Corners::all(ui::nested(ui::RADIUS_LG, 1.));
+        let _ = window.paint_image(bounds, bounds, corners, image.clone(), 0, false);
+    }
+}
+
+/// Rasterizes `items` with tiny-skia into `frames` and copies the result
+/// into an image GPUI can upload. The copy can't be avoided: a RenderImage
+/// owns its bytes and never hands them back.
+fn draw_frame(
+    frames: &mut raster::Frames,
+    items: &[Item],
+    palette: &Palette,
+    w: u32,
+    h: u32,
+    fit: Fit,
+    line: f32,
+) -> Option<Arc<RenderImage>> {
+    let pixmap = frames.draw(items, palette, w, h, fit, line)?;
+    // The ground is opaque, so premultiplied RGBA is plain RGBA; GPUI wants BGRA.
+    let mut data = pixmap.data().to_vec();
+    for px in data.as_chunks_mut::<4>().0 {
+        px.swap(0, 2);
+    }
+    let buffer = image::RgbaImage::from_raw(w, h, data)?;
+    Some(Arc::new(RenderImage::new(vec![image::Frame::new(buffer)])))
 }
 
 impl Render for IsoView {
@@ -1021,6 +1067,7 @@ impl Render for IsoView {
             self.look,
             self.shown.clone(),
         );
+        let view = cx.entity().downgrade();
         let stage = div()
             .flex_1()
             .min_h(px(240.))
@@ -1031,7 +1078,7 @@ impl Render for IsoView {
             .child(
                 canvas(
                     |_, _, _| {},
-                    move |b, _, window, _| {
+                    move |b, _, window, cx| {
                         let scale = window.scale_factor();
                         let size = (
                             (b.size.width.as_f32() * scale).round().max(0.) as u32,
@@ -1046,7 +1093,7 @@ impl Render for IsoView {
                             size,
                             scale,
                         };
-                        paint(&items, extent, &palette, key, &shown, b, window)
+                        paint(items, extent, palette, key, &shown, view, b, window, cx)
                     },
                 )
                 .size_full(),

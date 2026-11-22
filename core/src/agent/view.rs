@@ -309,6 +309,13 @@ pub struct ThreadView {
     entrances: Arrivals,
     /// Redraws the live turn's elapsed time while the agent works.
     tick: Option<Task<()>>,
+    /// True once `render` has painted the last notification. While false,
+    /// streaming updates coalesce instead of re-measuring and notifying a
+    /// hidden view (or re-running multiple times within one frame).
+    rendered: bool,
+    pending_reset: bool,
+    pending_from: Option<usize>,
+    pending_status: bool,
     /// The raccoon, shown by the shell perched on the composer under this session.
     mascot: Entity<Mascot>,
     _subs: Vec<Subscription>,
@@ -381,6 +388,10 @@ impl ThreadView {
             active: window.is_window_active(),
             entrances: Arrivals::new(seen),
             tick: None,
+            rendered: true,
+            pending_reset: false,
+            pending_from: None,
+            pending_status: false,
             mascot: cx.new(|cx| Mascot::new(MASCOT_W, cx).dancer().shy()),
             _subs: subs,
         };
@@ -465,39 +476,38 @@ impl ThreadView {
         {
             s.stale = true;
         }
-        match ev {
-            ThreadEvent::EntriesChanged { from } => {
-                let t = self.thread.read(cx);
-                let (len, at_work) = (t.entries().len(), t.is_busy());
-                self.entrances.entries_now(len, at_work, Instant::now());
-                keep_docs_of(&mut self.markdown, self.thread.read(cx).entries(), *from);
-                self.sync_turns(*from, cx)
-            }
-            ThreadEvent::Reset => {
-                self.markdown.clear();
-                self.arrivals.clear();
-                self.maps.borrow_mut().clear();
-                self.selection = None;
-                self.menu_at = None;
-                self.note = None;
-                self.phase_open.clear();
-                self.open.clear();
-                self.folds.clear();
-                self.changes_open.clear();
-                self.entrances.reset(self.thread.read(cx).entries().len());
-                self.turns = turns_of(self.thread.read(cx).entries());
-                self.list.reset(self.turns.len() + 1);
-                self.list.set_follow_mode(FollowMode::Tail);
-            }
-            ThreadEvent::StatusChanged => {
-                self.list
-                    .remeasure_items(self.turns.len()..self.turns.len() + 1);
-                if let Some(last) = self.turns.len().checked_sub(1) {
-                    self.list.remeasure_items(last..last + 1);
+        // Coalesce high-frequency updates while a notification is still pending
+        // paint (multiple chunks in one frame, or a background tab not on screen).
+        if !self.rendered {
+            match ev {
+                ThreadEvent::EntriesChanged { from } => {
+                    if !self.pending_reset {
+                        self.pending_from =
+                            Some(self.pending_from.map_or(*from, |prev| prev.min(*from)));
+                    }
+                    return;
                 }
-                self.sync_tick(window, cx);
-                self.sync_ask(window, cx);
+                ThreadEvent::Reset => {
+                    self.pending_reset = true;
+                    self.pending_from = None;
+                    return;
+                }
+                ThreadEvent::StatusChanged
+                | ThreadEvent::Changed
+                | ThreadEvent::SubagentsChanged { .. } => {
+                    self.pending_status = true;
+                    if !self.is_busy_for_tick(cx) {
+                        self.tick = None;
+                    }
+                    return;
+                }
+                _ => {}
             }
+        }
+        match ev {
+            ThreadEvent::EntriesChanged { from } => self.apply_entries_changed(*from, cx),
+            ThreadEvent::Reset => self.apply_reset(cx),
+            ThreadEvent::StatusChanged => self.apply_status_changed(window, cx),
             ThreadEvent::NeedsPermission => {
                 self.remeasure_footer();
                 self.sync_ask(window, cx);
@@ -518,7 +528,71 @@ impl ThreadView {
             _ => {}
         }
         self.sync_mascot(cx);
+        self.rendered = false;
         cx.notify();
+    }
+
+    fn apply_entries_changed(&mut self, from: usize, cx: &mut Context<Self>) {
+        let t = self.thread.read(cx);
+        let (len, at_work) = (t.entries().len(), t.is_busy());
+        self.entrances.entries_now(len, at_work, Instant::now());
+        keep_docs_of(&mut self.markdown, self.thread.read(cx).entries(), from);
+        self.sync_turns(from, cx);
+    }
+
+    fn apply_reset(&mut self, cx: &mut Context<Self>) {
+        self.markdown.clear();
+        self.arrivals.clear();
+        self.maps.borrow_mut().clear();
+        self.selection = None;
+        self.menu_at = None;
+        self.note = None;
+        self.phase_open.clear();
+        self.open.clear();
+        self.folds.clear();
+        self.changes_open.clear();
+        self.entrances.reset(self.thread.read(cx).entries().len());
+        self.turns = turns_of(self.thread.read(cx).entries());
+        self.list.reset(self.turns.len() + 1);
+        self.list.set_follow_mode(FollowMode::Tail);
+    }
+
+    fn apply_status_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.list
+            .remeasure_items(self.turns.len()..self.turns.len() + 1);
+        if let Some(last) = self.turns.len().checked_sub(1) {
+            self.list.remeasure_items(last..last + 1);
+        }
+        self.sync_tick(window, cx);
+        self.sync_ask(window, cx);
+    }
+
+    fn flush_pending(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let reset = std::mem::take(&mut self.pending_reset);
+        let from = self.pending_from.take();
+        let status = std::mem::take(&mut self.pending_status);
+        if reset {
+            self.apply_reset(cx);
+        } else if let Some(from) = from {
+            self.apply_entries_changed(from, cx);
+        }
+        if status {
+            self.apply_status_changed(window, cx);
+        }
+        if reset || from.is_some() || status {
+            self.sync_mascot(cx);
+        }
+        if self.tick.is_none() && self.is_busy_for_tick(cx) {
+            self.sync_tick(window, cx);
+        }
+    }
+
+    fn is_busy_for_tick(&self, cx: &App) -> bool {
+        let t = self.thread.read(cx);
+        matches!(
+            t.status(),
+            ThreadStatus::Working | ThreadStatus::NeedsInput | ThreadStatus::Connecting
+        ) || t.running_subagents() > 0
     }
 
     pub fn mascot(&self) -> Entity<Mascot> {
@@ -568,12 +642,8 @@ impl ThreadView {
     }
 
     fn sync_tick(&mut self, window: &Window, cx: &mut Context<Self>) {
-        let t = self.thread.read(cx);
         // A background subagent's timer runs on after the turn ends.
-        let busy = matches!(
-            t.status(),
-            ThreadStatus::Working | ThreadStatus::NeedsInput | ThreadStatus::Connecting
-        ) || t.running_subagents() > 0;
+        let busy = self.is_busy_for_tick(cx);
         if !(busy && window.is_window_active()) {
             self.tick = None;
             return;
@@ -586,7 +656,19 @@ impl ThreadView {
                 cx.background_executor()
                     .timer(Duration::from_millis(250))
                     .await;
-                if this.update(cx, |_, cx| cx.notify()).is_err() {
+                let keep = this
+                    .update(cx, |this, cx| {
+                        // Hidden views never clear `rendered`; stop ticking until rendered again.
+                        if !this.rendered {
+                            this.tick = None;
+                            return false;
+                        }
+                        this.rendered = false;
+                        cx.notify();
+                        true
+                    })
+                    .unwrap_or(false);
+                if !keep {
                     break;
                 }
             }
@@ -2309,7 +2391,9 @@ impl Focusable for ThreadView {
 }
 
 impl Render for ThreadView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.rendered = true;
+        self.flush_pending(window, cx);
         let spacing = crate::ui::space_scale();
         if spacing != self.spacing {
             self.spacing = spacing;

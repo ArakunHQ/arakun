@@ -1,0 +1,24 @@
+AGENTS.md
+  s_2b51bd3c575cde::t_aa69fd30652cc2 75-78
+CONTRIBUTING.md
+  s_2b51bd3c575cde::t_d665fd949854fc 371-374
+.claude/skills/release-notes/SKILL.md
+  s_2b51bd3c575cde::t_51774105f2fcbe 1-57,60-67
+  s_2b51bd3c575cde::t_150a674c93a0ed 58-59
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "fa89334d0cf8806120fe13bbd28b3ea69274c99e",
+  "prompts": {},
+  "sessions": {
+    "s_2b51bd3c575cde": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c7225e3b-063c-42d4-8374-568ef51e9426",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Rik Visser <rik@rivi.software>"
+    }
+  }
+}

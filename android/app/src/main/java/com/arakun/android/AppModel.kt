@@ -91,6 +91,13 @@ class AppModel(app: Application) : AndroidViewModel(app) {
     /** A start sent and not yet answered with `started` or `error`. */
     private var starting = false
 
+    /**
+     * The link dropped while a start waited for its answer: the computer may
+     * have started the session. Starting again then needs the user's say-so.
+     */
+    var startUnsure by mutableStateOf(false)
+        private set
+
     private var link: RelayLink? = null
     private var retry = 500L
     private var retryJob: Job? = null
@@ -132,15 +139,50 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         connection = Connection.Connecting
     }
 
-    fun pair(text: String) {
+    /** A pairing link opened from elsewhere, waiting for the user's yes. */
+    var opened by mutableStateOf<PairingLink?>(null)
+        private set
+    private var openedText: String? = null
+
+    /**
+     * A link from outside the app pairs only after the user says yes, as on
+     * iOS: any app or web page can open one, and pairing while paired would
+     * replace the computer this phone trusts.
+     */
+    fun openLink(text: String) {
+        val p = PairingLink.parse(text)
+        val problem = when {
+            p == null -> "That is not a pairing link. Open the Phone tab in Arakun and scan its code."
+            !p.secure -> "That link does not use a secure connection. Scan the code in Arakun instead."
+            else -> null
+        }
+        if (problem != null) {
+            if (credentials == null) pairError = problem else notice = problem
+            return
+        }
+        opened = p
+        openedText = text
+    }
+
+    /** The answer to [opened]: pair with it, or forget it. */
+    fun answerOpened(yes: Boolean) {
+        val text = openedText
+        opened = null
+        openedText = null
+        if (yes && text != null) pair(text)
+    }
+
+    /** Whether pairing started; a link that is not one leaves an error instead. */
+    fun pair(text: String): Boolean {
         val p = PairingLink.parse(text)
         if (p == null) {
             pairError = "That is not a pairing link. Open the Phone tab in Arakun and scan its code."
-            return
+            return false
         }
         pairError = null
         connection = Connection.Pairing
         start(RelayLink.Mode.Pairing(p, deviceName))
+        return true
     }
 
     private fun start(mode: RelayLink.Mode) {
@@ -203,6 +245,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         loadingOlder = false
         if (starting) {
             starting = false
+            startUnsure = true
             notice = "The connection dropped while the session was starting. Check the inbox before you start it again."
         }
     }
@@ -246,7 +289,21 @@ class AppModel(app: Application) : AndroidViewModel(app) {
                 if (!event.online) interrupted()
                 connection = if (event.online) Connection.Connecting else Connection.ComputerAway(event.since)
             }
-            is RelayLink.Event.Closed -> {
+            // A link opened while paired: the pairing it would replace stays
+            // until the new one works.
+            is RelayLink.Event.Closed -> if (connection == Connection.Pairing && credentials != null) {
+                link = null
+                interrupted()
+                notice = when (event.kind) {
+                    EndKind.PAIRING, EndKind.UNPAIRED ->
+                        "That link is wrong or has expired. This phone stays paired with the computer it had."
+                    EndKind.UNTRUSTED ->
+                        "That address does not answer with the key Arakun showed. This phone stays paired with the computer it had."
+                    else ->
+                        "Could not pair with the new computer (${event.detail}). This phone stays paired with the one it had."
+                }
+                lost()
+            } else {
                 link = null
                 interrupted()
                 when (event.kind) {
@@ -386,6 +443,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
             return true
         }
         starting = true
+        startUnsure = false
         send("type" to "start", "env" to place.path, "agent" to place.agent, "text" to text)
         return true
     }

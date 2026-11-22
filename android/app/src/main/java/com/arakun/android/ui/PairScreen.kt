@@ -55,8 +55,8 @@ fun PairScreen(model: AppModel) {
     // What went wrong, from pairing or from a computer that did not prove its key.
     val problem = model.pairError ?: (model.connection as? AppModel.Connection.Failed)?.why
     fun pairPasted() {
-        model.pair(pasted.text.toString())
-        pasted.clearText()
+        // A typo stays in the field to fix; only a link that pairs goes.
+        if (model.pair(pasted.text.toString())) pasted.clearText()
     }
 
     Box(Modifier.fillMaxSize().background(c.ground).safeDrawingPadding().imePadding(), contentAlignment = Alignment.TopCenter) {

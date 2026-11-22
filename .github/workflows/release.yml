@@ -1175,6 +1175,23 @@ jobs:
     permissions:
       contents: read
 
+  # The Android app too: once the release is out, upload it to Google Play
+  # from the tag. It skips pre-releases, and skips without failing until the
+  # `release` environment has the upload key.
+  android:
+    name: Android
+    needs: release
+    uses: $/.github/workflows/android-release.yml
+    # It lives in the `release` environment, which the called job uses.
+    secrets:
+      ANDROID_UPLOAD_KEYSTORE: ${{ secrets.ANDROID_UPLOAD_KEYSTORE }}
+      ANDROID_UPLOAD_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_PASSWORD }}
+      ANDROID_UPLOAD_KEY_ALIAS: ${{ secrets.ANDROID_UPLOAD_KEY_ALIAS }}
+      ANDROID_UPLOAD_KEY_PASSWORD: ${{ secrets.ANDROID_UPLOAD_KEY_PASSWORD }}
+      PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+    permissions:
+      contents: read
+
   # A nightly build of main, published as a pre-release with no approval. A
   # job of its own, like the release job: it runs no code from the
   # repository, and only it can read the nightly key. That key lives in the

@@ -66,13 +66,17 @@ fun NewSessionSheet(model: AppModel, onDismiss: () -> Unit) {
         if (sent && model.session != null) onDismiss()
     }
     LaunchedEffect(model.notice) {
-        // The computer refused it, or the link dropped before it answered:
-        // let the form be sent again, prompt and all.
-        if (model.notice != null) sent = false
+        // The computer refused it: let the form be sent again, prompt and all.
+        // A dropped link is no answer, so the form stays locked then.
+        if (model.notice != null && !model.startUnsure) sent = false
     }
 
     val prompt = text.text.trim().toString()
-    val ready = !sent && model.places.any { it.path == placePath } && prompt.isNotEmpty() && model.isLinked
+    val sendable = model.places.any { it.path == placePath } && prompt.isNotEmpty() && model.isLinked
+    // The link dropped before the computer answered: the session may exist
+    // already, so starting again is a separate, explicit choice.
+    val unsure = sent && model.startUnsure
+    val ready = (!sent || unsure) && sendable
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -124,6 +128,14 @@ fun NewSessionSheet(model: AppModel, onDismiss: () -> Unit) {
                     )
                 }
             }
+            if (unsure) {
+                Text(
+                    "The connection dropped before Arakun answered, so the session may have started. Check the inbox first.",
+                    style = Type.callout,
+                    color = c.textMuted,
+                    modifier = Modifier.padding(horizontal = 16.dp),
+                )
+            }
             PrimaryButton(
                 onClick = {
                     val p = model.places.firstOrNull { it.path == placePath } ?: return@PrimaryButton
@@ -132,8 +144,14 @@ fun NewSessionSheet(model: AppModel, onDismiss: () -> Unit) {
                 enabled = ready,
                 modifier = Modifier.fillMaxWidth().padding(16.dp),
             ) {
-                if (sent) CircularProgressIndicator(Modifier.size(16.dp), color = Brand.onAmber, strokeWidth = 2.dp)
-                Text(if (sent) "Starting…" else "Start session")
+                if (sent && !unsure) CircularProgressIndicator(Modifier.size(16.dp), color = Brand.onAmber, strokeWidth = 2.dp)
+                Text(
+                    when {
+                        unsure -> "Start it again anyway"
+                        sent -> "Starting…"
+                        else -> "Start session"
+                    },
+                )
             }
         }
     }

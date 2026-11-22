@@ -21,6 +21,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import okhttp3.HttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -130,13 +131,17 @@ class RelayLink(
         open()
     }
 
+    /**
+     * The relay's address. OkHttp reads the host and port, so an IPv6 one in
+     * brackets (`[::1]:8787`) keeps its colons.
+     */
+    private fun base(): HttpUrl.Builder =
+        "${if (secure) "https" else "http"}://$host/".toHttpUrlOrNull()?.newBuilder()
+            ?: throw IllegalArgumentException("bad address")
+
     /** The label the relay at `host` goes by, from its `/_relay`. */
     private fun relayLabel(): Result<String> = try {
-        val b = HttpUrl.Builder()
-            .scheme(if (secure) "https" else "http")
-            .host(host.substringBefore(':'))
-            .addPathSegment("_relay")
-        host.substringAfter(':', "").toIntOrNull()?.let(b::port)
+        val b = base().addPathSegment("_relay")
         // The socket's client never times out a read; this asks once and gives up.
         val probe = client.newBuilder().callTimeout(PROBE_WITHIN, TimeUnit.MILLISECONDS).build()
         probe.newCall(Request.Builder().url(b.build()).build()).execute().use { res ->
@@ -153,11 +158,7 @@ class RelayLink(
 
     private fun open() {
         val url = try {
-            val b = HttpUrl.Builder()
-                .scheme(if (secure) "https" else "http")
-                .host(host.substringBefore(':'))
-                .addPathSegment("ws")
-            host.substringAfter(':', "").toIntOrNull()?.let(b::port)
+            val b = base().addPathSegment("ws")
             when (mode) {
                 is Mode.WithCredentials -> b.addQueryParameter("d", mode.credentials.id)
                     .addQueryParameter("t", mode.credentials.ticket)

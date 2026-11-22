@@ -41,7 +41,7 @@ class MainActivity : ComponentActivity() {
     /** A pairing link opened from elsewhere. */
     private fun opened(intent: Intent?) {
         if (intent?.action != Intent.ACTION_VIEW) return
-        intent.data?.let { model.pair(pairingText(it)) }
+        intent.data?.let { model.openLink(pairingText(it)) }
     }
 
     companion object {

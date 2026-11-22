@@ -34,7 +34,8 @@ android {
     signingConfigs {
         if (uploadStore != null) {
             create("upload") {
-                storeFile = file(uploadStore)
+                // From android/, where ./gradlew runs, not from app/.
+                storeFile = rootProject.file(uploadStore)
                 storePassword = providers.gradleProperty("uploadStorePassword").get()
                 keyAlias = providers.gradleProperty("uploadKeyAlias").get()
                 keyPassword = providers.gradleProperty("uploadKeyPassword").get()

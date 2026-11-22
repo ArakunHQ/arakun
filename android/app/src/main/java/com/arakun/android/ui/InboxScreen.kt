@@ -425,7 +425,8 @@ fun StatusDot(status: SessionStatus) {
         SessionStatus.NEEDS_INPUT -> Brand.amber
         SessionStatus.ERROR -> c.failure
     }
-    val alpha = if (status == SessionStatus.WORKING) {
+    // With Remove animations on, a working dot stays lit instead of pulsing.
+    val alpha = if (status == SessionStatus.WORKING && !rememberStill()) {
         rememberInfiniteTransition(label = "pulse").animateFloat(
             1f, 0.35f, infiniteRepeatable(tween(900), RepeatMode.Reverse), label = "dot",
         ).value
@@ -476,7 +477,9 @@ fun ConnectionBanner(model: AppModel) {
     val c = Palette.current
     val now = rememberNow(30_000)
     when (val conn = model.connection) {
-        AppModel.Connection.Connected, AppModel.Connection.Unpaired, AppModel.Connection.Pairing -> {}
+        AppModel.Connection.Connected, AppModel.Connection.Unpaired -> {}
+        // Only a link opened while paired pairs over the inbox.
+        AppModel.Connection.Pairing -> BannerLine(R.drawable.ic_loading03, "Pairing with the new computer…", null, c.textMuted)
         AppModel.Connection.Connecting -> BannerLine(R.drawable.ic_loading03, "Connecting to your computer…", null, c.textMuted)
         is AppModel.Connection.ComputerAway -> BannerLine(
             R.drawable.ic_computer, "Your computer is offline.",

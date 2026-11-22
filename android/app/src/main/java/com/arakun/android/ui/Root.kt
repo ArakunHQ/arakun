@@ -73,6 +73,37 @@ fun Root(model: AppModel) {
                 containerColor = c.raised,
             )
         }
+        model.opened?.let { link ->
+            val paired = model.credentials != null
+            AlertDialog(
+                onDismissRequest = { model.answerOpened(false) },
+                title = {
+                    Text(if (paired) "Replace your paired computer?" else "Pair with this computer?", style = geist(18f, FontWeight.SemiBold))
+                },
+                text = {
+                    Text(
+                        if (paired) {
+                            "A link asks to pair this phone with ${link.host} instead of the computer it is paired with now. Only go on if you opened it from Arakun on your own computer."
+                        } else {
+                            "A link asks to pair this phone with ${link.host}. Only go on if you opened it from Arakun on your own computer."
+                        },
+                        style = Type.callout,
+                        color = c.textMuted,
+                    )
+                },
+                confirmButton = {
+                    TextButton(onClick = { model.answerOpened(true) }) {
+                        Text(if (paired) "Replace" else "Pair", color = c.amberInk, style = geist(15f, FontWeight.Medium))
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { model.answerOpened(false) }) {
+                        Text("Cancel", color = c.textMuted, style = geist(15f, FontWeight.Medium))
+                    }
+                },
+                containerColor = c.raised,
+            )
+        }
         model.notice?.let { text ->
             AlertDialog(
                 onDismissRequest = { model.notice = null },

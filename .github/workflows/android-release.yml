@@ -6,9 +6,9 @@ name: Android release
 #
 # Two ways in:
 #
-# - A release: the v* tag that starts release.yml starts this too.
-#   Pre-releases (a `-` in the tag) don't upload. The app's version is the
-#   tag's.
+# - A release: release.yml calls this after its publish job, on the v* tag,
+#   so only a tag that passed CI and was published uploads. Pre-releases (a
+#   `-` in the tag) don't upload. The app's version is the tag's.
 # - By hand, for a test build between releases, on main or a v* tag:
 #
 #     gh workflow run android-release.yml --ref main
@@ -39,8 +39,20 @@ name: Android release
 # reviewed the app, run with `-f status=draft`.
 
 on:
-  push:
-    tags: ["v*"]
+  workflow_call:
+    # A called workflow gets an environment secret only when the caller passes
+    # it; otherwise it is empty.
+    secrets:
+      ANDROID_UPLOAD_KEYSTORE:
+        required: false
+      ANDROID_UPLOAD_KEYSTORE_PASSWORD:
+        required: false
+      ANDROID_UPLOAD_KEY_ALIAS:
+        required: false
+      ANDROID_UPLOAD_KEY_PASSWORD:
+        required: false
+      PLAY_SERVICE_ACCOUNT_JSON:
+        required: false
   workflow_dispatch:
     inputs:
       track:

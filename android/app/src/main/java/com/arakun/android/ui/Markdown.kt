@@ -79,7 +79,7 @@ fun markdown(s: String, c: Palette): AnnotatedString = buildAnnotatedString {
             }
             ch == '[' -> {
                 val close = closes("]", i + 1)
-                val url = if (close > 0 && close + 1 < s.length && s[close + 1] == '(') s.indexOf(')', close + 2) else -1
+                val url = if (close > 0 && close + 1 < s.length && s[close + 1] == '(') closingParen(s, close + 2) else -1
                 if (url < 0) { plain.append(ch); i++ } else {
                     flush()
                     val target = s.substring(close + 2, url)
@@ -97,6 +97,23 @@ fun markdown(s: String, c: Palette): AnnotatedString = buildAnnotatedString {
         }
     }
     flush()
+}
+
+/**
+ * Where the link target that starts at `from` ends: its `)`, past any
+ * balanced pairs inside, as in `https://en.wikipedia.org/wiki/Fox_(film)`.
+ */
+private fun closingParen(s: String, from: Int): Int {
+    var depth = 0
+    for (i in from until s.length) {
+        when (s[i]) {
+            '(' -> depth++
+            ')' -> if (depth == 0) return i else depth--
+            // A target has no spaces or line breaks: this was no link.
+            ' ', '\n' -> return -1
+        }
+    }
+    return -1
 }
 
 private val WEB = Regex("https?://\\S+", RegexOption.IGNORE_CASE)

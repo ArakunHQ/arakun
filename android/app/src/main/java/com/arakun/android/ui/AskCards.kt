@@ -35,7 +35,11 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.listSaver
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshots.SnapshotStateList
+import androidx.compose.runtime.toMutableStateList
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -110,10 +114,14 @@ fun PermissionCard(ask: PermissionAsk, enabled: Boolean, pick: (PermissionAsk.Op
             title = { Text("Allow this for the rest of the session?", style = geist(18f, FontWeight.SemiBold)) },
             text = { Text("The agent will not ask again before doing it.", style = Type.callout, color = c.textMuted) },
             confirmButton = {
-                TextButton(onClick = {
-                    always = null
-                    pick(o)
-                }) { Text(o.name, color = c.amberInk, style = geist(15f, FontWeight.Medium)) }
+                // Offline the pick would be dropped; the dialog waits instead.
+                TextButton(
+                    onClick = {
+                        always = null
+                        pick(o)
+                    },
+                    enabled = enabled,
+                ) { Text(o.name, color = if (enabled) c.amberInk else c.textFaint, style = geist(15f, FontWeight.Medium)) }
             },
             dismissButton = {
                 TextButton(onClick = { always = null }) { Text("Cancel", color = c.textMuted, style = geist(15f, FontWeight.Medium)) }
@@ -186,10 +194,22 @@ private fun HoldButton(title: String, enabled: Boolean, action: () -> Unit) {
 @Composable
 fun QuestionCard(ask: QuestionAsk, enabled: Boolean, answer: (List<String>) -> Unit, skip: () -> Unit) {
     val c = Palette.current
-    var page by remember { mutableIntStateOf(0) }
-    val picked = remember { mutableStateListOf<Set<Int>>().apply { repeat(ask.questions.size) { add(emptySet()) } } }
-    val typed = remember { List(ask.questions.size) { TextFieldState() } }
-    var confirmSkip by remember { mutableStateOf(false) }
+    // Saved, so turning the phone keeps the page, the picks and the words.
+    // The caller keys this card by the ask, so a new ask starts empty.
+    var page by rememberSaveable { mutableIntStateOf(0) }
+    val picked = rememberSaveable(
+        saver = listSaver<SnapshotStateList<Set<Int>>, IntArray>(
+            save = { list -> list.map { it.sorted().toIntArray() } },
+            restore = { saved -> saved.map { it.toSet() }.toMutableStateList() },
+        ),
+    ) { mutableStateListOf<Set<Int>>().apply { repeat(ask.questions.size) { add(emptySet()) } } }
+    val typed = rememberSaveable(
+        saver = listSaver<List<TextFieldState>, String>(
+            save = { list -> list.map { it.text.toString() } },
+            restore = { saved -> saved.map { TextFieldState(it) } },
+        ),
+    ) { List(ask.questions.size) { TextFieldState() } }
+    var confirmSkip by rememberSaveable { mutableStateOf(false) }
 
     fun answerOf(i: Int): String {
         val q = ask.questions[i]
@@ -250,10 +270,13 @@ fun QuestionCard(ask: QuestionAsk, enabled: Boolean, answer: (List<String>) -> U
             onDismissRequest = { confirmSkip = false },
             title = { Text("Skip all the questions?", style = geist(18f, FontWeight.SemiBold)) },
             confirmButton = {
-                TextButton(onClick = {
-                    confirmSkip = false
-                    skip()
-                }) { Text("Skip all", color = c.failure, style = geist(15f, FontWeight.Medium)) }
+                TextButton(
+                    onClick = {
+                        confirmSkip = false
+                        skip()
+                    },
+                    enabled = enabled,
+                ) { Text("Skip all", color = if (enabled) c.failure else c.textFaint, style = geist(15f, FontWeight.Medium)) }
             },
             dismissButton = {
                 TextButton(onClick = { confirmSkip = false }) { Text("Cancel", color = c.textMuted, style = geist(15f, FontWeight.Medium)) }

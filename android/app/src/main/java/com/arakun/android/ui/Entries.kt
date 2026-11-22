@@ -39,7 +39,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.arakun.android.R
 import com.arakun.kit.Entry
-import java.text.NumberFormat
 import java.util.Date
 
 /** One entry of the transcript. */
@@ -63,10 +62,10 @@ fun EntryView(entry: Entry) {
         }
         is Entry.Compacted -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             Box(Modifier.weight(1f).height(1.dp).background(c.line))
-            val n = NumberFormat.getIntegerInstance()
             Text(
+                // How full the context was before and after, as the phone page shows it.
                 if (entry.before != null && entry.after != null) {
-                    "Compacted ${n.format(entry.before)} → ${n.format(entry.after)} tokens"
+                    "Compacted ${entry.before}% → ${entry.after}%"
                 } else {
                     "Compacted"
                 },

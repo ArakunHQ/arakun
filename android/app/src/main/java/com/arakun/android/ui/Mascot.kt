@@ -214,6 +214,21 @@ private fun now(): Double = System.nanoTime() / 1e9
 private fun animationsOff(context: Context): Boolean =
     Settings.Global.getFloat(context.contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f) == 0f
 
+/**
+ * Whether to hold still: Remove animations is on. Read again on each return,
+ * since the setting can change while the app is away.
+ */
+@Composable
+fun rememberStill(): Boolean {
+    val context = LocalContext.current
+    var still by remember { mutableStateOf(animationsOff(context)) }
+    LifecycleResumeEffect(context) {
+        still = animationsOff(context)
+        onPauseOrDispose {}
+    }
+    return still
+}
+
 /** The raccoon, `width` wide, in a mood. A tap makes it hop. */
 @Composable
 fun Mascot(mood: Mood, width: Dp, modifier: Modifier = Modifier, props: Boolean = true) {
@@ -223,12 +238,7 @@ fun Mascot(mood: Mood, width: Dp, modifier: Modifier = Modifier, props: Boolean 
     val height = width * ((BOX.height + top) / BOX.width)
     val state = remember { MascotState() }
     val art = remember(small) { MascotArt.get(context, small) }
-    // Read again on each return: the setting can change while the app is away.
-    var still by remember { mutableStateOf(animationsOff(context)) }
-    LifecycleResumeEffect(context) {
-        still = animationsOff(context)
-        onPauseOrDispose {}
-    }
+    val still = rememberStill()
     val c = Palette.current
     // The symbols over the head: in the text color, so they read on white too.
     val propColor = if (c.dark) Brand.fur else Brand.furInk

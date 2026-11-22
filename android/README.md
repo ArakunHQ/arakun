@@ -67,9 +67,10 @@ CI's Android job (`.github/workflows/ci.yml`) runs the kit's and the app's tests
 a debug build and an unsigned release bundle (`.aab`) when `android/`, `phone/`, the
 mascot's drawing or the fonts change.
 
-`.github/workflows/android-release.yml` delivers the app: on a `v*` tag (not a
-pre-release), or by hand on main, it builds the bundle with Arakun's version, signs it
-with the upload key and uploads it to a Google Play track (internal unless asked):
+`.github/workflows/android-release.yml` delivers the app: after a release is published
+(release.yml calls it on the `v*` tag, not for a pre-release), or by hand on main, it
+builds the bundle with Arakun's version, signs it with the upload key and uploads it to
+a Google Play track (internal unless asked):
 
 ```sh
 gh workflow run android-release.yml --ref main                    # internal track
@@ -83,8 +84,12 @@ bundle only by hand in Play Console, and `android/tools/play-upload.py` sends th
 after it. To build a signed bundle yourself:
 
 ```sh
+# Gradle reads ORG_GRADLE_PROJECT_<name> as -P<name>; this keeps the passwords out of
+# the shell's history and the process list. The keystore path is from android/.
+read -rs ORG_GRADLE_PROJECT_uploadStorePassword && export ORG_GRADLE_PROJECT_uploadStorePassword
+read -rs ORG_GRADLE_PROJECT_uploadKeyPassword && export ORG_GRADLE_PROJECT_uploadKeyPassword
 ./gradlew :app:bundleRelease -PversionName=0.18.0 -PversionCode=2 \
-  -PuploadStoreFile=upload.jks -PuploadStorePassword=… -PuploadKeyAlias=upload -PuploadKeyPassword=…
+  -PuploadStoreFile=upload.jks -PuploadKeyAlias=upload
 ```
 
 ## Crash reports
@@ -101,7 +106,8 @@ file.
 ## Pairing
 
 Open the Phone tab in Arakun, choose the relay, and scan its code from the app (or
-paste the link, or open an `arakun://pair?link=<link>` link). The credentials are
+paste the link, or open an `arakun://pair?link=<link>` link; an opened link asks before
+it pairs, and before it replaces the computer the phone is paired with). The credentials are
 sealed with a key the Android Keystore keeps on this device; the app's data is left out
 of backups and device transfers.
 

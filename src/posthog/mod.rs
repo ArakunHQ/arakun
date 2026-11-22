@@ -270,28 +270,6 @@ impl ApiError {
     }
 }
 
-/// One client for every call, so connections (and their TLS) are reused.
-fn agent() -> &'static ureq::Agent {
-    static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
-    AGENT.get_or_init(|| client(30))
-}
-
-/// PostHog AI writes and runs a query before it answers, which often takes
-/// longer than a plain read.
-fn ai_agent() -> &'static ureq::Agent {
-    static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
-    AGENT.get_or_init(|| client(120))
-}
-
-fn client(timeout: u64) -> ureq::Agent {
-    ureq::Agent::config_builder()
-        .timeout_global(Some(Duration::from_secs(timeout)))
-        .http_status_as_error(false)
-        .user_agent("arakun")
-        .build()
-        .into()
-}
-
 /// Which budget a call spends: queries are counted per hour, the rest is plain REST.
 fn bucket(path: &str) -> &'static str {
     if path.contains("/query") || path.ends_with(ask::PATH) {
@@ -427,61 +405,29 @@ fn fetch(
         return Ok(r);
     }
     let url = format!("{}{path}", host.trim_end_matches('/'));
-    let agent = if path.ends_with(ask::PATH) {
-        ai_agent()
-    } else {
-        agent()
-    };
-    let request = ureq::http::Request::builder()
-        .method(method)
-        .uri(&url)
-        .header("Authorization", format!("Bearer {token}"))
-        .header("Content-Type", "application/json");
-    let sent = match body {
-        Some(b) => request
-            .body(b.to_string())
-            .map_err(|e| e.to_string())
-            .and_then(|r| agent.run(r).map_err(|e| e.to_string())),
-        None => request
-            .body(())
-            .map_err(|e| e.to_string())
-            .and_then(|r| agent.run(r).map_err(|e| e.to_string())),
-    };
-    let mut response =
-        sent.map_err(|e| ApiError::Failed(format!("Couldn't reach PostHog: {e}")))?;
-    let header = |name: &str| {
-        response
-            .headers()
-            .get(name)
-            .and_then(|h| h.to_str().ok())
-            .map(str::to_string)
-    };
+    // PostHog AI writes and runs a query before it answers, which often
+    // takes longer than a plain read.
+    let timeout = if path.ends_with(ask::PATH) { 120 } else { 30 };
+    let reply = crate::http::json_call(
+        crate::http::agent(Duration::from_secs(timeout)),
+        method,
+        &url,
+        Some(token),
+        body.map(Value::to_string),
+        16 * 1024 * 1024,
+    )
+    .map_err(|e| ApiError::Failed(format!("Couldn't reach PostHog: {e}")))?;
     let number = |names: &[&str]| {
         names
             .iter()
-            .find_map(|n| header(n))
+            .find_map(|n| reply.header(n))
             .and_then(|v| v.trim().parse::<u64>().ok())
     };
-    let status = response.status().as_u16();
-    let retry_after = header("retry-after");
+    let status = reply.status;
+    let retry_after = reply.header("retry-after").map(str::to_string);
     let remaining = number(&["x-ratelimit-remaining", "ratelimit-remaining"]);
     let limit = number(&["x-ratelimit-limit", "ratelimit-limit"]);
-    let text = match response
-        .body_mut()
-        .with_config()
-        .limit(16 * 1024 * 1024)
-        .read_to_string()
-    {
-        Ok(text) => text,
-        // A success whose answer was cut off is not a success: for a change,
-        // `call` then says it may still have gone through.
-        Err(e) if (200..300).contains(&status) => {
-            return Err(ApiError::Failed(format!(
-                "Couldn't read PostHog's answer: {e}"
-            )));
-        }
-        Err(_) => String::new(),
-    };
+    let text = reply.text();
     Ok(Reply {
         status,
         retry_after,

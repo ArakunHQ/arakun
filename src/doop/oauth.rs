@@ -201,11 +201,7 @@ fn discover(host: &str) -> Result<Meta, Error> {
 }
 
 fn post_json(url: &str, body: &Value) -> Result<(u16, Value), Error> {
-    let builder = ureq::http::Request::builder()
-        .method("POST")
-        .uri(url)
-        .header("Content-Type", "application/json")
-        .header("Accept", "application/json");
+    let builder = crate::http::request("POST", url, None).header("Accept", "application/json");
     let (status, bytes) = run(builder, Some(body.to_string()), 1024 * 1024)?;
     Ok((
         status,

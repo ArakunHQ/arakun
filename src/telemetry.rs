@@ -757,30 +757,18 @@ fn send(batch: &[Value], agent: &ureq::Agent) {
     }
     let body = payload(&batch).to_string();
     SENDING.with(|s| s.set(true));
-    let _ = agent
-        .post(format!("{}/batch/", HOST.trim_end_matches('/')))
-        .header("Content-Type", "application/json")
-        .send(body);
+    let url = format!("{}/batch/", HOST.trim_end_matches('/'));
+    let _ = crate::http::json_call(agent, "POST", &url, None, Some(body), 64 * 1024);
     SENDING.with(|s| s.set(false));
 }
 
-pub(crate) fn agent_with(timeout: Duration) -> ureq::Agent {
-    ureq::Agent::config_builder()
-        .timeout_global(Some(timeout))
-        .user_agent(concat!("arakun/", env!("ARAKUN_VERSION")))
-        .build()
-        .into()
-}
-
 fn agent() -> &'static ureq::Agent {
-    static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
-    AGENT.get_or_init(|| agent_with(Duration::from_secs(10)))
+    crate::http::agent(Duration::from_secs(10))
 }
 
 /// For a dying process or one quitting: it must not hang there.
 fn quick_agent() -> &'static ureq::Agent {
-    static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
-    AGENT.get_or_init(|| agent_with(Duration::from_secs(2)))
+    crate::http::agent(Duration::from_secs(2))
 }
 
 // ---- panics -----------------------------------------------------------------

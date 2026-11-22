@@ -86,6 +86,19 @@ copy of it, rename it back, and start a version that can read it.
   list takes the place of the Active list and the project's worktrees below. A state
   file from before it keeps the projects and worktrees described next (the Classic
   layout).
+- **Pinned tabs.** With sessions in the sidebar, the title bar holds only the
+  sessions pinned to it, from any project, each with its state's mark and its project's
+  icon, plus the tab on screen and pages, files and views as before. Pin a session by
+  dragging its row up to the bar (a line marks where it lands), with Pin to the title
+  bar in its row's right-click menu, or with `Alt+P` while the pointer is on its row;
+  `Alt+P` on the bar pins or unpins the tab on screen. Closing a pinned tab (`Ctrl+W`)
+  or dragging it back to the sidebar unpins it; the session stays in the tree. A
+  session opened from the tree without a pin shows in the bar while it is on screen.
+  With nothing pinned, the session you open pins itself. Tabs keep clear of the island
+  when the window fills the screen, shrink when the bar fills, and the rest go under
+  **N more**, which can also unpin the ones that are done. With the sidebar hidden, a
+  **Sessions** button with the count of sessions that need you opens the tree as a
+  menu with a search. A state file from before pins keeps every open session pinned.
 - **Active.** The top of the sidebar lists the sessions of every project that need
   you (waiting for an answer, or failed), then the ones running. A click opens the
   session in its project. It stays the same whichever project is open. The open
@@ -1381,7 +1394,8 @@ forward through tabs, `Ctrl+Cmd+F` toggles full screen, and `Cmd+H`, `Cmd+M` and
 - `Ctrl+Tab`, `Ctrl+1...9` switch tabs, across environments; `Alt+Up` / `Alt+Down`
   switch environments
 - `Ctrl+W` close the tab, `Ctrl+Alt+T` reopen the last closed tab where it was;
-  `Ctrl+Shift+PageUp` / `Ctrl+Shift+PageDown` move the tab left / right. A middle click
+  `Ctrl+Shift+PageUp` / `Ctrl+Shift+PageDown` move the tab left / right, `Alt+P` pins
+  or unpins a session (see Pinned tabs). A middle click
   closes a tab, dragging it left or right moves it there (a line marks where it lands,
   and the order stays after a restart), and its right-click menu also
   opens a new session or closes the other tabs of its environment or those to its

@@ -54,6 +54,7 @@ mod panel;
 mod panes;
 mod paste;
 mod phone;
+mod pinned;
 mod posthog;
 mod project_icon;
 mod rail;
@@ -165,6 +166,7 @@ gpui::actions!(
         ReopenClosedTab,
         MoveTabLeft,
         MoveTabRight,
+        TogglePin,
         FindInChat,
         ZoomIn,
         ZoomOut,
@@ -234,6 +236,12 @@ enum MenuTarget {
     RailSection(usize),
     /// Every project, to switch to, from the rail's open project.
     ProjectSwitch,
+    /// A session of the sidebar's tree: project, environment, session.
+    TreeSession(usize, usize, usize),
+    /// The pinned tabs that don't fit the title bar.
+    MoreTabs,
+    /// The tree of sessions, from the title bar while the sidebar is hidden.
+    Sessions,
 }
 
 /// An environment made with one click, shown while its worktree is made.
@@ -520,6 +528,15 @@ pub struct Shell {
     /// Projects the user folded (false) or opened (true) in the sidebar's
     /// tree of sessions, over what `tab_layout::Quiet` does by itself.
     tree_open: std::collections::HashMap<std::path::PathBuf, bool>,
+    /// The tree's row under the pointer, which Alt+P pins.
+    tree_hover: Option<(usize, usize, SharedString)>,
+    /// The search of the Sessions menu.
+    tree_filter: Entity<TextInput>,
+    _tree_filter: Subscription,
+    /// The pinned tabs drawn under "N more" in the last frame.
+    bar_more: RefCell<Vec<u64>>,
+    /// Where the pinned tabs' part of the title bar was in the last frame.
+    bar_area: Rc<Cell<Bounds<Pixels>>>,
     slide: Option<drag::SessionSlide>,
     drop_menu: Option<drag::DropMenu>,
     /// Other sessions' conversations waiting in each environment's composer.
@@ -761,6 +778,15 @@ impl Shell {
                 InputEvent::Cancel => input.update(cx, |i, cx| i.set_text("", cx)),
                 _ => {}
             });
+        let tree_filter = cx.new(|cx| TextInput::new("Find a session", cx));
+        let tree_filter_sub = cx.subscribe(&tree_filter, |this, _, ev: &InputEvent, cx| {
+            match ev {
+                InputEvent::Cancel => this.menu = None,
+                InputEvent::Changed => {}
+                _ => return,
+            }
+            cx.notify();
+        });
         let notes_input = cx.new(|cx| TextInput::new("Add a note and press Enter...", cx));
         let notes_input_sub = cx.subscribe(&notes_input, |this, input, ev: &InputEvent, cx| {
             if let InputEvent::Submit = ev {
@@ -1095,6 +1121,11 @@ impl Shell {
             lifted_tab: None,
             tab_drop: None,
             tree_open: std::collections::HashMap::new(),
+            tree_hover: None,
+            tree_filter,
+            _tree_filter: tree_filter_sub,
+            bar_more: RefCell::default(),
+            bar_area: Rc::default(),
             slide: None,
             drop_menu: None,
             attached: std::collections::HashMap::new(),
@@ -3384,6 +3415,13 @@ impl Shell {
     fn close_tab(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         if self.can_close_tab(index) {
             self.remove_tab(index, true, window, cx);
+        } else if crate::tab_layout::current().pinned_bar()
+            && let Some(tab) = self.strip.tabs.get(index).filter(|t| t.pinned)
+        {
+            // The last tab of the environment on screen stays open, but
+            // closing it still takes it off the bar.
+            let id = tab.id;
+            self.unpin_tab(id, cx);
         }
     }
 
@@ -3902,6 +3940,11 @@ impl Render for Shell {
             }
         } else if !self.shown_browsers.is_empty() {
             cx.defer_in(window, |this, _, cx| this.sync_browsers(cx));
+        }
+        // With pinned tabs, a session tab that shows nowhere closes, and a
+        // lone session pins itself; whatever changed the tabs, this follows.
+        if self.pins_unsettled() {
+            cx.defer_in(window, |this, _, cx| this.settle_pins(cx));
         }
         if !self.stale_diffs.is_empty() {
             let stale = std::mem::take(&mut self.stale_diffs);

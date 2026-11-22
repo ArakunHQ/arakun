@@ -231,6 +231,7 @@ fn main() {
             bind("ctrl-pageup", shell::PrevTab, "Shell"),
             bind("ctrl-shift-pagedown", shell::MoveTabRight, "Shell"),
             bind("ctrl-shift-pageup", shell::MoveTabLeft, "Shell"),
+            bind("alt-p", shell::TogglePin, "Shell && !Terminal"),
             bind("ctrl-alt-t", shell::ReopenClosedTab, "Shell && !Terminal"),
             bind("ctrl-1", shell::SelectTab1, "Shell"),
             bind("ctrl-2", shell::SelectTab2, "Shell"),

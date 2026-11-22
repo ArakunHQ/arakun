@@ -364,6 +364,11 @@ const SHORTCUTS: &[Shortcut] = &[
     ("Tabs and panes", "Ctrl+W", "Close tab"),
     (
         "Tabs and panes",
+        "Alt+P",
+        "Pin or unpin a session in the title bar (with sessions in the sidebar)",
+    ),
+    (
+        "Tabs and panes",
         "Alt+← / Alt+→",
         "Back / forward through tabs",
     ),

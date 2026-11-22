@@ -167,6 +167,7 @@ impl Shell {
     ) -> gpui::Entity<DraggedSession> {
         self.lifted = Some(d.id.clone());
         self.lifted_tab = None;
+        self.tab_drop = None;
         self.drop_menu = None;
         let mut d = d.clone();
         d.offset = offset;
@@ -196,36 +197,35 @@ impl Shell {
         self.tab_drop.filter(|_| cx.has_active_drag())
     }
 
-    /// A tab dragged over the tab at `i`: the gap on the side of its middle
-    /// the pointer is on.
-    pub(super) fn tab_drag_over(
+    /// A tab or a session dragged over the tab at `i`: the gap on the side
+    /// of its middle the pointer is on. `next` is the tab shown after it,
+    /// whose gap is the one right of this tab.
+    pub(super) fn bar_drag_over(
         &mut self,
         i: usize,
-        ev: &gpui::DragMoveEvent<DraggedTab>,
+        next: usize,
+        bounds: gpui::Bounds<Pixels>,
+        at: Point<Pixels>,
         cx: &mut Context<Self>,
     ) {
-        let at = ev.event.position;
-        if !ev.bounds.contains(&at) {
+        if !bounds.contains(&at) {
             return;
         }
-        let gap = if at.x < ev.bounds.center().x {
-            i
-        } else {
-            i + 1
-        };
+        let gap = if at.x < bounds.center().x { i } else { next };
         if self.tab_drop != Some(gap) {
             self.tab_drop = Some(gap);
             cx.notify();
         }
     }
 
-    /// The pointer left the tab bar: no gap is marked.
-    pub(super) fn tab_drag_out(
+    /// The pointer left the tab bar (`bounds`): no gap is marked.
+    pub(super) fn bar_drag_out(
         &mut self,
-        ev: &gpui::DragMoveEvent<DraggedTab>,
+        bounds: gpui::Bounds<Pixels>,
+        at: Point<Pixels>,
         cx: &mut Context<Self>,
     ) {
-        if self.tab_drop.is_some() && !ev.bounds.contains(&ev.event.position) {
+        if self.tab_drop.is_some() && !bounds.contains(&at) {
             self.tab_drop = None;
             cx.notify();
         }

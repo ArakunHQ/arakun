@@ -1182,6 +1182,9 @@ impl Shell {
             MenuTarget::RailBlock(i, j) => return self.render_rail_block_menu(i, j, cx),
             MenuTarget::RailSection(i) => return self.render_rail_section_menu(i, cx),
             MenuTarget::ProjectSwitch => return self.render_project_switch_menu(cx),
+            MenuTarget::TreeSession(pi, ei, si) => return self.render_tree_menu(pi, ei, si, cx),
+            MenuTarget::MoreTabs => return self.render_more_menu(cx),
+            MenuTarget::Sessions => return self.render_sessions_menu(cx),
             MenuTarget::Change(i) => {
                 let change = self
                     .has_projects()

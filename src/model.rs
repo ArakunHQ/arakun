@@ -211,6 +211,9 @@ pub struct Tab {
     /// Counts the loads of a file or diff tab: only the latest one shows,
     /// whichever finishes last.
     pub loads: u64,
+    /// Pinned to the title bar, which then shows it whatever else it hides
+    /// (`tab_layout::BarShows::Pinned`).
+    pub pinned: bool,
 }
 
 impl Tab {
@@ -234,6 +237,7 @@ impl Tab {
             sheet: 0,
             large: false,
             loads: 0,
+            pinned: false,
         }
     }
 
@@ -252,6 +256,14 @@ impl Tab {
 
     pub fn is_in(&self, env: &Path) -> bool {
         self.env.as_deref() == Some(env)
+    }
+
+    /// The session a session tab shows.
+    pub fn session_id(&self) -> Option<&SharedString> {
+        match &self.kind {
+            TabKind::Session { id, .. } => Some(id),
+            _ => None,
+        }
     }
 }
 
@@ -805,6 +817,57 @@ impl TabStrip {
             .position(|t| t.id == active_id)
             .unwrap_or(0);
         true
+    }
+
+    /// The tabs the title bar holds, by index, as `bar` asks. With pinned
+    /// tabs, a session's tab shows when pinned, or while it is the one on
+    /// screen; other tabs (pages, files, views) show as always. For one
+    /// project, the tabs `in_project` picks and the views. The active tab
+    /// always shows.
+    pub fn shown(
+        &self,
+        bar: crate::tab_layout::BarShows,
+        in_project: impl Fn(&Tab) -> bool,
+    ) -> Vec<usize> {
+        use crate::tab_layout::BarShows;
+        (0..self.tabs.len())
+            .filter(|&i| {
+                let t = &self.tabs[i];
+                i == self.active_tab
+                    || match bar {
+                        BarShows::AllOpen => true,
+                        BarShows::Project => t.env.is_none() || in_project(t),
+                        BarShows::Pinned => t.pinned || t.session_id().is_none(),
+                    }
+            })
+            .collect()
+    }
+
+    /// Session tabs that are neither pinned nor on screen (`keep` is the
+    /// other pane's): with pinned tabs they show nowhere, so they close.
+    pub fn strays(&self, keep: Option<u64>) -> Vec<u64> {
+        let active = self.active().map(|t| t.id);
+        self.tabs
+            .iter()
+            .filter(|t| t.session_id().is_some() && !t.pinned)
+            .map(|t| t.id)
+            .filter(|id| Some(*id) != active && Some(*id) != keep)
+            .collect()
+    }
+
+    /// With nothing pinned, the session on screen pins itself, so a bar of
+    /// pinned tabs never sits empty. True when it did.
+    pub fn pin_lone(&mut self) -> bool {
+        if self.tabs.iter().any(|t| t.pinned) {
+            return false;
+        }
+        match self.tabs.get_mut(self.active_tab) {
+            Some(t) if t.session_id().is_some() => {
+                t.pinned = true;
+                true
+            }
+            _ => false,
+        }
     }
 
     /// Moves the tab `id` into the gap before the tab at `gap` (`tabs.len()`
@@ -1436,6 +1499,56 @@ mod tests {
         assert_eq!(titles(&env), ["c", "a", "b"]);
         assert!(!env.move_tab(2, 2));
         assert!(!env.move_tab(5, 0));
+    }
+
+    fn session(id: &str) -> Tab {
+        Tab::of(
+            Path::new("/p"),
+            id.to_string(),
+            TabKind::Session {
+                agent: AgentKind::Droid,
+                id: id.to_string().into(),
+            },
+        )
+    }
+
+    #[test]
+    fn a_pinned_bar_shows_pins_the_open_tab_and_the_rest() {
+        use crate::tab_layout::BarShows;
+        let mut a = session("a");
+        a.pinned = true;
+        let other = Tab::of(Path::new("/elsewhere"), "page", browser("page"));
+        let mut env = TabStrip {
+            tabs: vec![a, session("b"), session("c"), other],
+            ..Default::default()
+        };
+        env.active_tab = 2;
+        assert_eq!(env.shown(BarShows::Pinned, |_| true), [0, 2, 3]);
+        assert_eq!(env.shown(BarShows::AllOpen, |_| true), [0, 1, 2, 3]);
+        let here = |t: &Tab| t.is_in(Path::new("/p"));
+        assert_eq!(env.shown(BarShows::Project, here), [0, 1, 2]);
+        // b shows nowhere: it closes. The other pane's tab stays.
+        assert_eq!(env.strays(None), [env.tabs[1].id]);
+        assert!(env.strays(Some(env.tabs[1].id)).is_empty());
+    }
+
+    #[test]
+    fn the_first_session_pins_itself() {
+        let mut env = TabStrip {
+            tabs: vec![
+                Tab::of(Path::new("/p"), "page", browser("page")),
+                session("a"),
+            ],
+            ..Default::default()
+        };
+        env.active_tab = 0;
+        assert!(!env.pin_lone(), "a page is not a session");
+        env.active_tab = 1;
+        assert!(env.pin_lone());
+        assert!(env.tabs[1].pinned);
+        env.tabs.push(session("b"));
+        env.active_tab = 2;
+        assert!(!env.pin_lone(), "something is pinned already");
     }
 
     #[test]

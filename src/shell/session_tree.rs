@@ -147,8 +147,11 @@ pub(super) fn project_open(
 /// One session in the tree.
 struct Row {
     ei: usize,
+    /// Its place in its environment's list.
+    si: usize,
     id: SharedString,
     title: SharedString,
+    agent: crate::agent::AgentKind,
     state: RowState,
     pr: Option<u64>,
 }
@@ -160,7 +163,6 @@ impl Shell {
         let Some(project) = self.projects.get(pi) else {
             return Vec::new();
         };
-        let repo = self.ci.read(cx).repo(&project.path);
         let on_screen: Vec<SharedString> = self
             .sessions_on_screen()
             .into_iter()
@@ -168,21 +170,18 @@ impl Shell {
             .collect();
         let mut rows = Vec::new();
         for (ei, env) in project.environments.iter().enumerate() {
-            // The checks of the main checkout's branch are not any one session's.
-            let own = (!env.is_checkout).then_some(repo).flatten();
-            let ci = own
-                .and_then(|r| r.branch_state(&env.branch))
-                .map(|(s, _)| s);
-            let pr = own.and_then(|r| r.pr_of(&env.branch)).map(|p| p.number);
-            for s in &env.sessions {
+            let (ci, pr) = self.env_checks(pi, ei, cx);
+            for (si, s) in env.sessions.iter().enumerate() {
                 // An archived session still on screen keeps its row.
                 if s.settled && !self.show_settled && !on_screen.contains(&s.id) {
                     continue;
                 }
                 rows.push(Row {
                     ei,
+                    si,
                     id: s.id.clone(),
                     title: s.title.clone(),
+                    agent: s.agent,
                     state: RowState::of(s.shown_status(), ci),
                     pr,
                 });
@@ -191,23 +190,74 @@ impl Shell {
         rows
     }
 
-    pub(super) fn render_session_tree(&self, cx: &mut Context<Self>) -> AnyElement {
+    /// The checks and the pull request of environment `ei`'s branch, for a
+    /// git worktree; the main checkout's branch is no one session's.
+    fn env_checks(&self, pi: usize, ei: usize, cx: &App) -> (Option<ci::State>, Option<u64>) {
+        let Some(project) = self.projects.get(pi) else {
+            return (None, None);
+        };
+        let Some(env) = project.environments.get(ei).filter(|e| !e.is_checkout) else {
+            return (None, None);
+        };
+        let Some(repo) = self.ci.read(cx).repo(&project.path) else {
+            return (None, None);
+        };
+        (
+            repo.branch_state(&env.branch).map(|(s, _)| s),
+            repo.pr_of(&env.branch).map(|p| p.number),
+        )
+    }
+
+    /// What session `id` of environment `ei` in project `pi` is doing, as its
+    /// row says it.
+    pub(super) fn session_state(&self, pi: usize, ei: usize, id: &str, cx: &App) -> RowState {
+        let status = self
+            .projects
+            .get(pi)
+            .and_then(|p| p.environments.get(ei))
+            .and_then(|e| e.sessions.get(e.session_index(id)?))
+            .map_or(Status::Idle, |s| s.shown_status());
+        RowState::of(status, self.env_checks(pi, ei, cx).0)
+    }
+
+    /// The tree; in the Sessions menu (`menu`), without its heading and
+    /// narrowed to the titles its search matches.
+    pub(super) fn render_session_tree(&self, menu: bool, cx: &mut Context<Self>) -> AnyElement {
         let layout = crate::tab_layout::current();
         let open_id = self.active_session_id();
+        let query = menu
+            .then(|| self.tree_filter.read(cx).text().trim().to_lowercase())
+            .filter(|q| !q.is_empty());
         let mut list = div()
             .id("session-tree")
             .role(gpui::Role::Tree)
             .aria_label("Sessions")
             .flex()
             .flex_col()
-            .gap(crate::ui::sp(1.));
-        list = list.child(self.render_tree_heading(cx));
+            .gap(crate::ui::sp(1.))
+            // A pinned tab dragged back down unpins.
+            .drag_over::<super::drag::DraggedTab>(|s, _, _, _| s.bg(theme::hover()))
+            .on_drop(cx.listener(|this, d: &super::drag::DraggedTab, _, cx| {
+                this.lifted_tab = None;
+                this.unpin_tab(d.id, cx)
+            }));
+        if !menu {
+            list = list.child(self.render_tree_heading(cx));
+        }
         for (pi, project) in self.projects.iter().enumerate() {
-            let rows = self.tree_rows(pi, cx);
+            let mut rows = self.tree_rows(pi, cx);
+            if let Some(q) = &query {
+                rows.retain(|r| r.title.to_lowercase().contains(q.as_str()));
+                if rows.is_empty() {
+                    continue;
+                }
+            }
             let busy = rows.iter().any(|r| r.state.busy());
             let here = pi == self.active_project;
             let user = self.tree_open.get(&project.path).copied();
-            let open = if layout.group {
+            let open = if query.is_some() {
+                true
+            } else if layout.group {
                 match project_open(layout.quiet, busy, here, user) {
                     Some(open) => open,
                     None => continue,
@@ -352,12 +402,19 @@ impl Shell {
     ) -> impl IntoElement {
         let Row {
             ei,
+            si,
             id,
             title,
+            agent,
             state,
             pr,
         } = row;
+        let pinned = layout.pinned_bar() && self.is_pinned(&id);
         let env_path = self.projects[pi].environments[ei].path.clone();
+        let picked = self.is_picked(&env_path);
+        let dragged = super::drag::DraggedSession::new(env_path, id.clone(), title.clone(), agent);
+        let shell = cx.entity();
+        let hovered = id.clone();
         let title: SharedString = if title.is_empty() {
             "Untitled session".into()
         } else {
@@ -428,12 +485,28 @@ impl Shell {
                     .text_color(state.word_color())
                     .child(text)
             }))
-            .when(self.is_picked(&env_path), |d| {
-                d.bg(theme::selection_strong())
+            // Small and faint: the tab in the bar already says it.
+            .when(pinned, |d| {
+                d.child(
+                    div()
+                        .id(SharedString::from(format!("tree-pinned-{id}")))
+                        .flex_none()
+                        .map(|d| ui::labelled(d, gpui::Role::Image, "Pinned"))
+                        .child(icon("pin", 11.).text_color(theme::text_faint())),
+                )
             })
+            .on_hover(cx.listener(move |this, over: &bool, _, _| {
+                if *over {
+                    this.tree_hover = Some((pi, ei, hovered.clone()));
+                } else if this.tree_hover.as_ref().is_some_and(|h| h.2 == hovered) {
+                    this.tree_hover = None;
+                }
+            }))
+            .when(picked, |d| d.bg(theme::selection_strong()))
             // Ctrl (Cmd) or Shift picks the session's worktree, as in the
             // projects list; a plain click opens the session.
             .on_click(cx.listener(move |this, ev: &gpui::ClickEvent, window, cx| {
+                this.menu = None;
                 let m = ev.modifiers();
                 if m.secondary() || m.shift {
                     if let Some(path) = this
@@ -449,12 +522,18 @@ impl Shell {
                 this.drop_pick();
                 this.open_session_at(pi, ei, opens.clone(), window, cx)
             }))
+            // Dragged up to the title bar, it pins.
+            .when(layout.pinned_bar(), |d| {
+                d.on_drag(dragged, move |d, offset, _, cx| {
+                    shell.update(cx, |this, cx| this.start_session_drag(d, offset, cx))
+                })
+            })
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(move |this, ev: &gpui::MouseDownEvent, _, cx| {
                     cx.stop_propagation();
                     this.menu = Some(ContextMenu {
-                        target: MenuTarget::Env(pi, ei),
+                        target: MenuTarget::TreeSession(pi, ei, si),
                         at: ev.position,
                     });
                     cx.notify();

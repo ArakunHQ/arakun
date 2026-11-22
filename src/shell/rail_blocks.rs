@@ -788,6 +788,15 @@ impl Shell {
                     }))
                     .into_any_element()
             }
+            Piece::Help => row(None)
+                .on_click(cx.listener(|this, ev: &gpui::ClickEvent, _, cx| {
+                    this.menu = Some(ContextMenu {
+                        target: MenuTarget::Help,
+                        at: ev.position(),
+                    });
+                    cx.notify();
+                }))
+                .into_any_element(),
             Piece::Settings => row(shortcut(&item.piece))
                 .on_click(cx.listener(|this, _, window, cx| this.open_settings(window, cx)))
                 .into_any_element(),

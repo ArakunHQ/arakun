@@ -311,6 +311,8 @@ pub enum Piece {
     User,
     /// Plan usage of the signed-in agents.
     Usage,
+    /// Feedback forms and a link to the docs, in a menu.
+    Help,
     Settings,
     /// The raccoon, whose mood follows the agents.
     Mascot,
@@ -378,6 +380,7 @@ impl Piece {
             Piece::Pin { pin } => pin.title().into(),
             Piece::User => "User".into(),
             Piece::Usage => "Usage card".into(),
+            Piece::Help => "Help".into(),
             Piece::Settings => "Settings".into(),
             Piece::Mascot => "Mascot".into(),
             Piece::Separator => "Separator".into(),
@@ -401,6 +404,7 @@ impl Piece {
             Piece::Pin { pin } => pin.icon(),
             Piece::User => "user",
             Piece::Usage => "dashboard-square01",
+            Piece::Help => "help-circle",
             Piece::Settings => "settings01",
             Piece::Mascot => "smile-plus",
             Piece::Separator => "minus-sign",
@@ -718,6 +722,7 @@ impl Preset {
                         vec![
                             Piece::view(View::Extensions),
                             Piece::Spacer,
+                            Piece::Help,
                             Piece::Settings,
                         ],
                     ]
@@ -751,7 +756,7 @@ impl Preset {
                     ),
                 )
                 .folding(true),
-                account(vec![Piece::Usage, Piece::Settings]),
+                account(vec![Piece::Usage, Piece::Help, Piece::Settings]),
             ],
             Preset::Developer => vec![
                 Section::new(
@@ -773,7 +778,12 @@ impl Preset {
                 )
                 .titled(),
                 Section::new("More", Mode::Scroll, views(&more)).folding(true),
-                account(vec![Piece::Usage, Piece::User, Piece::Settings]),
+                account(vec![
+                    Piece::Usage,
+                    Piece::User,
+                    Piece::Help,
+                    Piece::Settings,
+                ]),
             ],
             Preset::Notion => vec![
                 Section::new(
@@ -799,7 +809,7 @@ impl Preset {
                     views(&[&[View::Runs, View::Branches, View::GitHub][..], &more[1..]].concat()),
                 )
                 .folding(true),
-                Section::new("Bottom", Mode::Fixed, vec![Piece::Settings]),
+                Section::new("Bottom", Mode::Fixed, vec![Piece::Help, Piece::Settings]),
             ],
             Preset::Compact => {
                 style.collapse = Collapse::Icons;
@@ -824,7 +834,7 @@ impl Preset {
                     ),
                     active(),
                     projects,
-                    account(vec![Piece::Settings]),
+                    account(vec![Piece::Help, Piece::Settings]),
                 ]
             }
             // Inbox sits by Search, where it shares the search box's row.
@@ -847,7 +857,7 @@ impl Preset {
                 ),
                 active(),
                 projects,
-                account(vec![Piece::Usage, Piece::Settings]),
+                account(vec![Piece::Usage, Piece::Help, Piece::Settings]),
             ],
         };
         Sidebar {
@@ -855,6 +865,7 @@ impl Preset {
             sections,
             known: View::ALL.to_vec(),
             offered_active: true,
+            offered_help: true,
             switcher_offered: true,
             trial_of: None,
         }
@@ -874,6 +885,9 @@ pub struct Sidebar {
     /// it on load; one where the user took it out keeps it out.
     #[serde(default)]
     pub offered_active: bool,
+    /// Help was put in once, the same way as the Active list.
+    #[serde(default)]
+    pub offered_help: bool,
     /// The Switcher was offered to this layout and answered. A layout saved
     /// before the Switcher was the default lacks it, so the rail offers it once.
     #[serde(default)]
@@ -954,6 +968,7 @@ impl Sidebar {
         s.trial_of = trial_of;
         s.tidy();
         s.offer_active();
+        s.offer_help();
         Some(s)
     }
 
@@ -1211,6 +1226,17 @@ impl Sidebar {
         );
     }
 
+    /// Puts Help just before Settings, once per layout. A layout without
+    /// Settings was arranged by hand: Help waits in Customize there.
+    fn offer_help(&mut self) {
+        if std::mem::replace(&mut self.offered_help, true) || self.has(&Piece::Help) {
+            return;
+        }
+        if let Some(at) = self.find(&Piece::Settings) {
+            self.insert(Item::new(Piece::Help), at);
+        }
+    }
+
     fn tidy(&mut self) {
         let mut seen: Vec<Piece> = Vec::new();
         for sec in &mut self.sections {
@@ -1375,6 +1401,7 @@ mod tests {
             ],
             known: View::ALL.to_vec(),
             offered_active: true,
+            offered_help: true,
             switcher_offered: false,
             trial_of: None,
         }
@@ -1562,6 +1589,29 @@ mod tests {
     }
 
     #[test]
+    fn help_is_offered_once_next_to_settings() {
+        let mut s = small();
+        s.offered_help = false;
+        let s = Sidebar::parse(s.to_json().as_bytes()).unwrap();
+        assert_eq!(
+            names(&s),
+            ["A[Search,Inbox]", "B[Projects,Runs]", "C[Help,Settings]"]
+        );
+        // Taken out, it stays out.
+        let mut s = s;
+        s.remove((2, 0));
+        let s = Sidebar::parse(s.to_json().as_bytes()).unwrap();
+        assert!(!s.has(&Piece::Help));
+        // A saved preset is still that preset once Help is in.
+        let mut old = Preset::Focused.layout();
+        let at = old.find(&Piece::Help).unwrap();
+        old.remove(at);
+        old.offered_help = false;
+        let s = Sidebar::parse(old.to_json().as_bytes()).unwrap();
+        assert_eq!(s.preset(), Some(Preset::Focused));
+    }
+
+    #[test]
     fn presets_round_trip() {
         for p in Preset::ALL {
             let s = p.layout();
@@ -1693,6 +1743,7 @@ mod tests {
             ],
             known: View::ALL.to_vec(),
             offered_active: true,
+            offered_help: true,
             switcher_offered: false,
             trial_of: None,
         };
@@ -1703,6 +1754,7 @@ mod tests {
             sections: vec![],
             known: vec![],
             offered_active: true,
+            offered_help: true,
             switcher_offered: false,
             trial_of: None,
         };

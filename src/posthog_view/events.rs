@@ -161,7 +161,15 @@ impl EventsTab {
         self.picker = false;
         self.adding = false;
         self.debounce.bump();
-        self.person.update(cx, |i, cx| i.set_text("", cx));
+        self._more = None;
+        self._defs = None;
+        self.loading_more = false;
+        self.defs_loading = false;
+        self.more = false;
+        self.keys.clear();
+        for input in [&self.search, &self.person, &self.prop_key, &self.prop_value] {
+            input.update(cx, |i, cx| i.clear(cx));
+        }
         cx.notify();
     }
 

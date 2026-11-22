@@ -25,6 +25,7 @@ pub struct PeopleTab {
     search: Entity<TextInput>,
     people: Vec<Person>,
     page: Paging,
+    until: u64,
     more: bool,
     total: Option<u64>,
     loading: bool,
@@ -64,6 +65,7 @@ impl PeopleTab {
             search,
             people: Vec::new(),
             page: Paging::first(PAGE),
+            until: 0,
             more: false,
             total: None,
             loading: false,
@@ -90,6 +92,11 @@ impl PeopleTab {
         if self.target == target {
             return;
         }
+        self._profile = None;
+        self._more = None;
+        self.loading_more = false;
+        self.profile_loading = false;
+        self.more = false;
         self.target = target;
         self.people.clear();
         self.total = None;
@@ -131,6 +138,11 @@ impl PeopleTab {
         // The page on screen belongs to the search that made it: a Load more
         // under the new text would page a different result set.
         self.more = false;
+        self.people.clear();
+        self.total = None;
+        self.selected = None;
+        self.profile = None;
+        self.profile_error = None;
         let generation = self.debounce.bump();
         self.loading = true;
         cx.notify();
@@ -151,6 +163,7 @@ impl PeopleTab {
         self.loaded = true;
         self.loading = true;
         cx.notify();
+        let until = crate::model::unix_now();
         let text = self.search.read(cx).text().trim().to_string();
         self._load = Some(cx.spawn(async move |this, cx| {
             let got = cx
@@ -158,9 +171,15 @@ impl PeopleTab {
                     let (s, id) = (&t.session, t.project.id);
                     let (list, total) = std::thread::scope(|scope| {
                         let l = scope.spawn(|| {
-                            query::run(s, id, &pp::list_query(&text, Paging::first(PAGE)), fresh)
+                            query::run(
+                                s,
+                                id,
+                                &pp::list_query(&text, Paging::first(PAGE), until, None),
+                                fresh,
+                            )
                         });
-                        let n = scope.spawn(|| query::run(s, id, &pp::total_query(&text), fresh));
+                        let n = scope
+                            .spawn(|| query::run(s, id, &pp::total_query(&text, until), fresh));
                         (posthog::joined(l), posthog::joined(n))
                     });
                     let (list, total) = (list?, total?);
@@ -176,6 +195,7 @@ impl PeopleTab {
                     Ok((list, total)) => {
                         // As in the events tab: the page resets with the rows,
                         // so a failed refresh keeps what it had.
+                        this.until = until;
                         this.page = Paging::first(PAGE);
                         let (people, more) = this.page.split(pp::parse_list(&list.rows));
                         this.people = people;
@@ -210,7 +230,11 @@ impl PeopleTab {
         cx.notify();
         let page = self.page.next();
         let generation = self.debounce.bump();
-        let q = pp::list_query(self.search.read(cx).text().trim(), page);
+        let after = self
+            .people
+            .last()
+            .map(|p| (p.last_stamp.as_str(), p.id.as_str()));
+        let q = pp::list_query(self.search.read(cx).text().trim(), page, self.until, after);
         self._more = Some(cx.spawn(async move |this, cx| {
             let got = cx
                 .background_spawn(crate::guard::task(async move {

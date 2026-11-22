@@ -16,6 +16,7 @@ pub struct Person {
     pub distinct_id: String,
     pub first_seen: u64,
     pub last_seen: u64,
+    pub last_stamp: String,
     pub events: u64,
 }
 
@@ -25,8 +26,8 @@ impl Person {
     }
 }
 
-fn search(q: &mut Hogql, text: &str) {
-    q.push(" WHERE timestamp > now() - INTERVAL 30 DAY");
+fn search(q: &mut Hogql, text: &str, until: u64) {
+    q.push(&format!(" WHERE timestamp > fromUnixTimestamp({until}) - INTERVAL 30 DAY AND timestamp <= fromUnixTimestamp({until})"));
     let text = text.trim();
     if !text.is_empty() {
         let p = q.bind(query::contains_pattern(text));
@@ -37,23 +38,31 @@ fn search(q: &mut Hogql, text: &str) {
 }
 
 /// People with events in the last 30 days, most recently seen first.
-pub fn list_query(text: &str, page: Paging) -> Hogql {
+pub fn list_query(text: &str, page: Paging, until: u64, after: Option<(&str, &str)>) -> Hogql {
     let mut q = Hogql::new(
         "SELECT person_id, argMax(person.properties.email, timestamp), argMax(distinct_id, timestamp), \
          min(person.created_at), max(timestamp), count() FROM events",
     );
-    search(&mut q, text);
+    search(&mut q, text, until);
     // person_id breaks the tie between people last seen at the same moment,
     // so a page boundary cannot drop or repeat one.
-    q.push(" GROUP BY person_id ORDER BY max(timestamp) DESC, person_id");
+    q.push(" GROUP BY person_id");
+    if let Some((stamp, id)) = after {
+        let t = q.bind(stamp);
+        let id = q.bind(id);
+        q.push(&format!(
+            " HAVING max(timestamp) < {t} OR (max(timestamp) = {t} AND person_id > {id})"
+        ));
+    }
+    q.push(" ORDER BY max(timestamp) DESC, person_id");
     q.push(&page.clause());
     q
 }
 
 /// How many people `list_query` would find in all.
-pub fn total_query(text: &str) -> Hogql {
+pub fn total_query(text: &str, until: u64) -> Hogql {
     let mut q = Hogql::new("SELECT uniq(person_id) FROM events");
-    search(&mut q, text);
+    search(&mut q, text, until);
     q
 }
 
@@ -65,6 +74,7 @@ pub fn parse_list(rows: &[Value]) -> Vec<Person> {
                 email: r[1].as_str().filter(|s| !s.is_empty()).map(str::to_string),
                 distinct_id: r[2].as_str().unwrap_or_default().to_string(),
                 first_seen: r[3].as_str().and_then(parse_iso).unwrap_or(0),
+                last_stamp: r[4].as_str()?.to_string(),
                 last_seen: r[4].as_str().and_then(parse_iso).unwrap_or(0),
                 events: num(&r[5]),
             })
@@ -370,22 +380,32 @@ mod tests {
 
     #[test]
     fn search_is_bound_and_literal() {
-        let q = list_query("50%' OR 1=1", Paging::first(50));
+        let q = list_query("50%' OR 1=1", Paging::first(50), 12345, None);
         assert!(q.text.contains(
-            "WHERE timestamp > now() - INTERVAL 30 DAY AND (person.properties.email ILIKE {v0} OR distinct_id ILIKE {v0})"
+            "WHERE timestamp > fromUnixTimestamp(12345) - INTERVAL 30 DAY AND timestamp <= fromUnixTimestamp(12345) AND (person.properties.email ILIKE {v0} OR distinct_id ILIKE {v0})"
         ));
         assert!(
             q.text
-                .ends_with("ORDER BY max(timestamp) DESC, person_id LIMIT 51 OFFSET 0")
+                .ends_with("ORDER BY max(timestamp) DESC, person_id LIMIT 51")
         );
         assert!(!q.text.contains("OR 1=1"));
         assert_eq!(q.values["v0"], "%50\\%' OR 1=1%");
-        let all = total_query("  ");
+        let all = total_query("  ", 12345);
         assert_eq!(
             all.text,
-            "SELECT uniq(person_id) FROM events WHERE timestamp > now() - INTERVAL 30 DAY"
+            "SELECT uniq(person_id) FROM events WHERE timestamp > fromUnixTimestamp(12345) - INTERVAL 30 DAY AND timestamp <= fromUnixTimestamp(12345)"
         );
         assert!(all.values.is_empty());
+        let next = list_query(
+            "",
+            Paging::first(50),
+            12345,
+            Some(("2026-11-18T13:50:00.123456Z", "uuid")),
+        );
+        assert!(next.text.contains(
+            "HAVING max(timestamp) < {v0} OR (max(timestamp) = {v0} AND person_id > {v1})"
+        ));
+        assert_eq!(next.values["v0"], "2026-11-18T13:50:00.123456Z");
         let t = timeline_query("p'1");
         assert!(t.text.contains("WHERE person_id = {v0} AND"));
         assert_eq!(t.values["v0"], "p'1");
@@ -394,20 +414,20 @@ mod tests {
     #[test]
     fn parses_people_and_persons() {
         let rows: Vec<Value> = serde_json::from_str(
-            r#"[["p1", "rik@tallerlabs.mx", "01936e7a", "2026-10-04T10:00:00Z", "2026-11-18T14:01:00Z", 3218],
+            r#"[["p1", "reader@example.test", "01936e7a", "2026-10-04T10:00:00Z", "2026-11-18T14:01:00Z", 3218],
                 ["p2", "", "4f2c91e0", null, "2026-11-18T13:50:00Z", "214"],
                 [null, "x", "y", null, null, 1]]"#,
         )
         .unwrap();
         let people = parse_list(&rows);
         assert_eq!(people.len(), 2);
-        assert_eq!(people[0].name(), "rik@tallerlabs.mx");
+        assert_eq!(people[0].name(), "reader@example.test");
         assert_eq!(people[1].name(), "4f2c91e0");
         assert_eq!((people[1].events, people[1].first_seen), (214, 0));
 
         let v: Value = serde_json::from_str(
             r#"{"next":null,"results":[{"id":12,"uuid":"01936e7a-b2c4","distinct_ids":["01936e7a","phone-rik-ios"],
-                "properties":{"email":"rik@tallerlabs.mx","plan":"pro"},"created_at":"2026-10-04T10:00:00Z","is_identified":true}]}"#,
+                "properties":{"email":"reader@example.test","plan":"pro"},"created_at":"2026-10-04T10:00:00Z","is_identified":true}]}"#,
         )
         .unwrap();
         let i = parse_person(&v).unwrap();

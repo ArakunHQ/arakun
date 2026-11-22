@@ -1,0 +1,475 @@
+{
+  "sessions": [
+    {
+      "id": "fixture",
+      "host": "https://us.posthog.com",
+      "email": "dev@example.test",
+      "name": "Developer",
+      "credential": {
+        "kind": "api_key",
+        "key": "fixture"
+      },
+      "added_at": 1
+    }
+  ],
+  "replies": [
+    {
+      "path": "/max_tools/create_and_query_insight/",
+      "method": "POST",
+      "request": {
+        "query": "How many events?",
+        "insight_type": "sql"
+      },
+      "body": [
+        {
+          "type": "message",
+          "data": {
+            "type": "ai/viz",
+            "answer": {
+              "kind": "HogQLQuery",
+              "query": "SELECT count() FROM events"
+            }
+          }
+        },
+        {
+          "type": "message",
+          "data": {
+            "type": "ai",
+            "content": "There were 48,210 events."
+          }
+        }
+      ]
+    },
+    {
+      "path": "/query/",
+      "query": "SELECT properties.$exception_list",
+      "body": {
+        "results": [
+          [
+            [
+              {
+                "stacktrace": {
+                  "frames": [
+                    {
+                      "function": "render",
+                      "filename": "src/editor.rs",
+                      "lineno": 18
+                    }
+                  ]
+                }
+              }
+            ],
+            "test-session",
+            "Firefox",
+            "Linux",
+            "1.2"
+          ]
+        ]
+      }
+    },
+    {
+      "path": "/experiments/2/",
+      "body": {
+        "start_date": "2026-11-10",
+        "metrics": [
+          {
+            "kind": "ExperimentMetric",
+            "metric_type": "mean",
+            "name": "Events per person",
+            "uuid": "metric-1"
+          }
+        ],
+        "id": 2,
+        "version": 7,
+        "feature_flag_key": "new-composer",
+        "parameters": {
+          "feature_flag_variants": [
+            {
+              "key": "control"
+            },
+            {
+              "key": "inline"
+            }
+          ]
+        }
+      },
+      "method": "GET"
+    },
+    {
+      "path": "/experiments/3/",
+      "body": {
+        "start_date": "2026-11-10",
+        "metrics": [
+          {
+            "kind": "ExperimentMetric",
+            "metric_type": "mean",
+            "name": "Events per person",
+            "uuid": "metric-1"
+          }
+        ],
+        "id": 3,
+        "version": 7,
+        "feature_flag_key": "new-composer",
+        "parameters": {
+          "feature_flag_variants": [
+            {
+              "key": "control"
+            },
+            {
+              "key": "inline"
+            }
+          ]
+        }
+      },
+      "method": "GET"
+    },
+    {
+      "path": "/query/",
+      "request": {
+        "query": {
+          "kind": "ExperimentQuery",
+          "experiment_id": 2,
+          "metric": {
+            "kind": "ExperimentMetric",
+            "metric_type": "mean",
+            "name": "Events per person",
+            "uuid": "metric-1"
+          }
+        }
+      },
+      "body": {
+        "baseline": {
+          "key": "control",
+          "number_of_samples": 500
+        },
+        "variant_results": [
+          {
+            "key": "inline",
+            "number_of_samples": 480,
+            "significant": true,
+            "chance_to_win": 0.96
+          }
+        ]
+      }
+    },
+    {
+      "path": "/query/",
+      "request": {
+        "query": {
+          "kind": "ExperimentQuery",
+          "experiment_id": 3,
+          "metric": {
+            "kind": "ExperimentMetric",
+            "metric_type": "mean",
+            "name": "Events per person",
+            "uuid": "metric-1"
+          }
+        }
+      },
+      "body": {
+        "baseline": {
+          "key": "control",
+          "number_of_samples": 500
+        },
+        "variant_results": [
+          {
+            "key": "inline",
+            "number_of_samples": 0,
+            "significant": true,
+            "chance_to_win": 0.96
+          }
+        ]
+      }
+    },
+    {
+      "path": "/query/",
+      "query": "SELECT uuid, event",
+      "body": {
+        "results": [
+          [
+            "event-1",
+            "session started",
+            "2026-11-19T18:00:00Z",
+            "visitor-1",
+            "person-1",
+            "reader@example.test",
+            {
+              "screen": "home"
+            },
+            {}
+          ]
+        ]
+      }
+    },
+    {
+      "path": "/query/",
+      "query": "SELECT person_id, argMax",
+      "body": {
+        "results": [
+          [
+            "person-1",
+            "reader@example.test",
+            "visitor-1",
+            "2026-11-18T12:00:00Z",
+            "2026-11-19T12:00:00Z",
+            25
+          ]
+        ]
+      }
+    },
+    {
+      "path": "/persons/",
+      "status": 403,
+      "body": {
+        "detail": "Missing scope person:read"
+      }
+    },
+    {
+      "path": "/event_definitions/",
+      "body": {
+        "results": []
+      }
+    },
+    {
+      "path": "/property_definitions/",
+      "body": {
+        "results": []
+      }
+    },
+    {
+      "path": "/users/@me/",
+      "body": {
+        "organizations": [
+          {
+            "id": "one",
+            "name": "Demo"
+          }
+        ]
+      },
+      "query": null
+    },
+    {
+      "path": "/organizations/one/projects/",
+      "body": {
+        "results": [
+          {
+            "id": 7,
+            "name": "Demo app",
+            "api_token": "phc_abcdef0123456789abcdef0123456789"
+          }
+        ]
+      },
+      "query": null
+    },
+    {
+      "path": "/query/",
+      "body": {
+        "results": [
+          [
+            48210,
+            9840,
+            3107
+          ]
+        ]
+      },
+      "query": "countIf"
+    },
+    {
+      "path": "/query/",
+      "body": {
+        "results": [
+          [
+            0,
+            1100,
+            120
+          ],
+          [
+            1,
+            1175,
+            126
+          ],
+          [
+            2,
+            1250,
+            132
+          ],
+          [
+            3,
+            1325,
+            138
+          ],
+          [
+            4,
+            1400,
+            144
+          ],
+          [
+            5,
+            1475,
+            150
+          ],
+          [
+            6,
+            1550,
+            156
+          ],
+          [
+            7,
+            1625,
+            162
+          ],
+          [
+            8,
+            1700,
+            168
+          ],
+          [
+            9,
+            1775,
+            120
+          ],
+          [
+            10,
+            1850,
+            126
+          ],
+          [
+            11,
+            1925,
+            132
+          ],
+          [
+            12,
+            1100,
+            138
+          ],
+          [
+            13,
+            1175,
+            144
+          ],
+          [
+            14,
+            1250,
+            150
+          ],
+          [
+            15,
+            1325,
+            156
+          ],
+          [
+            16,
+            1400,
+            162
+          ],
+          [
+            17,
+            1475,
+            168
+          ],
+          [
+            18,
+            1550,
+            120
+          ],
+          [
+            19,
+            1625,
+            126
+          ],
+          [
+            20,
+            1700,
+            132
+          ],
+          [
+            21,
+            1775,
+            138
+          ],
+          [
+            22,
+            1850,
+            144
+          ],
+          [
+            23,
+            1925,
+            150
+          ]
+        ]
+      },
+      "query": "intDiv"
+    },
+    {
+      "path": "/query/",
+      "body": {
+        "results": [
+          [
+            "issue-7",
+            [
+              "TypeError"
+            ],
+            [
+              "Cannot read model"
+            ],
+            1284,
+            212,
+            "2026-11-19T18:00:00Z"
+          ]
+        ]
+      },
+      "query": "exception_issue_id"
+    },
+    {
+      "path": "/feature_flags/",
+      "body": {
+        "results": [
+          {
+            "id": 1,
+            "key": "new-composer",
+            "name": "Inline tools",
+            "active": true,
+            "filters": {
+              "groups": [
+                {
+                  "rollout_percentage": 50
+                }
+              ]
+            },
+            "version": 5
+          }
+        ]
+      },
+      "query": null,
+      "method": "GET"
+    },
+    {
+      "path": "/experiments/?",
+      "body": {
+        "results": [
+          {
+            "id": 2,
+            "name": "Inline tools",
+            "start_date": "2026-11-15",
+            "description": "Compare the composer variants."
+          },
+          {
+            "id": 3,
+            "name": "New signup",
+            "start_date": "2026-11-17"
+          }
+        ]
+      },
+      "query": null
+    },
+    {
+      "path": "/query/",
+      "body": {
+        "results": []
+      },
+      "query": null
+    }
+  ]
+}

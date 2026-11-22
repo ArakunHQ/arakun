@@ -447,13 +447,20 @@ after a week).
   Overview, Events (filter by event, `key = value` properties, a person and a range;
   a row opens its properties, its person and its replay), People (search by email or
   distinct_id; a profile with properties, cohorts, flags, sessions and a timeline),
-  Flags and Errors. Experiments and Ask come next. The key needs `user:read`,
-  `organization:read`, `project:read`, `query:read`, `feature_flag:read` and
-  `error_tracking:read`; People also needs `person:read`, and the event picker
-  `event_definition:read` and `property_definition:read`. A tab whose scope is
-  missing says which one and the others keep working. PostHog counts queries per
-  hour: the tab shows how many are left, keeps answers on disk and reads again only
-  when they are 15 minutes old or you refresh.
+  Flags, Experiments, Errors and Ask. A flag, experiment or error opens inside the
+  tab. **Fix with agent** on an error and **Set up with agent** put a prompt in the
+  composer without sending it. Ask sends a question to PostHog AI, not to your
+  coding agent, and shows its answer and the SQL behind it; a pinned answer is a
+  saved copy and is not asked again. The key needs `user:read`, `organization:read`,
+  `project:read`, `query:read`, `feature_flag:read`, `experiment:read` and
+  `error_tracking:read`; People also needs `person:read`, the event picker
+  `event_definition:read` and `property_definition:read`, and Ask `insight:read`.
+  A tab whose scope is missing says which one and the others keep working. PostHog
+  counts queries per hour: the tab shows how many are left, keeps each account's
+  answers on disk (cleared when its key is replaced or removed) and reads again
+  only when they are 15 minutes old or you refresh. To try the tab without a key,
+  start a test Arakun with
+  `ARAKUN_POSTHOG_FIXTURE="$PWD/tools/posthog-fixture.json" arakun dev start`.
 - **Doop.** The canvases of a [Doop](https://doop.design) instance and the frames
   of the one you pick, page by page, each with its render; a click opens the frame on
   the canvas in a browser tab. Sign in with the browser, or paste an agent key (the form offers the one

@@ -89,7 +89,7 @@ impl Pins {
 
     fn write(&self, path: &std::path::Path) {
         if let Ok(bytes) = serde_json::to_vec_pretty(self) {
-            let _ = crate::stored::write(path, &bytes);
+            crate::stored::write_soon(path, bytes, "could not save the pins");
         }
     }
 }
@@ -166,6 +166,8 @@ mod tests {
         p.toggle(pin("notes"));
         p.write(&path);
         assert_eq!(Pins::read(&path), p);
+        // On disk before the file is broken by hand below.
+        crate::durable::flush();
         // A missing or broken file reads as no pins, and a broken one is
         // kept beside the next save.
         std::fs::write(&path, b"{nope").unwrap();
@@ -173,6 +175,7 @@ mod tests {
         p.write(&path);
         assert_eq!(Pins::read(&path), p);
         assert_eq!(crate::stored::tests::kept(&path).as_deref(), Some("{nope"));
+        crate::durable::flush();
         let _ = std::fs::remove_dir_all(dir);
     }
 }

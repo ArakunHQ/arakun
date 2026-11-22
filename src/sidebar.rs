@@ -923,7 +923,7 @@ impl Sidebar {
 
     fn save_to(&self, path: &std::path::Path) {
         if let Ok(bytes) = serde_json::to_vec_pretty(self) {
-            let _ = crate::stored::write(path, &bytes);
+            crate::stored::write_soon(path, bytes, "could not save the sidebar");
         }
     }
 
@@ -1282,7 +1282,7 @@ impl Extensions {
 
     fn save_to(&self, path: &std::path::Path) {
         if let Ok(bytes) = serde_json::to_vec_pretty(self) {
-            let _ = crate::stored::write(path, &bytes);
+            crate::stored::write_soon(path, bytes, "could not save the extensions");
         }
     }
 
@@ -1758,6 +1758,7 @@ mod tests {
         small().save_to(&path);
         assert_eq!(Sidebar::load_from(&path), small());
         assert_eq!(crate::stored::tests::kept(&path).as_deref(), Some(edited));
+        crate::durable::flush();
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -1770,6 +1771,7 @@ mod tests {
         assert!(e.on.is_empty());
         assert_eq!(Extensions::load_from(&path, &Sidebar::default(), true), e);
         assert_eq!(crate::stored::tests::kept(&path).as_deref(), Some("{}"));
+        crate::durable::flush();
         let _ = std::fs::remove_dir_all(dir);
     }
 

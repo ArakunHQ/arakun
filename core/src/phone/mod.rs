@@ -530,16 +530,27 @@ impl Settings {
         relay::page_url(&self.relay_base, label)
     }
 
-    /// Forgets the relay identity and every paired phone, and saves: the computer
-    /// gets a new address, and nothing paired against the old one may keep working.
+    /// Forgets the relay identity and every paired phone, and saves them on the
+    /// background writer (`save_soon`), for the window's click handler: the
+    /// computer gets a new address, and nothing paired against the old one may
+    /// keep working.
     pub fn renew_identity(&mut self) -> identity::Identity {
         self.identity = None;
         self.devices.clear();
-        self.identity()
+        self.identity_soon()
     }
 
     /// The computer's relay identity, made and saved the first time.
     pub fn identity(&mut self) -> identity::Identity {
+        self.identity_saving(Self::save)
+    }
+
+    /// `identity`, saved with `save_soon`.
+    pub fn identity_soon(&mut self) -> identity::Identity {
+        self.identity_saving(Self::save_soon)
+    }
+
+    fn identity_saving(&mut self, save: impl FnOnce(&Self)) -> identity::Identity {
         use base64::Engine as _;
         let kept = self.identity.as_ref().and_then(|s| {
             base64::engine::general_purpose::URL_SAFE_NO_PAD
@@ -551,12 +562,21 @@ impl Settings {
         }
         let id = identity::Identity::generate();
         self.identity = Some(id.pkcs8_b64());
-        self.save();
+        save(self);
         id
     }
 
     /// The push signing keys, made and saved the first time.
     pub fn vapid(&mut self) -> push::Vapid {
+        self.vapid_saving(Self::save)
+    }
+
+    /// `vapid`, saved with `save_soon`.
+    pub fn vapid_soon(&mut self) -> push::Vapid {
+        self.vapid_saving(Self::save_soon)
+    }
+
+    fn vapid_saving(&mut self, save: impl FnOnce(&Self)) -> push::Vapid {
         use base64::Engine as _;
         let kept = self.vapid.as_ref().and_then(|s| {
             base64::engine::general_purpose::URL_SAFE_NO_PAD
@@ -568,7 +588,7 @@ impl Settings {
         }
         let v = push::Vapid::generate();
         self.vapid = Some(v.pkcs8_b64());
-        self.save();
+        save(self);
         v
     }
 }
@@ -890,7 +910,7 @@ impl Settings {
     }
 
     fn read_from(path: &Path) -> Result<Option<Settings>, String> {
-        match std::fs::read(path) {
+        match crate::durable::read(path) {
             Ok(bytes) => serde_json::from_slice(&bytes).map(Some).map_err(|e| {
                 format!(
                     "{} is not what Arakun wrote ({e}); move it aside to start over",
@@ -909,6 +929,20 @@ impl Settings {
         let path = settings_file();
         if let Err(e) = self.save_to(&path) {
             eprintln!("arakun: could not save {}: {e}", path.display());
+        }
+    }
+
+    /// `save` on the background writer, for the window's click handlers, where
+    /// the disk flushes would stall it. A `load` right after still sees it.
+    pub fn save_soon(&self) {
+        let path = settings_file();
+        match serde_json::to_vec_pretty(self) {
+            Ok(json) => drop(crate::durable::write_private_soon(
+                path,
+                json,
+                "could not save the phone settings",
+            )),
+            Err(e) => eprintln!("arakun: could not save {}: {e}", path.display()),
         }
     }
 
@@ -1848,6 +1882,22 @@ mod tests {
             "{e}"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn keys_are_made_once_and_saved_the_way_the_caller_asks() {
+        let mut settings = Settings::default();
+        let mut saves = 0;
+        let id = settings.identity_saving(|_| saves += 1);
+        let vapid = settings.vapid_saving(|_| saves += 1);
+        assert_eq!(saves, 2);
+        assert!(settings.identity.is_some() && settings.vapid.is_some());
+        assert_eq!(settings.identity_saving(|_| saves += 1).label(), id.label());
+        assert_eq!(
+            settings.vapid_saving(|_| saves += 1).public_key(),
+            vapid.public_key()
+        );
+        assert_eq!(saves, 2, "keys that are kept are not saved again");
     }
 
     #[test]

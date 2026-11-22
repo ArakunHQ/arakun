@@ -193,14 +193,14 @@ impl Shell {
             PhoneEvent::Enable => {
                 let mut settings = phone::Settings::load();
                 settings.enabled = true;
-                settings.save();
+                settings.save_soon();
                 self.start_phone(&settings, window, cx);
             }
             PhoneEvent::Disable => {
                 self.save_devices();
                 let mut settings = phone::Settings::load();
                 settings.enabled = false;
-                settings.save();
+                settings.save_soon();
                 self.stop_phone(cx);
                 self.sync_phone_view(cx);
             }
@@ -211,7 +211,7 @@ impl Shell {
                     return;
                 }
                 settings.reach = *reach;
-                settings.save();
+                settings.save_soon();
                 if self.phone.is_some() {
                     self.stop_phone(cx);
                     self.start_phone(&settings, window, cx);
@@ -285,7 +285,7 @@ impl Shell {
         };
         let mut settings = phone::Settings::load();
         settings.devices = link.access.lock().unwrap().devices.clone();
-        settings.save();
+        settings.save_soon();
         link.server.sync_tickets(&link.access);
     }
 
@@ -311,7 +311,7 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let vapid = Arc::new(settings.clone().vapid());
+        let vapid = Arc::new(settings.clone().vapid_soon());
         let access = Access::new(settings.devices.clone(), vapid.public_key());
         let (server, mut incoming) = match settings.reach {
             Reach::Lan | Reach::Tailscale => {
@@ -331,7 +331,7 @@ impl Shell {
             Reach::Relay => {
                 let (r, rx) = RelayClient::start(
                     &settings.relay_base,
-                    settings.clone().identity(),
+                    settings.clone().identity_soon(),
                     access.clone(),
                 );
                 (Transport::Relay(r), rx)
@@ -428,7 +428,7 @@ impl Shell {
         let reach = self.phone.as_ref().map_or(settings.reach, |l| l.reach);
         // The identity is made the first time the relay is chosen, not before.
         let relay = (reach == Reach::Relay).then(|| {
-            let label = settings.identity().label();
+            let label = settings.identity_soon().label();
             RelayInfo {
                 url: settings.relay_address(&label),
             }

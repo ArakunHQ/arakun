@@ -1100,12 +1100,14 @@ the release build instead: `curl -fsSL https://arakun.dev/install-server | sh` (
 
 ### Install for your user (Linux)
 
-`tools/install.sh` builds a release binary and installs it to `~/.local/bin`, with a
+`tools/install.sh` builds an optimized binary and installs it to `~/.local/bin`, with a
 `.desktop` entry and icons. It prepares CEF with `tools/install-cef.sh` if it is missing
-and `CEF_DIST` points at an unpacked distribution.
+and `CEF_DIST` points at an unpacked distribution. It builds the `release-local` profile,
+which rebuilds in seconds after a change; `--full` builds the slower `release` profile
+that releases use.
 
 ```sh
-tools/install.sh               # --no-browser, --prefix DIR, --uninstall
+tools/install.sh               # --full, --debug, --no-browser, --prefix DIR, --uninstall
 ```
 
 ## Command line

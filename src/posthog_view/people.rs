@@ -97,6 +97,8 @@ impl PeopleTab {
         self.loading_more = false;
         self.profile_loading = false;
         self.more = false;
+        // Another project's cutoff would hide this one's newest people.
+        self.until = 0;
         self.target = target;
         self.people.clear();
         self.total = None;

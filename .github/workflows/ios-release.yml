@@ -18,8 +18,11 @@ name: iOS release
 # up, whichever way in.
 #
 # It uses the App Store Connect API key of the `release` environment, the one
-# macOS notarization uses. Its role must be App Manager or higher (Users and
-# Access, Integrations): with it Xcode makes and renews the signing
+# macOS notarization uses. Its role must be Admin (Users and Access,
+# Integrations): the export signs with a cloud-managed distribution
+# certificate, and only an Admin key may use one. With App Manager the archive
+# still works, but the export fails with "Cloud signing permission error" and
+# "No profiles for 'com.arakun.ios'". With Admin, Xcode makes and renews the
 # certificate and the profile itself, so no certificate is stored here:
 #
 #   APPLE_API_KEY_ID      the key's id

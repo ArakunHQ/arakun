@@ -2494,6 +2494,8 @@ impl TeamsView {
                         .child(
                             div()
                                 .id(("teams-resend", index))
+                                .map(|d| ui::labelled(d, gpui::Role::Button, "Send again"))
+                                .map(ui::focusable)
                                 .cursor_pointer()
                                 .ty(Type::Caption)
                                 .text_color(theme::link())

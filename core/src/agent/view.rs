@@ -625,7 +625,7 @@ impl ThreadView {
                 self.remeasure_footer();
                 self.sync_ask(window, cx)
             }
-            ThreadEvent::RewindChanged { entry } => self.remeasure_entry(*entry),
+            ThreadEvent::RewindChanged { entry } => self.remeasure_entry(*entry, cx),
             // A background subagent keeps the timers ticking after the turn.
             ThreadEvent::SubagentsChanged { .. } => self.sync_tick(window, cx),
             _ => {}
@@ -668,7 +668,7 @@ impl ThreadView {
         self.sync_rows(None, cx);
         self.remeasure_footer();
         if let Some(last) = self.turns.len().checked_sub(1) {
-            self.remeasure_turn_ends(last);
+            self.remeasure_turn_rows(last);
         }
         self.sync_tick(window, cx);
         self.sync_ask(window, cx);
@@ -758,50 +758,86 @@ impl ThreadView {
         self.rows = new_rows;
         self.long_turns = new_long;
         if let Some(entry) = remeasure_from
-            && let Some(row_ix) = self.row_for_entry(entry)
-            && !(spliced && (prefix..splice_end).contains(&row_ix))
+            && let Some(row_ix) = self.row_for_entry(entry, cx)
         {
-            self.list.remeasure_items(row_ix..row_ix + 1);
+            self.list.remeasure_items(row_ix..self.rows.len());
         }
     }
 
-    pub(super) fn row_for_entry(&self, entry: usize) -> Option<usize> {
+    pub(super) fn row_start_entry(&self, row_ix: usize) -> Option<usize> {
+        let row = *self.rows.get(row_ix)?;
+        match row {
+            ListRow::Turn(t) | ListRow::TurnHead(t) => self.turns.get(t).map(|r| r.start),
+            ListRow::TurnPhase { turn, phase } => {
+                let lt = self.long_turns.get(&turn)?;
+                let p = lt.phases.get(phase)?;
+                let rel = p.head.or_else(|| p.steps.first().copied()).unwrap_or(0);
+                Some(lt.range.start + lt.body_start + rel)
+            }
+            ListRow::TurnTail(t) => self.long_turns.get(&t).map_or_else(
+                || self.turns.get(t).map(|r| r.start),
+                |lt| {
+                    let after_phases = lt
+                        .phases
+                        .last()
+                        .and_then(|p| p.steps.last().copied().or(p.head))
+                        .map_or(0, |i| i + 1);
+                    Some(lt.range.start + lt.body_start + after_phases)
+                },
+            ),
+        }
+    }
+
+    pub(super) fn row_for_entry(&self, entry: usize, cx: &App) -> Option<usize> {
         let turn = self.turns.iter().position(|t| t.contains(&entry))?;
         if let Some(lt) = self.long_turns.get(&turn) {
             let base = lt.range.start + lt.body_start;
             if entry < base {
                 return self.rows.iter().position(|r| *r == ListRow::TurnHead(turn));
             }
-            let rel = entry - base;
-            if rel < lt.content_len
-                && let Some(pi) = lt
+            let mut rel = entry - base;
+            if rel < lt.content_len {
+                // Nested subagent tool calls render inside their parent Agent phase.
+                let entries = self.thread.read(cx).entries();
+                if let Some(content) = entries.get(base..base + lt.content_len)
+                    && let Some(Entry::Tool(tc)) = content.get(rel)
+                    && let Some(parent_id) = tc.parent.as_deref()
+                    && let Some(parent_rel) = content
+                        .iter()
+                        .position(|e| matches!(e, Entry::Tool(p) if p.id == parent_id))
+                {
+                    rel = parent_rel;
+                }
+                if let Some(pi) = lt
                     .phases
                     .iter()
                     .position(|p| p.head == Some(rel) || p.steps.contains(&rel))
-            {
-                return self
-                    .rows
-                    .iter()
-                    .position(|r| *r == ListRow::TurnPhase { turn, phase: pi });
+                {
+                    return self
+                        .rows
+                        .iter()
+                        .position(|r| *r == ListRow::TurnPhase { turn, phase: pi });
+                }
             }
             return self.rows.iter().position(|r| *r == ListRow::TurnTail(turn));
         }
         self.rows.iter().position(|r| *r == ListRow::Turn(turn))
     }
 
-    fn remeasure_turn_ends(&mut self, turn: usize) {
-        for (i, row) in self.rows.iter().enumerate() {
-            if matches!(
-                row,
-                ListRow::Turn(t) | ListRow::TurnHead(t) | ListRow::TurnTail(t) if *t == turn
-            ) {
-                self.list.remeasure_items(i..i + 1);
-            }
-        }
+    pub(super) fn remeasure_turn_rows(&mut self, turn: usize) {
+        let Some(first) = self.rows.iter().position(|r| r.turn() == turn) else {
+            return;
+        };
+        let last = self
+            .rows
+            .iter()
+            .rposition(|r| r.turn() == turn)
+            .unwrap_or(first);
+        self.list.remeasure_items(first..last + 1);
     }
 
-    fn remeasure_entry(&mut self, entry: usize) {
-        if let Some(row_ix) = self.row_for_entry(entry) {
+    pub(super) fn remeasure_entry(&mut self, entry: usize, cx: &App) {
+        if let Some(row_ix) = self.row_for_entry(entry, cx) {
             self.list.remeasure_items(row_ix..row_ix + 1);
         }
     }
@@ -1115,7 +1151,7 @@ impl ThreadView {
             self.open.insert(entry);
         }
         self.opened(Fold::Row, entry, open);
-        self.remeasure_entry(entry);
+        self.remeasure_entry(entry, cx);
         cx.notify();
     }
 
@@ -1131,7 +1167,7 @@ impl ThreadView {
 
     fn remeasure_last(&mut self) {
         if let Some(last) = self.turns.len().checked_sub(1) {
-            self.remeasure_turn_ends(last);
+            self.remeasure_turn_rows(last);
         }
         self.remeasure_footer();
     }
@@ -2100,7 +2136,7 @@ impl ThreadView {
     fn toggle_phase(&mut self, key: usize, open: bool, cx: &mut Context<Self>) {
         self.phase_open.insert(key, !open);
         self.opened(Fold::Phase, key, !open);
-        self.remeasure_entry(key);
+        self.remeasure_entry(key, cx);
         cx.notify();
     }
 

@@ -94,10 +94,8 @@ impl ThreadView {
         let hits = self.collect_hits(&query, cx);
         // The first match from the top of what is on screen, like a browser.
         let from = self
-            .rows
-            .get(self.list.logical_scroll_top().item_ix)
-            .and_then(|r| self.turns.get(r.turn()))
-            .map_or(usize::MAX, |t| t.start);
+            .row_start_entry(self.list.logical_scroll_top().item_ix)
+            .unwrap_or(usize::MAX);
         let current = hits
             .iter()
             .position(|h| h.0 >= from)
@@ -179,7 +177,7 @@ impl ThreadView {
         self.spot.set(None);
         self.settle_tries = 0;
         self.list.pause_following_tail();
-        if let Some(row_ix) = self.row_for_entry(entry) {
+        if let Some(row_ix) = self.row_for_entry(entry, cx) {
             self.list.scroll_to_reveal_item(row_ix);
         }
         cx.on_next_frame(window, |this, window, cx| {
@@ -226,13 +224,7 @@ impl ThreadView {
         }
         self.sync_rows(None, cx);
         if r.turn < self.turns.len() {
-            self.remeasure_turn_ends(r.turn);
-            if let Some(row) = r.row {
-                self.remeasure_entry(row);
-            }
-            if let Some((key, _)) = r.phase {
-                self.remeasure_entry(key);
-            }
+            self.remeasure_turn_rows(r.turn);
         }
     }
 

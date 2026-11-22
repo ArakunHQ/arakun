@@ -9,7 +9,7 @@ impl ThreadView {
             self.changes_open.insert(turn_start);
         }
         self.opened(Fold::Changes, turn_start, open);
-        self.remeasure_entry(turn_start);
+        self.remeasure_entry(turn_start, cx);
         cx.notify();
     }
 

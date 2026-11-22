@@ -157,6 +157,7 @@ impl Shell {
         self.menu_agent = None;
         self.menu_scroll.scroll_to_item(0);
         self.menu_cursor = None;
+        self.effort_hover = None;
         // A server's environment: its models come from the server, which is
         // asked again each time, and the menu fills in as it answers.
         if matches!(target, MenuTarget::ModelMenu)
@@ -749,7 +750,8 @@ impl Shell {
     }
 
     /// The reasoning level: Auto and Off as small buttons, then a bar per
-    /// level, lit up to the current one, and its name.
+    /// level, lit up to the current one, and its name. The pointer previews a
+    /// level before the click: the bars light up to it and the label names it.
     fn render_effort_row(
         &self,
         agent: AgentKind,
@@ -762,15 +764,42 @@ impl Shell {
         let (zeros, levels): (Vec<_>, Vec<_>) =
             options.into_iter().partition(|o| effort_is_zero(&o.id));
         let lit = levels.iter().position(|o| o.id == now);
-        let label = lit.map(|i| effort_short(&levels[i].id, &levels[i].name));
+        // A hover left over from another agent's levels matches nothing here.
+        let hovered = self
+            .effort_hover
+            .as_deref()
+            .and_then(|h| zeros.iter().chain(&levels).find(|o| o.id == h));
+        let shown = match hovered {
+            Some(o) => levels.iter().position(|l| l.id == o.id),
+            None => lit,
+        };
+        let label = match hovered {
+            Some(o) => Some(effort_short(&o.id, &o.name)),
+            None => lit.map(|i| effort_short(&levels[i].id, &levels[i].name)),
+        };
+        let previewing = hovered.is_some_and(|o| o.id != now);
+        // Only a dimmed level needs a tooltip: the label names the others.
         let tip = |o: &crate::agent::SettingOption| {
             o.disabled
                 .clone()
                 .or_else(|| effort_tip(&o.id).map(str::to_string))
                 .unwrap_or_else(|| o.name.clone())
         };
+        let hover = |id: String| {
+            cx.listener(move |this: &mut Self, over: &bool, _, cx| {
+                if *over {
+                    this.effort_hover = Some(id.clone());
+                } else if this.effort_hover.as_deref() == Some(id.as_str()) {
+                    // The next bar's enter can come before this one's leave.
+                    this.effort_hover = None;
+                } else {
+                    return;
+                }
+                cx.notify();
+            })
+        };
         let zero_buttons: Vec<_> = zeros
-            .into_iter()
+            .iter()
             .enumerate()
             .map(|(i, o)| {
                 let enabled = o.disabled.is_none();
@@ -781,6 +810,7 @@ impl Shell {
                     .aria_label(SharedString::from(o.name.clone()))
                     .aria_toggled(crate::ui::toggled(on))
                     .flex_none()
+                    .mr(crate::ui::sp(3.))
                     .px(crate::ui::sp(6.))
                     .py(crate::ui::sp(1.))
                     .rounded(crate::ui::rad(ui::RADIUS_SM))
@@ -793,58 +823,66 @@ impl Shell {
                     .when(on, |d| d.bg(theme::fill_selected()))
                     .when(!enabled, |d| d.opacity(0.4))
                     .when(enabled && !on, |d| {
-                        d.cursor_pointer().hover(|s| s.text_color(theme::text()))
+                        d.cursor_pointer()
+                            .hover(|s| s.bg(theme::fill_hover()).text_color(theme::text()))
                     })
                     .child(effort_short(&o.id, &o.name))
-                    .tooltip(ui::tip_text(tip(&o)))
+                    .tooltip(ui::tip_text(tip(o)))
                     .when_some(o.disabled.clone(), |d, why| d.aria_description(why))
                     .when(enabled, |d| {
                         let key = MenuKey::Choice(agent, Setting::Effort, o.id.clone(), true);
-                        d.on_click(cx.listener(move |this, _, window, cx| {
-                            this.menu_run(key.clone(), window, cx)
-                        }))
+                        d.on_hover(hover(o.id.clone())).on_click(cx.listener(
+                            move |this, _, window, cx| this.menu_run(key.clone(), window, cx),
+                        ))
                     })
                     .into_any_element()
             })
             .collect();
         let bars: Vec<_> = levels
-            .into_iter()
+            .iter()
             .enumerate()
             .map(|(i, o)| {
                 let enabled = o.disabled.is_none();
-                let on = lit.is_some_and(|l| i <= l);
+                let on = shown.is_some_and(|l| i <= l);
+                // While previewing, the bars the pick would add are dimmer
+                // than the ones already lit.
+                let fill = if !on {
+                    theme::fill_selected()
+                } else if previewing && !lit.is_some_and(|l| i <= l) {
+                    theme::text_subtle()
+                } else {
+                    theme::active()
+                };
                 div()
                     .id(("model-effort", i))
                     .role(gpui::Role::MenuItemRadio)
                     .aria_label(SharedString::from(o.name.clone()))
                     .aria_toggled(crate::ui::toggled(o.id == now))
-                    // A dimmed bar only shows the reason in its tooltip.
                     .when_some(o.disabled.clone(), |d, why| d.aria_description(why))
+                    // No gap between bars: the whole row height and width
+                    // takes the pointer, so a level is easy to hit.
                     .flex_1()
-                    .h(px(18.))
+                    .h_full()
+                    .px(crate::ui::sp(1.5))
                     .flex()
                     .items_center()
-                    .when(enabled, |d| d.cursor_pointer())
                     .child(
                         div()
                             .w_full()
                             .h(px(6.))
                             .rounded_full()
-                            .bg(if on {
-                                theme::active()
-                            } else {
-                                theme::fill_selected()
-                            })
+                            .bg(fill)
                             .when(!enabled, |d| d.opacity(0.4)),
                     )
-                    .tooltip(ui::tip_text(tip(&o)))
-                    .when_some(o.disabled.clone(), |d, why| d.aria_description(why))
                     .when(enabled, |d| {
                         let key = MenuKey::Choice(agent, Setting::Effort, o.id.clone(), true);
-                        d.on_click(cx.listener(move |this, _, window, cx| {
-                            this.menu_run(key.clone(), window, cx)
-                        }))
+                        d.cursor_pointer()
+                            .on_hover(hover(o.id.clone()))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.menu_run(key.clone(), window, cx)
+                            }))
                     })
+                    .when(!enabled, |d| d.tooltip(ui::tip_text(tip(o))))
                     .into_any_element()
             })
             .collect();
@@ -863,9 +901,9 @@ impl Shell {
             .child(
                 div()
                     .flex_1()
+                    .h_full()
                     .flex()
                     .items_center()
-                    .gap(crate::ui::sp(3.))
                     .children(zero_buttons)
                     .children(bars),
             )
@@ -876,7 +914,11 @@ impl Shell {
                         .w(px(40.))
                         .text_right()
                         .text_size(px(ui::TEXT_SM))
-                        .text_color(theme::text_muted())
+                        .text_color(if previewing {
+                            theme::text_subtle()
+                        } else {
+                            theme::text_muted()
+                        })
                         .children(label),
                 )
             })

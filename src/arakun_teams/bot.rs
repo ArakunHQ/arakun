@@ -1265,9 +1265,9 @@ impl Hub {
     }
 
     /// The project the bot reads, from the environment the window shows.
-    pub fn set_bot_project(&mut self, dir: Option<PathBuf>) {
+    pub fn set_bot_project(&mut self, dir: Option<PathBuf>, cx: &mut Context<Self>) {
         if self.bot.project != dir {
-            self.peer_review = None;
+            self.end_review(cx);
         }
         self.bot.project = dir;
     }

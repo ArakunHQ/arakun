@@ -429,7 +429,7 @@ impl TeamsView {
     /// The project @bot reads: the environment the window shows.
     pub fn set_project(&mut self, dir: std::path::PathBuf, cx: &mut Context<Self>) {
         self.hub
-            .update(cx, |h, _| h.set_bot_project(Self::local_project(dir)));
+            .update(cx, |h, cx| h.set_bot_project(Self::local_project(dir), cx));
     }
 
     /// A remote environment's path is an `arakun-server://` address, not a

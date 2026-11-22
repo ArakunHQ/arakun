@@ -12,6 +12,10 @@ use super::crypto::{self, Body};
 
 pub const MAX_TEXT: usize = 4000;
 pub const WINDOW: Duration = Duration::from_secs(15 * 60);
+/// How long a request waits for the peer's notes. The peer's turn is one
+/// short reply, so a longer silence means its grant is gone and it could
+/// not say so (a lost socket, a closed app).
+pub const NOTES_WAIT: Duration = Duration::from_secs(5 * 60);
 const KIND: &str = "agent_review";
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -33,6 +37,10 @@ pub enum Event {
     },
     Done,
     Blocked,
+    /// The device took its ticket back before anyone used it.
+    Withdrawn {
+        ticket: String,
+    },
 }
 
 impl Event {
@@ -43,6 +51,7 @@ impl Event {
             Self::Notes { .. } => "Peer review",
             Self::Done => "Recommendation",
             Self::Blocked => "Blocked",
+            Self::Withdrawn { .. } => "No longer available",
         }
     }
 
@@ -78,6 +87,7 @@ enum State {
         job: String,
         other: String,
         goal: String,
+        since: Instant,
     },
     Spent,
 }
@@ -111,6 +121,28 @@ impl Grant {
                 if job == wanted && other == to && from == &self.ticket)
     }
 
+    /// Nobody used this ticket yet and it could still be used: the peer
+    /// needs to hear when it goes away.
+    pub fn unspent(&self) -> bool {
+        self.started.elapsed() < WINDOW && matches!(self.state, State::Available)
+    }
+
+    /// This device asked `ticket` for notes and has not had them yet.
+    pub fn waiting_on(&self, ticket: &str) -> bool {
+        matches!(&self.state, State::Waiting { other, .. } if other == ticket)
+    }
+
+    /// The peer's notes did not come within [`NOTES_WAIT`].
+    pub fn overdue(&self) -> bool {
+        matches!(&self.state, State::Waiting { since, .. } if since.elapsed() >= NOTES_WAIT)
+    }
+
+    pub fn withdrawn(&self) -> Event {
+        Event::Withdrawn {
+            ticket: self.ticket.clone(),
+        }
+    }
+
     pub fn ready(&self) -> Event {
         Event::Ready {
             peer: self.peer,
@@ -127,6 +159,7 @@ impl Grant {
             job: job.clone(),
             other: other.clone(),
             goal: goal.into(),
+            since: Instant::now(),
         };
         Some(Event::Request {
             to: other,
@@ -155,7 +188,9 @@ impl Grant {
                 )
             }
             (
-                State::Waiting { job, other, goal },
+                State::Waiting {
+                    job, other, goal, ..
+                },
                 Event::Notes {
                     to,
                     from,
@@ -226,6 +261,29 @@ mod tests {
         assert_eq!(summary.response, Event::Done);
         assert!(a.receive(2, notes, "duplicate").is_none());
         assert!(b.receive(1, Event::Done, "@bot again").is_none());
+    }
+
+    #[test]
+    fn a_ticket_is_unspent_only_until_someone_uses_it() {
+        let mut a = Grant::new("T/C".into(), 1, 2);
+        let mut b = Grant::new("T/C".into(), 1, 1);
+        assert!(a.unspent() && b.unspent());
+        assert_eq!(
+            Event::read(&b.withdrawn().body("gone".into(), None)),
+            Some(Event::Withdrawn {
+                ticket: b.ticket.clone()
+            })
+        );
+        let request = a.request(b.ticket.clone(), "goal").unwrap();
+        assert!(!a.unspent());
+        assert!(a.waiting_on(&b.ticket) && !a.waiting_on(&a.ticket));
+        assert!(!a.overdue());
+        b.receive(1, request, "goal").unwrap();
+        assert!(!b.unspent() && !b.waiting_on(&a.ticket));
+        // A withdrawal is not something a grant acts on as a turn.
+        let gone = b.withdrawn();
+        assert!(a.receive(2, gone, "gone").is_none());
+        assert!(a.waiting_on(&b.ticket));
     }
 
     #[test]

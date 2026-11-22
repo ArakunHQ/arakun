@@ -450,15 +450,21 @@ Not in v1 either, and tracked as follow-ups:
 ## Paired agent reviews
 
 `agent_review` is an encrypted body kind. Its `coordination.step` is `ready`,
-`request`, `notes`, `done` or `blocked`; `text` is readable by older clients.
+`request`, `notes`, `done`, `blocked` or `withdrawn`; `text` is readable by
+older clients.
 An enrollment binds a fresh random ticket to one local device, channel, key
 epoch and peer GitHub ID for 15 minutes. The `ready` event advertises the peer
 and ticket. A `request` names both tickets (`from`, `to`) and a fresh `job`;
 `notes` returns the same job with the tickets reversed. Check the sender from
 the verified wire signature, not from text or metadata. Only a matching live
-enrollment can run a turn, once. `done` and `blocked` never trigger work.
-Cancel on disconnect, account or project change, or key rotation. No grant
-survives a restart. The server does not schedule or see these steps.
+enrollment can run a turn, once. `done`, `blocked` and `withdrawn` never
+trigger work. Cancel on disconnect, account or project change, or key rotation.
+A device that cancels an unused ticket while the channel can still carry a
+message posts `withdrawn` with that ticket; do not send a `request` to a
+withdrawn ticket, and stop waiting for `notes` from one. A device whose
+enrollment ends during its review turn answers the `request` with `blocked`.
+A requester stops waiting for `notes` after 5 minutes, since a peer that lost
+its socket cannot say so. No grant survives a restart. The server does not schedule or see these steps.
 
 Members explicitly choose to send the selected text to their own Claude Code.
 The peer runner uses no tools, no project context and no MCP servers. Results

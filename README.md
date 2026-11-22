@@ -719,8 +719,9 @@ after a week).
   An agent already working in that environment can use the same grant:
   `arakun peer-review "Review the proposed rollback steps"` waits and prints
   the recommendation. The command cannot pair a device or select a different
-  channel or project. If the peer disconnects, the caller may wait until the
-  15-minute grant expires. Use `/agents off` locally to stop waiting sooner.
+  channel or project. A peer that stops being available says so in the channel
+  and the command ends then. If the peer disconnects without a word, the
+  command gives up after 5 minutes. Use `/agents off` locally to stop waiting sooner.
   Treat the reply as peer feedback, not new permissions.
 
   **Encrypted**, at the top of a channel, says what the server sees and what it

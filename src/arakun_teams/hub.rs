@@ -781,9 +781,7 @@ impl Hub {
                 cx.background_executor().timer(REFRESH).await;
                 if this
                     .update(cx, |hub, cx| {
-                        if hub.peer_review.as_ref().is_some_and(|g| !g.live()) {
-                            hub.peer_review = None;
-                        }
+                        hub.expire_review();
                         hub.refresh(cx);
                     })
                     .is_err()
@@ -2338,6 +2336,25 @@ impl Hub {
                 self.peer_review = None;
                 continue;
             }
+            if let PeerEvent::Withdrawn { ticket } = &event {
+                // The request and the withdrawal crossed: nobody will answer.
+                if let Some(grant) = self.peer_review.as_mut()
+                    && grant.channel == key
+                    && sender == grant.peer
+                    && grant.waiting_on(ticket)
+                {
+                    if let Some(caller) = grant.caller.take() {
+                        let _ = caller.send(crate::control::Reply::err(
+                            "The peer is no longer available. Ask them to pair again.",
+                        ));
+                    }
+                    self.peer_review = None;
+                    self.error = Some(
+                        "The paired review ended: the other member is no longer available.".into(),
+                    );
+                }
+                continue;
+            }
             if let Some(grant) = &mut self.peer_review
                 && grant.channel == key
                 && grant.epoch == epoch
@@ -2346,10 +2363,23 @@ impl Hub {
                 let stop = grant.stop.clone();
                 let ticket = grant.ticket.clone();
                 let (team, channel) = (team_id.clone(), channel_id.clone());
+                let generation = self.generation;
                 cx.spawn(async move |this, cx| {
                     let result = cx.background_spawn(async move { super::bot::review_peer(&turn.prompt, &stop) }).await;
                     let _ = this.update(cx, |hub, cx| {
                         if !hub.peer_review.as_ref().is_some_and(|g| g.ticket == ticket && g.live()) {
+                            // The grant ran out or was replaced while Claude ran. The
+                            // requester still waits for notes, so say there are none.
+                            if matches!(turn.response, PeerEvent::Notes { .. })
+                                && hub.generation == generation
+                                && hub.review_epoch(&team, &channel) == Some(epoch)
+                            {
+                                let body = PeerEvent::Blocked.body(
+                                    "This device's pairing ended before the review finished. Pair again.".into(),
+                                    Some(id),
+                                );
+                                hub.send_body(&team, &channel, body, cx);
+                            }
                             return;
                         }
                         // The grant is spent: a channel that can't take the answer now
@@ -2423,6 +2453,52 @@ impl Hub {
             .then_some(t.detail.epoch)
     }
 
+    /// Drops this device's grant. A ticket nobody used yet is taken back in
+    /// the channel while the channel can still carry that, so the peer does
+    /// not send a request to a ticket that is gone.
+    pub(super) fn end_review(&mut self, cx: &mut Context<Self>) {
+        let Some(grant) = self.peer_review.take() else {
+            return;
+        };
+        if !grant.unspent() {
+            return;
+        }
+        let Some((team, channel)) = self
+            .channels
+            .get(&grant.channel)
+            .map(|c| (c.team_id.clone(), c.channel_id.clone()))
+        else {
+            return;
+        };
+        if self.review_epoch(&team, &channel) == Some(grant.epoch) {
+            let body = grant
+                .withdrawn()
+                .body("No longer available for the paired review.".into(), None);
+            self.send_body(&team, &channel, body, cx);
+        }
+    }
+
+    /// Ends a grant whose window ran out, or whose request got no notes in
+    /// time: the peer's grant can end where it has no way to say so.
+    fn expire_review(&mut self) {
+        let Some(grant) = self.peer_review.as_mut() else {
+            return;
+        };
+        if grant.overdue() {
+            if let Some(caller) = grant.caller.take() {
+                let _ = caller.send(crate::control::Reply::err(
+                    "The peer did not answer in time. Ask them to pair again.",
+                ));
+            }
+            self.error = Some(
+                "The paired review ended: the other member's agent did not answer in time.".into(),
+            );
+            self.peer_review = None;
+        } else if !grant.live() {
+            self.peer_review = None;
+        }
+    }
+
     pub(super) fn review_command(
         &mut self,
         team: &str,
@@ -2431,7 +2507,7 @@ impl Hub {
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
         if cmd == "off" {
-            self.peer_review = None;
+            self.end_review(cx);
             cx.notify();
             return Ok(());
         }
@@ -2451,6 +2527,8 @@ impl Hub {
                 .find(|m| m.login.eq_ignore_ascii_case(login) && m.github_id != me)
                 .ok_or("Choose another current member by GitHub login.")?
                 .github_id;
+            // A ticket for someone else, or in another channel, goes away here.
+            self.end_review(cx);
             let grant = Grant::new(key, epoch, peer);
             let ready = grant.ready();
             self.peer_review = Some(grant);
@@ -2486,6 +2564,16 @@ impl Hub {
                     }
                 })
                 .ok_or("The other member must pair a device with you in this channel first.")?;
+            if self.channels[&key].messages.iter().any(|m| {
+                m.github_id == g.peer
+                    && m.delivery == Delivery::Sent
+                    && matches!(PeerEvent::read(&m.body),
+                        Some(PeerEvent::Withdrawn { ticket }) if ticket == other)
+            }) {
+                return Err(
+                    "The other member is no longer available. Ask them to pair again.".into(),
+                );
+            }
             let event = g
                 .request(other, goal)
                 .ok_or("This ticket is in use, or the goal is empty or longer than 4000 bytes.")?;

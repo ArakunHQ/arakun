@@ -1310,6 +1310,7 @@ impl Thread {
                             updated: now,
                             pr: None,
                             seat: None,
+                            seat_key: None,
                         }));
                     }
                 }
@@ -1492,6 +1493,7 @@ impl Thread {
                         updated: now,
                         pr: None,
                         seat: None,
+                        seat_key: None,
                     },
                     prompt: plan.map(|p| p.text).unwrap_or_default(),
                 });

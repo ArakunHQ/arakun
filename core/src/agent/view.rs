@@ -45,6 +45,8 @@ mod diffs;
 mod find_bar;
 mod footer;
 mod note_box;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod ssh;
 mod tool_rows;
 
 // Free helpers the split-out parts of the transcript share.
@@ -143,6 +145,17 @@ fn rel_path(path: &Path, cwd: &Path) -> String {
         .to_string()
 }
 
+/// Drops parsed messages from `from` on whose entry is no longer a message. A
+/// shrink resets the view, but a sync can replace entries in place without one.
+/// Entries before `from` did not change, so a streamed chunk visits only the tail.
+fn keep_docs_of<T>(docs: &mut HashMap<usize, T>, entries: &[Entry], from: usize) {
+    for (ix, entry) in entries.iter().enumerate().skip(from) {
+        if !matches!(entry, Entry::Agent { .. } | Entry::Thought { .. }) {
+            docs.remove(&ix);
+        }
+    }
+}
+
 fn turns_of(entries: &[Entry]) -> Vec<Range<usize>> {
     let mut turns = Vec::new();
     let mut start = 0;
@@ -202,6 +215,12 @@ pub enum ThreadViewEvent {
     },
     /// An Agent call's subagent was asked for, by its id; `None` asks for the list.
     OpenSubagent(Option<String>),
+    /// "Tell us what happened" under an agent's error: the report sent for it,
+    /// if any, and the agent.
+    TellUs {
+        error_event: Option<String>,
+        agent: String,
+    },
 }
 
 /// Ctrl+F over the conversation: prompts, replies, and thoughts.
@@ -243,6 +262,9 @@ impl EventEmitter<ThreadViewEvent> for ThreadView {}
 
 pub struct ThreadView {
     thread: Entity<Thread>,
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    ssh: ssh::State,
+    can_tell_us: bool,
     ask: Option<AskState>,
     /// The parsed spec-mode plan on screen, keyed by its text.
     plan_md: RefCell<Option<(String, Rc<Vec<Block>>)>>,
@@ -293,6 +315,12 @@ pub struct ThreadView {
 }
 
 impl ThreadView {
+    /// Whether a failed session offers "Tell us what happened". The shell turns
+    /// it off when feedback cannot be sent.
+    pub fn set_can_tell_us(&mut self, on: bool) {
+        self.can_tell_us = on;
+    }
+
     pub fn new(thread: Entity<Thread>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let turns = turns_of(thread.read(cx).entries());
         let seen = thread.read(cx).entries().len();
@@ -309,7 +337,12 @@ impl ThreadView {
             });
         });
         let subs = vec![
-            cx.subscribe_in(&thread, window, Self::thread_event),
+            cx.subscribe_in(&thread, window, |this, source, ev, window, cx| {
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                this.ssh
+                    .sync(source.read(cx), matches!(ev, ThreadEvent::Reset));
+                this.thread_event(source, ev, window, cx);
+            }),
             cx.observe_window_activation(window, |this, window, cx| {
                 this.active = window.is_window_active();
                 this.sync_tick(window, cx);
@@ -318,6 +351,9 @@ impl ThreadView {
         ];
         let mut this = ThreadView {
             thread,
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            ssh: ssh::State::default(),
+            can_tell_us: true,
             ask: None,
             plan_md: RefCell::new(None),
             list,
@@ -434,6 +470,7 @@ impl ThreadView {
                 let t = self.thread.read(cx);
                 let (len, at_work) = (t.entries().len(), t.is_busy());
                 self.entrances.entries_now(len, at_work, Instant::now());
+                keep_docs_of(&mut self.markdown, self.thread.read(cx).entries(), *from);
                 self.sync_turns(*from, cx)
             }
             ThreadEvent::Reset => {
@@ -1036,8 +1073,10 @@ impl ThreadView {
                 None => footer,
             }
         };
+        // Fades and entrances: on the motion clock, not at the display's rate,
+        // since text streams in for as long as the agent writes.
         if std::mem::take(&mut self.fading) {
-            window.request_animation_frame();
+            crate::ui::motion::redraw_on_tick(window);
         }
         div()
             .id(("turn", ix))
@@ -1254,7 +1293,6 @@ impl ThreadView {
                     .py(crate::ui::sp(4.))
                     .text_size(px(crate::ui::TEXT_LG))
                     .child(shimmer(
-                        ("thinking", ix),
                         self.active,
                         "Thinking…",
                         theme::text_faint(),
@@ -1277,12 +1315,7 @@ impl ThreadView {
                     .bg(theme::fill_raised())
                     .text_size(px(crate::ui::TEXT_MD))
                     .text_color(theme::text_muted())
-                    .child(spinner(
-                        ("retry-spin", ix),
-                        self.active,
-                        12.,
-                        theme::text_subtle(),
-                    ))
+                    .child(spinner(self.active, 12., theme::text_subtle()))
                     .child(div().min_w_0().truncate().child(retry.to_string())),
             );
         }
@@ -1396,7 +1429,7 @@ impl ThreadView {
                     places,
                 } => {
                     let ix = base + notices_from + k;
-                    col = col.child(notice_row(ix, text, *error, *mark));
+                    col = col.child(notice_row(text, *error, *mark));
                     if let Some(places) = self.notice_places(ix, places, cx) {
                         col = col.child(
                             div()
@@ -1693,7 +1726,7 @@ impl ThreadView {
             .py(crate::ui::sp(4.))
             .text_size(px(crate::ui::TEXT_LG))
             .text_color(theme::text_subtle())
-            .child(beacon("live-beacon", state, color))
+            .child(beacon(state, color))
             .child(div().flex_none().child(kind.label()))
             .child(div().text_color(theme::text_faint()).child("·"))
             .child(
@@ -2227,13 +2260,13 @@ fn compaction_divider(removed: u64, before: Option<u64>, after: Option<u64>) -> 
         .into_any_element()
 }
 
-fn notice_row(ix: usize, text: &str, error: bool, mark: Option<NoticeMark>) -> AnyElement {
+fn notice_row(text: &str, error: bool, mark: Option<NoticeMark>) -> AnyElement {
     let glyph = match (error, mark) {
         (true, _) => icon("alert-circle", 14.)
             .text_color(red().opacity(0.85))
             .into_any_element(),
         (false, Some(NoticeMark::Busy)) => {
-            crate::ui::spinner(("notice-busy", ix), 14., theme::mix(0.45)).into_any_element()
+            crate::ui::spinner(14., theme::mix(0.45)).into_any_element()
         }
         (false, Some(NoticeMark::Passed)) => icon("checkmark-circle02", 14.)
             .text_color(theme::success())
@@ -2288,11 +2321,22 @@ impl Render for ThreadView {
         let queue = self.render_queue(cx);
         let menu = self.render_selection_menu(cx);
         let note = self.render_note_box(cx);
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        let (ssh_bar, ssh_body) = self.render_ssh(cx);
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        let (ssh_bar, ssh_body): (Option<AnyElement>, Option<AnyElement>) = (None, None);
         div()
             .id("thread-view")
             .key_context("ThreadView")
             .track_focus(&self.focus)
-            .on_key_down(cx.listener(Self::on_key))
+            .on_key_down(cx.listener(|this, ev, window, cx| {
+                // Keys in SSH fields must never answer a transcript permission.
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                if this.ssh.shown() {
+                    return;
+                }
+                this.on_key(ev, window, cx);
+            }))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _, window, cx| {
@@ -2316,7 +2360,8 @@ impl Render for ThreadView {
             .min_h_0()
             .font_family(theme::FONT_SANS)
             .text_color(theme::content())
-            .child(
+            .children(ssh_bar)
+            .child(ssh_body.unwrap_or_else(|| {
                 div()
                     .relative()
                     .flex_1()
@@ -2354,8 +2399,9 @@ impl Render for ThreadView {
                                         ),
                                 ),
                         )
-                    }),
-            )
+                    })
+                    .into_any_element()
+            }))
             .when_some(queue, |d, q| d.child(q))
             .when_some(menu, |d, m| d.child(m))
             .when_some(note, |d, n| d.child(n))
@@ -2375,6 +2421,35 @@ mod tests {
             "type": "tool", "id": title, "title": title, "kind": "other", "status": "completed",
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn docs_of_removed_or_replaced_entries_are_dropped() {
+        let entries = [
+            agent("kept"),
+            tool("Read"),
+            Entry::Thought {
+                text: "kept too".into(),
+            },
+        ];
+        let docs = || -> HashMap<usize, ()> { [(0, ()), (1, ()), (2, ())].into() };
+        let left = |mut docs: HashMap<usize, ()>| {
+            let mut left: Vec<usize> = docs.drain().map(|(ix, _)| ix).collect();
+            left.sort();
+            left
+        };
+
+        let mut all = docs();
+        keep_docs_of(&mut all, &entries, 0);
+        assert_eq!(left(all), [0, 2]);
+
+        let mut tail = docs();
+        keep_docs_of(&mut tail, &entries, 2);
+        assert_eq!(left(tail), [0, 1, 2]);
+
+        let mut past_the_end = docs();
+        keep_docs_of(&mut past_the_end, &entries, 9);
+        assert_eq!(left(past_the_end), [0, 1, 2]);
     }
 
     #[test]

@@ -1,6 +1,6 @@
 //! `arakun fetch` and `arakun crawl`: web pages for agents through Cloudflare
-//! Browser Run, a real browser on Cloudflare's network, so sites that turn
-//! `curl` away (Steam's workshop, for one) still answer. Works without the app.
+//! Browser Run, a real browser on Cloudflare's network for JavaScript-rendered
+//! pages and Markdown extraction. Works without the app.
 //!
 //! Needs an API token with the "Browser Run - Edit" permission (the `cf`
 //! sign-in doesn't carry it) and the account it belongs to: from
@@ -29,9 +29,8 @@ arakun crawl [--limit N] [--depth N] [--render] [--include <glob>] [--exclude <g
                                         a site's pages as Markdown, one after another
 arakun fetch --set-token <account-id>  store the API token (read from stdin) and its account
 
-Pages load in Cloudflare Browser Run. Free plan: one fetch every 10 s, 10 min of
-browser a day, 5 crawls of 100 pages a day. It doesn't get past captchas, and
-crawl follows robots.txt.";
+Pages load in Cloudflare Browser Run (limits depend on your Workers plan).
+It does not bypass captchas, and crawl honors robots.txt and Content Signals.";
 
 fn agent() -> &'static ureq::Agent {
     static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
@@ -39,7 +38,11 @@ fn agent() -> &'static ureq::Agent {
         ureq::Agent::config_builder()
             .timeout_global(Some(Duration::from_secs(120)))
             .http_status_as_error(false)
-            .user_agent(concat!("arakun/", env!("ARAKUN_VERSION")))
+            .user_agent(concat!(
+                "Arakun-Agent/",
+                env!("ARAKUN_VERSION"),
+                " (+https://github.com/ArakunHQ/arakun)"
+            ))
             .build()
             .into()
     })
@@ -181,18 +184,31 @@ fn crawl_args(args: &[String]) -> Option<CrawlArgs> {
     (!out.url.is_empty()).then_some(out)
 }
 
-/// Submits the crawl, waits for it, and prints each page as it is read.
-fn crawl(args: &[String]) -> Result<(), String> {
-    let a = crawl_args(args).ok_or(USAGE)?;
-    let c = creds()?;
-    let mut body =
-        json!({ "url": a.url, "limit": a.limit, "formats": ["markdown"], "render": a.render });
+fn crawl_body(a: &CrawlArgs) -> Value {
+    // Declare ai-input + reference so Cloudflare's /crawl does not reject sites
+    // that disallow ai-train while allowing real-time agent input.
+    let mut body = json!({
+        "url": a.url,
+        "limit": a.limit,
+        "formats": ["markdown"],
+        "render": a.render,
+        "crawlPurposes": ["ai-input"],
+        "contentUse": "reference",
+    });
     if let Some(d) = a.depth {
         body["depth"] = json!(d);
     }
     if !a.include.is_empty() || !a.exclude.is_empty() {
         body["options"] = json!({ "includePatterns": a.include, "excludePatterns": a.exclude });
     }
+    body
+}
+
+/// Submits the crawl, waits for it, and prints each page as it is read.
+fn crawl(args: &[String]) -> Result<(), String> {
+    let a = crawl_args(args).ok_or(USAGE)?;
+    let c = creds()?;
+    let body = crawl_body(&a);
     let job = call(&c, "POST", "crawl", Some(&body))?;
     let id = job
         .as_str()
@@ -318,5 +334,15 @@ mod tests {
     fn crawl_takes_help_too() {
         assert_eq!(cli(&s(&["--help"]), true), 0);
         assert_eq!(cli(&s(&["--limit", "3", "-h"]), true), 0);
+    }
+
+    #[test]
+    fn crawl_body_declares_ai_input_and_reference_use() {
+        let a = crawl_args(&s(&["--limit", "10", "--depth", "1", "https://x.dev/docs"])).unwrap();
+        let body = crawl_body(&a);
+        assert_eq!(body["crawlPurposes"], json!(["ai-input"]));
+        assert_eq!(body["contentUse"], json!("reference"));
+        assert_eq!(body["depth"], json!(1));
+        assert_eq!(body["limit"], json!(10));
     }
 }

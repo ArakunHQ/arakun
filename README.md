@@ -35,7 +35,7 @@ Written in Rust with [GPUI](https://github.com/zed-industries/zed/tree/main/crat
 
 ## Why Arakun
 
-- **Many agents, one place.** Claude Code, Droid, OpenCode, Codex, Devin, Cursor and Workers AI
+- **Many agents, one place.** Claude Code, Droid, OpenCode, Codex, Devin, Cursor, Antigravity and Workers AI
   sessions side by side. Give each task its own git worktree so the agents don't step on each
   other.
 - **The agents can use the app.** The `arakun` command line lets an agent open pages,
@@ -75,6 +75,31 @@ copy of it, rename it back, and start a version that can read it.
 
 ### Workspace
 
+- **Sessions in the sidebar.** With Focused (Settings › Appearance › Tabs and sessions;
+  a new install starts on it), the sidebar lists every session of every project, under
+  its project, archived ones aside (the archived toggle shows them). Each row has a mark for its state: a ring while it works, `!` when it needs
+  you, a cross when it failed or its checks failed, a check when its checks passed, a
+  faint dot when idle. The end of the row says what wants you, or the pull request's
+  number. By default a project with nothing running folds (Settings can keep it open or
+  hide it); the project on screen and
+  any project with a session that works or needs you stay open. Click a project to
+  fold or open it. `Ctrl`+click or `Shift`+click picks rows, as described below. This
+  list takes the place of the Active list and the project's worktrees below. A state
+  file from before it keeps the projects and worktrees described next (the Classic
+  layout).
+- **Pinned tabs.** With sessions in the sidebar, the title bar holds only the
+  sessions pinned to it, from any project, each with its state's mark and its project's
+  icon, plus the tab on screen and pages, files and views as before. Pin a session by
+  dragging its row up to the bar (a line marks where it lands), with Pin to the title
+  bar in its row's right-click menu, or with `Alt+P` while the pointer is on its row;
+  `Alt+P` on the bar pins or unpins the tab on screen. Closing a pinned tab (`Ctrl+W`)
+  or dragging it back to the sidebar unpins it; the session stays in the tree. A
+  session opened from the tree without a pin shows in the bar while it is on screen.
+  With nothing pinned, the session you open pins itself. Tabs keep clear of the island
+  when the window fills the screen, shrink when the bar fills, and the rest go under
+  **N more**, which can also unpin the ones that are done. With the sidebar hidden, a
+  **Sessions** button with the count of sessions that need you opens the tree as a
+  menu with a search. A state file from before pins keeps every open session pinned.
 - **Active.** The top of the sidebar lists the sessions of every project that need
   you (waiting for an answer, or failed), then the ones running. A click opens the
   session in its project. It stays the same whichever project is open. The open
@@ -119,7 +144,11 @@ copy of it, rename it back, and start a version that can read it.
   showed last. With tabs of several environments open, each run of tabs starts with
   its environment's name. The Workspace panel shows Sessions, an Explorer and the
   uncommitted
-  Changes; the Branches tab draws every live branch against the default one.
+  Changes; the Branches tab shows the default branch's history, newest first, with up
+  to three branches as colored lanes beside it (more fold into a list above it). Point
+  at a commit, or move to it with the arrow keys, to see its author and agent, what it
+  changed and its pull request. A click or Enter on a commit of a branch opens that
+  branch.
   In the Commit changes dialog, "Write with <agent>" writes the message from what
   the commit takes (the staged changes, or every change, new files too, when nothing
   is staged; up to 60,000 characters of diff and the first 300 files) in the style of
@@ -199,6 +228,7 @@ copy of it, rename it back, and start a version that can read it.
 | Codex | Through the ACP adapter `@agentclientprotocol/codex-acp`, which brings its own `codex` |
 | Devin | The `devin` CLI (`devin acp`) |
 | Cursor | The Cursor CLI (`cursor-agent acp`) |
+| Antigravity | Google's `agy` CLI (`agy acp`) |
 | Cloudflare Workers AI | A tool loop Arakun runs itself against the Workers AI API |
 
 The Claude Code adapter runs the Claude Code binary bundled with it (the `claude` on
@@ -262,6 +292,25 @@ sees the project's skills.
   be sandboxed yet. A sandboxed
   agent can still change what you later run outside it: the project's files, and its
   own settings such as `~/.claude.json`.
+- **SSH in a session (Linux and macOS).** To use a build machine from a local
+  agent session without installing Arakun there, open **Connect SSH** in that
+  session. Sandboxed sessions can't use it: it would lend them your local SSH
+  agent. Enter the literal `user@host` and port. Compare the ED25519
+  fingerprint with one you got from the machine's administrator or console
+  before trusting it. The account needs a key already loaded in your local
+  `ssh-agent`; Arakun uses system OpenSSH, without SSH config aliases, password
+  prompts or agent forwarding. The remote account's permissions apply.
+
+  Tell the agent about the connection to let it suggest a command. Review
+  the exact command and run it once, or enter one yourself. Each run starts a
+  fresh non-interactive shell: a `cd` doesn't carry over. A run is limited
+  to 10 minutes and 64 KiB of combined output. Output stays in
+  the panel unless you share it with that session. Disconnect cancels the
+  local SSH client and forgets the connection; it cannot undo a command or
+  guarantee that a process on the remote machine stops. Connections are not
+  saved across restarts. The panel is not a boundary: an agent that isn't
+  sandboxed runs as you and can reach your `ssh-agent` without it. Sandbox the
+  project to keep your SSH keys from the agent.
 - **Server.** `arakun server serve` is Arakun without a window, for a machine nobody
   sits at: a build box, the workstation at the office, a VPS. It runs sessions of any
   agent signed in on that machine and keeps them going while nothing is connected.
@@ -453,13 +502,27 @@ after a week).
   Overview, Events (filter by event, `key = value` properties, a person and a range;
   a row opens its properties, its person and its replay), People (search by email or
   distinct_id; a profile with properties, cohorts, flags, sessions and a timeline),
-  Flags and Errors. Experiments and Ask come next. The key needs `user:read`,
-  `organization:read`, `project:read`, `query:read`, `feature_flag:read` and
-  `error_tracking:read`; People also needs `person:read`, and the event picker
-  `event_definition:read` and `property_definition:read`. A tab whose scope is
-  missing says which one and the others keep working. PostHog counts queries per
-  hour: the tab shows how many are left, keeps answers on disk and reads again only
-  when they are 15 minutes old or you refresh.
+  Flags, Experiments, Errors and Ask. A flag, experiment or error opens inside the
+  tab. **Fix with agent** on an error and **Set up with agent** put a prompt in the
+  composer without sending it. Ask sends a question to PostHog AI, not to your
+  coding agent, and shows its answer and the SQL behind it; a pinned answer is a
+  saved copy and is not asked again. The key needs `user:read`, `organization:read`,
+  `project:read`, `query:read`, `feature_flag:read`, `experiment:read` and
+  `error_tracking:read`; People also needs `person:read` and `cohort:read`, the
+  event picker `event_definition:read` and `property_definition:read`, and Ask
+  `insight:read`. A tab whose scope is missing says which one and the others keep
+  working. PostHog counts queries per hour: the tab shows how many are left, keeps
+  each account's answers on disk (cleared when its key is replaced or removed) and
+  reads again only when they are 15 minutes old or you refresh.
+  Changing something in PostHog always asks you to type the flag key first. On a
+  flag, stage enable or disable (or a 10% rollout step, for release conditions in
+  PostHog's classic format), then review it; it needs `feature_flag:write`, and
+  PostHog refuses it if someone else changed the flag since. On a running experiment, **End experiment** freezes its results and leaves
+  the flag as it is; **Ship**, offered only for a variant the results call a
+  winner, also gives that variant to everyone the flag already matches. Both need
+  `experiment:write`. To try the tab without a key (Linux and macOS), start a test
+  Arakun with
+  `ARAKUN_POSTHOG_FIXTURE="$PWD/tools/posthog-fixture.json" arakun dev start`.
 - **Doop.** The canvases of a [Doop](https://doop.design) instance and the frames
   of the one you pick, page by page, each with its render; a click opens the frame on
   the canvas in a browser tab. Sign in with the browser, or paste an agent key (the form offers the one
@@ -517,19 +580,34 @@ after a week).
   limit, the session starts on the one with the most room and says so. The composer
   shows the seat of the session, and the Usage tab every seat's windows and live
   sessions. Reading a token's windows sends that seat a one-token message, so Arakun
-  does it only while the Usage tab is on screen, for `arakun seat ls`, and when a new
-  session picks its seat (waiting at most 4 seconds), and at most every 15 minutes per
-  token. A seat whose token is refused is skipped, and a session saved on it moves to
-  another seat and says so. Seats can't work
+  reads the windows only while the Usage tab is on screen, for `arakun seat ls`, and
+  when a new session picks its seat (waiting at most 4 seconds), at most every 15
+  minutes per token. Starting a session on a saved seat also checks its token with that
+  message (waiting at most 10 seconds) unless the same token was read in the last
+  minute, so a dead token shows up at the start, not in the middle of a session. A seat whose
+  token is refused is skipped, and a session saved on it moves to another seat and says
+  so. A session also keeps a SHA-256 fingerprint of its seat's token (never the token),
+  so it says so when a different token was saved under the same name. Sessions in the
+  sandbox don't use seats: they run on Claude Code's default account, and one that was
+  on a seat says so. Seats can't work
   while `~/.claude/settings.json` sets `CLAUDE_CODE_OAUTH_TOKEN` in its `env` block,
   because Claude Code applies that over each session's environment; the Usage tab says
-  so, and sessions start as before. Without a saved seat nothing changes.
+  so, sessions start as before, and one that was on a seat says so. The same goes
+  while Claude Code runs on an API key, a gateway or a cloud provider, which win over
+  any seat's token. Without a saved seat nothing changes.
 - **Marketplace.** Plugins, MCP servers and skills to add, and the MCP servers, plugins,
   skills and permission rules the agents load now. Discover › Skills searches
   [skills.sh](https://skills.sh); Install copies the skill's folder from its GitHub
-  repository into `~/.claude/skills`, where Claude Code and Workers AI find it. It uses
+  repository into `~/.claude/skills`, where Claude Code and Workers AI find it, or into
+  the repo's `.claude/skills` when "Install in" (below) picks this repo. It uses
   your `gh` sign-in (or `GH_TOKEN`) when there is one, since GitHub answers few
-  requests without one. Skills install on this computer only, not on a paired server. Under Arakun › Extensions (or Settings ›
+  requests without one. "Install in" picks where Install puts a plugin, skill or MCP
+  server on this computer: every repo (your user), this repo shared (its committed
+  `.claude/settings.json`, `.mcp.json` or `.claude/skills`), or this repo just for you
+  (Claude Code's `local` scope; a skill goes in `.claude/skills` and is listed in
+  `.git/info/exclude`). An MCP server that signs in gets the repo in its name when it is
+  installed in a repo (`github-acme-web` in acme/web), so each repo has its own sign-in. Paired servers
+  get what you install by the mirror (see Servers). Under Arakun › Extensions (or Settings ›
   General › Sidebar) you turn on the tabs the sidebar shows besides Inbox, Runs, Branches and Marketplace: GitHub, Notes,
   Memory, Usage, Cloudflare, PostHog, Doop, Isometric, Phone, Servers and Automations. The
   palette and Customize › Sidebar list only the tabs that are on. A new install starts
@@ -558,6 +636,22 @@ How the app looks is changed in the **Customize** panel, at the right of the win
 the workspace panel is, so the work stays in view while you change it. Open it from the
 palette (`Customize`), View › Customize… or Settings › Appearance › Open Customize, which
 only sums up what is chosen. It opens without a project too.
+
+Settings › Appearance › Tabs and sessions sets where sessions and tabs show. Three
+presets set everything at once: **Focused** (sessions in the sidebar tree, pinned tabs
+in the title bar; a new install starts here), **Classic** (every open tab in one row,
+the sidebar with projects and worktrees, as before) and **Everything** (the tree and
+every open tab). A state file from before this setting opens on Classic, so nobody's
+window changes after an update; pick Focused to switch. Then each option can change:
+Sessions live in (Sidebar, Title bar, Both), Title bar shows (Pinned, This project, All
+open), State (Icon, Dot, Word), Group by project, Sort sessions (Latest, A–Z, By
+environment), Projects with nothing running (Open, Folded, Hidden), Long titles (Cut,
+Two lines) and Sidebar width. Sort sessions starts on Latest, the session used last on
+top of its project, or of the whole tree without project headings; the sort button in
+the tree's heading switches to the next order. Options that mean
+nothing with the others are off: with sessions only in the title bar there is nothing
+to pin from or fold. Moving to pinned tabs pins every open session first. The choice is
+kept in `state.json` as `tabs`.
 
 Settings › Appearance › Reduce motion holds the mascot, spinners and the island still (its
 working dots, its change of shape and its alert cards), and shows menus and dialogs
@@ -641,7 +735,8 @@ run without changing that file.
 Arakun sends nothing until you say so. On first launch it asks whether to send crash
 reports and anonymous usage counts to Arakun's PostHog project, so we can see what
 breaks and what gets used: as a step of the setup, or in a dialog when you skip the
-setup or already have a project. Settings › Privacy has a switch for each:
+setup or already have a project. Settings › Privacy has a switch for crash reports and
+one for usage counts, and a button for feedback:
 
 - **Crash reports:** a panic's message and stack trace. When an agent stops with an
   error: the agent's name and version number, a fixed category such as "rate
@@ -653,6 +748,20 @@ setup or already have a project. Settings › Privacy has a switch for each:
   session started (with the agent), agent turn finished (with the agent, how it
   stopped and how many seconds it took), project added, environment created, a
   built-in view opened (with its name) and a browser tab opened.
+- **Feedback:** what you write when you press Send on a feedback form or after an
+  agent error or a crash. Help in the sidebar opens the form, set to a bug or a
+  feature request if you pick one, and links to the [docs](https://arakun.dev/docs). It is sent even with crash reports and usage counts off,
+  because pressing Send is your yes. An agent can also send feedback with
+  `arakun feedback`, but only with usage counts on, and you get a notice with the
+  full text in the Inbox. Surveys made in PostHog show up only with usage counts on,
+  at most once per launch. Arakun fetches them from PostHog only with usage counts
+  on, in an anonymous request with the project token and no id. With usage counts
+  off, the feedback forms use the questions built into Arakun. Each answer you send
+  also tries to open a ticket in the Arakun team's private support inbox (PostHog
+  Support), with the email you left, if any, so the team can reply. If that fails,
+  the answer still arrives, just without a ticket. A person on the team may
+  turn a bug, feature or UX report into a public GitHub issue, without paths, links,
+  keys or emails.
 
 Each event carries Arakun's version, the OS and the CPU architecture. On first launch,
 what happens before you answer the question waits in memory: it is sent if you turn
@@ -672,7 +781,7 @@ trace. That file stays on your machine; attach it when you report a crash. It ke
 most recent panics, up to about 256 KB. A panic in background work no longer closes
 Arakun: what was running shows an error, and the log says "Arakun carried on".
 
-`DO_NOT_TRACK=1` or `ARAKUN_TELEMETRY=0` turn both off and skip the question;
+`DO_NOT_TRACK=1` or `ARAKUN_TELEMETRY=0` turn both off, block all feedback and skip the question;
 `ARAKUN_TELEMETRY=1` turns both on. Debug builds send nothing unless
 `ARAKUN_TELEMETRY=1` is set, and the test Arakun of `arakun dev` never does. A build
 made with `ARAKUN_POSTHOG_KEY=` (empty) sends nothing at all.
@@ -908,6 +1017,10 @@ Arakun does not bundle the agents. Install the ones you want to use:
   environment. Arakun starts `cursor-agent acp`; `ARAKUN_CURSOR_BIN` picks another
   `cursor-agent` and `ARAKUN_CURSOR_ACP` runs another command instead. Cursor sessions
   use the MCP servers in `~/.cursor/mcp.json` and the project's `.cursor/mcp.json`.
+- Antigravity: Google's [Antigravity CLI](https://antigravity.google/docs/install?tab=cli)
+  1.5 or later, signed in with Google (Settings › Antigravity runs `agy acp --login` for
+  you) or with `GEMINI_API_KEY` set up in agy. Arakun starts `agy acp`; `ARAKUN_AGY_BIN`
+  picks another `agy` and `ARAKUN_ANTIGRAVITY_ACP` runs another command instead.
 - Workers AI: a Cloudflare API token with Workers AI access, either stored through
   `opencode auth login` or set as `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`.
 
@@ -1059,12 +1172,14 @@ the release build instead: `curl -fsSL https://arakun.dev/install-server | sh` (
 
 ### Install for your user (Linux)
 
-`tools/install.sh` builds a release binary and installs it to `~/.local/bin`, with a
+`tools/install.sh` builds an optimized binary and installs it to `~/.local/bin`, with a
 `.desktop` entry and icons. It prepares CEF with `tools/install-cef.sh` if it is missing
-and `CEF_DIST` points at an unpacked distribution.
+and `CEF_DIST` points at an unpacked distribution. It builds the `release-local` profile,
+which rebuilds in seconds after a change; `--full` builds the slower `release` profile
+that releases use.
 
 ```sh
-tools/install.sh               # --no-browser, --prefix DIR, --uninstall
+tools/install.sh               # --full, --debug, --no-browser, --prefix DIR, --uninstall
 ```
 
 ## Command line
@@ -1079,7 +1194,9 @@ One Arakun runs per state. `arakun` started again brings the running window up a
 exits (`arakun <dir>` adds the project there), since two windows on one state would
 save over each other and run the same automations twice. The running one holds
 `state.json.lock` next to `state.json`; an Arakun with its own `ARAKUN_STATE`, such as
-`arakun dev`, has its own lock and runs beside it.
+`arakun dev`, has its own lock and runs beside it. It also has its own socket and
+`arakun` command next to that state file (`dev.sock` and `dev.runtime/bin/arakun` for a
+`dev.json`), so the command line of the daily Arakun keeps reaching the daily Arakun.
 
 ```sh
 arakun .                          # add this project (or switch to it); starts Arakun if needed
@@ -1093,6 +1210,7 @@ arakun page screenshot            # PNG of the environment's browser tab
 arakun notify "done"              # desktop notification
 arakun shrink -- cargo test       # run it and print a summary: failures, collapsed logs,
                                   # JSON outline; the whole output goes to a file it names
+arakun feedback --kind bug "..."  # tell the Arakun team about a problem (agents use it; needs usage telemetry on)
 arakun notices --unseen           # notices you haven't read yet
 arakun usage tools --days 7       # which tools' results used the tokens of Workers AI turns
 arakun seat add work < token.txt  # save a Claude seat (a `claude setup-token` token)
@@ -1195,6 +1313,16 @@ The link is good for two minutes and pairs one device. There are two ways to use
   the plugins its marketplaces offer, and Install adds a plugin or MCP server for
   Claude Code there, for every project. An MCP server that wants a sign-in is signed
   in to on that machine (`claude mcp login <name>`), since that opens a browser.
+  Every paired server also mirrors this computer: when it connects, and after each
+  install here, it adds the plugins (and their marketplaces), the user MCP servers,
+  the skills from skills.sh and the MCP sign-ins it lacks. What you installed in a repo
+  just for you is added to the server's folders that have the same `origin`; what you
+  shared with the repo goes with git. It never removes anything,
+  and keeps a sign-in of its own that lasts longer. Over plain http only plugins
+  and skills go. A server on macOS does not take sign-ins, which Claude keeps in the
+  Keychain there. The skills installed from skills.sh are listed in
+  `skills-installed.json` in arakun's folder, and what was installed in a repo in
+  `repo-installs.json`.
   To add a folder on a server, press the folder button on it in the Servers tab,
   or right-click one of its environments. Clone runs that machine's git, with its
   logins, and puts the repository in the folder that holds most of the server's
@@ -1229,7 +1357,7 @@ arakun-server service install   # keep it running; see Keep it running
 
 `arakun-server help` lists them all.
 
-- **Agents.** Claude Code, Droid, OpenCode, Codex, Devin, Cursor and Workers AI, as in the app. Sign in to
+- **Agents.** Claude Code, Droid, OpenCode, Codex, Devin, Cursor, Antigravity and Workers AI, as in the app. Sign in to
   each one on that machine first: the server uses its logins and its permission
   settings. An agent set to allow everything there asks for nothing here either.
   Claude Code and Codex also need their ACP adapter. The server installs a missing one
@@ -1316,13 +1444,15 @@ forward through tabs, `Ctrl+Cmd+F` toggles full screen, and `Cmd+H`, `Cmd+M` and
 `Cmd+Q` hide, minimize and quit.
 
 - `Ctrl+T` new session (in a new worktree, made when you send the first prompt, unless the open one is a worktree without one), `Ctrl+J` toggle the terminal dock, `Ctrl+B` toggle the sidebar
-- `Ctrl+Alt+B` toggle the workspace panel, `Ctrl+Alt+S` toggle the session panel (its pull request and subagents)
+- `Ctrl+Alt+B` toggle the workspace panel, `Ctrl+Alt+S` switch the workspace panel to its Session tab (the session's pull request and subagents) and back
 - `Ctrl+D` / `Ctrl+Shift+D` split right / down, `Ctrl+Alt+arrows` move between panes
 - `Ctrl+Tab`, `Ctrl+1...9` switch tabs, across environments; `Alt+Up` / `Alt+Down`
   switch environments
 - `Ctrl+W` close the tab, `Ctrl+Alt+T` reopen the last closed tab where it was;
-  `Ctrl+Shift+PageUp` / `Ctrl+Shift+PageDown` move the tab left / right. A middle click
-  closes a tab, dragging it onto another moves it there, and its right-click menu also
+  `Ctrl+Shift+PageUp` / `Ctrl+Shift+PageDown` move the tab left / right, `Alt+P` pins
+  or unpins a session (see Pinned tabs). A middle click
+  closes a tab, dragging it left or right moves it there (a line marks where it lands,
+  and the order stays after a restart), and its right-click menu also
   opens a new session or closes the other tabs of its environment or those to its
   right. The tab on screen stays open when its environment has no other. GNOME, Ubuntu
   and some KDE setups keep `Ctrl+Alt+T` to open their own terminal; there, use Reopen

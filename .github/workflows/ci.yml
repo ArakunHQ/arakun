@@ -126,7 +126,7 @@ jobs:
               tools/layout_audit.py | tools/layout-audit-fixtures/*) rust=true ;;
               # Nothing the Rust build or its tests read. Anything not listed
               # here, such as a new top-level folder, runs the Rust jobs.
-              docs/* | iso/* | tools/* | .claude/* | .github/* | LICENSE | NOTICE | .gitignore | deny.toml) ;;
+              docs/* | iso/* | tools/* | .claude/* | .github/* | LICENSE | NOTICE | .gitignore | deny.toml | cubic.yaml) ;;
               */*) rust=true ;;
               *.md) ;;
               *) rust=true ;;

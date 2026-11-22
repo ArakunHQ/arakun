@@ -58,6 +58,8 @@ pub enum ExtensionsEvent {
     ConnectServers,
     /// A message for the paired server with this id (the phone's `ClientMsg`).
     Server(String, serde_json::Value),
+    /// Something changed on this computer: the paired servers get what they lack.
+    Mirror,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -337,6 +339,8 @@ impl ExtensionsView {
             return;
         }
         self.cwd = Some(cwd);
+        self.ms.repo_has = None;
+        self.load_repo_has(cx);
         self.claude = None;
         self.claude_at = None;
         self.droid = None;
@@ -421,7 +425,19 @@ impl ExtensionsView {
                     return;
                 }
                 this.claude_loading = false;
+                // A sign-in finished while watching (it runs in a terminal):
+                // the servers get it now, not at the next install.
+                let waiting = |c: &ClaudeExtensions| {
+                    c.servers
+                        .iter()
+                        .filter(|s| s.health == claude_ext::Health::NeedsAuth)
+                        .count()
+                };
+                let signed_in = this.claude.as_ref().map(waiting) > Some(waiting(&found));
                 this.claude = Some(found);
+                if signed_in {
+                    cx.emit(ExtensionsEvent::Mirror);
+                }
                 this.claude_at = Some(Instant::now());
                 cx.notify();
             });
@@ -484,7 +500,7 @@ impl ExtensionsView {
     fn run_op(
         &mut self,
         name: String,
-        done: &'static str,
+        done: impl Into<String>,
         job: impl FnOnce() -> anyhow::Result<()> + Send + 'static,
         then: Option<String>,
         cx: &mut Context<Self>,
@@ -496,6 +512,7 @@ impl ExtensionsView {
         self.error = None;
         self.notice = None;
         self.confirm_remove = None;
+        let done = done.into();
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_spawn(crate::guard::task(async move { job() }))
@@ -511,6 +528,8 @@ impl ExtensionsView {
                             cx.emit(ExtensionsEvent::Run(command));
                         }
                         this.load_claude(cx);
+                        this.load_repo_has(cx);
+                        cx.emit(ExtensionsEvent::Mirror);
                     }
                     Err(e) => this.error = Some(format!("{}: {e:#}", display_name(&name)).into()),
                 }
@@ -818,7 +837,7 @@ impl ExtensionsView {
                         .gap(crate::ui::sp(6.))
                         .ty(Type::Caption)
                         .text_color(theme::text_subtle())
-                        .child(ui::spinner("ext-checking", 12., theme::text_faint()))
+                        .child(ui::spinner(12., theme::text_faint()))
                         .child("Checking connections…")
                         .into_any_element()
                 } else if problems > 0 {
@@ -1185,11 +1204,7 @@ impl ExtensionsView {
             );
         }
         if busy {
-            buttons = buttons.child(ui::spinner(
-                SharedString::from(format!("ext-op-{}", s.name)),
-                14.,
-                theme::text_faint(),
-            ));
+            buttons = buttons.child(ui::spinner(14., theme::text_faint()));
         }
         let header_name = s.token_header().unwrap_or("Authorization").to_string();
         Some(
@@ -1367,12 +1382,7 @@ impl ExtensionsView {
             .map(|&(name, url, about, sign_in)| {
                 let busy = self.op.as_deref() == Some(name);
                 let action = if busy {
-                    ui::spinner(
-                        SharedString::from(format!("ext-add-busy-{name}")),
-                        14.,
-                        theme::text_faint(),
-                    )
-                    .into_any_element()
+                    ui::spinner(14., theme::text_faint()).into_any_element()
                 } else {
                     ui::button_with(
                         SharedString::from(format!("ext-add-{name}")),
@@ -1448,7 +1458,7 @@ impl ExtensionsView {
                 .w(px(30.))
                 .flex()
                 .justify_center()
-                .child(ui::spinner("ext-plugin-busy", 14., theme::text_faint()))
+                .child(ui::spinner(14., theme::text_faint()))
                 .into_any_element()
         } else {
             div()
@@ -1753,7 +1763,7 @@ impl ExtensionsView {
 
         if wants(Kind::Plugins) {
             match &self.plugins {
-                None => body = body.child(ui::loading("droid-plugins", "Checking plugins…")),
+                None => body = body.child(ui::loading("Checking plugins…")),
                 Some(p) => {
                     let mut content = div().flex().flex_col().gap(crate::ui::sp(12.));
                     if shown("Claude SEO audits schema core web vitals geo sitemap backlinks local")
@@ -1805,9 +1815,7 @@ impl ExtensionsView {
         }
 
         match &self.droid {
-            None if self.droid_error.is_none() => {
-                body = body.child(ui::loading("droid-loading", "Asking Droid…"))
-            }
+            None if self.droid_error.is_none() => body = body.child(ui::loading("Asking Droid…")),
             None => {}
             Some(data) => {
                 let busy = self.droid_busy.clone();
@@ -2389,7 +2397,7 @@ fn switch_or_spinner(on: bool, busy: bool, locked: bool) -> AnyElement {
             .w(px(30.))
             .flex()
             .justify_center()
-            .child(ui::spinner("ext-busy", 14., theme::text_faint()))
+            .child(ui::spinner(14., theme::text_faint()))
             .into_any_element()
     } else {
         div()
@@ -2859,11 +2867,8 @@ impl Render for ExtensionsView {
             Which::Claude if market => div().into_any_element(),
             Which::Claude => match &self.claude {
                 Some(x) => self.render_claude(x, cx).into_any_element(),
-                None => ui::loading(
-                    "claude-loading",
-                    "Reading Claude Code and checking its MCP servers…",
-                )
-                .into_any_element(),
+                None => ui::loading("Reading Claude Code and checking its MCP servers…")
+                    .into_any_element(),
             },
             Which::Droid => self.render_droid(cx).into_any_element(),
         };

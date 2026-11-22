@@ -177,11 +177,12 @@ impl Shell {
             // A full Go plan doesn't stop OpenCode: other providers, or Go's
             // extra usage, may still take the prompt; the provider says so if not.
             // Codex says so itself when its ChatGPT limits run out, and so do
-            // Devin and Cursor.
+            // Devin, Cursor and Antigravity.
             AgentKind::OpenCode
             | AgentKind::Codex
             | AgentKind::Devin
             | AgentKind::Cursor
+            | AgentKind::Antigravity
             | AgentKind::WorkersAi => None,
         }
     }

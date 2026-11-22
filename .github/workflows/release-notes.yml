@@ -1,0 +1,41 @@
+name: Release notes
+
+# A version bump needs its changelog entry, release-notes/v<version>.md, in the
+# same pull request: release.yml publishes it and arakun.dev shows it. Once the
+# version is released, its tag exists and the check passes by itself.
+on:
+  pull_request:
+    paths:
+      - Cargo.toml
+      - release-notes/**
+      - tools/release-notes.py
+  push:
+    branches: [main]
+    paths:
+      - Cargo.toml
+      - release-notes/**
+      - tools/release-notes.py
+
+concurrency:
+  group: release-notes-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Changelog entry
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check the entry of an unreleased version
+        run: |
+          version=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["package"]["version"])')
+          if git ls-remote --exit-code --tags origin "refs/tags/v$version" >/dev/null; then
+            echo "v$version is released already; nothing to check"
+            exit 0
+          fi
+          python3 tools/release-notes.py check "$version"

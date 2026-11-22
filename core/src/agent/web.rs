@@ -2,12 +2,15 @@
 //! read, so they never ask; `ARAKUN_WEB_BLOCK` (comma-separated domains,
 //! matched as suffixes of the host) keeps them off some sites.
 //!
-//! Pages load through Cloudflare Browser Run when its credentials are set up
-//! (what `arakun fetch` uses, core/src/fetch.rs), else with a plain GET whose HTML
-//! is turned into text here. Searches go to DuckDuckGo's HTML page
+//! `web_fetch` does a direct GET first with `Accept: text/markdown` preferred
+//! so sites that serve Markdown answer without a browser. Refusals (401, 403,
+//! 429, 451, 503 and bot challenges) stop immediately and are never retried
+//! through another client. Cloudflare Browser Run (core/src/fetch.rs) is only
+//! used when credentials are configured and a 2xx HTML page looks like it needs
+//! JavaScript to render. Searches go to DuckDuckGo's HTML page
 //! (`html.duckduckgo.com/html/?q=`): no API key, no account, and plain markup
-//! that a few string searches read. When it answers with its bot check, the
-//! same page is asked of Browser Run's real browser instead.
+//! that a few string searches read; if it answers with a bot check, the search
+//! stops and reports it.
 //!
 //! `web_fetch` takes an optional `query`. With it, the page is cut down to
 //! its title, its headings and the paragraphs, list items and table rows that
@@ -26,14 +29,24 @@
 //! anything else: a non-2xx status, with {"error": "<why>"} or plain text
 //! ```
 
-use std::sync::OnceLock;
-use std::time::Duration;
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
 /// What a page may weigh before it is refused.
 const PAGE_BYTES: u64 = 10 * 1024 * 1024;
 const DDG: &str = "https://html.duckduckgo.com/html/?q=";
+const USER_AGENT: &str = concat!(
+    "Arakun-Agent/",
+    env!("ARAKUN_VERSION"),
+    " (+https://github.com/ArakunHQ/arakun)"
+);
+/// Prefer Markdown when a site supports content negotiation (e.g. Cloudflare Markdown for Agents).
+const DIRECT_ACCEPT: &str = "text/markdown, text/html;q=0.9, text/plain;q=0.8, */*;q=0.5";
+/// Cap in-process host cooldowns so a single header cannot wedge a session indefinitely.
+const MAX_RETRY_AFTER: Duration = Duration::from_secs(120);
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Hit {
@@ -42,16 +55,66 @@ pub struct Hit {
     pub snippet: String,
 }
 
+struct Response {
+    url: String,
+    status: u16,
+    content_type: String,
+    retry_after: Option<String>,
+    cf_mitigated: Option<String>,
+    body: String,
+}
+
 fn http() -> &'static ureq::Agent {
     static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
     AGENT.get_or_init(|| {
         ureq::Agent::config_builder()
             .timeout_global(Some(Duration::from_secs(30)))
             .http_status_as_error(false)
-            .user_agent(concat!("arakun/", env!("ARAKUN_VERSION")))
+            .user_agent(USER_AGENT)
             .build()
             .into()
     })
+}
+
+fn backoff_map() -> &'static Mutex<HashMap<String, Instant>> {
+    static MAP: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
+    MAP.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn check_backoff(url: &str, now: Instant) -> Result<(), String> {
+    let Some(h) = host(url) else {
+        return Ok(());
+    };
+    let mut map = backoff_map().lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(&until) = map.get(&h) {
+        if until > now {
+            let secs = until.duration_since(now).as_secs().max(1);
+            return Err(format!(
+                "{h} asked to slow down (Retry-After); wait {secs}s before trying again"
+            ));
+        }
+        map.remove(&h);
+    }
+    Ok(())
+}
+
+fn record_backoff(url: &str, wait: Duration, now: Instant) {
+    if wait.is_zero() {
+        return;
+    }
+    if let Some(h) = host(url) {
+        let until = now + wait.min(MAX_RETRY_AFTER);
+        let mut map = backoff_map().lock().unwrap_or_else(|e| e.into_inner());
+        map.insert(h, until);
+    }
+}
+
+fn parse_retry_after_secs(raw: &str) -> Option<Duration> {
+    raw.trim()
+        .parse::<u64>()
+        .ok()
+        .filter(|&s| s > 0)
+        .map(Duration::from_secs)
 }
 
 fn env(key: &str) -> Option<String> {
@@ -153,8 +216,8 @@ fn lab_search_url(base: &str, query: &str, n: usize) -> String {
     format!("{base}/search?q={}&n={n}", encode(query))
 }
 
-/// A GET; the final URL after redirects, the status, the content type and the body.
-fn get(url: &str, accept: &str) -> Result<(String, u16, String, String), String> {
+/// A GET; the final URL after redirects, status, headers we inspect and body.
+fn get(url: &str, accept: &str) -> Result<Response, String> {
     use ureq::ResponseExt as _;
     let mut r = http()
         .get(url)
@@ -162,12 +225,18 @@ fn get(url: &str, accept: &str) -> Result<(String, u16, String, String), String>
         .call()
         .map_err(|e| format!("{url}: {e}"))?;
     let status = r.status().as_u16();
-    let ty = r
-        .headers()
-        .get("content-type")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("")
+    let header = |name: &str| {
+        r.headers()
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    };
+    let content_type = header("content-type")
+        .unwrap_or_default()
         .to_ascii_lowercase();
+    let retry_after = header("retry-after");
+    let cf_mitigated = header("cf-mitigated");
     let last = r.get_uri().to_string();
     let body = r
         .body_mut()
@@ -175,19 +244,29 @@ fn get(url: &str, accept: &str) -> Result<(String, u16, String, String), String>
         .limit(PAGE_BYTES)
         .read_to_string()
         .map_err(|e| format!("{url}: {e}"))?;
-    Ok((last, status, ty, body))
+    Ok(Response {
+        url: last,
+        status,
+        content_type,
+        retry_after,
+        cf_mitigated,
+        body,
+    })
 }
 
 /// A JSON answer from the lab's service.
 fn lab_get(url: &str) -> Result<Value, String> {
-    let (_, status, _, body) = get(url, "application/json")?;
-    let v: Option<Value> = serde_json::from_str(&body).ok();
-    if !(200..300).contains(&status) {
+    let resp = get(url, "application/json")?;
+    let v: Option<Value> = serde_json::from_str(&resp.body).ok();
+    if !(200..300).contains(&resp.status) {
         let why = v
             .as_ref()
             .and_then(|v| v["error"].as_str().map(str::to_string))
-            .unwrap_or_else(|| body.trim().chars().take(500).collect());
-        return Err(format!("the lab's web service answered {status}: {why}"));
+            .unwrap_or_else(|| resp.body.trim().chars().take(500).collect());
+        return Err(format!(
+            "the lab's web service answered {}: {why}",
+            resp.status
+        ));
     }
     v.ok_or_else(|| "the lab's web service did not answer JSON".into())
 }
@@ -237,28 +316,33 @@ pub fn fetch(args: &Value) -> Result<String, String> {
             .ok_or("the lab's web service answered no content")?
             .to_string();
         (last, Page::Markdown(content), None)
-    } else if crate::fetch::available() {
-        // A query reads the HTML: it has the document title, and tables keep
-        // their header when this file turns them into Markdown.
-        let page = if markdown && query.is_none() {
-            crate::fetch::page("markdown", &url).map(Page::Markdown)
-        } else {
-            crate::fetch::page("content", &url).map(Page::Html)
-        };
-        match page {
-            Ok(page) => (url.clone(), page, None),
-            Err(e) => {
-                let (last, page) = direct(&url)?;
-                (
-                    last,
-                    page,
-                    Some(format!("(Browser Run failed: {e}; fetched directly)")),
-                )
-            }
-        }
     } else {
         let (last, page) = direct(&url)?;
-        (last, page, None)
+        check(&last, &list)?;
+        // Only escalate to Browser Run when a 2xx HTML page looks like a JS shell;
+        // refusals already returned Err above and are never retried through another client.
+        match page {
+            Page::Html(html) if needs_js(&html) && crate::fetch::available() => {
+                // A query reads the HTML: it has the document title, and tables keep
+                // their header when this file turns them into Markdown.
+                let rendered = if markdown && query.is_none() {
+                    crate::fetch::page("markdown", &last).map(Page::Markdown)
+                } else {
+                    crate::fetch::page("content", &last).map(Page::Html)
+                };
+                match rendered {
+                    Ok(rendered) => (last, rendered, None),
+                    Err(e) => (
+                        last,
+                        Page::Html(html),
+                        Some(format!(
+                            "(page may need JavaScript; Browser Run failed: {e})"
+                        )),
+                    ),
+                }
+            }
+            other => (last, other, None),
+        }
     };
     check(&last, &list)?;
     let content = match query {
@@ -710,30 +794,115 @@ fn focus(page: &str, query: &str, title: Option<&str>, plain: bool) -> String {
     out
 }
 
-/// A page with a plain GET: the final URL and its body.
-fn direct(url: &str) -> Result<(String, Page), String> {
-    let (last, status, ty, body) = get(
-        url,
-        "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.5",
-    )?;
-    if status >= 400 {
-        return Err(format!("{last} answered {status}"));
+/// Extract a short reason from an RFC 9457 Problem Details JSON response.
+fn problem_detail(content_type: &str, body: &str) -> Option<String> {
+    if !content_type.contains("problem+json") {
+        return None;
     }
-    let html = ty.contains("html") || (ty.is_empty() && body.trim_start().starts_with('<'));
+    let v: Value = serde_json::from_str(body).ok()?;
+    let msg = v["detail"].as_str().or_else(|| v["title"].as_str())?.trim();
+    (!msg.is_empty()).then(|| msg.chars().take(200).collect())
+}
+
+fn is_challenge(resp: &Response) -> bool {
+    if resp
+        .cf_mitigated
+        .as_deref()
+        .is_some_and(|v| v.to_ascii_lowercase().contains("challenge"))
+    {
+        return true;
+    }
+    let is_html = resp.content_type.contains("html")
+        || (resp.content_type.is_empty() && resp.body.trim_start().starts_with('<'));
+    if !is_html {
+        return false;
+    }
+    resp.body.contains("cdn-cgi/challenge-platform")
+        || html_title(&resp.body).is_some_and(|t| t.eq_ignore_ascii_case("Just a moment..."))
+}
+
+/// Whether a 2xx HTML page looks like a client-side shell that needs JavaScript
+/// to render its content (as opposed to a short static page with no scripts).
+fn needs_js(html: &str) -> bool {
+    let mut rest = html;
+    while let Some(start) = find_ignore_case(rest, "<noscript") {
+        let after = &rest[start..];
+        let Some(gt) = after.find('>') else { break };
+        let body = &after[gt + 1..];
+        let (inner, next) = match find_ignore_case(body, "</noscript") {
+            Some(end) => (&body[..end], &body[end..]),
+            None => (body, ""),
+        };
+        if strip_tags(inner)
+            .to_ascii_lowercase()
+            .contains("javascript")
+        {
+            return true;
+        }
+        rest = next;
+    }
+    find_ignore_case(html, "<script").is_some() && html_to_text(html, false).trim().len() < 200
+}
+
+fn classify_response(resp: Response, now: Instant) -> Result<(String, Page), String> {
+    let last = resp.url.clone();
+    if is_challenge(&resp) {
+        return Err(format!(
+            "{last} answered with a bot challenge (HTTP {}); not retried",
+            resp.status
+        ));
+    }
+    if matches!(resp.status, 429 | 503) {
+        if let Some(wait) = resp.retry_after.as_deref().and_then(parse_retry_after_secs) {
+            record_backoff(&last, wait, now);
+        }
+        let mut msg = format!("{last} answered {}", resp.status);
+        if let Some(ra) = &resp.retry_after {
+            msg.push_str(&format!(" (Retry-After: {ra})"));
+        }
+        if let Some(detail) = problem_detail(&resp.content_type, &resp.body) {
+            msg.push_str(&format!(": {detail}"));
+        }
+        return Err(msg);
+    }
+    if matches!(resp.status, 401 | 403 | 451) {
+        let mut msg = format!("{last} refused access (HTTP {})", resp.status);
+        if let Some(detail) = problem_detail(&resp.content_type, &resp.body) {
+            msg.push_str(&format!(": {detail}"));
+        }
+        return Err(msg);
+    }
+    if resp.status >= 400 {
+        let mut msg = format!("{last} answered {}", resp.status);
+        if let Some(detail) = problem_detail(&resp.content_type, &resp.body) {
+            msg.push_str(&format!(": {detail}"));
+        }
+        return Err(msg);
+    }
+    let ty = &resp.content_type;
     let markdown = ty.starts_with("text/markdown") || ty.starts_with("text/x-markdown");
+    let html = ty.contains("html") || (ty.is_empty() && resp.body.trim_start().starts_with('<'));
     let text = ty.starts_with("text/")
         || ["json", "xml", "javascript", "yaml", "toml"]
             .iter()
             .any(|t| ty.contains(t));
-    if html {
-        Ok((last, Page::Html(body)))
-    } else if markdown {
-        Ok((last, Page::MarkdownFile(body)))
+    if markdown {
+        Ok((last, Page::MarkdownFile(resp.body)))
+    } else if html {
+        Ok((last, Page::Html(resp.body)))
     } else if text || ty.is_empty() {
-        Ok((last, Page::Plain(body)))
+        Ok((last, Page::Plain(resp.body)))
     } else {
         Err(format!("{last} is {ty}, not a page to read"))
     }
+}
+
+/// A page with a plain GET: the final URL and its body.
+fn direct(url: &str) -> Result<(String, Page), String> {
+    let now = Instant::now();
+    check_backoff(url, now)?;
+    let resp = get(url, DIRECT_ACCEPT)?;
+    classify_response(resp, now)
 }
 
 // ---- web_search -------------------------------------------------------------------
@@ -796,20 +965,22 @@ fn refused(status: u16, html: &str) -> bool {
 
 fn duckduckgo(query: &str) -> Result<Vec<Hit>, String> {
     let url = format!("{DDG}{}", encode(query));
-    let (_, status, _, html) =
+    let now = Instant::now();
+    check_backoff(&url, now)?;
+    let resp =
         get(&url, "text/html").map_err(|e| format!("DuckDuckGo could not be reached: {e}"))?;
-    if !refused(status, &html) && status < 400 {
-        return Ok(parse_duckduckgo(&html));
-    }
-    if crate::fetch::available()
-        && let Ok(html) = crate::fetch::page("content", &url)
-        && !refused(200, &html)
+    if matches!(resp.status, 429 | 503)
+        && let Some(wait) = resp.retry_after.as_deref().and_then(parse_retry_after_secs)
     {
-        return Ok(parse_duckduckgo(&html));
+        record_backoff(&url, wait, now);
+    }
+    if !refused(resp.status, &resp.body) && resp.status < 400 {
+        return Ok(parse_duckduckgo(&resp.body));
     }
     Err(format!(
-        "DuckDuckGo answered {status} with its bot check instead of results; try again in a while, \
-         or web_fetch a page you already know"
+        "DuckDuckGo answered {} with its bot check instead of results; try again in a while, \
+         or web_fetch a page you already know",
+        resp.status
     ))
 }
 
@@ -1656,5 +1827,120 @@ mod tests {
             out.ends_with("# Prices\n| Plan | Price |\n|---|---|\n| Pro | 20 |\n"),
             "{out}"
         );
+    }
+
+    #[test]
+    fn refusals_challenges_and_retry_after_stop_and_record_backoff() {
+        let now = Instant::now();
+        let make =
+            |url: &str, status: u16, ct: &str, ra: Option<&str>, cf: Option<&str>, body: &str| {
+                Response {
+                    url: url.into(),
+                    status,
+                    content_type: ct.into(),
+                    retry_after: ra.map(str::to_string),
+                    cf_mitigated: cf.map(str::to_string),
+                    body: body.into(),
+                }
+            };
+
+        // 403 with RFC 9457 detail
+        let err = classify_response(
+            make(
+                "https://denied.test/doc",
+                403,
+                "application/problem+json",
+                None,
+                None,
+                r#"{"title":"Forbidden","detail":"bot access denied"}"#,
+            ),
+            now,
+        )
+        .err()
+        .unwrap();
+        assert!(err.contains("refused access (HTTP 403)"));
+        assert!(err.contains("bot access denied"));
+
+        // Cloudflare challenge via header or markup
+        let err = classify_response(
+            make(
+                "https://cf.test/",
+                403,
+                "text/html",
+                None,
+                Some("challenge"),
+                "<html></html>",
+            ),
+            now,
+        )
+        .err()
+        .unwrap();
+        assert!(err.contains("bot challenge"));
+
+        let err = classify_response(
+            make(
+                "https://cf2.test/",
+                200,
+                "text/html",
+                None,
+                None,
+                "<html><head><title>Just a moment...</title></head><body></body></html>",
+            ),
+            now,
+        )
+        .err()
+        .unwrap();
+        assert!(err.contains("bot challenge"));
+
+        // 429 records Retry-After backoff for that host and releases after expiry
+        let url = "https://backoff-unique.test/page";
+        let err = classify_response(
+            make(url, 429, "text/plain", Some("15"), None, "slow down"),
+            now,
+        )
+        .err()
+        .unwrap();
+        assert!(err.contains("429") && err.contains("Retry-After: 15"));
+        assert!(check_backoff(url, now + Duration::from_secs(5)).is_err());
+        assert!(check_backoff(url, now + Duration::from_secs(16)).is_ok());
+
+        // Markdown content negotiation returns MarkdownFile
+        let (_, page) = classify_response(
+            make(
+                "https://docs.test/guide",
+                200,
+                "text/markdown; charset=utf-8",
+                None,
+                None,
+                "# Guide\nHello.",
+            ),
+            now,
+        )
+        .ok()
+        .unwrap();
+        assert!(matches!(page, Page::MarkdownFile(_)));
+        assert!(USER_AGENT.starts_with("Arakun-Agent/"));
+        assert!(DIRECT_ACCEPT.starts_with("text/markdown"));
+    }
+
+    #[test]
+    fn needs_js_distinguishes_spa_shells_from_static_pages() {
+        assert!(!needs_js(
+            "<html><body><h1>Hello</h1><p>Short static page.</p></body></html>"
+        ));
+        assert!(needs_js(
+            "<html><body><div id=\"root\"></div><script src=\"/app.js\"></script></body></html>"
+        ));
+        assert!(needs_js(
+            "<html><body><noscript>You need to enable JavaScript to run this app.</noscript></body></html>"
+        ));
+        assert!(!needs_js(
+            "<html><body><noscript><img src=\"/pixel.gif\"/></noscript><p>Plain page.</p></body></html>"
+        ));
+        let long_article = format!(
+            "<html><body><script>analytics();</script><p>{}</p></body></html>",
+            "word ".repeat(60)
+        );
+        assert!(!needs_js(&long_article));
     }
 }

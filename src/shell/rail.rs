@@ -142,8 +142,20 @@ pub(super) fn heading_button(
     id: impl Into<gpui::ElementId>,
     tip: &'static str,
 ) -> gpui::Stateful<gpui::Div> {
+    heading_icon_button(id, "add01", tip)
+}
+
+/// A segment heading's button with `name`'s icon, sized like its +.
+pub(super) fn heading_icon_button(
+    id: impl Into<gpui::ElementId>,
+    name: &str,
+    tip: impl Into<SharedString>,
+) -> gpui::Stateful<gpui::Div> {
+    let tip = tip.into();
     div()
         .id(id)
+        .map(|d| ui::labelled(d, gpui::Role::Button, tip.clone()))
+        .map(ui::focusable)
         .group("rail-heading-add")
         .flex()
         .flex_none()
@@ -153,9 +165,9 @@ pub(super) fn heading_button(
         .rounded(crate::ui::rad(6.))
         .cursor_pointer()
         .hover(|s| s.bg(theme::fill_selected()))
-        .tooltip(ui::tip(tip))
+        .tooltip(ui::tip_text(tip))
         .child(hover_icon(
-            "add01",
+            name,
             14.,
             theme::text_subtle(),
             theme::content(),
@@ -183,11 +195,7 @@ fn pending_env_row(id: usize, name: String) -> gpui::Stateful<gpui::Div> {
                 .items_center()
                 .justify_center()
                 .size(px(14.))
-                .child(ui::spinner(
-                    ("env-pending-spin", id),
-                    12.,
-                    theme::text_faint(),
-                )),
+                .child(ui::spinner(12., theme::text_faint())),
         )
         .child(div().flex_1().min_w_0().truncate().child(name))
         .child(
@@ -633,7 +641,7 @@ impl Shell {
     /// the foot of the rail: in the list, the rows would jump when it goes
     /// and a late click on Undo would land on one of them.
     fn render_removed_note(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let (what, _) = self.builder.removed.clone()?;
+        let (what, id) = self.builder.removed.clone()?;
         Some(
             div()
                 .id("rail-removed")
@@ -670,11 +678,15 @@ impl Shell {
                     ui::button("rail-removed-undo", "Undo", ui::ButtonKind::Ghost, true)
                         .on_click(cx.listener(|this, _, _, cx| this.undo_sidebar(false, cx))),
                 )
+                .map(|d| {
+                    // Keyed by the removal, so a new one arrives again.
+                    ui::motion::rise(d, ("rail-removed-in", id as usize), 6., ui::motion::FAST)
+                })
                 .into_any_element(),
         )
     }
 
-    /// What the rail, the workspace panel and the subagents column sit in,
+    /// What the rail and the workspace panel sit in,
     /// as the rail's style says: on the window itself (Flush, the default),
     /// in a card, or in a card lifted off the window.
     pub(super) fn side_card(&self) -> gpui::Div {

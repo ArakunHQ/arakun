@@ -22,15 +22,13 @@ fn id_of(key: &str) -> u64 {
     })
 }
 
-pub(super) fn lead(lead: &Lead, key: &str) -> AnyElement {
+pub(super) fn lead(lead: &Lead) -> AnyElement {
     match lead {
         Lead::Icon(name, tint) => kit::lead_icon(name, *tint).into_any_element(),
         Lead::Avatar(login, path) => {
             kit::ringed_avatar(login, path.as_deref(), 20.).into_any_element()
         }
-        Lead::Working => {
-            kit::lead_spinner(ElementId::NamedInteger("palette-spin".into(), id_of(key)))
-        }
+        Lead::Working => kit::lead_spinner(),
         Lead::Idle => kit::lead_ring().into_any_element(),
         Lead::Dot(tint, halo) => kit::lead_dot(tint.color(), *halo).into_any_element(),
     }
@@ -170,7 +168,7 @@ impl Palette {
         .child(if marking {
             kit::check_box(marked).into_any_element()
         } else {
-            lead(&item.lead, &item.key)
+            lead(&item.lead)
         })
         .child(kit::row_title(
             item.title.clone(),
@@ -430,7 +428,7 @@ impl Palette {
                                 .flex()
                                 .items_center()
                                 .gap(crate::ui::sp(8.))
-                                .child(kit::spinner("answer-wait", 13., theme::working()))
+                                .child(kit::spinner(13., theme::working()))
                                 .child(div().child("Asking Claude…").with_animation(
                                     "answer-wait-label",
                                     Animation::new(Duration::from_millis(1400))

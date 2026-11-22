@@ -120,19 +120,26 @@ impl PostHogView {
         for p in &o.problems {
             notes.push(notice("alert-circle", Tone::Warning, p.clone()));
         }
-        let traffic = section("Traffic", Some("last 24 hours, per hour".into()), None, cx)
-            .child(
-                div()
-                    .flex()
-                    .gap(crate::ui::sp(16.))
-                    .child(ui::legend("Events", Tone::Info.color()))
-                    .child(ui::legend("Visitors", Tone::Accent.color())),
-            )
-            .child(if o.hourly.len() == posthog::HOURS {
-                self.chart.clone().into_any_element()
-            } else {
-                quiet("No hourly numbers yet.").into_any_element()
-            });
+        let traffic = section(
+            "Traffic",
+            Some("last 24 hours, per hour · one scale per row".into()),
+            None,
+            cx,
+        )
+        .child(if o.hourly.len() == posthog::HOURS {
+            let events: Vec<_> = o.hourly.iter().map(|h| h.0).collect();
+            div()
+                .flex()
+                .flex_col()
+                .gap(ui::sp(8.))
+                .child(ui::legend("Events", Tone::Info.color()))
+                .child(bars::bars(&events, 82., vec![]))
+                .child(ui::legend("Visitors", gpui::rgb(theme::CATEGORY[5]).into()))
+                .child(self.chart.clone())
+                .into_any_element()
+        } else {
+            quiet("No hourly numbers yet.").into_any_element()
+        });
         div()
             .flex()
             .flex_col()
@@ -147,7 +154,16 @@ impl PostHogView {
                     .items_start()
                     .gap(crate::ui::sp(40.))
                     .child(self.render_flags(o, Some(6), cx))
-                    .child(self.render_issues(o, Some(5), cx)),
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(300.))
+                            .flex()
+                            .flex_col()
+                            .gap(ui::sp(20.))
+                            .child(self.render_experiments(o, Some(2), cx))
+                            .child(self.render_issues(o, Some(3), cx)),
+                    ),
             )
             .into_any_element()
     }

@@ -61,25 +61,25 @@ impl Shell {
                     );
                     return;
                 }
-                // The card is hidden for Devin; this covers a state from before.
-                if *agent == AgentKind::Devin {
-                    self.notify(
-                        AlertKind::Warning,
+                // The card is hidden for Devin, Cursor and Antigravity; this
+                // covers a state from before.
+                let unsupported = match agent {
+                    AgentKind::Devin => Some((
                         "Connect Cloudflare to Devin",
                         "Arakun can't connect Cloudflare's MCP server to Devin yet. Add it with devin mcp in a terminal.",
-                        Some(Open::Cloudflare),
-                        cx,
-                    );
-                    return;
-                }
-                if *agent == AgentKind::Cursor {
-                    self.notify(
-                        AlertKind::Warning,
+                    )),
+                    AgentKind::Cursor => Some((
                         "Connect Cloudflare to Cursor",
                         "Arakun can't connect Cloudflare's MCP server to Cursor yet. Add it to ~/.cursor/mcp.json.",
-                        Some(Open::Cloudflare),
-                        cx,
-                    );
+                    )),
+                    AgentKind::Antigravity => Some((
+                        "Connect Cloudflare to Antigravity",
+                        "Arakun can't connect Cloudflare's MCP server to Antigravity yet. Add it to ~/.gemini/config/mcp_config.json.",
+                    )),
+                    _ => None,
+                };
+                if let Some((title, body)) = unsupported {
+                    self.notify(AlertKind::Warning, title, body, Some(Open::Cloudflare), cx);
                     return;
                 }
                 self.run_in_terminal(

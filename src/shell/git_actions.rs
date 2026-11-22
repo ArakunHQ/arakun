@@ -135,6 +135,7 @@ impl Shell {
                 };
                 if env.sync.branch.as_deref() == Some(branch.as_str()) && env.pr != pr {
                     env.pr = pr;
+                    this.branch_pr_read(cx);
                     cx.notify();
                 }
             });
@@ -969,7 +970,7 @@ fn sync_chip(
         })
         .when(!enabled && !busy, |d| d.opacity(0.4))
         .child(if busy {
-            ui::spinner((id, 0usize), 13., theme::mix(0.65)).into_any_element()
+            ui::spinner(13., theme::mix(0.65)).into_any_element()
         } else {
             icon(icon_name, 13.)
                 .text_color(tint.map_or(theme::mix(0.6), Hsla::from))

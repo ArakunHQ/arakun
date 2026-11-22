@@ -201,6 +201,11 @@ fn own_frozen(kind: AgentKind, home: &Path) -> Vec<PathBuf> {
             home.join(".cursor/hooks.json"),
             home.join(".cursor/hooks"),
         ],
+        // MCP servers: agy's own file, and the Gemini settings it shares.
+        AgentKind::Antigravity => vec![
+            home.join(".gemini/config/mcp_config.json"),
+            home.join(".gemini/settings.json"),
+        ],
         AgentKind::WorkersAi => Vec::new(),
     }
 }
@@ -282,6 +287,8 @@ fn own(kind: AgentKind, home: &Path) -> Vec<PathBuf> {
         AgentKind::Devin => &[".devin", ".config/devin", ".local/share/devin"],
         // Its sign-in is in ~/.cursor on macOS, ~/.config/cursor elsewhere.
         AgentKind::Cursor => &[".cursor", ".config/cursor", ".local/share/cursor-agent"],
+        // agy keeps its sign-in, settings and conversations under ~/.gemini.
+        AgentKind::Antigravity => &[".gemini"],
         AgentKind::WorkersAi => &[],
     };
     let mut out: Vec<PathBuf> = rel.iter().map(|r| home.join(r)).collect();

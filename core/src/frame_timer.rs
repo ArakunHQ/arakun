@@ -8,8 +8,6 @@ use futures::StreamExt;
 use futures::channel::mpsc;
 use gpui::{Context, Task};
 
-/// About 30 frames a second while something moves.
-const FRAME: Duration = Duration::from_millis(33);
 /// How long a drawing with nothing to do sleeps before it checks again. A
 /// change it isn't told about (a dance started elsewhere) waits at most this.
 const IDLE: Duration = Duration::from_millis(500);
@@ -29,10 +27,12 @@ impl Waker {
     }
 }
 
-/// Calls `tick` about 30 times a second while it returns true. When it returns
+/// Calls `tick` on every tick of the motion clock (`motion::CLOCK_FPS`) while
+/// it returns true. The clock is shared with the looping effects, so a
+/// drawing that moves while a spinner turns costs one frame a tick, not two. When it returns
 /// false (nothing moves, the window is in the background or the view is not on
 /// screen) the timer sleeps until `Waker::wake` or for `IDLE`, so an idle
-/// drawing doesn't wake the app 30 times a second.
+/// drawing doesn't wake the app on every tick.
 pub fn start<T: 'static>(
     cx: &mut Context<T>,
     mut tick: impl FnMut(&mut T, &mut Context<T>) -> bool + 'static,
@@ -40,11 +40,12 @@ pub fn start<T: 'static>(
     let sleeping = Rc::new(Cell::new(false));
     let (tx, mut rx) = mpsc::unbounded();
     let asleep = sleeping.clone();
+    crate::ui::motion::start_loop_clock(cx);
     let task = cx.spawn(async move |this, cx| {
         let mut busy = true;
         loop {
             if busy {
-                cx.background_executor().timer(FRAME).await;
+                crate::ui::motion::next_tick().await;
             } else {
                 asleep.set(true);
                 let timer = std::pin::pin!(cx.background_executor().timer(IDLE));

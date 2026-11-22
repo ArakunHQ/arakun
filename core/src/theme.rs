@@ -1071,6 +1071,19 @@ pub fn pr_draft() -> Rgba {
     by_mode(0x9198a1, 0x59636e)
 }
 
+/// The Branches history's lanes: lane 1 blue, 2 orange, 3 green, told apart
+/// in dark and light (the dataviz validator's all-pairs check). The default
+/// branch is not one of them: it stays neutral, so color only names a branch.
+/// More lanes than these fold rather than repeat a color.
+pub const LANE_DARK: [u32; 3] = [0x3987e5, 0xd95926, 0x199e70];
+pub const LANE_LIGHT: [u32; 3] = [0x2a78d6, 0xeb6834, 0x1baf7a];
+
+/// The color of history lane `i` (0-based), in the current mode.
+pub fn lane(i: usize) -> Hsla {
+    let i = i % LANE_DARK.len();
+    by_mode(LANE_DARK[i], LANE_LIGHT[i]).into()
+}
+
 /// Hues for things told apart only by color (chart series, project logos,
 /// memory kinds, file types), at even lightness so none stands out: the stars'
 /// blue, the accent's amber, then the rest of the night sky.

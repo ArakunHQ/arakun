@@ -157,6 +157,7 @@ impl Shell {
         self.menu_agent = None;
         self.menu_scroll.scroll_to_item(0);
         self.menu_cursor = None;
+        self.effort_hover = None;
         // A server's environment: its models come from the server, which is
         // asked again each time, and the menu fills in as it answers.
         if matches!(target, MenuTarget::ModelMenu)
@@ -209,6 +210,11 @@ impl Shell {
                 let label = self.setting_value_label(Setting::Mode, cx)?;
                 Some((label, false))
             }
+            // Antigravity's modes come from agy; what each may do without
+            // asking is agy's own setting.
+            AgentKind::Antigravity => self
+                .setting_value_label(Setting::Mode, cx)
+                .map(|l| (l, false)),
             // It asks before commands and edits; `arakun agent new` sessions don't.
             AgentKind::WorkersAi => None,
             AgentKind::Droid => {
@@ -503,7 +509,8 @@ impl Shell {
             | AgentKind::OpenCode
             | AgentKind::Codex
             | AgentKind::Devin
-            | AgentKind::Cursor => vec![Setting::Mode],
+            | AgentKind::Cursor
+            | AgentKind::Antigravity => vec![Setting::Mode],
             AgentKind::WorkersAi => Vec::new(),
             AgentKind::Droid => [Setting::Mode, Setting::Autonomy]
                 .into_iter()
@@ -743,7 +750,8 @@ impl Shell {
     }
 
     /// The reasoning level: Auto and Off as small buttons, then a bar per
-    /// level, lit up to the current one, and its name.
+    /// level, lit up to the current one, and its name. The pointer previews a
+    /// level before the click: the bars light up to it and the label names it.
     fn render_effort_row(
         &self,
         agent: AgentKind,
@@ -756,15 +764,35 @@ impl Shell {
         let (zeros, levels): (Vec<_>, Vec<_>) =
             options.into_iter().partition(|o| effort_is_zero(&o.id));
         let lit = levels.iter().position(|o| o.id == now);
-        let label = lit.map(|i| effort_short(&levels[i].id, &levels[i].name));
-        let tip = |o: &crate::agent::SettingOption| {
-            o.disabled
-                .clone()
-                .or_else(|| effort_tip(&o.id).map(str::to_string))
-                .unwrap_or_else(|| o.name.clone())
+        // A hover left over from another agent's levels matches nothing here.
+        let hovered = self
+            .effort_hover
+            .as_deref()
+            .and_then(|h| zeros.iter().chain(&levels).find(|o| o.id == h));
+        let shown = match hovered {
+            Some(o) => levels.iter().position(|l| l.id == o.id),
+            None => lit,
+        };
+        let label = match hovered {
+            Some(o) => Some(effort_short(&o.id, &o.name)),
+            None => lit.map(|i| effort_short(&levels[i].id, &levels[i].name)),
+        };
+        let previewing = hovered.is_some_and(|o| o.id != now);
+        let hover = |id: String| {
+            cx.listener(move |this: &mut Self, over: &bool, _, cx| {
+                if *over {
+                    this.effort_hover = Some(id.clone());
+                } else if this.effort_hover.as_deref() == Some(id.as_str()) {
+                    // The next bar's enter can come before this one's leave.
+                    this.effort_hover = None;
+                } else {
+                    return;
+                }
+                cx.notify();
+            })
         };
         let zero_buttons: Vec<_> = zeros
-            .into_iter()
+            .iter()
             .enumerate()
             .map(|(i, o)| {
                 let enabled = o.disabled.is_none();
@@ -775,6 +803,7 @@ impl Shell {
                     .aria_label(SharedString::from(o.name.clone()))
                     .aria_toggled(crate::ui::toggled(on))
                     .flex_none()
+                    .mr(crate::ui::sp(3.))
                     .px(crate::ui::sp(6.))
                     .py(crate::ui::sp(1.))
                     .rounded(crate::ui::rad(ui::RADIUS_SM))
@@ -787,58 +816,69 @@ impl Shell {
                     .when(on, |d| d.bg(theme::fill_selected()))
                     .when(!enabled, |d| d.opacity(0.4))
                     .when(enabled && !on, |d| {
-                        d.cursor_pointer().hover(|s| s.text_color(theme::text()))
+                        d.cursor_pointer()
+                            .hover(|s| s.bg(theme::fill_hover()).text_color(theme::text()))
                     })
                     .child(effort_short(&o.id, &o.name))
-                    .tooltip(ui::tip_text(tip(&o)))
-                    .when_some(o.disabled.clone(), |d, why| d.aria_description(why))
+                    // Only a dimmed level needs a tooltip, for its reason: the
+                    // label names the others on hover.
+                    .when_some(o.disabled.clone(), |d, why| {
+                        d.aria_description(why.clone()).tooltip(ui::tip_text(why))
+                    })
                     .when(enabled, |d| {
                         let key = MenuKey::Choice(agent, Setting::Effort, o.id.clone(), true);
-                        d.on_click(cx.listener(move |this, _, window, cx| {
-                            this.menu_run(key.clone(), window, cx)
-                        }))
+                        d.on_hover(hover(o.id.clone())).on_click(cx.listener(
+                            move |this, _, window, cx| this.menu_run(key.clone(), window, cx),
+                        ))
                     })
                     .into_any_element()
             })
             .collect();
         let bars: Vec<_> = levels
-            .into_iter()
+            .iter()
             .enumerate()
             .map(|(i, o)| {
                 let enabled = o.disabled.is_none();
-                let on = lit.is_some_and(|l| i <= l);
+                let on = shown.is_some_and(|l| i <= l);
+                // While previewing, the bars the pick would add are dimmer
+                // than the ones already lit.
+                let fill = if !on {
+                    theme::fill_selected()
+                } else if previewing && !lit.is_some_and(|l| i <= l) {
+                    theme::text_subtle()
+                } else {
+                    theme::active()
+                };
                 div()
                     .id(("model-effort", i))
                     .role(gpui::Role::MenuItemRadio)
                     .aria_label(SharedString::from(o.name.clone()))
                     .aria_toggled(crate::ui::toggled(o.id == now))
-                    // A dimmed bar only shows the reason in its tooltip.
                     .when_some(o.disabled.clone(), |d, why| d.aria_description(why))
+                    // No gap between bars: the whole row height and width
+                    // takes the pointer, so a level is easy to hit.
                     .flex_1()
-                    .h(px(18.))
+                    .h_full()
+                    .px(crate::ui::sp(1.5))
                     .flex()
                     .items_center()
-                    .when(enabled, |d| d.cursor_pointer())
                     .child(
                         div()
                             .w_full()
                             .h(px(6.))
                             .rounded_full()
-                            .bg(if on {
-                                theme::active()
-                            } else {
-                                theme::fill_selected()
-                            })
+                            .bg(fill)
                             .when(!enabled, |d| d.opacity(0.4)),
                     )
-                    .tooltip(ui::tip_text(tip(&o)))
-                    .when_some(o.disabled.clone(), |d, why| d.aria_description(why))
                     .when(enabled, |d| {
                         let key = MenuKey::Choice(agent, Setting::Effort, o.id.clone(), true);
-                        d.on_click(cx.listener(move |this, _, window, cx| {
-                            this.menu_run(key.clone(), window, cx)
-                        }))
+                        d.cursor_pointer()
+                            .on_hover(hover(o.id.clone()))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.menu_run(key.clone(), window, cx)
+                            }))
                     })
+                    .when_some(o.disabled.clone(), |d, why| d.tooltip(ui::tip_text(why)))
                     .into_any_element()
             })
             .collect();
@@ -857,9 +897,9 @@ impl Shell {
             .child(
                 div()
                     .flex_1()
+                    .h_full()
                     .flex()
                     .items_center()
-                    .gap(crate::ui::sp(3.))
                     .children(zero_buttons)
                     .children(bars),
             )
@@ -870,7 +910,11 @@ impl Shell {
                         .w(px(40.))
                         .text_right()
                         .text_size(px(ui::TEXT_SM))
-                        .text_color(theme::text_muted())
+                        .text_color(if previewing {
+                            theme::text_subtle()
+                        } else {
+                            theme::text_muted()
+                        })
                         .children(label),
                 )
             })
@@ -1182,6 +1226,10 @@ impl Shell {
             MenuTarget::RailBlock(i, j) => return self.render_rail_block_menu(i, j, cx),
             MenuTarget::RailSection(i) => return self.render_rail_section_menu(i, cx),
             MenuTarget::ProjectSwitch => return self.render_project_switch_menu(cx),
+            MenuTarget::TreeSession(pi, ei, si) => return self.render_tree_menu(pi, ei, si, cx),
+            MenuTarget::MoreTabs => return self.render_more_menu(cx),
+            MenuTarget::Sessions => return self.render_sessions_menu(cx),
+            MenuTarget::Help => return self.render_help_menu(cx),
             MenuTarget::Change(i) => {
                 let change = self
                     .has_projects()
@@ -1441,22 +1489,6 @@ fn effort_is_zero(id: &str) -> bool {
     matches!(id, "default" | "auto" | "none" | "off")
 }
 
-/// What a reasoning level's bar says on hover.
-fn effort_tip(id: &str) -> Option<&'static str> {
-    Some(match id {
-        "default" | "auto" => "The model's own default",
-        "none" | "off" => "No reasoning",
-        "minimal" => "Minimal reasoning",
-        "low" => "Low reasoning",
-        "medium" => "Medium reasoning",
-        "high" => "High reasoning",
-        "xhigh" => "Extra high reasoning",
-        "max" => "Maximum reasoning",
-        "ultra" => "Ultra reasoning",
-        _ => return None,
-    })
-}
-
 /// Whether picking `agent`'s choice of `s` closes the menu. Reasoning stays
 /// open to compare levels, and so does a model of the agent in use: the
 /// reasoning row sits below the models and may change with them, so it comes
@@ -1467,6 +1499,45 @@ fn closes_on_pick(s: crate::agent::Setting, agent: AgentKind, composer_agent: Ag
         Setting::Effort => false,
         Setting::Model => agent != composer_agent,
         _ => true,
+    }
+}
+
+/// Where the Help menu's Documentation row goes.
+const DOCS_URL: &str = "https://arakun.dev/docs";
+
+impl Shell {
+    /// The rail's Help: the feedback form, by kind, and the docs.
+    pub(super) fn render_help_menu(&self, cx: &mut Context<Self>) -> AnyElement {
+        let feedback = [
+            ("help-feedback", "message01", "Send feedback…", None),
+            ("help-bug", "alert-circle", "Report a bug…", Some("bug")),
+            (
+                "help-feature",
+                "ai-idea",
+                "Request a feature…",
+                Some("feature"),
+            ),
+        ];
+        let mut panel = ui::menu_panel("help-menu", 220.);
+        for (id, icon_name, label, kind) in feedback {
+            panel = panel.child(ui::menu_item(id, icon_name, label, false, true).on_click(
+                cx.listener(move |this, _, window, cx| {
+                    this.menu = None;
+                    this.send_feedback_as(kind, window, cx);
+                }),
+            ));
+        }
+        panel
+            .child(div().my(px(4.)).h(px(1.)).bg(theme::stroke()))
+            .child(
+                ui::menu_item("help-docs", "link-square02", "Documentation", false, true).on_click(
+                    cx.listener(|this, _, window, cx| {
+                        this.menu = None;
+                        this.open_page(DOCS_URL.into(), window, cx);
+                    }),
+                ),
+            )
+            .into_any_element()
     }
 }
 
@@ -1491,10 +1562,8 @@ mod tests {
             "default", "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
         ] {
             assert!(effort_short(id, id).len() <= 5, "{id}");
-            assert!(effort_tip(id).is_some(), "{id}");
         }
         assert_eq!(effort_short("turbo", "Turbo"), "Turbo");
-        assert_eq!(effort_tip("turbo"), None);
     }
 
     #[test]

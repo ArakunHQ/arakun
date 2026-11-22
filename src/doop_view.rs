@@ -825,9 +825,7 @@ impl DoopView {
                 .size_full()
                 .object_fit(ObjectFit::Contain)
                 .into_any_element(),
-            Some(Thumb::Loading) => {
-                ui::spinner(("doop-frame-spin", i), 14., theme::text_faint()).into_any_element()
-            }
+            Some(Thumb::Loading) => ui::spinner(14., theme::text_faint()).into_any_element(),
             _ => icon("image01", 18.)
                 .text_color(theme::text_faint())
                 .into_any_element(),
@@ -918,7 +916,7 @@ impl DoopView {
         }
         let Some(canvas) = &self.canvas else {
             if self.loading || self.listing {
-                return ui::loading("doop-loading", "Reading the canvas…").into_any_element();
+                return ui::loading("Reading the canvas…").into_any_element();
             }
             return ui::empty_state(
                 "paint-board",
@@ -1003,7 +1001,7 @@ impl DoopView {
         if self.tools.is_none() {
             return match self.list_error.as_ref().or(self.error.as_ref()) {
                 Some(e) => self.render_error(e, cx),
-                None => ui::loading("doop-reading", "Reading Doop…").into_any_element(),
+                None => ui::loading("Reading Doop…").into_any_element(),
             };
         }
         div()
@@ -1069,7 +1067,16 @@ impl Render for DoopView {
                     gpui::anchored()
                         .position(at)
                         .snap_to_window_with_margin(px(8.))
-                        .child(self.render_menu(cx)),
+                        .child(crate::ui::motion::enter(
+                            div().child(self.render_menu(cx)),
+                            (
+                                "doop-menu-in",
+                                ((at.x.as_f32() as usize) << 16) ^ at.y.as_f32() as usize,
+                            ),
+                            crate::ui::motion::From::Above,
+                            4.,
+                            crate::ui::motion::FAST,
+                        )),
                 ))
             })
     }

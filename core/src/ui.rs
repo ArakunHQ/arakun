@@ -2,8 +2,8 @@
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnimationExt as _, AnyView, App, AppContext as _, Bounds, Context, ElementId, Hsla,
-    InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Render, Role, SharedString,
+    AnyView, App, AppContext as _, Bounds, Context, ElementId, Hsla, InteractiveElement as _,
+    IntoElement, ParentElement as _, Pixels, Render, Role, SharedString,
     StatefulInteractiveElement as _, Styled, Svg, Toggled, Window, canvas, div, fill, point, px,
     size, svg,
 };
@@ -112,6 +112,15 @@ pub fn devin_logo(size: f32) -> Svg {
 pub fn cursor_logo(size: f32) -> Svg {
     svg()
         .path("providers/cursor.svg")
+        .size(px(size))
+        .flex_none()
+        .text_color(theme::content())
+}
+
+/// Antigravity's mark (Google's, from the ACP registry), tinted like the text around it.
+pub fn antigravity_logo(size: f32) -> Svg {
+    svg()
+        .path("providers/antigravity.svg")
         .size(px(size))
         .flex_none()
         .text_color(theme::content())
@@ -944,14 +953,14 @@ pub fn menu_item(
         .child(div().flex_1().min_w_0().truncate().child(label))
 }
 
-/// Small spinning loader for busy buttons and rows.
-pub fn spinner(id: impl Into<ElementId>, size: f32, color: Hsla) -> impl IntoElement {
-    icon("loading03", size).text_color(color).with_animation(
-        id,
-        // Synced, so spinners side by side turn together.
-        gpui::Animation::new(std::time::Duration::from_millis(900)).repeat_synced(),
-        |svg, t| svg.with_transformation(gpui::Transformation::rotate(gpui::percentage(t))),
-    )
+/// Small spinning loader for busy buttons and rows. It runs on the loop
+/// clock (`motion::looping`), so spinners side by side turn together.
+pub fn spinner(size: f32, color: Hsla) -> impl IntoElement {
+    motion::looping(std::time::Duration::from_millis(900), |t| {
+        icon("loading03", size)
+            .text_color(color)
+            .with_transformation(gpui::Transformation::rotate(gpui::percentage(t)))
+    })
 }
 
 #[cfg(test)]

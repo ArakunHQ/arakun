@@ -530,14 +530,13 @@ fn store_book(book: &Book) {
 /// the proxy from the environment (`HTTP_PROXY`, `ALL_PROXY`): it would carry
 /// the tokens off the machine unencrypted. `https://` keeps it.
 fn agent(base: &str) -> ureq::Agent {
-    let mut config = ureq::Agent::config_builder();
-    if local_http(base) {
-        config = config.proxy(None);
+    let timeout = Duration::from_secs(20);
+    if !local_http(base) {
+        return crate::http::agent(timeout).clone();
     }
-    config
-        .timeout_global(Some(Duration::from_secs(20)))
-        .http_status_as_error(false)
-        .user_agent(concat!("arakun/", env!("ARAKUN_VERSION")))
+    crate::http::builder()
+        .proxy(None)
+        .timeout_global(Some(timeout))
         .build()
         .into()
 }
@@ -591,42 +590,30 @@ fn post_json(
     body: &serde_json::Value,
     admin: bool,
 ) -> Result<Vec<u8>, String> {
-    let mut res = agent(base)
-        .post(format!("{base}{path}"))
-        .header("Authorization", format!("Bearer {token}"))
-        .header("Content-Type", "application/json")
-        .send(body.to_string())
-        .map_err(|e| format!("could not reach {base}: {e}"))?;
-    let status = res.status().as_u16();
-    let bytes = res
-        .body_mut()
-        .with_config()
-        .limit(64 * 1024)
-        .read_to_vec()
-        .unwrap_or_default();
-    if (200..300).contains(&status) {
-        Ok(bytes)
+    let reply = crate::http::json_call(
+        &agent(base),
+        "POST",
+        &format!("{base}{path}"),
+        Some(token),
+        Some(body.to_string()),
+        64 * 1024,
+    )
+    .map_err(|e| format!("could not reach {base}: {e}"))?;
+    if reply.ok() {
+        Ok(reply.bytes)
     } else {
-        Err(write_problem(status, &bytes, admin))
+        Err(write_problem(reply.status, &reply.bytes, admin))
     }
 }
 
 /// A read of `path` with the read token: the status and up to `limit` bytes.
 /// Never the token in an error: only the address.
 pub(super) fn get(cfg: &Config, path: &str, limit: u64) -> Result<(u16, Vec<u8>), String> {
-    let mut res = agent(&cfg.url)
-        .get(format!("{}{path}", cfg.url))
-        .header("Authorization", format!("Bearer {}", cfg.token))
-        .call()
-        .map_err(|e| format!("could not reach {}: {e}", cfg.url))?;
-    let status = res.status().as_u16();
-    let bytes = res
-        .body_mut()
-        .with_config()
-        .limit(limit)
-        .read_to_vec()
-        .map_err(|e| format!("the Worker cut the answer short: {e}"))?;
-    Ok((status, bytes))
+    let url = format!("{}{path}", cfg.url);
+    let reply =
+        crate::http::json_call(&agent(&cfg.url), "GET", &url, Some(&cfg.token), None, limit)
+            .map_err(|e| format!("could not reach {}: {e}", cfg.url))?;
+    Ok((reply.status, reply.bytes))
 }
 
 /// Every item the Worker has open. It closes some on its own, so a read of
@@ -640,12 +627,17 @@ pub fn fetch(cfg: &Config) -> Result<Vec<Item>, String> {
 
 /// Tells the Worker the user dealt with `id`. One it no longer knows is done too.
 pub fn tell_done(cfg: &Config, id: &str) -> Result<(), String> {
-    let res = agent(&cfg.url)
-        .post(format!("{}/items/{}/done", cfg.url, encode(id)))
-        .header("Authorization", format!("Bearer {}", cfg.token))
-        .send_empty()
-        .map_err(|e| format!("could not reach {}: {e}", cfg.url))?;
-    match res.status().as_u16() {
+    let url = format!("{}/items/{}/done", cfg.url, encode(id));
+    let reply = crate::http::json_call(
+        &agent(&cfg.url),
+        "POST",
+        &url,
+        Some(&cfg.token),
+        None,
+        64 * 1024,
+    )
+    .map_err(|e| format!("could not reach {}: {e}", cfg.url))?;
+    match reply.status {
         200..=299 | 404 => Ok(()),
         s => Err(status_problem(s)),
     }

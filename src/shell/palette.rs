@@ -1222,9 +1222,9 @@ impl Shell {
             add(
                 "toggle-subagents",
                 "bot",
-                "Toggle session panel",
+                "Toggle session tab",
                 &["Ctrl", "Alt", "S"],
-                "The session's pull request and subagents.",
+                "The session's pull request and subagents, in the Workspace panel.",
                 Target::ToggleSubagents,
             );
         }
@@ -1276,6 +1276,14 @@ impl Shell {
             &["Ctrl", ","],
             "Agents, the island, shortcuts and more.",
             Target::Settings,
+        );
+        add(
+            "send-feedback",
+            "message01",
+            "Send Feedback…",
+            &[],
+            "A bug, an idea or anything else, sent to the Arakun team.",
+            Target::SendFeedback,
         );
         add(
             "extensions",
@@ -1343,6 +1351,14 @@ impl Shell {
             "Opens a terminal with Cursor's login.",
             Target::SignIn(AgentKind::Cursor),
         );
+        add(
+            "signin-antigravity",
+            "square-lock02",
+            "Sign in to Antigravity",
+            &[],
+            "Opens a terminal with agy's Google sign-in.",
+            Target::SignIn(AgentKind::Antigravity),
+        );
         // The settings pilot read last (every minute, off this thread's
         // drawing): the palette never waits on the disk.
         let p = self.pilot.read(cx);
@@ -1408,10 +1424,10 @@ impl Shell {
             ),
             (
                 Setting::Subagents,
-                "Session panel",
+                "Session tab",
                 "Layout",
-                "The session's pull request and subagents.",
-                self.subagents_open,
+                "The session's pull request and subagents, in the Workspace panel.",
+                self.subagents_shown(),
             ),
         ];
         for (s, name, path, blurb, on) in rows {
@@ -1470,6 +1486,7 @@ impl Shell {
             Target::ToggleSubagents => self.toggle_subagents(cx),
             Target::Account => self.open_account(window, cx),
             Target::Settings => self.open_settings(window, cx),
+            Target::SendFeedback => self.send_feedback(window, cx),
             Target::Extensions => self.open_extensions_tab(window, cx),
             #[cfg(feature = "coderlabs")]
             Target::Tasks => self.open_tasks_tab(window, cx),
@@ -2046,7 +2063,24 @@ impl Shell {
             InteractiveElement as _, IntoElement, ParentElement as _,
             StatefulInteractiveElement as _, Styled as _, div, px,
         };
-        if self.pins.items.is_empty() || self.rail_narrow() {
+        if self.rail_narrow() {
+            return None;
+        }
+        // A pin keeps its shortcut index, but can't expose a gated view.
+        let pins: Vec<_> = self
+            .pins
+            .items
+            .iter()
+            .enumerate()
+            .filter(|(_, pin)| {
+                pin.kind != "view"
+                    || View::ALL.iter().any(|v| {
+                        v.label().eq_ignore_ascii_case(&pin.id)
+                            && self.rail_shows(&crate::sidebar::Piece::view(*v), cx)
+                    })
+            })
+            .collect();
+        if pins.is_empty() {
             return None;
         }
         Some(
@@ -2066,7 +2100,7 @@ impl Shell {
                         .text_color(theme::text_faint())
                         .child("Pinned"),
                 )
-                .children(self.pins.items.iter().enumerate().map(|(n, p)| {
+                .children(pins.into_iter().map(|(n, p)| {
                     let view = View::ALL
                         .iter()
                         .find(|v| v.label().eq_ignore_ascii_case(&p.id));

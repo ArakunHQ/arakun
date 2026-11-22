@@ -5,7 +5,9 @@
 //!
 //! The file: `{"sessions": [Session…], "replies": [{"path": "/persons/",
 //! "query": "uniq(person_id)", "status": 200, "body": …}…]}`. The first reply
-//! whose `path` is in the call's path (and `query` in its HogQL) answers.
+//! whose `path` is in the call's path (and `query` in its HogQL, `method` is
+//! its method and `request` its whole body, when given) answers.
+//! `tools/posthog-fixture.json` is one to start from.
 
 use std::sync::OnceLock;
 
@@ -17,6 +19,10 @@ use super::{Reply, Session};
 #[derive(Deserialize)]
 struct Rule {
     path: String,
+    #[serde(default)]
+    method: Option<String>,
+    #[serde(default)]
+    request: Option<Value>,
     #[serde(default)]
     query: Option<String>,
     #[serde(default = "ok")]
@@ -42,7 +48,9 @@ fn loaded() -> Option<&'static Fixture> {
     F.get_or_init(|| {
         crate::dev::size()?;
         let file = std::env::var_os("ARAKUN_POSTHOG_FIXTURE")?;
-        crate::durable::load_json(file)
+        // A broken fixture still answers (with nothing) rather than letting
+        // the test instance reach the real PostHog.
+        Some(crate::durable::load_json(file).unwrap_or_default())
     })
     .as_ref()
 }
@@ -51,15 +59,17 @@ pub(super) fn sessions() -> Option<Vec<Session>> {
     loaded().map(|f| f.sessions.clone())
 }
 
-pub(super) fn reply(_method: &str, path: &str, body: Option<&Value>) -> Option<Reply> {
+pub(super) fn reply(method: &str, path: &str, body: Option<&Value>) -> Option<Reply> {
     let f = loaded()?;
     let query = body
         .and_then(|b| b["query"]["query"].as_str())
         .unwrap_or_default();
-    let rule = f
-        .replies
-        .iter()
-        .find(|r| path.contains(&r.path) && r.query.as_deref().is_none_or(|q| query.contains(q)));
+    let rule = f.replies.iter().find(|r| {
+        r.method.as_deref().is_none_or(|m| m == method)
+            && r.request.as_ref().is_none_or(|v| Some(v) == body)
+            && path.contains(&r.path)
+            && r.query.as_deref().is_none_or(|q| query.contains(q))
+    });
     Some(match rule {
         Some(r) => Reply {
             status: r.status,

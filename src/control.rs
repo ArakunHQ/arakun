@@ -82,8 +82,21 @@ pub fn sandbox_socket_path() -> PathBuf {
 
 /// Where the `arakun` shim is, when there is one.
 pub fn shim_dir() -> Option<PathBuf> {
-    let bin = runtime_dir().join("bin");
+    let bin = shim_path();
     bin.is_dir().then_some(bin)
+}
+
+fn shim_path() -> PathBuf {
+    shim_path_for(std::env::var_os("ARAKUN_STATE"), runtime_dir)
+}
+
+/// A second instance with its own state (`arakun dev`) links its own shim,
+/// beside its socket, so it doesn't replace the daily app's.
+fn shim_path_for(state: Option<std::ffi::OsString>, runtime: impl FnOnce() -> PathBuf) -> PathBuf {
+    state
+        .map(|state| PathBuf::from(state).with_extension("runtime"))
+        .unwrap_or_else(runtime)
+        .join("bin")
 }
 
 /// Whether a sandboxed agent may send `req`: only commands that show it things
@@ -132,7 +145,7 @@ pub(crate) fn runtime_dir() -> PathBuf {
 /// this binary first on `PATH`. Call before any thread starts.
 pub fn export_env() {
     let socket = socket_path();
-    let bin = runtime_dir().join("bin");
+    let bin = shim_path();
     let linked = std::env::current_exe().ok().is_some_and(|exe| {
         let _ = std::fs::create_dir_all(&bin);
         link_shim(&exe, &bin)
@@ -349,6 +362,10 @@ Usage:
                              (failures of a test run, a log's repeated lines
                              collapsed, JSON's outline); the whole output goes
                              to a file it names. Needs no running Arakun
+  arakun feedback --kind <bug|feature|ux|other> <text…|->
+                             tell the Arakun team about a problem or a missing
+                             feature in Arakun itself (up to 4000 characters;
+                             - reads stdin; needs usage telemetry on)
   arakun notices [--unseen]    the notifications Arakun has shown, newest first
   arakun usage tools [--days N] [--json]
                              where the tokens of Workers AI sessions' tool
@@ -817,6 +834,12 @@ fn cli(args: Vec<String>) -> Cli {
             [name] if !name.starts_with('-') => request("rename", vec![name.clone()]),
             _ => return stopped(first, Stop::Usage),
         },
+        "feedback" => {
+            match feedback_args(&rest, std::io::stdin(), std::env::var("ARAKUN_AGENT").ok()) {
+                Ok(args) => request("feedback", args),
+                Err(stop) => return stopped(first, stop),
+            }
+        }
         "notify" if !rest.is_empty() => request("notify", vec![rest.join(" ")]),
         "notify" => return stopped(first, Stop::Usage),
         "ls" => request("ls", Vec::new()),
@@ -922,12 +945,54 @@ fn island_args(rest: &[String]) -> Option<Vec<String>> {
 /// (`arakun run du -s .`); elsewhere anywhere, as `arakun open file -s` reads.
 fn side_flag(cmd: &str, args: &[String]) -> (bool, Vec<String>) {
     let is_flag = |a: &String| matches!(a.as_str(), "-s" | "--side");
-    if matches!(cmd, "run" | "notify" | "agent") {
+    if matches!(cmd, "run" | "notify" | "agent" | "feedback") {
         let lead = args.iter().take_while(|a| is_flag(a)).count();
         return (lead > 0, args[lead..].to_vec());
     }
     let side = args.iter().any(is_flag);
     (side, args.iter().filter(|a| !is_flag(a)).cloned().collect())
+}
+
+/// `--kind <kind> <text…|->` as `[kind, text, agent]`. `-` reads the text from
+/// `stdin`; `agent` is the `ARAKUN_AGENT` of the caller. The app checks again.
+fn feedback_args(
+    rest: &[String],
+    stdin: impl std::io::Read,
+    agent: Option<String>,
+) -> Result<Vec<String>, Stop> {
+    let max = crate::surveys::agent::MAX_CHARS;
+    let (flag, rest) = rest.split_first().ok_or(Stop::Usage)?;
+    if flag != "--kind" {
+        // Help, or a flag it does not know, is not the payload.
+        flags_end(flag)?;
+        return Err(Stop::Usage);
+    }
+    let (kind, rest) = match rest.split_first() {
+        Some((kind, rest)) if crate::surveys::ids::KINDS.contains(&kind.as_str()) => (kind, rest),
+        _ => return Err(Stop::Usage),
+    };
+    let rest = payload(rest)?;
+    let text = match rest {
+        [] => return Err(Stop::Usage),
+        [dash] if dash == "-" => {
+            let mut bytes = Vec::new();
+            // A little past the limit is enough to know it is too long.
+            let _ = stdin.take(4 * max as u64 + 4).read_to_end(&mut bytes);
+            String::from_utf8_lossy(&bytes).into_owned()
+        }
+        words => words.join(" "),
+    };
+    let text = text.trim();
+    if text.is_empty() {
+        return Err(Stop::Usage);
+    }
+    if text.chars().count() > max {
+        return Err(Stop::Message(format!(
+            "the feedback is over {max} characters; shorten it"
+        )));
+    }
+    let agent = crate::surveys::agent::clean_agent(&agent.unwrap_or_default());
+    Ok(vec![kind.clone(), text.to_string(), agent])
 }
 
 /// Seconds `arakun run --ready/--port` waits unless told otherwise, and the most it may.
@@ -1401,6 +1466,7 @@ fn usage_of(cmd: &str) -> Option<&'static str> {
         "rename" => "arakun rename <branch>",
         "notify" => "arakun notify [--] <message…>",
         "ls" => "arakun ls",
+        "feedback" => "arakun feedback --kind <bug|feature|ux|other> <text…|->",
         "restart" => "arakun restart",
         "add" => "arakun add [dir]",
         _ => return None,
@@ -1421,6 +1487,8 @@ pub(crate) enum Stop {
     Flag(String),
     /// Anything else wrong with them.
     Usage,
+    /// A mistake with its own words.
+    Message(String),
 }
 
 pub(crate) fn is_help(arg: &str) -> bool {
@@ -1465,6 +1533,10 @@ pub(crate) fn report(stop: Stop, usage: &str) -> i32 {
         }
         Stop::Usage => {
             eprintln!("usage: {usage}");
+            2
+        }
+        Stop::Message(m) => {
+            eprintln!("arakun: {m}");
             2
         }
     }
@@ -1571,7 +1643,89 @@ fn resolve_dir(cwd: &Path, dir: &str) -> Result<PathBuf, String> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn feedback_needs_kind() {
+        assert_eq!(feedback(&["too slow"], "", None), Err(Stop::Usage));
+        assert_eq!(feedback(&[], "", None), Err(Stop::Usage));
+        assert_eq!(feedback(&["--kind", "bug"], "", None), Err(Stop::Usage));
+        let usage = usage_of("feedback").unwrap();
+        for kind in ["bug", "feature", "ux", "other"] {
+            assert!(usage.contains(kind), "{usage}");
+        }
+    }
+
+    #[test]
+    fn feedback_rejects_unknown_kind() {
+        assert_eq!(
+            feedback(&["--kind", "praise", "nice"], "", None),
+            Err(Stop::Usage)
+        );
+    }
+
+    #[test]
+    fn feedback_reads_stdin_dash() {
+        assert_eq!(
+            feedback(&["--kind", "ux", "-"], "  the tabs jump\n", None),
+            Ok(vec!["ux".into(), "the tabs jump".into(), "agent".into()])
+        );
+        assert_eq!(
+            feedback(&["--kind", "ux", "two", "words"], "", None),
+            Ok(vec!["ux".into(), "two words".into(), "agent".into()])
+        );
+        // Empty text is not a report.
+        assert_eq!(
+            feedback(&["--kind", "ux", "-"], " \n", None),
+            Err(Stop::Usage)
+        );
+    }
+
+    #[test]
+    fn feedback_over_4000_chars_refused() {
+        let long = "a".repeat(4001);
+        assert!(matches!(
+            feedback(&["--kind", "bug", &long], "", None),
+            Err(Stop::Message(_))
+        ));
+        assert!(matches!(
+            feedback(&["--kind", "bug", "-"], &long, None),
+            Err(Stop::Message(_))
+        ));
+        assert!(feedback(&["--kind", "bug", &"a".repeat(4000)], "", None).is_ok());
+    }
+
+    #[test]
+    fn feedback_passes_agent_env() {
+        let got = feedback(&["--kind", "bug", "x"], "", Some("codex")).unwrap();
+        assert_eq!(got[2], "codex");
+        let got = feedback(&["--kind", "bug", "x"], "", Some(String::new().as_str())).unwrap();
+        assert_eq!(got[2], "agent");
+    }
+
+    #[test]
+    fn feedback_text_keeps_dashes_and_side_words() {
+        let s = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(!side_flag("feedback", &s(&["--kind", "bug", "use", "-s"])).0);
+    }
     use super::*;
+
+    fn feedback(args: &[&str], stdin: &str, agent: Option<&str>) -> Result<Vec<String>, Stop> {
+        let rest: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+        feedback_args(&rest, stdin.as_bytes(), agent.map(String::from))
+    }
+
+    #[test]
+    fn an_isolated_instance_keeps_its_own_shim() {
+        let daily = || PathBuf::from("/run/user/1000/arakun");
+        assert_eq!(
+            shim_path_for(None, daily),
+            PathBuf::from("/run/user/1000/arakun/bin")
+        );
+        assert_eq!(
+            shim_path_for(Some("/tmp/arakun-dev/state.json".into()), daily),
+            PathBuf::from("/tmp/arakun-dev/state.runtime/bin")
+        );
+    }
 
     #[test]
     fn file_with_line_suffix_resolves() {

@@ -4,8 +4,10 @@ name: Release
 # Release with SHA256SUMS, its minisign signature and a build provenance
 # attestation.
 #
-# To release: set `version` in Cargo.toml, core/Cargo.toml and server/Cargo.toml, merge that,
-# then run this workflow on main with that version:
+# To release: set `version` in Cargo.toml, core/Cargo.toml and server/Cargo.toml, and
+# write the changelog entry, release-notes/v<version>.md (`tools/release-notes.py new`;
+# see release-notes/README.md). Merge that, then run this workflow on main with that
+# version:
 #
 #   gh workflow run release.yml --ref main -f version=1.2.3
 #
@@ -177,6 +179,7 @@ jobs:
             echo "::error::version $VERSION is not the version in main's Cargo.toml ($app); merge the version bump first"
             exit 1
           fi
+          python3 tools/release-notes.py check "$VERSION"
 
       - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         id: app
@@ -270,6 +273,11 @@ jobs:
           if [ -n "$TAG" ] && [ "$TAG" != "v$app" ]; then
             echo "::error::tag $TAG does not match version $app in Cargo.toml; set it to ${TAG#v} and tag that commit, or tag v$app"
             exit 1
+          fi
+          # A tag pushed by hand skips the tag job's check. Fail before the builds,
+          # not after them in the publish job.
+          if [ -n "$TAG" ]; then
+            python3 tools/release-notes.py check "$app"
           fi
 
       - name: Nightly version
@@ -1031,13 +1039,15 @@ jobs:
       id-token: write
       attestations: write
     steps:
-      # Only the public key, to check the signature against: this job runs no
-      # code from the repository.
+      # Only the public key, to check the signature against, and the changelog
+      # entry: this job runs no code from the repository.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           path: repo
-          sparse-checkout: assets/release-key.pub
+          sparse-checkout: |
+            assets/release-key.pub
+            release-notes/${{ github.ref_name }}.md
           sparse-checkout-cone-mode: false
 
       # macos-arm64 is the notarized image: this job needs macos-notarize,
@@ -1123,6 +1133,9 @@ jobs:
       - uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4 # zizmor: ignore[superfluous-actions]
         with:
           name: Arakun ${{ github.ref_name }}
+          # The changelog entry from the version bump, above the generated list of
+          # pull requests. arakun.dev/changelog reads it from the top of the notes.
+          body_path: repo/release-notes/${{ github.ref_name }}.md
           generate_release_notes: true
           prerelease: ${{ contains(github.ref_name, '-') }}
           fail_on_unmatched_files: true

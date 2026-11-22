@@ -22,8 +22,9 @@ pub fn git(dir: &Path) -> Command {
         .env("GIT_OPTIONAL_LOCKS", "0")
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("LC_ALL", "C");
-    // A status scan of a big repository shouldn't compete with the window for the CPU.
-    crate::platform::lower_priority(&mut cmd);
+    // No lower_priority here: its pre_exec makes the spawn a full fork() of arakun,
+    // which holds the process's memory map while it copies it, and git runs every
+    // few seconds. A fork of a 1.7 GB arakun stalled the window for up to seconds.
     // `dir` picks the repository, not a GIT_DIR inherited from whatever started arakun.
     unpinned(&mut cmd);
     cmd
@@ -2451,16 +2452,6 @@ test: cover the resize\u{1f}\u{1e}\n";
         assert!(ok.success());
         assert!(super::rename_branch(&dir, "env/brave-otter", "fix/x", true).is_err());
         let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn git_runs_at_lower_priority() {
-        let dir = std::env::temp_dir();
-        let alias = format!("alias.ni=!{}", super::NICE_OF_SHELL);
-        let out = super::stdout(super::git(&dir).args(["-c", alias.as_str(), "ni"])).unwrap();
-        let ours = unsafe { libc::getpriority(libc::PRIO_PROCESS, 0) };
-        assert_eq!(out.trim().parse::<i32>().unwrap(), (ours + 10).min(19));
     }
 
     #[cfg(unix)]

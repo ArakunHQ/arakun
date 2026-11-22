@@ -161,7 +161,15 @@ impl EventsTab {
         self.picker = false;
         self.adding = false;
         self.debounce.bump();
-        self.person.update(cx, |i, cx| i.set_text("", cx));
+        self._more = None;
+        self._defs = None;
+        self.loading_more = false;
+        self.defs_loading = false;
+        self.more = false;
+        self.keys.clear();
+        for input in [&self.search, &self.person, &self.prop_key, &self.prop_value] {
+            input.update(cx, |i, cx| i.clear(cx));
+        }
         cx.notify();
     }
 
@@ -1165,6 +1173,7 @@ impl EventsTab {
                     .overflow_y_scroll()
                     .child(body),
             )
+            .map(|d| ui::motion::enter_from_right(d, "ph-ev-drawer-in", 24., ui::motion::BASE))
             .into_any_element()
     }
 }
@@ -1208,7 +1217,7 @@ impl Render for EventsTab {
             None => None,
         };
         let body: AnyElement = if self.loading && self.events.is_empty() {
-            ui::loading("ph-ev-loading", "Reading events…").into_any_element()
+            ui::loading("Reading events…").into_any_element()
         } else {
             self.render_table(cx)
         };
@@ -1236,11 +1245,15 @@ impl Render for EventsTab {
                             .child(div().relative().child(filters).when_some(picker, |d, p| {
                                 d.child(
                                     gpui::deferred(
-                                        div()
-                                            .absolute()
-                                            .top(px(ui::BUTTON_H + 6.))
-                                            .left_0()
-                                            .child(p),
+                                        div().absolute().top(px(ui::BUTTON_H + 6.)).left_0().child(
+                                            ui::motion::enter(
+                                                div().child(p),
+                                                "ph-ev-picker-in",
+                                                ui::motion::From::Above,
+                                                4.,
+                                                ui::motion::FAST,
+                                            ),
+                                        ),
                                     )
                                     .with_priority(1),
                                 )

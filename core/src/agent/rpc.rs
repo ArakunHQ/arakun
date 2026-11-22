@@ -177,6 +177,8 @@ impl Connection {
         for k in &spec.unset {
             cmd.env_remove(k);
         }
+        // Lets `arakun feedback` say which agent a report comes from.
+        cmd.env("ARAKUN_AGENT", kind.id());
         for (k, v) in &spec.env {
             cmd.env(k, v);
         }

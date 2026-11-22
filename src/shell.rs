@@ -54,6 +54,7 @@ mod panel;
 mod panes;
 mod paste;
 mod phone;
+mod pinned;
 mod posthog;
 mod project_icon;
 mod rail;
@@ -62,6 +63,7 @@ mod rail_pick;
 mod runs;
 mod servers;
 mod session_actions;
+mod session_tree;
 mod sessions;
 mod settle;
 mod sidebar_builder;
@@ -69,6 +71,7 @@ mod sidebar_builder;
 mod site;
 mod subagents;
 mod subnav;
+mod survey_card;
 mod switching;
 #[cfg(feature = "coderlabs")]
 mod tasks;
@@ -164,12 +167,14 @@ gpui::actions!(
         ReopenClosedTab,
         MoveTabLeft,
         MoveTabRight,
+        TogglePin,
         FindInChat,
         ZoomIn,
         ZoomOut,
         ZoomReset,
         CustomizeSidebar,
-        OpenCustomize
+        OpenCustomize,
+        SendFeedback
     ]
 );
 
@@ -178,6 +183,8 @@ enum PanelTab {
     Sessions,
     Explorer,
     Changes,
+    /// The session's pull request and subagents, or the transcript of one.
+    Session,
 }
 
 enum Modal {
@@ -201,6 +208,8 @@ enum Modal {
     New(Entity<new_dialog::NewDialog>),
     /// Connecting arakun-pilot, or changing its settings.
     Pilot(Entity<crate::github_view::connect::PilotDialog>),
+    /// A PostHog survey, drawn natively (`survey_dialog`).
+    Survey(Entity<crate::survey_dialog::SurveyDialog>),
 }
 
 #[derive(Clone, Copy)]
@@ -233,6 +242,14 @@ enum MenuTarget {
     RailSection(usize),
     /// Every project, to switch to, from the rail's open project.
     ProjectSwitch,
+    /// A session of the sidebar's tree: project, environment, session.
+    TreeSession(usize, usize, usize),
+    /// The pinned tabs that don't fit the title bar.
+    MoreTabs,
+    /// The tree of sessions, from the title bar while the sidebar is hidden.
+    Sessions,
+    /// The rail's Help: the feedback forms and the docs.
+    Help,
 }
 
 /// An environment made with one click, shown while its worktree is made.
@@ -334,6 +351,8 @@ pub struct Shell {
     _caret_focus: Subscription,
     _composer_blur: Subscription,
     modal: Option<(Modal, Subscription)>,
+    /// The popover survey card and what its clock knows (`shell::survey_card`).
+    survey: survey_card::CardState,
     /// Refreshes the open palette when GitHub brings in more.
     palette_watch: Option<Subscription>,
     /// Each project's `owner/name` on GitHub (None when it has none), by
@@ -347,6 +366,10 @@ pub struct Shell {
     rail_pick: Vec<std::path::PathBuf>,
     /// The row Shift+click picks from.
     rail_pick_anchor: Option<std::path::PathBuf>,
+    /// Sessions of the sidebar's tree picked with Ctrl or Shift+click, by id,
+    /// and the one clicked last, where Shift starts.
+    tree_pick: Vec<SharedString>,
+    tree_pick_anchor: Option<SharedString>,
     /// Polls `git status` of the visible environment while the window is active.
     poll: Option<Task<()>>,
     /// When the last background `git fetch` ended, so the network is asked rarely.
@@ -385,6 +408,8 @@ pub struct Shell {
     /// The `update-policy` feature flag's dialog (`shell::updates`), over
     /// everything else, dialogs included.
     update_dialog: Option<(Entity<crate::update_dialog::UpdateDialog>, Subscription)>,
+    /// Reports agents sent with `arakun feedback`, per environment.
+    feedback_limits: crate::surveys::agent::RateLimit,
     /// The pages last marked visible, so tab switches can tell when to update CEF.
     shown_browsers: Vec<gpui::EntityId>,
     /// Answers `arakun <command>` from the control socket.
@@ -410,25 +435,24 @@ pub struct Shell {
     /// Dragged widths of the side cards; state::RAIL_W / PANEL_W until dragged.
     rail_w: f32,
     panel_w: f32,
-    /// The widths the rail, workspace panel and subagents column are drawn at
-    /// this frame: the dragged ones, narrowed when the window is too small to
-    /// leave the work in the middle `MAIN_MIN_W` (see `fit_sides`).
-    side_fit: Cell<[f32; 3]>,
-    /// The workspace panel and the subagents column, open but left out this
-    /// frame because the window is too narrow for them (see `crowd_out`).
-    side_crowded: Cell<[bool; 2]>,
-    /// Which of the two the user asked for last: on a narrow window it stays
-    /// and the other gives way.
-    side_prefer: SideCard,
-    /// The Session panel, between the chat and the Workspace panel.
-    subagents_open: bool,
-    subagents_w: f32,
-    /// The user closed it, so a new subagent doesn't open it again until restart.
+    /// The widths the rail and workspace panel are drawn at this frame: the
+    /// dragged ones, narrowed when the window is too small to leave the work
+    /// in the middle `MAIN_MIN_W` (see `fit_sides`).
+    side_fit: Cell<[f32; 2]>,
+    /// The workspace panel, open but left out this frame because the window
+    /// is too narrow for it (see `crowd_out`).
+    side_crowded: Cell<bool>,
+    /// The user left the Session tab, so a new subagent or pull request
+    /// doesn't bring it back until restart.
     subagents_dismissed: bool,
-    /// The subagent whose transcript the Session panel shows.
+    /// The subagent whose transcript the Session tab shows.
     subagent_view: Option<subagents::SubagentView>,
-    /// Redraws the Session panel each second while a subagent in it runs.
+    /// Redraws the Session tab each second while a subagent in it runs.
     subagent_tick: Option<Task<()>>,
+    /// The session on screen when its branch's pull request was last looked
+    /// at, and whether it had one: a read that finds one counts as connecting
+    /// it, a switch to a session that already has one does not.
+    branch_pr_seen: Option<(SharedString, bool)>,
     arcade: bool,
     /// What the person pinned from the palette (`pins.json`).
     pins: crate::palette::pins::Pins,
@@ -505,7 +529,7 @@ pub struct Shell {
     /// The project check's state per session id.
     checks: std::collections::HashMap<String, checks::CheckLoop>,
     /// Large pastes waiting in each environment's composer, sent with the draft.
-    pastes: std::collections::HashMap<std::path::PathBuf, Vec<String>>,
+    pastes: std::collections::HashMap<std::path::PathBuf, Vec<paste::Paste>>,
     /// Annotations and review comments waiting in each environment's composer.
     notes: std::collections::HashMap<std::path::PathBuf, Vec<crate::agent::notes::ChatNote>>,
     review_draft: Option<notes::ReviewDraft>,
@@ -513,10 +537,32 @@ pub struct Shell {
     lifted: Option<SharedString>,
     /// The tab being dragged onto a pane, while a drag is on.
     lifted_tab: Option<u64>,
+    /// The gap in the tab bar a dragged tab would drop into: before the tab
+    /// at this index, or after the last one.
+    tab_drop: Option<usize>,
+    /// The tab whose side marked `tab_drop`.
+    tab_drop_over: Option<Bounds<Pixels>>,
+    /// The session on screen pinned itself, or something was pinned: after
+    /// that, nothing pins by itself in this window.
+    pins_seeded: bool,
+    /// Projects the user folded (false) or opened (true) in the sidebar's
+    /// tree of sessions, over what `tab_layout::Quiet` does by itself.
+    tree_open: std::collections::HashMap<std::path::PathBuf, bool>,
+    /// The tree's row under the pointer, which Alt+P pins.
+    tree_hover: Option<(usize, usize, SharedString)>,
+    /// The search of the Sessions menu.
+    tree_filter: Entity<TextInput>,
+    _tree_filter: Subscription,
+    /// The pinned tabs drawn under "N more" in the last frame.
+    bar_more: RefCell<Vec<u64>>,
+    /// Where the pinned tabs' part of the title bar was in the last frame.
+    bar_area: Rc<Cell<Bounds<Pixels>>>,
     slide: Option<drag::SessionSlide>,
     drop_menu: Option<drag::DropMenu>,
     /// Other sessions' conversations waiting in each environment's composer.
     attached: std::collections::HashMap<std::path::PathBuf, Vec<drag::AttachedContext>>,
+    /// Dropped sessions still being read for each environment's composer.
+    dropping: std::collections::HashMap<std::path::PathBuf, usize>,
     saved_prompts: Vec<crate::prompts::SavedPrompt>,
     /// A one-line note under the composer (a prompt was saved, ...), until the next key.
     composer_flash: Option<SharedString>,
@@ -524,6 +570,9 @@ pub struct Shell {
     menu_agent: Option<AgentKind>,
     /// The row the arrow keys are on, in `menu_keys` order.
     menu_cursor: Option<usize>,
+    /// The reasoning level under the pointer, by its id: the meter shows it
+    /// lit as a preview, and its name, until the pointer leaves.
+    effort_hover: Option<String>,
     /// The model list's scroll, kept on the row the keys are on.
     menu_scroll: ScrollHandle,
     /// The alert level (`limits::level`) each plan window last notified at.
@@ -572,6 +621,13 @@ const DOCK_MIN_H: f32 = 120.;
 /// What the dock leaves above it for the work, however tall it was dragged.
 const DOCK_ROOM_ABOVE: f32 = 160.;
 
+/// Whether to ask after a crash. Not on first launch, before the answer to the
+/// consent question, and not when nothing can be sent: the notice would lead
+/// to a dead end.
+fn crash_notice_wanted(should_ask: bool, blocked: bool) -> bool {
+    !should_ask && !blocked
+}
+
 /// The tallest the dock can be in a window `viewport_h` tall: its bottom edge
 /// is one gap above the window's.
 fn dock_max_h(viewport_h: f32) -> f32 {
@@ -580,69 +636,24 @@ fn dock_max_h(viewport_h: f32) -> f32 {
 /// How narrow and wide the side cards can be dragged.
 const RAIL_W_RANGE: std::ops::Range<f32> = 160. ..320.;
 const PANEL_W_RANGE: std::ops::Range<f32> = 200. ..480.;
-const SUBAGENTS_W_RANGE: std::ops::Range<f32> = 260. ..640.;
+/// How wide the panel gets while it shows a subagent's transcript, which
+/// reads badly at the panel's usual width.
+const SUBAGENT_TRANSCRIPT_W: f32 = 360.;
 /// How narrow the work between the side cards may get before they give way.
 const MAIN_MIN_W: f32 = 420.;
 /// Below this, even at their narrowest the side cards leave too little for
-/// the work, and the workspace panel or subagents column is left out. A
-/// 1366x768 laptop at 125% scale, or a window snapped to half a screen, is
-/// that narrow.
+/// the work, and the workspace panel is left out. A 1366x768 laptop at 125%
+/// scale, or a window snapped to half a screen, is that narrow.
 const MAIN_FLOOR_W: f32 = 320.;
 
-/// The workspace panel or the subagents column.
-#[derive(Clone, Copy, PartialEq, Debug)]
-enum SideCard {
-    Panel,
-    Subagents,
-}
-
-/// Which of the open panel and subagents column to leave out so the cards'
-/// narrowest widths fit in `room`. The one not preferred goes first. The rail
-/// always stays: it holds the projects and the way back to everything else.
-/// Each card is its minimum width plus its handle; a closed one is `None`.
-fn crowd_out(
-    room: f32,
-    rail: f32,
-    panel: Option<f32>,
-    subagents: Option<f32>,
-    prefer: SideCard,
-) -> [bool; 2] {
-    let mut out = [false; 2];
-    let mut need = rail + panel.unwrap_or(0.) + subagents.unwrap_or(0.);
-    let order = match prefer {
-        SideCard::Panel => [(1, subagents), (0, panel)],
-        SideCard::Subagents => [(0, panel), (1, subagents)],
-    };
-    for (i, w) in order {
-        if need <= room {
-            break;
-        }
-        if let Some(w) = w {
-            out[i] = true;
-            need -= w;
-        }
-    }
-    out
-}
-
-/// `crowd_out`, except that with `keep_panel` the panel is never the one
-/// left out: Customize sits there, and a change made in it (a wider gap, a
-/// bigger text size) must not take away the controls that undo it. The
-/// subagents give way first, then the middle shrinks.
-fn crowd_out_keeping(
-    room: f32,
-    rail: f32,
-    panel: Option<f32>,
-    subagents: Option<f32>,
-    prefer: SideCard,
-    keep_panel: bool,
-) -> [bool; 2] {
-    if !keep_panel {
-        return crowd_out(room, rail, panel, subagents, prefer);
-    }
-    let mut out = crowd_out(room, rail, panel, subagents, SideCard::Panel);
-    out[0] = false;
-    out
+/// Whether the open workspace panel is left out so the cards' narrowest
+/// widths fit in `room`. The rail always stays: it holds the projects and the
+/// way back to everything else. With `keep_panel` the panel stays too:
+/// Customize sits there, and a change made in it (a wider gap, a bigger text
+/// size) must not take away the controls that undo it. Each card is its
+/// minimum width plus its handle; a closed panel is `None`.
+fn crowd_out(room: f32, rail: f32, panel: Option<f32>, keep_panel: bool) -> bool {
+    !keep_panel && panel.is_some_and(|p| rail + p > room)
 }
 
 /// Side card widths that leave `room` for the cards together. Each one gives
@@ -685,7 +696,6 @@ const DOCK_TAB_CLOSE_TOP: f32 = (ui::DOCK_TAB_H - 20.) / 2.;
 enum SideDrag {
     Rail,
     Panel,
-    Subagents,
 }
 const POLL: Duration = Duration::from_secs(3);
 /// A `git fetch` of the visible environment at most this often while the window is
@@ -754,6 +764,15 @@ impl Shell {
                 InputEvent::Cancel => input.update(cx, |i, cx| i.set_text("", cx)),
                 _ => {}
             });
+        let tree_filter = cx.new(|cx| TextInput::new("Find a session", cx));
+        let tree_filter_sub = cx.subscribe(&tree_filter, |this, _, ev: &InputEvent, cx| {
+            match ev {
+                InputEvent::Cancel => this.menu = None,
+                InputEvent::Changed => {}
+                _ => return,
+            }
+            cx.notify();
+        });
         let notes_input = cx.new(|cx| TextInput::new("Add a note and press Enter...", cx));
         let notes_input_sub = cx.subscribe(&notes_input, |this, input, ev: &InputEvent, cx| {
             if let InputEvent::Submit = ev {
@@ -784,7 +803,10 @@ impl Shell {
         let ci = cx.new(Ci::new);
         let runs_view = cx.new(|cx| RunsView::new(ci.clone(), cx));
         let runs_subs = [
-            cx.observe(&ci, |_, _, cx| cx.notify()),
+            cx.observe(&ci, |this, _, cx| {
+                this.branch_pr_read(cx);
+                cx.notify()
+            }),
             cx.subscribe_in(&runs_view, window, |this, _, ev, window, cx| {
                 this.on_runs_event(ev, window, cx)
             }),
@@ -968,12 +990,15 @@ impl Shell {
             _caret_focus: caret_focus,
             _composer_blur: composer_blur,
             modal: None,
+            survey: survey_card::CardState::new(Instant::now()),
             palette_watch: None,
             repo_slugs: Default::default(),
             repo_slugs_read: None,
             menu: None,
             rail_pick: Vec::new(),
             rail_pick_anchor: None,
+            tree_pick: Vec::new(),
+            tree_pick_anchor: None,
             poll: None,
             last_fetch: None,
             fetching: false,
@@ -1010,16 +1035,12 @@ impl Shell {
             builder: Default::default(),
             rail_w: layout.rail_w,
             panel_w: layout.panel_w,
-            side_fit: Cell::new([layout.rail_w, layout.panel_w, layout.subagents_w]),
-            side_crowded: Cell::new([false; 2]),
-            side_prefer: SideCard::Panel,
-            subagents_open: layout.subagents_open,
-            subagents_w: layout
-                .subagents_w
-                .clamp(SUBAGENTS_W_RANGE.start, SUBAGENTS_W_RANGE.end),
+            side_fit: Cell::new([layout.rail_w, layout.panel_w]),
+            side_crowded: Cell::new(false),
             subagents_dismissed: false,
             subagent_view: None,
             subagent_tick: None,
+            branch_pr_seen: None,
             arcade: layout.arcade,
             pins: crate::palette::pins::Pins::load(),
             rules: crate::palette::rules::Rules::load(),
@@ -1086,13 +1107,24 @@ impl Shell {
             review_draft: None,
             lifted: None,
             lifted_tab: None,
+            tab_drop: None,
+            tab_drop_over: None,
+            pins_seeded: false,
+            tree_open: std::collections::HashMap::new(),
+            tree_hover: None,
+            tree_filter,
+            _tree_filter: tree_filter_sub,
+            bar_more: RefCell::default(),
+            bar_area: Rc::default(),
             slide: None,
             drop_menu: None,
             attached: std::collections::HashMap::new(),
+            dropping: std::collections::HashMap::new(),
             saved_prompts: crate::prompts::load(),
             composer_flash: None,
             menu_agent: None,
             menu_cursor: None,
+            effort_hover: None,
             menu_scroll: ScrollHandle::new(),
             limit_alerts: std::collections::HashMap::new(),
             limits_seen: false,
@@ -1110,6 +1142,7 @@ impl Shell {
             clear_armed: false,
             restarting: false,
             update_dialog: None,
+            feedback_limits: Default::default(),
             _runs: runs_subs,
             _quit: [
                 cx.on_app_quit(|this, cx| {
@@ -1122,7 +1155,8 @@ impl Shell {
                     this.save_transcripts(cx);
                     // Notices are saved off the UI thread: let the last one land.
                     crate::notices::flush();
-                    // Settings switched in the last moments.
+                    // Settings switched, or a sidebar, pin, to-do or phone
+                    // change made, in the last moments.
                     crate::durable::flush();
                     // Up to 2 s for usage events still queued.
                     crate::telemetry::quit();
@@ -1422,8 +1456,6 @@ impl Shell {
             panel_open: self.panel_open,
             rail_w: self.rail_w,
             panel_w: self.panel_w,
-            subagents_open: self.subagents_open,
-            subagents_w: self.subagents_w,
             arcade: self.arcade,
             diff_palette: theme::diff_palette(),
             glass: theme::glass_chosen(),
@@ -2557,6 +2589,29 @@ impl Shell {
         }
     }
 
+    /// After a run that ended without a clean exit, asks what happened. Not on
+    /// the first launch, which has nothing to ask about yet.
+    pub fn ask_after_crash(&mut self, cx: &mut Context<Self>) {
+        let Some(event) = crate::crash::last_run_ended_badly() else {
+            return;
+        };
+        if !crash_notice_wanted(crate::telemetry::should_ask(), crate::telemetry::blocked()) {
+            return;
+        }
+        let open = island::Open::Feedback {
+            error_event: event,
+            agent: None,
+            category: None,
+        };
+        self.notify(
+            crate::island::AlertKind::Warning,
+            "Arakun quit unexpectedly. Tell us what happened?",
+            "",
+            Some(open),
+            cx,
+        );
+    }
+
     /// Asks once, on first launch, whether to send crash reports and usage
     /// counts; nothing is sent before the answer.
     pub fn ask_telemetry(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -2590,6 +2645,93 @@ impl Shell {
         );
         self.modal = Some((Modal::Telemetry(dialog), sub));
         cx.notify();
+    }
+
+    /// Shows a survey over the app. `extra` fills response properties the
+    /// survey leaves empty, such as the error a survey is about.
+    pub fn open_survey(
+        &mut self,
+        survey: crate::surveys::model::Survey,
+        src: crate::telemetry::Source,
+        extra: Vec<(String, serde_json::Value)>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::survey_dialog::{SurveyDialog, SurveyEvent};
+        use crate::surveys::{ids, send, store};
+        match survey_card::decide(self.modal.is_some() || self.onboarding.is_some(), src) {
+            survey_card::Ask::Open => {}
+            survey_card::Ask::Drop => return,
+            // One request at a time: a newer one replaces an older.
+            survey_card::Ask::Defer => {
+                self.survey.pending = Some(survey_card::PendingAsk { survey, src, extra });
+                return;
+            }
+        }
+        // The built-in forms can be sent any number of times; others once.
+        let builtin = ids::is_builtin(&survey.id);
+        let dialog = cx.new(|cx| SurveyDialog::new(survey, src, extra, window, cx));
+        let sub = cx.subscribe_in(
+            &dialog,
+            window,
+            move |this, dialog, ev: &SurveyEvent, window, cx| match ev {
+                SurveyEvent::Sent => {
+                    if !builtin {
+                        store::mark(&dialog.read(cx).survey().id, store::Seen::Answered);
+                    }
+                }
+                SurveyEvent::Dismissed => {
+                    let d = dialog.read(cx);
+                    if !d.is_sent() && src == crate::telemetry::Source::Popover {
+                        store::mark(&d.survey().id, store::Seen::Dismissed);
+                        send::dismissed(d.survey());
+                    }
+                    this.close_modal(window, cx);
+                }
+                // The dialog shows why and keeps the answers.
+                SurveyEvent::Failed(why) => eprintln!("arakun: feedback not sent: {why}"),
+                // Behind the dialog, which stays open to finish the survey.
+                SurveyEvent::OpenUrl(url) => {
+                    if this.has_projects() {
+                        this.open_browser_tab(url.clone(), window, cx);
+                    } else {
+                        cx.open_url(url);
+                    }
+                }
+            },
+        );
+        self.modal = Some((Modal::Survey(dialog), sub));
+        cx.notify();
+    }
+
+    fn send_feedback(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.send_feedback_as(None, window, cx);
+    }
+
+    /// The feedback form, with its kind (one of `ids::KINDS`) picked when given.
+    fn send_feedback_as(
+        &mut self,
+        kind: Option<&'static str>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::surveys::{ids, store};
+        let survey = store::builtin(&ids::USER);
+        self.open_survey(
+            survey,
+            crate::telemetry::Source::User,
+            Vec::new(),
+            window,
+            cx,
+        );
+        // Only when this form opened: a busy modal defers it, and then it
+        // opens later without the kind, which is still a working form.
+        if let (Some(kind), Some((Modal::Survey(dialog), _))) = (kind, &self.modal) {
+            dialog.update(cx, |d, cx| {
+                d.preset_kind(kind);
+                cx.notify();
+            });
+        }
     }
 
     fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -2656,6 +2798,8 @@ impl Shell {
                 cx,
             )
         });
+        let rail_w = self.rail_w;
+        dialog.update(cx, |d, _| d.rail_w = rail_w);
         let sub = cx.subscribe_in(
             &dialog,
             window,
@@ -2686,6 +2830,14 @@ impl Shell {
                     this.save(cx);
                 }
                 SettingsEvent::Zoom(pct) => this.zoom_to(*pct, window, cx),
+                SettingsEvent::TabLayout(layout, preset) => {
+                    this.apply_tab_layout(*layout, *preset, cx)
+                }
+                SettingsEvent::SidebarWidth(w) => {
+                    this.rail_w = w.clamp(RAIL_W_RANGE.start, RAIL_W_RANGE.end);
+                    this.save(cx);
+                    cx.notify();
+                }
                 SettingsEvent::SidebarView(view, on) => {
                     this.extensions_view
                         .update(cx, |v, cx| v.set_view(*view, *on, cx));
@@ -2727,6 +2879,12 @@ impl Shell {
                 SettingsEvent::OpenAccount => {
                     this.close_modal(window, cx);
                     this.open_account(window, cx);
+                }
+                SettingsEvent::SendFeedback => {
+                    // Their own choice goes first, not a notice's earlier request.
+                    this.survey.pending = None;
+                    this.close_modal(window, cx);
+                    this.send_feedback(window, cx);
                 }
                 SettingsEvent::OpenExtensions => {
                     this.close_modal(window, cx);
@@ -2777,6 +2935,10 @@ impl Shell {
                     this.close_modal(window, cx);
                     this.sign_out(AgentKind::Cursor, window, cx);
                 }
+                SettingsEvent::AntigravitySignIn => {
+                    this.close_modal(window, cx);
+                    this.sign_in(crate::agent::AgentKind::Antigravity, window, cx);
+                }
                 SettingsEvent::OpenCodeSignIn => {
                     this.close_modal(window, cx);
                     this.sign_in(AgentKind::OpenCode, window, cx);
@@ -2812,20 +2974,10 @@ impl Shell {
                 self.panel_open = true;
                 self.save(cx);
             }
-            self.side_prefer = SideCard::Panel;
-            cx.notify();
-            return;
-        }
-        // Left out for room, a click brings it back in the subagents' place.
-        if self.panel_open && self.side_crowded.get()[0] {
-            self.side_prefer = SideCard::Panel;
             cx.notify();
             return;
         }
         self.panel_open = !self.panel_open;
-        if self.panel_open {
-            self.side_prefer = SideCard::Panel;
-        }
         self.save(cx);
         cx.notify();
     }
@@ -2951,8 +3103,6 @@ impl Shell {
             self.customize_tab = tab;
             self.customize = Some((view, sub));
         }
-        // It takes the workspace panel's place, so that place must be shown.
-        self.side_prefer = SideCard::Panel;
         cx.notify();
     }
 
@@ -3026,15 +3176,10 @@ impl Shell {
         self.side_fit.get()[1]
     }
 
-    fn subagents_width(&self) -> f32 {
-        self.side_fit.get()[2]
-    }
-
     /// Narrows the side cards for this frame when the window can't hold them
     /// at their dragged widths and still leave `MAIN_MIN_W` for the work.
     /// The dragged widths stay, so widening the window brings them back.
     fn fit_side_cards(&self, window: &Window) {
-        let has_projects = self.has_projects();
         let rail = self.rail_shown();
         let viewport_w = window.viewport_size().width.as_f32();
         let rail_card = match (rail, self.rail_narrow()) {
@@ -3043,21 +3188,18 @@ impl Shell {
             (true, false) => (self.rail_w, RAIL_W_RANGE.start),
         };
         // Each card's narrowest, with the handle beside it.
-        let crowded = crowd_out_keeping(
+        let crowded = crowd_out(
             viewport_w - 2. * gap() - MAIN_FLOOR_W,
             if rail { rail_card.1 + gap() } else { 0. },
             self.panel_wanted().then(|| PANEL_W_RANGE.start + gap()),
-            (has_projects && self.subagents_open).then(|| SUBAGENTS_W_RANGE.start + gap()),
-            self.side_prefer,
             self.customize.is_some(),
         );
         self.side_crowded.set(crowded);
         let panel = self.panel_shown();
-        let subagents = self.subagents_shown();
-        let shown = [rail, panel, subagents].iter().filter(|s| **s).count() as f32;
+        let shown = [rail, panel].iter().filter(|s| **s).count() as f32;
         // The window's padding at both sides, and one handle beside each card.
         let room = viewport_w - (2. + shown) * gap() - MAIN_MIN_W;
-        let [r, p, s] = fit_sides(
+        let [r, p] = fit_sides(
             room,
             [
                 rail_card,
@@ -3066,23 +3208,17 @@ impl Shell {
                 } else {
                     (0., 0.)
                 },
-                if subagents {
-                    (self.subagents_w, SUBAGENTS_W_RANGE.start)
-                } else {
-                    (0., 0.)
-                },
             ],
         );
         self.side_fit.set([
             if rail { r } else { self.rail_w },
             if panel { p } else { self.panel_w },
-            if subagents { s } else { self.subagents_w },
         ]);
     }
 
     /// The workspace panel is open and the window has room for it this frame.
     fn panel_shown(&self) -> bool {
-        self.panel_wanted() && !self.side_crowded.get()[0]
+        self.panel_wanted() && !self.side_crowded.get()
     }
 
     /// Something should sit in the workspace panel's place: the panel of a
@@ -3091,19 +3227,16 @@ impl Shell {
         self.customize.is_some() || (self.has_projects() && self.panel_open)
     }
 
-    /// The panel's dragged width, or wider while Customize is in it: its
-    /// palettes sit three to a row.
+    /// The panel's dragged width, or wider while Customize is in it (its
+    /// palettes sit three to a row) or while it shows a subagent's transcript.
     fn panel_preferred_w(&self) -> f32 {
         if self.customize.is_some() {
             self.panel_w.max(crate::customize_view::CUSTOMIZE_W)
+        } else if self.panel_tab == PanelTab::Session && self.subagent_view.is_some() {
+            self.panel_w.max(SUBAGENT_TRANSCRIPT_W)
         } else {
             self.panel_w
         }
-    }
-
-    /// The subagents column is open and the window has room for it this frame.
-    pub(super) fn subagents_shown(&self) -> bool {
-        self.has_projects() && self.subagents_open && !self.side_crowded.get()[1]
     }
 
     /// The gap between two cards doubles as the resize handle for the side card.
@@ -3135,8 +3268,7 @@ impl Shell {
     }
 
     fn show_changes(&mut self, cx: &mut Context<Self>) {
-        self.panel_tab = PanelTab::Changes;
-        self.side_prefer = SideCard::Panel;
+        self.set_panel_tab(PanelTab::Changes, cx);
         if !self.panel_open {
             self.panel_open = true;
             self.save(cx);
@@ -3191,6 +3323,7 @@ impl Shell {
         } else {
             window.focus(&self.focus, cx);
         }
+        self.open_pending_survey(window, cx);
         cx.notify();
     }
 
@@ -3375,6 +3508,13 @@ impl Shell {
     fn close_tab(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         if self.can_close_tab(index) {
             self.remove_tab(index, true, window, cx);
+        } else if crate::tab_layout::current().pinned_bar()
+            && let Some(tab) = self.strip.tabs.get(index).filter(|t| t.pinned)
+        {
+            // The last tab of the environment on screen stays open, but
+            // closing it still takes it off the bar.
+            let id = tab.id;
+            self.unpin_tab(id, cx);
         }
     }
 
@@ -3716,7 +3856,12 @@ impl Shell {
                 self.sync_branches_view(cx);
                 self.branches_view.clone().into_any_element()
             }
-            Some(TabKind::GitHub) => self.github_view.clone().into_any_element(),
+            Some(TabKind::GitHub) => {
+                let corners = self.pane_card_corners(index);
+                self.github_view
+                    .update(cx, |v, cx| v.set_card_corners(corners, cx));
+                self.github_view.clone().into_any_element()
+            }
             Some(TabKind::Extensions) => {
                 // Follows the visible environment, also when it changes under an open tab.
                 let dir = env.path.clone();
@@ -3889,6 +4034,11 @@ impl Render for Shell {
         } else if !self.shown_browsers.is_empty() {
             cx.defer_in(window, |this, _, cx| this.sync_browsers(cx));
         }
+        // With pinned tabs, a session tab that shows nowhere closes, and a
+        // lone session pins itself; whatever changed the tabs, this follows.
+        if self.pins_unsettled() {
+            cx.defer_in(window, |this, _, cx| this.settle_pins(cx));
+        }
         if !self.stale_diffs.is_empty() {
             let stale = std::mem::take(&mut self.stale_diffs);
             cx.defer_in(window, |this, window, cx| {
@@ -3966,14 +4116,17 @@ impl Render for Shell {
             Modal::Telemetry(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),
             Modal::Pilot(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),
             Modal::New(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),
+            Modal::Survey(e) => (e.clone().into_any_element(), e.entity_id().as_u64()),
         });
         let viewport_h = window.viewport_size().height.as_f32();
         let floating_sheet = self.render_floating_sheet(cx);
         let context_menu = self.menu.as_ref().map(|m| {
-            let above = matches!(
-                m.target,
-                MenuTarget::ModelMenu | MenuTarget::PermissionMenu | MenuTarget::RailUsage
-            );
+            let above = match m.target {
+                MenuTarget::ModelMenu | MenuTarget::PermissionMenu | MenuTarget::RailUsage => true,
+                // Help can be anywhere in the rail; low down it opens upward.
+                MenuTarget::Help => m.at.y.as_f32() > viewport_h / 2.,
+                _ => false,
+            };
             // The room between the anchor and the window edge the menu opens toward.
             let room = if above {
                 m.at.y.as_f32() - 24.
@@ -4038,21 +4191,6 @@ impl Render for Shell {
                             Some(SideDrag::Panel) => {
                                 this.panel_w = ((window_w - gap()) - ev.position.x.as_f32())
                                     .clamp(PANEL_W_RANGE.start, PANEL_W_RANGE.end)
-                            }
-                            Some(SideDrag::Subagents) => {
-                                // Its right edge is where the Workspace panel starts.
-                                let rail = this.rail_shown()
-                                    && this.sidebar.style.side == crate::sidebar::Side::Right;
-                                let right = window_w
-                                    - gap()
-                                    - if this.panel_shown() {
-                                        this.panel_width() + gap()
-                                    } else {
-                                        0.
-                                    }
-                                    - if rail { this.rail_width() + gap() } else { 0. };
-                                this.subagents_w = (right - ev.position.x.as_f32())
-                                    .clamp(SUBAGENTS_W_RANGE.start, SUBAGENTS_W_RANGE.end)
                             }
                             None => {}
                         }
@@ -4138,6 +4276,9 @@ impl Render for Shell {
             .on_action(
                 cx.listener(|this, _: &OpenSettings, window, cx| this.open_settings(window, cx)),
             )
+            .on_action(
+                cx.listener(|this, _: &SendFeedback, window, cx| this.send_feedback(window, cx)),
+            )
             .on_action(cx.listener(|_, _: &ToggleDance, _, cx| {
                 crate::mascot::toggle_dancing();
                 cx.notify();
@@ -4185,6 +4326,8 @@ impl Render for Shell {
             })
             .capture_key_down(cx.listener(|this, ev: &gpui::KeyDownEvent, window, cx| {
                 let k = &ev.keystroke;
+                // A survey never pops up while someone is typing.
+                this.survey.last_typed = Instant::now();
                 // The update dialog's Enter and Space press its own buttons.
                 if this.menu.is_some()
                     && this.update_dialog.is_none()
@@ -4227,10 +4370,6 @@ impl Render for Shell {
                             .child(self.side_handle(SideDrag::Rail, cx))
                     })
                     .child(body)
-                    .when(chrome && self.subagents_shown(), |d| {
-                        d.child(self.side_handle(SideDrag::Subagents, cx))
-                            .child(self.render_subagents(cx))
-                    })
                     .when(chrome && self.panel_shown(), |d| {
                         d.child(self.side_handle(SideDrag::Panel, cx))
                             .child(self.render_panel(cx))
@@ -4362,8 +4501,23 @@ impl Render for Shell {
                         .pt(relative(0.10))
                         .px(crate::ui::sp(12.))
                         .occlude()
-                        .bg(gpui::black().opacity(0.4))
-                        .child(dialog),
+                        .child(ui::motion::enter(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .items_center()
+                                .w_full()
+                                .child(dialog),
+                            "update-dialog-in",
+                            ui::motion::From::Below,
+                            10.,
+                            ui::motion::BASE,
+                        ))
+                        .with_animation(
+                            "update-backdrop-in",
+                            gpui::Animation::new(ui::motion::BASE),
+                            |d, t| d.bg(gpui::black().opacity(0.4 * ui::motion::ease_out(t))),
+                        ),
                 )
             })
             .when(self.env_menu_open, |d| {
@@ -4382,6 +4536,7 @@ impl Render for Shell {
                 )
                 .child(self.render_env_menu(viewport_h, cx))
             })
+            .when_some(self.render_survey_card(cx), |d, card| d.child(card))
             .when_some(crate::agent::markdown::preview(), |d, image| {
                 d.child(crate::agent::markdown::render_preview(image, window, cx))
             })
@@ -4407,9 +4562,11 @@ pub(crate) fn agent_icon(agent: AgentKind, size: f32) -> AnyElement {
             .into_any_element(),
         AgentKind::Droid => ui::factory_logo(size).into_any_element(),
         AgentKind::OpenCode => ui::opencode_logo(size).into_any_element(),
-        AgentKind::Codex | AgentKind::Devin | AgentKind::Cursor | AgentKind::WorkersAi => {
-            agent.icon(size)
-        }
+        AgentKind::Codex
+        | AgentKind::Devin
+        | AgentKind::Cursor
+        | AgentKind::Antigravity
+        | AgentKind::WorkersAi => agent.icon(size),
     }
 }
 
@@ -4648,6 +4805,13 @@ fn drop_envs(
 mod tests {
     use super::*;
 
+    #[test]
+    fn no_crash_notice_when_nothing_can_be_sent() {
+        assert!(crash_notice_wanted(false, false));
+        assert!(!crash_notice_wanted(true, false));
+        assert!(!crash_notice_wanted(false, true));
+    }
+
     /// The dock's sizes before corners and spacing became settings. At the
     /// default scales it must look exactly as it did.
     #[test]
@@ -4693,48 +4857,17 @@ mod tests {
     }
 
     #[test]
-    fn a_narrow_window_leaves_out_a_side_card() {
-        let (rail, panel, sub) = (168., Some(208.), Some(268.));
-        // 1366x768 at 125%: all three fit at their narrowest.
+    fn a_narrow_window_leaves_out_the_panel() {
+        let (rail, panel) = (168., Some(208.));
+        // 1366x768 at 125%: both fit at their narrowest.
         let room = 1093. - 16. - MAIN_FLOOR_W;
-        assert_eq!(
-            crowd_out(room, rail, panel, sub, SideCard::Panel),
-            [false; 2]
-        );
-        // The smallest window: the one not asked for last goes.
-        let room = 800. - 16. - MAIN_FLOOR_W;
-        assert_eq!(
-            crowd_out(room, rail, panel, sub, SideCard::Panel),
-            [false, true]
-        );
-        assert_eq!(
-            crowd_out(room, rail, panel, sub, SideCard::Subagents),
-            [true, false]
-        );
-        // Too narrow for either: both go, and the rail stays.
-        assert_eq!(
-            crowd_out(100., rail, panel, sub, SideCard::Panel),
-            [true, true]
-        );
-        // A closed card is never counted or left out.
-        assert_eq!(
-            crowd_out(room, rail, None, sub, SideCard::Panel),
-            [false, false]
-        );
-        // Customize in the panel's place stays, even asked for after the
-        // subagents or with no room at all; without it, nothing changes.
-        assert_eq!(
-            crowd_out_keeping(room, rail, panel, sub, SideCard::Subagents, true),
-            [false, true]
-        );
-        assert_eq!(
-            crowd_out_keeping(100., rail, panel, sub, SideCard::Panel, true),
-            [false, true]
-        );
-        assert_eq!(
-            crowd_out_keeping(room, rail, panel, sub, SideCard::Subagents, false),
-            [true, false]
-        );
+        assert!(!crowd_out(room, rail, panel, false));
+        // Too narrow: the panel goes, and the rail stays.
+        assert!(crowd_out(300., rail, panel, false));
+        // A closed panel is never left out.
+        assert!(!crowd_out(300., rail, None, false));
+        // Customize in the panel's place stays, even with no room at all.
+        assert!(!crowd_out(100., rail, panel, true));
     }
 
     #[test]

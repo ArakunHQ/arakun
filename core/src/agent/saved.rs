@@ -38,6 +38,32 @@ fn stamp(path: &Path) -> Option<(SystemTime, u64)> {
     Some((meta.modified().ok()?, meta.len()))
 }
 
+/// A transcript read by [`read`], for [`LastRead::keep`].
+pub struct Read(Kept);
+
+/// Reads the transcript at `path`. A long one takes a while to parse, so
+/// call it off the main thread and hand the result to [`LastRead::keep`].
+pub fn read(path: &Path) -> Option<Read> {
+    load(path).map(Read)
+}
+
+fn load(path: &Path) -> Option<Kept> {
+    // Taken before the read: a save that lands in between leaves an old
+    // stamp on new entries, and the next call reads again.
+    let stamp = stamp(path);
+    let (Ok(read), Some(stamp)) = (Thread::read_transcript(path), stamp) else {
+        return None;
+    };
+    Some(Kept {
+        path: path.to_path_buf(),
+        stamp,
+        entries: read.entries,
+        cwd: read.meta.cwd,
+        queue: read.queue,
+        used: Cell::new(Instant::now()),
+    })
+}
+
 impl LastRead {
     /// Runs `f` over the entries and the directory saved at `path`. A file
     /// that is missing or cannot be read has no entries, and is read again
@@ -56,15 +82,7 @@ impl LastRead {
     }
 
     fn kept(&self, path: &Path) -> Option<Rc<Kept>> {
-        // Taken before the read: a save that lands in between leaves an old
-        // stamp on new entries, and the next call reads again.
-        let stamp = stamp(path);
-        let kept = self
-            .kept
-            .borrow()
-            .clone()
-            .filter(|k| k.path == path && Some(k.stamp) == stamp);
-        let kept = match kept {
+        let kept = match self.fresh(path) {
             Some(kept) => kept,
             None => {
                 #[cfg(test)]
@@ -72,23 +90,53 @@ impl LastRead {
                 // A read that failed is not kept: the file may be readable
                 // again with the same time and length (its folder was, for a
                 // moment, not), and the empty answer would stay for good.
-                let (Ok(read), Some(stamp)) = (Thread::read_transcript(path), stamp) else {
-                    *self.kept.borrow_mut() = None;
-                    return None;
-                };
-                let (entries, cwd, queue) = (read.entries, read.meta.cwd, read.queue);
-                let kept = Rc::new(Kept {
-                    path: path.to_path_buf(),
-                    stamp,
-                    entries,
-                    cwd,
-                    queue,
-                    used: Cell::new(Instant::now()),
-                });
-                *self.kept.borrow_mut() = Some(kept.clone());
-                kept
+                let kept = load(path).map(Rc::new);
+                self.kept.borrow_mut().clone_from(&kept);
+                kept?
             }
         };
+        kept.used.set(Instant::now());
+        Some(kept)
+    }
+
+    /// The read kept for `path`, if the file has not changed since.
+    fn fresh(&self, path: &Path) -> Option<Rc<Kept>> {
+        let stamp = stamp(path);
+        self.kept
+            .borrow()
+            .clone()
+            .filter(|k| k.path == path && Some(k.stamp) == stamp)
+    }
+
+    /// Whether the read kept for `path` is still what the file holds, so
+    /// [`LastRead::with_kept`] has it without a new [`read`].
+    pub fn is_kept(&self, path: &Path) -> bool {
+        self.fresh(path).is_some()
+    }
+
+    /// Keeps what [`read`] got. A read that failed lets go of the last one,
+    /// as [`LastRead::with`] does.
+    pub fn keep(&self, read: Option<Read>) {
+        *self.kept.borrow_mut() = read.map(|r| Rc::new(r.0));
+    }
+
+    /// Like [`LastRead::with`], but never reads the file: the caller read it
+    /// off the main thread with [`read`]. The read kept for `path` answers
+    /// even if a save landed since; with none, there are no entries.
+    pub fn with_kept<R>(&self, path: &Path, f: impl FnOnce(&[Entry], &Path) -> R) -> R {
+        match self.peek(path) {
+            Some(kept) => f(&kept.entries, &kept.cwd),
+            None => f(&[], Path::new("")),
+        }
+    }
+
+    /// Like [`LastRead::queue`], but never reads the file.
+    pub fn queue_kept(&self, path: &Path) -> Vec<String> {
+        self.peek(path).map(|k| k.queue.clone()).unwrap_or_default()
+    }
+
+    fn peek(&self, path: &Path) -> Option<Rc<Kept>> {
+        let kept = self.kept.borrow().clone().filter(|k| k.path == path)?;
         kept.used.set(Instant::now());
         Some(kept)
     }
@@ -178,5 +226,31 @@ mod tests {
         // A file gone has none.
         std::fs::remove_dir_all(&dir).unwrap();
         assert!(last.queue(&path).is_empty());
+    }
+
+    #[test]
+    fn a_read_made_elsewhere_is_kept_and_answers_without_reading() {
+        let dir = std::env::temp_dir().join(format!("arakun-last-keep-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("k.json");
+        save(&path, &["one", "two"]);
+        let last = LastRead::default();
+        assert!(!last.is_kept(&path));
+        // Nothing kept: no entries, and no read on this thread.
+        assert_eq!(last.with_kept(&path, |all, _| all.len()), 0);
+        let got = std::thread::scope(|s| s.spawn(|| read(&path)).join().unwrap());
+        last.keep(got);
+        assert!(last.is_kept(&path));
+        assert_eq!(last.with_kept(&path, |all, _| all.len()), 2);
+        assert_eq!(last.with(&path, |all, _| all.len()), 2);
+        assert_eq!(last.reads.get(), 0);
+        // A save since: no longer current, but what was read still answers.
+        save(&path, &["one", "two", "three"]);
+        assert!(!last.is_kept(&path));
+        assert_eq!(last.with_kept(&path, |all, _| all.len()), 2);
+        // A read that failed lets go of it.
+        last.keep(read(&dir.join("missing.json")));
+        assert_eq!(last.with_kept(&path, |all, _| all.len()), 0);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

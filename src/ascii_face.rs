@@ -59,6 +59,11 @@ const SCRAMBLE_BAND: f32 = 90.;
 const FADE_LEN: f32 = 0.6;
 /// Keys during the intro play the rest this much faster.
 const RUSH: f32 = 4.;
+/// No pointer move or keystroke for this long and the start-screen face
+/// settles to rest so an idle window costs zero frames.
+const IDLE_REST: f64 = 8.;
+/// Breathing fades out smoothly over this span once idle rest begins.
+const BREATH_FADE: f64 = 1.;
 
 /// The eyes in the image, which leaves them out: centres, then width and
 /// height of the capsules, as `assets/brand/raccoon.svg` has them.
@@ -81,6 +86,15 @@ fn smooth(t: f32) -> f32 {
 
 fn lerp(a: f32, b: f32, k: f32) -> f32 {
     a + (b - a) * k
+}
+
+/// Breathing amplitude after `quiet` seconds without input: full while active,
+/// then smoothly fades to 0 over `BREATH_FADE` once `IDLE_REST` elapses.
+fn breath_scale(quiet: f64) -> f32 {
+    if quiet <= IDLE_REST {
+        return 1.;
+    }
+    (1. - ((quiet - IDLE_REST) / BREATH_FADE).clamp(0., 1.)) as f32
 }
 
 /// How open the eyes are at `t` in the intro: slits that open, then two
@@ -552,6 +566,8 @@ pub struct AsciiFace {
     blink: Blinker,
 
     pointer: Option<(Point<Pixels>, f64)>,
+    last_input: f64,
+    moving: bool,
     typing_until: f64,
     /// The composer's caret in window coordinates, set by whoever shows the face.
     pub caret: Rc<Cell<Option<Point<Pixels>>>>,
@@ -608,6 +624,8 @@ impl AsciiFace {
             tilt: Spring::new(0., 2.2, 0.55),
             blink: Blinker { next: 0., at: -9. },
             pointer: None,
+            last_input: 0.,
+            moving: true,
             typing_until: -9.,
             caret: Rc::default(),
             origin: Point::default(),
@@ -647,19 +665,41 @@ impl AsciiFace {
     }
 
     fn typed(&mut self) {
-        self.typing_until = self.now() + 1.4;
+        let now = self.now();
+        self.last_input = now;
+        self.moving = true;
+        self.typing_until = now + 1.4;
         if self.intro.is_some() {
             self.rush = true;
         }
+        self.wake.wake();
+    }
+
+    fn pointer_moved(&mut self, at: Point<Pixels>) {
+        let now = self.now();
+        self.pointer = Some((at, now));
+        self.last_input = now;
+        self.moving = true;
+        self.wake.wake();
     }
 
     fn wants_frame(&self) -> bool {
-        animated() && (self.intro.is_some() || self.fade.is_some() || self.active)
+        if !animated() {
+            return false;
+        }
+        if self.intro.is_some() || self.fade.is_some() {
+            return true;
+        }
+        if !self.active {
+            return (self.time - self.blink.at) < 0.16;
+        }
+        let now = self.now();
+        self.moving || now < self.typing_until || (now - self.last_input) <= IDLE_REST + BREATH_FADE
     }
 
-    fn blink_at(&mut self) -> f32 {
+    fn blink_at(&mut self, allow_new: bool) -> f32 {
         let t = self.time;
-        if t > self.blink.next {
+        if allow_new && t > self.blink.next {
             self.blink.at = t;
             self.blink.next = t + if self.rnd(0., 1.) < 0.2 {
                 0.25
@@ -708,6 +748,9 @@ impl AsciiFace {
         if let Some((p, _)) = self.pointer.filter(|&(_, at)| now - at < 3.) {
             return (toward(p, 450. * u, 300. * u), 0.);
         }
+        if now - self.last_input > IDLE_REST {
+            return ([0., 0.], 0.);
+        }
         const IDLE: [[f32; 2]; 5] = [[0., 0.], [-0.7, 0.1], [0.2, -0.3], [0.8, 0.1], [-0.2, 0.5]];
         (IDLE[(self.time / 2.6) as usize % IDLE.len()], 0.)
     }
@@ -718,6 +761,7 @@ impl AsciiFace {
         if !animated() {
             self.intro = None;
             self.fade = None;
+            self.moving = false;
             return pose;
         }
         if let Some(t) = self.intro.as_mut() {
@@ -733,6 +777,8 @@ impl AsciiFace {
             }
         }
         self.time += dt;
+        let quiet = now - self.last_input;
+        let breath_amp = breath_scale(quiet);
         let (want, lean) = self.target(now);
         let n = (dt / 0.004).ceil().max(1.) as usize;
         let h = dt / n as f32;
@@ -743,7 +789,7 @@ impl AsciiFace {
             self.tilt.step(lx * 7. + lean, h);
         }
         let [lx, ly] = [self.look[0].x, self.look[1].x];
-        let br = (self.time * 2.4).sin();
+        let br = (self.time * 2.4).sin() * breath_amp;
         let u = pose.k / PROTO_K;
         pose.at = [
             pose.at[0] + lx * 14. * u,
@@ -752,7 +798,12 @@ impl AsciiFace {
         pose.turn = self.tilt.x.to_radians();
         pose.stretch = 1. + 0.006 * br;
         pose.gaze = [lx * 7., ly * 5.];
-        pose.blink = self.blink_at();
+        pose.blink = self.blink_at(quiet <= IDLE_REST);
+        self.moving = breath_amp > 0.
+            || (self.time - self.blink.at) < 0.16
+            || !self.look[0].settled(want[0], 0.004)
+            || !self.look[1].settled(want[1], 0.004)
+            || !self.tilt.settled(lx * 7. + lean, 0.05);
         if let Some(t) = self.intro {
             pose.blink = intro_blink(t);
             let lit = smooth(along(t, LIGHT));
@@ -856,10 +907,14 @@ impl Render for AsciiFace {
         if std::mem::take(&mut self.hidden) && self.intro.is_none() && animated() {
             self.fade = Some(0.);
             self.last = None;
+            self.last_input = self.now();
+            self.moving = true;
         }
         self.rendered = true;
-        self.wake.wake();
         self.active = window.is_window_active();
+        if self.wants_frame() {
+            self.wake.wake();
+        }
         let (weak, moves) = (cx.weak_entity(), cx.weak_entity());
         // It gives up height first when the window is short (see `Pose::still`),
         // so what sits under it stays on screen.
@@ -877,8 +932,7 @@ impl Render for AsciiFace {
                         }
                         window.on_mouse_event(move |e: &MouseMoveEvent, phase, _, cx| {
                             if phase == DispatchPhase::Bubble {
-                                let _ = moves
-                                    .update(cx, |f, _| f.pointer = Some((e.position, f.now())));
+                                let _ = moves.update(cx, |f, _| f.pointer_moved(e.position));
                             }
                         });
                     },
@@ -995,5 +1049,15 @@ mod tests {
             ..pose
         };
         assert_eq!(lit(&dark), (0, 0));
+    }
+
+    #[test]
+    fn breathing_fades_out_after_idle_rest() {
+        assert_eq!(breath_scale(0.), 1.);
+        assert_eq!(breath_scale(IDLE_REST), 1.);
+        let mid = breath_scale(IDLE_REST + BREATH_FADE * 0.5);
+        assert!(mid > 0.4 && mid < 0.6, "fading smoothly: {mid}");
+        assert_eq!(breath_scale(IDLE_REST + BREATH_FADE), 0.);
+        assert_eq!(breath_scale(IDLE_REST + 60.), 0.);
     }
 }

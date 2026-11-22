@@ -179,6 +179,7 @@ impl Render for RemoveDialog {
             AgentKind::Codex => "Codex keeps its own copy of the session.",
             AgentKind::Devin => "Devin keeps its own copy of the session.",
             AgentKind::Cursor => "Cursor keeps its own copy of the session.",
+            AgentKind::Antigravity => "Antigravity keeps its own copy of the session.",
             AgentKind::WorkersAi => "arakun keeps the messages the model saw until then.",
         };
         ui::modal_panel("remove-session", 420., "Remove session from Arakun?")
@@ -341,7 +342,7 @@ impl Render for ImportDialog {
                 .justify_center()
                 .text_size(px(ui::TEXT_MD))
                 .text_color(theme::text_subtle())
-                .child(ui::spinner("import-spin", 14., theme::mix(0.5)))
+                .child(ui::spinner(14., theme::mix(0.5)))
                 .child("Looking for sessions…")
                 .into_any_element()
         } else if self.found.is_empty() {

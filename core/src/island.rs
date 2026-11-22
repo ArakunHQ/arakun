@@ -2896,8 +2896,12 @@ impl Render for Island {
             || self
                 .melted
                 .is_some_and(|at| at.elapsed().as_secs_f32() < 1.2);
-        if moving || animated || card_moving || self.prev_alpha().is_some() {
+        if moving || card_moving || self.prev_alpha().is_some() {
             window.request_animation_frame();
+        } else if animated {
+            // Only something pulsing or a waveform, for as long as an agent
+            // works or a call runs: on the motion clock, not at the display's rate.
+            crate::ui::motion::redraw_on_tick(window);
         } else {
             // At rest: the next change starts its clock fresh instead of jumping by the idle time.
             self.last = None;

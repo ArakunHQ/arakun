@@ -1572,8 +1572,8 @@ fn model_name(id: &str) -> String {
 }
 
 /// Which hue each agent's series and share bar wear: Anthropic's clay for
-/// Claude Code, a quiet light gray for Droid. Darker grays keep Cursor, Devin,
-/// OpenCode and Codex apart.
+/// Claude Code, a quiet light gray for Droid. Darker grays keep Cursor,
+/// Antigravity, Devin, OpenCode and Codex apart.
 fn agent_color(agent: AgentKind) -> Hsla {
     match agent {
         AgentKind::Claude => gpui::rgb(0xd97757).into(),
@@ -1582,6 +1582,7 @@ fn agent_color(agent: AgentKind) -> Hsla {
         AgentKind::Codex => theme::mix(0.3),
         AgentKind::Devin => theme::mix(0.2),
         AgentKind::Cursor => theme::mix(0.58),
+        AgentKind::Antigravity => theme::mix(0.38),
         AgentKind::WorkersAi => gpui::rgb(0xf38020).into(),
     }
 }
@@ -1993,7 +1994,7 @@ impl Render for UsageView {
             );
 
         let body: AnyElement = match &self.records {
-            None => ui::loading("usage-loading", "Reading agent usage history…").into_any_element(),
+            None => ui::loading("Reading agent usage history…").into_any_element(),
             Some(_) => self.render_body(&s, cx),
         };
         div()

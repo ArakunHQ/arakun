@@ -1,14 +1,16 @@
 //! How the transcript moves: the live beacon, spinners and shimmer that loop
 //! while the agent works, and the way entries and folds arrive.
 //!
-//! Loops are gpui animations on the app's shared clock, so they draw at the
-//! display's frame rate and hold still when the system reduces motion.
+//! Loops run on the app's motion clock (`motion::looping`), which redraws at
+//! `motion::LOOP_FPS`, or at its full rate on ticks that draw a frame anyway,
+//! rather than at the display's rate. It keeps loops side by side in step,
+//! and holds them still when the system reduces motion.
 //! Arrivals are keyed by entry, not by element: the list drops an element's
 //! state when it scrolls away, and an old reply must not replay its entrance.
 
 use super::*;
 use crate::ui::motion;
-use gpui::{Animation, AnimationExt as _, Svg};
+use gpui::{AnimationExt as _, Svg};
 
 /// One turn of the spinner's arc.
 const SPIN: Duration = Duration::from_millis(1000);
@@ -57,7 +59,7 @@ pub(super) fn ring_at(t: f32) -> (f32, f32) {
 }
 
 /// A dot with a ring that swells out of it: the agent is working, or waits.
-pub(super) fn beacon(id: impl Into<ElementId>, state: Beacon, color: Hsla) -> AnyElement {
+pub(super) fn beacon(state: Beacon, color: Hsla) -> AnyElement {
     let offset = |size: f32| px((BEACON_BOX - size) / 2.);
     let dot = div()
         .absolute()
@@ -68,40 +70,32 @@ pub(super) fn beacon(id: impl Into<ElementId>, state: Beacon, color: Hsla) -> An
         .bg(color);
     let mut b = div().relative().flex_none().size(px(BEACON_BOX));
     if let Some(period) = state.period() {
-        let ring = div().absolute().rounded_full().border_1().with_animation(
-            id,
-            Animation::new(period).repeat_synced(),
-            move |d, t| {
-                let (size, opacity) = ring_at(t);
-                d.top(offset(size))
-                    .left(offset(size))
-                    .size(px(size))
-                    .border_color(color.opacity(opacity))
-            },
-        );
-        b = b.child(ring);
+        b = b.child(motion::looping(period, |t| {
+            let (size, opacity) = ring_at(t);
+            div()
+                .absolute()
+                .rounded_full()
+                .border_1()
+                .top(offset(size))
+                .left(offset(size))
+                .size(px(size))
+                .border_color(color.opacity(opacity))
+        }));
     }
     b.child(dot).into_any_element()
 }
 
 /// A faint ring with an arc going round it. Still while `moving` is off.
-pub(super) fn spinner(
-    id: impl Into<ElementId>,
-    moving: bool,
-    size: f32,
-    color: Hsla,
-) -> AnyElement {
+pub(super) fn spinner(moving: bool, size: f32, color: Hsla) -> AnyElement {
     let arc = icon("spinner-arc", size)
         .absolute()
         .top_0()
         .left_0()
         .text_color(color);
     let arc = if moving {
-        // Synced, so spinners side by side turn together.
-        arc.with_animation(id, Animation::new(SPIN).repeat_synced(), |s, t| {
-            s.with_transformation(Transformation::rotate(radians(t * std::f32::consts::TAU)))
+        motion::looping(SPIN, |t| {
+            arc.with_transformation(Transformation::rotate(radians(t * std::f32::consts::TAU)))
         })
-        .into_any_element()
     } else {
         arc.into_any_element()
     };
@@ -124,24 +118,16 @@ pub(super) fn spinner(
 /// Text with a bright band sweeping across it, then a pause: `base` lit
 /// up to `peak`, two text roles so the Grays setting holds. Plain, at
 /// `base`, while `moving` is off.
-pub(super) fn shimmer(
-    id: impl Into<ElementId>,
-    moving: bool,
-    text: &str,
-    base: Hsla,
-    peak: Hsla,
-) -> AnyElement {
-    let owned = text.to_string();
-    let styled = StyledText::new(SharedString::from(text.to_string()))
-        .with_runs(shimmer_runs(&owned, 0., base, peak));
-    if !moving {
-        return styled.into_any_element();
+pub(super) fn shimmer(moving: bool, text: &str, base: Hsla, peak: Hsla) -> AnyElement {
+    let draw = |t| {
+        StyledText::new(SharedString::from(text.to_string()))
+            .with_runs(shimmer_runs(text, t, base, peak))
+    };
+    if moving {
+        motion::looping(SHIMMER, draw)
+    } else {
+        draw(0.).into_any_element()
     }
-    styled
-        .with_animation(id, Animation::new(SHIMMER).repeat_synced(), move |s, t| {
-            s.with_runs(shimmer_runs(&owned, t, base, peak))
-        })
-        .into_any_element()
 }
 
 /// The band's brightness at char `i` of `n`, `t` (0 to 1) into a sweep. The
@@ -176,14 +162,13 @@ fn shimmer_runs(text: &str, t: f32, base: Hsla, peak: Hsla) -> Vec<TextRun> {
 
 /// Breathes `el`'s opacity between 0.35 and 0.9: a thought still streaming.
 /// Held at the top of the breath while `moving` is off.
-pub(super) fn pulse(id: impl Into<ElementId>, moving: bool, el: Div) -> AnyElement {
+pub(super) fn pulse(moving: bool, el: Div) -> AnyElement {
     if !moving {
         return el.opacity(0.9).into_any_element();
     }
-    el.with_animation(id, Animation::new(PULSE).repeat_synced(), |d, t| {
-        d.opacity(0.625 + 0.275 * (t * std::f32::consts::TAU).cos())
+    motion::looping(PULSE, |t| {
+        el.opacity(0.625 + 0.275 * (t * std::f32::consts::TAU).cos())
     })
-    .into_any_element()
 }
 
 /// A chevron that springs between pointing right (closed) and down (open).

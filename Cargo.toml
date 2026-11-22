@@ -1,6 +1,6 @@
 [package]
 name = "arakun"
-version = "0.14.0"
+version = "0.18.0"
 edition = "2024"
 publish = false
 license = "AGPL-3.0-only"
@@ -50,7 +50,7 @@ backtrace = "0.3"
 ring.workspace = true
 # the signature of a release's SHA256SUMS (src/update.rs); no dependencies of its own
 minisign-verify = "0.3"
-rusqlite = { version = "=0.41.0", default-features = false, features = ["bundled"] }
+rusqlite = { version = "=0.43.0", default-features = false, features = ["bundled"] }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
@@ -151,6 +151,18 @@ coderlabs = ["arakun-core/coderlabs"]
 debug = 1
 lto = "thin"
 codegen-units = 1
+
+# What tools/install.sh builds by default: the release profile without its slowest
+# parts. One codegen unit and LTO keep one core busy for minutes on every change to
+# the app crate; this profile splits the work and keeps incremental state, so
+# rebuilding after an edit takes seconds instead of about six minutes on a 24-thread
+# machine. The binary is somewhat larger and slower than a release's. Releases and CI
+# keep `--release`.
+[profile.release-local]
+inherits = "release"
+lto = false
+codegen-units = 16
+incremental = true
 
 # Leaves debug info in the object files instead of copying it into each binary. A
 # change relinks the app, its tests and the examples: on Linux this cut an incremental

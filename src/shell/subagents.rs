@@ -1,8 +1,6 @@
-//! The Session panel: what the session on screen is connected to, beside the
-//! chat. The pull request its thread opened or pushed to, with its review and
-//! checks, and its subagents, with the transcript of the one opened. It sits
-//! between the chat and the Workspace panel, with its own width and its own
-//! open flag (stored as the subagents column's, so layouts keep working).
+//! The Workspace panel's Session tab: what the session on screen is
+//! connected to. The pull request its thread opened or pushed to, with its
+//! review and checks, and its subagents, with the transcript of the one opened.
 
 use super::*;
 use crate::agent::{SubagentState, Thread, ThreadView, ThreadViewEvent};
@@ -166,24 +164,54 @@ fn section_title(title: &'static str, count: Option<usize>) -> gpui::Div {
 }
 
 impl Shell {
+    /// The Workspace panel is on screen at its Session tab.
+    pub(super) fn subagents_shown(&self) -> bool {
+        self.has_projects()
+            && self.customize.is_none()
+            && self.panel_shown()
+            && self.panel_tab == PanelTab::Session
+    }
+
+    /// Opens the Workspace panel at its Session tab, or goes back to its
+    /// Sessions tab when that is what shows.
     pub(super) fn toggle_subagents(&mut self, cx: &mut Context<Self>) {
-        // Left out for room, a click brings it back in the panel's place.
-        if self.subagents_open && self.side_crowded.get()[1] {
-            self.side_prefer = SideCard::Subagents;
-            cx.notify();
+        if self.subagents_shown() {
+            self.set_panel_tab(PanelTab::Sessions, cx);
             return;
         }
-        self.subagents_open = !self.subagents_open;
-        self.subagents_dismissed = !self.subagents_open;
-        if self.subagents_open {
-            self.side_prefer = SideCard::Subagents;
-        }
-        self.save(cx);
+        self.show_subagents_tab(cx);
+        self.subagents_dismissed = false;
         self.sync_subagent_tick(cx);
         cx.notify();
     }
 
-    /// Opens the panel on the list, or on `subagent` of session `session`.
+    /// Switches the Workspace panel's tab. Leaving Session means a new
+    /// subagent or pull request should not pull the panel back to it.
+    pub(super) fn set_panel_tab(&mut self, tab: PanelTab, cx: &mut Context<Self>) {
+        if self.panel_tab == PanelTab::Session && tab != PanelTab::Session {
+            self.subagents_dismissed = true;
+        }
+        self.panel_tab = tab;
+        if tab == PanelTab::Session {
+            self.sync_subagent_tick(cx);
+        }
+        cx.notify();
+    }
+
+    /// Shows the Workspace panel at its Session tab, in Customize's place
+    /// if that is open.
+    fn show_subagents_tab(&mut self, cx: &mut Context<Self>) {
+        if self.customize.is_some() {
+            self.close_customize(cx);
+        }
+        self.panel_tab = PanelTab::Session;
+        if !self.panel_open {
+            self.panel_open = true;
+            self.save(cx);
+        }
+    }
+
+    /// Opens the Session tab on the list, or on `subagent` of session `session`.
     pub(super) fn open_subagent(
         &mut self,
         session: SharedString,
@@ -191,11 +219,7 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !self.subagents_open {
-            self.subagents_open = true;
-            self.save(cx);
-        }
-        self.side_prefer = SideCard::Subagents;
+        self.show_subagents_tab(cx);
         match subagent {
             Some(id) => self.show_subagent(session, &id, window, cx),
             None => self.subagent_view = None,
@@ -210,17 +234,41 @@ impl Shell {
         self.sync_subagent_tick(cx);
     }
 
-    /// The session got something the panel shows (a subagent, a pull request):
-    /// the panel opens for the one on screen, unless the user closed it.
+    /// The session got something the Session tab shows (a subagent, a pull
+    /// request): the panel switches to that tab for the one on screen, unless
+    /// the user left it, or is busy in another tab than Sessions.
     pub(super) fn session_connected(&mut self, session: &str, cx: &mut Context<Self>) {
         let active = self
             .active_session_id()
             .is_some_and(|a| a.as_ref() == session);
-        if active && !self.subagents_open && !self.subagents_dismissed {
-            self.subagents_open = true;
-            self.save(cx);
+        if active
+            && !self.subagents_dismissed
+            && self.customize.is_none()
+            && self.panel_tab == PanelTab::Sessions
+        {
+            self.show_subagents_tab(cx);
         }
         cx.notify();
+    }
+
+    /// A read of the branch's pull request (the environment's own, or the
+    /// project's list) ended. Those don't go through the session, so a pull
+    /// request that turns up there connects it here.
+    pub(super) fn branch_pr_read(&mut self, cx: &mut Context<Self>) {
+        let Some(id) = self.active_session_id() else {
+            self.branch_pr_seen = None;
+            return;
+        };
+        let has = self.session_has_pr(cx);
+        // `None` for a session not looked at yet: it may have had one all along.
+        let had = match &self.branch_pr_seen {
+            Some((seen, had)) if *seen == id => Some(*had),
+            _ => None,
+        };
+        self.branch_pr_seen = Some((id.clone(), has));
+        if has && had == Some(false) {
+            self.session_connected(&id, cx);
+        }
     }
 
     fn session_thread(&self, session: &str) -> Option<Entity<Thread>> {
@@ -255,7 +303,9 @@ impl Shell {
         {
             return;
         }
+        let child_thread = child.clone();
         let view = cx.new(|cx| ThreadView::new(child, window, cx));
+        view.update(cx, |v, _| v.set_can_tell_us(!crate::telemetry::blocked()));
         let (env, sid) = (self.env().path.clone(), session.clone());
         let events = cx.subscribe_in(
             &view,
@@ -268,6 +318,13 @@ impl Shell {
                     this.open_subagent(sid.clone(), id.clone(), window, cx)
                 }
                 ThreadViewEvent::AddNote { .. } => {}
+                ThreadViewEvent::TellUs { error_event, agent } => this.tell_us(
+                    &child_thread,
+                    error_event.clone(),
+                    agent.clone(),
+                    window,
+                    cx,
+                ),
             },
         );
         self.subagent_view = Some(SubagentView {
@@ -278,7 +335,7 @@ impl Shell {
         });
     }
 
-    /// Keeps the elapsed times of running subagents counting while the panel shows them.
+    /// Keeps the elapsed times of running subagents counting while the tab shows them.
     pub(super) fn sync_subagent_tick(&mut self, cx: &mut Context<Self>) {
         if self.subagent_tick.is_some() || !self.subagents_running(cx) {
             return;
@@ -303,16 +360,29 @@ impl Shell {
     }
 
     fn subagents_running(&self, cx: &App) -> bool {
-        self.subagents_open
-            && self.has_projects()
+        self.subagents_shown()
             && self
                 .active_thread(cx)
                 .is_some_and(|t| t.read(cx).running_subagents() > 0)
     }
 
+    /// The Session tab's body.
     pub(super) fn render_subagents(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let session = self.active_session_id();
         let thread = self.active_thread(cx);
+        // The tick stops while the tab is out of sight, and reopening the
+        // panel or switching sessions doesn't pass through `set_panel_tab`:
+        // drawing the tab with a subagent running starts it again.
+        if self.subagent_tick.is_none()
+            && thread
+                .as_ref()
+                .is_some_and(|t| t.read(cx).running_subagents() > 0)
+        {
+            let shell = cx.entity().downgrade();
+            cx.defer(move |cx| {
+                let _ = shell.update(cx, |this, cx| this.sync_subagent_tick(cx));
+            });
+        }
         let opened = self
             .subagent_view
             .as_ref()
@@ -323,56 +393,36 @@ impl Shell {
                 Some((v.view.clone(), s.name.clone(), s.state, s.elapsed_secs()))
             });
 
-        let header = div()
-            .flex()
-            .flex_none()
-            .items_center()
-            .h(px(40.))
-            .pl(crate::ui::sp(if opened.is_some() { 6. } else { 12. }))
-            .pr(crate::ui::sp(6.))
-            .gap(crate::ui::sp(6.))
-            .map(|d| match &opened {
-                Some((_, name, state, _)) => d
-                    .child(
-                        icon_button("subagent-back", "arrow-left01", 14., "Back to the session")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.subagent_view = None;
-                                cx.notify();
-                            })),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .text_size(px(ui::TEXT_LG))
-                            .font_weight(FontWeight::MEDIUM)
-                            .child(name.clone()),
-                    )
-                    .child(ui::badge(state.label(), tone(*state))),
-                None => d
-                    .child(
-                        div()
-                            .text_size(px(ui::TEXT_LG))
-                            .font_weight(FontWeight::MEDIUM)
-                            .child("Session"),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .h_full()
-                            .on_mouse_down(MouseButton::Left, |ev, window, _| {
-                                crate::ui::drag_window(ev, window)
-                            })
-                            .when(cfg!(windows), |d| {
-                                d.window_control_area(WindowControlArea::Drag)
-                            }),
-                    ),
-            })
-            .child(
-                icon_button("subagents-close", "cancel01", 14., "Close session panel")
-                    .on_click(cx.listener(|this, _, _, cx| this.toggle_subagents(cx))),
-            );
+        // The tab names the session; a transcript gets a bar with the way back.
+        let header = opened.as_ref().map(|(_, name, state, _)| {
+            div()
+                .flex()
+                .flex_none()
+                .items_center()
+                .h(px(36.))
+                .pl(crate::ui::sp(6.))
+                .pr(crate::ui::sp(10.))
+                .gap(crate::ui::sp(6.))
+                .border_b_1()
+                .border_color(theme::border_subtle())
+                .child(
+                    icon_button("subagent-back", "arrow-left01", 14., "Back to the session")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.subagent_view = None;
+                            cx.notify();
+                        })),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .ty(Type::Label)
+                        .text_color(theme::text())
+                        .child(name.clone()),
+                )
+                .child(ui::badge(state.label(), tone(*state)))
+        });
 
         let body: AnyElement = match (&opened, &thread) {
             (Some((view, ..)), _) => gpui::AnyView::from(view.clone())
@@ -420,6 +470,8 @@ impl Shell {
                     let count = rows.len();
                     div()
                         .id("subagent-list")
+                        // Its own height, or it grows with its rows and never scrolls.
+                        .size_full()
                         .flex()
                         .flex_col()
                         .gap(crate::ui::sp(2.))
@@ -449,16 +501,18 @@ impl Shell {
             }
         };
 
-        self.side_card()
-            .id("subagents-card")
-            .map(ui::stop_window_move)
+        div()
             .flex()
             .flex_col()
-            .flex_none()
-            .w(px(self.subagents_width()))
-            .h_full()
-            .child(header)
+            .size_full()
+            .children(header)
             .child(div().flex_1().min_h_0().child(body))
+    }
+
+    /// The session on screen is connected to a pull request.
+    pub(super) fn session_has_pr(&self, cx: &App) -> bool {
+        self.active_thread(cx)
+            .is_some_and(|t| self.session_pr(&t, cx).is_some())
     }
 
     /// The pull request of the session `thread` belongs to, from its own link or

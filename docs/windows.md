@@ -4,6 +4,9 @@ Arakun builds for Windows 10/11 (x86_64, MSVC toolchain). Linux is still the mai
 platform and the only one used daily; this guide says what has been verified and what has
 not.
 
+The **Connect SSH** panel for local agent sessions is available on Linux and
+macOS only. The Servers tab for paired Arakun servers is separate.
+
 **What was verified (from Linux):** `cargo check` and `cargo clippy --all-targets` for
 `x86_64-pc-windows-gnu` with no errors, and the unit tests running as Windows `.exe` files
 under Wine: 170 of 176 pass, two are ignored just as on Linux, and the other four need
@@ -49,8 +52,9 @@ always checks the signature.
   `GPUI_FXC_PATH` at `C:\Program Files (x86)\Windows Kits\10\bin\<version>\x64\fxc.exe`.
 - **Git for Windows**: the Changes panel, worktrees and the CI graph use `git`.
 - For the agents: **Node.js** (with `npm`) for the Claude Code and Codex adapters, Factory's
-  `droid` CLI for Droid, the Devin CLI for Devin, and the Cursor CLI (`cursor-agent`) for
-  Cursor. `gh` if you want the CI panel.
+  `droid` CLI for Droid, the Devin CLI for Devin, the Cursor CLI (`cursor-agent`) for
+  Cursor, and the Antigravity CLI (`agy`, found in `%LOCALAPPDATA%\agy\bin` too) for
+  Antigravity. `gh` if you want the CI panel.
 - For browser tabs: **CMake** and **Ninja**. They come with the *C++ CMake tools for
   Windows* component of Visual Studio Build Tools (selected by default in *Desktop
   development with C++*) and are on the `PATH` of the Developer PowerShell.
@@ -136,7 +140,7 @@ start `arakun-server serve` from Task Scheduler, with the trigger "At log on".
 | `arakun server`: its settings, sessions and socket | `%LOCALAPPDATA%\arakun\server\` |
 | Servers the app is paired with (Servers tab) | `%LOCALAPPDATA%\arakun\servers.json` |
 | What each paired server listed last | `%LOCALAPPDATA%\arakun\servers-inbox.json` |
-| `arakun.exe` for the command line | `%LOCALAPPDATA%\arakun\bin\arakun.exe` |
+| `arakun.exe` for the command line | `%LOCALAPPDATA%\arakun\bin\arakun.exe`; with `ARAKUN_STATE` set, `bin\arakun.exe` in a folder next to that state file (`dev.runtime` for `dev.json`) |
 | Factory sessions | Credential Manager, as `arakun:<account>` |
 | GitHub tab settings, review drafts | `%LOCALAPPDATA%\arakun\github.json`, `%LOCALAPPDATA%\arakun\github\drafts\` |
 | The PR agent's cards you saw and dealt with (arakun-pilot) | By default `%LOCALAPPDATA%\arakun\pilot.json`; with `ARAKUN_STATE` set, `pilot.json` next to that state file |

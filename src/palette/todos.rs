@@ -86,7 +86,7 @@ impl Todos {
 
     fn save_to(&self, path: &Path) {
         if let Ok(bytes) = serde_json::to_vec_pretty(self) {
-            let _ = crate::stored::write(path, &bytes);
+            crate::stored::write_soon(path, bytes, "could not save the to-dos");
         }
     }
 }
@@ -224,6 +224,7 @@ mod tests {
         assert_eq!(Todos::load_from(&path), Todos::default());
         Todos::default().save_to(&path);
         assert_eq!(crate::stored::tests::kept(&path).as_deref(), Some(edited));
+        crate::durable::flush();
         let _ = std::fs::remove_dir_all(dir);
     }
 }

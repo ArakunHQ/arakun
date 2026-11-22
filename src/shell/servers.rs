@@ -37,6 +37,7 @@ use crate::servers::{self, Saved};
 use crate::servers_view::{PlaceRow, Reach, ServerRow, ServersEvent, ServersState, SessionRow};
 
 mod files;
+mod mirror;
 mod terms;
 
 /// One server: its connection and what it last said it holds.
@@ -661,16 +662,7 @@ fn text(v: &Value, key: &str) -> String {
     v[key].as_str().unwrap_or("").to_string()
 }
 
-/// What a repository is known by on every machine: `owner/repo` on GitHub,
-/// whatever the protocol, else its URL.
-fn repo_key(origin: &str) -> Option<String> {
-    let source = crate::clone_source::parse_clone_source(origin)?;
-    Some(if source.on_github {
-        source.label.to_lowercase()
-    } else {
-        source.label.to_string()
-    })
-}
+use crate::clone_source::repo_key;
 
 /// Where a server's folder goes: the local project its repository is, else a
 /// project of the servers' own. Without an `origin`, a server's repository is
@@ -732,6 +724,7 @@ fn transcript_of(f: &Following) -> Transcript {
             updated: unix_now(),
             pr: None,
             seat: None,
+            seat_key: None,
         },
         entries: f.entries.clone(),
         usage: Usage::default(),
@@ -2753,6 +2746,7 @@ impl Shell {
                 if back {
                     self.server_terms_back(id, cx);
                     self.server_files_back(id, cx);
+                    self.server_mirror(id, cx);
                 } else {
                     self.servers_drop_rewinds(id, cx);
                 }
@@ -2780,6 +2774,14 @@ impl Shell {
                 let Some(link) = &mut self.servers else {
                     return;
                 };
+                if kind == "mirror_done" {
+                    self.server_mirrored(id, &msg, cx);
+                    return;
+                }
+                // A server from before mirroring: it keeps what it has.
+                if kind == "error" && older_server_refused(&text(&msg, "message"), &["mirror"]) {
+                    return;
+                }
                 if matches!(kind, "market" | "market_done") {
                     self.extensions_view
                         .update(cx, |v, cx| v.server_said(id, &msg, cx));
@@ -3464,6 +3466,7 @@ fn empty_transcript(agent: AgentKind, title: &str) -> Transcript {
             updated: unix_now(),
             pr: None,
             seat: None,
+            seat_key: None,
         },
         entries: Vec::new(),
         usage: Usage::default(),

@@ -732,6 +732,13 @@ impl Shell {
     /// the draft waiting in the queue.
     fn submit_with(&mut self, now: bool, window: &mut Window, cx: &mut Context<Self>) {
         let env_path = self.env().path.clone();
+        // A dropped session still being read would miss this prompt.
+        if self.dropping.contains_key(&env_path) {
+            self.composer_flash =
+                Some("Still reading the dropped session. Send again in a moment.".into());
+            cx.notify();
+            return;
+        }
         // A server that cannot be reached would lose the prompt: it stays here.
         if let Some(remote) = self.env().remote.clone()
             && self.server_reach(&remote.server) != Some(crate::servers_view::Reach::Connected)
@@ -789,7 +796,7 @@ impl Shell {
             if !text.is_empty() {
                 text.push_str("\n\n");
             }
-            text.push_str(&crate::agent::attach::wrap_paste(p));
+            text.push_str(&crate::agent::attach::wrap_paste(&p.text));
         }
         if !notes.is_empty() {
             if !text.is_empty() {
@@ -956,11 +963,7 @@ impl Shell {
         let pastes: Vec<(usize, usize)> = self
             .pastes
             .get(&env.path)
-            .map(|v| {
-                v.iter()
-                    .map(|p| (p.lines().count(), p.chars().count()))
-                    .collect()
-            })
+            .map(|v| v.iter().map(|p| (p.lines, p.chars)).collect())
             .unwrap_or_default();
         let paste_row: Option<AnyElement> = (!pastes.is_empty()).then(|| {
             div()

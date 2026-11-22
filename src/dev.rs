@@ -23,8 +23,8 @@ arakun dev start [dir] [--size WxH]  start a fresh test arakun (Linux: on a virt
                                   dir (default: here) as its project; restarts one
 arakun dev shot [file.png]          screenshot its window, in the pixels click takes
                                   (on a Retina Mac, 2 a point)
-arakun dev click <x> <y> [--right] [--double]
-arakun dev click <text> [--nth N] [--right] [--double]
+arakun dev click <x> <y> [--right] [--double] [--ctrl] [--shift]
+arakun dev click <text> [--nth N] [--right] [--double] [--ctrl] [--shift]
                                   click the text where it shows (read with OCR)
 arakun dev text [words…]            the text on screen, a line each with its x y;
                                   with words, only where they show
@@ -630,7 +630,7 @@ fn text(args: &[String]) -> Result<String, String> {
         .join("\n"))
 }
 
-/// `arakun dev click <text> [--nth N] [--right] [--double]`.
+/// `arakun dev click <text> [--nth N] [--right] [--double] [--ctrl] [--shift]`.
 fn click_text(args: &[String]) -> Result<String, String> {
     let (mut words, mut flags, mut nth) = (Vec::new(), Vec::new(), None);
     let mut it = args.iter();
@@ -644,7 +644,7 @@ fn click_text(args: &[String]) -> Result<String, String> {
                         .ok_or("--nth wants 1, 2…")?,
                 )
             }
-            "--right" | "--double" => flags.push(a.clone()),
+            "--right" | "--double" | "--ctrl" | "--shift" => flags.push(a.clone()),
             _ => words.push(a.as_str()),
         }
     }
@@ -791,6 +791,9 @@ pub enum Synth {
         y: f32,
         button: MouseButton,
         count: usize,
+        /// Held while clicking: Ctrl (Cmd on macOS) and Shift, to pick rows.
+        secondary: bool,
+        shift: bool,
     },
     Scroll {
         x: f32,
@@ -819,10 +822,13 @@ pub fn parse_input(args: &[String]) -> Result<Vec<Synth>, String> {
             let flags = &rest[2.min(rest.len())..];
             let mut button = MouseButton::Left;
             let mut count = 1;
+            let (mut secondary, mut shift) = (false, false);
             for f in flags {
                 match f.as_str() {
                     "--right" => button = MouseButton::Right,
                     "--double" => count = 2,
+                    "--ctrl" => secondary = true,
+                    "--shift" => shift = true,
                     other => return Err(format!("unknown click flag {other}")),
                 }
             }
@@ -831,6 +837,8 @@ pub fn parse_input(args: &[String]) -> Result<Vec<Synth>, String> {
                 y,
                 button,
                 count,
+                secondary,
+                shift,
             }])
         }
         Some("move") if rest.len() == 2 => Ok(vec![Synth::Move(
@@ -957,8 +965,16 @@ pub fn play(
                 y,
                 button,
                 count,
+                secondary,
+                shift,
             } => {
                 let position = at(x, y);
+                let mods = Modifiers {
+                    control: secondary && cfg!(not(target_os = "macos")),
+                    platform: secondary && cfg!(target_os = "macos"),
+                    shift,
+                    ..mods
+                };
                 window.dispatch_event(
                     PlatformInput::MouseMove(MouseMoveEvent {
                         position,
@@ -1139,7 +1155,9 @@ mod tests {
                 x: 10.,
                 y: 20.5,
                 button: MouseButton::Left,
-                count: 1
+                count: 1,
+                secondary: false,
+                shift: false,
             }])
         );
         assert_eq!(
@@ -1148,7 +1166,20 @@ mod tests {
                 x: 1.,
                 y: 2.,
                 button: MouseButton::Right,
-                count: 2
+                count: 2,
+                secondary: false,
+                shift: false,
+            }])
+        );
+        assert_eq!(
+            parse_input(&s(&["click", "1", "2", "--ctrl", "--shift"])),
+            Ok(vec![Synth::Click {
+                x: 1.,
+                y: 2.,
+                button: MouseButton::Left,
+                count: 1,
+                secondary: true,
+                shift: true,
             }])
         );
         assert!(parse_input(&s(&["click", "x", "2"])).is_err());

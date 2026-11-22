@@ -40,6 +40,7 @@ fn session_meta(m: &Meta) -> agent::SessionMeta {
         updated: m.updated,
         pr: None,
         seat: None,
+        seat_key: None,
     }
 }
 

@@ -636,6 +636,7 @@ impl AutomationsDialog {
                         (AgentKind::Codex, AgentKind::Codex.label()),
                         (AgentKind::Devin, AgentKind::Devin.label()),
                         (AgentKind::Cursor, AgentKind::Cursor.label()),
+                        (AgentKind::Antigravity, AgentKind::Antigravity.label()),
                     ],
                     agent,
                     cx,

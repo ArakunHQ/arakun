@@ -303,6 +303,14 @@ fn notice_row(n: &Notice, now: u64, cx: &mut Context<Shell>) -> impl IntoElement
                         )
                         .truncate(),
                     )
+                })
+                // What an agent sent, in full: the subtitle is only its start.
+                .when(!n.body.is_empty(), |d| {
+                    d.child(div().pt(crate::ui::sp(4.)).child(ui::text(
+                        Type::Caption,
+                        theme::text_muted(),
+                        crate::redact::text(&n.body).into_owned(),
+                    )))
                 }),
         )
         .child(

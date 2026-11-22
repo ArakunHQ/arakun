@@ -17,12 +17,7 @@ impl ThreadView {
                 .py(crate::ui::sp(10.))
                 .text_size(px(crate::ui::TEXT_MD))
                 .text_color(theme::text_subtle())
-                .child(spinner(
-                    "connecting-spin",
-                    self.active,
-                    14.,
-                    theme::mix(0.45),
-                ))
+                .child(spinner(self.active, 14., theme::mix(0.45)))
                 .child(
                     t.status_detail()
                         .unwrap_or_else(|| format!("Starting {}…", t.kind().label()).into()),
@@ -132,6 +127,34 @@ impl ThreadView {
                                                 .on_click(cx.listener(|this, _, _, cx| {
                                                     this.thread
                                                         .update(cx, |t, cx| t.request_login(cx))
+                                                })),
+                                        )
+                                    })
+                                    // The shell hides it when nothing can be sent.
+                                    .when(self.can_tell_us, |row| {
+                                        row.child(
+                                            div()
+                                                .id("tell-us")
+                                                .flex()
+                                                .items_center()
+                                                .h(px(24.))
+                                                .px(crate::ui::sp(10.))
+                                                .rounded(crate::ui::rad(8.))
+                                                .bg(theme::fill_selected())
+                                                .text_color(theme::text_muted())
+                                                .text_size(px(crate::ui::TEXT_SM))
+                                                .cursor_pointer()
+                                                .hover(|s| s.bg(theme::mix(0.18)))
+                                                .child("Tell us what happened")
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    let t = this.thread.read(cx);
+                                                    let ev = ThreadViewEvent::TellUs {
+                                                        error_event: t
+                                                            .error_event()
+                                                            .map(str::to_string),
+                                                        agent: t.kind().id().to_string(),
+                                                    };
+                                                    cx.emit(ev);
                                                 })),
                                         )
                                     })
@@ -367,7 +390,7 @@ impl ThreadView {
                                             .when(stuck.is_some() || offer.is_some() || paused || !queue.is_empty(), |d| {
                                                 d.border_b_1().border_color(theme::stroke())
                                             })
-                                            .child(spinner("background-spin", self.active, 14., theme::text_subtle()))
+                                            .child(spinner(self.active, 14., theme::text_subtle()))
                                             .child(
                                                 div()
                                                     .id("background-subagents")

@@ -212,8 +212,9 @@ tools/bench/bench.py compare target/bench/before.json target/bench/after.json --
 tools/bench/bench.py agent --tasks fix-bug --model haiku    # Claude Code on a task, in Arakun
 ```
 
-`perf` plays scenarios (palette, sidebar, zoom, scrolling, a terminal flood) in a test
-Arakun (`arakun dev`, Linux and macOS) and reads the time GPUI took for each frame.
+`perf` plays scenarios (palette, sidebar, zoom, scrolling, a terminal flood, on Linux a session
+at work) in a test Arakun (`arakun dev`, Linux and macOS) and reads the time GPUI took
+for each frame.
 `agent` gives Claude Code the coding tasks in `tools/bench/tasks/`, in Arakun and, with
 `--runner arakun,claude`, as bare `claude -p`, and scores each run with tests the
 agent never saw. It uses your Claude account or API key, so it costs money. The
@@ -387,6 +388,10 @@ that keeps one on purpose goes on its allow-list.
 - **Keep the branch up to date** with `main`, and make sure the required checks pass before you
   ask for a review. If a check fails and you think it is not your change, say so in the pull
   request.
+- **A version bump** also adds the release's changelog entry,
+  `release-notes/v<version>.md`, written for people who use the app. The **Changelog
+  entry** check fails the pull request without it. See
+  [release-notes/README.md](release-notes/README.md).
 - **Stack pull requests** when one step needs another that is not merged yet. See
   [Stacked pull requests](#stacked-pull-requests).
 - **Coding agents are welcome.** Arakun is a tool for working with them, after all. You

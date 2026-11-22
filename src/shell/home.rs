@@ -202,7 +202,11 @@ impl Shell {
         )
         .on_click(cx.listener(|this, _, _, cx| this.show_alone(None, cx)));
         let view = match alone {
-            Alone::GitHub => self.github_view.clone().into_any_element(),
+            Alone::GitHub => {
+                self.github_view
+                    .update(cx, |v, cx| v.set_card_corners(gpui::Corners::default(), cx));
+                self.github_view.clone().into_any_element()
+            }
             Alone::Servers => self.servers_view.clone().into_any_element(),
             Alone::Usage => {
                 self.usage_shown.set(true);

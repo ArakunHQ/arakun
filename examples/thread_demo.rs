@@ -13,69 +13,7 @@
 //! Enter sends (queued while the agent works), Escape stops the turn. Clicking the mode or model chip
 //! cycles through the agent's choices.
 
-#[path = "../src/agent/mod.rs"]
-mod agent;
-#[allow(dead_code)]
-#[path = "../src/headless/broker.rs"]
-mod broker;
-#[path = "../src/durable.rs"]
-mod durable;
-#[path = "../src/fetch.rs"]
-#[allow(dead_code)]
-mod fetch;
-#[path = "../src/guard.rs"]
-mod guard;
-#[path = "../src/rotate.rs"]
-mod rotate;
-#[allow(dead_code)]
-#[path = "../src/headless/sandbox.rs"]
-mod sandbox;
-#[allow(dead_code)]
-mod headless {
-    // The agent's sandbox and broker; the session store they need is the app's, which examples don't run.
-    pub(crate) use crate::{broker, sandbox};
-    pub fn root() -> std::path::PathBuf {
-        crate::platform::app_dir().join("headless")
-    }
-}
-mod memory {
-    pub fn prompt_for(_: &std::path::Path) -> String {
-        String::new()
-    }
-}
-#[path = "../src/assets.rs"]
-mod assets;
-#[path = "../src/caret.rs"]
-mod caret;
-#[path = "../src/frame_timer.rs"]
-mod frame_timer;
-#[allow(dead_code)]
-#[path = "../src/highlight.rs"]
-mod highlight;
-#[allow(dead_code)]
-#[path = "../src/input.rs"]
-mod input;
-#[allow(dead_code)]
-#[path = "../src/mascot.rs"]
-mod mascot;
-#[allow(dead_code)]
-#[path = "../src/platform.rs"]
-mod platform;
-#[allow(dead_code)]
-#[path = "../src/redact.rs"]
-mod redact;
-#[allow(dead_code)]
-#[path = "../src/schedule.rs"]
-mod schedule;
-#[allow(dead_code)]
-#[path = "../src/theme.rs"]
-mod theme;
-#[allow(dead_code, unused_imports)]
-#[path = "../src/ui.rs"]
-mod ui;
-#[path = "../src/zoom.rs"]
-#[allow(dead_code)]
-mod zoom;
+use arakun_core::{agent, assets, input, theme, ui};
 
 use std::path::PathBuf;
 
@@ -163,6 +101,8 @@ impl Demo {
                     created: 0,
                     updated: 0,
                     pr: None,
+                    seat: None,
+                    seat_key: None,
                 });
                 Thread::start(args.kind, args.cwd.clone(), resume, cx)
             }

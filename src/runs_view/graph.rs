@@ -391,7 +391,7 @@ impl RunsView {
                             .flex_1()
                             .items_center()
                             .justify_center()
-                            .child(ui::spinner("graph-loading", 16., theme::mix(0.4))),
+                            .child(ui::spinner(16., theme::mix(0.4))),
                     )
                     .into_any_element();
             }
@@ -655,7 +655,7 @@ impl RunsView {
                             .justify_center()
                             .size(px(18.))
                             .child(match node.state {
-                                Some(s) => state_icon(("graph-state", i), s, 15.),
+                                Some(s) => state_icon(s, 15.),
                                 None => div()
                                     .size(px(12.))
                                     .rounded_full()

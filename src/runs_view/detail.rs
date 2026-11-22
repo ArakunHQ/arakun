@@ -58,7 +58,7 @@ impl RunsView {
                                     .flex_1()
                                     .items_center()
                                     .justify_center()
-                                    .child(ui::spinner("run-loading", 18., theme::mix(0.4)))
+                                    .child(ui::spinner(18., theme::mix(0.4)))
                                     .into_any_element(),
                                 Some(DetailState::Failed(e)) => {
                                     empty("alert-circle", "Couldn't read this run", e.as_ref())
@@ -129,7 +129,7 @@ impl RunsView {
                     .px(crate::ui::sp(10.))
                     .text_size(px(ui::TEXT_SM))
                     .text_color(theme::text_subtle())
-                    .child(ui::spinner("run-acting", 13., theme::mix(0.5)))
+                    .child(ui::spinner(13., theme::mix(0.5)))
                     .child(if state.done() {
                         "Starting…"
                     } else {
@@ -681,7 +681,7 @@ impl RunsView {
                             .bg(soft_state(state, 0.14))
                             .border_1()
                             .border_color(soft_state(state, 0.3))
-                            .child(state_icon("run-side-state", state, 16.)),
+                            .child(state_icon(state, 16.)),
                     )
                     .child(
                         div()
@@ -1228,20 +1228,20 @@ impl RunsView {
                     )
                     .child(div().flex_1())
                     .child(
-                        ui::icon_button(("code-open", key), "link-square02", 13.).on_click(
-                            cx.listener(move |_, _, _, cx| {
+                        ui::icon_button(("code-open", key), "link-square02", 13., "Open file")
+                            .on_click(cx.listener(move |_, _, _, cx| {
                                 cx.emit(RunsEvent::OpenFile {
                                     branch: branch.clone(),
                                     path: path.clone(),
                                 })
-                            }),
-                        ),
+                            })),
                     )
                     .child(
                         ui::icon_button(
                             ("code-copy", key),
                             if copied { "tick02" } else { "copy01" },
                             13.,
+                            if copied { "Copied" } else { "Copy" },
                         )
                         .on_click(move |_, window, cx| {
                             crate::agent::copy_with_feedback(&copy, window, cx)
@@ -1354,7 +1354,7 @@ impl RunsView {
                 .flex_1()
                 .items_center()
                 .justify_center()
-                .child(ui::spinner("log-loading", 16., theme::mix(0.4)))
+                .child(ui::spinner(16., theme::mix(0.4)))
                 .into_any_element(),
             Some(Err(Some(e))) => {
                 let retry = ui::button("log-retry", "Try again", ui::ButtonKind::Outline, true)
@@ -1692,9 +1692,13 @@ fn log_box(id: impl Into<gpui::ElementId>, lines: &[LogLine], copy: String) -> A
         }))
         .child(
             div().absolute().top(px(6.)).right(px(6.)).child(
-                ui::icon_button(id, if copied { "tick02" } else { "copy01" }, 13.).on_click(
-                    move |_, window, cx| crate::agent::copy_with_feedback(&copy, window, cx),
-                ),
+                ui::icon_button(
+                    id,
+                    if copied { "tick02" } else { "copy01" },
+                    13.,
+                    if copied { "Copied" } else { "Copy" },
+                )
+                .on_click(move |_, window, cx| crate::agent::copy_with_feedback(&copy, window, cx)),
             ),
         )
         .into_any_element()

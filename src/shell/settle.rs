@@ -18,7 +18,7 @@ use crate::github::{pr, queue};
 use crate::model::{Status, unix_now};
 use crate::settle::{self, Book, Merged};
 
-/// Each check asks GitHub once per environment: not more often than this.
+/// Each check asks GitHub once per project: not more often than this.
 const EVERY: Duration = Duration::from_secs(180);
 /// Checks that try again to resolve a merge's threads before giving up on them.
 const TRIES: u32 = 5;
@@ -60,30 +60,52 @@ impl Shell {
         {
             return;
         }
-        let envs: Vec<(PathBuf, String)> = self
+        // Each project's environments, (path, branch); the project is asked once.
+        let projects: Vec<Vec<(PathBuf, String)>> = self
             .projects
             .iter()
-            .flat_map(|p| &p.environments)
-            // The main checkout sits on the default branch: `--head main` would
-            // match any merged pull request opened from a fork's `main`.
-            .filter(|e| !e.is_checkout && e.sync.github && e.sync.gh)
-            .filter_map(|e| Some((e.path.clone(), e.sync.branch.clone()?)))
+            .map(|p| {
+                p.environments
+                    .iter()
+                    // The main checkout sits on the default branch: its merges
+                    // would be any merged pull request from a fork's `main`.
+                    .filter(|e| !e.is_checkout && e.sync.github && e.sync.gh)
+                    .filter_map(|e| Some((e.path.clone(), e.sync.branch.clone()?)))
+                    .collect::<Vec<_>>()
+            })
+            .filter(|envs| !envs.is_empty())
             .collect();
         self.settle.last = Some(Instant::now());
-        if envs.is_empty() {
+        if projects.is_empty() {
             return;
         }
         self.settle.busy = true;
+        let now = unix_now();
         cx.spawn(async move |this, cx| {
             let found: Vec<(PathBuf, Merged)> = cx
                 .background_spawn(crate::guard::task(async move {
-                    envs.into_iter()
-                        .flat_map(|(path, branch)| {
-                            settle::merged_prs(&path, &branch)
-                                .into_iter()
-                                .map(move |m| (path.clone(), m))
-                        })
-                        .collect()
+                    let mut found = Vec::new();
+                    for envs in projects {
+                        let merged = settle::recent_merged(&envs[0].0, now);
+                        // A full list may have left a branch's merge out.
+                        let full = merged.len() >= settle::MERGED_PER_REPO;
+                        for (path, branch) in &envs {
+                            let mut mine: Vec<Merged> =
+                                settle::of_branch(&merged, branch).cloned().collect();
+                            // Even with one of the branch's merges in the list,
+                            // another may be missing: add what the branch query
+                            // finds that the list did not have.
+                            if full {
+                                for m in settle::merged_of_branch(path, branch) {
+                                    if !mine.iter().any(|k| k.url == m.url) {
+                                        mine.push(m);
+                                    }
+                                }
+                            }
+                            found.extend(mine.into_iter().map(|m| (path.clone(), m)));
+                        }
+                    }
+                    found
                 }))
                 .await;
             let Ok(threads) = this.update(cx, |this, cx| this.settle_found(found, cx)) else {

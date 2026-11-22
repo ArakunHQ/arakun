@@ -18,30 +18,28 @@ use gpui::{
     Subscription, Task, Window, canvas, div, px, relative,
 };
 
+use crate::agent::AgentKind;
 use crate::cloudflare::{
     self, Ask, Cert, Day, DnsRecord, Insight, Issue, LoadError, Mcp, Snapshot, Subject, Tunnel,
     Worker, Zone, bytes, count,
 };
 use crate::input::{InputEvent, TextInput};
-use crate::model::Agent;
 use crate::theme;
 use crate::ui::{self, ButtonKind, icon, icon_button};
 
 /// Opening the tab reloads data older than this; the GraphQL API has a tight budget.
 mod overview;
 
-/// Under this width the side navigation shows only its icons.
-const RAIL_UNDER: f32 = 760.;
-const NAV_W: f32 = 216.;
-const RAIL_W: f32 = 58.;
+/// Under this width the page keeps less room at its sides.
+const NARROW_UNDER: f32 = 760.;
 /// The pages never get wider than this.
 const PAGE_MAX: f32 = 1320.;
 
 /// How the tab lays itself out at a width.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Layout {
-    /// The navigation shows icons only.
-    rail: bool,
+    /// The page is narrow: less room at its sides.
+    narrow: bool,
     /// The page's padding at the sides.
     pad: f32,
     /// The width the page's content gets.
@@ -49,18 +47,17 @@ struct Layout {
 }
 
 /// The page's padding at the sides, before the Spacing setting scales it.
-fn page_pad(rail: bool) -> f32 {
-    if rail { 16. } else { 28. }
+fn page_pad(narrow: bool) -> f32 {
+    if narrow { 16. } else { 28. }
 }
 
 fn layout(w: f32) -> Layout {
-    let rail = w < RAIL_UNDER;
-    let nav = if rail { RAIL_W } else { NAV_W };
-    let pad = f32::from(crate::ui::sp(page_pad(rail)));
+    let narrow = w < NARROW_UNDER;
+    let pad = f32::from(crate::ui::sp(page_pad(narrow)));
     Layout {
-        rail,
+        narrow,
         pad,
-        content: ((w - nav).min(PAGE_MAX) - 2. * pad).max(0.),
+        content: (w.min(PAGE_MAX) - 2. * pad).max(0.),
     }
 }
 
@@ -82,7 +79,7 @@ pub enum CloudflareEvent {
     /// that deploys `ask.workers` when there is one.
     Ask(Ask),
     /// Add Cloudflare's MCP server to the agent (if missing) and sign in to it.
-    ConnectMcp(Agent, Mcp),
+    ConnectMcp(AgentKind, Mcp),
     /// Share `localhost:port` with a Quick Tunnel only `emails` can open.
     Share { port: u16, emails: Vec<String> },
     /// Run `cf auth login` (installing `cf` first when `install`).
@@ -116,6 +113,37 @@ enum Page {
 }
 
 impl Page {
+    const ALL: [Page; 11] = [
+        Page::Summary,
+        Page::Domains,
+        Page::Tunnels,
+        Page::Workers,
+        Page::Logs,
+        Page::Containers,
+        Page::Storage,
+        Page::Security,
+        Page::Email,
+        Page::Activity,
+        Page::Tools,
+    ];
+
+    /// What the sidebar gets back when the page is picked.
+    fn key(self) -> &'static str {
+        match self {
+            Page::Summary => "summary",
+            Page::Domains => "domains",
+            Page::Tunnels => "tunnels",
+            Page::Workers => "workers",
+            Page::Logs => "logs",
+            Page::Containers => "containers",
+            Page::Storage => "storage",
+            Page::Security => "security",
+            Page::Email => "email",
+            Page::Activity => "activity",
+            Page::Tools => "tools",
+        }
+    }
+
     fn label(self) -> &'static str {
         match self {
             Page::Summary => "Overview",
@@ -143,7 +171,7 @@ pub struct CloudflareView {
     /// The projects on this machine; their wrangler configs name D1 databases.
     roots: Vec<PathBuf>,
     /// The agent new sessions start with: it gets Investigate and the MCP server.
-    agent: Agent,
+    agent: AgentKind,
     /// Zones whose full DNS list is open.
     dns_open: HashSet<String>,
     /// Kinds of issue whose group is open on the Overview.
@@ -239,18 +267,9 @@ impl CloudflareView {
             }
         });
         // Signed in before: keep the account warm in the background.
-        let warm = cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(WARM_FIRST).await;
-            loop {
-                let alive = this.update(cx, |this, cx| {
-                    if this.snap.is_some() {
-                        this.refresh_if_stale(cx);
-                    }
-                });
-                if alive.is_err() {
-                    break;
-                }
-                cx.background_executor().timer(WARM).await;
+        let warm = crate::poll::poll_every(cx, WARM_FIRST, WARM, |this, cx| {
+            if this.snap.is_some() {
+                this.refresh_if_stale(cx);
             }
         });
         Self {
@@ -261,7 +280,7 @@ impl CloudflareView {
             loading: false,
             analytics_pending: false,
             roots: Vec::new(),
-            agent: Agent::Claude,
+            agent: AgentKind::Claude,
             dns_open: HashSet::new(),
             groups_open: HashSet::new(),
             fix_confirm: None,
@@ -280,7 +299,7 @@ impl CloudflareView {
             chart: cx.new(|_| overview::chart()),
             // Wide until measured, as most windows are.
             width: Rc::new(Cell::new(1200.)),
-            mcp: cloudflare::mcp_configured(Agent::Claude),
+            mcp: cloudflare::mcp_configured(AgentKind::Claude),
             mcp_watch: 0,
             mcp_task: None,
             cloudflared: crate::agent::which("cloudflared").is_some(),
@@ -315,7 +334,7 @@ impl CloudflareView {
     }
 
     /// Follows the agent picked for new sessions, and asks it about the MCP server.
-    pub fn set_agent(&mut self, agent: Agent, cx: &mut Context<Self>) {
+    pub fn set_agent(&mut self, agent: AgentKind, cx: &mut Context<Self>) {
         if self.agent != agent {
             self.agent = agent;
             self.mcp = cloudflare::mcp_configured(agent);
@@ -527,13 +546,14 @@ impl CloudflareView {
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
         let tip = match self.agent {
-            Agent::Claude => "Starts a Claude Code session with what Arakun sees",
-            Agent::Droid => "Starts a Droid session with what Arakun sees",
-            Agent::OpenCode => "Starts an OpenCode session with what Arakun sees",
-            Agent::Codex => "Starts a Codex session with what Arakun sees",
-            Agent::Devin => "Starts a Devin session with what Arakun sees",
-            Agent::Antigravity => "Starts an Antigravity session with what Arakun sees",
-            Agent::WorkersAi => "Starts a Workers AI session with what Arakun sees",
+            AgentKind::Claude => "Starts a Claude Code session with what Arakun sees",
+            AgentKind::Droid => "Starts a Droid session with what Arakun sees",
+            AgentKind::OpenCode => "Starts an OpenCode session with what Arakun sees",
+            AgentKind::Codex => "Starts a Codex session with what Arakun sees",
+            AgentKind::Devin => "Starts a Devin session with what Arakun sees",
+            AgentKind::Cursor => "Starts a Cursor session with what Arakun sees",
+            AgentKind::Antigravity => "Starts an Antigravity session with what Arakun sees",
+            AgentKind::WorkersAi => "Starts a Workers AI session with what Arakun sees",
         };
         ui::button_with(
             SharedString::from(id),
@@ -546,9 +566,23 @@ impl CloudflareView {
         .on_click(cx.listener(move |this, _, _, cx| this.ask(&subject, cx)))
     }
 
-    fn open_button(&self, id: String, path: String, cx: &mut Context<Self>) -> Stateful<Div> {
-        icon_button(SharedString::from(id), "link-square02", 13.)
-            .on_click(cx.listener(move |this, _, _, cx| this.open(&path, cx)))
+    /// `what` names the resource for screen readers: every row has this
+    /// button, and the row's text never reaches them.
+    fn open_button(
+        &self,
+        id: String,
+        path: String,
+        what: &str,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
+        icon_button(
+            SharedString::from(id),
+            "link-square02",
+            13.,
+            "Open in Cloudflare",
+        )
+        .aria_label(format!("Open {what} in Cloudflare"))
+        .on_click(cx.listener(move |this, _, _, cx| this.open(&path, cx)))
     }
 
     fn layout(&self) -> Layout {
@@ -630,7 +664,7 @@ impl CloudflareView {
                 cx,
             ))
             .when_some(subject_path(&issue.subject), |d, path| {
-                d.child(self.open_button(format!("cf-issue-open-{i}"), path, cx))
+                d.child(self.open_button(format!("cf-issue-open-{i}"), path, &issue.title, cx))
             })
     }
 
@@ -647,13 +681,14 @@ impl CloudflareView {
             )
         };
         card(match self.agent {
-            Agent::Claude => "Cloudflare MCP for Claude Code",
-            Agent::Droid => "Cloudflare MCP for Droid",
-            Agent::OpenCode => "Cloudflare MCP for OpenCode",
-            Agent::Codex => "Cloudflare MCP for Codex",
-            Agent::Devin => "Cloudflare MCP for Devin",
-            Agent::Antigravity => "Cloudflare MCP for Antigravity",
-            Agent::WorkersAi => "Cloudflare MCP",
+            AgentKind::Claude => "Cloudflare MCP for Claude Code",
+            AgentKind::Droid => "Cloudflare MCP for Droid",
+            AgentKind::OpenCode => "Cloudflare MCP for OpenCode",
+            AgentKind::Codex => "Cloudflare MCP for Codex",
+            AgentKind::Devin => "Cloudflare MCP for Devin",
+            AgentKind::Cursor => "Cloudflare MCP for Cursor",
+            AgentKind::Antigravity => "Cloudflare MCP for Antigravity",
+            AgentKind::WorkersAi => "Cloudflare MCP",
         })
         .child(
             div()
@@ -673,7 +708,7 @@ impl CloudflareView {
                             .child(format!("Connected: Investigate uses it in {name}")),
                     );
             }
-            let how = if self.agent == Agent::Claude {
+            let how = if self.agent == AgentKind::Claude {
                 "Opens Claude Code: pick cloudflare in /mcp and approve in the browser."
             } else {
                 "Opens a terminal; approve access when the browser asks."
@@ -885,7 +920,7 @@ impl CloudflareView {
                 )
                 .on_click(cx.listener(move |this, _, _, cx| this.open(&security, cx)))
             })
-            .child(self.open_button(format!("cf-zone-{name}"), name.clone(), cx));
+            .child(self.open_button(format!("cf-zone-{name}"), name.clone(), &name, cx));
         let week = div()
             .flex()
             .items_end()
@@ -1226,7 +1261,7 @@ impl CloudflareView {
                 Subject::Tunnel(name.clone()),
                 cx,
             ))
-            .child(self.open_button(format!("cf-tun-open-{name}"), "tunnels".into(), cx));
+            .child(self.open_button(format!("cf-tun-open-{name}"), "tunnels".into(), &name, cx));
         let hosts = if t.hostnames.is_empty() {
             "No DNS record routes to it".to_string()
         } else {
@@ -1388,6 +1423,7 @@ impl CloudflareView {
                             .child(self.open_button(
                                 format!("cf-pages-open-{name}"),
                                 format!("pages/view/{name}"),
+                                &name,
                                 cx,
                             )),
                     )
@@ -1521,6 +1557,7 @@ impl CloudflareView {
             .child(self.open_button(
                 format!("cf-open-{name}"),
                 format!("workers/services/view/{name}/production"),
+                &name,
                 cx,
             ));
         let stats = (w.requests > 0).then(|| {
@@ -1818,6 +1855,7 @@ impl CloudflareView {
                     .child(self.open_button(
                         format!("cf-flow-{name}"),
                         "workers/workflows".into(),
+                        &name,
                         cx,
                     )),
             );
@@ -1870,6 +1908,7 @@ impl CloudflareView {
                             .child(self.open_button(
                                 format!("cf-gw-{id}"),
                                 "ai/ai-gateway".into(),
+                                &id,
                                 cx,
                             )),
                     )
@@ -2067,11 +2106,14 @@ impl CloudflareView {
                     .flex()
                     .gap(crate::ui::sp(10.))
                     // Workers AI has no MCP client; Arakun cannot connect Devin's
-                    // or Antigravity's yet.
+                    // or Cursor's or Antigravity's yet.
                     .when(
                         !matches!(
                             self.agent,
-                            Agent::WorkersAi | Agent::Devin | Agent::Antigravity
+                            AgentKind::WorkersAi
+                                | AgentKind::Devin
+                                | AgentKind::Cursor
+                                | AgentKind::Antigravity
                         ),
                         |d| d.child(self.render_mcp(cx)),
                     )
@@ -2134,10 +2176,7 @@ impl CloudflareView {
                 )
                 .into_any_element(),
             None => center()
-                .child(ui::loading(
-                    "cf-loading",
-                    "Reading your Cloudflare account…",
-                ))
+                .child(ui::loading("Reading your Cloudflare account…"))
                 .into_any_element(),
         }
     }
@@ -2263,15 +2302,16 @@ fn access_denied(problem: &str) -> bool {
 }
 
 /// The agent's short name, for button labels.
-fn agent_name(agent: Agent) -> &'static str {
+fn agent_name(agent: AgentKind) -> &'static str {
     match agent {
-        Agent::Claude => "Claude",
-        Agent::Droid => "Droid",
-        Agent::OpenCode => "OpenCode",
-        Agent::Codex => "Codex",
-        Agent::Devin => "Devin",
-        Agent::Antigravity => "Antigravity",
-        Agent::WorkersAi => "Workers AI",
+        AgentKind::Claude => "Claude",
+        AgentKind::Droid => "Droid",
+        AgentKind::OpenCode => "OpenCode",
+        AgentKind::Codex => "Codex",
+        AgentKind::Devin => "Devin",
+        AgentKind::Cursor => "Cursor",
+        AgentKind::Antigravity => "Antigravity",
+        AgentKind::WorkersAi => "Workers AI",
     }
 }
 
@@ -2733,7 +2773,6 @@ impl Render for CloudflareView {
                 .flex()
                 .flex_1()
                 .min_h_0()
-                .child(self.render_nav(&s, lay.rail, cx))
                 .child(
                     div()
                         .id("cloudflare-body")
@@ -2751,7 +2790,7 @@ impl Render for CloudflareView {
                                 .w_full()
                                 .max_w(px(PAGE_MAX))
                                 .mx_auto()
-                                .px(crate::ui::sp(page_pad(lay.rail)))
+                                .px(crate::ui::sp(page_pad(lay.narrow)))
                                 .py(crate::ui::sp(24.))
                                 .children(access)
                                 .children(waiting)
@@ -2830,13 +2869,13 @@ mod tests {
 
     #[test]
     fn the_layout_follows_the_width() {
-        // A small window: the navigation folds to icons and the page keeps its width.
+        // A small window: less room at the sides, the page keeps its width.
         let l = layout(530.);
-        assert!(l.rail);
-        assert_eq!(l.content, 530. - RAIL_W - 2. * l.pad);
-        // A wide one: the full navigation, the page capped.
+        assert!(l.narrow);
+        assert_eq!(l.content, 530. - 2. * l.pad);
+        // A wide one: the page capped.
         let l = layout(2400.);
-        assert!(!l.rail);
+        assert!(!l.narrow);
         assert_eq!(l.content, PAGE_MAX - 2. * l.pad);
         assert_eq!(layout(0.).content, 0.);
     }

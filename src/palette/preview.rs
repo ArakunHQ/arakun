@@ -120,11 +120,7 @@ impl Palette {
                 quote,
             } => {
                 let (lead, word, color) = match status {
-                    Status::Working => (
-                        kit::lead_spinner("pv-spin"),
-                        "Working",
-                        theme::success().into(),
-                    ),
+                    Status::Working => (kit::lead_spinner(), "Working", theme::success().into()),
                     Status::NeedsInput => (
                         kit::lead_dot(theme::accent(), true).into_any_element(),
                         "Needs you",

@@ -271,6 +271,8 @@ struct Cached {
     /// Claude: the (message id, request id) of each record, for dropping the
     /// copies a resumed or forked transcript repeats.
     keys: Vec<String>,
+    /// Claude: how far the transcript was read, so a write is read from there.
+    tail: Option<ClaudeTail>,
 }
 
 static CACHE: Mutex<Option<HashMap<PathBuf, Cached>>> = Mutex::new(None);
@@ -335,6 +337,7 @@ pub fn scan() -> Vec<Record> {
             | AgentKind::OpenCode
             | AgentKind::Codex
             | AgentKind::Devin
+            | AgentKind::Cursor
             | AgentKind::Antigravity
             | AgentKind::WorkersAi => modified,
         };
@@ -348,8 +351,34 @@ pub fn scan() -> Vec<Record> {
         {
             continue;
         }
+        if *agent == AgentKind::Claude {
+            // A transcript only grows while its session runs: read what was added
+            // since the last scan. Reading it from the start each time read tens of
+            // MB a minute for a long session, and freeing that stalled the window.
+            let entry = cache.entry(file.clone()).or_insert_with(|| Cached {
+                modified: None,
+                len: 0,
+                wal: None,
+                records: Vec::new(),
+                keys: Vec::new(),
+                tail: None,
+            });
+            let mut tail = entry.tail.take().unwrap_or_default();
+            if meta.len() < tail.offset || meta.len() < entry.len {
+                // Shorter than before: rewritten, so read it all again. The read
+                // can stop short of the old length at a half-written last line.
+                tail = ClaudeTail::default();
+                entry.records.clear();
+                entry.keys.clear();
+            }
+            read_claude_from(file, &mut tail, &mut entry.records, &mut entry.keys);
+            entry.modified = stamp;
+            entry.len = meta.len();
+            entry.tail = Some(tail);
+            continue;
+        }
         let (records, keys) = match agent {
-            AgentKind::Claude => read_claude(file),
+            AgentKind::Claude => unreachable!("read above"),
             AgentKind::Droid => (read_droid(file, stamp).into_iter().collect(), Vec::new()),
             AgentKind::Devin => match read_devin(file) {
                 Ok(records) => (records, Vec::new()),
@@ -359,9 +388,11 @@ pub fn scan() -> Vec<Record> {
                 }
             },
             // OpenCode keeps its history in a database arakun does not read, and
-            // Codex's rollouts and Antigravity's conversations are not read yet.
+            // Codex's rollouts, Cursor's chats and Antigravity's conversations
+            // are not read yet.
             AgentKind::OpenCode
             | AgentKind::Codex
+            | AgentKind::Cursor
             | AgentKind::Antigravity
             | AgentKind::WorkersAi => (Vec::new(), Vec::new()),
         };
@@ -373,6 +404,7 @@ pub fn scan() -> Vec<Record> {
                 wal,
                 records,
                 keys,
+                tail: None,
             },
         );
     }
@@ -497,28 +529,66 @@ fn jsonl_files(dir: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
+/// How far a Claude transcript was read, and what reading it so far found.
+#[derive(Default)]
+struct ClaudeTail {
+    /// Bytes read, up to the end of the last whole line.
+    offset: u64,
+    seen: HashSet<String>,
+    /// A title the user gave beats the one Claude Code wrote.
+    custom: Option<String>,
+    ai: Option<String>,
+}
+
 /// One record per API response. Claude Code writes a response once per content
 /// block with the same usage; the message id keeps it to one.
+#[cfg(test)]
 fn read_claude(path: &Path) -> (Vec<Record>, Vec<String>) {
-    let Ok(file) = std::fs::File::open(path) else {
-        return Default::default();
+    let (mut records, mut keys) = (Vec::new(), Vec::new());
+    read_claude_from(path, &mut ClaudeTail::default(), &mut records, &mut keys);
+    (records, keys)
+}
+
+/// Reads `path` from `tail.offset` and adds what it finds to `records` and
+/// `keys`. A last line without its newline is still being written: it is left
+/// for the next read.
+fn read_claude_from(
+    path: &Path,
+    tail: &mut ClaudeTail,
+    records: &mut Vec<Record>,
+    keys: &mut Vec<String>,
+) {
+    use std::io::{Seek as _, SeekFrom};
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return;
     };
-    let mut records = Vec::new();
-    let mut keys = Vec::new();
-    let mut seen = HashSet::new();
-    // A title the user gave beats the one Claude Code wrote.
-    let (mut custom, mut ai) = (None, None);
-    for line in BufReader::new(file).lines() {
-        let Ok(line) = line else { break };
+    if file.seek(SeekFrom::Start(tail.offset)).is_err() {
+        return;
+    }
+    let mut reader = BufReader::new(file);
+    let mut buf = Vec::new();
+    loop {
+        buf.clear();
+        let Ok(n) = reader.read_until(b'\n', &mut buf) else {
+            break;
+        };
+        if n == 0 || buf.last() != Some(&b'\n') {
+            break;
+        }
+        tail.offset += n as u64;
+        let Ok(line) = std::str::from_utf8(&buf) else {
+            continue;
+        };
+        let line = line.trim_end();
         if line.starts_with("{\"type\":\"custom-title\"")
             || line.starts_with("{\"type\":\"ai-title\"")
         {
-            if let Ok(v) = serde_json::from_str::<Value>(&line) {
+            if let Ok(v) = serde_json::from_str::<Value>(line) {
                 if let Some(t) = v["customTitle"].as_str() {
-                    custom = Some(t.to_string());
+                    tail.custom = Some(t.to_string());
                 }
                 if let Some(t) = v["aiTitle"].as_str() {
-                    ai = Some(t.to_string());
+                    tail.ai = Some(t.to_string());
                 }
             }
             continue;
@@ -526,7 +596,7 @@ fn read_claude(path: &Path) -> (Vec<Record>, Vec<String>) {
         if !line.contains("\"usage\"") || !line.contains("\"assistant\"") {
             continue;
         }
-        let Ok(v) = serde_json::from_str::<Value>(&line) else {
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
             continue;
         };
         if v["type"].as_str() != Some("assistant") {
@@ -543,7 +613,7 @@ fn read_claude(path: &Path) -> (Vec<Record>, Vec<String>) {
             m["id"].as_str().unwrap_or_default(),
             v["requestId"].as_str().unwrap_or_default()
         );
-        if !seen.insert(key.clone()) {
+        if !tail.seen.insert(key.clone()) {
             continue;
         }
         let n = |k: &str| u[k].as_u64().unwrap_or(0);
@@ -576,12 +646,14 @@ fn read_claude(path: &Path) -> (Vec<Record>, Vec<String>) {
         });
         keys.push(key);
     }
-    if let Some(title) = custom.or(ai) {
-        for r in &mut records {
-            r.title = title.clone();
+    // A title can arrive after the responses it names.
+    if let Some(title) = tail.custom.clone().or_else(|| tail.ai.clone()) {
+        for r in records.iter_mut() {
+            if r.title != title {
+                r.title = title.clone();
+            }
         }
     }
-    (records, keys)
 }
 
 fn droid_transcript(settings: &Path) -> Option<PathBuf> {
@@ -591,7 +663,7 @@ fn droid_transcript(settings: &Path) -> Option<PathBuf> {
 
 /// A Droid session's running total, dated by its transcript's last write.
 fn read_droid(path: &Path, stamp: Option<SystemTime>) -> Option<Record> {
-    let v: Value = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+    let v: Value = crate::durable::load_json(path)?;
     let u = &v["tokenUsage"];
     let n = |k: &str| u[k].as_u64().unwrap_or(0);
     let credits = n("factoryCredits");
@@ -774,6 +846,39 @@ mod tests {
                 < 1e-9
         );
         assert!((r.cache_savings() - 3.8).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_growing_transcript_is_read_from_where_it_stopped() {
+        let dir = std::env::temp_dir().join(format!("arakun-history-tail-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("s.jsonl");
+        let line = |id: &str| {
+            format!(
+                r#"{{"type":"assistant","timestamp":"2026-10-25T10:00:00Z","sessionId":"s","requestId":"r","cwd":"/p","message":{{"id":"{id}","model":"claude-opus-5-5","usage":{{"input_tokens":1,"output_tokens":1}}}}}}"#
+            )
+        };
+        let (mut tail, mut records, mut keys) = (ClaudeTail::default(), Vec::new(), Vec::new());
+        std::fs::write(&path, format!("{}\n", line("m1"))).unwrap();
+        read_claude_from(&path, &mut tail, &mut records, &mut keys);
+        assert_eq!(records.len(), 1);
+        // A second response, a repeat of the first, and half of a third.
+        let third = line("m3");
+        let (half, rest) = third.split_at(20);
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        use std::io::Write as _;
+        write!(f, "{}\n{}\n{half}", line("m2"), line("m1")).unwrap();
+        read_claude_from(&path, &mut tail, &mut records, &mut keys);
+        assert_eq!(keys, ["m1:r", "m2:r"]);
+        // The rest of the third line arrives with its newline.
+        writeln!(f, "{rest}").unwrap();
+        read_claude_from(&path, &mut tail, &mut records, &mut keys);
+        assert_eq!(keys, ["m1:r", "m2:r", "m3:r"]);
+        assert_eq!(tail.offset, std::fs::metadata(&path).unwrap().len());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

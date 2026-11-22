@@ -1,24 +1,32 @@
-//! The Branches tab: every live branch of the project as a lane next to the
-//! default branch, on a time axis that only spends room where commits happened.
-//! Each commit wears the color of the agent that wrote it; each row says what
-//! the branch needs (conflicts, failing checks, ready to merge...) with the
-//! most urgent first, and a selected branch opens its PR, environment, sessions
-//! and commits, with a session to fix conflicts or checks one click away.
+//! The Branches tab: the history of the default branch, newest first, with
+//! each branch as a colored lane beside it (see `branch_history`). A branch
+//! not in the default one yet shows at its newest commit with its
+//! environment, the live session there and its pull request; a merged one
+//! leaves the default line and comes back at the commit that took it in.
+//! Pointing at a commit, or moving to it with the arrow keys, shows who wrote
+//! it, with which agent, what it changed and its pull request. A selected
+//! branch opens its PR, environment, sessions and commits, with a session to
+//! fix conflicts or checks one click away.
 
+use std::cell::Cell;
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::time::Duration;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, AppContext as _, BorderStyle, Bounds, Context, Div, EventEmitter, FocusHandle,
-    FontWeight, Hsla, InteractiveElement as _, IntoElement, ParentElement as _, PathBuilder,
-    Pixels, Render, ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled as _, Task,
-    TextAlign, TextRun, Window, canvas, div, point, px, quad, size,
+    FontWeight, Hsla, InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _,
+    PathBuilder, Pixels, Render, Role, ScrollHandle, SharedString, StatefulInteractiveElement as _,
+    Styled as _, Task, Window, canvas, div, point, px, quad, size,
 };
 
-use crate::branches::{self, Branch, Checks, Map, Status, Who};
+use crate::agent::AgentKind;
+use crate::branch_history::{self, History, People, Source};
+use crate::branches::{self, Branch, Checks, Commit, Map, Status, Who};
 use crate::input::{InputEvent, TextInput};
-use crate::model::{Agent, Status as SessionStatus};
+use crate::model::Status as SessionStatus;
 use crate::theme;
 use crate::ui::{self, ButtonKind, icon, icon_button};
 
@@ -26,14 +34,21 @@ use crate::ui::{self, ButtonKind, icon, icon_button};
 const STALE: Duration = Duration::from_secs(60);
 /// While the tab is closed the map is read this often, for the rail's badge.
 const BACKGROUND: Duration = Duration::from_secs(5 * 60);
-const ROW_H: f32 = 34.;
-/// Room above the lanes for the day labels.
-const AXIS_H: f32 = 22.;
-const LABEL_W: f32 = 200.;
-const STATUS_W: f32 = 300.;
-/// Room per commit on the time axis.
-const COL_W: f32 = 18.;
-const PAD: f32 = 14.;
+/// One commit per row; the lanes are painted on the same grid.
+const ROW_H: f32 = 40.;
+/// x of the default branch's line, and the room between lanes.
+const MAIN_X: f32 = 24.;
+const LANE_STEP: f32 = 20.;
+/// Rows shown before the rest folds under "N more commits".
+const SHOWN_ROWS: usize = 40;
+/// Under this width the list drops the author, the PR number, branch names
+/// and the `type(scope):` prefix, as in the Workspace panel.
+const COMPACT_W: f32 = 640.;
+const AUTHOR_W: f32 = 150.;
+const TIME_W: f32 = 32.;
+const CARD_W: f32 = 340.;
+/// About the card's height, to tell if it fits under its row.
+const CARD_H: f32 = 240.;
 
 const CLAUDE: u32 = 0xD97757;
 const DROID: u32 = 0x8B7CF6;
@@ -53,7 +68,7 @@ pub struct EnvInfo {
 pub struct SessionInfo {
     pub id: SharedString,
     pub title: SharedString,
-    pub agent: Agent,
+    pub agent: AgentKind,
     pub status: SessionStatus,
 }
 
@@ -103,30 +118,68 @@ pub enum BranchesEvent {
 pub struct BranchesView {
     root: Option<PathBuf>,
     envs: Vec<EnvInfo>,
-    map: Option<Map>,
+    map: Option<Rc<Map>>,
     loading: bool,
     loaded_at: Option<std::time::Instant>,
     selected: Option<String>,
-    show_idle: bool,
-    show_merged: bool,
+    /// The row under the pointer, and the one the arrow keys moved to.
+    hovered: Option<usize>,
+    cursor: Option<usize>,
+    /// The arrow keys moved last: the cursor's row shows its card.
+    keyed: bool,
+    /// Every commit read, not only the first [`SHOWN_ROWS`].
+    show_all: bool,
+    /// The branches that got no lane, listed above the history.
+    show_folded: bool,
     /// The field to link a GitHub repository, for a repository without a remote.
     show_repo: bool,
+    /// The width this view got last frame; it decides the layout of this one.
+    width: Rc<Cell<f32>>,
+    /// Where the history list started last frame, in window pixels, to
+    /// scroll the row the arrow keys moved to into view.
+    list_y: Rc<Cell<f32>>,
     focus: FocusHandle,
+    /// The two folds, reachable with Tab.
+    more_focus: FocusHandle,
+    folded_focus: FocusHandle,
     scroll: ScrollHandle,
     /// `owner/name` of the GitHub repository to read pull requests from.
     repo: gpui::Entity<TextInput>,
     repo_error: Option<String>,
     _repo: gpui::Subscription,
     _load: Option<Task<()>>,
+    /// Who is who among the authors of `map`, worked out with it.
+    people: Rc<People>,
+    /// GitHub pictures by lower-case login; None while one downloads or
+    /// when it failed. Read from disk or GitHub off the UI thread, once.
+    avatars: HashMap<String, Option<PathBuf>>,
+    _avatars: Option<Task<()>>,
 }
 
 impl EventEmitter<BranchesEvent> for BranchesView {}
 
-/// A row of the graph: the default branch, or one branch.
-struct Row<'a> {
+/// What one row is, worked out once per frame for its text, its card and
+/// what a click does.
+struct RowInfo<'a> {
+    commit: &'a Commit,
+    /// On a branch's lane (dimmer), not on the default branch.
+    side: bool,
+    /// The newest commit of a branch not in the default one yet.
+    tip: Option<&'a Branch>,
+    /// The merged branch that comes back into the default line here.
+    merged: Option<&'a Branch>,
+    /// The branch a click selects and the card names.
     branch: Option<&'a Branch>,
-    status: Status,
-    env: Option<&'a EnvInfo>,
+    pr: Option<&'a branches::Pr>,
+    /// The PR number from a squash title, when its PR wasn't read.
+    pr_number: Option<u64>,
+    /// The title without " (#N)".
+    title: &'a str,
+    lane: Option<Hsla>,
+    tag: Option<&'a str>,
+    /// The author's name, one per person, and their GitHub login.
+    author: &'a str,
+    login: Option<&'a str>,
 }
 
 impl BranchesView {
@@ -147,10 +200,20 @@ impl BranchesView {
             loading: false,
             loaded_at: None,
             selected: None,
-            show_idle: false,
-            show_merged: false,
+            hovered: None,
+            cursor: None,
+            keyed: false,
+            show_all: false,
+            show_folded: false,
             show_repo: false,
+            people: Rc::default(),
+            avatars: HashMap::new(),
+            _avatars: None,
+            width: Rc::new(Cell::new(1200.)),
+            list_y: Rc::new(Cell::new(0.)),
             focus: cx.focus_handle(),
+            more_focus: cx.focus_handle().tab_index(0).tab_stop(true),
+            folded_focus: cx.focus_handle().tab_index(0).tab_stop(true),
             scroll: ScrollHandle::new(),
             _load: None,
         }
@@ -172,6 +235,9 @@ impl BranchesView {
             self.root = root;
             self.map = None;
             self.selected = None;
+            self.hovered = None;
+            self.cursor = None;
+            self.show_all = false;
             self.loaded_at = None;
             self._load = None;
             self.loading = false;
@@ -205,7 +271,6 @@ impl BranchesView {
         })
     }
 
-    /// Every branch read, with its PR's number and title: what Ctrl+K can jump to.
     /// Each branch with how far it is ahead of the default one, for the palette.
     pub fn branch_ahead(&self) -> Vec<(String, u64, u64)> {
         self.map.as_ref().map_or_else(Vec::new, |m| {
@@ -216,6 +281,7 @@ impl BranchesView {
         })
     }
 
+    /// Every branch read, with its PR's number and title: what Ctrl+K can jump to.
     pub fn branch_list(&self) -> Vec<(String, Option<(u64, String)>)> {
         self.map.as_ref().map_or_else(Vec::new, |m| {
             m.branches
@@ -236,13 +302,7 @@ impl BranchesView {
         let now = crate::model::unix_now();
         map.branches
             .iter()
-            .filter(|b| {
-                let env = self.env_of(&b.name);
-                matches!(
-                    b.status(env.is_some(), env.is_some_and(EnvInfo::working), now),
-                    Status::Conflict | Status::Failing
-                )
-            })
+            .filter(|b| matches!(self.status_of(b, now), Status::Conflict | Status::Failing))
             .count()
     }
 
@@ -264,10 +324,12 @@ impl BranchesView {
         cx.notify();
         self._load = Some(cx.spawn(async move |this, cx| {
             let r = root.clone();
-            let map = cx
-                .background_spawn(crate::guard::task_or_default(
-                    async move { branches::load(&r) },
-                ))
+            let (map, people) = cx
+                .background_spawn(crate::guard::task_or_default(async move {
+                    let map = branches::load(&r);
+                    let people = branch_history::people(&map);
+                    (map, people)
+                }))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 if this.root.as_ref() == Some(&root) {
@@ -280,12 +342,79 @@ impl BranchesView {
                             });
                         }
                     }
-                    this.map = Some(map);
+                    this.map = Some(Rc::new(map));
+                    this.people = Rc::new(people);
+                    this.fetch_avatars(cx);
+                    // Rows moved: the card would describe another commit.
+                    this.hovered = None;
+                    this.cursor = None;
                 }
                 this.loading = false;
                 cx.notify();
             });
         }));
+    }
+    /// Pictures of the people with a GitHub login that aren't asked for yet:
+    /// from the GitHub tab's cache on disk, else downloaded, in the
+    /// background. A render only reads what arrived.
+    fn fetch_avatars(&mut self, cx: &mut Context<Self>) {
+        let want: Vec<String> = self
+            .people
+            .logins()
+            .into_iter()
+            .filter(|l| !self.avatars.contains_key(l))
+            .collect();
+        if want.is_empty() || self._avatars.is_some() {
+            return;
+        }
+        for l in &want {
+            self.avatars.insert(l.clone(), None);
+        }
+        self._avatars = Some(cx.spawn(async move |this, cx| {
+            let got = cx
+                .background_spawn(crate::guard::task_or_default(async move {
+                    let dir = crate::github::avatars::dir();
+                    let one = |login: String| {
+                        let path = match crate::github::avatars::cached(&dir, &login) {
+                            Some((path, false)) => Some(path),
+                            // Due again: a failed download keeps the old one.
+                            Some((path, true)) => crate::github::avatars::download(&dir, &login)
+                                .ok()
+                                .or(Some(path)),
+                            None => crate::github::avatars::download(&dir, &login).ok(),
+                        };
+                        (login, path)
+                    };
+                    // Four at a time, like the GitHub tab.
+                    let size = want.len().div_ceil(4).max(1);
+                    std::thread::scope(|sc| {
+                        let jobs: Vec<_> = want
+                            .chunks(size)
+                            .map(|part| {
+                                let one = &one;
+                                sc.spawn(move || part.iter().cloned().map(one).collect::<Vec<_>>())
+                            })
+                            .collect();
+                        jobs.into_iter()
+                            .flat_map(|j| j.join().unwrap_or_default())
+                            .collect::<Vec<_>>()
+                    })
+                }))
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this._avatars = None;
+                for (login, path) in got {
+                    this.avatars.insert(login, path);
+                }
+                // People who showed up while these were read.
+                this.fetch_avatars(cx);
+                cx.notify();
+            });
+        }));
+    }
+
+    fn picture(&self, login: Option<&str>) -> Option<&std::path::Path> {
+        self.avatars.get(login?)?.as_deref()
     }
 
     /// Reads pull requests from the GitHub repository typed in the field.
@@ -372,49 +501,12 @@ impl BranchesView {
         self.envs.iter().find(|e| e.branch == branch)
     }
 
-    /// The rows, most urgent first; merged and inactive ones only when shown.
-    /// Also how many of each are hidden or shown.
-    fn rows<'a>(&'a self, map: &'a Map, now: u64) -> (Vec<Row<'a>>, usize, usize) {
-        let mut rows: Vec<Row> = map
-            .branches
-            .iter()
-            .map(|b| {
-                let env = self.env_of(&b.name);
-                Row {
-                    branch: Some(b),
-                    status: b.status(env.is_some(), env.is_some_and(EnvInfo::working), now),
-                    env,
-                }
-            })
-            .collect();
-        rows.sort_by(|a, b| {
-            a.status.cmp(&b.status).then_with(|| {
-                b.branch
-                    .map_or(0, |x| x.time)
-                    .cmp(&a.branch.map_or(0, |x| x.time))
-            })
-        });
-        let idle = rows.iter().filter(|r| r.status == Status::Idle).count();
-        let merged = rows.iter().filter(|r| r.status == Status::Merged).count();
-        let selected = self.selected.as_deref();
-        // A selected row stays, so its detail and lane match.
-        rows.retain(|r| match r.status {
-            Status::Idle => self.show_idle || r.branch.map(|b| b.name.as_str()) == selected,
-            Status::Merged => self.show_merged || r.branch.map(|b| b.name.as_str()) == selected,
-            _ => true,
-        });
-        rows.insert(
-            0,
-            Row {
-                branch: None,
-                status: Status::Working,
-                env: self.env_of(&map.main),
-            },
-        );
-        (rows, merged, idle)
+    fn status_of(&self, b: &Branch, now: u64) -> Status {
+        let env = self.env_of(&b.name);
+        b.status(env.is_some(), env.is_some_and(EnvInfo::working), now)
     }
 
-    /// Selects `name` (its row shows even in a hidden group).
+    /// Selects `name`; its detail opens above the history.
     pub fn reveal(&mut self, name: String, cx: &mut Context<Self>) {
         self.selected = Some(name);
         cx.notify();
@@ -425,206 +517,704 @@ impl BranchesView {
         cx.notify();
     }
 
-    fn render_summary(&self, map: &Map, now: u64) -> Div {
-        let mut counts: Vec<(Status, usize)> = Vec::new();
-        for b in &map.branches {
-            let env = self.env_of(&b.name);
-            let s = b.status(env.is_some(), env.is_some_and(EnvInfo::working), now);
-            match counts.iter_mut().find(|(x, _)| *x == s) {
-                Some(c) => c.1 += 1,
-                None => counts.push((s, 1)),
-            }
-        }
-        counts.sort_by_key(|(s, _)| *s);
-        div().flex().flex_wrap().gap(crate::ui::sp(8.)).children(
-            counts
-                .into_iter()
-                .filter(|(s, _)| *s != Status::Idle)
-                .map(|(s, n)| {
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(crate::ui::sp(6.))
-                        .h(px(26.))
-                        .px(crate::ui::sp(10.))
-                        .rounded_full()
-                        .bg(status_color(s).opacity(0.12))
-                        .text_size(px(ui::TEXT_SM))
-                        .child(div().size(px(7.)).rounded_full().bg(status_color(s)))
-                        .child(div().font_weight(FontWeight::MEDIUM).child(n.to_string()))
-                        .child(div().text_color(theme::text_muted()).child(s.label()))
-                }),
-        )
+    /// Inactive branches get no lane: they would only push the live ones aside.
+    fn history(&self, map: &Map, now: u64) -> History {
+        branch_history::layout(map, |b| self.status_of(b, now) != Status::Idle)
     }
 
-    fn render_graph(
+    /// How many rows show: the first [`SHOWN_ROWS`], and far enough for every
+    /// lane that starts in them to come back into the default line.
+    fn shown_rows(&self, h: &History) -> usize {
+        if self.show_all {
+            return h.rows.len();
+        }
+        let lanes_end = h
+            .lanes
+            .iter()
+            .filter(|l| l.top < SHOWN_ROWS)
+            .filter_map(|l| l.bottom)
+            .max()
+            .map_or(0, |b| b + 1);
+        SHOWN_ROWS.max(lanes_end).min(h.rows.len())
+    }
+
+    /// Selects the branch of row `r`, the way a click on it does.
+    fn activate(&mut self, r: usize, cx: &mut Context<Self>) {
+        let Some(map) = self.map.clone() else { return };
+        let h = self.history(&map, crate::model::unix_now());
+        if r >= h.rows.len() {
+            return;
+        }
+        let people = self.people.clone();
+        let info = row_info(&map, &h, &pr_index(&map), &HashMap::new(), &people, r);
+        if let Some(b) = info.branch {
+            self.select(Some(b.name.clone()), cx);
+        }
+    }
+
+    fn on_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let k = &ev.keystroke;
+        // Keys typed in the repository field are text, not moves.
+        if k.modifiers.control
+            || k.modifiers.alt
+            || k.modifiers.platform
+            || !self.focus.is_focused(window)
+        {
+            return;
+        }
+        let Some(map) = self.map.clone() else { return };
+        let h = self.history(&map, crate::model::unix_now());
+        let n = self.shown_rows(&h);
+        if n == 0 {
+            return;
+        }
+        let at = self.cursor.or(self.hovered);
+        match k.key.as_str() {
+            "down" | "j" => self.cursor = Some(at.map_or(0, |r| (r + 1).min(n - 1))),
+            "up" | "k" => self.cursor = Some(at.map_or(0, |r| r.saturating_sub(1))),
+            "home" => self.cursor = Some(0),
+            "end" => self.cursor = Some(n - 1),
+            "enter" | "space" => {
+                if let Some(r) = at {
+                    self.activate(r, cx);
+                }
+            }
+            "escape" if self.selected.is_some() => self.selected = None,
+            "escape" => self.cursor = None,
+            _ => return,
+        }
+        self.hovered = None;
+        self.keyed = true;
+        if let Some(r) = self.cursor {
+            self.scroll_to_row(r);
+        }
+        cx.stop_propagation();
+        cx.notify();
+    }
+
+    /// Scrolls just enough for row `r` and the card under it to show.
+    fn scroll_to_row(&self, r: usize) {
+        let view = self.scroll.bounds();
+        let (top, bottom) = (f32::from(view.top()), f32::from(view.bottom()));
+        let y = self.list_y.get() + r as f32 * ROW_H;
+        let mut offset = self.scroll.offset();
+        if y < top {
+            offset.y += px(top - y);
+        } else if y + ROW_H > bottom {
+            offset.y -= px(y + ROW_H - bottom);
+        }
+        self.scroll.set_offset(offset);
+    }
+
+    fn render_header(
         &self,
-        map: &Map,
-        rows: &[Row],
-        merged: usize,
-        idle: usize,
+        map: Option<&Map>,
+        compact: bool,
         now: u64,
         cx: &mut Context<Self>,
     ) -> Div {
-        let lanes = Lanes::new(map, rows);
-        let height = AXIS_H + rows.len() as f32 * ROW_H;
-        let painter = lanes.clone();
-        let graph = canvas(
-            |_, _, _| {},
-            move |bounds, _, window, cx| painter.paint(bounds, window, cx),
-        )
-        .absolute()
-        .top_0()
-        .bottom_0()
-        .left(px(LABEL_W))
-        .right(px(STATUS_W))
-        .h(px(height));
-
-        // The lanes are painted from a fixed AXIS_H, so the rows start there
-        // too, whatever the Spacing: a spacer, not padding, keeps them on it.
-        let mut list = div()
-            .relative()
-            .flex()
-            .flex_col()
-            .child(div().flex_none().h(px(AXIS_H)));
-        for (i, row) in rows.iter().enumerate() {
-            list = list.child(self.render_row(map, row, i, now, cx));
-        }
-        let toggle = |id: &'static str,
-                      open: bool,
-                      label: String,
-                      cx: &mut Context<Self>,
-                      flip: fn(&mut Self)| {
-            div()
-                .id(id)
-                .flex()
-                .items_center()
-                .gap(crate::ui::sp(6.))
-                .h(px(28.))
-                .px(crate::ui::sp(12.))
-                .text_size(px(ui::TEXT_SM))
-                .text_color(theme::text_subtle())
-                .cursor_pointer()
-                .hover(|s| s.text_color(theme::content()))
-                .child(
-                    icon(if open { "arrow-up01" } else { "arrow-down01" }, 12.)
-                        .text_color(theme::text_subtle()),
-                )
-                .child(label)
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    flip(this);
-                    cx.notify();
-                }))
-        };
-        let plural = |n: usize| if n == 1 { "branch" } else { "branches" };
-        let toggles = div()
-            .flex()
-            .gap(crate::ui::sp(4.))
-            .when(merged > 0, |d| {
-                let label = if self.show_merged {
-                    "Hide merged".to_string()
-                } else {
-                    format!("{merged} merged this week")
-                };
-                d.child(toggle(
-                    "branches-merged",
-                    self.show_merged,
-                    label,
-                    cx,
-                    |this| this.show_merged = !this.show_merged,
-                ))
-            })
-            .when(idle > 0, |d| {
-                let label = if self.show_idle {
-                    "Hide inactive".to_string()
-                } else {
-                    format!("{idle} inactive {}", plural(idle))
-                };
-                d.child(toggle("branches-idle", self.show_idle, label, cx, |this| {
-                    this.show_idle = !this.show_idle
-                }))
-            });
+        let open = map.map_or(0, |m| {
+            m.branches
+                .iter()
+                .filter(|b| {
+                    branch_history::not_in_main(b) && !branch_history::integration(b, &m.main)
+                })
+                .count()
+        });
+        let no_remote = map.is_some_and(|m| m.prs_error.as_deref() == Some(branches::NO_REMOTE));
         div()
             .flex()
-            .flex_col()
-            .rounded(crate::ui::rad(ui::RADIUS_LG))
-            .bg(theme::fill_raised())
-            .overflow_hidden()
-            .child(div().relative().child(list).child(graph))
-            .when(merged + idle > 0, |d| d.child(toggles))
+            .flex_none()
+            .items_center()
+            .gap(crate::ui::sp(10.))
+            .h(px(ui::TOOLBAR_H))
+            .px(crate::ui::sp(16.))
+            .border_b_1()
+            .border_color(theme::stroke())
+            .when(!compact, |d| {
+                d.child(
+                    div()
+                        .flex_none()
+                        .text_size(px(ui::TEXT_LG))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child("History"),
+                )
+            })
+            .when_some(map, |d, m| {
+                d.child(
+                    div()
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .gap(crate::ui::sp(6.))
+                        .h(px(26.))
+                        .px(crate::ui::sp(8.))
+                        .rounded(crate::ui::rad(ui::RADIUS))
+                        .border_1()
+                        .border_color(theme::border())
+                        .child(icon("git-branch", 12.).text_color(theme::text_muted()))
+                        .child(
+                            div()
+                                .font_family(theme::FONT_MONO)
+                                .text_size(px(ui::TEXT_SM))
+                                .child(m.main.clone()),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex_none()
+                        .font_family(theme::FONT_MONO)
+                        .text_size(px(ui::TEXT_SM))
+                        .text_color(theme::text_subtle())
+                        .child(m.main_total.to_string()),
+                )
+                // Set by hand for a clone without a GitHub remote.
+                .when_some(m.github.clone().filter(|_| !compact), |d, g| {
+                    d.child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(px(ui::TEXT_SM))
+                            .text_color(theme::text_faint())
+                            .child(format!("PRs from {g}")),
+                    )
+                })
+            })
+            .child(div().flex_1())
+            .when(no_remote && !compact, |d| {
+                d.child(
+                    div()
+                        .id("branches-link-repo")
+                        .flex_none()
+                        .text_size(px(ui::TEXT_SM))
+                        .text_color(theme::text_faint())
+                        .cursor_pointer()
+                        .hover(|s| s.text_color(theme::content()))
+                        .child("No GitHub remote · Link a repo")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.show_repo = !this.show_repo;
+                            cx.notify();
+                        })),
+                )
+            })
+            .when(open > 0, |d| {
+                let text = match (compact, open) {
+                    (true, n) => format!("{n} not in main"),
+                    (false, 1) => "1 branch not in main".to_string(),
+                    (false, n) => format!("{n} branches not in main"),
+                };
+                d.child(
+                    div()
+                        .flex_none()
+                        .text_size(px(ui::TEXT_SM))
+                        .text_color(theme::text_subtle())
+                        .child(text),
+                )
+            })
+            .child(ui::refresh_control(
+                "branches-refresh",
+                self.loading,
+                map.filter(|_| !compact)
+                    .map(|m| crate::account::ago(m.fetched, now)),
+                cx.listener(|this, _, _, cx| this.refresh(cx)),
+            ))
     }
 
-    fn render_row(
+    /// A fold that opens with a click, or with Enter or Space once Tab
+    /// reached it (GPUI turns those keys on a focused element into a click).
+    #[allow(clippy::too_many_arguments)]
+    fn disclosure(
+        &self,
+        id: &'static str,
+        focus: &FocusHandle,
+        open: bool,
+        label: String,
+        lead: f32,
+        height: f32,
+        cx: &mut Context<Self>,
+        flip: fn(&mut Self),
+    ) -> gpui::Stateful<Div> {
+        ui::labelled(div().id(id), Role::Button, label.clone())
+            .aria_expanded(open)
+            .track_focus(focus)
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap(crate::ui::sp(6.))
+            .h(px(height))
+            .rounded(crate::ui::rad(ui::RADIUS))
+            .text_size(px(ui::TEXT_SM))
+            .text_color(theme::text_subtle())
+            .cursor_pointer()
+            .hover(|s| s.text_color(theme::content()))
+            .focus_visible(|s| s.text_color(theme::content()).bg(theme::fill_hover()))
+            .child(div().flex_none().w(px(lead)))
+            .child(
+                icon(if open { "arrow-up01" } else { "arrow-down01" }, 12.)
+                    .text_color(theme::text_subtle()),
+            )
+            .child(label)
+            .on_click(cx.listener(move |this, _, _, cx| {
+                flip(this);
+                cx.notify();
+            }))
+    }
+
+    /// The branches not in the default one that got no lane: a fold above
+    /// the history, opened into a row per branch.
+    fn render_folded(
         &self,
         map: &Map,
-        row: &Row,
-        i: usize,
+        h: &History,
+        gutter: f32,
+        now: u64,
+        cx: &mut Context<Self>,
+    ) -> Option<Div> {
+        let n = h.folded.len();
+        if n == 0 {
+            return None;
+        }
+        let label = if n == 1 {
+            "1 more branch not in main".to_string()
+        } else {
+            format!("{n} more branches not in main")
+        };
+        let toggle = self.disclosure(
+            "history-folded",
+            &self.folded_focus,
+            self.show_folded,
+            label,
+            gutter - 18.,
+            32.,
+            cx,
+            |this| this.show_folded = !this.show_folded,
+        );
+        let rows = self.show_folded.then(|| {
+            div().flex().flex_col().children(h.folded.iter().map(|&bi| {
+                let b = &map.branches[bi];
+                let env = self.env_of(&b.name);
+                let status = self.status_of(b, now);
+                let name = b.name.clone();
+                let selected = self.selected.as_deref() == Some(b.name.as_str());
+                ui::labelled(
+                    div().id(SharedString::from(format!("history-folded-{bi}"))),
+                    Role::Button,
+                    format!("{}, {}", b.name, status.label()),
+                )
+                .flex()
+                .items_center()
+                .gap(crate::ui::sp(8.))
+                .h(px(32.))
+                .pr(crate::ui::sp(12.))
+                .rounded(crate::ui::rad(ui::RADIUS))
+                .cursor_pointer()
+                .when(selected, |d| d.bg(theme::fill_selected()))
+                .hover(|s| s.bg(theme::fill_hover()))
+                .child(div().flex_none().w(px(gutter)))
+                .child(
+                    div()
+                        .flex_none()
+                        .size(px(6.))
+                        .rounded_full()
+                        .bg(status_color(status)),
+                )
+                .child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .font_family(theme::FONT_MONO)
+                        .text_size(px(ui::TEXT_SM))
+                        .child(b.name.clone()),
+                )
+                .when_some(env, |d, e| {
+                    d.child(icon("folder01", 11.).text_color(theme::text_subtle()))
+                        .child(meta(e.name.clone()))
+                })
+                .child(div().flex_1())
+                .children(row_status(b, status, env, now))
+                .on_click(cx.listener(move |this, _, _, cx| this.select(Some(name.clone()), cx)))
+            }))
+        });
+        Some(
+            div()
+                .flex()
+                .flex_col()
+                .pb(crate::ui::sp(4.))
+                .child(toggle)
+                .children(rows),
+        )
+    }
+
+    fn render_history(
+        &self,
+        map: &Map,
+        h: &History,
+        shown: usize,
+        compact: bool,
+        now: u64,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let by_pr = pr_index(map);
+        let tags = tag_index(map);
+        let gutter = gutter(h, shown);
+        let active = self
+            .hovered
+            .or(self.cursor.filter(|_| self.keyed))
+            .filter(|r| *r < shown);
+        let more = h.rows.len() - shown;
+
+        let mut list = div().relative().flex().flex_col();
+        let mut card = None;
+        for r in 0..shown {
+            let info = row_info(map, h, &by_pr, &tags, &self.people, r);
+            if active == Some(r) {
+                card = Some(self.render_card(map, &info, now));
+            }
+            list =
+                list.child(self.render_row(&info, r, active == Some(r), compact, gutter, now, cx));
+        }
+        if more > 0 {
+            let label = if more == 1 {
+                "1 more commit".to_string()
+            } else {
+                format!("{more} more commits")
+            };
+            list = list.child(self.disclosure(
+                "history-more",
+                &self.more_focus,
+                false,
+                label,
+                gutter,
+                ROW_H,
+                cx,
+                |this| this.show_all = true,
+            ));
+        }
+        let rows = shown + usize::from(more > 0);
+        let graph = Graph::new(map, h, shown, more > 0);
+        let list_y = self.list_y.clone();
+        list = list.child(
+            canvas(
+                |_, _, _| {},
+                move |bounds, _, window, _| {
+                    list_y.set(f32::from(bounds.origin.y));
+                    graph.paint(bounds, window);
+                },
+            )
+            .absolute()
+            .top_0()
+            .left_0()
+            .w(px(gutter))
+            .h(px(rows as f32 * ROW_H)),
+        );
+        if let (Some(r), Some(card)) = (active, card) {
+            // Under its row, unless the view ends before the card would:
+            // then above it, where there is room.
+            let view = self.scroll.bounds();
+            let row_y = self.list_y.get() + r as f32 * ROW_H;
+            let below = row_y + ROW_H + CARD_H <= f32::from(view.bottom());
+            let above = row_y - CARD_H >= f32::from(view.top());
+            let card = if below || !above {
+                card.top(px((r + 1) as f32 * ROW_H + 2.))
+            } else {
+                card.bottom(px((rows - r) as f32 * ROW_H + 2.))
+            };
+            let card = if compact {
+                card.left(px(gutter)).right(px(8.))
+            } else {
+                card.w(px(CARD_W)).right(px(AUTHOR_W + TIME_W + 40.))
+            };
+            list = list.child(card);
+        }
+        list
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn render_row(
+        &self,
+        info: &RowInfo,
+        r: usize,
+        active: bool,
+        compact: bool,
+        gutter: f32,
         now: u64,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let name = row.branch.map_or(map.main.clone(), |b| b.name.clone());
-        let selected = self.selected.as_deref() == Some(name.as_str()) && row.branch.is_some();
-        let color = row
-            .branch
-            .map_or(theme::mix(0.45), |_| status_color(row.status));
-        let label = div()
-            .flex()
-            .items_center()
-            .gap(crate::ui::sp(8.))
-            .w(px(LABEL_W))
-            .flex_none()
-            .pl(crate::ui::sp(14.))
-            .pr(crate::ui::sp(8.))
-            .child(div().flex_none().size(px(8.)).rounded_full().bg(color))
-            .child(
+        let c = info.commit;
+        let title = if compact {
+            branch_history::without_type(info.title)
+        } else {
+            info.title
+        };
+        let number = info.pr.map(|p| p.number).or(info.pr_number);
+        let mut tags: Vec<AnyElement> = Vec::new();
+        if let Some(b) = info.tip {
+            if !compact {
+                tags.push(branch_label(b.name.clone(), info.lane));
+                if let Some(e) = self.env_of(&b.name) {
+                    tags.push(
+                        div()
+                            .flex()
+                            .flex_none()
+                            .items_center()
+                            .gap(crate::ui::sp(4.))
+                            .child(icon("folder01", 12.).text_color(theme::text_subtle()))
+                            .child(
+                                div()
+                                    .font_family(theme::FONT_MONO)
+                                    .text_size(px(ui::TEXT_XS))
+                                    .text_color(theme::text_muted())
+                                    .child(e.name.clone()),
+                            )
+                            .into_any_element(),
+                    );
+                    if let Some(s) = e.live_session() {
+                        tags.push(
+                            div()
+                                .flex()
+                                .flex_none()
+                                .items_center()
+                                .gap(crate::ui::sp(4.))
+                                .child(crate::shell::agent_icon(s.agent, 12.))
+                                .child(
+                                    div()
+                                        .text_size(px(ui::TEXT_SM))
+                                        .text_color(session_color(s.status))
+                                        .child(session_label(s.status)),
+                                )
+                                .into_any_element(),
+                        );
+                    }
+                }
+            }
+            if b.pr.as_ref().is_some_and(|p| p.open() && p.draft) {
+                tags.push(ui::tag("Draft", theme::pr_draft()).into_any_element());
+            }
+            let status = self.status_of(b, now);
+            if matches!(status, Status::Conflict | Status::Failing) {
+                tags.push(ui::tag(status.label(), theme::danger()).into_any_element());
+            }
+        }
+        if let (Some(b), false) = (info.merged, compact) {
+            tags.push(branch_label(format!("merged {}", b.name), info.lane));
+        }
+        if let Some(t) = info.tag {
+            tags.push(ui::tag(t.to_string(), theme::content()).into_any_element());
+        }
+
+        ui::labelled(
+            div().id(SharedString::from(format!("history-row-{r}"))),
+            Role::Button,
+            row_label(info, now),
+        )
+        .aria_selected(active)
+        .flex()
+        .items_center()
+        .gap(crate::ui::sp(8.))
+        .h(px(ROW_H))
+        .flex_none()
+        .pr(crate::ui::sp(12.))
+        .rounded(crate::ui::rad(ui::RADIUS))
+        .when(active, |d| d.bg(theme::fill_hover()))
+        .when(info.branch.is_some(), |d| d.cursor_pointer())
+        .child(div().flex_none().w(px(gutter)))
+        .child(
+            div()
+                .min_w_0()
+                .flex_shrink(1.)
+                .truncate()
+                .text_size(px(ui::TEXT_MD))
+                .text_color(if info.side {
+                    theme::text_subtle()
+                } else {
+                    theme::content()
+                })
+                .child(title.to_string()),
+        )
+        .when_some(number.filter(|_| !compact), |d, n| {
+            d.child(
                 div()
-                    .min_w_0()
-                    .truncate()
+                    .flex_none()
                     .font_family(theme::FONT_MONO)
-                    .text_size(px(ui::TEXT_SM))
-                    .when(row.branch.is_none(), |d| {
-                        d.font_weight(FontWeight::SEMIBOLD)
-                    })
-                    .when(row.branch.is_some_and(|b| b.ghost), |d| {
-                        d.text_color(theme::text_subtle())
-                    })
-                    .child(name.clone()),
+                    .text_size(px(ui::TEXT_XS))
+                    .text_color(theme::text_faint())
+                    .child(format!("#{n}")),
             )
-            .when_some(row.env, |d, _| {
-                d.child(icon("folder01", 11.).text_color(theme::text_subtle()))
-            });
-        let status = div()
-            .flex()
-            .items_center()
-            .justify_end()
-            .gap(crate::ui::sp(6.))
-            .w(px(STATUS_W))
-            .flex_none()
-            .pr(crate::ui::sp(14.))
-            .children(match row.branch {
-                None => vec![meta(format!("{} commits shown", map.main_commits.len()))],
-                Some(b) => row_status(b, row.status, row.env, now),
-            });
-        div()
-            .id(SharedString::from(format!("branch-row-{i}")))
-            .flex()
-            .items_center()
-            .h(px(ROW_H))
-            .when(i > 0, |d| d.border_t_1().border_color(theme::stroke()))
-            .when(selected, |d| d.bg(theme::fill_selected()))
-            .when(row.branch.is_some() && !selected, |d| {
-                d.hover(|s| s.bg(theme::fill_hover()))
-            })
-            .when(row.branch.is_some(), |d| d.cursor_pointer())
-            .child(label)
-            .child(div().flex_1())
-            .child(status)
-            .when(row.branch.is_some(), |d| {
-                d.on_click(cx.listener(move |this, _, _, cx| this.select(Some(name.clone()), cx)))
-            })
-            .into_any_element()
+        })
+        .children(tags)
+        .child(div().flex_1().min_w(px(8.)))
+        .child(
+            div()
+                .flex()
+                .flex_none()
+                .items_center()
+                .gap(crate::ui::sp(8.))
+                .when(!compact, |d| d.w(px(AUTHOR_W)))
+                .when(info.side, |d| d.opacity(0.7))
+                .child(face(c, info.author, self.picture(info.login), 20.))
+                .when(!compact, |d| {
+                    d.child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(px(ui::TEXT_SM))
+                            .text_color(theme::text_subtle())
+                            .child(info.author.to_string()),
+                    )
+                }),
+        )
+        .child(
+            div()
+                .flex_none()
+                .w(px(TIME_W))
+                .text_right()
+                .text_size(px(ui::TEXT_SM))
+                .text_color(theme::text_subtle())
+                .child(branch_history::short_ago(c.time, now)),
+        )
+        .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+            if *hovered && this.hovered != Some(r) {
+                this.hovered = Some(r);
+                this.keyed = false;
+                cx.notify();
+            } else if !*hovered && this.hovered == Some(r) {
+                this.hovered = None;
+                cx.notify();
+            }
+        }))
+        .on_click(cx.listener(move |this, _, window, cx| {
+            window.focus(&this.focus, cx);
+            this.cursor = Some(r);
+            this.keyed = false;
+            this.activate(r, cx);
+        }))
+        .into_any_element()
     }
 
+    /// What pointing at a commit tells: who wrote it and with which agent,
+    /// its sha, what it changed, when, its branch and its pull request.
+    fn render_card(&self, map: &Map, info: &RowInfo, now: u64) -> Div {
+        let c = info.commit;
+        let fact = |label: &'static str, value: AnyElement| {
+            div()
+                .flex()
+                .items_center()
+                .gap(crate::ui::sp(12.))
+                .text_size(px(ui::TEXT_SM))
+                .child(
+                    div()
+                        .flex_none()
+                        .w(px(92.))
+                        .text_color(theme::text_subtle())
+                        .child(label),
+                )
+                .child(
+                    div()
+                        .min_w_0()
+                        .flex()
+                        .items_center()
+                        .gap(crate::ui::sp(6.))
+                        .child(value),
+                )
+        };
+        let mono = |text: String| {
+            div()
+                .truncate()
+                .font_family(theme::FONT_MONO)
+                .child(text)
+                .into_any_element()
+        };
+        let branch = info.branch.map_or(map.main.clone(), |b| b.name.clone());
+        let pr = info.pr.or(info.branch.and_then(|b| b.pr.as_ref()));
+        div()
+            .absolute()
+            .flex()
+            .flex_col()
+            .gap(crate::ui::sp(10.))
+            .p(crate::ui::sp(14.))
+            .rounded(crate::ui::rad(ui::RADIUS_LG))
+            .bg(theme::dialog())
+            .border_1()
+            .border_color(theme::border())
+            .shadow_lg()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(crate::ui::sp(10.))
+                    .child(face(c, info.author, self.picture(info.login), 28.))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .min_w_0()
+                            .child(
+                                div()
+                                    .truncate()
+                                    .text_size(px(ui::TEXT_MD))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(info.author.to_string()),
+                            )
+                            .when_some(c.coauthor.clone(), |d, who| {
+                                d.child(
+                                    div()
+                                        .truncate()
+                                        .text_size(px(ui::TEXT_SM))
+                                        .text_color(theme::text_subtle())
+                                        .child(format!("Co-authored with {who}")),
+                                )
+                            }),
+                    ),
+            )
+            .child(div().h(px(1.)).bg(theme::border_subtle()))
+            .child(fact("Commit", mono(c.short().to_string())))
+            .when_some(c.stat, |d, s| {
+                d.child(fact(
+                    "Changed",
+                    div()
+                        .flex()
+                        .gap(crate::ui::sp(6.))
+                        .child(format!(
+                            "{} {}",
+                            s.files,
+                            if s.files == 1 { "file" } else { "files" }
+                        ))
+                        .child(
+                            div()
+                                .text_color(theme::diff_add())
+                                .child(format!("+{}", s.added)),
+                        )
+                        .child(
+                            div()
+                                .text_color(theme::diff_del())
+                                .child(format!("−{}", s.removed)),
+                        )
+                        .into_any_element(),
+                ))
+            })
+            .child(fact(
+                "Committed",
+                div()
+                    .child(branch_history::long_ago(c.time, now))
+                    .into_any_element(),
+            ))
+            .child(fact("Branch", mono(branch)))
+            .when_some(pr, |d, p| {
+                let (word, color): (&str, Hsla) = if p.merged() {
+                    ("Merged", theme::pr_merged().into())
+                } else if p.open() && p.draft {
+                    ("Draft", theme::pr_draft().into())
+                } else if p.open() {
+                    ("Open", theme::pr_open().into())
+                } else {
+                    ("Closed", theme::pr_closed().into())
+                };
+                d.child(fact(
+                    "Pull request",
+                    ui::tag(format!("#{} {word}", p.number), color).into_any_element(),
+                ))
+            })
+    }
     fn render_detail(&self, map: &Map, b: &Branch, now: u64, cx: &mut Context<Self>) -> Div {
         let env = self.env_of(&b.name);
         let status = b.status(env.is_some(), env.is_some_and(EnvInfo::working), now);
@@ -779,11 +1369,7 @@ impl BranchesView {
                             .child(crate::shell::agent_icon(s.agent, 12.))
                             .child(div().min_w_0().truncate().child(s.title.clone()))
                             .when(matches!(s.status, SessionStatus::Working), |d| {
-                                d.child(ui::spinner(
-                                    SharedString::from(format!("bs-spin-{}", s.id)),
-                                    10.,
-                                    theme::working(),
-                                ))
+                                d.child(ui::spinner(10., theme::working()))
                             })
                             .on_click(cx.listener(move |_, _, _, cx| {
                                 cx.emit(BranchesEvent::OpenSession {
@@ -871,7 +1457,7 @@ impl BranchesView {
                     .child(ui::tag(status.label(), status_color(status)))
                     .child(div().flex_1())
                     .child(
-                        icon_button("branch-close", "cancel01", 12.)
+                        icon_button("branch-close", "cancel01", 12., "Close")
                             .on_click(cx.listener(|this, _, _, cx| this.select(None, cx))),
                     ),
             )
@@ -909,11 +1495,7 @@ fn row_status(b: &Branch, status: Status, env: Option<&EnvInfo>, now: u64) -> Ve
                 .items_center()
                 .gap(crate::ui::sp(4.))
                 .child(crate::shell::agent_icon(s.agent, 12.))
-                .child(ui::spinner(
-                    SharedString::from(format!("bw-{}", s.id)),
-                    10.,
-                    session_color(s.status),
-                ))
+                .child(ui::spinner(10., session_color(s.status)))
                 .into_any_element(),
         );
     } else {
@@ -1083,404 +1665,427 @@ fn meta(text: impl Into<SharedString>) -> AnyElement {
         .into_any_element()
 }
 
-/// What the canvas needs, copied out of the rows so it can paint later.
+/// Which branch has which pull request, by number.
+fn pr_index(map: &Map) -> HashMap<u64, usize> {
+    map.branches
+        .iter()
+        .enumerate()
+        .filter_map(|(i, b)| b.pr.as_ref().map(|p| (p.number, i)))
+        .collect()
+}
+
+/// Version tags ("v0.14.1") by the commit they point at.
+fn tag_index(map: &Map) -> HashMap<&str, &str> {
+    map.tags
+        .iter()
+        .filter(|(_, t)| {
+            t.strip_prefix('v')
+                .is_some_and(|v| v.starts_with(|c: char| c.is_ascii_digit()))
+        })
+        .map(|(sha, t)| (sha.as_str(), t.as_str()))
+        .collect()
+}
+
+/// The room left of the titles: the default line and the lanes in use.
+fn gutter(h: &History, shown: usize) -> f32 {
+    let columns = h
+        .lanes
+        .iter()
+        .filter(|l| l.top < shown)
+        .map(|l| l.column)
+        .max()
+        .unwrap_or(0);
+    MAIN_X + columns as f32 * LANE_STEP + 18.
+}
+
+fn row_info<'a>(
+    map: &'a Map,
+    h: &History,
+    by_pr: &HashMap<u64, usize>,
+    tags: &HashMap<&str, &'a str>,
+    people: &'a People,
+    r: usize,
+) -> RowInfo<'a> {
+    let (commit, side, tip) = match h.rows[r] {
+        Source::Main(j) => (&map.main_commits[j], false, false),
+        Source::Side { branch, commit } => {
+            (&map.branches[branch].commits[commit], true, h.is_tip(r))
+        }
+    };
+    let (title, pr_number) = branch_history::split_pr(&commit.title);
+    let lane = h.lane_of(r).or_else(|| h.merged_at(r));
+    let lane_branch = lane.map(|l| &map.branches[l.branch]);
+    let tip = lane
+        .filter(|l| tip && !l.merged)
+        .map(|l| &map.branches[l.branch]);
+    let merged = h.merged_at(r).map(|l| &map.branches[l.branch]);
+    // A main commit's branch: by its PR number, else the branch it merged
+    // (a merge commit, or a branch with no lane).
+    let pr_branch = pr_number
+        .and_then(|n| by_pr.get(&n))
+        .map(|&i| &map.branches[i])
+        .or_else(|| {
+            map.branches
+                .iter()
+                .find(|b| !side && b.merged_by.as_deref() == Some(commit.sha.as_str()))
+        });
+    let pr = match (side, tip) {
+        (_, Some(b)) => b.pr.as_ref(),
+        (true, None) => None,
+        (false, None) => pr_branch.and_then(|b| b.pr.as_ref()),
+    };
+    RowInfo {
+        commit,
+        side,
+        tip,
+        merged,
+        branch: lane_branch.or(pr_branch),
+        pr,
+        pr_number: pr_number.filter(|_| !side),
+        title,
+        lane: lane.map(|l| theme::lane(l.color)),
+        tag: tags.get(commit.sha.as_str()).copied(),
+        author: people.name(commit),
+        login: people.of(commit).and_then(|p| p.login.as_deref()),
+    }
+}
+
+/// What a screen reader says for a row: the card's facts in one line.
+fn row_label(info: &RowInfo, now: u64) -> String {
+    let c = info.commit;
+    let mut out = format!("{}, {}", info.title, info.author);
+    if let Some(who) = &c.coauthor {
+        out.push_str(&format!(" with {who}"));
+    }
+    out.push_str(&format!(", {}", branch_history::long_ago(c.time, now)));
+    if let Some(b) = info.branch {
+        out.push_str(&format!(", branch {}", b.name));
+    }
+    if let Some(n) = info.pr.map(|p| p.number).or(info.pr_number) {
+        out.push_str(&format!(", pull request #{n}"));
+    }
+    if let Some(s) = c.stat {
+        out.push_str(&format!(
+            ", {} {} changed, {} added, {} removed",
+            s.files,
+            if s.files == 1 { "file" } else { "files" },
+            s.added,
+            s.removed
+        ));
+    }
+    out
+}
+
+/// The agent that wrote a commit with its author: from the author or the
+/// Co-Authored-By trailer.
+fn agent_of(c: &Commit) -> Option<AgentKind> {
+    match c.who {
+        Who::Claude => return Some(AgentKind::Claude),
+        Who::Droid => return Some(AgentKind::Droid),
+        Who::Person => {}
+    }
+    let who = c.coauthor.as_deref()?.to_ascii_lowercase();
+    [
+        ("codex", AgentKind::Codex),
+        ("openai", AgentKind::Codex),
+        ("cursor", AgentKind::Cursor),
+        ("devin", AgentKind::Devin),
+        ("opencode", AgentKind::OpenCode),
+    ]
+    .into_iter()
+    .find(|(name, _)| who.contains(name))
+    .map(|(_, a)| a)
+}
+
+/// The author's avatar, with the mark of the agent that wrote it with them.
+fn face(c: &Commit, name: &str, picture: Option<&std::path::Path>, size: f32) -> Div {
+    let b = (size * 0.6).round();
+    div()
+        .relative()
+        .flex_none()
+        .size(px(size))
+        .child(ui::avatar_image(name, picture, size))
+        .when_some(agent_of(c), |d, agent| {
+            d.child(
+                div()
+                    .absolute()
+                    .right(px(-b * 0.3))
+                    .bottom(px(-b * 0.3))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .size(px(b))
+                    .rounded_full()
+                    .bg(theme::background())
+                    .child(crate::shell::agent_icon(agent, b * 0.72)),
+            )
+        })
+}
+
+/// A branch name with its lane's dot.
+fn branch_label(text: String, lane: Option<Hsla>) -> AnyElement {
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(crate::ui::sp(6.))
+        .font_family(theme::FONT_MONO)
+        .text_size(px(ui::TEXT_XS))
+        .text_color(theme::text_subtle())
+        .when_some(lane, |d, c| {
+            d.child(div().flex_none().size(px(6.)).rounded_full().bg(c))
+        })
+        .child(text)
+        .into_any_element()
+}
+
+fn session_label(s: SessionStatus) -> &'static str {
+    match s {
+        SessionStatus::NeedsInput => "Needs you",
+        _ => "Working",
+    }
+}
+
+/// The lanes and dots of the shown rows, copied out so the canvas can paint
+/// them later.
 #[derive(Clone)]
-struct Lanes {
-    /// Every commit time drawn, newest first; a commit's column is its index.
-    times: Vec<u64>,
-    main: Vec<Dot>,
-    rows: Vec<Lane>,
+struct Graph {
+    /// Rows painted, the fold row included.
+    rows: usize,
+    fold: bool,
+    first_main: Option<usize>,
+    lanes: Vec<LanePath>,
+    dots: Vec<GraphDot>,
+    line: Hsla,
+    ground: Hsla,
 }
 
 #[derive(Clone)]
-struct Dot {
-    time: u64,
-    who: Who,
+struct LanePath {
+    x: f32,
+    color: Hsla,
+    top: usize,
+    bottom: Option<usize>,
+    merged: bool,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum DotKind {
+    Main,
+    /// A commit of the default branch that took a lane in: a ring.
+    Merge,
+    Tip,
+    Side,
+}
+
+#[derive(Clone)]
+struct GraphDot {
+    row: usize,
+    x: f32,
+    kind: DotKind,
+    color: Hsla,
     pushed: bool,
 }
 
-#[derive(Clone)]
-struct Lane {
-    color: Hsla,
-    /// Newest first.
-    dots: Vec<Dot>,
-    /// Time of the commit on main it grew from (0: older than the view).
-    fork: Option<u64>,
-    /// Time of the commit on main that took it in.
-    merge: Option<u64>,
-    ghost: bool,
-    faded: bool,
+fn lane_x(column: usize) -> f32 {
+    MAIN_X + column as f32 * LANE_STEP
 }
 
-impl Lanes {
-    fn new(map: &Map, rows: &[Row]) -> Self {
-        let main_time = |sha: &str| {
-            map.main_commits
-                .iter()
-                .find(|c| c.sha == sha)
-                .map(|c| c.time)
-        };
-        let dot = |c: &branches::Commit| Dot {
-            time: c.time,
-            who: c.who,
-            pushed: c.pushed,
-        };
-        let lanes: Vec<Lane> = rows
+impl Graph {
+    fn new(map: &Map, h: &History, shown: usize, fold: bool) -> Self {
+        let lanes: Vec<LanePath> = h
+            .lanes
             .iter()
-            .skip(1)
-            .filter_map(|r| r.branch.map(|b| (b, r.status)))
-            .map(|(b, status)| Lane {
-                color: status_color(status),
-                dots: b.commits.iter().map(dot).collect(),
-                fork: b.fork.as_deref().map(|s| main_time(s).unwrap_or(0)),
-                merge: b.merged_by.as_deref().and_then(main_time),
-                ghost: b.ghost,
-                faded: matches!(status, Status::Idle | Status::Merged),
+            .filter(|l| l.top < shown)
+            .map(|l| LanePath {
+                x: lane_x(l.column),
+                color: if l.merged {
+                    theme::lane(l.color).opacity(0.6)
+                } else {
+                    theme::lane(l.color)
+                },
+                top: l.top,
+                bottom: l.bottom.filter(|b| *b < shown),
+                merged: l.merged,
             })
             .collect();
-        let mut times: Vec<u64> = map
-            .main_commits
-            .iter()
-            .map(|c| c.time)
-            .chain(lanes.iter().flat_map(|l| l.dots.iter().map(|d| d.time)))
+        let dots = (0..shown)
+            .map(|r| match h.rows[r] {
+                Source::Main(_) => GraphDot {
+                    row: r,
+                    x: MAIN_X,
+                    kind: if h.merged_at(r).is_some() {
+                        DotKind::Merge
+                    } else {
+                        DotKind::Main
+                    },
+                    color: theme::text_muted(),
+                    pushed: true,
+                },
+                Source::Side { branch, commit } => {
+                    let lane = h.lane_of(r);
+                    let c = &map.branches[branch].commits[commit];
+                    GraphDot {
+                        row: r,
+                        x: lane.map_or(MAIN_X, |l| lane_x(l.column)),
+                        kind: if h.is_tip(r) {
+                            DotKind::Tip
+                        } else {
+                            DotKind::Side
+                        },
+                        color: lane.map_or(theme::text_muted(), |l| theme::lane(l.color)),
+                        pushed: c.pushed,
+                    }
+                }
+            })
             .collect();
-        times.sort_unstable_by(|a, b| b.cmp(a));
-        times.dedup();
         Self {
-            times,
-            main: map.main_commits.iter().map(dot).collect(),
-            rows: lanes,
+            rows: shown + usize::from(fold),
+            fold,
+            first_main: h.rows[..shown]
+                .iter()
+                .position(|s| matches!(s, Source::Main(_))),
+            lanes,
+            dots,
+            line: theme::text_faint(),
+            ground: theme::background(),
         }
     }
 
-    /// x of a time: its column from the right edge; None when older than what fits.
-    fn x(&self, time: u64, right: f32, columns: usize) -> Option<f32> {
-        let i = self.times.iter().position(|t| *t <= time)?;
-        (i < columns).then_some(right - i as f32 * COL_W)
-    }
-
-    fn paint(&self, bounds: Bounds<Pixels>, window: &mut Window, cx: &mut App) {
+    fn paint(&self, bounds: Bounds<Pixels>, window: &mut Window) {
         let o = bounds.origin;
-        let w = f32::from(bounds.size.width);
-        let right = w - PAD;
-        let columns = (((w - 2. * PAD) / COL_W).floor() as usize).max(1);
-        let left = right - (columns.saturating_sub(1)) as f32 * COL_W;
-        let y = |row: usize| AXIS_H + row as f32 * ROW_H + ROW_H / 2.;
-        let at = |x: f32, yy: f32| point(o.x + px(x), o.y + px(yy));
-        let line = |from: gpui::Point<Pixels>,
-                    to: gpui::Point<Pixels>,
-                    curve: bool,
-                    color: Hsla,
-                    width: f32,
-                    window: &mut Window| {
-            let mut p = PathBuilder::stroke(px(width));
-            p.move_to(from);
-            if curve {
-                let dx = (to.x - from.x) * 0.5;
-                p.cubic_bezier_to(to, point(from.x + dx, from.y), point(to.x - dx, to.y));
-            } else {
-                p.line_to(to);
-            }
-            if let Ok(path) = p.build() {
-                window.paint_path(path, color);
-            }
-        };
-
-        // Down from main at `x`, round the corner, along the lane to `to_x`; or the
-        // mirror image, along the lane and up into main.
-        let elbow = |x: f32, lane_y: f32, to_x: f32, color: Hsla, window: &mut Window| {
-            let r = (ROW_H * 0.45).min((to_x - x).abs().max(1.));
-            let dir = if to_x >= x { 1. } else { -1. };
-            let k = r * 0.552;
+        let at = |x: f32, y: f32| point(o.x + px(x), o.y + px(y));
+        let y = |row: usize| row as f32 * ROW_H + ROW_H / 2.;
+        let shown = self.rows - usize::from(self.fold);
+        let end = self.rows as f32 * ROW_H;
+        let stroke = |from: (f32, f32), to: (f32, f32), color: Hsla, window: &mut Window| {
             let mut p = PathBuilder::stroke(px(2.));
-            p.move_to(at(x, y(0)));
-            p.line_to(at(x, lane_y - r));
-            p.cubic_bezier_to(
-                at(x + dir * r, lane_y),
-                at(x, lane_y - r + k),
-                at(x + dir * (r - k), lane_y),
-            );
-            p.line_to(at(to_x, lane_y));
+            p.move_to(at(from.0, from.1));
+            if from.0 == to.0 {
+                p.line_to(at(to.0, to.1));
+            } else {
+                // Leaves straight up or down and arrives the same way.
+                let mid = (from.1 + to.1) / 2.;
+                p.cubic_bezier_to(at(to.0, to.1), at(from.0, mid), at(to.0, mid));
+            }
             if let Ok(path) = p.build() {
                 window.paint_path(path, color);
             }
         };
 
-        self.paint_days(o, right, columns, window, cx);
-
-        // The default branch: one line across, a dot per commit.
-        let main_color = theme::mix(0.4);
-        let main_xs: Vec<f32> = self
-            .main
-            .iter()
-            .filter_map(|d| self.x(d.time, right, columns))
-            .collect();
-        let main_left = if self.main.len() > main_xs.len() {
-            left
-        } else {
-            main_xs.last().copied().unwrap_or(right)
-        };
-        line(
-            at(main_left, y(0)),
-            at(main_xs.first().copied().unwrap_or(right), y(0)),
-            false,
-            main_color,
-            2.,
-            window,
-        );
-
-        for (i, lane) in self.rows.iter().enumerate() {
-            let row_y = y(i + 1);
-            let color = if lane.faded {
-                lane.color.opacity(0.45)
-            } else {
-                lane.color
-            };
-            let xs: Vec<f32> = lane
-                .dots
-                .iter()
-                .filter_map(|d| self.x(d.time, right, columns))
-                .collect();
-            // A lane with no commit in view still shows where it is: a stub at its merge, or at the right edge.
-            let (newest, oldest) = match (xs.first(), xs.last()) {
-                (Some(n), Some(o)) => (*n, if lane.dots.len() > xs.len() { left } else { *o }),
-                _ => match (
-                    lane.merge.and_then(|t| self.x(t, right, columns)),
-                    lane.fork
-                        .filter(|f| *f > 0)
-                        .and_then(|t| self.x(t, right, columns)),
-                ) {
-                    (Some(m), _) => (m - COL_W, m - COL_W),
-                    // No commits of its own: it points at a commit of main.
-                    (None, Some(f)) if lane.dots.is_empty() && !lane.ghost => {
-                        (f + COL_W, f + COL_W)
-                    }
-                    (None, _) if lane.dots.is_empty() => (right, right),
-                    (None, _) => continue,
-                },
-            };
-            if newest > oldest {
-                line(
-                    at(oldest, row_y),
-                    at(newest, row_y),
-                    false,
-                    color,
-                    2.,
-                    window,
-                );
+        // The default branch: one neutral line from its newest shown commit
+        // down, dotted through the fold.
+        if let Some(first) = self.first_main {
+            let solid_end = if self.fold { y(shown - 1) } else { end };
+            if solid_end > y(first) {
+                stroke((MAIN_X, y(first)), (MAIN_X, solid_end), self.line, window);
             }
-            // Grew from main: a curve down from the fork commit to its first commit.
-            if let Some(fork) = lane.fork {
-                let fx = if fork == 0 {
-                    None
-                } else {
-                    self.x(fork, right, columns)
-                };
-                match fx {
-                    Some(fx) if fx < oldest => elbow(fx, row_y, oldest, color, window),
-                    _ if oldest > left => line(
-                        at(left, row_y),
-                        at(oldest, row_y),
-                        false,
-                        color.opacity(0.4),
-                        2.,
-                        window,
-                    ),
-                    _ => {}
+            if self.fold {
+                let mut d = y(shown - 1) + 8.;
+                while d < end - 4. {
+                    stroke((MAIN_X, d), (MAIN_X, d + 2.), self.line, window);
+                    d += 6.;
                 }
             }
-            if let Some(mx) = lane.merge.and_then(|t| self.x(t, right, columns)) {
-                elbow(mx, row_y, newest, color, window);
+        }
+
+        for l in &self.lanes {
+            let start = if l.merged {
+                stroke((MAIN_X, y(l.top)), (l.x, y(l.top + 1)), l.color, window);
+                y(l.top + 1)
+            } else {
+                y(l.top)
+            };
+            let stop = match l.bottom {
+                Some(b) => y(b.saturating_sub(1)),
+                None => end,
+            };
+            if stop > start {
+                stroke((l.x, start), (l.x, stop), l.color, window);
             }
-            for (d, x) in lane.dots.iter().zip(xs.iter()) {
-                dot(
+            if let Some(b) = l.bottom {
+                stroke(
+                    (l.x, y(b.saturating_sub(1)).max(start)),
+                    (MAIN_X, y(b)),
+                    l.color,
                     window,
-                    at(*x, row_y),
-                    who_color(d.who),
-                    d.pushed,
-                    if lane.faded { 0.5 } else { 1. },
                 );
             }
-            if lane.dots.is_empty() {
-                // Only known from GitHub: a hollow dashed ring.
-                dot(window, at(newest, row_y), color, false, 0.8);
-            }
         }
-        for d in &self.main {
-            if let Some(x) = self.x(d.time, right, columns) {
-                let c = if d.who == Who::Person {
-                    main_color
-                } else {
-                    who_color(d.who)
-                };
-                let r = 3.5;
-                window.paint_quad(quad(
-                    Bounds::new(
-                        point(o.x + px(x - r), o.y + px(y(0) - r)),
-                        size(px(r * 2.), px(r * 2.)),
-                    ),
-                    px(r),
-                    c,
-                    px(0.),
-                    gpui::transparent_black(),
-                    BorderStyle::Solid,
-                ));
-            }
-        }
-    }
 
-    /// A label where the day changes, over a faint guide line.
-    fn paint_days(
-        &self,
-        o: gpui::Point<Pixels>,
-        right: f32,
-        columns: usize,
-        window: &mut Window,
-        cx: &mut App,
-    ) {
-        let font_size = px(ui::TEXT_XS);
-        let mut last_day = None;
-        let mut last_x = f32::MAX;
-        for (i, t) in self.times.iter().take(columns).enumerate() {
-            let day = t / 86_400;
-            if last_day == Some(day) {
-                continue;
-            }
-            last_day = Some(day);
-            let x = right - i as f32 * COL_W;
-            // Leave room between labels.
-            if last_x - x < 52. {
-                continue;
-            }
-            last_x = x;
-            let text: SharedString = crate::cloudflare::date(*t)
-                .get(5..)
-                .unwrap_or_default()
-                .to_string()
-                .into();
-            let run = TextRun {
-                len: text.len(),
-                font: gpui::font(theme::FONT_SANS),
-                color: theme::text_faint(),
-                background_color: None,
-                underline: None,
-                strikethrough: None,
+        for d in &self.dots {
+            // A commit not pushed yet is drawn faint.
+            let alpha = if d.pushed { 1. } else { 0.45 };
+            let (r, fill, ring) = match d.kind {
+                DotKind::Main => (4.5, d.color, self.ground),
+                DotKind::Merge => (5., self.ground, theme::content()),
+                DotKind::Tip => (5., d.color.opacity(alpha), self.ground),
+                DotKind::Side => (4., self.ground, d.color.opacity(alpha)),
             };
-            let shaped = window
-                .text_system()
-                .shape_line(text, font_size, &[run], None);
-            let tx = x - f32::from(shaped.width);
-            let _ = shaped.paint(
-                point(o.x + px(tx.max(0.)), o.y + px(4.)),
-                px(14.),
-                TextAlign::Left,
-                None,
-                window,
-                cx,
-            );
+            let c = at(d.x, y(d.row));
+            window.paint_quad(quad(
+                Bounds::new(
+                    point(c.x - px(r), c.y - px(r)),
+                    size(px(r * 2.), px(r * 2.)),
+                ),
+                px(r),
+                fill,
+                px(2.),
+                ring,
+                BorderStyle::Solid,
+            ));
         }
     }
-}
-
-fn dot(window: &mut Window, c: gpui::Point<Pixels>, ring: Hsla, pushed: bool, alpha: f32) {
-    let r = 5.;
-    window.paint_quad(quad(
-        Bounds::new(
-            point(c.x - px(r), c.y - px(r)),
-            size(px(r * 2.), px(r * 2.)),
-        ),
-        px(r),
-        theme::fill_raised(),
-        px(2.),
-        ring.opacity(alpha),
-        if pushed {
-            BorderStyle::Solid
-        } else {
-            BorderStyle::Dashed
-        },
-    ));
 }
 
 impl Render for BranchesView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let now = crate::model::unix_now();
-        let header = div()
-            .flex()
-            .flex_none()
-            .items_center()
-            .gap(crate::ui::sp(8.))
-            .h(px(ui::TOOLBAR_H))
-            .px(crate::ui::sp(12.))
-            .border_b_1()
-            .border_color(theme::stroke())
-            .text_size(px(ui::TEXT_SM))
-            .text_color(theme::text_subtle())
-            .child(icon("git-branch", 14.).text_color(theme::text_subtle()))
-            .child(div().flex_none().child("Branches"))
-            .when_some(self.map.as_ref(), |d, m| {
-                let from = m
-                    .github
-                    .as_ref()
-                    .map_or(String::new(), |g| format!(" · PRs from {g}"));
-                d.child(
-                    div()
-                        .min_w_0()
-                        .truncate()
-                        .text_color(theme::text_faint())
-                        .child(format!("against {}{from}", m.main_ref)),
-                )
-            })
-            .child(div().flex_1())
-            .when(
-                self.map
-                    .as_ref()
-                    .is_some_and(|m| m.prs_error.as_deref() == Some(branches::NO_REMOTE)),
-                |d| {
-                    d.child(
-                        div()
-                            .id("branches-link-repo")
-                            .flex_none()
-                            .text_color(theme::text_faint())
-                            .cursor_pointer()
-                            .hover(|s| s.text_color(theme::content()))
-                            .child("No GitHub remote · Link a repo")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.show_repo = !this.show_repo;
-                                cx.notify();
-                            })),
-                    )
-                },
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(crate::ui::sp(10.))
-                    .text_size(px(ui::TEXT_XS))
-                    .child(legend(gpui::rgb(CLAUDE).into(), "Claude"))
-                    .child(legend(gpui::rgb(DROID).into(), "Droid"))
-                    .child(legend(theme::mix(0.55), "Person")),
-            )
-            .child(ui::refresh_control(
-                "branches-refresh",
-                self.loading,
-                self.map
-                    .as_ref()
-                    .map(|m| crate::account::ago(m.fetched, now)),
-                cx.listener(|this, _, _, cx| this.refresh(cx)),
-            ));
+        // The width this view got last frame decides the layout of this one.
+        let (cell, id) = (self.width.clone(), cx.entity_id());
+        let measure = canvas(
+            |_, _, _| {},
+            move |bounds: Bounds<Pixels>, _, _: &mut Window, cx: &mut App| {
+                let now = f32::from(bounds.size.width);
+                if (now - cell.get()).abs() > 0.5 {
+                    cell.set(now);
+                    // A notify while the window paints marks no new frame, so
+                    // send it once this one is drawn.
+                    cx.defer(move |cx| cx.notify(id));
+                }
+            },
+        )
+        .absolute()
+        .size_full();
+        let compact = self.width.get() < COMPACT_W;
+        let map = self.map.clone();
+        let header = self.render_header(map.as_deref(), compact, now, cx);
 
-        let body: AnyElement = match self.map.clone() {
+        let detail = map.as_ref().and_then(|m| {
+            let b = m.branch(self.selected.as_deref()?)?;
+            Some(
+                div()
+                    .id("branches-detail")
+                    .flex_none()
+                    .max_h(px(360.))
+                    .overflow_y_scroll()
+                    .px(crate::ui::sp(8.))
+                    .pt(crate::ui::sp(8.))
+                    .child(self.render_detail(m, b, now, cx)),
+            )
+        });
+
+        let body: AnyElement = match map.as_deref() {
             None if self.root.is_none() => ui::empty_state(
                 "git-branch",
                 "No project",
-                "Open a project to see its branches.",
+                "Open a project to see its history.",
                 None,
             )
             .into_any_element(),
             None => div()
                 .pt(crate::ui::sp(60.))
-                .child(ui::loading("branches-first", "Reading branches…"))
+                .child(ui::loading("Reading history…"))
                 .into_any_element(),
             Some(map) if map.main.is_empty() => ui::empty_state(
                 "git-branch",
@@ -1490,41 +2095,37 @@ impl Render for BranchesView {
             )
             .into_any_element(),
             Some(map) => {
-                let (rows, merged, idle) = self.rows(&map, now);
-                let detail = self
-                    .selected
-                    .as_deref()
-                    .and_then(|n| map.branch(n))
-                    .map(|b| self.render_detail(&map, b, now, cx));
+                let h = self.history(map, now);
+                let shown = self.shown_rows(&h);
+                let gutter = gutter(&h, shown);
                 div()
                     .flex()
                     .flex_col()
-                    .gap(crate::ui::sp(16.))
-                    .child(self.render_summary(&map, now))
                     // No remote is not a failure: a quiet link in the header opens the field.
                     .when_some(
                         map.prs_error
                             .clone()
                             .filter(|e| e != branches::NO_REMOTE || self.show_repo),
-                        |d, e| d.child(self.render_repo(&e, cx)),
+                        |d, e| d.child(div().pb(crate::ui::sp(8.)).child(self.render_repo(&e, cx))),
                     )
-                    .child(self.render_graph(&map, &rows, merged, idle, now, cx))
-                    .children(detail)
-                    .when(map.branches.is_empty(), |d| {
-                        d.child(meta(format!("No branches besides {}.", map.main)))
-                    })
+                    .children(self.render_folded(map, &h, gutter, now, cx))
+                    .child(self.render_history(map, &h, shown, compact, now, cx))
                     .into_any_element()
             }
         };
         div()
             .track_focus(&self.focus)
+            .on_key_down(cx.listener(Self::on_key))
+            .relative()
             .flex()
             .flex_col()
             .size_full()
             .bg(theme::background())
             .font_family(theme::FONT_SANS)
             .text_color(theme::content())
+            .child(measure)
             .child(header)
+            .children(detail)
             .child(
                 div()
                     .id("branches-body")
@@ -1534,39 +2135,26 @@ impl Render for BranchesView {
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
-                    .child(
-                        div()
-                            .w_full()
-                            .max_w(px(1200.))
-                            .mx_auto()
-                            .p(crate::ui::sp(ui::PAGE_PAD))
-                            .child(body),
-                    ),
+                    .child(div().w_full().p(crate::ui::sp(8.)).child(body)),
             )
     }
-}
-
-fn legend(color: Hsla, name: &'static str) -> Div {
-    div()
-        .flex()
-        .items_center()
-        .gap(crate::ui::sp(4.))
-        .child(div().size(px(7.)).rounded_full().bg(color))
-        .child(name)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::branches::Commit;
 
     fn commit(sha: &str, time: u64) -> Commit {
         Commit {
             sha: sha.into(),
             time,
-            author: String::new(),
+            author: "Ana".into(),
+            email: "ana@example.com".into(),
+            merge: false,
             title: String::new(),
             who: Who::Person,
+            coauthor: None,
+            stat: None,
             pushed: true,
         }
     }
@@ -1575,6 +2163,7 @@ mod tests {
     fn a_session_that_needs_you_is_not_drawn_as_working() {
         assert_eq!(session_color(SessionStatus::NeedsInput), theme::needs_you());
         assert_eq!(session_color(SessionStatus::Working), theme::working());
+        assert_eq!(session_label(SessionStatus::NeedsInput), "Needs you");
     }
 
     #[test]
@@ -1582,7 +2171,7 @@ mod tests {
         let session = |id: &str, status| SessionInfo {
             id: id.to_string().into(),
             title: SharedString::default(),
-            agent: Agent::Claude,
+            agent: AgentKind::Claude,
             status,
         };
         let mut env = EnvInfo {
@@ -1651,38 +2240,68 @@ mod tests {
     }
 
     #[test]
-    fn time_axis_only_spends_room_on_commits() {
+    fn the_agent_mark_comes_from_the_author_or_the_trailer() {
+        let mut c = commit("a", 0);
+        assert_eq!(agent_of(&c), None);
+        c.who = Who::Claude;
+        assert_eq!(agent_of(&c), Some(AgentKind::Claude));
+        c.who = Who::Person;
+        c.coauthor = Some("Codex".into());
+        assert_eq!(agent_of(&c), Some(AgentKind::Codex));
+        c.coauthor = Some("cubic".into());
+        assert_eq!(agent_of(&c), None);
+    }
+
+    #[test]
+    fn a_row_knows_its_branch_pr_and_tag() {
+        let mut main = commit("m1", 100);
+        main.title = "perf(usage): read less (#672)".into();
+        let mut side = commit("s1", 90);
+        side.title = "perf(usage): first try".into();
         let map = Map {
             main: "main".into(),
-            main_commits: vec![commit("m3", 900), commit("m2", 500), commit("m1", 100)],
+            main_commits: vec![main, commit("m0", 50)],
+            tags: vec![
+                ("m0".into(), "v0.14.1".into()),
+                ("m0".into(), "nightly".into()),
+            ],
             branches: vec![Branch {
-                name: "b".into(),
-                commits: vec![commit("b1", 600)],
-                fork: Some("m2".into()),
-                time: 600,
-                ahead: 1,
+                name: "perf/usage".into(),
+                commits: vec![side],
+                fork: Some("m0".into()),
+                merged_by: Some("m1".into()),
+                pr: Some(branches::Pr {
+                    number: 672,
+                    title: String::new(),
+                    url: String::new(),
+                    state: "MERGED".into(),
+                    draft: false,
+                    review: String::new(),
+                    mergeable: String::new(),
+                    checks: Checks::None,
+                    author: String::new(),
+                    merged_at: 0,
+                    updated_at: 0,
+                }),
                 ..Default::default()
             }],
             ..Default::default()
         };
-        let view_rows = [
-            Row {
-                branch: None,
-                status: Status::Working,
-                env: None,
-            },
-            Row {
-                branch: Some(&map.branches[0]),
-                status: Status::Working,
-                env: None,
-            },
-        ];
-        let lanes = Lanes::new(&map, &view_rows);
-        assert_eq!(lanes.times, vec![900, 600, 500, 100]);
-        // Columns from the right edge, one per commit, however far apart in time.
-        assert_eq!(lanes.x(900, 100., 10), Some(100.));
-        assert_eq!(lanes.x(600, 100., 10), Some(100. - COL_W));
-        assert_eq!(lanes.x(100, 100., 3), None);
-        assert_eq!(lanes.rows[0].fork, Some(500));
+        let h = branch_history::layout(&map, |_| true);
+        let (by_pr, tags) = (pr_index(&map), tag_index(&map));
+        let people = branch_history::people(&map);
+        let merge = row_info(&map, &h, &by_pr, &tags, &people, 0);
+        assert_eq!(merge.title, "perf(usage): read less");
+        assert_eq!(merge.pr.map(|p| p.number), Some(672));
+        assert_eq!(merge.merged.map(|b| b.name.as_str()), Some("perf/usage"));
+        assert!(!merge.side && merge.tip.is_none());
+        let side = row_info(&map, &h, &by_pr, &tags, &people, 1);
+        assert!(side.side && side.tip.is_none() && side.pr.is_none());
+        assert_eq!(side.branch.map(|b| b.name.as_str()), Some("perf/usage"));
+        let last = row_info(&map, &h, &by_pr, &tags, &people, 2);
+        assert_eq!(last.tag, Some("v0.14.1"));
+        assert_eq!(gutter(&h, 3), MAIN_X + LANE_STEP + 18.);
+        let label = row_label(&merge, 100);
+        assert!(label.contains("branch perf/usage") && label.contains("#672"));
     }
 }

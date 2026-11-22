@@ -502,7 +502,15 @@ impl Shell {
         cx.notify();
     }
 
-    pub(super) fn render_dock(&self, viewport_h: f32, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(super) fn render_dock(
+        &self,
+        viewport_h: f32,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        // A hidden element registers no click listeners, so a close button
+        // that only shows on hover could not be pressed by a screen reader.
+        let hide_close = !window.is_a11y_active();
         let env = self.env();
         let dock_open = self.dock_open;
         let env_path = env.path.clone();
@@ -510,6 +518,7 @@ impl Shell {
         let path = env.path.clone();
         let mut tabs = div()
             .id("term-tabs")
+            .role(gpui::Role::TabList)
             .flex()
             .flex_1()
             .min_w_0()
@@ -526,7 +535,7 @@ impl Shell {
             let id = tab.terminal.entity_id();
             let close_path = env_path.clone();
             tabs = tabs.child(
-                ui::tab(("term", i), active)
+                ui::tab(("term", i), title.clone(), active)
                     .w(px(DOCK_TAB_W))
                     .h(px(ui::DOCK_TAB_H))
                     .group(group.clone())
@@ -543,7 +552,7 @@ impl Shell {
                             .text_color(theme::text_faint())
                             .child(tab.number.to_string()),
                     )
-                    .child(div().flex_1().min_w_0().truncate().child(title))
+                    .child(div().flex_1().min_w_0().truncate().child(title.clone()))
                     .when(tab.unseen && !active, |d| {
                         d.child(
                             div()
@@ -557,6 +566,7 @@ impl Shell {
                     .child(
                         div()
                             .id(("term-close", i))
+                            .map(|d| ui::labelled(d, gpui::Role::Button, format!("Close {title}")))
                             .absolute()
                             .right(px(4.))
                             .top(px(DOCK_TAB_CLOSE_TOP))
@@ -565,7 +575,7 @@ impl Shell {
                             .justify_center()
                             .size(px(20.))
                             .rounded(crate::ui::rad(4.))
-                            .when(!active, |d| {
+                            .when(!active && hide_close, |d| {
                                 d.invisible().group_hover(group.clone(), |s| s.visible())
                             })
                             .hover(|s| s.bg(theme::fill_selected()))
@@ -762,8 +772,7 @@ impl Shell {
                         .flex()
                         .gap(crate::ui::sp(2.))
                         .child(
-                            icon_button("term-add", "add01", 14.)
-                                .tooltip(ui::tip("New terminal (Ctrl+Shift+T)"))
+                            icon_button("term-add", "add01", 14., "New terminal (Ctrl+Shift+T)")
                                 .on_click(
                                     cx.listener(|this, _, window, cx| {
                                         this.new_terminal(window, cx)
@@ -771,8 +780,7 @@ impl Shell {
                                 ),
                         )
                         .child(
-                            icon_button("term-hide", "arrow-down01", 14.)
-                                .tooltip(ui::tip("Hide terminal (Ctrl+J)"))
+                            icon_button("term-hide", "arrow-down01", 14., "Hide terminal (Ctrl+J)")
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     this.set_dock(false, window, cx)
                                 })),

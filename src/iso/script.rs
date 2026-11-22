@@ -48,6 +48,12 @@ impl ScriptScene {
     pub fn load(path: &Path) -> Result<ScriptScene, String> {
         let source =
             std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        Self::from_source(path, &source)
+    }
+
+    /// Compiles `source` as if it were read from `path`, which names the
+    /// scene when it has no `scene(...)` call and prefixes its errors.
+    pub fn from_source(path: &Path, source: &str) -> Result<ScriptScene, String> {
         let stem = path
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
@@ -63,7 +69,7 @@ impl ScriptScene {
         }));
         let engine = engine(meta.clone());
         let ast = engine
-            .compile(&source)
+            .compile(source)
             .map_err(|e| format!("{}: {e}", path.display()))?;
         let mut scene = ScriptScene {
             path: path.to_path_buf(),

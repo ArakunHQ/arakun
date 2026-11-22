@@ -6,12 +6,14 @@ use std::collections::HashMap;
 
 use std::rc::Rc;
 
-use gpui::{Hsla, ListAlignment, ListOffset, ListState, list};
+use gpui::{ListAlignment, ListOffset, ListState, list};
 
 use super::*;
 use serde_json::json;
 
 use crate::agent::marketplace::{self, Input, Install, PluginEntry, RegistryServer};
+use crate::agent::publishers;
+use crate::agent::skills_sh::{self, SkillEntry, SkillSource};
 
 /// Wait this long after the last keystroke before asking the registry.
 const DEBOUNCE: Duration = Duration::from_millis(350);
@@ -20,6 +22,16 @@ const DEBOUNCE: Duration = Duration::from_millis(350);
 pub(super) enum Market {
     Plugins,
     Registry,
+    /// skills.sh.
+    Skills,
+}
+
+/// What GitHub says of a skill picked on skills.sh.
+#[derive(Clone)]
+pub(super) enum Located {
+    Looking,
+    Found(SkillSource),
+    Failed(SharedString),
 }
 
 /// A registry server being installed: the way picked and what the user typed.
@@ -29,11 +41,18 @@ pub(super) struct Installing {
     fields: Vec<(Input, Entity<TextInput>)>,
 }
 
+/// How long a failed load waits before opening the Marketplace asks again.
+const RETRY: Duration = Duration::from_secs(60);
+
 #[derive(Default)]
 pub(super) struct MarketState {
     pub(super) catalog: Option<Vec<PluginEntry>>,
     pub(super) catalog_loading: bool,
     pub(super) catalog_error: Option<SharedString>,
+    /// When a load of the catalog or a server list last failed. Opening the
+    /// Marketplace doesn't ask again until `RETRY` has passed, so a failure
+    /// stays on screen instead of restarting at every redraw.
+    pub(super) failed_at: Option<Instant>,
     /// The plugin category, or the company of official servers, the list is narrowed to.
     pub(super) category: Option<String>,
     pub(super) registry: Option<Vec<RegistryServer>>,
@@ -49,6 +68,18 @@ pub(super) struct MarketState {
     /// Every server the known companies publish (`publishers`).
     pub(super) official: Option<Vec<RegistryServer>>,
     pub(super) official_loading: bool,
+    /// skills.sh's answer to the search box.
+    pub(super) skills: Option<Vec<SkillEntry>>,
+    /// The query the shown skills answer.
+    pub(super) skills_for: String,
+    pub(super) skills_loading: bool,
+    /// The query skills.sh is being asked, so asking again for it does not
+    /// drop the answer on its way.
+    pub(super) skills_asking: Option<String>,
+    pub(super) skills_error: Option<SharedString>,
+    pub(super) skills_task: Option<Task<()>>,
+    /// Each picked skill's folder on GitHub, by skills.sh id.
+    pub(super) located: HashMap<String, Located>,
     /// The plugin id or server name whose details show on the right.
     pub(super) selected: Option<String>,
     pub(super) sort: Sort,
@@ -65,6 +96,9 @@ impl ExtensionsView {
     pub(super) fn open_market(&mut self, cx: &mut Context<Self>) {
         // A server says which plugins and MCP servers it has in one answer.
         self.ask_remote(false, cx);
+        if self.ms.failed_at.is_some_and(|t| t.elapsed() < RETRY) {
+            return;
+        }
         match self.market {
             Market::Plugins if self.targets.target.is_some() => {}
             Market::Plugins if self.ms.catalog.is_none() && !self.ms.catalog_loading => {
@@ -74,8 +108,113 @@ impl ExtensionsView {
             Market::Registry if self.ms.registry.is_none() && !self.ms.registry_loading => {
                 self.search_registry(false, cx)
             }
+            Market::Skills => self.search_skills(cx),
             _ => {}
         }
+    }
+
+    /// Asks skills.sh for the search box's words, unless it answered them already.
+    fn search_skills(&mut self, cx: &mut Context<Self>) {
+        let query = self.query.read(cx).text().trim().to_string();
+        if (self.ms.skills.is_some() || self.ms.skills_error.is_some())
+            && query == self.ms.skills_for
+            || self.ms.skills_asking.as_ref() == Some(&query)
+        {
+            return;
+        }
+        self.ms.skills_error = None;
+        if query.chars().count() < 2 {
+            self.ms.skills = None;
+            self.ms.skills_for = query;
+            self.ms.skills_loading = false;
+            self.ms.skills_asking = None;
+            self.ms.skills_task = None;
+            cx.notify();
+            return;
+        }
+        self.ms.skills_loading = true;
+        self.ms.skills_asking = Some(query.clone());
+        self.ms.skills_task = Some(cx.spawn(async move |this, cx| {
+            let q = query.clone();
+            let found = cx
+                .background_spawn(crate::guard::task(async move { skills_sh::search(&q) }))
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.ms.skills_loading = false;
+                this.ms.skills_asking = None;
+                match found {
+                    Ok(list) => this.ms.skills = Some(list),
+                    Err(e) => {
+                        this.ms.skills = None;
+                        this.ms.skills_error = Some(format!("{e:#}").into());
+                    }
+                }
+                this.ms.skills_for = query;
+                cx.notify();
+            });
+        }));
+        cx.notify();
+    }
+
+    /// Finds a picked skill's folder on GitHub, once, for its details and install.
+    fn locate_skill(&mut self, entry: &SkillEntry, cx: &mut Context<Self>) {
+        if matches!(
+            self.ms.located.get(&entry.id),
+            Some(Located::Looking | Located::Found(_))
+        ) {
+            return;
+        }
+        self.ms.located.insert(entry.id.clone(), Located::Looking);
+        let e = entry.clone();
+        cx.spawn(async move |this, cx| {
+            let id = e.id.clone();
+            let found = cx
+                .background_spawn(crate::guard::task(async move { skills_sh::locate(&e) }))
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                let state = match found {
+                    Ok(s) => Located::Found(s),
+                    Err(e) => Located::Failed(format!("{e:#}").into()),
+                };
+                this.ms.located.insert(id, state);
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    /// Copies a skill from GitHub into `~/.claude/skills`, for every project here.
+    fn install_skill(&mut self, entry: &SkillEntry, cx: &mut Context<Self>) {
+        if let Some(s) = self.target_server() {
+            self.error = Some(
+                format!(
+                    "Skills from skills.sh install on this computer only, not on {} yet.",
+                    s.name
+                )
+                .into(),
+            );
+            cx.notify();
+            return;
+        }
+        let found = match self.ms.located.get(&entry.id) {
+            Some(Located::Found(s)) => Some(s.clone()),
+            _ => None,
+        };
+        let e = entry.clone();
+        self.run_op(
+            entry.name.clone(),
+            "is installed for every project",
+            move || {
+                let found = match found {
+                    Some(f) => f,
+                    None => skills_sh::locate(&e)?,
+                };
+                skills_sh::install(&e, &found, &skills_sh::skills_root()).map(|_| ())
+            },
+            None,
+            cx,
+        );
     }
 
     /// The official servers: the last list at once, a new one when a day old.
@@ -107,7 +246,10 @@ impl ExtensionsView {
                 this.ms.official_loading = false;
                 match found {
                     Ok(list) => this.ms.official = Some(list),
-                    Err(e) => this.ms.registry_error = Some(format!("{e:#}").into()),
+                    Err(e) => {
+                        this.ms.registry_error = Some(format!("{e:#}").into());
+                        this.ms.failed_at = Some(Instant::now());
+                    }
                 }
                 cx.notify();
             });
@@ -133,7 +275,10 @@ impl ExtensionsView {
                 this.ms.catalog_loading = false;
                 match found {
                     Ok(list) => this.ms.catalog = Some(list),
-                    Err(e) => this.ms.catalog_error = Some(format!("{e:#}").into()),
+                    Err(e) => {
+                        this.ms.catalog_error = Some(format!("{e:#}").into());
+                        this.ms.failed_at = Some(Instant::now());
+                    }
                 }
                 cx.notify();
             });
@@ -144,6 +289,17 @@ impl ExtensionsView {
 
     /// Asks the registry for the search box's words, after a pause in typing.
     pub(super) fn query_changed(&mut self, cx: &mut Context<Self>) {
+        if self.kind == Kind::Marketplace && self.market == Market::Skills {
+            // This drops a search on its way: it is asked again, and nothing is
+            // loading until it is (the words may be back to ones already answered).
+            self.ms.skills_asking = None;
+            self.ms.skills_loading = false;
+            self.ms.skills_task = Some(cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(DEBOUNCE).await;
+                let _ = this.update(cx, |this, cx| this.search_skills(cx));
+            }));
+            return;
+        }
         // The official list filters as you type; only "All" asks the registry.
         if self.kind != Kind::Marketplace || self.market != Market::Registry || !self.ms.everything
         {
@@ -186,7 +342,10 @@ impl ExtensionsView {
                         this.ms.registry_next = next;
                         this.ms.registry_for = query;
                     }
-                    Err(e) => this.ms.registry_error = Some(format!("{e:#}").into()),
+                    Err(e) => {
+                        this.ms.registry_error = Some(format!("{e:#}").into());
+                        this.ms.failed_at = Some(Instant::now());
+                    }
                 }
                 cx.notify();
             });
@@ -410,6 +569,16 @@ impl ExtensionsView {
                     .map(Item::Server)
                     .collect()
             }
+            // skills.sh searched the words already; the repository narrows it.
+            Market::Skills => self
+                .ms
+                .skills
+                .iter()
+                .flatten()
+                .filter(|s| self.ms.category.as_ref().is_none_or(|c| &s.source == c))
+                .cloned()
+                .map(Item::Skill)
+                .collect(),
         };
         if self.ms.sort == Sort::Name {
             items.sort_by_key(|i| i.title().to_lowercase());
@@ -467,6 +636,19 @@ impl ExtensionsView {
                     .as_ref()
                     .is_some_and(|x| x.servers.iter().any(|i| i.name == s.short_name()))
             }),
+            // Its folder in ~/.claude/skills, where Install puts it. A project's or a
+            // plugin's skill of that name leaves room for a copy of your own.
+            Item::Skill(k) => {
+                self.targets.target.is_none()
+                    && self.claude.as_ref().is_some_and(|x| {
+                        x.skills.iter().any(|i| {
+                            i.source == "personal"
+                                && i.path.file_name().is_some_and(|f| {
+                                    f.to_string_lossy().eq_ignore_ascii_case(&k.skill_id)
+                                })
+                        })
+                    })
+            }
         }
     }
 
@@ -479,6 +661,11 @@ impl ExtensionsView {
             Item::Server(s) => {
                 self.ms.selected = Some(s.name.clone());
                 self.start_install(s.clone(), window, cx);
+            }
+            Item::Skill(k) => {
+                self.ms.installing = None;
+                self.ms.selected = Some(k.id.clone());
+                self.locate_skill(k, cx);
             }
         }
         cx.notify();
@@ -500,6 +687,7 @@ impl ExtensionsView {
             }),
             Market::Registry if self.ms.everything => self.ms.registry.as_ref().map(Vec::len),
             Market::Registry => self.ms.official.as_ref().map(Vec::len),
+            Market::Skills => self.ms.skills.as_ref().map(Vec::len),
         }
     }
 
@@ -520,8 +708,8 @@ impl ExtensionsView {
     }
 
     /// Discover's categories for plugins, or the companies of official servers,
-    /// for the left column.
-    pub(super) fn render_market_filters(&self, cx: &mut Context<Self>) -> Option<Div> {
+    /// for the sidebar.
+    pub(super) fn category_lines(&self) -> Vec<Line> {
         let mut groups: Vec<(String, usize)> = Vec::new();
         let mut add = |g: &str| match groups.iter_mut().find(|(n, _)| n == g) {
             Some((_, n)) => *n += 1,
@@ -549,54 +737,54 @@ impl ExtensionsView {
                 }
                 "Companies"
             }
-            Market::Registry => return None,
+            Market::Registry => return Vec::new(),
+            Market::Skills => {
+                for s in self.ms.skills.iter().flatten() {
+                    add(&s.source);
+                }
+                "Repositories"
+            }
         };
         if groups.is_empty() {
-            return None;
+            return Vec::new();
         }
         groups.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
         let total = self.discover_count(self.market).unwrap_or(0);
-        let mut out = div()
-            .flex()
-            .flex_col()
-            .flex_none()
-            .gap(crate::ui::sp(2.))
-            .child(nav_heading(heading, true))
-            .child(
-                nav_row(
-                    "ext-cat-all",
-                    "dashboard-square01",
-                    "All",
-                    Some(total),
-                    self.ms.category.is_none(),
-                )
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.ms.category = None;
-                    this.ms.rows.top();
-                    cx.notify();
-                })),
-            );
-        for (i, (g, n)) in groups.into_iter().enumerate() {
+        let mut out = vec![
+            Line::Heading(heading.into()),
+            Line::Entry(
+                Entry::new("cat:", Lead::Icon("dashboard-square01"), "All")
+                    .count(Some(total))
+                    .on(self.ms.category.is_none()),
+            ),
+        ];
+        for (g, n) in groups {
             let on = self.ms.category.as_ref() == Some(&g);
-            let row = match self.market {
-                Market::Plugins => nav_dot_row(
-                    ("ext-cat", i),
-                    rgb(category_color(&g)).into(),
-                    capitalize(&g),
-                    n,
-                    on,
-                ),
-                Market::Registry => {
-                    nav_mark_row(("ext-cat", i), logos::mark(&g, ""), g.clone(), n, on)
+            let (lead, label) = match self.market {
+                Market::Plugins => (Lead::Dot(rgb(category_color(&g)).into()), capitalize(&g)),
+                Market::Registry => (Lead::Mark(logos::mark(&g, "")), g.clone()),
+                Market::Skills => {
+                    let owner = g.split('/').next().unwrap_or_default();
+                    (
+                        Lead::Mark(mark_by(owner, "", publishers::by_org(owner))),
+                        g.clone(),
+                    )
                 }
             };
-            out = out.child(row.on_click(cx.listener(move |this, _, _, cx| {
-                this.ms.category = Some(g.clone());
-                this.ms.rows.top();
-                cx.notify();
-            })));
+            out.push(Line::Entry(
+                Entry::new(format!("cat:{g}"), lead, label)
+                    .count(Some(n))
+                    .on(on),
+            ));
         }
-        Some(out)
+        out
+    }
+
+    /// Shows one category (or company) of Discover, or all of them.
+    pub(super) fn pick_category(&mut self, category: Option<String>, cx: &mut Context<Self>) {
+        self.ms.category = category;
+        self.ms.rows.top();
+        cx.notify();
     }
 
     /// Discover: what needs you, the featured strip, the heading with its
@@ -613,10 +801,12 @@ impl ExtensionsView {
             Market::Plugins => self.plugin_catalog().is_none(),
             Market::Registry if self.ms.everything => self.ms.registry.is_none(),
             Market::Registry => self.ms.official.is_none(),
+            Market::Skills => self.ms.skills.is_none() && self.ms.skills_loading,
         };
         let error = match self.market {
             Market::Plugins => self.catalog_error(),
             Market::Registry => self.ms.registry_error.clone(),
+            Market::Skills => self.ms.skills_error.clone(),
         };
         let query = self.query.read(cx).text().trim().to_string();
         // The most installed, larger, when there is room for two side by side,
@@ -640,18 +830,25 @@ impl ExtensionsView {
             let state: AnyElement = if loading {
                 match error.clone() {
                     Some(e) => note(e, Tone::Danger).into_any_element(),
-                    None => ui::loading(
-                        "ext-market-loading",
-                        match self.market {
-                            Market::Plugins => self.catalog_wait(),
-                            Market::Registry if self.ms.everything => {
-                                "Asking the MCP Registry…".into()
-                            }
-                            Market::Registry => "Gathering what each company publishes…".into(),
-                        },
-                    )
+                    None => ui::loading(match self.market {
+                        Market::Plugins => self.catalog_wait(),
+                        Market::Registry if self.ms.everything => "Asking the MCP Registry…".into(),
+                        Market::Registry => "Gathering what each company publishes…".into(),
+                        Market::Skills => "Asking skills.sh…".into(),
+                    })
                     .into_any_element(),
                 }
+            } else if self.market == Market::Skills && self.ms.skills_error.is_some() {
+                // The heading says what went wrong.
+                div().into_any_element()
+            } else if self.market == Market::Skills && self.ms.skills.is_none() {
+                ui::empty_state(
+                    "sparkles",
+                    "Search skills.sh",
+                    "Type what you need in the search box, like react, pdf or testing. A skill installs into ~/.claude/skills, where Claude Code and Workers AI find it.",
+                    None,
+                )
+                .into_any_element()
             } else {
                 ui::empty_state(
                     "search01",
@@ -660,6 +857,7 @@ impl ExtensionsView {
                         Market::Registry if self.ms.everything => {
                             "It searches server names: try a product name like github or postgres."
                         }
+                        Market::Skills => "skills.sh found no skill for that. Try other words.",
                         _ => "Try other words, another category, or All instead of Official.",
                     },
                     None,
@@ -701,7 +899,7 @@ impl ExtensionsView {
             }
             self.sync_rows(
                 RowsKey {
-                    plugins: self.market == Market::Plugins,
+                    market: self.market,
                     category: self.ms.category.clone(),
                     everything: self.ms.everything,
                     by_name: self.ms.sort == Sort::Name,
@@ -832,8 +1030,7 @@ impl ExtensionsView {
                 .justify_center()
                 .h(px(ROW_H))
                 .child(if self.ms.registry_loading {
-                    ui::spinner("ext-registry-more-busy", 14., theme::text_faint())
-                        .into_any_element()
+                    ui::spinner(14., theme::text_faint()).into_any_element()
                 } else {
                     ui::button("ext-registry-more", "Load more", ButtonKind::Outline, true)
                         .on_click(cx.listener(|this, _, _, cx| this.search_registry(true, cx)))
@@ -942,9 +1139,11 @@ impl ExtensionsView {
                 Market::Plugins => self.catalog_loading(),
                 Market::Registry if self.ms.everything => self.ms.registry_loading,
                 Market::Registry => self.ms.official_loading,
+                Market::Skills => self.ms.skills_loading,
             };
         let error = match self.market {
             Market::Plugins => self.catalog_error(),
+            Market::Skills => self.ms.skills_error.clone(),
             // The registry is read from here; installing from it needs the server.
             Market::Registry => self.server_refused().or(self.ms.registry_error.clone()),
         };
@@ -955,6 +1154,7 @@ impl ExtensionsView {
             (Market::Plugins, None) => "Official plugins".to_string(),
             (Market::Registry, None) if self.ms.everything => "MCP Registry".to_string(),
             (Market::Registry, None) => "Official MCP servers".to_string(),
+            (Market::Skills, None) => "skills.sh".to_string(),
         };
         let mut scope = ui::segmented();
         for (i, (everything, label)) in [(false, "Official"), (true, "All")].into_iter().enumerate()
@@ -984,10 +1184,10 @@ impl ExtensionsView {
         for (i, (s, label)) in [
             (
                 Sort::Popular,
-                if self.market == Market::Plugins {
-                    "Popular"
-                } else {
+                if self.market == Market::Registry {
                     "By company"
+                } else {
+                    "Popular"
                 },
             ),
             (Sort::Name, "A–Z"),
@@ -1027,25 +1227,28 @@ impl ExtensionsView {
                             .text_color(theme::text())
                             .child(title),
                     )
-                    .when(!loading, |d| {
-                        d.child(
-                            div()
-                                .flex_none()
-                                .ty(Type::Label)
-                                .text_color(theme::text_faint())
-                                .child(n.to_string()),
-                        )
-                    })
-                    .when(busy, |d| {
-                        d.child(ui::spinner("ext-market-busy", 13., theme::text_faint()))
-                    })
+                    // Before a search, skills.sh has shown nothing to count.
+                    .when(
+                        !loading && (self.market != Market::Skills || self.ms.skills.is_some()),
+                        |d| {
+                            d.child(
+                                div()
+                                    .flex_none()
+                                    .ty(Type::Label)
+                                    .text_color(theme::text_faint())
+                                    .child(n.to_string()),
+                            )
+                        },
+                    )
+                    .when(busy, |d| d.child(ui::spinner(13., theme::text_faint())))
                     .child(div().flex_1())
                     .child(
                         div()
                             .flex()
                             .flex_none()
                             .gap(crate::ui::sp(8.))
-                            .child(scope)
+                            // skills.sh does not say which skills are official.
+                            .when(self.market != Market::Skills, |d| d.child(scope))
                             .child(sort),
                     ),
             )
@@ -1060,15 +1263,13 @@ impl ExtensionsView {
             return ui::state_pill("checkmark-circle02", "Installed", Tone::Success.color())
                 .into_any_element();
         }
-        if let Item::Plugin(p) = item
-            && self.op.as_deref() == Some(p.name.as_str())
-        {
-            return ui::spinner(
-                SharedString::from(format!("ext-card-busy-{}", item.key())),
-                14.,
-                theme::text_faint(),
-            )
-            .into_any_element();
+        let busy_name = match item {
+            Item::Plugin(p) => Some(p.name.as_str()),
+            Item::Skill(k) => Some(k.name.as_str()),
+            Item::Server(_) => None,
+        };
+        if busy_name.is_some() && self.op.as_deref() == busy_name {
+            return ui::spinner(14., theme::text_faint()).into_any_element();
         }
         let target = item.clone();
         ui::button(
@@ -1085,11 +1286,15 @@ impl ExtensionsView {
                 None => "Install for every project".to_string(),
             }))
         })
+        .when(matches!(item, Item::Skill(_)), |b| {
+            b.tooltip(ui::tip("Install into ~/.claude/skills, for every project"))
+        })
         .on_click(cx.listener(move |this, _, window, cx| {
             // The card under the button opens the details; Install alone installs.
             cx.stop_propagation();
             match &target {
                 Item::Plugin(p) => this.install_plugin(p, cx),
+                Item::Skill(k) => this.install_skill(k, cx),
                 // A server asks what it needs first, in the details.
                 Item::Server(_) => this.select(&target, window, cx),
             }
@@ -1279,6 +1484,14 @@ impl ExtensionsView {
                     .clone(),
             ),
             Market::Registry => Item::Server(self.ms.installing.as_ref()?.server.clone()),
+            Market::Skills => Item::Skill(
+                self.ms
+                    .skills
+                    .as_ref()?
+                    .iter()
+                    .find(|k| &k.id == key)?
+                    .clone(),
+            ),
         };
         let installed = self.installed(&item);
         let (by, verified) = item.by();
@@ -1312,7 +1525,7 @@ impl ExtensionsView {
                             .child(by_line(by, verified)),
                     )
                     .child(
-                        ui::icon_button("ext-detail-close", "cancel01", 14.)
+                        ui::icon_button("ext-detail-close", "cancel01", 14., "Close")
                             .on_click(cx.listener(|this, _, _, cx| this.close_detail(cx))),
                     ),
             );
@@ -1329,12 +1542,21 @@ impl ExtensionsView {
         if installed {
             facts = facts.child(ui::badge("Installed", Tone::Success));
         }
-        panel = panel.child(facts).child(
-            div()
-                .ty(Type::Body)
-                .text_color(theme::text_muted())
-                .child(item.description()),
-        );
+        let description = match &item {
+            Item::Skill(k) => match self.ms.located.get(&k.id) {
+                Some(Located::Found(f)) if !f.description.is_empty() => f.description.clone(),
+                _ => String::new(),
+            },
+            _ => item.description(),
+        };
+        panel = panel.child(facts).when(!description.is_empty(), |d| {
+            d.child(
+                div()
+                    .ty(Type::Body)
+                    .text_color(theme::text_muted())
+                    .child(description),
+            )
+        });
         match &item {
             Item::Plugin(p) => {
                 let busy = self.op.as_ref() == Some(&p.name);
@@ -1380,7 +1602,7 @@ impl ExtensionsView {
                             .flex()
                             .items_center()
                             .gap(crate::ui::sp(8.))
-                            .child(ui::spinner("ext-detail-busy", 14., theme::text_faint()))
+                            .child(ui::spinner(14., theme::text_faint()))
                             .child("Installing…")
                             .into_any_element()
                     } else {
@@ -1403,6 +1625,7 @@ impl ExtensionsView {
             Item::Server(_) => {
                 panel = panel.children(self.render_install_form(installed, cx));
             }
+            Item::Skill(k) => panel = self.render_skill_detail(panel, k, installed, cx),
         }
         Some(
             div()
@@ -1415,6 +1638,116 @@ impl ExtensionsView {
                 .bg(theme::fill_raised())
                 .child(panel),
         )
+    }
+
+    /// A skills.sh skill's folder on GitHub, its links, and Install.
+    fn render_skill_detail(
+        &self,
+        panel: Stateful<Div>,
+        k: &SkillEntry,
+        installed: bool,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
+        let located = self.ms.located.get(&k.id).cloned();
+        let found = match &located {
+            Some(Located::Found(f)) => Some(f.clone()),
+            _ => None,
+        };
+        let page = k.page();
+        let mut links = div().flex().flex_wrap().gap(crate::ui::sp(8.)).child(
+            ui::button_with(
+                "ext-skill-page",
+                Some("link-square02"),
+                "skills.sh",
+                ButtonKind::Ghost,
+                true,
+            )
+            .on_click(move |_, _, cx| cx.open_url(&page)),
+        );
+        if let Some(url) = found.as_ref().map(SkillSource::url) {
+            links = links.child(
+                ui::button_with(
+                    "ext-skill-github",
+                    Some("github"),
+                    "GitHub",
+                    ButtonKind::Ghost,
+                    true,
+                )
+                .on_click(move |_, _, cx| cx.open_url(&url)),
+            );
+        }
+        let mut facts = div()
+            .flex()
+            .flex_col()
+            .child(ui::kv("Repository", k.source.clone()))
+            .child(ui::kv("Skill", k.skill_id.clone()));
+        if let Some(f) = &found {
+            facts = facts
+                .child(ui::kv(
+                    "Folder",
+                    if f.dir.is_empty() {
+                        "(the repository)".to_string()
+                    } else {
+                        f.dir.clone()
+                    },
+                ))
+                .child(ui::kv(
+                    "Files",
+                    format!("{} ({})", f.files.len(), crate::ci::size_label(f.bytes())),
+                ));
+        }
+        let state: Option<AnyElement> = match &located {
+            Some(Located::Looking) => Some(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(crate::ui::sp(8.))
+                    .ty(Type::Body)
+                    .text_color(theme::text_subtle())
+                    .child(ui::spinner(14., theme::text_faint()))
+                    .child("Reading it on GitHub…")
+                    .into_any_element(),
+            ),
+            Some(Located::Failed(e)) => Some(note(e.clone(), Tone::Danger).into_any_element()),
+            _ => None,
+        };
+        let busy = self.op.as_deref() == Some(k.name.as_str());
+        let entry = k.clone();
+        let action = if installed {
+            div()
+                .ty(Type::Body)
+                .text_color(theme::text_subtle())
+                .child("Installed for your user. It shows under Skills.")
+                .into_any_element()
+        } else if busy {
+            div()
+                .flex()
+                .items_center()
+                .gap(crate::ui::sp(8.))
+                .child(ui::spinner(14., theme::text_faint()))
+                .child("Installing…")
+                .into_any_element()
+        } else {
+            ui::button_with(
+                "ext-detail-install",
+                Some("download04"),
+                "Install for every project",
+                ButtonKind::Primary,
+                self.op.is_none() && !matches!(located, Some(Located::Failed(_))),
+            )
+            .on_click(cx.listener(move |this, _, _, cx| this.install_skill(&entry, cx)))
+            .into_any_element()
+        };
+        panel
+            .children(state)
+            .child(facts)
+            .child(links)
+            .child(note(
+                "A skill is instructions and sometimes scripts an agent follows. Read it on GitHub before you install one from someone you don't know.",
+                Tone::Warning,
+            ))
+            .child(div().flex_1())
+            .child(action)
     }
 
     /// How to install the picked registry server: the way, what it needs, the command.
@@ -1605,7 +1938,7 @@ enum Row {
 /// What the rows depend on: when it changes, the list starts over at the top.
 #[derive(Clone, PartialEq)]
 pub(super) struct RowsKey {
-    plugins: bool,
+    market: Market,
     category: Option<String>,
     everything: bool,
     by_name: bool,
@@ -1706,6 +2039,7 @@ pub(super) enum Sort {
 pub(super) enum Item {
     Plugin(PluginEntry),
     Server(RegistryServer),
+    Skill(SkillEntry),
 }
 
 impl Item {
@@ -1713,6 +2047,7 @@ impl Item {
         match self {
             Item::Plugin(p) => &p.id,
             Item::Server(s) => &s.name,
+            Item::Skill(k) => &k.id,
         }
     }
 
@@ -1730,6 +2065,7 @@ impl Item {
                     _ => s.title.clone(),
                 }
             }
+            Item::Skill(k) => k.name.clone(),
         }
     }
 
@@ -1739,6 +2075,10 @@ impl Item {
             Item::Server(s) => match &s.official {
                 Some(c) => (Some(c.clone()), true),
                 None => (Some(s.publisher()), false),
+            },
+            Item::Skill(k) => match publishers::by_org(k.owner()) {
+                Some(company) => (Some(company.to_string()), true),
+                None => (Some(k.owner().to_string()), false),
             },
         }
     }
@@ -1751,6 +2091,11 @@ impl Item {
                 s.website.as_deref().unwrap_or_default(),
                 s.official.as_deref(),
             ),
+            Item::Skill(k) => mark_by(
+                &k.name,
+                "",
+                Some(publishers::by_org(k.owner()).unwrap_or(k.owner())),
+            ),
         }
     }
 
@@ -1758,6 +2103,8 @@ impl Item {
         match self {
             Item::Plugin(p) => p.description.clone(),
             Item::Server(s) => s.description.clone(),
+            // skills.sh lists no descriptions; the details read the SKILL.md.
+            Item::Skill(k) => format!("A skill from {}.", k.source),
         }
     }
 
@@ -1779,6 +2126,7 @@ impl Item {
     fn installs(&self) -> Option<u64> {
         match self {
             Item::Plugin(p) if p.installs > 0 => Some(p.installs),
+            Item::Skill(k) if k.installs > 0 => Some(k.installs),
             _ => None,
         }
     }
@@ -1810,6 +2158,7 @@ impl Item {
                 }
                 tags
             }
+            Item::Skill(_) => Vec::new(),
         }
     }
 }
@@ -1834,107 +2183,6 @@ fn by_line(by: Option<String>, verified: bool) -> Div {
                     .child(format!("by {by}")),
             )
         })
-}
-
-fn nav_base(id: impl Into<gpui::ElementId>, on: bool) -> Stateful<Div> {
-    div()
-        .id(id)
-        .flex()
-        .flex_none()
-        .items_center()
-        .gap(crate::ui::sp(8.))
-        .h(px(30.))
-        .px(crate::ui::sp(8.))
-        .rounded(crate::ui::rad(ui::RADIUS))
-        .cursor_pointer()
-        .ty(Type::Label)
-        .when(on, |d| {
-            d.bg(theme::fill_selected()).text_color(theme::text())
-        })
-        .when(!on, |d| {
-            d.text_color(theme::text_muted())
-                .hover(|d| d.bg(theme::fill_hover()).text_color(theme::text()))
-        })
-}
-
-fn nav_count(n: Option<usize>) -> Div {
-    div()
-        .flex_none()
-        .ty(Type::Caption)
-        .text_color(theme::text_faint())
-        .children(n.map(|n| n.to_string()))
-}
-
-pub(super) fn nav_row(
-    id: impl Into<gpui::ElementId>,
-    icon_name: &str,
-    label: &str,
-    n: Option<usize>,
-    on: bool,
-) -> Stateful<Div> {
-    nav_base(id, on)
-        .child(icon(icon_name, 14.).text_color(if on {
-            theme::text()
-        } else {
-            theme::text_subtle()
-        }))
-        .child(div().flex_1().min_w_0().truncate().child(label.to_string()))
-        .child(nav_count(n))
-}
-
-/// A row of the left column whose count says how many need you.
-pub(super) fn nav_alert_row(
-    id: impl Into<gpui::ElementId>,
-    icon_name: &str,
-    label: &str,
-    n: usize,
-    on: bool,
-) -> Stateful<Div> {
-    let warn = Tone::Warning.color();
-    nav_base(id, on)
-        .child(icon(icon_name, 14.).text_color(if on {
-            theme::text()
-        } else {
-            theme::text_subtle()
-        }))
-        .child(div().flex_1().min_w_0().truncate().child(label.to_string()))
-        .child(
-            div()
-                .flex()
-                .flex_none()
-                .items_center()
-                .gap(crate::ui::sp(5.))
-                .ty(Type::Caption)
-                .text_color(warn)
-                .child(div().size(px(6.)).rounded_full().bg(warn))
-                .child(n.to_string()),
-        )
-}
-
-fn nav_dot_row(
-    id: impl Into<gpui::ElementId>,
-    color: Hsla,
-    label: String,
-    n: usize,
-    on: bool,
-) -> Stateful<Div> {
-    nav_base(id, on)
-        .child(div().flex_none().size(px(8.)).rounded_full().bg(color))
-        .child(div().flex_1().min_w_0().truncate().child(label))
-        .child(nav_count(Some(n)))
-}
-
-fn nav_mark_row(
-    id: impl Into<gpui::ElementId>,
-    mark: logos::Mark,
-    label: String,
-    n: usize,
-    on: bool,
-) -> Stateful<Div> {
-    nav_base(id, on)
-        .child(logos::tile(mark, 18.))
-        .child(div().flex_1().min_w_0().truncate().child(label))
-        .child(nav_count(Some(n)))
 }
 
 /// A marketplace card: logo, name and line under it, what it does, tags and the action.
@@ -2090,7 +2338,7 @@ mod tests {
 
     fn key(query: &str) -> RowsKey {
         RowsKey {
-            plugins: true,
+            market: Market::Plugins,
             category: None,
             everything: false,
             by_name: false,

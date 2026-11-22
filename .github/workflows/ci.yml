@@ -40,8 +40,8 @@ env:
   CI_CARGO_CONFIG: profile.dev.package."*".opt-level=0
 
 jobs:
-  # Decides which of the jobs below a change needs, so a docs-only or relay-only
-  # change does not pay for the Rust builds. The jobs are still
+  # Decides which of the jobs below a change needs, so a docs-only, relay-only
+  # or teams-only change does not pay for the Rust builds. The jobs are still
   # required checks: a job skipped by its `if` counts as passed, while a
   # workflow-level `paths` filter would leave the checks pending forever.
   changes:
@@ -53,6 +53,7 @@ jobs:
     outputs:
       rust: ${{ steps.diff.outputs.rust }}
       relay: ${{ steps.diff.outputs.relay }}
+      teams: ${{ steps.diff.outputs.teams }}
     steps:
       - name: Sort the changed files
         id: diff
@@ -67,13 +68,13 @@ jobs:
         run: |
           if [ "$MAIN_PASSED" = true ]; then
             echo "::notice::CI already passed on main for $AFTER, so every job skips"
-            { echo rust=false; echo relay=false; } >> "$GITHUB_OUTPUT"
+            { echo rust=false; echo relay=false; echo teams=false; } >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
           everything() {
             echo "::notice::$1, so every job runs"
-            { echo rust=true; echo relay=true; } >> "$GITHUB_OUTPUT"
+            { echo rust=true; echo relay=true; echo teams=true; } >> "$GITHUB_OUTPUT"
             exit 0
           }
 
@@ -97,13 +98,15 @@ jobs:
 
           rust=false
           relay=false
+          teams=false
           while IFS= read -r f; do
             [ -n "$f" ] || continue
             case "$f" in
               # How CI itself runs: test everything with it.
-              .github/workflows/ci.yml | .github/actions/*) rust=true relay=true ;;
+              .github/workflows/ci.yml | .github/actions/*) rust=true relay=true teams=true ;;
               # The relay job also runs the phone tests.
               relay/*) relay=true ;;
+              teams/*) teams=true ;;
               # The app embeds phone/ (rust_embed) and tests against its vectors.
               phone/*) rust=true relay=true ;;
               # The browser job prepares CEF with it.
@@ -116,15 +119,15 @@ jobs:
               tools/layout_audit.py | tools/layout-audit-fixtures/*) rust=true ;;
               # Nothing the Rust build or its tests read. Anything not listed
               # here, such as a new top-level folder, runs the Rust jobs.
-              docs/* | iso/* | tools/* | .claude/* | .github/* | LICENSE | NOTICE | .gitignore | deny.toml) ;;
+              docs/* | iso/* | tools/* | .claude/* | .github/* | LICENSE | NOTICE | .gitignore | deny.toml | cubic.yaml) ;;
               */*) rust=true ;;
               *.md) ;;
               *) rust=true ;;
             esac
           done <<< "$files"
 
-          echo "rust=$rust relay=$relay"
-          { echo "rust=$rust"; echo "relay=$relay"; } >> "$GITHUB_OUTPUT"
+          echo "rust=$rust relay=$relay teams=$teams"
+          { echo "rust=$rust"; echo "relay=$relay"; echo "teams=$teams"; } >> "$GITHUB_OUTPUT"
 
   # Clippy and the tests build different artifacts (metadata vs. code), so they
   # run side by side instead of one after the other.
@@ -172,7 +175,7 @@ jobs:
         run: cargo clippy --locked --all-targets --no-default-features --config "$CI_CARGO_CONFIG" -- -D warnings
 
   # The default `browser` feature needs CEF, so the other jobs leave it out. This one
-  # prepares CEF as the README does on Linux, so src/browser/ and arakun-helper compile.
+  # prepares CEF as the README does on Linux, so core/src/browser/ and arakun-helper compile.
   clippy-browser:
     name: Clippy (Linux, browser)
     needs: changes
@@ -283,7 +286,7 @@ jobs:
         run: cargo test --locked --no-default-features --config "$CI_CARGO_CONFIG"
 
   # arakun-server (server/) is the app's server for a machine with no display:
-  # the same source files, against GPUI without Wayland and X11. It is a package
+  # the same code (core/), against GPUI without Wayland and X11. It is a package
   # of its own, which the jobs above leave out, and it is only worth having if it
   # really needs no desktop library. So this job installs none of them, builds it
   # alone, as someone setting up a server would, and reads what the binary needs.
@@ -444,3 +447,31 @@ jobs:
       - name: phone e2e vectors
         working-directory: phone
         run: node --test "test/*.test.mjs"
+
+  # The teams Worker (sign-in and feature flags) is TypeScript apart from the
+  # app, like the relay; its tests run the real Worker and D1 inside workerd.
+  teams:
+    name: Teams (types and tests)
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.teams != 'false' }}
+    runs-on: depot-ubuntu-24.04
+    defaults:
+      run:
+        working-directory: teams
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # CPU and memory use for the weekly runner-sizing report.
+      - uses: $/.github/actions/runner-usage
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: teams/package-lock.json
+
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: npx vitest run

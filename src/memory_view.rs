@@ -85,21 +85,13 @@ impl MemoryView {
             InputEvent::Cancel => input.update(cx, |i, cx| i.set_text("", cx)),
             _ => {}
         });
-        let poll = cx.spawn(async move |this, cx| {
-            loop {
-                cx.background_executor().timer(POLL).await;
-                let alive = this.update(cx, |this, cx| {
-                    let mut changed = false;
-                    for (_, s) in &mut this.sources {
-                        changed |= s.reload();
-                    }
-                    if changed {
-                        cx.notify();
-                    }
-                });
-                if alive.is_err() {
-                    break;
-                }
+        let poll = crate::poll::poll_every(cx, POLL, POLL, |this, cx| {
+            let mut changed = false;
+            for (_, s) in &mut this.sources {
+                changed |= s.reload();
+            }
+            if changed {
+                cx.notify();
             }
         });
         Self {
@@ -346,6 +338,7 @@ impl MemoryView {
                                     SharedString::from(format!("mem-edit-{scope:?}")),
                                     "pencil-edit01",
                                     13.,
+                                    "Edit",
                                 )
                                 .on_click(cx.listener(
                                     move |_, _, _, cx| cx.emit(MemoryEvent::Edit(file.clone())),

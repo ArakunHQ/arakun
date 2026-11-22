@@ -183,11 +183,7 @@ fn pending_env_row(id: usize, name: String) -> gpui::Stateful<gpui::Div> {
                 .items_center()
                 .justify_center()
                 .size(px(14.))
-                .child(ui::spinner(
-                    ("env-pending-spin", id),
-                    12.,
-                    theme::text_faint(),
-                )),
+                .child(ui::spinner(12., theme::text_faint())),
         )
         .child(div().flex_1().min_w_0().truncate().child(name))
         .child(
@@ -462,16 +458,20 @@ impl Shell {
                 ]
                 .map(|(id, name, enabled, go_back)| {
                     if enabled {
-                        icon_button(id, name, 14.)
-                            .tooltip(ui::tip(if go_back {
+                        icon_button(
+                            id,
+                            name,
+                            14.,
+                            if go_back {
                                 "Back (Alt+Left)"
                             } else {
                                 "Forward (Alt+Right)"
-                            }))
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.tab_history(go_back, window, cx)
-                            }))
-                            .into_any_element()
+                            },
+                        )
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.tab_history(go_back, window, cx)
+                        }))
+                        .into_any_element()
                     } else {
                         div()
                             .id(id)
@@ -487,8 +487,7 @@ impl Shell {
             )
             .when(self.has_projects(), |d| {
                 d.child(
-                    icon_button("rail-hide", "sidebar-left", 14.)
-                        .tooltip(ui::tip("Hide sidebar (Ctrl+B)"))
+                    icon_button("rail-hide", "sidebar-left", 14., "Hide sidebar (Ctrl+B)")
                         .on_click(cx.listener(|this, _, _, cx| this.toggle_rail(cx))),
                 )
             })
@@ -546,6 +545,10 @@ impl Shell {
                     .children(self.render_rail_sections(cx)),
             )
             .pb(crate::ui::sp(4.))
+            .relative()
+            .when(!narrow && !self.arranging(), |d| {
+                d.children(self.render_removed_note(cx))
+            })
     }
 
     /// Offers the Switcher to someone whose layout predates it, once: "Try it"
@@ -620,6 +623,53 @@ impl Shell {
         )
     }
 
+    /// What a right-click just took out of the rail, with the way back.
+    /// It goes on its own after a while, unless the pointer is on it, or at
+    /// the next change. It lies over
+    /// the foot of the rail: in the list, the rows would jump when it goes
+    /// and a late click on Undo would land on one of them.
+    fn render_removed_note(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let (what, _) = self.builder.removed.clone()?;
+        Some(
+            div()
+                .id("rail-removed")
+                // It stays while the pointer is on it.
+                .on_hover(cx.listener(|this, hovered: &bool, _, _| {
+                    this.hover_removed_note(*hovered);
+                }))
+                .flex()
+                .absolute()
+                .left(crate::ui::sp(8.))
+                .right(crate::ui::sp(8.))
+                .bottom(crate::ui::sp(8.))
+                .items_center()
+                .gap(crate::ui::sp(6.))
+                .pl(crate::ui::sp(10.))
+                .pr(crate::ui::sp(4.))
+                .py(crate::ui::sp(4.))
+                .rounded(crate::ui::rad(8.))
+                .border_1()
+                .border_color(theme::border())
+                .bg(theme::dialog())
+                .shadow_lg()
+                .occlude()
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_size(px(ui::TEXT_SM))
+                        .text_color(theme::text_muted())
+                        .child(what),
+                )
+                .child(
+                    ui::button("rail-removed-undo", "Undo", ui::ButtonKind::Ghost, true)
+                        .on_click(cx.listener(|this, _, _, cx| this.undo_sidebar(false, cx))),
+                )
+                .into_any_element(),
+        )
+    }
+
     /// What the rail, the workspace panel and the subagents column sit in,
     /// as the rail's style says: on the window itself (Flush, the default),
     /// in a card, or in a card lifted off the window.
@@ -653,8 +703,7 @@ impl Shell {
                     }),
             )
             .child(
-                icon_button("rail-widen", "sidebar-left", 14.)
-                    .tooltip(ui::tip("Show sidebar (Ctrl+B)"))
+                icon_button("rail-widen", "sidebar-left", 14., "Show sidebar (Ctrl+B)")
                     .on_click(cx.listener(|this, _, _, cx| this.toggle_rail(cx))),
             )
     }
@@ -1407,6 +1456,14 @@ impl Shell {
             .children(pr)
             .children(self.render_machine(env, pi * 1000 + ei))
             .children(end.map(|e| div().flex_none().child(e)))
+            .on_hover(cx.listener({
+                let opens = opens.clone();
+                move |this, hovered: &bool, _, cx| {
+                    if *hovered {
+                        this.read_ahead(pi, ei, opens.clone(), cx);
+                    }
+                }
+            }))
             .on_click(cx.listener(move |this, ev: &gpui::ClickEvent, window, cx| {
                 this.click_env(pi, ei, opens.clone(), ev.modifiers(), window, cx)
             }))

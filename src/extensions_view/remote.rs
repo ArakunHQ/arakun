@@ -414,38 +414,30 @@ impl ExtensionsView {
     }
 
     /// Above Discover's sources, when servers are paired: where Install goes.
-    pub(super) fn render_targets(&self, cx: &mut Context<Self>) -> Option<Div> {
+    pub(super) fn target_lines(&self) -> Vec<Line> {
         if self.targets.servers.is_empty() {
-            return None;
+            return Vec::new();
         }
-        let mut out = div()
-            .flex()
-            .flex_col()
-            .flex_none()
-            .gap(crate::ui::sp(2.))
-            .pb(crate::ui::sp(12.))
-            .child(nav_heading("Install on", false))
-            .child(
-                market::nav_row(
-                    "ext-target-here",
-                    "home01",
-                    "This computer",
-                    None,
-                    self.targets.target.is_none(),
-                )
-                .on_click(cx.listener(|this, _, _, cx| this.pick_target(None, cx))),
-            );
-        for (i, s) in self.targets.servers.iter().enumerate() {
-            let id = s.id.clone();
+        let mut out = vec![
+            Line::Heading("Install on".into()),
+            Line::Entry(
+                Entry::new("target:", Lead::Icon("home01"), "This computer")
+                    .on(self.targets.target.is_none()),
+            ),
+        ];
+        for s in &self.targets.servers {
             let on = self.targets.target.as_deref() == Some(s.id.as_str());
-            let row = market::nav_row(("ext-target", i), "computer", &s.name, None, on)
-                .when(s.reach != Reach::Connected, |d| d.opacity(0.6))
-                .on_click(
-                    cx.listener(move |this, _, _, cx| this.pick_target(Some(id.clone()), cx)),
-                );
-            out = out.child(row);
+            out.push(Line::Entry(
+                Entry::new(
+                    format!("target:{}", s.id),
+                    Lead::Icon("computer"),
+                    s.name.clone(),
+                )
+                .on(on)
+                .dim(s.reach != Reach::Connected),
+            ));
         }
-        Some(out)
+        out
     }
 }
 

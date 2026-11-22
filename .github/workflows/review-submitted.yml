@@ -1,9 +1,10 @@
 name: Review submitted
 
-# Only a trigger. When a review is submitted or dismissed, its completion
+# Only a trigger. When a review is submitted or dismissed, or a comment is
+# left on the diff, its completion
 # starts the Human approval workflow (workflow_run), which updates the "Human
-# approval" status, and the Reviewers workflow, which judges CodeRabbit's
-# approval and asks a person if needed.
+# approval" status, and the Reviewers workflow, which judges cubic's
+# approval and asks a person once cubic's findings are dealt with.
 #
 # The work can't happen here: on a pull request from a fork, this runs the
 # fork's copy of this file with a read-only token, and a fork could change it
@@ -16,6 +17,11 @@ name: Review submitted
 on:
   pull_request_review:
     types: [submitted, dismissed]
+  # The author answering cubic's last finding is what lets the Reviewers
+  # workflow ask a person. Resolving a thread starts no workflow on GitHub;
+  # Reviewers looks for those on a schedule.
+  pull_request_review_comment:
+    types: [created]
 
 permissions: {}
 

@@ -2,9 +2,8 @@
 
 use super::*;
 
-/// The model menu: the agent column beside the model's options.
-const MODEL_MENU_W: f32 = 500.;
-const AGENT_COLUMN_W: f32 = 170.;
+/// The model menu: one column, wide enough for seven agents in its strip.
+const MODEL_MENU_W: f32 = 340.;
 /// Claude offers some twenty models; past this the list scrolls.
 const MODEL_LIST_MAX_H: f32 = 280.;
 
@@ -181,7 +180,7 @@ impl Shell {
         use crate::agent::Setting;
         let current = |s| self.setting_choices(s, cx).map(|(c, _)| c);
         match self.composer_agent() {
-            model::Agent::Claude => {
+            AgentKind::Claude => {
                 let label = self.setting_value_label(Setting::Mode, cx)?;
                 Some((
                     label,
@@ -189,11 +188,11 @@ impl Shell {
                 ))
             }
             // Build or Plan; what Build may do without asking is OpenCode's own config.
-            model::Agent::OpenCode => self
+            AgentKind::OpenCode => self
                 .setting_value_label(Setting::Mode, cx)
                 .map(|l| (l, false)),
             // Codex's sandbox and approval preset; full access never asks.
-            model::Agent::Codex => {
+            AgentKind::Codex => {
                 let label = self.setting_value_label(Setting::Mode, cx)?;
                 Some((
                     label,
@@ -201,18 +200,23 @@ impl Shell {
                 ))
             }
             // Devin's mode: Code, Smart, Ask, Plan or Bypass; bypass never asks.
-            model::Agent::Devin => {
+            AgentKind::Devin => {
                 let label = self.setting_value_label(Setting::Mode, cx)?;
                 Some((label, current(Setting::Mode).as_deref() == Some("bypass")))
             }
+            // Cursor's mode: Agent, Plan or Ask. None of them skips asking.
+            AgentKind::Cursor => {
+                let label = self.setting_value_label(Setting::Mode, cx)?;
+                Some((label, false))
+            }
             // Antigravity's modes come from agy; what each may do without
             // asking is agy's own setting.
-            model::Agent::Antigravity => self
+            AgentKind::Antigravity => self
                 .setting_value_label(Setting::Mode, cx)
                 .map(|l| (l, false)),
             // It asks before commands and edits; `arakun agent new` sessions don't.
-            model::Agent::WorkersAi => None,
-            model::Agent::Droid => {
+            AgentKind::WorkersAi => None,
+            AgentKind::Droid => {
                 let Some(autonomy) = self.setting_value_label(Setting::Autonomy, cx) else {
                     // Droid over ACP: its modes carry the autonomy.
                     return self
@@ -238,15 +242,15 @@ impl Shell {
     // ---- what the composer and rail menus can do, for clicks and keys ---------
 
     /// The agent whose models the model menu shows.
-    fn menu_agent(&self) -> model::Agent {
+    fn menu_agent(&self) -> AgentKind {
         self.menu_agent.unwrap_or_else(|| self.composer_agent())
     }
 
     /// The agents the model menu offers: all of them, unless the session can't
     /// be handed over.
-    fn menu_agents(&self) -> Vec<model::Agent> {
+    fn menu_agents(&self) -> Vec<AgentKind> {
         if self.can_switch_agent() {
-            model::Agent::ALL.to_vec()
+            AgentKind::ALL.to_vec()
         } else {
             vec![self.composer_agent()]
         }
@@ -259,7 +263,7 @@ impl Shell {
         let Some(menu) = &self.menu else {
             return Vec::new();
         };
-        let choices = |agent: model::Agent, s: Setting| -> Vec<MenuKey> {
+        let choices = |agent: AgentKind, s: Setting| -> Vec<MenuKey> {
             self.agent_choices(agent, s, cx)
                 .map(|(_, options)| {
                     options
@@ -273,7 +277,7 @@ impl Shell {
             MenuTarget::ModelMenu => {
                 let agent = self.menu_agent();
                 let mut keys = choices(agent, Setting::Model);
-                if self.agent_choices(agent, Setting::Effort, cx).is_some() {
+                if self.effort_levels(agent, cx).is_some() {
                     keys.push(MenuKey::Effort(agent));
                 }
                 if let Some((current, _)) = self.agent_choices(agent, Setting::Fast, cx) {
@@ -293,7 +297,7 @@ impl Shell {
                     .flat_map(|s| choices(agent, s))
                     .collect()
             }
-            MenuTarget::RailUsage => AgentKind::ALL
+            MenuTarget::RailUsage => AgentKind::WITH_PLAN
                 .into_iter()
                 .map(MenuKey::Rail)
                 .chain([MenuKey::OpenUsage])
@@ -304,6 +308,22 @@ impl Shell {
 
     /// Does what a row of a composer or rail menu does.
     pub(super) fn menu_run(&mut self, key: MenuKey, window: &mut Window, cx: &mut Context<Self>) {
+        let focused = self
+            .menu_cursor
+            .and_then(|i| self.menu_keys(cx).get(i).cloned());
+        self.menu_run_key(key, window, cx);
+        // A pick can add or drop rows (another model may have no reasoning
+        // levels), so the cursor follows its action, not its old index.
+        if let Some(focused) = focused {
+            self.menu_cursor = self
+                .menu_keys(cx)
+                .iter()
+                .position(|k| same_action(k, &focused));
+        }
+        cx.notify();
+    }
+
+    fn menu_run_key(&mut self, key: MenuKey, window: &mut Window, cx: &mut Context<Self>) {
         use crate::agent::Setting;
         match key {
             MenuKey::Choice(agent, s, id, enabled) => {
@@ -341,13 +361,23 @@ impl Shell {
                 self.open_usage_tab(window, cx);
             }
         }
-        cx.notify();
+    }
+
+    /// `agent`'s reasoning levels, when there are two or more to pick from.
+    fn effort_levels(
+        &self,
+        agent: AgentKind,
+        cx: &App,
+    ) -> Option<(String, Vec<crate::agent::SettingOption>)> {
+        use crate::agent::Setting;
+        self.agent_choices(agent, Setting::Effort, cx)
+            .filter(|(_, options)| options.len() > 1)
     }
 
     /// The next (or previous) reasoning level of `agent`, without wrapping.
     fn step_effort(
         &mut self,
-        agent: model::Agent,
+        agent: AgentKind,
         up: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -474,13 +504,14 @@ impl Shell {
     fn permission_sections(&self, cx: &App) -> Vec<crate::agent::Setting> {
         use crate::agent::Setting;
         match self.composer_agent() {
-            model::Agent::Claude
-            | model::Agent::OpenCode
-            | model::Agent::Codex
-            | model::Agent::Devin
-            | model::Agent::Antigravity => vec![Setting::Mode],
-            model::Agent::WorkersAi => Vec::new(),
-            model::Agent::Droid => [Setting::Mode, Setting::Autonomy]
+            AgentKind::Claude
+            | AgentKind::OpenCode
+            | AgentKind::Codex
+            | AgentKind::Devin
+            | AgentKind::Cursor
+            | AgentKind::Antigravity => vec![Setting::Mode],
+            AgentKind::WorkersAi => Vec::new(),
+            AgentKind::Droid => [Setting::Mode, Setting::Autonomy]
                 .into_iter()
                 .filter(|s| self.setting_choices(*s, cx).is_some())
                 .collect(),
@@ -492,17 +523,24 @@ impl Shell {
         use crate::agent::AgentKind;
         ui::menu_panel("rail-usage-menu", 220.)
             .child(ui::menu_heading("Show in sidebar"))
-            .children(AgentKind::ALL.into_iter().enumerate().map(|(i, agent)| {
-                ui::switch_row(
-                    ("rail-usage-opt", i),
-                    agent.label(),
-                    account_view::rail_shows(agent),
-                )
-                .when(self.menu_focus(i), |d| d.bg(theme::fill_hover()))
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.menu_run(MenuKey::Rail(agent), window, cx)
-                }))
-            }))
+            .children(
+                AgentKind::WITH_PLAN
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, agent)| {
+                        ui::switch_row(
+                            ("rail-usage-opt", i),
+                            agent.label(),
+                            account_view::rail_shows(agent),
+                        )
+                        .when(self.menu_focus(i), |d| d.bg(theme::fill_hover()))
+                        .on_click(cx.listener(
+                            move |this, _, window, cx| {
+                                this.menu_run(MenuKey::Rail(agent), window, cx)
+                            },
+                        ))
+                    }),
+            )
             .child(ui::menu_divider())
             .child(
                 ui::menu_item(
@@ -512,7 +550,7 @@ impl Shell {
                     false,
                     true,
                 )
-                .when(self.menu_focus(AgentKind::ALL.len()), |d| {
+                .when(self.menu_focus(AgentKind::WITH_PLAN.len()), |d| {
                     d.bg(theme::fill_hover())
                 })
                 .on_click(
@@ -523,18 +561,19 @@ impl Shell {
             )
     }
 
-    /// Agents on the left; on the right the hovered agent's models, reasoning
-    /// and fast mode. Picking another agent's model moves the composer to it.
+    /// One column: the shown agent's models, its reasoning level and fast
+    /// mode, and the agents in a strip at the bottom. The menu opens upward,
+    /// so the strip sits by the chip and stays put while the height follows
+    /// the agent. Picking another agent's model moves the composer to it.
     pub(super) fn render_model_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
         use crate::agent::Setting;
         let current = self.composer_agent();
         let shown = self.menu_agent();
         let agents = self.menu_agents();
-        let switchable = agents.len() > 1;
         let in_session = self.composer_in_session();
         let models = self.choice_rows(shown, Setting::Model, false, 0, cx);
         let n_models = models.len();
-        let effort = self.agent_choices(shown, Setting::Effort, cx);
+        let effort = self.effort_levels(shown, cx);
         let fast_ix = n_models + usize::from(effort.is_some());
         let fast = self
             .agent_choices(shown, Setting::Fast, cx)
@@ -546,159 +585,155 @@ impl Shell {
             format!("Use {}", shown.label())
         };
 
-        let agent_column = div()
-            .flex_none()
-            .w(px(AGENT_COLUMN_W))
+        let heading = div()
             .flex()
-            .flex_col()
-            .gap(crate::ui::sp(1.))
-            .child(ui::menu_heading(if in_session {
-                "Continue with"
-            } else {
-                "Agent"
-            }))
-            .children(agents.into_iter().map(|agent| {
-                let model = self.agent_value_label(agent, Setting::Model, cx);
-                div()
-                    .id(("model-agent", agent as usize))
-                    .flex()
-                    .items_center()
-                    .gap(crate::ui::sp(8.))
-                    .min_h(px(ui::MENU_ROW_H))
-                    .py(crate::ui::sp(4.))
-                    .px(crate::ui::sp(8.))
-                    .rounded(ui::menu_row_radius())
-                    .cursor_pointer()
-                    .text_size(px(ui::TEXT_MD))
-                    .text_color(theme::text())
-                    .when(agent == shown, |d| d.bg(theme::fill_hover()))
-                    .when(agent == current, |d| d.bg(theme::fill_selected()))
-                    .child(agent_icon(agent, 14.))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .child(div().truncate().child(agent.label()))
-                            .when_some(model, |d, m| {
-                                d.child(
-                                    div()
-                                        .truncate()
-                                        .text_size(px(ui::TEXT_XS))
-                                        .text_color(theme::text_subtle())
-                                        .child(m),
-                                )
-                            }),
-                    )
-                    .when(agent == current, |d| {
-                        d.child(
-                            icon("tick02", 12.)
-                                .flex_none()
-                                .text_color(theme::text_subtle()),
-                        )
-                    })
-                    .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
-                        if *hovered && this.menu_agent() != agent {
-                            this.menu_agent = Some(agent);
-                            this.menu_cursor = None;
-                            cx.notify();
-                        }
-                    }))
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.menu_run(MenuKey::Agent(agent), window, cx)
-                    }))
-            }));
+            .items_center()
+            .justify_between()
+            .pr(crate::ui::sp(8.))
+            .child(ui::menu_heading(&format!("{} models", shown.label())))
+            .when(shown != current, |d| {
+                d.child(
+                    div()
+                        .pt(crate::ui::sp(3.))
+                        .text_size(px(ui::TEXT_XS))
+                        .text_color(theme::text_faint())
+                        .child("Picking one switches agent"),
+                )
+            });
 
-        let empty = n_models == 0;
-        let options = div()
-            .flex_1()
-            .min_w_0()
+        let models = if n_models == 0 {
+            div()
+                .px(crate::ui::sp(8.))
+                .py(crate::ui::sp(6.))
+                .text_size(px(ui::TEXT_SM))
+                .text_color(theme::text_subtle())
+                .child(format!(
+                    "{}'s models show here after its first session.",
+                    shown.label()
+                ))
+                .into_any_element()
+        } else {
+            div()
+                .id("model-list")
+                .flex()
+                .flex_col()
+                .gap(crate::ui::sp(1.))
+                .max_h(px(MODEL_LIST_MAX_H))
+                .min_h(px(0.))
+                .overflow_y_scroll()
+                .track_scroll(&self.menu_scroll)
+                .children(models)
+                .into_any_element()
+        };
+
+        let effort_row = effort.map(|(now, options)| {
+            self.render_effort_row(shown, &now, options, self.menu_focus(n_models), cx)
+        });
+
+        // Fast mode and reset share the last row: both are small and rarely used.
+        let settings_row = div()
             .flex()
-            .flex_col()
-            .gap(crate::ui::sp(1.))
-            .child(ui::menu_heading(if shown == current {
-                "Model"
-            } else {
-                "Model · switches agent"
-            }))
-            .when(empty, |d| {
-                d.child(
-                    div()
-                        .px(crate::ui::sp(8.))
-                        .py(crate::ui::sp(6.))
-                        .text_size(px(ui::TEXT_SM))
-                        .text_color(theme::text_subtle())
-                        .child(format!(
-                            "{}'s models show here after its first session.",
-                            shown.label()
-                        )),
-                )
-            })
-            .when(!empty, |d| {
-                d.child(
-                    div()
-                        .id("model-list")
-                        .flex()
-                        .flex_col()
-                        .gap(crate::ui::sp(1.))
-                        .max_h(px(MODEL_LIST_MAX_H))
-                        .min_h(px(0.))
-                        .overflow_y_scroll()
-                        .track_scroll(&self.menu_scroll)
-                        .children(models),
-                )
-            })
-            .when_some(effort, |d, (now, levels)| {
-                d.child(ui::menu_heading("Reasoning")).child(
-                    div().px(crate::ui::sp(4.)).pb(crate::ui::sp(2.)).child(
-                        ui::segmented()
-                            .w_full()
-                            .when(self.menu_focus(n_models), |d| {
-                                d.border_color(theme::border_strong())
-                            })
-                            .children(levels.into_iter().enumerate().map(|(i, o)| {
-                                let enabled = o.disabled.is_none();
-                                let key =
-                                    MenuKey::Choice(shown, Setting::Effort, o.id.clone(), enabled);
-                                ui::segment(
-                                    ("model-effort", i),
-                                    None,
-                                    effort_short(&o.id, &o.name),
-                                    o.id == now,
-                                )
-                                .flex_1()
-                                .min_w_0()
-                                .justify_center()
-                                .px(crate::ui::sp(4.))
-                                .when_some(effort_tip(&o.id), |d, tip| d.tooltip(ui::tip(tip)))
-                                .when(!enabled, |d| d.opacity(0.45).cursor_default())
-                                .when(enabled, |d| {
-                                    d.on_click(cx.listener(move |this, _, window, cx| {
-                                        this.menu_run(key.clone(), window, cx)
-                                    }))
-                                })
-                            })),
-                    ),
-                )
-            })
+            .items_center()
+            .gap(crate::ui::sp(4.))
             .when_some(fast, |d, on| {
                 d.child(
-                    ui::switch_row("model-fast", Setting::Fast.label(), on)
+                    div()
+                        .id("model-fast")
+                        .role(gpui::Role::Switch)
+                        .aria_label(Setting::Fast.label())
+                        .aria_toggled(crate::ui::toggled(on))
+                        .flex()
+                        .items_center()
+                        .gap(crate::ui::sp(8.))
+                        .h(px(ui::MENU_ROW_H))
+                        .px(crate::ui::sp(8.))
+                        .rounded(ui::menu_row_radius())
+                        .cursor_pointer()
+                        .map(crate::ui::focusable)
+                        .text_size(px(ui::TEXT_MD))
+                        .text_color(theme::text())
+                        .hover(|d| d.bg(theme::fill_hover()))
                         .when(self.menu_focus(fast_ix), |d| d.bg(theme::fill_hover()))
+                        .child(icon("flash", 13.).text_color(if on {
+                            theme::text()
+                        } else {
+                            theme::text_subtle()
+                        }))
+                        .child(Setting::Fast.label())
+                        .child(ui::switch(on))
+                        .tooltip(ui::tip("Faster output, at a higher price"))
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.menu_run(MenuKey::Fast(shown, on), window, cx)
                         })),
                 )
             })
-            .child(ui::menu_divider())
+            .child(div().flex_1())
             .child(
-                ui::menu_item("model-reset", "undo", "Reset to default", false, true)
+                ui::menu_item("model-reset", "undo", "Reset", false, true)
+                    .text_size(px(ui::TEXT_SM))
                     .when(self.menu_focus(reset_ix), |d| d.bg(theme::fill_hover()))
+                    .tooltip(ui::tip("Back to the default model, reasoning and speed"))
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.menu_run(MenuKey::Reset(shown), window, cx)
                     })),
-            )
+            );
+
+        let agent_strip = (agents.len() > 1).then(|| {
+            div()
+                .flex()
+                .items_center()
+                .gap(crate::ui::sp(2.))
+                .px(crate::ui::sp(2.))
+                .children(agents.into_iter().map(|agent| {
+                    let tip = match self.agent_value_label(agent, Setting::Model, cx) {
+                        Some(m) => format!("{} · {m}", agent.label()),
+                        None => agent.label().to_string(),
+                    };
+                    div()
+                        .id(("model-agent", agent as usize))
+                        .role(gpui::Role::Tab)
+                        .aria_label(agent.label())
+                        .aria_selected(agent == shown)
+                        .relative()
+                        .flex()
+                        .flex_1()
+                        .items_center()
+                        .justify_center()
+                        .h(px(ui::MENU_ROW_H))
+                        .rounded(ui::menu_row_radius())
+                        .cursor_pointer()
+                        .hover(|d| d.bg(theme::fill_hover()))
+                        .when(agent == shown, |d| d.bg(theme::fill_selected()))
+                        .child(agent_icon(agent, 16.))
+                        // The agent the composer uses now: a dot under its icon.
+                        .when(agent == current, |d| {
+                            d.child(
+                                div()
+                                    .absolute()
+                                    .bottom(px(1.))
+                                    .size(px(3.))
+                                    .rounded_full()
+                                    .bg(theme::text_muted()),
+                            )
+                        })
+                        .tooltip(ui::tip_text(tip))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if this.menu_agent() != agent {
+                                this.menu_agent = Some(agent);
+                                this.menu_cursor = None;
+                                this.menu_scroll.scroll_to_item(0);
+                                cx.notify();
+                            }
+                        }))
+                }))
+        });
+
+        ui::menu_panel("model-menu", MODEL_MENU_W)
+            .child(heading)
+            .child(models)
+            .child(ui::menu_divider())
+            .children(effort_row)
+            .child(settings_row)
             .when(shown != current, |d| {
                 d.child(
                     ui::menu_item("model-switch", "arrow-right01", switch_label, false, true)
@@ -707,37 +742,145 @@ impl Shell {
                             this.menu_run(MenuKey::Agent(shown), window, cx)
                         })),
                 )
-            });
+            })
+            .when_some(agent_strip, |d, strip| {
+                d.child(ui::menu_divider()).child(strip)
+            })
+    }
 
-        // The menu opens upward, so a height that followed the hovered agent's
-        // options would move the agents under the cursor and hover another.
-        // With more than one agent the agent column sets the height, and the
-        // options fit in it, the model list scrolling.
-        let options = if switchable {
-            div()
-                .relative()
-                .flex_1()
-                .min_w_0()
-                .self_stretch()
-                .child(options.absolute().top_0().left_0().right_0().bottom_0())
-        } else {
-            options
+    /// The reasoning level: Auto and Off as small buttons, then a bar per
+    /// level, lit up to the current one, and its name.
+    fn render_effort_row(
+        &self,
+        agent: AgentKind,
+        now: &str,
+        options: Vec<crate::agent::SettingOption>,
+        focused: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        use crate::agent::Setting;
+        let (zeros, levels): (Vec<_>, Vec<_>) =
+            options.into_iter().partition(|o| effort_is_zero(&o.id));
+        let lit = levels.iter().position(|o| o.id == now);
+        let label = lit.map(|i| effort_short(&levels[i].id, &levels[i].name));
+        let tip = |o: &crate::agent::SettingOption| {
+            o.disabled
+                .clone()
+                .or_else(|| effort_tip(&o.id).map(str::to_string))
+                .unwrap_or_else(|| o.name.clone())
         };
-
-        ui::menu_panel("model-menu", MODEL_MENU_W)
-            .flex_row()
-            .items_start()
-            .gap(crate::ui::sp(4.))
-            .child(agent_column)
+        let zero_buttons: Vec<_> = zeros
+            .into_iter()
+            .enumerate()
+            .map(|(i, o)| {
+                let enabled = o.disabled.is_none();
+                let on = o.id == now;
+                div()
+                    .id(("model-effort-zero", i))
+                    .role(gpui::Role::MenuItemRadio)
+                    .aria_label(SharedString::from(o.name.clone()))
+                    .aria_toggled(crate::ui::toggled(on))
+                    .flex_none()
+                    .px(crate::ui::sp(6.))
+                    .py(crate::ui::sp(1.))
+                    .rounded(crate::ui::rad(ui::RADIUS_SM))
+                    .text_size(px(ui::TEXT_SM))
+                    .text_color(if on {
+                        theme::text()
+                    } else {
+                        theme::text_subtle()
+                    })
+                    .when(on, |d| d.bg(theme::fill_selected()))
+                    .when(!enabled, |d| d.opacity(0.4))
+                    .when(enabled && !on, |d| {
+                        d.cursor_pointer().hover(|s| s.text_color(theme::text()))
+                    })
+                    .child(effort_short(&o.id, &o.name))
+                    .tooltip(ui::tip_text(tip(&o)))
+                    .when_some(o.disabled.clone(), |d, why| d.aria_description(why))
+                    .when(enabled, |d| {
+                        let key = MenuKey::Choice(agent, Setting::Effort, o.id.clone(), true);
+                        d.on_click(cx.listener(move |this, _, window, cx| {
+                            this.menu_run(key.clone(), window, cx)
+                        }))
+                    })
+                    .into_any_element()
+            })
+            .collect();
+        let bars: Vec<_> = levels
+            .into_iter()
+            .enumerate()
+            .map(|(i, o)| {
+                let enabled = o.disabled.is_none();
+                let on = lit.is_some_and(|l| i <= l);
+                div()
+                    .id(("model-effort", i))
+                    .role(gpui::Role::MenuItemRadio)
+                    .aria_label(SharedString::from(o.name.clone()))
+                    .aria_toggled(crate::ui::toggled(o.id == now))
+                    // A dimmed bar only shows the reason in its tooltip.
+                    .when_some(o.disabled.clone(), |d, why| d.aria_description(why))
+                    .flex_1()
+                    .h(px(18.))
+                    .flex()
+                    .items_center()
+                    .when(enabled, |d| d.cursor_pointer())
+                    .child(
+                        div()
+                            .w_full()
+                            .h(px(6.))
+                            .rounded_full()
+                            .bg(if on {
+                                theme::active()
+                            } else {
+                                theme::fill_selected()
+                            })
+                            .when(!enabled, |d| d.opacity(0.4)),
+                    )
+                    .tooltip(ui::tip_text(tip(&o)))
+                    .when_some(o.disabled.clone(), |d, why| d.aria_description(why))
+                    .when(enabled, |d| {
+                        let key = MenuKey::Choice(agent, Setting::Effort, o.id.clone(), true);
+                        d.on_click(cx.listener(move |this, _, window, cx| {
+                            this.menu_run(key.clone(), window, cx)
+                        }))
+                    })
+                    .into_any_element()
+            })
+            .collect();
+        let has_bars = !bars.is_empty();
+        div()
+            .flex()
+            .items_center()
+            .gap(crate::ui::sp(8.))
+            .h(px(ui::MENU_ROW_H))
+            .px(crate::ui::sp(8.))
+            .rounded(ui::menu_row_radius())
+            .text_size(px(ui::TEXT_MD))
+            .text_color(theme::text())
+            .when(focused, |d| d.bg(theme::fill_hover()))
+            .child(div().flex_none().child("Reasoning"))
             .child(
                 div()
-                    .flex_none()
-                    .w(px(1.))
-                    .self_stretch()
-                    .my(crate::ui::sp(4.))
-                    .bg(theme::border_subtle()),
+                    .flex_1()
+                    .flex()
+                    .items_center()
+                    .gap(crate::ui::sp(3.))
+                    .children(zero_buttons)
+                    .children(bars),
             )
-            .child(options)
+            .when(has_bars, |d| {
+                d.child(
+                    div()
+                        .flex_none()
+                        .w(px(40.))
+                        .text_right()
+                        .text_size(px(ui::TEXT_SM))
+                        .text_color(theme::text_muted())
+                        .children(label),
+                )
+            })
+            .into_any_element()
     }
 
     /// Who decides what the agent may do: Claude's modes, or Droid's mode and
@@ -768,7 +911,7 @@ impl Shell {
     /// start in the keyboard's order.
     fn choice_rows(
         &self,
-        agent: model::Agent,
+        agent: AgentKind,
         s: crate::agent::Setting,
         describe: bool,
         offset: usize,
@@ -789,42 +932,62 @@ impl Shell {
                         .flatten()
                 });
                 let description = o.description.filter(|_| describe);
-                ui::choice_row(("choice", s as usize * 1000 + i), o.id == current)
-                    .when(self.menu_focus(offset + i), |d| d.bg(theme::fill_hover()))
-                    .when(!enabled, |d| d.opacity(0.45).cursor_default())
-                    .child(
+                // Plain children don't reach screen readers, so the row says
+                // what it shows next to its name: the description and the
+                // note, which for an unavailable choice is the reason.
+                let mut spoken: Vec<&str> = Vec::new();
+                for text in [description.as_deref(), note.as_deref()]
+                    .into_iter()
+                    .flatten()
+                {
+                    if !spoken.contains(&text) {
+                        spoken.push(text);
+                    }
+                }
+                let spoken = (!spoken.is_empty()).then(|| spoken.join(". "));
+                ui::choice_row(
+                    ("choice", s as usize * 1000 + i),
+                    o.name.clone(),
+                    o.id == current,
+                )
+                .when(self.menu_focus(offset + i), |d| d.bg(theme::fill_hover()))
+                .when(!enabled, |d| d.opacity(0.45).cursor_default())
+                // gpui has no disabled state to give screen readers; the
+                // reason, part of the note, says the choice is out of reach.
+                .when_some(spoken, |d, text| d.aria_description(text))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .child(div().truncate().child(o.name))
+                        .when_some(description, |d, text| {
+                            d.child(
+                                div()
+                                    .text_size(px(ui::TEXT_XS))
+                                    .text_color(theme::text_subtle())
+                                    .child(text),
+                            )
+                        }),
+                )
+                .when_some(note, |d, note| {
+                    d.child(
                         div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .child(div().truncate().child(o.name))
-                            .when_some(description, |d, text| {
-                                d.child(
-                                    div()
-                                        .text_size(px(ui::TEXT_XS))
-                                        .text_color(theme::text_subtle())
-                                        .child(text),
-                                )
-                            }),
+                            .flex_none()
+                            .max_w(px(130.))
+                            .truncate()
+                            .text_size(px(ui::TEXT_XS))
+                            .text_color(theme::text_subtle())
+                            .child(note),
                     )
-                    .when_some(note, |d, note| {
-                        d.child(
-                            div()
-                                .flex_none()
-                                .max_w(px(130.))
-                                .truncate()
-                                .text_size(px(ui::TEXT_XS))
-                                .text_color(theme::text_subtle())
-                                .child(note),
-                        )
-                    })
-                    .when(enabled, |d| {
-                        d.on_click(cx.listener(move |this, _, window, cx| {
-                            this.menu_run(key.clone(), window, cx)
-                        }))
-                    })
-                    .into_any_element()
+                })
+                .when(enabled, |d| {
+                    d.on_click(cx.listener(move |this, _, window, cx| {
+                        this.menu_run(key.clone(), window, cx)
+                    }))
+                })
+                .into_any_element()
             })
             .collect()
     }
@@ -1025,6 +1188,9 @@ impl Shell {
             MenuTarget::RailBlock(i, j) => return self.render_rail_block_menu(i, j, cx),
             MenuTarget::RailSection(i) => return self.render_rail_section_menu(i, cx),
             MenuTarget::ProjectSwitch => return self.render_project_switch_menu(cx),
+            MenuTarget::TreeSession(pi, ei, si) => return self.render_tree_menu(pi, ei, si, cx),
+            MenuTarget::MoreTabs => return self.render_more_menu(cx),
+            MenuTarget::Sessions => return self.render_sessions_menu(cx),
             MenuTarget::Change(i) => {
                 let change = self
                     .has_projects()
@@ -1252,7 +1418,7 @@ impl Shell {
     }
 }
 
-/// A reasoning level as short as a segment can hold.
+/// A reasoning level as short as the meter's label can hold.
 fn effort_short(id: &str, name: &str) -> String {
     match id {
         "default" | "auto" => "Auto".into(),
@@ -1268,7 +1434,23 @@ fn effort_short(id: &str, name: &str) -> String {
     }
 }
 
-/// What a reasoning level's segment says on hover.
+/// Whether two menu rows do the same thing, whatever state they show now.
+fn same_action(a: &MenuKey, b: &MenuKey) -> bool {
+    match (a, b) {
+        (MenuKey::Choice(a1, s1, id1, _), MenuKey::Choice(a2, s2, id2, _)) => {
+            a1 == a2 && s1 == s2 && id1 == id2
+        }
+        (MenuKey::Fast(a1, _), MenuKey::Fast(a2, _)) => a1 == a2,
+        _ => a == b,
+    }
+}
+
+/// Whether a reasoning level is the bottom of the meter, lighting no bars.
+fn effort_is_zero(id: &str) -> bool {
+    matches!(id, "default" | "auto" | "none" | "off")
+}
+
+/// What a reasoning level's bar says on hover.
 fn effort_tip(id: &str) -> Option<&'static str> {
     Some(match id {
         "default" | "auto" => "The model's own default",
@@ -1288,11 +1470,7 @@ fn effort_tip(id: &str) -> Option<&'static str> {
 /// open to compare levels, and so does a model of the agent in use: the
 /// reasoning row sits below the models and may change with them, so it comes
 /// next. Another agent's model switches the agent or hands the session over.
-fn closes_on_pick(
-    s: crate::agent::Setting,
-    agent: model::Agent,
-    composer_agent: model::Agent,
-) -> bool {
+fn closes_on_pick(s: crate::agent::Setting, agent: AgentKind, composer_agent: AgentKind) -> bool {
     use crate::agent::Setting;
     match s {
         Setting::Effort => false,
@@ -1308,7 +1486,7 @@ mod tests {
 
     #[test]
     fn model_menu_stays_open_for_the_same_agent() {
-        let (claude, codex) = (model::Agent::Claude, model::Agent::Codex);
+        let (claude, codex) = (AgentKind::Claude, AgentKind::Codex);
         assert!(!closes_on_pick(Setting::Model, claude, claude));
         assert!(closes_on_pick(Setting::Model, codex, claude));
         assert!(!closes_on_pick(Setting::Effort, claude, claude));
@@ -1317,7 +1495,7 @@ mod tests {
     }
 
     #[test]
-    fn effort_levels_fit_a_segment() {
+    fn effort_levels_fit_the_label() {
         for id in [
             "default", "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
         ] {
@@ -1326,5 +1504,29 @@ mod tests {
         }
         assert_eq!(effort_short("turbo", "Turbo"), "Turbo");
         assert_eq!(effort_tip("turbo"), None);
+    }
+
+    #[test]
+    fn the_cursor_follows_the_action_not_its_state() {
+        use crate::agent::Setting;
+        let c = AgentKind::Claude;
+        let pick = |id: &str, on| MenuKey::Choice(c, Setting::Effort, id.into(), on);
+        assert!(same_action(&pick("high", true), &pick("high", false)));
+        assert!(!same_action(&pick("high", true), &pick("low", true)));
+        assert!(same_action(
+            &MenuKey::Fast(c, true),
+            &MenuKey::Fast(c, false)
+        ));
+        assert!(!same_action(&MenuKey::Effort(c), &MenuKey::Reset(c)));
+    }
+
+    #[test]
+    fn auto_and_off_light_no_bars() {
+        for id in ["default", "auto", "none", "off"] {
+            assert!(effort_is_zero(id), "{id}");
+        }
+        for id in ["minimal", "low", "high", "max"] {
+            assert!(!effort_is_zero(id), "{id}");
+        }
     }
 }

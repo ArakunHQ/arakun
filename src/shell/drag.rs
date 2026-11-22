@@ -13,8 +13,8 @@ use gpui::{
 };
 
 use super::{Shell, agent_icon};
+use crate::agent::AgentKind;
 use crate::agent::Entry;
-use crate::model::Agent;
 use crate::state;
 use crate::theme;
 use crate::ui::icon;
@@ -30,13 +30,13 @@ pub(super) struct DraggedSession {
     pub env: PathBuf,
     pub id: SharedString,
     pub title: SharedString,
-    pub agent: Agent,
+    pub agent: AgentKind,
     /// Where the pointer grabbed the card, so the preview stays under it.
     offset: Point<Pixels>,
 }
 
 impl DraggedSession {
-    pub fn new(env: PathBuf, id: SharedString, title: SharedString, agent: Agent) -> Self {
+    pub fn new(env: PathBuf, id: SharedString, title: SharedString, agent: AgentKind) -> Self {
         DraggedSession {
             env,
             id,
@@ -104,39 +104,35 @@ impl Render for DraggedSession {
 pub(super) struct DraggedTab {
     pub id: u64,
     pub title: SharedString,
-    offset: Point<Pixels>,
 }
 
 impl DraggedTab {
     pub fn new(id: u64, title: SharedString) -> Self {
-        DraggedTab {
-            id,
-            title,
-            offset: Point::default(),
-        }
+        DraggedTab { id, title }
     }
 }
 
 impl Render for DraggedTab {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .relative()
-            .left(-self.offset.x)
-            .top(-self.offset.y)
-            .w(px(200.))
-            .h(px(30.))
-            .flex()
-            .items_center()
-            .px(crate::ui::sp(10.))
-            .rounded(crate::ui::rad(8.))
-            .border_1()
-            .border_color(theme::active().opacity(0.6))
-            .bg(theme::dialog())
-            .shadow_lg()
-            .font_family(theme::FONT_SANS)
-            .text_size(px(crate::ui::TEXT_MD))
-            .text_color(theme::content())
-            .child(div().min_w_0().truncate().child(self.title.clone()))
+        // gpui puts the preview where the tab was grabbed. It hangs a tab's
+        // height lower, so the bar and the line where it would land stay in sight.
+        div().pt(crate::ui::sp(crate::ui::TAB_H + 6.)).child(
+            div()
+                .max_w(px(200.))
+                .h(px(30.))
+                .flex()
+                .items_center()
+                .px(crate::ui::sp(10.))
+                .rounded(crate::ui::rad(8.))
+                .border_1()
+                .border_color(theme::active().opacity(0.6))
+                .bg(theme::dialog())
+                .shadow_lg()
+                .font_family(theme::FONT_SANS)
+                .text_size(px(crate::ui::TEXT_MD))
+                .text_color(theme::content())
+                .child(div().min_w_0().truncate().child(self.title.clone())),
+        )
     }
 }
 
@@ -171,6 +167,7 @@ impl Shell {
     ) -> gpui::Entity<DraggedSession> {
         self.lifted = Some(d.id.clone());
         self.lifted_tab = None;
+        self.tab_drop = None;
         self.drop_menu = None;
         let mut d = d.clone();
         d.offset = offset;
@@ -180,13 +177,12 @@ impl Shell {
     pub(super) fn start_tab_drag(
         &mut self,
         d: &DraggedTab,
-        offset: Point<Pixels>,
         cx: &mut Context<Self>,
     ) -> gpui::Entity<DraggedTab> {
         self.lifted_tab = Some(d.id);
+        self.tab_drop = None;
         self.lifted = None;
-        let mut d = d.clone();
-        d.offset = offset;
+        let d = d.clone();
         cx.notify();
         cx.new(|_| d)
     }
@@ -194,6 +190,49 @@ impl Shell {
     /// The tab being dragged, while a drag is on.
     pub(super) fn lifted_tab(&self, cx: &gpui::App) -> Option<u64> {
         self.lifted_tab.filter(|_| cx.has_active_drag())
+    }
+
+    /// The gap a dragged tab would drop into, while a drag is on.
+    pub(super) fn tab_drop(&self, cx: &gpui::App) -> Option<usize> {
+        self.tab_drop.filter(|_| cx.has_active_drag())
+    }
+
+    /// A tab or a session dragged over the tab at `i`: the gap on the side
+    /// of its middle the pointer is on. `next` is the tab shown after it,
+    /// whose gap is the one right of this tab.
+    pub(super) fn bar_drag_over(
+        &mut self,
+        i: usize,
+        next: usize,
+        bounds: gpui::Bounds<Pixels>,
+        at: Point<Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        if !bounds.contains(&at) {
+            return;
+        }
+        let gap = if at.x < bounds.center().x { i } else { next };
+        self.tab_drop_over = Some(bounds);
+        if self.tab_drop != Some(gap) {
+            self.tab_drop = Some(gap);
+            cx.notify();
+        }
+    }
+
+    /// The pointer left the tab bar (`bounds`), or the tab that marked the
+    /// gap for empty bar: no gap is marked, so a drop there lands at the end.
+    pub(super) fn bar_drag_out(
+        &mut self,
+        bounds: gpui::Bounds<Pixels>,
+        at: Point<Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        let off_tab = self.tab_drop_over.is_none_or(|b| !b.contains(&at));
+        if self.tab_drop.is_some() && (!bounds.contains(&at) || off_tab) {
+            self.tab_drop = None;
+            self.tab_drop_over = None;
+            cx.notify();
+        }
     }
 
     /// The session being dragged, while a drag is on.

@@ -38,8 +38,8 @@ Every commit message and pull request title follows
   (`revert: <the title of the change you undo>`). Pick the one that matches the
   effect for the user: a bug fix that needs a refactor is still `fix`.
 - **scope** (optional): the module or folder it touches, such as `terminal`, `agent`,
-  `browser`, `phone`, `relay`, `iso` or `windows`. Leave it out if the change spans
-  many parts.
+  `browser`, `phone`, `relay`, `teams`, `iso` or `windows`. Leave it out if the change
+  spans many parts.
 - **description:** imperative, lower case, no period at the end, under about 70
   characters. `fix(terminal): keep the tab name on resize`, not `Fixed terminal bug.`
 - **Breaking changes** (a CLI flag, a setting or a stored file format that no longer
@@ -57,16 +57,20 @@ Every commit message and pull request title follows
   ready with `gh pr ready`, never before. That script waits for the required checks, and
   for macOS only when the diff touches macOS code; don't wait for the rest. The required
   **Human approval** status is a merge gate, not part of this wait: it only resolves once
-  a person approves, and marking ready is what asks for the review. CodeRabbit reviews
-  drafts too, so its review is often done before the checks. Once the pull request is
-  ready and CodeRabbit has finished, the reviewers are asked unless CodeRabbit approved
-  and every review thread is resolved.
-- Answer every CodeRabbit comment: fix it and push, or reply with the reason you
-  won't. Resolve a thread on GitHub once the pushed commit fixes it; leave the ones
-  you declined open for the reviewer. Don't post `@coderabbitai resolve` or `approve`.
-  A workflow dismisses CodeRabbit's approval when a thread is still open, so resolve
-  the fixed ones right after you push. If you change a rule here or in
-  CONTRIBUTING.md, check the instructions in `.coderabbit.yaml` too.
+  a person approves, and marking ready is what asks for the review. cubic, the review
+  bot, reviews drafts too, so its review is often done before the checks. The
+  Reviewers workflow asks the reviewers only once the pull request is ready, cubic has
+  finished and every cubic comment is resolved or answered, and not at all if cubic
+  approved and every review thread is resolved. A maintainer who runs it by hand skips
+  the wait for cubic and for its comments. A pull request from outside the team
+  always needs a person: the workflow dismisses cubic's approval of it.
+- Answer every cubic comment: fix it and push, or reply with the reason you won't.
+  Resolve a thread on GitHub once the pushed commit fixes it; leave the ones you
+  declined open for the reviewer. Never resolve a thread you didn't fix to get cubic's
+  approval. A workflow dismisses cubic's approval when a thread is still open, so
+  resolve the fixed ones right after you push. cubic may push its own fixes to your
+  branch, so pull before you push. If you change a rule here or in
+  CONTRIBUTING.md, check the rules in `cubic.yaml` too.
 
 ### Stacked pull requests
 
@@ -109,13 +113,16 @@ cargo clippy --locked --all-targets --no-default-features -- -D warnings
 cargo test --locked --no-default-features <module>   # only the modules you touched
 # relay/ or phone/ changed
 (cd relay && npx tsc --noEmit)
+# teams/ changed
+(cd teams && npm ci && npm run check)
 ```
 
 Leave the rest to CI on the draft pull request: the full `cargo test`, the
-`arakun-server` clippy, `cargo deny check`, `zizmor .github`, the relay and phone
-tests and the other platforms. If CI fails, fix it with the `triage-ci` skill. Don't
-rerun the whole suite locally just to be sure. With the Git hooks installed, push with
-`LEFTHOOK_EXCLUDE=cargo-test git push` so the push does not run the full suite either.
+`arakun-server` clippy, `cargo deny check`, `zizmor .github`, the relay, phone and
+teams tests and the other platforms. If CI fails, fix it with the `triage-ci` skill.
+Don't rerun the whole suite locally just to be sure. With the Git hooks installed, push
+with `LEFTHOOK_EXCLUDE=cargo-test git push` so the push does not run the full suite
+either.
 The full list of what CI runs is under "Checks" in CONTRIBUTING.md.
 
 If you add or update a dependency, commit `Cargo.lock` too. Its license must be on the
@@ -128,6 +135,10 @@ request that also fixes the new lints.
 
 - Format with `tools/rustfmt.sh` (rustfmt defaults). Plain `cargo fmt` stops at the
   private modules this repository does not have.
+- The code the app shares with `arakun-server` and the examples is the `arakun-core`
+  crate in `core/`; the app reaches it as `crate::agent` and so on. A core item the
+  app uses must be `pub`. Where the app and the server differ, core asks through
+  `core/src/host.rs`; never include a file by `#[path]` from another package.
 - Tests go in a `#[cfg(test)] mod tests` at the bottom of the file they test.
 - UI code uses the design system: colors, grays, text sizes and fonts from `theme` and
   `ui`, never hand-written values. `src/design_lint.rs` fails the tests otherwise.

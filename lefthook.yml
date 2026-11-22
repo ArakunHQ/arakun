@@ -18,7 +18,7 @@ pre-commit:
     # `&rust` is what the Rust build reads, as in the "What changed" job in
     # ci.yml; cargo-test reuses it. The app embeds phone/, so it counts too.
     - name: clippy
-      glob: &rust ["*.rs", "src/*", "examples/*", "assets/*", "phone/*", "Cargo.toml", "Cargo.lock", "clippy.toml", ".cargo/*", "rust-toolchain.toml"]
+      glob: &rust ["*.rs", "src/*", "core/*", "examples/*", "assets/*", "phone/*", "Cargo.toml", "Cargo.lock", "clippy.toml", ".cargo/*", "rust-toolchain.toml"]
       run: env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE cargo clippy --locked --all-targets --no-default-features -- -D warnings
 
     # npx would download an unrelated `tsc` package if node_modules is missing.
@@ -27,10 +27,16 @@ pre-commit:
       glob: "*"
       run: (test -d node_modules || npm ci) && npx tsc --noEmit
 
+    # npm ci again when the lockfile is newer than the install, as after
+    # switching to a branch with other dependencies.
+    - name: teams-types
+      glob: &teams ["teams/*", "teams/**/*", ".github/workflows/ci.yml", ".github/actions/*", ".github/actions/**/*"]
+      run: cd teams && (test node_modules/.package-lock.json -nt package-lock.json || npm ci) && npm run check
+
     # The phone's encryption against the vectors the Rust side writes, so a
     # change on either side runs it. No `root:`, which would drop src/phone.
     - name: phone
-      glob: ["phone/*", "src/phone/*"]
+      glob: ["phone/*", "core/src/phone/*"]
       run: cd phone && node --test "test/*.test.mjs"
 
 # The slower tests, once per push, for the commits you push.
@@ -45,6 +51,10 @@ pre-push:
       root: relay/
       glob: "*"
       run: (test -d node_modules || npm ci) && npx vitest run
+
+    - name: teams-tests
+      glob: *teams
+      run: cd teams && (test node_modules/.package-lock.json -nt package-lock.json || npm ci) && npm test
 
 commit-msg:
   jobs:

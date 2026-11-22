@@ -7,7 +7,7 @@
 //! parses the query, so a filter value can never change what the query does.
 
 use std::collections::{BTreeMap, HashMap};
-use std::path::PathBuf;
+use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
@@ -97,7 +97,7 @@ impl Paging {
 
     /// Asks for one row more than the page, to know whether another follows.
     pub fn clause(self) -> String {
-        format!(" LIMIT {} OFFSET {}", self.size + 1, self.offset)
+        format!(" LIMIT {}", self.size + 1)
     }
 
     /// The page's rows, and whether there are more after them.
@@ -118,18 +118,27 @@ pub struct Budget {
     spent: Vec<u64>,
     /// (remaining, limit, when) from PostHog's rate-limit headers.
     told: Option<(u64, u64, u64)>,
+    /// Queries reserved and sent that PostHog has not answered yet.
+    in_flight: u64,
 }
 
 impl Budget {
     pub fn spend(&mut self, now: u64) {
         self.spent.retain(|t| now.saturating_sub(*t) < 3600);
         self.spent.push(now);
+        if let Some((remaining, _, _)) = &mut self.told {
+            *remaining = remaining.saturating_sub(1);
+        }
     }
 
+    /// One query came back (with PostHog's headers when it has them). Its
+    /// count can't know of the queries still on their way, so those still
+    /// come off it.
     pub fn note(&mut self, remaining: Option<u64>, limit: Option<u64>, now: u64) {
+        self.in_flight = self.in_flight.saturating_sub(1);
         if let Some(r) = remaining {
             let limit = limit.or(self.told.map(|t| t.1)).unwrap_or(HOURLY_QUERIES);
-            self.told = Some((r, limit, now));
+            self.told = Some((r.saturating_sub(self.in_flight), limit, now));
         }
     }
 
@@ -144,7 +153,7 @@ impl Budget {
         };
         match self.told {
             Some((remaining, _, at)) if now.saturating_sub(at) < 3600 => {
-                remaining.saturating_sub(recent(at))
+                remaining.min(HOURLY_QUERIES.saturating_sub(recent(0)))
             }
             _ => HOURLY_QUERIES.saturating_sub(recent(0)),
         }
@@ -159,10 +168,29 @@ fn budgets() -> std::sync::MutexGuard<'static, HashMap<String, Budget>> {
 }
 
 /// Counts one query against `session`'s hour.
-pub fn spend(session: &str, now: u64) {
-    budgets().entry(session.to_string()).or_default().spend(now);
+pub fn reserve(session: &str, now: u64) -> Result<(), ApiError> {
+    let mut budgets = budgets();
+    let b = budgets.entry(session.to_string()).or_default();
+    if b.left(now) == 0 {
+        let until = match b.told {
+            Some((0, _, at)) if now.saturating_sub(at) < 3600 => at + 3600,
+            _ => {
+                b.spent
+                    .iter()
+                    .copied()
+                    .find(|t| now.saturating_sub(*t) < 3600)
+                    .unwrap_or(now)
+                    + 3600
+            }
+        };
+        return Err(ApiError::RateLimited(until));
+    }
+    b.spend(now);
+    b.in_flight += 1;
+    Ok(())
 }
 
+/// After each query `reserve` let through, answered or not.
 pub fn note_headers(session: &str, remaining: Option<u64>, limit: Option<u64>, now: u64) {
     budgets()
         .entry(session.to_string())
@@ -213,21 +241,16 @@ pub fn cache_key(host: &str, project: u64, q: &Hogql) -> String {
     format!("{h:016x}")
 }
 
-fn dir() -> PathBuf {
-    super::cache_dir().join("posthog").join("q")
+fn read_cached(file: &Path) -> Option<Answer> {
+    crate::durable::load_json(file)
 }
 
-fn read_cached(key: &str) -> Option<Answer> {
-    serde_json::from_slice(&std::fs::read(dir().join(format!("{key}.json"))).ok()?).ok()
-}
-
-/// Deletes answers no one has asked for in a week, once per run.
-fn prune(now: u64) {
-    static DONE: OnceLock<()> = OnceLock::new();
-    if DONE.set(()).is_err() {
-        return;
-    }
-    for e in std::fs::read_dir(dir()).into_iter().flatten().flatten() {
+/// Deletes this account's expired answers without touching pending writes.
+fn prune(dir: &Path, now: u64) {
+    for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        if e.path().extension().is_none_or(|ext| ext != "json") {
+            continue;
+        }
         let old = e
             .metadata()
             .and_then(|m| m.modified())
@@ -245,10 +268,11 @@ fn prune(now: u64) {
 pub fn run(s: &Session, project: u64, q: &Hogql, fresh: u64) -> Result<Answer, ApiError> {
     let now = crate::model::unix_now();
     let key = cache_key(&s.host, project, q);
-    if let Some(a) = read_cached(&key).filter(|a| now.saturating_sub(a.fetched_at) < fresh) {
+    let dir = super::answers_dir(&s.id).join("q");
+    let file = dir.join(format!("{key}.json"));
+    if let Some(a) = read_cached(&file).filter(|a| now.saturating_sub(a.fetched_at) < fresh) {
         return Ok(a);
     }
-    spend(&s.id, now);
     let v = super::call(
         s,
         "POST",
@@ -260,8 +284,8 @@ pub fn run(s: &Session, project: u64, q: &Hogql, fresh: u64) -> Result<Answer, A
         fetched_at: now,
         spent: 1,
     };
-    super::write_json(&dir().join(format!("{key}.json")), &a);
-    prune(now);
+    let _ = super::cache_answer(s, &file, &a);
+    prune(&dir, now);
     Ok(a)
 }
 
@@ -322,8 +346,8 @@ mod tests {
     #[test]
     fn paging_asks_one_more_to_know_the_rest() {
         let p = Paging::first(50);
-        assert_eq!(p.clause(), " LIMIT 51 OFFSET 0");
-        assert_eq!(p.next().clause(), " LIMIT 51 OFFSET 50");
+        assert_eq!(p.clause(), " LIMIT 51");
+        assert_eq!(p.next().clause(), " LIMIT 51");
         assert_eq!(p.next().next().offset, 100);
         let (rows, more) = p.split((0..51).collect::<Vec<_>>());
         assert_eq!((rows.len(), more), (50, true));
@@ -353,6 +377,31 @@ mod tests {
         assert_eq!(budget_line(1, 117), "1 query · 117 left this hour");
         assert_eq!(budget_line(3, 5), "3 queries · 5 left this hour");
         assert_eq!(budget_line(0, 5), "cached · 5 left this hour");
+    }
+
+    #[test]
+    fn the_last_slot_can_only_be_reserved_once_even_in_the_same_second() {
+        let session = "test-reserve-last-slot";
+        note_headers(session, Some(1), None, 1000);
+        assert!(reserve(session, 1000).is_ok());
+        assert_eq!(reserve(session, 1000), Err(ApiError::RateLimited(4600)));
+        assert!(reserve(session, 4600).is_ok());
+    }
+
+    #[test]
+    fn an_answer_does_not_give_back_a_slot_another_query_holds() {
+        let session = "test-reserve-in-flight";
+        note_headers(session, Some(10), None, 1000);
+        // Two queries go out; the first answer was counted before the second.
+        reserve(session, 1001).unwrap();
+        reserve(session, 1001).unwrap();
+        note_headers(session, Some(9), None, 1001);
+        assert_eq!(left(session, 1001), 8);
+        // A query that got no answer still frees its place.
+        note_headers(session, None, None, 1002);
+        reserve(session, 1002).unwrap();
+        note_headers(session, Some(7), None, 1002);
+        assert_eq!(left(session, 1002), 7);
     }
 
     #[test]

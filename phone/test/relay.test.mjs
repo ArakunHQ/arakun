@@ -1,5 +1,5 @@
 // phone/relay.js joining the pieces of a message the computer split for the
-// relay (`say` in src/phone/relay.rs), against the pieces Rust wrote
+// relay (`say` in core/src/phone/relay.rs), against the pieces Rust wrote
 // (vectors/part.json). Run with `node --test phone/test/`.
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -48,4 +48,60 @@ test("the next message starts from nothing", () => {
     assert.deepEqual(got.at(-1), msg);
     assert.ok(got.slice(0, -1).every((m) => m === null));
   }
+});
+
+/// A WebSocket that records what the page sends and lets the test speak for
+/// the relay.
+class FakeSocket {
+  static last = null;
+  constructor(url) {
+    this.url = url;
+    this.sent = [];
+    this.closed = false;
+    FakeSocket.last = this;
+  }
+  send(data) {
+    this.sent.push(data);
+  }
+  close() {
+    this.closed = true;
+  }
+}
+
+/// A link through the relay on a fake socket, with fake clocks; what it ended with lands in `ended`.
+function fakeLink(t) {
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+  globalThis.location = { protocol: "https:", host: "relay.test" };
+  globalThis.WebSocket = FakeSocket;
+  const ended = [];
+  RELAY.open("label", { creds: { id: "d", ticket: "t", token: "k" } }, { onclose: (e) => ended.push(e), onstatus() {}, onopen() {}, onmessage() {} });
+  return { ws: FakeSocket.last, ended };
+}
+
+const control = (msg) => ({ data: E2E.encodeFrame(E2E.CONTROL, E2E.utf8(JSON.stringify(msg))).buffer });
+const settle = () => new Promise((r) => setImmediate(r));
+
+test("a computer that never answers is given up on", (t) => {
+  const { ended } = fakeLink(t);
+  t.mock.timers.tick(14_000);
+  assert.deepEqual(ended, []);
+  t.mock.timers.tick(1_000);
+  assert.deepEqual(ended, [{ kind: "gone", detail: "no answer from the computer" }]);
+});
+
+test("the relay is pinged, and a link that hears nothing back is given up on", async (t) => {
+  const { ws, ended } = fakeLink(t);
+  ws.onopen();
+  assert.deepEqual(ws.sent, ["ping"]);
+  // The computer is away: no answer is due, so only the pings count.
+  ws.onmessage(control({ type: "pc_offline" }));
+  await settle();
+  t.mock.timers.tick(30_000);
+  assert.deepEqual(ws.sent, ["ping", "ping"]);
+  ws.onmessage({ data: "pong" });
+  t.mock.timers.tick(60_000);
+  assert.deepEqual(ended, []);
+  t.mock.timers.tick(30_000);
+  assert.deepEqual(ended, [{ kind: "gone", detail: "the relay went quiet" }]);
+  assert.ok(ws.closed);
 });

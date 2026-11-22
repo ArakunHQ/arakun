@@ -34,18 +34,11 @@ pub struct Defs {
 }
 
 fn file(p: &Project) -> PathBuf {
-    let host: String = p
-        .host
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
-        .collect();
-    super::cache_dir()
-        .join("posthog")
-        .join(format!("{host}-{}-defs.json", p.id))
+    super::answers_dir(&p.session).join(format!("{}-defs.json", p.id))
 }
 
 pub fn cached(p: &Project) -> Option<Defs> {
-    serde_json::from_slice(&std::fs::read(file(p)).ok()?).ok()
+    crate::durable::load_json(file(p))
 }
 
 /// `results` of `/event_definitions/`.
@@ -162,7 +155,7 @@ pub fn load(s: &Session, p: &Project) -> Result<Defs, ApiError> {
         fetched_at: crate::model::unix_now(),
         missing,
     };
-    super::write_json(&file(p), &d);
+    let _ = super::cache_answer(s, &file(p), &d);
     Ok(d)
 }
 

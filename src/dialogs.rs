@@ -9,6 +9,7 @@ use gpui::{
     StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, px,
 };
 
+use crate::agent::AgentKind;
 use crate::env_name;
 use crate::git;
 use crate::input::{InputEvent, TextInput};
@@ -66,7 +67,7 @@ pub struct CreateEnvDialog {
     /// the first prompt.
     suggested: String,
     /// Who renames a branch that keeps `suggested`; None when naming is off.
-    namer: Option<crate::agent::AgentKind>,
+    namer: Option<AgentKind>,
     branches: git::Branches,
     /// The local branches are read. Until then a random name could match one, which
     /// would be checked out and later renamed.
@@ -161,7 +162,7 @@ impl CreateEnvDialog {
                 // A new environment's sessions start on the agent picked last.
                 let namer = env_name::namer();
                 namer
-                    .pick(crate::model::default_agent().kind())
+                    .pick(crate::model::default_agent())
                     .map(|(agent, _)| agent)
                     .filter(|a| namer.choice.agent().is_some() || env_name::installed(*a))
             },
@@ -475,7 +476,7 @@ impl Render for CreateEnvDialog {
                 )
             });
 
-        ui::modal_panel("create-env", 420.)
+        ui::modal_panel("create-env", 420., "New environment")
             .child(ui::modal_header(
                 "New environment",
                 None,
@@ -615,7 +616,7 @@ impl Render for CreateEnvDialog {
                                     ready,
                                 )
                                 .when(self.busy, |d| {
-                                    d.child(ui::spinner("create-env-spin", 12., theme::background()))
+                                    d.child(ui::spinner(12., theme::background()))
                                 })
                                 .on_click(cx.listener(|this, _, _, cx| this.submit(cx))),
                             ),
@@ -712,7 +713,7 @@ impl Focusable for CommandDialog {
 
 impl Render for CommandDialog {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        ui::modal_panel("setup-script", 420.)
+        ui::modal_panel("setup-script", 420., self.title)
             .child(ui::modal_header(
                 self.title,
                 None,
@@ -1015,7 +1016,7 @@ impl Render for DeleteEnvDialog {
         }
 
         let switch_on = self.delete_branch;
-        ui::modal_panel("delete-env", 420.)
+        ui::modal_panel("delete-env", 420., "Delete environment?")
             .track_focus(&self.focus)
             .on_key_down(cx.listener(|this, ev: &gpui::KeyDownEvent, _, cx| {
                 match ev.keystroke.key.as_str() {
@@ -1170,9 +1171,7 @@ impl Render for DeleteEnvDialog {
                                     !self.busy,
                                 )
                                 .when(self.busy, |d| {
-                                    d.child(ui::spinner(
-                                        "delete-env-spin",
-                                        12.,
+                                    d.child(ui::spinner(12.,
                                         theme::error().into(),
                                     ))
                                 })

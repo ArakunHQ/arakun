@@ -53,8 +53,61 @@ impl Shell {
                         .opacity(alpha)
                         .child(self.render_composer(true, window, cx)),
                 )
+                .when(self.setup_tips, |d| {
+                    d.child(self.render_setup_tips(cx).opacity(alpha))
+                })
                 .child(div().flex_1().max_h(crate::ui::sp(96.))),
         )
+    }
+
+    /// Right after the setup: that it is done, and three keys worth knowing,
+    /// in place of the setup's own last screen.
+    fn render_setup_tips(&self, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
+        let key = |keys: &[&str], what: &'static str| {
+            div()
+                .flex()
+                .items_center()
+                .gap(crate::ui::sp(6.))
+                .child(ui::shortcut(keys))
+                .child(what)
+        };
+        div()
+            .id("setup-tips")
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap(crate::ui::sp(16.))
+            .mt(crate::ui::sp(20.))
+            .py(crate::ui::sp(8.))
+            .pl(crate::ui::sp(14.))
+            .pr(crate::ui::sp(8.))
+            .rounded(crate::ui::rad(ui::RADIUS))
+            .border_1()
+            .border_dashed()
+            .border_color(theme::border())
+            .ty(ui::Type::Label)
+            .text_color(theme::text_subtle())
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(crate::ui::sp(8.))
+                    .text_color(theme::text())
+                    .child(icon("checkmark-circle02", 14.).text_color(theme::success()))
+                    .child("Arakun is ready"),
+            )
+            .child(key(&["Ctrl", "K"], "palette"))
+            .child(key(&["Ctrl", "T"], "new session"))
+            .child(key(&["Ctrl", "Shift", "N"], "new environment"))
+            .child(div().flex_1())
+            .child(
+                icon_button("setup-tips-close", "cancel01", 12., "Close").on_click(cx.listener(
+                    |this, _, _, cx| {
+                        this.setup_tips = false;
+                        cx.notify();
+                    },
+                )),
+            )
     }
 
     /// No projects yet: the raccoon over a short welcome and one button.
@@ -141,13 +194,24 @@ impl Shell {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let back = icon_button("alone-back", "arrow-left01", 14.)
-            .tooltip(ui::tip("Back to the welcome screen"))
-            .on_click(cx.listener(|this, _, _, cx| this.show_alone(None, cx)));
+        let back = icon_button(
+            "alone-back",
+            "arrow-left01",
+            14.,
+            "Back to the welcome screen",
+        )
+        .on_click(cx.listener(|this, _, _, cx| this.show_alone(None, cx)));
         let view = match alone {
-            Alone::GitHub => self.github_view.clone().into_any_element(),
+            Alone::GitHub => {
+                self.github_view
+                    .update(cx, |v, cx| v.set_card_corners(gpui::Corners::default(), cx));
+                self.github_view.clone().into_any_element()
+            }
             Alone::Servers => self.servers_view.clone().into_any_element(),
-            Alone::Usage => self.usage_view.clone().into_any_element(),
+            Alone::Usage => {
+                self.usage_shown.set(true);
+                self.usage_view.clone().into_any_element()
+            }
         };
         self.render_alone("view-alone", back, view, window)
     }
@@ -160,12 +224,16 @@ impl Shell {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let back = icon_button("terminal-alone-back", "arrow-left01", 14.)
-            .tooltip(ui::tip("Close the terminal and go back"))
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.terminal_alone = None;
-                cx.notify();
-            }));
+        let back = icon_button(
+            "terminal-alone-back",
+            "arrow-left01",
+            14.,
+            "Close the terminal and go back",
+        )
+        .on_click(cx.listener(|this, _, _, cx| {
+            this.terminal_alone = None;
+            cx.notify();
+        }));
         self.render_alone(
             "terminal-alone",
             back,

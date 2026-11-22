@@ -17,9 +17,13 @@
 //! values, one hourly budget per account, and answers cached on disk. A 403
 //! names the missing scope (`scope`) so only the tab that needs it stops.
 
+pub mod ask;
 pub mod defs;
 pub mod events;
 mod fixture;
+pub mod flag_edit;
+pub mod inspection;
+pub mod lifecycle;
 pub mod people;
 pub mod query;
 pub mod scan;
@@ -32,6 +36,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 
 /// Where an account lives: PostHog Cloud US or EU.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -114,15 +119,13 @@ pub struct Store {
 
 impl Store {
     pub fn read_from(file: &Path) -> Store {
-        std::fs::read(file)
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or_default()
+        crate::durable::load_json(file).unwrap_or_default()
     }
 
     pub fn write_to(&self, file: &Path) -> Result<(), String> {
         let json = serde_json::to_vec_pretty(self).map_err(|e| e.to_string())?;
-        write_private(file, &json).map_err(|e| format!("Couldn't save the PostHog sign-in: {e}"))
+        crate::durable::write_private(file, &json)
+            .map_err(|e| format!("Couldn't save the PostHog sign-in: {e}"))
     }
 
     /// Adds `s`, or replaces the session of the same user and region.
@@ -159,6 +162,7 @@ fn store_lock() -> std::sync::MutexGuard<'static, ()> {
 }
 
 pub fn sessions() -> Vec<Session> {
+    forget_shared_cache();
     if let Some(s) = fixture::sessions() {
         return s;
     }
@@ -168,6 +172,16 @@ pub fn sessions() -> Vec<Session> {
 pub fn save_session(s: Session) -> Result<(), String> {
     let _g = store_lock();
     let mut store = Store::read_from(&store_file());
+    invalidate_directory()?;
+    // The same key again keeps its answers and pins; a new one may see less.
+    if store
+        .sessions
+        .iter()
+        .find(|o| o.id == s.id)
+        .is_none_or(|o| o.credential != s.credential)
+    {
+        clear_answers(&s.id)?;
+    }
     store.upsert(s);
     store.write_to(&store_file())
 }
@@ -175,40 +189,52 @@ pub fn save_session(s: Session) -> Result<(), String> {
 pub fn remove_session(id: &str) -> Result<(), String> {
     let _g = store_lock();
     let mut store = Store::read_from(&store_file());
+    invalidate_directory()?;
+    clear_answers(id)?;
     store.remove(id);
     store.write_to(&store_file())
 }
 
-/// Writes `bytes` so only this user can read them: 0600 in a 0700 directory
-/// on Unix (Windows keeps app data under the user's profile already).
-fn write_private(file: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    use std::io::Write as _;
-    if let Some(d) = file.parent() {
-        std::fs::create_dir_all(d)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            let _ = std::fs::set_permissions(d, std::fs::Permissions::from_mode(0o700));
-        }
-    }
-    let tmp = file.with_extension("tmp");
-    let mut opts = std::fs::OpenOptions::new();
-    opts.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        opts.mode(0o600);
-    }
-    let mut f = opts.open(&tmp)?;
-    f.write_all(bytes)?;
-    f.sync_all()?;
-    drop(f);
-    std::fs::rename(&tmp, file)
+/// Where `id`'s answers are kept. Each account has its own directory, so two
+/// accounts that see the same project never read each other's answers, and
+/// removing one clears only its own.
+fn answers_dir(id: &str) -> PathBuf {
+    cache_dir().join("posthog-answers").join(
+        Sha256::digest(id.as_bytes())
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>(),
+    )
 }
 
-pub(crate) fn write_json(file: &Path, v: &impl Serialize) {
-    if let Ok(json) = serde_json::to_vec(v) {
-        let _ = crate::durable::write(file, &json);
+fn clear_answers(id: &str) -> Result<(), String> {
+    match std::fs::remove_dir_all(answers_dir(id)) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!(
+            "Could not clear this account's cached answers: {e}"
+        )),
+    }
+}
+
+/// Saves an answer under `s`'s cache, readable only by this user. Skipped
+/// when the sign-in was removed or its key replaced while the request ran, so
+/// a late answer can't come back after its cache was cleared.
+fn cache_answer(s: &Session, file: &Path, value: &impl Serialize) -> std::io::Result<()> {
+    let _guard = store_lock();
+    if !sessions().contains(s) {
+        return Err(std::io::Error::other("The sign-in changed."));
+    }
+    crate::durable::write_private(file, &serde_json::to_vec(value)?)
+}
+
+/// Earlier versions kept every account's answers together in `cache/posthog`,
+/// readable by other users. Nothing reads them now, so they go once per run,
+/// the first time the tab looks for its accounts.
+fn forget_shared_cache() {
+    static DONE: OnceLock<()> = OnceLock::new();
+    if DONE.set(()).is_ok() {
+        let _ = std::fs::remove_dir_all(cache_dir().join("posthog"));
     }
 }
 
@@ -247,19 +273,28 @@ impl ApiError {
 /// One client for every call, so connections (and their TLS) are reused.
 fn agent() -> &'static ureq::Agent {
     static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
-    AGENT.get_or_init(|| {
-        ureq::Agent::config_builder()
-            .timeout_global(Some(Duration::from_secs(30)))
-            .http_status_as_error(false)
-            .user_agent("arakun")
-            .build()
-            .into()
-    })
+    AGENT.get_or_init(|| client(30))
+}
+
+/// PostHog AI writes and runs a query before it answers, which often takes
+/// longer than a plain read.
+fn ai_agent() -> &'static ureq::Agent {
+    static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
+    AGENT.get_or_init(|| client(120))
+}
+
+fn client(timeout: u64) -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(timeout)))
+        .http_status_as_error(false)
+        .user_agent("arakun")
+        .build()
+        .into()
 }
 
 /// Which budget a call spends: queries are counted per hour, the rest is plain REST.
 fn bucket(path: &str) -> &'static str {
-    if path.contains("/query") {
+    if path.contains("/query") || path.ends_with(ask::PATH) {
         "query"
     } else {
         "api"
@@ -392,6 +427,11 @@ fn fetch(
         return Ok(r);
     }
     let url = format!("{}{path}", host.trim_end_matches('/'));
+    let agent = if path.ends_with(ask::PATH) {
+        ai_agent()
+    } else {
+        agent()
+    };
     let request = ureq::http::Request::builder()
         .method(method)
         .uri(&url)
@@ -401,11 +441,11 @@ fn fetch(
         Some(b) => request
             .body(b.to_string())
             .map_err(|e| e.to_string())
-            .and_then(|r| agent().run(r).map_err(|e| e.to_string())),
+            .and_then(|r| agent.run(r).map_err(|e| e.to_string())),
         None => request
             .body(())
             .map_err(|e| e.to_string())
-            .and_then(|r| agent().run(r).map_err(|e| e.to_string())),
+            .and_then(|r| agent.run(r).map_err(|e| e.to_string())),
     };
     let mut response =
         sent.map_err(|e| ApiError::Failed(format!("Couldn't reach PostHog: {e}")))?;
@@ -426,12 +466,22 @@ fn fetch(
     let retry_after = header("retry-after");
     let remaining = number(&["x-ratelimit-remaining", "ratelimit-remaining"]);
     let limit = number(&["x-ratelimit-limit", "ratelimit-limit"]);
-    let text = response
+    let text = match response
         .body_mut()
         .with_config()
         .limit(16 * 1024 * 1024)
         .read_to_string()
-        .unwrap_or_default();
+    {
+        Ok(text) => text,
+        // A success whose answer was cut off is not a success: for a change,
+        // `call` then says it may still have gone through.
+        Err(e) if (200..300).contains(&status) => {
+            return Err(ApiError::Failed(format!(
+                "Couldn't read PostHog's answer: {e}"
+            )));
+        }
+        Err(_) => String::new(),
+    };
     Ok(Reply {
         status,
         retry_after,
@@ -492,21 +542,57 @@ pub(crate) fn call(
     if let Some(until) = blocked_until(&s.id, path, now) {
         return Err(ApiError::RateLimited(until));
     }
-    let reply = fetch(&s.host, s.credential.bearer(), method, path, body)?;
     if bucket(path) == "query" {
-        query::note_headers(&s.id, reply.remaining, reply.limit, now);
+        query::reserve(&s.id, now)?;
     }
+    let reply = match fetch(&s.host, s.credential.bearer(), method, path, body) {
+        Err(ApiError::Failed(e)) if writes(method, path) => Err(ApiError::Failed(format!(
+            "{e} The change may still have been saved. Reload before trying again."
+        ))),
+        other => other,
+    };
+    if bucket(path) == "query" {
+        let (remaining, limit) = reply
+            .as_ref()
+            .map_or((None, None), |r| (r.remaining, r.limit));
+        query::note_headers(&s.id, remaining, limit, now);
+    }
+    let reply = reply?;
     let got = answer(reply.status, reply.retry_after.as_deref(), &reply.text, now);
     match got {
         Err(ApiError::RateLimited(until)) => {
             block(&s.id, path, until);
             Err(ApiError::RateLimited(until))
         }
+        // A refused change is not a missing read scope: the tab keeps
+        // working, and the person needs PostHog's reason.
+        Err(ApiError::SignedOut(detail)) if reply.status == 403 && writes(method, path) => {
+            Err(ApiError::Failed(format!(
+                "PostHog refused this change. The key needs {}, and the project may \
+                 require approval for it. PostHog said: {detail}",
+                write_scope(path)
+            )))
+        }
         Err(ApiError::SignedOut(detail)) if reply.status == 403 => {
             Err(scope::forbidden(path, &detail)
                 .map_or(ApiError::SignedOut(detail), ApiError::MissingScope))
         }
         other => other,
+    }
+}
+
+/// Whether a call changes something in PostHog, rather than reading or
+/// running a query.
+fn writes(method: &str, path: &str) -> bool {
+    method != "GET" && bucket(path) != "query"
+}
+
+/// The scope a change on `path` needs.
+fn write_scope(path: &str) -> &'static str {
+    if path.contains("/experiments/") {
+        "experiment:write"
+    } else {
+        "feature_flag:write"
     }
 }
 
@@ -620,8 +706,16 @@ fn directory_file() -> PathBuf {
     cache_dir().join("posthog-projects.json")
 }
 
+fn invalidate_directory() -> Result<(), String> {
+    match std::fs::remove_file(directory_file()) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!("Could not clear the saved project directory: {e}")),
+    }
+}
+
 pub fn cached_directory() -> Option<Directory> {
-    serde_json::from_slice(&std::fs::read(directory_file()).ok()?).ok()
+    crate::durable::load_json(directory_file())
 }
 
 /// One session's projects, and what it couldn't read.
@@ -745,7 +839,15 @@ pub fn load_directory(sessions: &[Session]) -> Directory {
             }
         }
     }
-    write_json(&directory_file(), &dir);
+    // Same as `cache_answer`: a directory read with a sign-in that changed
+    // since is not saved.
+    let _guard = store_lock();
+    if sessions == self::sessions()
+        && let Ok(bytes) = serde_json::to_vec(&dir)
+        && let Err(e) = crate::durable::write_private(&directory_file(), &bytes)
+    {
+        eprintln!("arakun: could not save the PostHog project directory: {e}");
+    }
     dir
 }
 
@@ -771,10 +873,7 @@ fn root_key(root: &Path) -> String {
 }
 
 pub fn links_from(file: &Path) -> HashMap<String, Link> {
-    std::fs::read(file)
-        .ok()
-        .and_then(|b| serde_json::from_slice(&b).ok())
-        .unwrap_or_default()
+    crate::durable::load_json(file).unwrap_or_default()
 }
 
 pub fn link_of(root: &Path) -> Option<Link> {
@@ -789,7 +888,9 @@ pub fn set_link(root: &Path, link: Option<Link>) {
         Some(l) => links.insert(root_key(root), l),
         None => links.remove(&root_key(root)),
     };
-    write_json(&file, &links);
+    if let Err(e) = crate::durable::save_json(&file, &links) {
+        eprintln!("arakun: could not save the PostHog project links: {e}");
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -853,6 +954,45 @@ pub struct Flag {
     pub active: bool,
     /// "100%", "25%", "3 conditions", "multivariate".
     pub rollout: String,
+    /// PostHog's count of changes to the flag, sent back with a change so
+    /// PostHog can refuse it when the flag changed since it was read.
+    #[serde(default)]
+    pub version: Option<u64>,
+    /// The release conditions as PostHog stores them, for changing a rollout.
+    #[serde(default)]
+    pub filters: Value,
+}
+
+/// An experiment as the project's list gives it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Experiment {
+    pub id: u64,
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub start_date: Option<String>,
+    #[serde(default)]
+    pub end_date: Option<String>,
+    #[serde(default)]
+    pub archived: bool,
+    #[serde(default)]
+    pub conclusion: Option<String>,
+}
+
+impl Experiment {
+    /// Where it is in its life, from its dates, as PostHog names it.
+    pub fn status(&self) -> &'static str {
+        if self.archived {
+            "Archived"
+        } else if self.end_date.is_some() {
+            "Complete"
+        } else if self.start_date.is_some() {
+            "Running"
+        } else {
+            "Draft"
+        }
+    }
 }
 
 /// What the tab shows for a project. Parts that failed keep the last answer.
@@ -866,6 +1006,15 @@ pub struct Overview {
     pub hourly: Vec<(u64, u64)>,
     pub issues: Vec<Issue>,
     pub flags: Vec<Flag>,
+    /// The first 100 experiments. A failed read leaves them empty with
+    /// `experiment_error`, so a missing scope doesn't stop the rest.
+    #[serde(default)]
+    pub experiments: Vec<Experiment>,
+    #[serde(default)]
+    pub experiment_error: Option<String>,
+    /// PostHog has more than `experiments`.
+    #[serde(default)]
+    pub experiments_more: bool,
     pub fetched_at: u64,
     /// When PostHog's query budget lets the next read happen.
     pub limited_until: Option<u64>,
@@ -881,27 +1030,24 @@ const HOURLY: &str = "SELECT intDiv(dateDiff('second', timestamp, now()), 3600) 
 const ISSUES: &str = "SELECT properties.$exception_issue_id AS issue, any(properties.$exception_types), \
     any(properties.$exception_values), count(), uniq(person_id), max(timestamp) AS last FROM events \
     WHERE event = '$exception' AND timestamp > now() - INTERVAL 7 DAY AND issue IS NOT NULL \
-    GROUP BY issue ORDER BY last DESC LIMIT 8";
+    GROUP BY issue ORDER BY uniq(person_id) DESC, last DESC LIMIT 100";
 
 fn overview_file(p: &Project) -> PathBuf {
-    let host: String = p
-        .host
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
-        .collect();
-    cache_dir()
-        .join("posthog")
-        .join(format!("{host}-{}.json", p.id))
+    answers_dir(&p.session).join(format!("{}-overview.json", p.id))
+}
+
+/// Drops what the last read of `p` found, so the next look reads it again.
+pub fn forget_cached(p: &Project) {
+    let _ = std::fs::remove_file(overview_file(p));
 }
 
 /// What the last read of `p` found, to show at once.
 pub fn cached(p: &Project) -> Option<Overview> {
-    serde_json::from_slice(&std::fs::read(overview_file(p)).ok()?).ok()
+    crate::durable::load_json(overview_file(p))
 }
 
 fn hogql(s: &Session, project: u64, q: &str) -> Result<Vec<Value>, ApiError> {
     let body = json!({ "query": { "kind": "HogQLQuery", "query": q } });
-    query::spend(&s.id, crate::model::unix_now());
     let v = call(
         s,
         "POST",
@@ -995,6 +1141,8 @@ fn parse_flags(v: &Value) -> Vec<Flag> {
                 name: f["name"].as_str().unwrap_or_default().to_string(),
                 active: f["active"].as_bool().unwrap_or(false),
                 rollout,
+                version: f["version"].as_u64(),
+                filters: f["filters"].clone(),
             })
         })
         .collect();
@@ -1019,7 +1167,7 @@ pub fn load_overview(
     previous: Option<&Overview>,
 ) -> Result<Overview, ApiError> {
     let id = p.id;
-    let (totals, hourly, issues, flags) = std::thread::scope(|scope| {
+    let (totals, hourly, issues, flags, experiments) = std::thread::scope(|scope| {
         let s = &s;
         let t = scope.spawn(move || hogql(s, id, TOTALS));
         let h = scope.spawn(move || hogql(s, id, HOURLY));
@@ -1032,7 +1180,18 @@ pub fn load_overview(
                 None,
             )
         });
-        (joined(t), joined(h), joined(i), joined(f))
+        let e = scope.spawn(move || {
+            let value = call(
+                s,
+                "GET",
+                &format!("/api/projects/{id}/experiments/?limit=100"),
+                None,
+            )?;
+            let items: Vec<Experiment> = serde_json::from_value(value["results"].clone())
+                .map_err(|_| ApiError::Failed("Could not read the experiments list.".into()))?;
+            Ok((items, value["next"].is_string()))
+        });
+        (joined(t), joined(h), joined(i), joined(f), joined(e))
     });
     let errors: Vec<&ApiError> = [
         totals.as_ref().err(),
@@ -1100,7 +1259,19 @@ pub fn load_overview(
         Ok(v) => o.flags = parse_flags(v),
         Err(e) => problem("Feature flags", e),
     }
-    write_json(&overview_file(p), &o);
+    o.experiment_error = None;
+    match experiments {
+        Ok((items, more)) => {
+            o.experiments = items;
+            o.experiments_more = more;
+        }
+        Err(e) => {
+            o.experiments.clear();
+            o.experiments_more = false;
+            o.experiment_error = Some(e.message());
+        }
+    }
+    let _ = cache_answer(&s, &overview_file(p), &o);
     Ok(o)
 }
 
@@ -1119,6 +1290,35 @@ mod tests {
             name: format!("p{id}"),
             api_token: token.into(),
         }
+    }
+
+    #[test]
+    fn overview_paths_do_not_cross_accounts_for_the_same_project() {
+        let a = project("us#a", 7, "");
+        let b = project("us#b", 7, "");
+        assert_ne!(overview_file(&a), overview_file(&b));
+        assert!(overview_file(&a).starts_with(answers_dir(&a.session)));
+    }
+
+    #[test]
+    fn only_flag_and_experiment_changes_count_as_writes() {
+        assert!(writes("PATCH", "/api/projects/1/feature_flags/2/"));
+        assert!(writes("POST", "/api/projects/1/experiments/3/end/"));
+        assert!(!writes("GET", "/api/projects/1/experiments/3/"));
+        // Queries and PostHog AI are POSTs too, but only read.
+        assert!(!writes("POST", "/api/environments/1/query/"));
+        assert!(!writes(
+            "POST",
+            "/api/environments/1/max_tools/create_and_query_insight/"
+        ));
+        assert_eq!(
+            write_scope("/api/projects/1/experiments/3/ship_variant/"),
+            "experiment:write"
+        );
+        assert_eq!(
+            write_scope("/api/projects/1/feature_flags/2/"),
+            "feature_flag:write"
+        );
     }
 
     #[test]

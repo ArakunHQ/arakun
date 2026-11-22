@@ -21,9 +21,8 @@
 //! for now: its own permission settings (allow rules, bypass mode) answer
 //! before ACP asks, so the policy could not be enforced through it.
 
-pub mod broker;
 pub mod policy;
-pub mod sandbox;
+pub use arakun_core::headless::{broker, sandbox};
 
 use std::cell::Cell;
 use std::path::{Path, PathBuf};
@@ -230,12 +229,8 @@ fn save_json<T: Serialize>(path: &Path, v: &T) -> std::io::Result<()> {
     )
 }
 
-fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Option<T> {
-    serde_json::from_slice(&std::fs::read(path).ok()?).ok()
-}
-
 pub fn read_meta(id: &str) -> Option<Meta> {
-    read_json(&meta_path(id))
+    crate::durable::load_json(meta_path(id))
 }
 
 /// Saves a session that already has its folder. A folder that is gone was
@@ -258,7 +253,7 @@ fn create_meta(m: &Meta) {
 }
 
 pub fn read_pending(id: &str) -> Option<Pending> {
-    read_json(&pending_path(id))
+    crate::durable::load_json(pending_path(id))
 }
 
 /// Sessions being deleted: their folder is still there while the host stops.
@@ -1323,7 +1318,8 @@ fn pending_cmd(json: bool) -> i32 {
 pub fn resolve(id: &str, req: &str, approve: bool, note: &str) -> Result<String, String> {
     let m = find(id)?.ok_or_else(|| format!("no headless session {id}"))?;
     let path = pending_path(&m.id);
-    let mut p: Pending = read_json(&path).ok_or_else(|| format!("{} has nothing pending", m.id))?;
+    let mut p: Pending =
+        crate::durable::load_json(&path).ok_or_else(|| format!("{} has nothing pending", m.id))?;
     if p.req_id != req {
         return Err(format!("{} is waiting on {}, not {req}", m.id, p.req_id));
     }
@@ -1502,14 +1498,7 @@ impl Host {
             })
             .detach();
         }
-        host._tick = Some(cx.spawn(async move |this, cx| {
-            loop {
-                cx.background_executor().timer(TICK).await;
-                if this.update(cx, |this, cx| this.tick(cx)).is_err() {
-                    break;
-                }
-            }
-        }));
+        host._tick = Some(crate::poll::poll_every(cx, TICK, TICK, Self::tick));
         host
     }
 
@@ -1686,7 +1675,7 @@ impl Host {
         };
         let gate = call == NO_SANDBOX;
         let path = pending_path(&self.meta.id);
-        let seen: Option<Pending> = read_json(&path);
+        let seen: Option<Pending> = crate::durable::load_json(&path);
         let expired = waiting.expires <= now();
         let decision = match seen.filter(|p| p.req_id == waiting.req_id) {
             Some(p) if p.answer.is_some() => Some((p.answer == Some(Answer::Approved), p.note)),
@@ -2231,6 +2220,8 @@ mod tests {
                 created: 1,
                 updated: 2,
                 pr: None,
+                seat: None,
+                seat_key: None,
             },
             entries: vec![
                 Entry::User {

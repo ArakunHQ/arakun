@@ -42,6 +42,7 @@ pub enum CustomizeEvent {
     TypeScale(TypeScale),
     DiffPalette(DiffPalette),
     Glass(bool),
+    Contrast(theme::Contrast),
     /// The sidebar is the window's: these ask it to change and save it.
     SidebarStyle(Style),
     SidebarPreset(Preset),
@@ -445,7 +446,7 @@ impl CustomizeView {
             space: self.palettes.space,
             window_gap: self.palettes.window_gap,
             text: ui::type_scale().id().into(),
-            glass: theme::glass(),
+            glass: theme::glass_chosen(),
         });
         cx.emit(CustomizeEvent::CopyLook {
             look: crate::look::Look {
@@ -770,26 +771,27 @@ impl CustomizeView {
                     .map(|l| (l.can_undo, l.can_redo)),
                 |d, (undo, redo)| {
                     d.child(
-                        ui::icon_button("customize-undo", "undo", 14.)
-                            .tooltip(ui::tip("Undo"))
+                        ui::icon_button("customize-undo", "undo", 14., "Undo")
                             .when(!undo, |b| b.opacity(0.4))
-                            .on_click(cx.listener(|_, _, _, cx| {
-                                cx.emit(CustomizeEvent::UndoSidebar(false))
-                            })),
+                            .when(undo, |b| {
+                                b.on_click(cx.listener(|_, _, _, cx| {
+                                    cx.emit(CustomizeEvent::UndoSidebar(false))
+                                }))
+                            }),
                     )
                     .child(
-                        ui::icon_button("customize-redo", "arrow-turn-forward", 14.)
-                            .tooltip(ui::tip("Redo"))
+                        ui::icon_button("customize-redo", "arrow-turn-forward", 14., "Redo")
                             .when(!redo, |b| b.opacity(0.4))
-                            .on_click(cx.listener(|_, _, _, cx| {
-                                cx.emit(CustomizeEvent::UndoSidebar(true))
-                            })),
+                            .when(redo, |b| {
+                                b.on_click(cx.listener(|_, _, _, cx| {
+                                    cx.emit(CustomizeEvent::UndoSidebar(true))
+                                }))
+                            }),
                     )
                 },
             )
             .child(
-                ui::icon_button("customize-close", "cancel01", 14.)
-                    .tooltip(ui::tip("Close"))
+                ui::icon_button("customize-close", "cancel01", 14., "Close")
                     .on_click(cx.listener(|_, _, _, cx| cx.emit(CustomizeEvent::Close))),
             )
     }
@@ -1218,7 +1220,31 @@ impl CustomizeView {
                 )
                 .into_any_element()
         };
-        vec![mode, self.render_palettes(cx), grays, diffs]
+        let contrast = {
+            let now = theme::contrast_setting();
+            let mut seg = ui::segmented();
+            for (i, c) in theme::Contrast::ALL.into_iter().enumerate() {
+                seg = seg.child(
+                    ui::segment(("cz-contrast", i), None, c.label(), now == c).on_click(
+                        cx.listener(move |_, _, _, cx| {
+                            cx.emit(CustomizeEvent::Contrast(c));
+                            cx.notify();
+                        }),
+                    ),
+                );
+            }
+            div()
+                .flex()
+                .flex_col()
+                .gap(crate::ui::sp(6.))
+                .child(inline("Contrast", seg.into_any_element()))
+                .child(hint_label(contrast_note(
+                    now,
+                    theme::system_high_contrast(),
+                )))
+                .into_any_element()
+        };
+        vec![mode, self.render_palettes(cx), contrast, grays, diffs]
     }
 
     fn render_shape(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
@@ -1280,7 +1306,7 @@ impl CustomizeView {
             }
             inline("Text size", seg.into_any_element())
         };
-        let glass = theme::glass();
+        let glass = theme::glass_chosen();
         let glass_row = div()
             .id("cz-glass")
             .flex()
@@ -1295,9 +1321,11 @@ impl CustomizeView {
                     .min_w_0()
                     .gap(crate::ui::sp(2.))
                     .child(name_label("Glass"))
-                    .child(hint_label(
-                        "See-through window and sidebar; the compositor blurs what is behind.",
-                    )),
+                    .child(hint_label(if glass && theme::high_contrast() {
+                        "Off while high contrast is on."
+                    } else {
+                        "See-through window and sidebar; the compositor blurs what is behind."
+                    })),
             )
             .child(ui::switch(glass))
             .on_click(cx.listener(move |_, _, _, cx| {
@@ -1744,6 +1772,22 @@ fn name_label(title: impl Into<SharedString>) -> gpui::Div {
         .child(title.into())
 }
 
+/// What the Contrast choice does, said under it.
+fn contrast_note(c: theme::Contrast, system: bool) -> &'static str {
+    match (c, system) {
+        (theme::Contrast::System, true) => {
+            "High now: the system asks for more contrast, so text, borders and grays are stronger and glass is off."
+        }
+        (theme::Contrast::System, false) => {
+            "Standard now; switches to high when the system asks for more contrast."
+        }
+        (theme::Contrast::Standard, _) => "The usual grays, whatever the system asks for.",
+        (theme::Contrast::High, _) => {
+            "Stronger text, borders and grays, and no glass, whatever the system asks for."
+        }
+    }
+}
+
 fn hint_label(hint: impl Into<SharedString>) -> gpui::Div {
     div()
         .text_size(px(ui::TEXT_SM))
@@ -1943,11 +1987,13 @@ impl Summary {
 
     pub fn of(saved: &crate::palettes::Saved, sidebar: &crate::sidebar::Sidebar) -> Summary {
         let mode = if saved.light { "Light" } else { "Dark" };
-        let colors = format!(
-            "{mode} · {} · {} grays",
-            saved.active().name,
-            theme::grays().label()
-        );
+        // High contrast replaces the Grays choice, so it is named instead.
+        let grays = if theme::high_contrast() {
+            "High contrast".to_string()
+        } else {
+            format!("{} grays", theme::grays().label())
+        };
+        let colors = format!("{mode} · {} · {grays}", saved.active().name);
         let shape = Summary::shape_of(saved);
         let style = match sidebar.style.variant {
             Variant::Card => "Card",

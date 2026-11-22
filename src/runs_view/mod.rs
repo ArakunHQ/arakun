@@ -16,8 +16,9 @@ use gpui::{
     UniformListScrollHandle, Window, div, px, rgb, rgba,
 };
 
+use crate::agent::AgentKind;
 use crate::ci::{self, Ci, Load, Run, State};
-use crate::model::{self, Agent, Status};
+use crate::model::{self, Status};
 use crate::theme;
 use crate::ui::{self, icon};
 
@@ -28,7 +29,7 @@ pub struct LinkedSession {
     pub env: usize,
     pub id: SharedString,
     pub title: SharedString,
-    pub agent: Agent,
+    pub agent: AgentKind,
     pub status: Status,
     /// Unix seconds.
     pub updated: u64,
@@ -157,9 +158,9 @@ pub fn state_color(s: State) -> Hsla {
 }
 
 /// The run's status glyph; work in progress spins.
-pub fn state_icon(id: impl Into<ElementId>, s: State, size: f32) -> AnyElement {
+pub fn state_icon(s: State, size: f32) -> AnyElement {
     match s {
-        State::Running => ui::spinner(id, size, hex(AMBER)).into_any_element(),
+        State::Running => ui::spinner(size, hex(AMBER)).into_any_element(),
         State::Passed => icon("checkmark-circle01", size)
             .text_color(hex(GREEN))
             .into_any_element(),
@@ -479,7 +480,7 @@ impl RunsView {
                     .flex_1()
                     .items_center()
                     .justify_center()
-                    .child(ui::spinner("runs-loading", 18., theme::mix(0.4)))
+                    .child(ui::spinner(18., theme::mix(0.4)))
                     .into_any_element(),
             },
             List::Ready { .. } if self.mode == Mode::Graph => self.render_graph_page(cx),
@@ -664,7 +665,7 @@ impl RunsView {
                     .items_center()
                     .justify_center()
                     .size(px(18.))
-                    .child(state_icon(("run-state", ix), state, 16.)),
+                    .child(state_icon(state, 16.)),
             )
             .child(
                 div()

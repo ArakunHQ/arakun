@@ -11,6 +11,7 @@
 //! the user posts it. The island opens the same sheet over any window.
 
 mod bandeja;
+pub mod connect;
 mod diff;
 mod item;
 mod pilot;
@@ -25,10 +26,10 @@ use std::rc::Rc;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, AnyView, App, AppContext as _, Bounds, Context, Entity, EventEmitter, FocusHandle,
-    Focusable, InteractiveElement as _, IntoElement, KeyDownEvent, ListAlignment, ListState,
-    MouseButton, ParentElement as _, Pixels, Point, Render, ScrollHandle, StyleRefinement,
-    Styled as _, Subscription, WeakEntity, Window, canvas, div, px,
+    AnyElement, AnyView, App, AppContext as _, Bounds, Context, Corners, Entity, EventEmitter,
+    FocusHandle, Focusable, InteractiveElement as _, IntoElement, KeyDownEvent, ListAlignment,
+    ListState, MouseButton, ParentElement as _, Pixels, Point, Render, ScrollHandle,
+    StyleRefinement, Styled as _, Subscription, WeakEntity, Window, canvas, div, px,
 };
 
 use crate::agent::markdown::{self, Block, MdStyle};
@@ -72,10 +73,16 @@ fn layout(w: f32) -> Layout {
 pub enum GitHubViewEvent {
     /// Show a GitHub page.
     Open(String),
-    /// Start an agent session.
-    Ask { title: String, prompt: String },
+    /// Start an agent session; about a pull request, on its branch.
+    Ask {
+        title: String,
+        prompt: String,
+        pull: Option<pr::PullTarget>,
+    },
     /// The sheet shown over another window closed.
     Closed,
+    /// Open the form that connects arakun-pilot or changes its settings.
+    ConnectPilot,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -282,6 +289,9 @@ pub struct GitHubView {
     /// The sheet shows over another window (opened from the island): the
     /// tab's list isn't drawn, and closing it hands the window back.
     floating: bool,
+    /// The corners of the main card this view fills, which the card clips
+    /// to a square: none with no project added, two in a split.
+    card_corners: Corners<bool>,
     tab: Tab,
     /// The sheet's details unfolded (Some(true)) or folded by the user;
     /// None folds them on a short window.
@@ -392,6 +402,9 @@ pub struct GitHubView {
     /// The card whose "Other answer…" line is open.
     pilot_other: Option<String>,
     pilot_input: Entity<TextInput>,
+    /// The "Other answer…" line went while it had the focus: the next frame
+    /// gives the focus back to the tab, so the next card answers by key.
+    pilot_refocus: bool,
     /// Cards whose answer is on its way.
     pilot_sending: HashSet<String>,
     /// "Sent…" after an answer went, until its timer clears it.
@@ -526,6 +539,12 @@ impl GitHubView {
             picked: None,
             sheet_open: false,
             floating: false,
+            card_corners: Corners {
+                top_left: true,
+                top_right: true,
+                bottom_right: true,
+                bottom_left: true,
+            },
             tab: Tab::Timeline,
             details_open: None,
             done_open: false,
@@ -584,6 +603,7 @@ impl GitHubView {
             pilot_act: None,
             pilot_notes: HashMap::new(),
             pilot_other: None,
+            pilot_refocus: false,
             pilot_input,
             pilot_sending: HashSet::new(),
             pilot_sent: None,
@@ -699,6 +719,13 @@ impl GitHubView {
     /// the list).
     fn select(&mut self, entry: Entry, open: bool, cx: &mut Context<Self>) {
         let same = self.picked.as_ref().is_some_and(|p| p.key() == entry.key());
+        // A picked card belongs to its pull request: moving to another one
+        // (J, K or a click) lets go of it, or its keys would answer a card
+        // no longer in front. A card's own click reveals its pull request
+        // after picking it, so that one keeps it.
+        if !same && !self.pilot_focus_on(&entry.key(), cx) {
+            self.pilot_focus = None;
+        }
         self.picked = Some(entry);
         if open {
             self.sheet_open = true;
@@ -956,8 +983,27 @@ impl GitHubView {
     // -----------------------------------------------------------------------
     // Agents
 
-    fn ask(&mut self, title: String, prompt: String, cx: &mut Context<Self>) {
-        cx.emit(GitHubViewEvent::Ask { title, prompt });
+    fn ask(
+        &mut self,
+        title: String,
+        prompt: String,
+        pull: Option<pr::PullTarget>,
+        cx: &mut Context<Self>,
+    ) {
+        cx.emit(GitHubViewEvent::Ask {
+            title,
+            prompt,
+            pull,
+        });
+    }
+
+    /// Where an agent works on `item`: the environment on its branch, once
+    /// the pull request is read.
+    fn target(&self, item: &ItemRef, cx: &App) -> Option<pr::PullTarget> {
+        match self.github.read(cx).details(item) {
+            Some(Details::Pull(p)) => Some(pr::PullTarget::of(item, p)),
+            _ => None,
+        }
     }
 
     fn review_with_agent(&mut self, cx: &mut Context<Self>) {
@@ -965,11 +1011,24 @@ impl GitHubView {
             return;
         };
         let title = self.title(cx);
-        self.ask(
-            format!("Review: {title}"),
-            pr::review_prompt(&item, &title),
-            cx,
-        );
+        let prompt = pr::review_prompt(&item, &title);
+        let title = format!("Review: {title}");
+        if let Some(on) = self.target(&item, cx) {
+            self.ask(title, prompt, Some(on), cx);
+            return;
+        }
+        // Not read yet: without its branch the session would start in the
+        // environment in front, and reading it later wouldn't move it.
+        cx.spawn(async move |this, cx| {
+            let it = item.clone();
+            let read = cx
+                .background_spawn(crate::guard::task(async move { pr::fetch_pull(&it) }))
+                .await;
+            // Unreadable: the environment in front, whose agent then says so.
+            let on = read.ok().map(|p| pr::PullTarget::of(&item, &p));
+            let _ = this.update(cx, |this, cx| this.ask(title, prompt, on, cx));
+        })
+        .detach();
     }
 
     /// "Work on it": an agent does what the issue asks, in the project open.
@@ -981,6 +1040,7 @@ impl GitHubView {
         self.ask(
             format!("Issue: {title}"),
             pr::issue_prompt(&item, &title),
+            None,
             cx,
         );
     }
@@ -998,7 +1058,8 @@ impl GitHubView {
             }
             _ => return,
         };
-        self.ask(format!("Conflicts: {title}"), prompt, cx);
+        let on = self.target(&item, cx);
+        self.ask(format!("Conflicts: {title}"), prompt, on, cx);
     }
 
     /// "Address comments with agent": the open review threads, fixed or
@@ -1018,7 +1079,8 @@ impl GitHubView {
             }
             _ => return,
         };
-        self.ask(format!("Comments: {title}"), prompt, cx);
+        let on = self.target(&item, cx);
+        self.ask(format!("Comments: {title}"), prompt, on, cx);
     }
 
     fn catch_up(&mut self, cx: &mut Context<Self>) {
@@ -1041,7 +1103,7 @@ impl GitHubView {
             // An issue has no reviews: what it says so far is the catch-up.
             _ => pr::summarize_prompt(&item, &title),
         };
-        self.ask(format!("Catch up: {title}"), prompt, cx);
+        self.ask(format!("Catch up: {title}"), prompt, None, cx);
     }
 
     fn summarize(&mut self, cx: &mut Context<Self>) {
@@ -1050,6 +1112,7 @@ impl GitHubView {
         self.ask(
             format!("Summary: {title}"),
             pr::summarize_prompt(&item, &title),
+            None,
             cx,
         );
     }
@@ -1499,6 +1562,14 @@ impl GitHubView {
         {
             return;
         }
+        // A picked pilot card takes its own keys first: 1-4, E and Y, also
+        // with the sheet showing its pull request. Not a held key's repeats:
+        // after an answer the next card is picked, and a repeat would answer
+        // it without a press.
+        if self.pilot_keys_apply(ev.is_held, cx) && self.pilot_key(k.key.as_str(), window, cx) {
+            cx.stop_propagation();
+            return;
+        }
         let pull = self.item().is_some_and(|i| i.kind == ItemKind::Pull);
         let mine = self.is_mine(cx);
         match k.key.as_str() {
@@ -1644,6 +1715,7 @@ fn render_markdown(
         &crate::agent::TextMap::default(),
         None,
         &[],
+        None,
         None,
         None,
         None,
@@ -2630,7 +2702,14 @@ impl Focusable for GitHubView {
 }
 
 impl Render for GitHubView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if std::mem::take(&mut self.pilot_refocus) {
+            let (input, focus) = (self.pilot_input.focus_handle(cx), self.focus.clone());
+            // Only when nothing else took the focus while the answer went.
+            if input.is_focused(window) || window.focused(cx).is_none() {
+                window.defer(cx, move |window, cx| window.focus(&focus, cx));
+            }
+        }
         // The width this view got last frame decides the layout of this one.
         let (cell, id) = (self.size.clone(), cx.entity_id());
         // The panes lay themselves out from the size too.
@@ -2685,6 +2764,14 @@ impl Render for GitHubView {
             ))
         });
         let shows_sheet = (self.sheet_open || self.floating) && self.picked.is_some();
+        // The main card clips to a square: the dim takes the card's corners,
+        // or it darkens the window past them. Over another window there is
+        // no card.
+        let corners = if self.floating {
+            Corners::default()
+        } else {
+            self.card_corners
+        };
         let root = root.when(shows_sheet, |d| {
             d.child(
                 // The rest dims: a click on it closes the sheet.
@@ -2694,6 +2781,18 @@ impl Render for GitHubView {
                     .top_0()
                     .left_0()
                     .size_full()
+                    .when(corners.top_left, |d| {
+                        d.rounded_tl(crate::ui::rad(ui::RADIUS_XL))
+                    })
+                    .when(corners.top_right, |d| {
+                        d.rounded_tr(crate::ui::rad(ui::RADIUS_XL))
+                    })
+                    .when(corners.bottom_right, |d| {
+                        d.rounded_br(crate::ui::rad(ui::RADIUS_XL))
+                    })
+                    .when(corners.bottom_left, |d| {
+                        d.rounded_bl(crate::ui::rad(ui::RADIUS_XL))
+                    })
                     .bg(gpui::black().opacity(0.45))
                     .occlude()
                     .on_mouse_down(

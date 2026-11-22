@@ -6,6 +6,7 @@
 use super::*;
 use crate::cloudflare::fix::{self, Fix};
 use crate::logos;
+use crate::subnav::{Entry, Lead, Line};
 use crate::ui::{AreaChart, Format, Series, Tone, Type, Typography as _};
 
 /// Issues of one kind, shown as one card when there are several.
@@ -76,11 +77,7 @@ impl CloudflareView {
                 .gap(crate::ui::sp(6.))
                 .ty(Type::Caption)
                 .text_color(theme::text_subtle())
-                .child(ui::spinner(
-                    SharedString::from(format!("{id}-busy")),
-                    12.,
-                    theme::text_faint(),
-                ))
+                .child(ui::spinner(12., theme::text_faint()))
                 .child("Applying…")
                 .into_any_element();
         }
@@ -239,7 +236,7 @@ impl CloudflareView {
                         .bg(theme::fill_raised())
                         .ty(Type::Caption)
                         .text_color(theme::text_subtle())
-                        .child(ui::spinner("cf-analytics", 11., theme::text_faint()))
+                        .child(ui::spinner(11., theme::text_faint()))
                         .child("Updating analytics"),
                 )
             })
@@ -266,14 +263,12 @@ impl CloudflareView {
             })
     }
 
-    /// `rail`: the window is narrow, so only the icons show, a dot for a count
-    /// that needs a look and the name in a tooltip.
-    pub(super) fn render_nav(
-        &self,
-        s: &Snapshot,
-        rail: bool,
-        cx: &mut Context<Self>,
-    ) -> Stateful<Div> {
+    /// The pages, for the sidebar (`crate::subnav`), each with what needs a
+    /// look. Empty until the account was read once.
+    pub fn nav(&self) -> Vec<Line> {
+        let Some(s) = self.snap.as_ref() else {
+            return Vec::new();
+        };
         let issues = s.issues();
         let urgent = issues.iter().any(|i| i.high);
         let real = issues.iter().filter(|i| !i.bots).count();
@@ -289,19 +284,6 @@ impl CloudflareView {
             .iter()
             .filter(|z| z.email_enabled == Some(true))
             .count();
-        let mut nav = div()
-            .id("cf-nav")
-            .flex()
-            .flex_col()
-            .flex_none()
-            .w(px(if rail { super::RAIL_W } else { super::NAV_W }))
-            .h_full()
-            .overflow_y_scroll()
-            .gap(crate::ui::sp(2.))
-            .px(crate::ui::sp(if rail { 8. } else { 12. }))
-            .py(crate::ui::sp(16.))
-            .border_r_1()
-            .border_color(theme::border_subtle());
         let entries: [(Page, &str, Option<String>, Option<Tone>); 11] = [
             (
                 Page::Summary,
@@ -362,102 +344,28 @@ impl CloudflareView {
             ),
             (Page::Tools, "wrench01", None, None),
         ];
+        let mut out = Vec::new();
         for (i, (page, icon_name, n, tone)) in entries.into_iter().enumerate() {
             if i == 1 || i == 7 || i == 9 {
-                nav = nav.child(div().flex_none().h(px(10.)));
+                out.push(Line::Gap);
             }
-            let on = self.page == page;
-            if rail {
-                nav = nav.child(
-                    div()
-                        .id(("cf-nav-row", i))
-                        .relative()
-                        .flex()
-                        .flex_none()
-                        .items_center()
-                        .justify_center()
-                        .h(px(32.))
-                        .rounded(crate::ui::rad(ui::RADIUS))
-                        .cursor_pointer()
-                        .when(on, |d| d.bg(theme::fill_selected()))
-                        .when(!on, |d| d.hover(|d| d.bg(theme::fill_hover())))
-                        .child(icon(icon_name, 14.).text_color(if on {
-                            theme::text()
-                        } else {
-                            theme::text_subtle()
-                        }))
-                        .children(tone.map(|t| {
-                            div()
-                                .absolute()
-                                .top(px(6.))
-                                .right(px(8.))
-                                .size(px(6.))
-                                .rounded_full()
-                                .bg(t.color())
-                        }))
-                        .tooltip(ui::tip(page.label()))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.page = page;
-                            this.scroll.set_offset(gpui::point(px(0.), px(0.)));
-                            cx.notify();
-                        })),
-                );
-                continue;
-            }
-            nav = nav.child(
-                div()
-                    .id(("cf-nav-row", i))
-                    .flex()
-                    .flex_none()
-                    .items_center()
-                    .gap(crate::ui::sp(10.))
-                    .h(px(32.))
-                    .px(crate::ui::sp(10.))
-                    .rounded(crate::ui::rad(ui::RADIUS))
-                    .cursor_pointer()
-                    .ty(Type::Label)
-                    .when(on, |d| {
-                        d.bg(theme::fill_selected()).text_color(theme::text())
-                    })
-                    .when(!on, |d| {
-                        d.text_color(theme::text_muted())
-                            .hover(|d| d.bg(theme::fill_hover()).text_color(theme::text()))
-                    })
-                    .child(icon(icon_name, 14.).text_color(if on {
-                        theme::text()
-                    } else {
-                        theme::text_subtle()
-                    }))
-                    .child(div().flex_1().min_w_0().truncate().child(page.label()))
-                    .children(n.map(|n| {
-                        match tone {
-                            Some(t) => div()
-                                .flex_none()
-                                .px(crate::ui::sp(6.))
-                                .h(px(18.))
-                                .flex()
-                                .items_center()
-                                .rounded_full()
-                                .bg(t.color().opacity(0.18))
-                                .ty(Type::Caption)
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .text_color(t.color())
-                                .child(n),
-                            None => div()
-                                .flex_none()
-                                .ty(Type::Caption)
-                                .text_color(theme::text_faint())
-                                .child(n),
-                        }
-                    }))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.page = page;
-                        this.scroll.set_offset(gpui::point(px(0.), px(0.)));
-                        cx.notify();
-                    })),
-            );
+            out.push(Line::Entry(
+                Entry::new(page.key(), Lead::Icon(icon_name), page.label())
+                    .count(n)
+                    .tone(tone)
+                    .on(self.page == page),
+            ));
         }
-        nav
+        out
+    }
+
+    /// Opens the page `key` of `nav` names.
+    pub fn pick_nav(&mut self, key: &str, cx: &mut Context<Self>) {
+        if let Some(page) = Page::ALL.into_iter().find(|p| p.key() == key) {
+            self.page = page;
+            self.scroll.set_offset(gpui::point(px(0.), px(0.)));
+            cx.notify();
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -1597,7 +1505,12 @@ impl CloudflareView {
                                     .child(name.clone()),
                             )
                             .child(state)
-                            .child(self.open_button(format!("cf-email-{name}"), path, cx)),
+                            .child(self.open_button(
+                                format!("cf-email-{name}"),
+                                path,
+                                &format!("email routing for {name}"),
+                                cx,
+                            )),
                     )
                     .when(z.email_rules.is_empty(), |d| d.child(quiet("No rules.")))
                     .child(rows),
@@ -2127,10 +2040,7 @@ impl CloudflareView {
             .bg(theme::background());
         let t = match self.traffic.get(&z.id) {
             None => {
-                return shell.child(ui::loading(
-                    SharedString::from(format!("cf-traffic-load-{}", z.id)),
-                    "Reading the last 24 hours…",
-                ));
+                return shell.child(ui::loading("Reading the last 24 hours…"));
             }
             Some(Err(e)) => {
                 return shell.child(note(format!("Couldn't read the traffic: {e}"), true));

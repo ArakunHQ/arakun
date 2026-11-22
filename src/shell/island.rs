@@ -459,6 +459,7 @@ impl Shell {
                 .is_window_active()
                 .then(|| self.active_session_id())
                 .flatten(),
+            reduce_motion: Some(cx.reduce_motion()),
         };
         if let Some(feed) = changed(&mut link.sent, feed) {
             let _ = link.tx.send(ToIsland::Feed { feed });
@@ -702,6 +703,7 @@ mod tests {
             rows: vec![row(status)],
             today: None,
             viewing: None,
+            reduce_motion: None,
         };
         let mut sent = None;
         assert!(changed(&mut sent, feed(isl::Status::Working)).is_some());

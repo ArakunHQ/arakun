@@ -8,7 +8,8 @@ use crate::ui::Typography as _;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::time::{Duration, SystemTime};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant, SystemTime};
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
@@ -21,7 +22,8 @@ use crate::account::{Account, UsageMode};
 use crate::account_view;
 use crate::agent::claude_auth;
 use crate::agent::cliproxy;
-use crate::agent::plan::{self, PlanUsage};
+use crate::agent::plan::{self, PlanUsage, Seats};
+use crate::agent::seats;
 use crate::agent::{AgentKind, fmt_cost};
 use crate::agent::{devin_plan, opencode_plan};
 use crate::input::{InputEvent, TextInput};
@@ -258,6 +260,8 @@ pub struct UsageView {
     /// machine has one; shown beside the sign-in's.
     #[cfg(feature = "coderlabs")]
     borrowed: Option<PlanUsage>,
+    /// Every Claude seat sessions can run on; shown once a named seat is saved.
+    seats: SeatsInfo,
     /// The OpenCode Go plan's windows, when a Go key is connected.
     go: Option<PlanUsage>,
     /// The Devin plan's quota windows, on a plan that has a quota.
@@ -266,8 +270,21 @@ pub struct UsageView {
     proxy: Option<cliproxy::Proxy>,
     /// CLIProxyAPI's management key, typed in once.
     proxy_key: Entity<TextInput>,
-    proxy_saving: bool,
-    _proxy_key_sub: Subscription,
+    /// The proxy's address, typed when Claude Code does not run on it.
+    proxy_address: Entity<TextInput>,
+    /// What the proxy's controls are doing ("Checking…"), while they work.
+    proxy_busy: Option<&'static str>,
+    /// Why the last save, refresh or forget failed.
+    proxy_note: Option<String>,
+    /// Counts when the proxy's controls' jobs start and end, so a background
+    /// read that overlapped one (say, Forget key) does not put back what it
+    /// changed.
+    proxy_jobs: u64,
+    /// The key field shows although a key is saved (Change key).
+    proxy_key_open: bool,
+    /// The address field shows (Add CLIProxyAPI, Change address).
+    proxy_address_open: bool,
+    _proxy_subs: [Subscription; 2],
     /// The Factory account, shared by the shell once it exists.
     account: Option<Entity<Account>>,
     _account_sub: Option<Subscription>,
@@ -288,33 +305,88 @@ pub struct UsageView {
     projects: Vec<(PathBuf, String)>,
     focus: FocusHandle,
     scroll: ScrollHandle,
+    /// Whether the view is on screen, for the poll's background task.
+    shown: std::sync::Arc<Shown>,
     _poll: [Task<()>; 3],
 }
 
 impl EventEmitter<UsageEvent> for UsageView {}
 
+/// Whether the Usage view is on screen, readable off the UI thread.
+#[derive(Default)]
+struct Shown {
+    /// Whether the shell's last frame showed the view. A window that is not
+    /// drawn keeps the last value, so `drawn` counts too.
+    on_screen: AtomicBool,
+    /// When the view was last drawn. Its own poll redraws it every [`POLL`]
+    /// while it is on screen, so an older time means it is not.
+    drawn: std::sync::Mutex<Option<Instant>>,
+}
+
+impl Shown {
+    fn now(&self) -> bool {
+        self.on_screen.load(Ordering::Relaxed)
+            && self
+                .drawn
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .is_some_and(|at| at.elapsed() < 2 * POLL)
+    }
+}
+
+/// What the seats block shows (see `agent::seats`).
+#[derive(Clone, Default, PartialEq)]
+struct SeatsInfo {
+    seats: Seats,
+    /// Claude Code has a claude.ai sign-in: the "own" seat.
+    own: bool,
+    /// A borrowed token is set.
+    borrowed: bool,
+    /// Live sessions on each seat.
+    live: HashMap<String, usize>,
+    /// Why sessions can't get a seat each, if they can't.
+    blocked: Option<seats::Blocked>,
+}
+
+impl SeatsInfo {
+    /// Reads files and maybe the network; keep it off the UI thread.
+    fn read(all: Seats) -> Self {
+        SeatsInfo {
+            seats: all,
+            own: plan::own_sign_in(),
+            borrowed: plan::borrowed_seat_token().is_some(),
+            live: seats::live(),
+            blocked: seats::blocked(),
+        }
+    }
+}
+
 impl UsageView {
     pub fn new(cx: &mut Context<Self>) -> Self {
-        let poll = cx.spawn(async move |this, cx| {
-            loop {
-                if this.update(cx, |v, cx| v.rescan(cx)).is_err() {
-                    break;
-                }
-                cx.background_executor().timer(POLL).await;
-            }
-        });
+        let shown = std::sync::Arc::new(Shown::default());
+        let probe_ok = shown.clone();
+        let poll = crate::poll::poll_every(cx, Duration::ZERO, POLL, Self::rescan);
         let plan_poll = cx.spawn(async move |this, cx| {
             loop {
-                let (seats, go, devin, access) = cx
+                // Reading a named seat sends it a message, which can start its
+                // 5-hour window: only while someone looks at them.
+                let probe_ok = probe_ok.clone();
+                let (info, go, devin, access) = cx
                     .background_spawn(crate::guard::task_or_default(async move {
+                        // Asked once the refresh has its turn: the tab may
+                        // have closed while another refresh ran.
+                        let all = plan::seats_probing_if(&seats::Store::open().names(), || {
+                            probe_ok.now()
+                        });
                         (
-                            plan::seats(),
+                            SeatsInfo::read(all),
                             opencode_plan::refresh(),
                             devin_plan::refresh(),
                             claude_auth::access(),
                         )
                     }))
                     .await;
+                let seats = &info.seats;
                 let plan = seats.active().cloned();
                 #[cfg(feature = "coderlabs")]
                 let borrowed = seats.borrowed.clone();
@@ -326,6 +398,10 @@ impl UsageView {
                         let changed = false;
                         // The phone's Claude card names the key or endpoint too.
                         let changed = changed || v.access != access;
+                        if v.seats != info {
+                            v.seats = info;
+                            cx.notify();
+                        }
                         if changed || v.plan != plan || v.go != go || v.devin != devin {
                             v.access = access;
                             v.plan = plan;
@@ -350,15 +426,23 @@ impl UsageView {
         // other plans should not wait for it.
         let proxy_poll = cx.spawn(async move |this, cx| {
             loop {
+                let Ok(jobs) = this.update(cx, |v, _| v.proxy_jobs) else {
+                    break;
+                };
                 let proxy = cx
                     .background_spawn(crate::guard::task(async move { cliproxy::refresh(false) }))
                     .await;
                 if this
                     .update(cx, |v, cx| {
+                        // A control ran meanwhile: its own read is newer.
+                        if v.proxy_busy.is_some() || v.proxy_jobs != jobs {
+                            return;
+                        }
                         if v.proxy != proxy {
                             // A key typed for the old proxy must not be saved for the new one.
                             if proxy_switched(v.proxy.as_ref(), proxy.as_ref()) {
                                 v.proxy_key.update(cx, |i, cx| i.set_text("", cx));
+                                v.proxy_key_open = false;
                             }
                             v.proxy = proxy;
                             cx.notify();
@@ -374,20 +458,37 @@ impl UsageView {
         let proxy_key = cx.new(|cx| TextInput::new("Management key", cx).mono().secret());
         let proxy_key_sub = cx.subscribe(&proxy_key, |this: &mut Self, _, ev: &InputEvent, cx| {
             if matches!(ev, InputEvent::Submit) {
-                this.save_proxy_key(cx);
+                if this.proxy_address_open {
+                    this.save_proxy_address(cx);
+                } else {
+                    this.save_proxy_key(cx);
+                }
             }
         });
+        let proxy_address = cx.new(|cx| TextInput::new("Address, e.g. 127.0.0.1:8317", cx).mono());
+        let proxy_address_sub =
+            cx.subscribe(&proxy_address, |this: &mut Self, _, ev: &InputEvent, cx| {
+                if matches!(ev, InputEvent::Submit) {
+                    this.save_proxy_address(cx);
+                }
+            });
         Self {
             plan: None,
             access: None,
             #[cfg(feature = "coderlabs")]
             borrowed: None,
+            seats: SeatsInfo::default(),
             go: None,
             devin: None,
             proxy: None,
             proxy_key,
-            proxy_saving: false,
-            _proxy_key_sub: proxy_key_sub,
+            proxy_address,
+            proxy_busy: None,
+            proxy_note: None,
+            proxy_jobs: 0,
+            proxy_key_open: false,
+            proxy_address_open: false,
+            _proxy_subs: [proxy_key_sub, proxy_address_sub],
             account: None,
             _account_sub: None,
             records: None,
@@ -401,6 +502,7 @@ impl UsageView {
             titles: HashMap::new(),
             projects: Vec::new(),
             focus: cx.focus_handle(),
+            shown,
             scroll: ScrollHandle::new(),
             _poll: [poll, plan_poll, proxy_poll],
         }
@@ -440,6 +542,12 @@ impl UsageView {
             self.projects = projects;
             cx.notify();
         }
+    }
+
+    /// Tells the view whether the shell's frame shows it. Named seats are
+    /// read only while it does: a read sends the seat a message.
+    pub fn set_on_screen(&self, shown: bool) {
+        self.shown.on_screen.store(shown, Ordering::Relaxed);
     }
 
     pub fn focus(&self, window: &mut Window, cx: &mut Context<Self>) {
@@ -540,36 +648,39 @@ impl UsageView {
         )
     }
 
-    /// Saves the typed management key and reads the proxy's accounts with it.
-    fn save_proxy_key(&mut self, cx: &mut Context<Self>) {
-        let key = self.proxy_key.read(cx).text().trim().to_string();
-        // The proxy on screen when the key was typed is the one it is for.
-        let Some(base) = self.proxy.as_ref().map(|p| p.base.clone()) else {
-            return;
-        };
-        if key.is_empty() || self.proxy_saving {
+    /// Runs one of the proxy's controls off the UI thread: `busy` labels it
+    /// meanwhile, and what `job` reads is what the tab shows after.
+    fn proxy_job(
+        &mut self,
+        busy: &'static str,
+        job: impl FnOnce() -> anyhow::Result<Option<cliproxy::Proxy>> + Send + 'static,
+        cx: &mut Context<Self>,
+    ) {
+        if self.proxy_busy.is_some() {
             return;
         }
-        self.proxy_saving = true;
+        self.proxy_busy = Some(busy);
+        self.proxy_jobs += 1;
+        self.proxy_note = None;
         cx.notify();
         cx.spawn(async move |this, cx| {
             let got = cx
-                .background_spawn(crate::guard::task(async move {
-                    cliproxy::save_key(&key, &base).map(|()| cliproxy::refresh(true))
-                }))
+                .background_spawn(crate::guard::task(async move { job() }))
                 .await;
             let _ = this.update(cx, |v, cx| {
-                v.proxy_saving = false;
+                v.proxy_busy = None;
+                // A poll that began while this ran may have read before it
+                // wrote: count the end too, so that poll's result is dropped.
+                v.proxy_jobs += 1;
                 match got {
                     Ok(proxy) => {
                         v.proxy = proxy;
+                        v.proxy_key_open = false;
+                        v.proxy_address_open = false;
                         v.proxy_key.update(cx, |i, cx| i.set_text("", cx));
+                        v.proxy_address.update(cx, |i, cx| i.set_text("", cx));
                     }
-                    Err(e) => {
-                        if let Some(p) = &mut v.proxy {
-                            p.error = Some(format!("Couldn't save the key: {e}"));
-                        }
-                    }
+                    Err(e) => v.proxy_note = Some(format!("{e:#}")),
                 }
                 cx.notify();
             });
@@ -577,77 +688,165 @@ impl UsageView {
         .detach();
     }
 
-    /// The claude.ai accounts behind CLIProxyAPI, each with its windows, or
-    /// the field for the proxy's management key. Nothing unless Claude Code
-    /// runs on another endpoint.
-    fn proxy_limits(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let proxy = self.proxy.as_ref()?;
-        let at = now();
-        let note = |text: String, color: Hsla| {
-            div()
-                .text_size(px(ui::TEXT_SM))
-                .line_height(px(17.))
-                .text_color(color)
-                .child(text)
-        };
-        let mut rows = div().flex().flex_col().gap(crate::ui::sp(14.));
-        for a in &proxy.accounts {
-            let mut account = div().flex().flex_col().gap(crate::ui::sp(8.)).child(
-                div()
-                    .text_size(px(ui::TEXT_SM))
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(theme::text_muted())
-                    .child(crate::redact::value(&a.name)),
-            );
-            match (&a.usage, &a.error) {
-                (Some(u), _) => {
-                    let mut idle = Vec::new();
-                    for w in &u.windows {
-                        if w.active || w.percent > 0 {
-                            account = account.child(ui::limit_line(
-                                &w.label,
-                                w.percent as f32,
-                                w.reset_text(at),
-                            ));
-                        } else {
-                            idle.push(w.label.clone());
-                        }
-                    }
-                    account = account.children(idle_line(&idle));
-                }
-                (None, e) => {
-                    let e = e.clone().unwrap_or_else(|| "No windows reported.".into());
-                    account = account.child(note(
-                        crate::redact::text(&e).into_owned(),
-                        theme::text_subtle(),
-                    ));
-                }
-            }
-            rows = rows.child(account);
+    /// Opens the address form or the key field. The key field is shared, and
+    /// a key typed for one proxy must not be saved for another, so it starts
+    /// empty whenever the form changes.
+    fn open_proxy_form(&mut self, address: bool, cx: &mut Context<Self>) {
+        if self.proxy_address_open != address {
+            self.proxy_key.update(cx, |i, cx| i.set_text("", cx));
         }
-        let host = proxy
-            .base
-            .split_once("://")
-            .map_or(proxy.base.as_str(), |(_, r)| r)
-            .trim_end_matches("/v0/management")
-            .to_string();
-        let host = crate::redact::value(&host);
+        self.proxy_address_open = address;
+        self.proxy_key_open = !address;
+        cx.notify();
+    }
+
+    /// Saves the typed management key and reads the proxy's accounts with it.
+    fn save_proxy_key(&mut self, cx: &mut Context<Self>) {
+        let key = self.proxy_key.read(cx).text().trim().to_string();
+        // The proxy on screen when the key was typed is the one it is for.
+        let Some(base) = self.proxy.as_ref().map(|p| p.base.clone()) else {
+            return;
+        };
+        if key.is_empty() {
+            return;
+        }
+        self.proxy_job(
+            "Checking…",
+            move || {
+                cliproxy::save_key(&key, &base)?;
+                Ok(cliproxy::refresh(true))
+            },
+            cx,
+        );
+    }
+
+    /// Saves the typed address, and the key typed with it, then reads.
+    fn save_proxy_address(&mut self, cx: &mut Context<Self>) {
+        let address = self.proxy_address.read(cx).text().trim().to_string();
+        let key = self.proxy_key.read(cx).text().trim().to_string();
+        self.proxy_job(
+            "Checking…",
+            move || {
+                let base = cliproxy::save_address(&address)?;
+                if !key.is_empty() {
+                    cliproxy::save_key(&key, &base)?;
+                }
+                Ok(cliproxy::refresh(true))
+            },
+            cx,
+        );
+    }
+
+    /// The claude.ai and ChatGPT accounts behind CLIProxyAPI, with how the
+    /// pool is doing, each account's health and windows, and the controls for
+    /// the key and address. Without a proxy, a quiet way to add one.
+    fn proxy_limits(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let Some(proxy) = self.proxy.as_ref() else {
+            if !self.proxy_address_open {
+                return Some(
+                    div()
+                        .flex()
+                        .child(
+                            ui::button(
+                                "usage-cliproxy-add",
+                                "Add CLIProxyAPI",
+                                ButtonKind::Ghost,
+                                true,
+                            )
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.open_proxy_form(true, cx);
+                            })),
+                        )
+                        .into_any_element(),
+                );
+            }
+            let rows = div()
+                .flex()
+                .flex_col()
+                .gap(crate::ui::sp(10.))
+                .child(proxy_note(
+                    "Add the address and management key of a CLIProxyAPI to see the 5-hour and weekly limits of the Claude and Codex accounts behind it.".into(),
+                    theme::text_subtle(),
+                ))
+                .when_some(self.proxy_note.as_ref(), |d, note| {
+                    d.child(proxy_note(
+                        crate::redact::text(note).into_owned(),
+                        theme::error().into(),
+                    ))
+                })
+                .child(self.proxy_address_form(cx));
+            return Some(limits_block(AgentKind::Claude, "CLIProxyAPI", None, rows));
+        };
+        let at = now();
+        let mut rows = div().flex().flex_col().gap(crate::ui::sp(14.));
+        let mut providers: Vec<cliproxy::Provider> =
+            proxy.accounts.iter().map(|a| a.provider).collect();
+        providers.dedup();
+        let several = providers.len() > 1;
+        for provider in providers {
+            let mut group = div().flex().flex_col().gap(crate::ui::sp(12.));
+            if several {
+                let kind = match provider {
+                    cliproxy::Provider::Claude => AgentKind::Claude,
+                    cliproxy::Provider::Codex => AgentKind::Codex,
+                };
+                group = group.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(crate::ui::sp(6.))
+                        .child(kind.icon(12.))
+                        .child(
+                            div()
+                                .text_size(px(ui::TEXT_SM))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(theme::content())
+                                .child(provider.name()),
+                        ),
+                );
+            }
+            if let Some(summary) = cliproxy::summary(&proxy.accounts, provider, at) {
+                group = group.child(proxy_note(summary, theme::text_subtle()));
+            }
+            for a in proxy.accounts.iter().filter(|a| a.provider == provider) {
+                group = group.child(proxy_account(a, at));
+            }
+            rows = rows.child(group);
+        }
+        let host = crate::redact::value(proxy.host()).to_string();
         if let Some(e) = &proxy.error {
-            rows = rows.child(note(
+            rows = rows.child(proxy_note(
                 crate::redact::text(e).into_owned(),
                 theme::error().into(),
             ));
         } else if proxy.has_key && proxy.accounts.is_empty() && proxy.at > 0 {
-            rows = rows.child(note(
-                "CLIProxyAPI has no claude.ai accounts signed in.".into(),
+            rows = rows.child(proxy_note(
+                "CLIProxyAPI has no Claude or Codex accounts signed in.".into(),
                 theme::text_subtle(),
             ));
         }
-        if !proxy.has_key || (proxy.accounts.is_empty() && proxy.error.is_some()) {
-            let busy = self.proxy_saving;
+        if let Some(note) = &self.proxy_note {
+            rows = rows.child(proxy_note(
+                crate::redact::text(note).into_owned(),
+                theme::error().into(),
+            ));
+        }
+        let busy = self.proxy_busy;
+        if self.proxy_address_open {
+            rows = rows.child(self.proxy_address_form(cx));
+        } else if !proxy.has_key
+            || proxy.key_refused()
+            || self.proxy_key_open
+            || (proxy.accounts.is_empty() && proxy.error.is_some())
+        {
             if !proxy.has_key {
-                rows = rows.child(note(
-                    format!("Claude Code runs on {host}. If that is CLIProxyAPI, add its management key to see each account's 5-hour and weekly limits."),
+                let source = if proxy.typed {
+                    format!("CLIProxyAPI at {host}. Add")
+                } else {
+                    format!("Claude Code runs on {host}. If that is CLIProxyAPI, add")
+                };
+                rows = rows.child(proxy_note(
+                    format!("{source} its management key to see each account's 5-hour and weekly limits."),
                     theme::text_subtle(),
                 ));
             }
@@ -660,22 +859,160 @@ impl UsageView {
                     .child(
                         ui::button(
                             "usage-cliproxy-key",
-                            if busy { "Checking…" } else { "Save" },
+                            busy.unwrap_or("Save"),
                             ButtonKind::Outline,
-                            !busy,
+                            busy.is_none(),
                         )
-                        .when(!busy, |b| {
+                        .when(busy.is_none(), |b| {
                             b.on_click(cx.listener(|this, _, _, cx| this.save_proxy_key(cx)))
                         }),
                     ),
             );
         }
+        rows = rows.child(self.proxy_controls(proxy, at, cx));
         Some(limits_block(
             AgentKind::Claude,
             "CLIProxyAPI",
             Some(host.into_any_element()),
             rows,
         ))
+    }
+
+    /// The address and key fields, with Save and Cancel.
+    fn proxy_address_form(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let busy = self.proxy_busy;
+        div()
+            .flex()
+            .flex_col()
+            .gap(crate::ui::sp(8.))
+            .child(ui::field().child(self.proxy_address.clone()))
+            .child(ui::field().child(self.proxy_key.clone()))
+            .child(
+                div()
+                    .flex()
+                    .gap(crate::ui::sp(8.))
+                    .child(
+                        ui::button(
+                            "usage-cliproxy-address-save",
+                            busy.unwrap_or("Save"),
+                            ButtonKind::Outline,
+                            busy.is_none(),
+                        )
+                        .when(busy.is_none(), |b| {
+                            b.on_click(cx.listener(|this, _, _, cx| this.save_proxy_address(cx)))
+                        }),
+                    )
+                    .child(
+                        ui::button(
+                            "usage-cliproxy-address-cancel",
+                            "Cancel",
+                            ButtonKind::Ghost,
+                            busy.is_none(),
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.proxy_address_open = false;
+                            this.proxy_note = None;
+                            this.proxy_key.update(cx, |i, cx| i.set_text("", cx));
+                            cx.notify();
+                        })),
+                    ),
+            )
+    }
+
+    /// When the accounts were read, and Refresh, Change key, Forget key and
+    /// the address controls.
+    fn proxy_controls(
+        &self,
+        proxy: &cliproxy::Proxy,
+        at: u64,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        let idle = self.proxy_busy.is_none();
+        let ghost =
+            |id: &'static str, label: &'static str| ui::button(id, label, ButtonKind::Ghost, idle);
+        div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap(crate::ui::sp(4.))
+            .when(proxy.has_key && proxy.at > 0, |d| {
+                d.child(
+                    div()
+                        .mr(crate::ui::sp(4.))
+                        .text_size(px(ui::TEXT_XS))
+                        .text_color(theme::text_faint())
+                        .child(match self.proxy_busy {
+                            Some("Reading…") => "Reading…".to_string(),
+                            _ => format!("Read {}", crate::account::ago(proxy.at, at)),
+                        }),
+                )
+            })
+            .when(proxy.has_key && !proxy.key_refused(), |d| {
+                d.child(ghost("usage-cliproxy-refresh", "Refresh").when(idle, |b| {
+                    b.on_click(cx.listener(|this, _, _, cx| {
+                        this.proxy_job("Reading…", || Ok(cliproxy::refresh(true)), cx);
+                    }))
+                }))
+            })
+            .when(
+                proxy.has_key && !proxy.key_refused() && !self.proxy_key_open,
+                |d| {
+                    d.child(
+                        ghost("usage-cliproxy-change-key", "Change key").on_click(
+                            cx.listener(|this, _, _, cx| this.open_proxy_form(false, cx)),
+                        ),
+                    )
+                },
+            )
+            .when(self.proxy_key_open, |d| {
+                d.child(
+                    ghost("usage-cliproxy-cancel-key", "Cancel").on_click(cx.listener(
+                        |this, _, _, cx| {
+                            this.proxy_key_open = false;
+                            this.proxy_key.update(cx, |i, cx| i.set_text("", cx));
+                            cx.notify();
+                        },
+                    )),
+                )
+            })
+            .when(proxy.has_key, |d| {
+                d.child(
+                    ghost("usage-cliproxy-forget-key", "Forget key").when(idle, |b| {
+                        b.on_click(cx.listener(|this, _, _, cx| {
+                            this.proxy_job(
+                                "Forgetting…",
+                                || {
+                                    cliproxy::forget_key()?;
+                                    Ok(cliproxy::refresh(false))
+                                },
+                                cx,
+                            );
+                        }))
+                    }),
+                )
+            })
+            .when(!self.proxy_address_open, |d| {
+                d.child(
+                    ghost("usage-cliproxy-change-address", "Change address")
+                        .on_click(cx.listener(|this, _, _, cx| this.open_proxy_form(true, cx))),
+                )
+            })
+            .when(proxy.typed, |d| {
+                d.child(
+                    ghost("usage-cliproxy-forget-address", "Forget address").when(idle, |b| {
+                        b.on_click(cx.listener(|this, _, _, cx| {
+                            this.proxy_job(
+                                "Forgetting…",
+                                || {
+                                    cliproxy::forget_address()?;
+                                    Ok(cliproxy::refresh(false))
+                                },
+                                cx,
+                            );
+                        }))
+                    }),
+                )
+            })
     }
 
     /// A second seat's windows: only some builds read one.
@@ -700,6 +1037,116 @@ impl UsageView {
             "Borrowed seat"
         };
         Some(limits_block(AgentKind::Claude, name, None, rows))
+    }
+
+    /// Every Claude seat with its 5-hour and weekly windows and the live
+    /// sessions on it, once a named seat is saved (`arakun seat add`). Says so
+    /// when sessions can't get a seat each.
+    fn seat_limits(&self) -> Option<AnyElement> {
+        let info = &self.seats;
+        if info.seats.named.is_empty() {
+            return None;
+        }
+        let at = now();
+        let mut rows = div().flex().flex_col().gap(crate::ui::sp(14.));
+        if let Some(blocked) = &info.blocked {
+            rows = rows.child(
+                div()
+                    .text_size(px(ui::TEXT_SM))
+                    .line_height(px(17.))
+                    .text_color(theme::warn())
+                    .child(blocked.notice()),
+            );
+        }
+        let mut list: Vec<(&str, Option<&PlanUsage>, Option<&str>)> = Vec::new();
+        if info.own {
+            list.push((seats::OWN, info.seats.own.as_ref(), None));
+        }
+        if info.borrowed {
+            list.push((seats::BORROWED, info.seats.borrowed.as_ref(), None));
+        }
+        for s in &info.seats.named {
+            list.push((&s.name, s.usage.as_ref(), s.error.as_deref()));
+        }
+        for (id, usage, error) in list {
+            let live = info.live.get(id).copied().unwrap_or(0);
+            let name = match id {
+                seats::OWN | seats::BORROWED => seats::label(id),
+                name => crate::redact::value(name),
+            };
+            let mut seat = div().flex().flex_col().gap(crate::ui::sp(8.)).child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(crate::ui::sp(8.))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(px(ui::TEXT_SM))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(theme::text_muted())
+                            .child(name),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .text_size(px(ui::TEXT_XS))
+                            .text_color(if live > 0 {
+                                theme::text_muted()
+                            } else {
+                                theme::text_faint()
+                            })
+                            .child(match live {
+                                0 => "No live sessions".to_string(),
+                                1 => "1 live session".to_string(),
+                                n => format!("{n} live sessions"),
+                            }),
+                    ),
+            );
+            let windows: Vec<_> = usage
+                .map(|u| {
+                    [u.five_hour_window(), u.weekly()]
+                        .into_iter()
+                        .flatten()
+                        .collect()
+                })
+                .unwrap_or_default();
+            for w in &windows {
+                seat = seat.child(ui::limit_line(&w.label, w.percent as f32, w.reset_text(at)));
+            }
+            let quiet = match (windows.is_empty(), error) {
+                (true, Some(e)) => Some((
+                    format!("Couldn't read it: {}", crate::redact::text(e)),
+                    theme::error(),
+                )),
+                (true, None) => Some(("Not read yet.".to_string(), theme::text_subtle().into())),
+                // The windows above are the last good read; say why this one
+                // failed, or a refused seat would look like any other.
+                (false, Some(e)) => Some((
+                    format!("Couldn't refresh it: {}", crate::redact::text(e)),
+                    theme::error(),
+                )),
+                (false, None) => None,
+            };
+            if let Some((text, color)) = quiet {
+                seat = seat.child(
+                    div()
+                        .text_size(px(ui::TEXT_SM))
+                        .text_color(color)
+                        .child(text),
+                );
+            }
+            rows = rows.child(seat);
+        }
+        let total: usize = info.live.values().sum();
+        Some(limits_block(
+            AgentKind::Claude,
+            "Claude seats",
+            (total > 0).then(|| format!("{total} live").into_any_element()),
+            rows,
+        ))
     }
 
     /// OpenCode Go's limits: its three windows, each with the endpoint's
@@ -1125,8 +1572,8 @@ fn model_name(id: &str) -> String {
 }
 
 /// Which hue each agent's series and share bar wear: Anthropic's clay for
-/// Claude Code, a quiet light gray for Droid. Darker grays keep Antigravity,
-/// Devin, OpenCode and Codex apart.
+/// Claude Code, a quiet light gray for Droid. Darker grays keep Cursor,
+/// Antigravity, Devin, OpenCode and Codex apart.
 fn agent_color(agent: AgentKind) -> Hsla {
     match agent {
         AgentKind::Claude => gpui::rgb(0xd97757).into(),
@@ -1134,7 +1581,8 @@ fn agent_color(agent: AgentKind) -> Hsla {
         AgentKind::OpenCode => theme::mix(0.45),
         AgentKind::Codex => theme::mix(0.3),
         AgentKind::Devin => theme::mix(0.2),
-        AgentKind::Antigravity => theme::mix(0.58),
+        AgentKind::Cursor => theme::mix(0.58),
+        AgentKind::Antigravity => theme::mix(0.38),
         AgentKind::WorkersAi => gpui::rgb(0xf38020).into(),
     }
 }
@@ -1302,6 +1750,112 @@ fn idle_line(labels: &[String]) -> Option<AnyElement> {
     })
 }
 
+/// A line of small text in the proxy's block.
+fn proxy_note(text: String, color: Hsla) -> gpui::Div {
+    div()
+        .text_size(px(ui::TEXT_SM))
+        .line_height(px(17.))
+        .text_color(color)
+        .child(text)
+}
+
+/// One account behind CLIProxyAPI: its name and plan, whether the proxy
+/// routes to it, and its windows.
+fn proxy_account(a: &cliproxy::Account, at: u64) -> AnyElement {
+    let mut account = div().flex().flex_col().gap(crate::ui::sp(8.)).child(
+        div()
+            .flex()
+            .items_center()
+            .gap(crate::ui::sp(8.))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(px(ui::TEXT_SM))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(theme::text_muted())
+                    .child(crate::redact::value(&a.name).to_string()),
+            )
+            .when(!a.plan.is_empty(), |d| {
+                d.child(
+                    div()
+                        .flex_none()
+                        .text_size(px(ui::TEXT_XS))
+                        .text_color(theme::text_faint())
+                        .child(proxy_plan(&a.plan)),
+                )
+            }),
+    );
+    let state = match &a.state {
+        cliproxy::State::Ready => None,
+        cliproxy::State::Cooling { until, why } => {
+            let mut text = match until.and_then(|t| plan::when_text(t, at)) {
+                Some(when) => format!("Cooling down, back {when}"),
+                None => "Cooling down".to_string(),
+            };
+            if !why.is_empty() {
+                text.push_str(&format!(" · {why}"));
+            }
+            Some((text, theme::warn().into()))
+        }
+        cliproxy::State::SignIn => Some((
+            "Signed out on the proxy. Sign in to this account there again.".to_string(),
+            theme::error().into(),
+        )),
+        cliproxy::State::Failing { why } => Some((why.clone(), theme::warn().into())),
+    };
+    if let Some((text, color)) = state {
+        account = account.child(proxy_note(crate::redact::text(&text).into_owned(), color));
+    }
+    match (&a.usage, &a.error) {
+        (Some(u), _) => {
+            let mut idle = Vec::new();
+            for w in &u.windows {
+                if w.active || w.percent > 0 {
+                    account =
+                        account.child(ui::limit_line(&w.label, w.percent as f32, w.reset_text(at)));
+                } else {
+                    idle.push(w.label.clone());
+                }
+            }
+            account = account.children(idle_line(&idle));
+        }
+        (None, Some(e)) => {
+            account = account.child(proxy_note(
+                crate::redact::text(e).into_owned(),
+                theme::text_subtle(),
+            ));
+        }
+        // Signed out: the state line says it all.
+        (None, None) if a.state == cliproxy::State::SignIn => {}
+        (None, None) => {
+            account = account.child(proxy_note(
+                "No windows reported.".into(),
+                theme::text_subtle(),
+            ));
+        }
+    }
+    account.into_any_element()
+}
+
+/// "Pro", "Plus", "Team": a plan id as the proxy reports it, for a badge.
+fn proxy_plan(plan: &str) -> String {
+    let mut words = plan.split('_').filter(|w| !w.is_empty());
+    let Some(first) = words.next() else {
+        return String::new();
+    };
+    let mut c = first.chars();
+    let first: String = c
+        .next()
+        .map(|f| f.to_uppercase().chain(c).collect())
+        .unwrap_or_default();
+    std::iter::once(first)
+        .chain(words.map(String::from))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// The breakdown table: name, cost, share of cost and tokens, in the quiet
 /// column rhythm of a ledger.
 fn breakdown_table(
@@ -1386,6 +1940,7 @@ impl gpui::Focusable for UsageView {
 
 impl Render for UsageView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        *self.shown.drawn.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
         let all: &[Record] = self.records.as_deref().unwrap_or_default();
         let filtered: Vec<Record>;
         let records = match self.agent_filter {
@@ -1439,7 +1994,7 @@ impl Render for UsageView {
             );
 
         let body: AnyElement = match &self.records {
-            None => ui::loading("usage-loading", "Reading agent usage history…").into_any_element(),
+            None => ui::loading("Reading agent usage history…").into_any_element(),
             Some(_) => self.render_body(&s, cx),
         };
         div()
@@ -1790,6 +2345,9 @@ impl UsageView {
                     })
                     .when_some(self.borrowed_limits(), |d, b| {
                         d.child(div().h(px(1.)).bg(theme::fill_hover())).child(b)
+                    })
+                    .when_some(self.seat_limits(), |d, s| {
+                        d.child(div().h(px(1.)).bg(theme::fill_hover())).child(s)
                     })
                     .child(div().h(px(1.)).bg(theme::fill_hover()))
                     .child(self.droid_limits(cx))

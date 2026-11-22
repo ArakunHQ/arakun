@@ -161,7 +161,15 @@ impl EventsTab {
         self.picker = false;
         self.adding = false;
         self.debounce.bump();
-        self.person.update(cx, |i, cx| i.set_text("", cx));
+        self._more = None;
+        self._defs = None;
+        self.loading_more = false;
+        self.defs_loading = false;
+        self.more = false;
+        self.keys.clear();
+        for input in [&self.search, &self.person, &self.prop_key, &self.prop_value] {
+            input.update(cx, |i, cx| i.clear(cx));
+        }
         cx.notify();
     }
 
@@ -431,8 +439,7 @@ fn filter_chip(id: usize, f: &PropFilter, cx: &mut Context<EventsTab>) -> AnyEle
         .text_color(theme::text())
         .child(format!("{} = {}", f.key, f.value))
         .child(
-            ui::icon_button(("ph-ev-chip-x", id), "cancel01", 12.)
-                .tooltip(ui::tip("Remove"))
+            ui::icon_button(("ph-ev-chip-x", id), "cancel01", 12., "Remove")
                 .on_click(cx.listener(move |this, _, _, cx| this.remove_prop(id, cx))),
         )
         .into_any_element()
@@ -1209,7 +1216,7 @@ impl Render for EventsTab {
             None => None,
         };
         let body: AnyElement = if self.loading && self.events.is_empty() {
-            ui::loading("ph-ev-loading", "Reading events…").into_any_element()
+            ui::loading("Reading events…").into_any_element()
         } else {
             self.render_table(cx)
         };

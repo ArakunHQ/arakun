@@ -63,13 +63,16 @@ fn parse_choice(text: &str) -> Option<bool> {
     }
 }
 
-/// The pull request merged from an environment's branch.
+/// A pull request of the user's that was merged.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 pub struct Merged {
     pub number: u64,
     pub url: String,
     #[serde(rename = "mergedAt", default)]
     pub merged_at: String,
+    /// The branch it was merged from.
+    #[serde(rename = "headRefName", default)]
+    pub head: String,
 }
 
 impl Merged {
@@ -85,34 +88,78 @@ impl Merged {
     }
 }
 
+/// The most merged pull requests read per repository: far more than one
+/// person merges in [`RECENT_SECS`]. A list this long may have left some out,
+/// even one of two merges from the same branch, so every branch is then asked
+/// one by one ([`merged_of_branch`]).
+pub const MERGED_PER_REPO: usize = 300;
 /// The most merged pull requests read per branch: a branch can be merged
 /// more than once.
 const MERGED_PER_BRANCH: &str = "5";
 /// A `gh` that hangs must not hold up the next check.
 const GH_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// The user's newest merged pull requests from `branch`, asked in `dir`.
-/// Empty when there are none or gh can't say.
-pub fn merged_prs(dir: &Path, branch: &str) -> Vec<Merged> {
+/// The user's pull requests merged in the last [`RECENT_SECS`] in the
+/// repository at `dir`, from every branch. One `gh` call for the whole
+/// repository: asking once per environment ran dozens of `gh` processes in a
+/// row for a project with many environments. Empty when there are none or gh
+/// can't say.
+pub fn recent_merged(dir: &Path, now: u64) -> Vec<Merged> {
+    let search = merged_since(now);
+    let limit = MERGED_PER_REPO.to_string();
+    gh_merged(
+        dir,
+        &[
+            "--search",
+            &search,
+            "--limit",
+            &limit,
+            "--json",
+            "number,url,mergedAt,headRefName",
+        ],
+    )
+}
+
+/// The user's newest merged pull requests from `branch`, asked in `dir`: for
+/// when [`recent_merged`] came back full, added to what it found. Empty when there are none or gh
+/// can't say.
+pub fn merged_of_branch(dir: &Path, branch: &str) -> Vec<Merged> {
+    gh_merged(
+        dir,
+        &[
+            "--head",
+            branch,
+            "--limit",
+            MERGED_PER_BRANCH,
+            "--json",
+            "number,url,mergedAt,headRefName",
+        ],
+    )
+}
+
+/// `gh pr list` of the user's merged pull requests, with `args` added.
+fn gh_merged(dir: &Path, args: &[&str]) -> Vec<Merged> {
     let mut cmd = crate::git::gh(dir);
-    cmd.args([
-        "pr",
-        "list",
-        "--state",
-        "merged",
-        "--author",
-        "@me",
-        "--head",
-        branch,
-        "--limit",
-        MERGED_PER_BRANCH,
-        "--json",
-        "number,url,mergedAt",
-    ]);
+    cmd.args(["pr", "list", "--state", "merged", "--author", "@me"]);
+    cmd.args(args);
     match crate::headless::sandbox::run_with_timeout(cmd, None, GH_TIMEOUT) {
         Ok(out) if out.status.success() => serde_json::from_slice(&out.stdout).unwrap_or_default(),
         _ => Vec::new(),
     }
+}
+
+/// The search for merges in the last [`RECENT_SECS`] before `now`. GitHub's
+/// search takes a date, so the day before also counts; [`Merged::recent`]
+/// drops what is too old.
+fn merged_since(now: u64) -> String {
+    let days = now.saturating_sub(RECENT_SECS) / 86_400;
+    let (y, m, d) = crate::platform::civil_from_days(days.saturating_sub(1) as i64);
+    format!("merged:>={y:04}-{m:02}-{d:02}")
+}
+
+/// The merges in `list` from `branch`.
+pub fn of_branch<'a>(list: &'a [Merged], branch: &'a str) -> impl Iterator<Item = &'a Merged> {
+    list.iter().filter(move |m| m.head == branch)
 }
 
 /// The merges already settled, by pull request URL, oldest first.
@@ -124,20 +171,11 @@ pub struct Book {
 
 impl Book {
     pub fn load() -> Self {
-        std::fs::read(book_path())
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or_default()
+        crate::durable::load_json(book_path()).unwrap_or_default()
     }
 
     pub fn store(&self) {
-        let path = book_path();
-        if let Some(dir) = path.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
-        if let Ok(bytes) = serde_json::to_vec(self)
-            && let Err(e) = crate::durable::write(&path, &bytes)
-        {
+        if let Err(e) = crate::durable::save_json(&book_path(), self) {
             eprintln!("arakun: could not keep the settled merges: {e}");
         }
     }
@@ -182,6 +220,7 @@ mod tests {
             number: 1,
             url: "https://github.com/o/r/pull/1".into(),
             merged_at: at.into(),
+            head: "b".into(),
         };
         let now = crate::account::parse_rfc3339("2026-11-17T12:00:00Z").unwrap();
         assert!(m("2026-11-17T11:00:00Z").recent(now));
@@ -208,10 +247,25 @@ mod tests {
     #[test]
     fn reads_what_gh_answers() {
         let list: Vec<Merged> = serde_json::from_str(
-            r#"[{"number":232,"url":"https://github.com/ArakunHQ/arakun/pull/232","mergedAt":"2026-11-17T18:00:00Z"}]"#,
+            r#"[{"number":232,"url":"https://github.com/ArakunHQ/arakun/pull/232","mergedAt":"2026-11-17T18:00:00Z","headRefName":"fix/a"},
+                {"number":233,"url":"https://github.com/ArakunHQ/arakun/pull/233","mergedAt":"2026-11-18T18:00:00Z","headRefName":"fix/b"},
+                {"number":240,"url":"https://github.com/ArakunHQ/arakun/pull/240","mergedAt":"2026-11-19T18:00:00Z","headRefName":"fix/a"}]"#,
         )
         .unwrap();
         assert_eq!(list[0].number, 232);
         assert!(list[0].merged_secs() > 0);
+        // A branch merged twice finds both; another branch's merge isn't its.
+        let a: Vec<u64> = of_branch(&list, "fix/a").map(|m| m.number).collect();
+        assert_eq!(a, [232, 240]);
+        assert_eq!(of_branch(&list, "fix/c").count(), 0);
+    }
+
+    #[test]
+    fn searches_back_a_week_and_a_day() {
+        let now = crate::account::parse_rfc3339("2026-11-21T12:00:00Z").unwrap();
+        assert_eq!(merged_since(now), "merged:>=2026-11-13");
+        // Early in the day the week still starts on the day before it.
+        let early = crate::account::parse_rfc3339("2026-11-21T00:30:00Z").unwrap();
+        assert_eq!(merged_since(early), "merged:>=2026-11-13");
     }
 }

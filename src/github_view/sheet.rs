@@ -163,6 +163,15 @@ impl GitHubView {
         true
     }
 
+    /// The corners of the main card the view fills: all of them in a
+    /// project's tab, two in a split, none on the window with no project.
+    pub fn set_card_corners(&mut self, corners: gpui::Corners<bool>, cx: &mut Context<Self>) {
+        if self.card_corners != corners {
+            self.card_corners = corners;
+            cx.notify();
+        }
+    }
+
     /// The GitHub tab came to the front: the floating sheet stays open in it.
     pub fn unfloat(&mut self, cx: &mut Context<Self>) {
         if std::mem::take(&mut self.floating) {
@@ -258,8 +267,7 @@ impl GitHubView {
             (None, None) => {
                 top = top.child(match &problem {
                     Some(p) => self.detail_problem(item.as_ref(), p, cx),
-                    None => ui::loading("gh-item-loading", "Reading the pull request…")
-                        .into_any_element(),
+                    None => ui::loading("Reading the pull request…").into_any_element(),
                 });
             }
         }
@@ -470,9 +478,7 @@ impl GitHubView {
                             .text_color(theme::text_muted())
                             .child(crumb),
                     )
-                    .when(reading, |d| {
-                        d.child(ui::spinner("gh-reading", 12., theme::text_faint()))
-                    }),
+                    .when(reading, |d| d.child(ui::spinner(12., theme::text_faint()))),
             )
             .when(review, |d| {
                 d.child(
@@ -517,24 +523,22 @@ impl GitHubView {
                 )
             })
             .child(
-                ui::icon_button("gh-open-web", "link-square02", 14.)
-                    .tooltip(ui::tip("Open on GitHub (O)"))
+                ui::icon_button("gh-open-web", "link-square02", 14., "Open on GitHub (O)")
                     .on_click(cx.listener(|this, _, _, cx| this.open_on_github(cx))),
             )
             .when_some(url, |d, url| {
                 d.child(
-                    ui::icon_button("gh-copy-link", "link01", 14.)
-                        .tooltip(ui::tip("Copy link"))
-                        .on_click(cx.listener(move |this, _, _, cx| {
+                    ui::icon_button("gh-copy-link", "link01", 14., "Copy link").on_click(
+                        cx.listener(move |this, _, _, cx| {
                             cx.write_to_clipboard(ClipboardItem::new_string(url.clone()));
                             this.note = Some(Note::ok("Link copied."));
                             cx.notify();
-                        })),
+                        }),
+                    ),
                 )
             })
             .child(
-                ui::icon_button("gh-sheet-close", "cancel01", 14.)
-                    .tooltip(ui::tip("Close (Esc)"))
+                ui::icon_button("gh-sheet-close", "cancel01", 14., "Close (Esc)")
                     .on_click(cx.listener(|this, _, _, cx| this.close_sheet(cx))),
             )
             .into_any_element()
@@ -811,7 +815,7 @@ impl GitHubView {
                         .items_center()
                         .gap(crate::ui::sp(8.))
                         .pl(crate::ui::sp(18.))
-                        .child(ui::spinner("gh-decision-sending", 12., theme::text_faint()))
+                        .child(ui::spinner(12., theme::text_faint()))
                         .child(ui::text(
                             Type::Label,
                             theme::text_muted(),
@@ -1155,8 +1159,7 @@ impl GitHubView {
                                     })
                                     .cursor_pointer()
                                     .child(if self.task_sending {
-                                        ui::spinner("gh-task-sending", 11., theme::working())
-                                            .into_any_element()
+                                        ui::spinner(11., theme::working()).into_any_element()
                                     } else {
                                         icon("sparkles", 12.)
                                             .text_color(if can_task {

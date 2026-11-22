@@ -19,22 +19,24 @@ use std::path::{Path, PathBuf};
 
 use futures::StreamExt as _;
 use futures::channel::mpsc;
-use gpui::{AppContext as _, Context, Entity, SharedString, Task, Window};
+use gpui::{App, AppContext as _, Context, Entity, SharedString, Task, Window};
 use serde_json::{Value, json};
 
 use super::{Modal, Shell};
 use crate::agent::{
-    AgentKind, Entry, RemoteAction, SessionMeta, Setting, SettingOption, Thread, ThreadStatus,
-    Transcript, Usage,
+    AgentKind, Entry, RemoteAction, SessionMeta, Setting, SettingOption, SubagentRecord, Thread,
+    ThreadStatus, Transcript, Usage,
 };
 use crate::dialogs::{DeleteEnvDialog, DialogEvent};
 use crate::extensions_view::ServerTarget;
 use crate::model::{self, Environment, Project, Remote, Session, Status, TabKind, unix_now};
 use crate::phone::{ClientId, wire};
+use crate::servers::balance::{self, Balance, Candidate};
 use crate::servers::client::{Client, Event, Events, Status as LinkStatus};
 use crate::servers::{self, Saved};
 use crate::servers_view::{PlaceRow, Reach, ServerRow, ServersEvent, ServersState, SessionRow};
 
+mod files;
 mod terms;
 
 /// One server: its connection and what it last said it holds.
@@ -46,6 +48,8 @@ struct Conn {
     /// It sends several sessions to one connection (`open` with `keep`), as
     /// its inbox says. One from before sends the last one opened only.
     watches_several: bool,
+    /// It is from before it sent images: none are asked of it.
+    no_images: bool,
 }
 
 impl Conn {
@@ -56,6 +60,7 @@ impl Conn {
             sessions: Vec::new(),
             places: Vec::new(),
             watches_several: false,
+            no_images: false,
         }
     }
 }
@@ -70,6 +75,9 @@ struct Following {
     env_path: PathBuf,
     /// Its entries so far, whole, as the server's transcript holds them.
     entries: Vec<Entry>,
+    /// Its subagents that ran as child sessions, as the server last sent them.
+    /// Their transcripts are not among the entries.
+    subagents: Vec<SubagentRecord>,
     agent: AgentKind,
     cwd: PathBuf,
     title: String,
@@ -91,6 +99,53 @@ struct Following {
     /// Who looks at it: the session in front here, phones through this app.
     /// It is followed while anyone does.
     by: Vec<Watcher>,
+    /// The prompts waiting there for the running turn, as its last `state`
+    /// said: the server keeps the queue.
+    queue: RemoteQueue,
+    /// The images its agent named that are on the server, by link as written.
+    images: HashMap<String, ImageCopy>,
+}
+
+/// An image a server's session names, as asked of the server.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct ImageCopy {
+    /// The last entry that named it when it was asked for. An entry after it
+    /// naming it again may mean a new image under the same name: it is asked
+    /// for again.
+    at: usize,
+    /// The copy here, once one came: the newest answer's.
+    file: Option<PathBuf>,
+    /// The `at` of the answer `file` came from.
+    file_at: usize,
+    /// Asked and not answered yet.
+    waiting: bool,
+}
+
+/// A server session's queue, as its `state` says it. An older server says
+/// none: it is shown empty.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct RemoteQueue {
+    prompts: Vec<String>,
+    paused: bool,
+    sending_now: usize,
+}
+
+impl RemoteQueue {
+    fn of(msg: &Value) -> Self {
+        let prompts = msg["queue"]
+            .as_array()
+            .map(|q| {
+                q.iter()
+                    .filter_map(|p| p.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        Self {
+            prompts,
+            paused: msg["queue_paused"] == true,
+            sending_now: msg["sending_now"].as_u64().unwrap_or(0) as usize,
+        }
+    }
 }
 
 impl Following {
@@ -98,6 +153,12 @@ impl Following {
     fn read_again(&mut self) {
         (self.asking, self.asked, self.again) = (true, 0, None);
         (self.refill, self.broken) = (Some(Vec::new()), None);
+        // Answers the old connection never brought are asked for again; the
+        // copies that came stay on show.
+        self.images.retain(|_, i| !i.waiting || i.file.is_some());
+        for i in self.images.values_mut() {
+            i.waiting = false;
+        }
     }
 }
 
@@ -127,6 +188,9 @@ pub(super) struct ServersLink {
     inboxes: HashMap<String, Value>,
     /// The last write of `inboxes` failed: the next inbox writes them again.
     inboxes_unsaved: bool,
+    /// Waits for the newest write of `inboxes` to set `inboxes_unsaved`. A
+    /// newer write drops it: only how the last one went counts.
+    inboxes_saving: Option<Task<()>>,
     /// What each local project's repository is known by (`repo_key`), read once.
     origins: HashMap<PathBuf, Option<String>>,
     /// Sessions asked of servers, until each says its session's id.
@@ -152,10 +216,13 @@ pub(super) struct ServersLink {
     /// The model and reasoning each server offers a new session of an agent
     /// in one of its folders, by server, place and agent, as it last said.
     options: HashMap<OptionsKey, SettingList>,
+    /// The slash commands each server's agent offered last in one of its
+    /// folders: a session opened there has them before its agent runs again.
+    commands: HashMap<OptionsKey, Vec<crate::agent::Choice>>,
     /// Phones that asked for the options of a server's folder, by server,
     /// place and agent, with the environment and agent they asked about:
     /// the server's answer goes to them too.
-    phone_options: HashMap<OptionsKey, Vec<(ClientId, PathBuf, model::Agent)>>,
+    phone_options: HashMap<OptionsKey, Vec<(ClientId, PathBuf, AgentKind)>>,
     /// The environments servers were asked to delete, by server and place,
     /// until each answers, with the Delete environment dialog that waits on it.
     deleting: Vec<(String, String, gpui::EntityId)>,
@@ -166,6 +233,10 @@ pub(super) struct ServersLink {
     error: Option<String>,
     /// The terminals open in servers' environments.
     terms: terms::Terms,
+    /// Whether new environments are spread across machines, and each one's preference.
+    balance: Balance,
+    /// Git asked of servers for their environments' Changes panels.
+    git_asks: servers::git::Asks,
     _listen: Task<()>,
 }
 
@@ -243,7 +314,7 @@ pub(super) struct FirstPrompt {
     pub env: PathBuf,
     /// As the user wrote it, without the note to the agent.
     pub text: String,
-    pub agent: crate::agent::AgentKind,
+    pub agent: AgentKind,
     /// The rename note that went with it, kept for the next prompt if it did not go.
     pub note: Option<String>,
     /// The folder it was written in, when another: kept with it if it did not go.
@@ -557,6 +628,7 @@ fn offered_picks(
 /// what the environment picked (`draft`).
 fn draft_on_server(
     offered: &SettingList,
+    agent: AgentKind,
     draft: &[(Setting, String)],
     s: Setting,
 ) -> Option<(String, Vec<SettingOption>)> {
@@ -567,9 +639,11 @@ fn draft_on_server(
             .map(|(_, v)| v)
     };
     let picked = |s: Setting| draft.iter().find(|(d, _)| *d == s).map(|(_, v)| v);
-    // The reasoning levels offered are those of the model the server would
-    // start on; another model picked here may have others.
-    if s == Setting::Effort
+    // OpenCode's and Codex's reasoning levels are per model: the ones offered
+    // are those of the model the server would start on. Claude's are the same
+    // for every model, as the server sends them.
+    if matches!(agent, AgentKind::OpenCode | AgentKind::Codex)
+        && s == Setting::Effort
         && let Some(model) = picked(Setting::Model)
         && on_offer(Setting::Model)
             .is_some_and(|(current, o)| current != model && o.iter().any(|c| c.id == *model))
@@ -621,6 +695,30 @@ fn project_for(
     (Remote::project_path(&key), false)
 }
 
+/// Shows the followed session in `thread` as it is now, and why it stopped
+/// there if it did. The reason goes after what is shown, which would replace it.
+fn show_following(f: &Following, thread: &Entity<Thread>, cx: &mut App) {
+    let (status, transcript) = (thread_status(f.status), transcript_of(f));
+    let why = f.broken.clone();
+    // Copies that came for a view of it closed since.
+    let fetched: Vec<(String, PathBuf)> = f
+        .images
+        .iter()
+        .filter_map(|(l, i)| Some((l.clone(), i.file.clone()?)))
+        .collect();
+    thread.update(cx, |t, cx| {
+        t.show_transcript(transcript, status, cx);
+        for (link, file) in fetched {
+            if t.fetched_images().get(&link) != Some(&file) {
+                t.image_fetched(link, file, cx);
+            }
+        }
+        if let Some(why) = why {
+            t.post_notice(why, true, cx);
+        }
+    });
+}
+
 /// The transcript a viewer thread is handed: the entries so far, as this session.
 fn transcript_of(f: &Following) -> Transcript {
     Transcript {
@@ -633,15 +731,17 @@ fn transcript_of(f: &Following) -> Transcript {
             created: unix_now(),
             updated: unix_now(),
             pr: None,
+            seat: None,
+            seat_key: None,
         },
         entries: f.entries.clone(),
         usage: Usage::default(),
         fork_point: None,
         interrupted: false,
         resume: false,
-        queue: Vec::new(),
+        queue: f.queue.prompts.clone(),
         handoff: None,
-        subagents: Vec::new(),
+        subagents: f.subagents.clone(),
     }
 }
 
@@ -669,8 +769,8 @@ fn thread_of(projects: &[Project], env_path: &Path, id: &str) -> Option<Entity<T
         .map(|l| l.thread.clone())
 }
 
-fn agent_of(name: &str) -> model::Agent {
-    model::Agent::from_key(AgentKind::parse(name).unwrap_or(AgentKind::Claude).id())
+fn agent_of(name: &str) -> AgentKind {
+    AgentKind::parse(name).unwrap_or(AgentKind::Claude)
 }
 
 /// A link is good for two minutes; a pairing still under way a little after
@@ -735,6 +835,70 @@ fn merge(entries: &mut Vec<Entry>, page: Page, asked: usize) -> Next {
     } else {
         Next::Stuck
     }
+}
+
+/// Writes the kept lists off the UI thread, and sets `inboxes_unsaved` once
+/// the disk says how it went.
+fn save_inboxes(link: &mut ServersLink, cx: &mut Context<Shell>) {
+    let saved = servers::save_inboxes(&link.inboxes);
+    link.inboxes_saving = Some(cx.spawn(async move |this, cx| {
+        // The writer gone without a word is a write that did not happen.
+        let saved = saved.await.unwrap_or(false);
+        let _ = this.update(cx, |this, _| {
+            if let Some(link) = &mut this.servers {
+                link.inboxes_unsaved = !saved;
+            }
+        });
+    }));
+}
+
+/// The images `entries` name to ask the server for, each with the last entry
+/// naming it: the ones not asked for yet, and the ones named again since they
+/// were. The files are the server's: one at the same path here is another.
+fn images_to_ask(entries: &[Entry], asked: &HashMap<String, ImageCopy>) -> Vec<(String, usize)> {
+    let mut last: Vec<(String, usize)> = Vec::new();
+    for (at, e) in entries.iter().enumerate() {
+        let Entry::Agent { text } = e else { continue };
+        for link in crate::agent::markdown::image_files(text) {
+            match last.iter_mut().find(|(l, _)| *l == link) {
+                Some(seen) => seen.1 = at,
+                None => last.push((link, at)),
+            }
+        }
+    }
+    last.retain(|(link, at)| asked.get(link).is_none_or(|i| *at > i.at));
+    last
+}
+
+/// Keeps the image an `image` answer carries in `dir`, named by its bytes so
+/// a changed image is never mistaken for the one shown before.
+fn keep_image(msg: &Value, dir: &Path) -> Option<PathBuf> {
+    use base64::Engine as _;
+    use sha2::Digest as _;
+    let ext = match msg["mime"].as_str()? {
+        "image/png" => "png",
+        "image/jpeg" => "jpg",
+        "image/gif" => "gif",
+        "image/webp" => "webp",
+        _ => return None,
+    };
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(msg["data"].as_str()?)
+        .ok()?;
+    let digest = sha2::Sha256::digest(&bytes);
+    let name: String = digest.iter().take(16).map(|b| format!("{b:02x}")).collect();
+    let file = dir.join(format!("{name}.{ext}"));
+    if !file.is_file() {
+        std::fs::create_dir_all(dir).ok()?;
+        crate::durable::write_private(&file, &bytes).ok()?;
+    }
+    Some(file)
+}
+
+/// Where the copies of servers' images are kept. They are fetched again
+/// after a restart, so a temporary folder is enough.
+fn images_dir() -> PathBuf {
+    std::env::temp_dir().join("arakun-server-images")
 }
 
 impl Shell {
@@ -830,6 +994,7 @@ impl Shell {
             following: Vec::new(),
             inboxes,
             inboxes_unsaved: false,
+            inboxes_saving: None,
             origins: HashMap::new(),
             starts: Starts::default(),
             starting_id: None,
@@ -840,12 +1005,15 @@ impl Shell {
             no_new_env: HashSet::new(),
             first_prompts: HashMap::new(),
             options: HashMap::new(),
+            commands: HashMap::new(),
             phone_options: HashMap::new(),
             deleting: Vec::new(),
             pairing: None,
             pairing_timeout: None,
             error: None,
             terms: terms::Terms::new(window, cx),
+            balance: balance::load(),
+            git_asks: Default::default(),
             _listen: listen,
         });
         for (id, inbox) in &seeded {
@@ -894,6 +1062,7 @@ impl Shell {
             pairing: link.pairing.is_some(),
             adding: link.adding.clone(),
             error: link.error.clone(),
+            balance: link.balance.clone(),
         };
         self.servers_view.update(cx, |v, cx| v.set_state(state, cx));
         cx.notify();
@@ -989,10 +1158,16 @@ impl Shell {
                 if let Some(conn) = link.conns.remove(id) {
                     conn.client.unpair();
                 }
+                link.git_asks
+                    .fail(id, "The server was forgotten before it answered.");
                 link.saved.retain(|s| s.id != *id);
                 servers::save(&link.saved);
+                if link.balance.servers.contains_key(id) {
+                    link.balance.forget(id);
+                    balance::save(&link.balance);
+                }
                 if link.inboxes.remove(id).is_some() || link.inboxes_unsaved {
-                    link.inboxes_unsaved = !servers::save_inboxes(&link.inboxes);
+                    save_inboxes(link, cx);
                 }
                 link.following.retain(|f| f.server != *id);
                 // What it was asked is not coming: the others' requests stay.
@@ -1030,6 +1205,14 @@ impl Shell {
             ServersEvent::Open { server, session } => {
                 let (server, session) = (server.clone(), session.clone());
                 self.servers_open_session(&server, &session, window, cx);
+            }
+            ServersEvent::Spread(on) => {
+                link.balance.spread = *on;
+                balance::save(&link.balance);
+            }
+            ServersEvent::Prefer { server, preference } => {
+                link.balance.set(server.as_deref(), *preference);
+                balance::save(&link.balance);
             }
         }
         self.sync_servers_view(cx);
@@ -1161,7 +1344,7 @@ impl Shell {
                         let main = !place.repo.is_empty() && place.repo == place.path;
                         let branch = (!place.branch.is_empty()).then(|| place.branch.clone());
                         let mut env = Environment::new(env_path.clone(), branch, main);
-                        env.agent = model::Agent::from_key(&place.agent);
+                        env.agent = AgentKind::from_id(&place.agent);
                         env.remote = Some(remote.clone());
                         env
                     });
@@ -1203,6 +1386,8 @@ impl Shell {
         }
         self.servers_open_started(window, cx);
         self.servers_open_added(window, cx);
+        // A window that had no projects polls none: the server's ones need it.
+        self.sync_poll(window, cx);
         // Phones list the servers' sessions too.
         self.phone_inbox_changed(cx);
         cx.notify();
@@ -1220,9 +1405,21 @@ impl Shell {
         let Some(s) = self.session_mut(env_path, id) else {
             return;
         };
-        let (agent, title, status) = (s.agent.kind(), s.title.to_string(), s.status);
+        let (agent, title, status) = (s.agent, s.title.to_string(), s.status);
         let thread = Thread::viewer(empty_transcript(agent, &title), thread_status(status), cx);
         thread.update(cx, |t, _| t.set_remote());
+        let known = self
+            .find_env(env_path)
+            .and_then(|e| e.remote.as_ref())
+            .and_then(|r| {
+                let link = self.servers.as_ref()?;
+                link.commands
+                    .get(&(r.server.clone(), r.place.clone(), agent))
+                    .cloned()
+            });
+        if let Some(commands) = known {
+            thread.update(cx, |t, cx| t.set_remote_commands(commands, cx));
+        }
         self.attach(env_path, id, thread, window, cx);
     }
 
@@ -1262,7 +1459,7 @@ impl Shell {
         let session = self
             .find_env(env_path)
             .and_then(|e| e.sessions.iter().find(|s| s.id.as_ref() == id))
-            .map(|s| (s.agent.kind(), s.title.to_string(), s.status));
+            .map(|s| (s.agent, s.title.to_string(), s.status));
         let Some((agent, title, status)) = session else {
             return;
         };
@@ -1277,6 +1474,7 @@ impl Shell {
             session: id.to_string(),
             env_path: env_path.to_path_buf(),
             entries: Vec::new(),
+            subagents: Vec::new(),
             agent,
             cwd: PathBuf::from(&remote.place),
             title,
@@ -1287,6 +1485,8 @@ impl Shell {
             refill: Some(Vec::new()),
             broken: None,
             by: Vec::new(),
+            queue: RemoteQueue::default(),
+            images: HashMap::new(),
         };
         let followed = follow_in(&mut link.following, who, fresh, conn.watches_several);
         close_follows(link, followed.close);
@@ -1344,7 +1544,12 @@ impl Shell {
             RemoteAction::Send { text, now } => {
                 json!({ "type": "send", "text": text, "uploads": [], "now": now })
             }
-            RemoteAction::Cancel => json!({ "type": "cancel" }),
+            // Paused, not dropped: the queue stays on show, to resume or empty.
+            RemoteAction::Cancel => json!({ "type": "cancel", "keep_queue": true }),
+            RemoteAction::Unqueue { index, text, now } => {
+                json!({ "type": "unqueue", "index": index, "text": text, "now": now })
+            }
+            RemoteAction::ResumeQueue => json!({ "type": "resume_queue" }),
             RemoteAction::Permission(option) => json!({ "type": "permission", "option": option }),
             RemoteAction::Answer(answers) => json!({ "type": "answer", "answers": answers }),
             RemoteAction::SkipQuestion => json!({ "type": "skip_question" }),
@@ -1375,7 +1580,7 @@ impl Shell {
         &mut self,
         env_path: &Path,
         id: &str,
-        agent: model::Agent,
+        agent: AgentKind,
         cx: &mut Context<Self>,
     ) {
         let Some(env) = self.find_env(env_path) else {
@@ -1401,10 +1606,10 @@ impl Shell {
         // there, after the old one is gone.
         let offered = self.servers.as_ref().and_then(|link| {
             link.options
-                .get(&(remote.server.clone(), remote.place.clone(), agent.kind()))
+                .get(&(remote.server.clone(), remote.place.clone(), agent))
         });
         let settings = offered_picks(&settings, offered);
-        let msg = json!({ "type": "continue_with", "agent": agent.key(), "settings": settings });
+        let msg = json!({ "type": "continue_with", "agent": agent.id(), "settings": settings });
         self.servers_send(&remote.server, id, msg, cx);
     }
 
@@ -1530,7 +1735,7 @@ impl Shell {
     pub(super) fn servers_start(
         &mut self,
         env_path: &Path,
-        agent: model::Agent,
+        agent: AgentKind,
         text: &str,
         settings: &[(String, String)],
         by: Asker,
@@ -1567,13 +1772,13 @@ impl Shell {
         }
         // A pick the server does not offer (one from this machine's
         // catalog) would only fail there: it starts on its own instead.
-        let offered =
-            link.options
-                .get(&(remote.server.clone(), remote.place.clone(), agent.kind()));
+        let offered = link
+            .options
+            .get(&(remote.server.clone(), remote.place.clone(), agent));
         let settings = offered_picks(settings, offered);
         let reference = link.starts.sent(&remote.server, by);
         let mut start = json!({
-            "type": "start", "env": remote.place, "agent": agent.key(), "text": text,
+            "type": "start", "env": remote.place, "agent": agent.id(), "text": text,
             "settings": settings, "ref": reference,
         });
         // Left out otherwise: a server from before it reads none the same.
@@ -1600,9 +1805,9 @@ impl Shell {
         else {
             return;
         };
-        for agent in model::Agent::ALL {
+        for agent in AgentKind::ALL {
             conn.client
-                .send(&json!({ "type": "options", "env": remote.place, "agent": agent.key() }));
+                .send(&json!({ "type": "options", "env": remote.place, "agent": agent.id() }));
         }
         if let Some(id) = session {
             conn.client
@@ -1616,7 +1821,7 @@ impl Shell {
         &mut self,
         client: ClientId,
         env_path: &Path,
-        agent: model::Agent,
+        agent: AgentKind,
     ) {
         let Some(remote) = self.find_env(env_path).and_then(|e| e.remote.clone()) else {
             return;
@@ -1631,7 +1836,7 @@ impl Shell {
         }
         self.servers_ask_settings(env_path, None);
         if let Some(link) = &mut self.servers {
-            let key = (remote.server, remote.place, agent.kind());
+            let key = (remote.server, remote.place, agent);
             let waiting = link.phone_options.entry(key).or_default();
             if !waiting
                 .iter()
@@ -1649,13 +1854,36 @@ impl Shell {
     pub(super) fn server_draft_choices(
         &self,
         env: &Environment,
-        agent: model::Agent,
+        agent: AgentKind,
         s: Setting,
     ) -> Option<(String, Vec<SettingOption>)> {
         let remote = env.remote.as_ref()?;
-        let key = (remote.server.clone(), remote.place.clone(), agent.kind());
+        let key = (remote.server.clone(), remote.place.clone(), agent);
         let offered = self.servers.as_ref()?.options.get(&key)?;
-        draft_on_server(offered, super::sessions::agent_draft(env, agent), s)
+        draft_on_server(offered, agent, super::sessions::agent_draft(env, agent), s)
+    }
+
+    /// Where git runs for the environment at `env_path`: in its folder here,
+    /// or on the server that has it.
+    ///
+    /// A server reached over plain http gets its git too: its diffs and commit
+    /// messages cross the network in the clear, but so does everything else on
+    /// that link, sessions and token included. Refusing git alone would not
+    /// protect the code, and the README says so.
+    pub(super) fn git_at(&self, env_path: &Path) -> servers::git::GitAt {
+        use servers::git::{GitAt, ServerGit};
+        let Some(remote) = self.find_env(env_path).and_then(|e| e.remote.as_ref()) else {
+            return GitAt::Here(env_path.to_path_buf());
+        };
+        let link = self.servers.as_ref();
+        GitAt::Server(ServerGit {
+            server: remote.server.clone(),
+            place: remote.place.clone(),
+            link: link
+                .and_then(|l| l.conns.get(&remote.server))
+                .map(|c| c.client.sender()),
+            asks: link.map(|l| l.git_asks.clone()).unwrap_or_default(),
+        })
     }
 
     /// Keeps the first prompt of the start `reference` until its server answers.
@@ -1853,6 +2081,10 @@ impl Shell {
                 self.server_term_lost(msg, cx);
                 return;
             }
+            Some("list_dir" | "read_file" | "list_files") => {
+                self.server_files_lost(server, msg, cx);
+                return;
+            }
             _ => return,
         };
         let why = "The connection dropped first.";
@@ -2012,6 +2244,43 @@ impl Shell {
             prompt,
             cx,
         );
+    }
+
+    /// Where a new environment goes while they are spread: one of `machines`, each a server's id or `None` for this computer,
+    /// listed with the open environment's machine first. `None` when they
+    /// are not spread or none of them can take it.
+    pub(super) fn servers_spread_pick(&self, machines: &[Option<&str>]) -> Option<usize> {
+        let link = self.servers.as_ref().filter(|l| l.balance.spread)?;
+        let working = |status: Status| status == Status::Working;
+        // A server that refused `new_env` before, or is still making a folder,
+        // would refuse this one too.
+        let can_take = |m: &Option<&str>| {
+            m.is_none_or(|id| !link.no_new_env.contains(id) && !link.adding.contains(id))
+        };
+        let eligible: Vec<usize> = (0..machines.len())
+            .filter(|&i| can_take(&machines[i]))
+            .collect();
+        let candidates: Vec<Candidate> = eligible
+            .iter()
+            .map(|&i| &machines[i])
+            .map(|m| Candidate {
+                preference: link.balance.of(*m),
+                busy: match m {
+                    None => self
+                        .projects
+                        .iter()
+                        .flat_map(|p| &p.environments)
+                        .filter(|e| e.remote.is_none())
+                        .flat_map(|e| &e.sessions)
+                        .filter(|s| working(s.status))
+                        .count(),
+                    Some(id) => link.conns.get(*id).map_or(0, |c| {
+                        c.sessions.iter().filter(|s| working(s.status)).count()
+                    }),
+                },
+            })
+            .collect();
+        balance::pick(&candidates).map(|i| eligible[i])
     }
 
     /// Whether a first prompt in the server environment at `env_path` starts
@@ -2361,6 +2630,10 @@ impl Shell {
             return;
         };
         match event {
+            Event::Undelivered(msg) if msg["type"] == "git" => {
+                link.git_asks.undelivered(id, &msg);
+                return;
+            }
             Event::Undelivered(msg) => {
                 self.servers_undelivered(id, &msg, cx);
                 return;
@@ -2408,6 +2681,15 @@ impl Shell {
                     LinkStatus::Refused(why) => Reach::Refused(why),
                 };
                 let back = reach == Reach::Connected;
+                // Git's answers would have come on the connection that dropped.
+                if back {
+                    link.git_asks.back(id);
+                } else {
+                    link.git_asks.fail(
+                        id,
+                        "The connection to the server dropped before it answered.",
+                    );
+                }
                 // The answer would have come on the connection that dropped,
                 // but the server may still finish: the form says to look first.
                 let lost_env = if back { None } else { link.new_env.remove(id) };
@@ -2471,13 +2753,29 @@ impl Shell {
                 }
                 if back {
                     self.server_terms_back(id, cx);
+                    self.server_files_back(id, cx);
                 } else {
                     self.servers_drop_rewinds(id, cx);
                 }
             }
             Event::Message(msg) => {
                 let kind = msg["type"].as_str().unwrap_or("");
-                if self.server_term_message(id, &msg, cx) {
+                if kind == "git" {
+                    link.git_asks.answered(id, &msg);
+                    return;
+                }
+                // The refusal names `git` first: it is about the Changes
+                // panel, and none of what else was asked.
+                if kind == "error" && older_server_refused(&text(&msg, "message"), &["git"]) {
+                    link.git_asks.older(id);
+                    return;
+                }
+                // Knows `git`, but not this request: only that one fails.
+                if kind == "error" && link.git_asks.refused(id, &text(&msg, "message")) {
+                    return;
+                }
+                if self.server_term_message(id, &msg, cx) || self.server_files_message(id, &msg, cx)
+                {
                     return;
                 }
                 let Some(link) = &mut self.servers else {
@@ -2507,7 +2805,7 @@ impl Shell {
                         .is_none_or(|old| !servers::same_kept(old, &kept));
                     if link.saved.iter().any(|s| s.id == id) && (changed || link.inboxes_unsaved) {
                         link.inboxes.insert(id.to_string(), kept);
-                        link.inboxes_unsaved = !servers::save_inboxes(&link.inboxes);
+                        save_inboxes(link, cx);
                     }
                     self.servers_inbox(id, &msg);
                     self.sync_remote_projects(window, cx);
@@ -2688,6 +2986,13 @@ impl Shell {
             }
             // Archive is asked from the sidebar: said there too. The
             // refusal names `settle_env` itself, so it is about that.
+            // A server from before it sent images: they stay links.
+            _ if older_server_refused(&message, &["image"]) => {
+                if let Some(conn) = link.conns.get_mut(id) {
+                    conn.no_images = true;
+                }
+                true
+            }
             _ if older_server_refused(&message, &["settle_env"]) => {
                 self.notify(
                     crate::island::AlertKind::Warning,
@@ -2807,20 +3112,42 @@ impl Shell {
                 }
                 cx.notify();
             }
+            "commands" => {
+                let Some(f) = following else { return };
+                let commands = wire::read_commands(&msg["commands"]);
+                let (env_path, session, agent) = (f.env_path.clone(), f.session.clone(), f.agent);
+                if let Some(place) = self
+                    .find_env(&env_path)
+                    .and_then(|e| e.remote.as_ref())
+                    .map(|r| r.place.clone())
+                    && let Some(link) = &mut self.servers
+                {
+                    link.commands
+                        .insert((id.to_string(), place, agent), commands.clone());
+                }
+                if let Some(thread) = thread_of(&self.projects, &env_path, &session) {
+                    thread.update(cx, |t, cx| t.set_remote_commands(commands, cx));
+                }
+                // A `/` typed before they came shows them now.
+                self.update_completion(cx);
+            }
             "session" | "state" => {
                 let Some(f) = following else { return };
                 f.status = status_from(msg["status"].as_str().unwrap_or(""));
                 if let Some(title) = msg["title"].as_str().filter(|t| !t.is_empty()) {
                     f.title = title.to_string();
                 }
+                f.queue = RemoteQueue::of(msg);
                 let Some(thread) = thread_of(&self.projects, &f.env_path, &f.session) else {
                     return;
                 };
                 let (status, transcript) = (thread_status(f.status), transcript_of(f));
                 let (permission, question) = (msg["permission"].clone(), msg["question"].clone());
+                let queue = f.queue.clone();
                 thread.update(cx, |t, cx| {
                     t.show_transcript(transcript, status, cx);
                     t.set_remote_asks(&permission, &question, cx);
+                    t.set_remote_queue(queue.prompts, queue.paused, queue.sending_now, cx);
                 });
             }
             // Entries changed, cut down for a phone: the whole ones are asked for.
@@ -2893,16 +3220,54 @@ impl Shell {
                 if f.refill.is_none()
                     && let Some(thread) = thread_of(&self.projects, &f.env_path, &f.session)
                 {
-                    let (status, transcript) = (thread_status(f.status), transcript_of(f));
-                    // The reason goes after what is shown, which would replace it.
-                    let why = f.broken.clone();
-                    thread.update(cx, |t, cx| {
-                        t.show_transcript(transcript, status, cx);
-                        if let Some(why) = why {
-                            t.post_notice(why, true, cx);
-                        }
-                    });
+                    show_following(f, &thread, cx);
                 }
+                if f.refill.is_none() && !conn.no_images {
+                    for (link, at) in images_to_ask(&f.entries, &f.images) {
+                        let copy = f.images.entry(link.clone()).or_default();
+                        (copy.at, copy.waiting) = (at, true);
+                        conn.client.send(&json!({
+                            "type": "image", "session": f.session, "path": link, "at": at,
+                        }));
+                    }
+                }
+            }
+            "subagents" => {
+                let Some(f) = following else { return };
+                let Ok(subagents) = wire::read_subagents(msg) else {
+                    return;
+                };
+                f.subagents = subagents;
+                if let Some(thread) = thread_of(&self.projects, &f.env_path, &f.session) {
+                    show_following(f, &thread, cx);
+                }
+            }
+            "image" => {
+                let Some(f) = following else { return };
+                let path = text(msg, "path");
+                let at = msg["at"].as_u64().unwrap_or(0) as usize;
+                let Some(copy) = f.images.get_mut(&path) else {
+                    return;
+                };
+                if at >= copy.at {
+                    copy.waiting = false;
+                }
+                if msg["missing"] == true {
+                    return;
+                }
+                let (server, session, msg) = (f.server.clone(), f.session.clone(), msg.clone());
+                // Decoding and writing it to disk hold up nothing else.
+                let kept = cx.background_spawn(crate::guard::task_or(
+                    async move { keep_image(&msg, &images_dir()) },
+                    |_| None,
+                ));
+                cx.spawn(async move |this, cx| {
+                    let Some(file) = kept.await else { return };
+                    let _ = this.update(cx, |this, cx| {
+                        this.servers_image_kept(&server, &session, path, at, file, cx);
+                    });
+                })
+                .detach();
             }
             "rewind_plan" => {
                 let Some(thread) = self.server_thread(id, &text(msg, "id")) else {
@@ -2969,6 +3334,41 @@ impl Shell {
                 }
             }
             _ => {}
+        }
+    }
+}
+
+impl Shell {
+    /// A copy of a server's image is on disk: the session shows it, unless
+    /// it is no longer followed or a newer answer for it came first.
+    fn servers_image_kept(
+        &mut self,
+        server: &str,
+        session: &str,
+        link: String,
+        at: usize,
+        file: PathBuf,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(link_state) = &mut self.servers else {
+            return;
+        };
+        let Some(f) = link_state
+            .following
+            .iter_mut()
+            .find(|f| f.server == server && f.session == session)
+        else {
+            return;
+        };
+        let Some(copy) = f.images.get_mut(&link) else {
+            return;
+        };
+        if copy.file.is_some() && at < copy.file_at {
+            return;
+        }
+        (copy.file, copy.file_at) = (Some(file.clone()), at);
+        if let Some(thread) = thread_of(&self.projects, &f.env_path, &f.session) {
+            thread.update(cx, |t, cx| t.image_fetched(link, file, cx));
         }
     }
 }
@@ -3064,6 +3464,8 @@ fn empty_transcript(agent: AgentKind, title: &str) -> Transcript {
             created: unix_now(),
             updated: unix_now(),
             pr: None,
+            seat: None,
+            seat_key: None,
         },
         entries: Vec::new(),
         usage: Usage::default(),
@@ -3099,6 +3501,82 @@ mod tests {
     }
 
     #[test]
+    fn images_are_asked_for_once_and_again_when_named_again() {
+        let agent = |text: &str| Entry::Agent { text: text.into() };
+        let mut entries = vec![
+            agent("![a](shot.png)\n\n![c](https://x.dev/c.png)"),
+            agent("![again](shot.png)\n\n![d](/srv/out/d.png)"),
+        ];
+        let mut asked = HashMap::new();
+        assert_eq!(
+            images_to_ask(&entries, &asked),
+            [
+                ("shot.png".to_string(), 1),
+                ("/srv/out/d.png".to_string(), 1)
+            ]
+        );
+        for (link, at) in images_to_ask(&entries, &asked) {
+            asked.insert(
+                link,
+                ImageCopy {
+                    at,
+                    waiting: true,
+                    ..ImageCopy::default()
+                },
+            );
+        }
+        assert_eq!(images_to_ask(&entries, &asked), []);
+        // A later turn shows the same name: it may be a new image.
+        entries.push(agent("Redrawn:\n\n![a](shot.png)"));
+        assert_eq!(
+            images_to_ask(&entries, &asked),
+            [("shot.png".to_string(), 2)]
+        );
+    }
+
+    #[test]
+    fn a_reconnect_asks_again_for_the_images_still_waited_for() {
+        let mut f = following("srv", "s1", Vec::new());
+        let copy = |file: Option<&str>, waiting| ImageCopy {
+            at: 0,
+            file: file.map(PathBuf::from),
+            file_at: 0,
+            waiting,
+        };
+        f.images.insert("lost.png".into(), copy(None, true));
+        f.images
+            .insert("kept.png".into(), copy(Some("/tmp/k.png"), true));
+        f.images.insert("none.png".into(), copy(None, false));
+        f.read_again();
+        assert!(!f.images.contains_key("lost.png"));
+        assert_eq!(f.images["kept.png"], copy(Some("/tmp/k.png"), false));
+        assert_eq!(f.images["none.png"], copy(None, false));
+    }
+
+    #[test]
+    fn an_image_answer_is_kept_by_its_bytes() {
+        use base64::Engine as _;
+        let dir = std::env::temp_dir().join(format!("arakun-servers-kept-{}", std::process::id()));
+        let b64 = |b: &[u8]| base64::engine::general_purpose::STANDARD.encode(b);
+        let answer =
+            |data: &[u8]| json!({ "type": "image", "mime": "image/png", "data": b64(data) });
+        let one = keep_image(&answer(b"one"), &dir).unwrap();
+        assert_eq!(std::fs::read(&one).unwrap(), b"one");
+        assert_eq!(one.extension().unwrap(), "png");
+        // A changed image gets a file of its own, which the view loads afresh.
+        let two = keep_image(&answer(b"two"), &dir).unwrap();
+        assert_ne!(one, two);
+        assert_eq!(keep_image(&answer(b"one"), &dir).unwrap(), one);
+        assert_eq!(
+            keep_image(&json!({ "type": "image", "missing": true }), &dir),
+            None
+        );
+        let svg = json!({ "type": "image", "mime": "image/svg+xml", "data": b64(b"<svg/>") });
+        assert_eq!(keep_image(&svg, &dir), None);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn a_start_sends_only_the_picks_its_server_offers() {
         let offered: SettingList = vec![
             (Setting::Model, offer("m1", &["m1", "m2"])),
@@ -3128,8 +3606,9 @@ mod tests {
             (Setting::Model, offer("m1", &["m1", "m2"])),
             (Setting::Effort, offer("low", &["low", "high"])),
         ];
-        let current =
-            |draft: &[(Setting, String)], s| draft_on_server(&offered, draft, s).map(|(c, _)| c);
+        let current = |draft: &[(Setting, String)], s| {
+            draft_on_server(&offered, AgentKind::Codex, draft, s).map(|(c, _)| c)
+        };
         assert_eq!(current(&[], Setting::Model).as_deref(), Some("m1"));
         assert_eq!(current(&[], Setting::Mode), None);
         let picked = [
@@ -3144,6 +3623,9 @@ mod tests {
         let other = [(Setting::Model, "m2".to_string())];
         assert_eq!(current(&other, Setting::Model).as_deref(), Some("m2"));
         assert_eq!(current(&other, Setting::Effort), None);
+        // Claude's levels are the same for every model, so they stay.
+        let claude = draft_on_server(&offered, AgentKind::Claude, &other, Setting::Effort);
+        assert_eq!(claude.map(|(c, _)| c).as_deref(), Some("low"));
     }
 
     #[test]
@@ -3414,6 +3896,7 @@ mod tests {
             session: session.into(),
             env_path: PathBuf::new(),
             entries: Vec::new(),
+            subagents: Vec::new(),
             agent: AgentKind::Claude,
             cwd: PathBuf::new(),
             title: String::new(),
@@ -3424,7 +3907,33 @@ mod tests {
             refill: None,
             broken: None,
             by,
+            queue: RemoteQueue::default(),
+            images: HashMap::new(),
         }
+    }
+
+    #[test]
+    fn the_viewer_gets_the_subagents_the_server_sent() {
+        use crate::agent::SubagentState;
+        let mut f = following("s1", "a", Vec::new());
+        assert!(transcript_of(&f).subagents.is_empty());
+        f.subagents = vec![SubagentRecord {
+            id: "child".into(),
+            name: "Explore".into(),
+            task: String::new(),
+            state: SubagentState::Completed,
+            started: 1,
+            ended: Some(2),
+            host: None,
+            call: None,
+            entries: Vec::new(),
+        }];
+        let ids: Vec<String> = transcript_of(&f)
+            .subagents
+            .into_iter()
+            .map(|s| s.id)
+            .collect();
+        assert_eq!(ids, ["child"]);
     }
 
     #[test]
@@ -3714,5 +4223,24 @@ mod tests {
         // One that stays idle is not marked again once read.
         env.sessions.iter_mut().for_each(|s| s.unread = false);
         assert!(!sync_sessions(&strip, &[], &mut env, done()));
+    }
+
+    #[test]
+    fn a_session_state_carries_the_queue_there() {
+        let msg = json!({
+            "type": "state", "id": "s1", "status": "working",
+            "queue": ["now", "later"], "queue_paused": true, "sending_now": 1,
+        });
+        assert_eq!(
+            RemoteQueue::of(&msg),
+            RemoteQueue {
+                prompts: vec!["now".into(), "later".into()],
+                paused: true,
+                sending_now: 1,
+            }
+        );
+        // An older server says nothing of it.
+        let old = json!({ "type": "state", "id": "s1", "status": "working" });
+        assert_eq!(RemoteQueue::of(&old), RemoteQueue::default());
     }
 }

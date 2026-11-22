@@ -246,17 +246,14 @@ impl Render for GalleryView {
                 Type::Body,
                 theme::text_subtle(),
                 format!(
-                    "Subtle — labels, units, column headers ({:.0}%)",
+                    "Subtle — labels, units, placeholders, axis ticks ({:.0}%)",
                     r.text_subtle * 100.
                 ),
             ))
             .child(ui::text(
                 Type::Body,
                 theme::text_faint(),
-                format!(
-                    "Faint — placeholders, axis ticks, disabled ({:.0}%)",
-                    r.text_faint * 100.
-                ),
+                format!("Faint — disabled text, icons ({:.0}%)", r.text_faint * 100.),
             ));
         let surfaces = row()
             .items_start()
@@ -465,9 +462,7 @@ impl Render for GalleryView {
             ]
             .into_iter()
             .enumerate()
-            .map(|(i, name)| {
-                ui::icon_button(("ds-ib", i), name, 14.).tooltip(ui::tip("Icon button"))
-            }),
+            .map(|(i, name)| ui::icon_button(("ds-ib", i), name, 14., "Icon button")),
         );
         let mut seg = ui::segmented();
         for (i, label) in ["7 days", "30 days", "90 days"].into_iter().enumerate() {
@@ -547,7 +542,7 @@ impl Render for GalleryView {
             .child(ui::icon("search01", 14.).text_color(theme::text_faint()))
             .child(
                 div()
-                    .text_color(theme::text_faint())
+                    .text_color(theme::text_subtle())
                     .child("Search sessions…"),
             );
 
@@ -561,7 +556,7 @@ impl Render for GalleryView {
         let mut mode_menu = panel(300.).child(ui::menu_heading("Mode"));
         for (i, (name, desc)) in modes.into_iter().enumerate() {
             mode_menu = mode_menu.child(
-                ui::choice_row(("ds-radio", i), self.radio == i)
+                ui::choice_row(("ds-radio", i), name, self.radio == i)
                     .child(div().flex_1().flex().flex_col().child(name).child(ui::text(
                         Type::Caption,
                         theme::text_subtle(),

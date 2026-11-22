@@ -4,7 +4,7 @@ name: Release
 # Release with SHA256SUMS, its minisign signature and a build provenance
 # attestation.
 #
-# To release: set `version` in Cargo.toml and server/Cargo.toml, merge that,
+# To release: set `version` in Cargo.toml, core/Cargo.toml and server/Cargo.toml, merge that,
 # then run this workflow on main with that version:
 #
 #   gh workflow run release.yml --ref main -f version=1.2.3
@@ -133,7 +133,8 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
   # Cargo.toml keeps line tables in release builds (debug = 1); the published
-  # binaries leave them out, which keeps the archives small and skips the .pdb.
+  # binaries leave them out, which keeps the archives small. Windows still
+  # ships a .pdb with function names only (see its cargo build step).
   CARGO_PROFILE_RELEASE_DEBUG: 0
   # Lets the binaries update themselves (src/update.rs). A build from source
   # never does, since a release would take its browser away.
@@ -260,9 +261,10 @@ jobs:
           read_version() { python3 -c 'import sys, tomllib; print(tomllib.load(open(sys.argv[1], "rb"))["package"]["version"])' "$1"; }
           app=$(read_version Cargo.toml)
           server=$(read_version server/Cargo.toml)
-          echo "Cargo.toml: $app, server/Cargo.toml: $server, tag: ${TAG:-none}"
-          if [ "$app" != "$server" ]; then
-            echo "::error::Cargo.toml says $app but server/Cargo.toml says $server; they are released together"
+          core=$(read_version core/Cargo.toml)
+          echo "Cargo.toml: $app, server/Cargo.toml: $server, core/Cargo.toml: $core, tag: ${TAG:-none}"
+          if [ "$app" != "$server" ] || [ "$app" != "$core" ]; then
+            echo "::error::Cargo.toml says $app, server/Cargo.toml $server and core/Cargo.toml $core; they are released together"
             exit 1
           fi
           if [ -n "$TAG" ] && [ "$TAG" != "v$app" ]; then
@@ -301,8 +303,9 @@ jobs:
   # A tag or a nightly is on a commit that main's CI already checked. If
   # that run passed with every Rust job run (none skipped because the commit
   # changed no Rust), the ci job skips its jobs instead of running them
-  # again. The relay job may have skipped: the archives hold no relay code,
-  # and relay changes pass it before they merge. A run still going is waited
+  # again. The relay and teams jobs may have skipped: the archives hold no
+  # relay or teams code, and changes there pass those jobs before they merge.
+  # A run still going is waited
   # for: starting another would queue a second macOS job behind it. A
   # cancelled or failed run, or none (a tag pushed by hand on another
   # branch), runs CI here as before. This is its own job, not a step of
@@ -343,17 +346,27 @@ jobs:
           done
           for id in $(runs '.workflow_runs[] | select(.conclusion == "success") | .id'); do
             # filter=latest: a job re-run after it failed counts by its last attempt.
-            other=$(gh api --paginate "repos/$GH_REPO/actions/runs/$id/jobs?filter=latest" \
-              --jq '.jobs[] | select(.conclusion != "success")
-                | select(.conclusion != "skipped" or .name != "Relay (types and tests)")
-                | "\(.name): \(.conclusion)"') || continue
-            if [ -z "$other" ]; then
+            jobs=$(gh api --paginate "repos/$GH_REPO/actions/runs/$id/jobs?filter=latest") || continue
+            # An empty or partial list is no proof that every job passed: each
+            # job of ci.yml must be there. Keep these names in step with
+            # ci.yml; a renamed job only means CI runs here again.
+            if jq -es '
+              [.[].jobs[]] as $jobs
+              | ["What changed", "Clippy (no warnings)", "Clippy (Linux, browser)",
+                 "Tests (Linux, no browser)", "Server (Linux, no display libraries)",
+                 "Clippy (Windows)", "Clippy and tests (macOS, no browser)",
+                 "Relay (types and tests)", "Teams (types and tests)"] as $expected
+              | ($jobs | length) == .[0].total_count
+                and (($expected - [$jobs[].name]) | length == 0)
+                and all($jobs[]; .conclusion == "success" or (.conclusion == "skipped"
+                  and (.name == "Relay (types and tests)" or .name == "Teams (types and tests)")))
+            ' > /dev/null <<< "$jobs"; then
               echo "::notice::main's CI passed on $SHA ($GITHUB_SERVER_URL/$GH_REPO/actions/runs/$id); not running it again"
               echo passed=true >> "$GITHUB_OUTPUT"
               exit 0
             fi
-            echo "run $id passed without running every Rust job:"
-            echo "$other"
+            echo "run $id did not list every job of ci.yml as passed:"
+            jq -rs '.[].jobs[] | "\(.name): \(.conclusion)"' <<< "$jobs" || true
           done
           echo "::notice::no run of main's CI passed every Rust job on $SHA; running CI"
 
@@ -480,7 +493,7 @@ jobs:
           cp "target/$TARGET/release/arakun" "dist/$name/"
           strip "dist/$name/arakun"
           cp LICENSE NOTICE README.md "dist/$name/"
-          # Next to the binary, where src/browser/loader.rs looks first. Without
+          # Next to the binary, where core/src/browser/loader.rs looks first. Without
           # sdk/, which only the build reads.
           cp -r "$RUNNER_TEMP/cef" "dist/$name/cef"
           rm -rf "dist/$name/cef/sdk"
@@ -576,9 +589,13 @@ jobs:
       # gpui compiles its HLSL shaders with fxc.exe from the Windows SDK in
       # release builds; the runner image ships the SDK (GPUI_FXC_PATH overrides).
       # build.rs copies the CEF runtime from CEF_PATH next to arakun.exe.
+      # Without debug info Cargo strips by default, and the linker then writes no
+      # .pdb. Kept, the .pdb holds the function names that crash reports read
+      # (src/telemetry.rs); a binary alone has only those of Windows' own DLLs.
       - name: cargo build
         env:
           CEF_PATH: ${{ runner.temp }}/cef
+          CARGO_PROFILE_RELEASE_STRIP: none
         run: cargo build --release --locked --target x86_64-pc-windows-msvc
 
       - name: Package
@@ -597,9 +614,11 @@ jobs:
           New-Item -ItemType Directory -Force -Path "$out/locales" | Out-Null
           # arakun-helper.exe starts CEF's child processes without a console each.
           Copy-Item "$release/arakun.exe", "$release/arakun-helper.exe" $out
+          # Crash reports find it next to arakun.exe; the updater carries it along.
+          Copy-Item "$release/arakun.pdb" $out
           # The CEF runtime build.rs copied: DLLs, .pak, .bin, .dat and the
           # SwiftShader manifest, not the import libraries. The two locales
-          # src/browser/runtime.rs picks from, as on Linux.
+          # core/src/browser/runtime.rs picks from, as on Linux.
           Copy-Item "$release/*" $out -Include *.dll, *.pak, *.bin, *.dat, *.json
           Copy-Item "$release/locales/en-US.pak", "$release/locales/es.pak", "$release/locales/es-419.pak" "$out/locales"
           Copy-Item LICENSE, NOTICE, README.md $out
@@ -616,7 +635,7 @@ jobs:
           & $exe --version
           if ($LASTEXITCODE -ne 0) { throw "arakun.exe --version exited with $LASTEXITCODE" }
           $dir = Split-Path $exe
-          foreach ($f in 'arakun-helper.exe', 'libcef.dll', 'icudtl.dat', 'resources.pak', 'locales/en-US.pak') {
+          foreach ($f in 'arakun-helper.exe', 'arakun.pdb', 'libcef.dll', 'icudtl.dat', 'resources.pak', 'locales/en-US.pak') {
             if (-not (Test-Path (Join-Path $dir $f))) { throw "the archive has no $f" }
           }
 
@@ -836,7 +855,7 @@ jobs:
           # Hardened runtime, which notarization requires. Inside out: the
           # framework's libraries, the framework, then the app, since signing a
           # bundle does not sign the code nested in it. There are no helper apps:
-          # CEF's child processes are arakun itself again (src/browser/runtime.rs),
+          # CEF's child processes are arakun itself again (core/src/browser/runtime.rs),
           # so the one binary takes the entitlement Chromium gives its renderer
           # and GPU helpers: V8 and SwiftShader write JIT code.
           # Extended attributes first: codesign --strict refuses a bundle with

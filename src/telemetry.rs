@@ -23,6 +23,7 @@
 //! the answer was.
 
 use std::cell::Cell;
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Condvar, Mutex, MutexGuard, OnceLock};
@@ -33,11 +34,11 @@ use serde_json::{Map, Value, json};
 
 /// The project token: write-only, so it is safe in the binary. A build can
 /// point at another project with `ARAKUN_POSTHOG_KEY` (empty turns it off).
-const KEY: &str = match option_env!("ARAKUN_POSTHOG_KEY") {
+pub(crate) const KEY: &str = match option_env!("ARAKUN_POSTHOG_KEY") {
     Some(key) => key,
     None => "phc_kXKrLfaWumKa3mfXcFVBCRpyKa6DZiUv7hCkQW2epLQZ",
 };
-const HOST: &str = match option_env!("ARAKUN_POSTHOG_HOST") {
+pub(crate) const HOST: &str = match option_env!("ARAKUN_POSTHOG_HOST") {
     Some(host) => host,
     None => "https://us.i.posthog.com",
 };
@@ -143,11 +144,7 @@ fn saved() -> &'static Mutex<Option<Option<Consent>>> {
 
 /// The user's answer, or None while they have not given one.
 pub fn consent() -> Option<Consent> {
-    *lock(saved()).get_or_insert_with(|| {
-        std::fs::read(consent_file())
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
-    })
+    *lock(saved()).get_or_insert_with(|| crate::durable::load_json(consent_file()))
 }
 
 /// Whether to ask on this launch: never asked, and nothing else decides it.
@@ -310,7 +307,7 @@ fn flush() {
     if STARTED.get().is_none() {
         return;
     }
-    let batch = std::mem::take(&mut *lock(&queue().events));
+    let batch: Vec<Value> = std::mem::take(&mut *lock(&queue().events)).into();
     send(&batch, quick_agent());
 }
 
@@ -399,6 +396,7 @@ pub mod events {
     pub const BROWSER_TAB_OPENED: &str = "browser tab opened";
     pub const ONBOARDING_FINISHED: &str = "onboarding finished";
     pub const APP_QUIT: &str = "app quit";
+    pub const UPDATE_ASKED: &str = "update asked";
 }
 
 // ---- events -----------------------------------------------------------------
@@ -479,6 +477,22 @@ fn install_id() -> String {
     .clone()
 }
 
+/// Who `flags` asks for: the install's id when the user agreed to usage
+/// counts, else a random one that lives as long as this process, so a
+/// feature flag check can't tie this machine to anything.
+pub(crate) fn flags_id() -> String {
+    if effective().usage {
+        return install_id();
+    }
+    static ID: OnceLock<String> = OnceLock::new();
+    ID.get_or_init(|| {
+        let mut bytes = [0u8; 16];
+        let _ = getrandom::fill(&mut bytes);
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
+    })
+    .clone()
+}
+
 fn home() -> String {
     static HOME: OnceLock<String> = OnceLock::new();
     HOME.get_or_init(|| crate::platform::home().to_string_lossy().into_owned())
@@ -488,14 +502,15 @@ fn home() -> String {
 // ---- sending ----------------------------------------------------------------
 
 struct Queue {
-    events: Mutex<Vec<Value>>,
+    // A deque, so dropping the oldest event when full does not shift the rest.
+    events: Mutex<VecDeque<Value>>,
     wake: Condvar,
 }
 
 fn queue() -> &'static Queue {
     static QUEUE: OnceLock<Queue> = OnceLock::new();
     QUEUE.get_or_init(|| Queue {
-        events: Mutex::new(Vec::new()),
+        events: Mutex::new(VecDeque::new()),
         wake: Condvar::new(),
     })
 }
@@ -503,13 +518,18 @@ fn queue() -> &'static Queue {
 fn enqueue(event: Value) {
     let q = queue();
     let mut events = lock(&q.events);
-    if events.len() >= MAX_QUEUE {
-        events.remove(0);
-    }
-    events.push(event);
+    push_capped(&mut events, event);
     if events.len() >= 50 {
         q.wake.notify_one();
     }
+}
+
+/// Adds `event`, dropping the oldest first when the queue is full.
+fn push_capped(events: &mut VecDeque<Value>, event: Value) {
+    if events.len() >= MAX_QUEUE {
+        events.pop_front();
+    }
+    events.push_back(event);
 }
 
 fn send_loop() {
@@ -521,7 +541,7 @@ fn send_loop() {
                 .wake
                 .wait_timeout(events, BATCH_EVERY)
                 .unwrap_or_else(|e| e.into_inner());
-            std::mem::take(&mut *events)
+            Vec::from(std::mem::take(&mut *events))
         };
         send(&batch, agent());
     }
@@ -993,9 +1013,21 @@ mod tests {
         hold(event(2));
         release_held(true);
         assert!(lock(held()).is_empty());
-        let queued = std::mem::take(&mut *lock(&queue().events));
+        let queued = Vec::from(std::mem::take(&mut *lock(&queue().events)));
         assert_eq!(queued, vec![event(2)]);
         assert!(!HOLDING.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn a_full_queue_drops_the_oldest_event() {
+        let event = |n: usize| json!({"event": "app launched", "n": n});
+        let mut events = VecDeque::new();
+        for n in 0..MAX_QUEUE + 2 {
+            push_capped(&mut events, event(n));
+        }
+        assert_eq!(events.len(), MAX_QUEUE);
+        assert_eq!(events.front(), Some(&event(2)));
+        assert_eq!(events.back(), Some(&event(MAX_QUEUE + 1)));
     }
 
     #[test]

@@ -95,9 +95,7 @@ impl GitHubView {
             .filter(|d| super::diff_is_current(&d.tip, &p.head_ref_oid, &p.base_ref_name))
             .map(|d| &d.state);
         match diff {
-            None | Some(DiffState::Loading) => {
-                ui::loading("gh-diff-loading", "Reading the diff…").into_any_element()
-            }
+            None | Some(DiffState::Loading) => ui::loading("Reading the diff…").into_any_element(),
             Some(DiffState::Failed(e)) => div()
                 .px(crate::ui::sp(18.))
                 .py(crate::ui::sp(14.))
@@ -477,7 +475,8 @@ impl GitHubView {
             }
             pr::fix_checks_prompt(&item, &title, p, &failed)
         };
-        self.ask(format!("Fix checks: {title}"), prompt, cx);
+        let on = self.target(&item, cx);
+        self.ask(format!("Fix checks: {title}"), prompt, on, cx);
     }
 
     /// The line over the checks when some failed: how many, and what to do
@@ -563,9 +562,7 @@ impl GitHubView {
             .border_color(theme::border_subtle())
             .bg(theme::background());
         match self.check_logs.get(&job) {
-            None | Some(CheckLog::Loading) => {
-                block.child(ui::loading(("gh-check-log", job), "Reading the log…"))
-            }
+            None | Some(CheckLog::Loading) => block.child(ui::loading("Reading the log…")),
             Some(CheckLog::Failed(e)) => block
                 .gap(crate::ui::sp(8.))
                 .child(ui::text(Type::Caption, theme::error().into(), e.clone()))
@@ -629,13 +626,23 @@ impl GitHubView {
             let link = (!url.is_empty()).then(|| {
                 let url = url.clone();
                 match job {
-                    Some(_) => ui::icon_button(("gh-check-link", i), "link-square02", 13.)
-                        .tooltip(ui::tip("Open on GitHub"))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            cx.stop_propagation();
-                            this.open_url(url.clone(), cx)
-                        }))
-                        .into_any_element(),
+                    Some(_) => ui::icon_button(
+                        ("gh-check-link", i),
+                        "link-square02",
+                        13.,
+                        "Open on GitHub",
+                    )
+                    // Checks of different workflows can share a name.
+                    .aria_label(if c.workflow.is_empty() {
+                        format!("Open {} on GitHub", c.name)
+                    } else {
+                        format!("Open {} ({}) on GitHub", c.name, c.workflow)
+                    })
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.open_url(url.clone(), cx)
+                    }))
+                    .into_any_element(),
                     None => icon("link-square02", 13.)
                         .text_color(theme::text_faint())
                         .into_any_element(),

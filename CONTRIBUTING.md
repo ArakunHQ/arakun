@@ -78,7 +78,8 @@ You only need the `browser` feature (and CEF) if you work on `src/browser` or
 a while and later ones are quick.
 
 The phone relay in [`relay/`](relay) is a separate TypeScript project. It needs Node 24
-or newer; see [relay/README.md](relay/README.md).
+or newer; see [relay/README.md](relay/README.md). So is the teams Worker in
+[`teams/`](teams); see [teams/README.md](teams/README.md).
 
 ### Features you can ignore
 
@@ -89,9 +90,9 @@ off, and do not add code behind them.
 
 CI runs the checks below that a pull request can affect. A change to docs, `iso/` or
 `tools/` (apart from `tools/rustfmt.sh` and the layout audit) alone skips the Rust
-jobs, the relay job runs only when `relay/`, `phone/` or CI itself changes, and
-cargo-deny runs only when `Cargo.toml`, `Cargo.lock` or `deny.toml` changes, and
-zizmor runs only when `.github/` changes.
+jobs, the relay job runs only when `relay/`, `phone/` or CI itself changes, the teams
+job only when `teams/` or CI itself changes, cargo-deny runs only when `Cargo.toml`,
+`Cargo.lock` or `deny.toml` changes, and zizmor runs only when `.github/` changes.
 
 CI is the gate, not your machine. Before you push, run the quick checks for what you
 changed: `tools/rustfmt.sh --check` and clippy for Rust, and the tests of the modules
@@ -101,12 +102,12 @@ and the other platforms can be left to CI on your draft pull request; fix what i
 finds there. These are the commands CI runs:
 
 ```sh
-# the app (with CEF set up, you can leave out --no-default-features)
+# the app and core/ (with CEF set up, you can leave out --no-default-features)
 tools/rustfmt.sh --check
 cargo clippy --locked --all-targets --no-default-features -- -D warnings
 cargo test --locked --no-default-features
 
-# server/ changed, or a file src/server.rs builds on (see the list in server/src/main.rs)
+# server/ or core/ changed
 cargo clippy --locked -p arakun-server -- -D warnings
 
 # Cargo.toml, Cargo.lock or deny.toml changed (cargo install --locked cargo-deny)
@@ -116,18 +117,29 @@ cargo deny check
 (cd relay && npm ci && npx tsc --noEmit && npx vitest run)
 (cd phone && node --test "test/*.test.mjs")
 
+# teams/ changed
+(cd teams && npm ci && npx tsc --noEmit && npx vitest run)
+
 # .github/ changed (brew install zizmor, or pipx install zizmor)
 zizmor .github
 ```
 
 Some notes:
 
+- The code the app shares with `arakun-server` and the examples is the `arakun-core`
+  library in `core/`: agents, the phone, the server, the terminal, the browser, and the
+  platform, theme and UI kit they draw with. The app (`src/`), `arakun-server` and the
+  examples are thin binaries over it. The app names its modules as its own
+  (`use arakun_core::{agent, ...}` in `src/main.rs`), so `crate::agent` works in both.
+  What the binaries answer differently (the memory prompt, the control socket), core
+  asks through `core/src/host.rs`. A core item the app uses has to be `pub`. A
+  dependency more than one package uses goes in `[workspace.dependencies]` in the
+  root `Cargo.toml`.
 - `arakun-server` (in `server/`) is the app's server built for a machine with no
-  display: a package of its own that includes the app's source files, against GPUI
-  without Wayland and X11. Its tests are the app's (`src/server/`), so `cargo test`
-  covers them. CI also builds it alone and fails if the binary needs a desktop library
-  (`tools/check-server-libs.sh`). A dependency it needs is listed in both `Cargo.toml`
-  files, with the same version.
+  display: a package of its own, against GPUI without Wayland and X11. Its code and
+  tests are in `core/` (`core/src/server/`), so `cargo test` covers them. CI also
+  builds it alone and fails if the binary needs a desktop library
+  (`tools/check-server-libs.sh`).
 
 - The code is formatted with rustfmt's default settings. `tools/rustfmt.sh` formats
   it; it runs `cargo fmt`, which on its own stops at the private modules this
@@ -153,7 +165,7 @@ Some notes:
   sign-in and so on), so CI skips them. Run one with `cargo test <name> -- --ignored` if
   you work on that part.
 - The phone tests check the phone's encryption against vectors the Rust side writes. If
-  you change the format in `src/phone`, update both sides.
+  you change the format in `core/src/phone`, update both sides.
 
 ### Git hooks
 
@@ -167,10 +179,10 @@ lefthook install
 ```
 
 - **On commit:** clippy if Rust files changed, the relay's types if `relay/` changed,
-  and the phone tests if `phone/` or `src/phone/` changed. They check the files on
-  disk, not only what you staged.
-- **On push:** `cargo test` and the relay tests, if the commits you push change those
-  parts.
+  the teams Worker's types if `teams/` changed, and the phone tests if `phone/` or
+  `core/src/phone/` changed. They check the files on disk, not only what you staged.
+- **On push:** `cargo test`, the relay tests and the teams tests, if the commits you
+  push change those parts.
 - **On the commit message:** the Conventional Commits check (see
   [Pull requests](#pull-requests)).
 
@@ -178,6 +190,37 @@ Skip the hooks for one command with `LEFTHOOK=0 git commit ...`, or one job with
 `LEFTHOOK_EXCLUDE=clippy git commit ...`. To leave the full test suite to CI, push with
 `LEFTHOOK_EXCLUDE=cargo-test git push`. Put your own changes in `lefthook-local.yml`,
 which git ignores. Turn the hooks off with `lefthook uninstall`.
+
+### Benchmarks
+
+[`tools/bench/bench.py`](tools/bench/bench.py) measures Arakun. CI doesn't run it on
+pull requests. Run it when a change could make the app slower, and put the `compare`
+table in the pull request.
+
+```sh
+cargo build --release --locked --no-default-features
+tools/bench/bench.py perf --out target/bench/after.json     # frame times, CPU, memory
+tools/bench/bench.py compare target/bench/before.json target/bench/after.json --markdown
+tools/bench/bench.py agent --tasks fix-bug --model haiku    # Claude Code on a task, in Arakun
+```
+
+`perf` plays scenarios (palette, sidebar, zoom, scrolling, a terminal flood) in a test
+Arakun (`arakun dev`, Linux and macOS) and reads the time GPUI took for each frame.
+`agent` gives Claude Code the coding tasks in `tools/bench/tasks/`, in Arakun and, with
+`--runner arakun,claude`, as bare `claude -p`, and scores each run with tests the
+agent never saw. It uses your Claude account or API key, so it costs money. The
+[`bench` skill](.claude/skills/bench/SKILL.md) has the details.
+
+To compare two releases, start the **Benchmark releases** workflow from the Actions
+tab, or with `gh`. It downloads both Linux builds, runs `perf` on one after the other
+on the same runner and puts the `compare` table on the run's summary page. The run
+fails when the newer release is slower past the threshold.
+
+```sh
+gh workflow run bench-releases.yml -f before=v0.10.0 -f after=v0.11.1
+gh workflow run bench-releases.yml            # the latest release against the one before
+tools/bench/releases.sh v0.10.0 v0.11.1       # the same on your own Linux machine
+```
 
 ## Writing code
 
@@ -279,7 +322,7 @@ that keeps one on purpose goes on its allow-list.
     in behavior), `perf`, `test`, `build` (Cargo, dependencies, tools), `ci`, `chore`
     or `revert` (`revert: <the title of the change you undo>`).
   - **scope** (optional): the part of Arakun it touches, usually the module or folder:
-    `terminal`, `agent`, `browser`, `phone`, `relay`, `iso`, `windows`...
+    `terminal`, `agent`, `browser`, `phone`, `relay`, `teams`, `iso`, `windows`...
   - **description:** imperative and lower case, with no period at the end, for example
     `fix(terminal): keep the tab name on resize` or
     `feat(phone): answer permission prompts`.
@@ -295,29 +338,33 @@ that keeps one on purpose goes on its allow-list.
   Commits inside the pull request are not checked, because they do not reach `main`. To
   check them as you write them, turn on the [Git hooks](#git-hooks).
 - **Open it as a draft** (`gh pr create --draft`, or "Create draft pull request" on
-  GitHub). Nobody is asked to review a draft, so you can push while CI and CodeRabbit
-  run: CodeRabbit reviews drafts too, so its comments are usually waiting when the
+  GitHub). Nobody is asked to review a draft, so you can push while CI and cubic (the
+  review bot) run: cubic reviews drafts too, so its comments are usually waiting when the
   checks are. Once the required checks pass, mark it ready with `gh pr ready` or the
   button on GitHub. `tools/wait-checks.sh` waits for them, and for the macOS job only
   when the diff touches macOS code. Don't wait for the other checks (macOS for other
   changes, CodeQL), which can queue for a long time. Don't wait for the **Human approval**
   status either: for a pull request from outside the team it is required, but it only
   resolves after a person approves, and marking ready is what asks for the review. It
-  stays a merge gate, not a pre-ready one. When CodeRabbit finishes, people are asked to review
-  unless CodeRabbit approved and every review thread is resolved. A pull request from
-  outside the team always needs a
-  maintainer's approval: a workflow dismisses CodeRabbit's, and the **Human approval**
+  stays a merge gate, not a pre-ready one. The Reviewers workflow asks people to review
+  only once the pull request is ready, cubic has finished and you have resolved or
+  answered every cubic comment, and not at all if cubic approved and every review thread
+  is resolved. A maintainer who runs it by hand skips the wait for cubic and for its
+  comments. A pull request from outside the team always needs a
+  maintainer's approval: a workflow dismisses cubic's, and the **Human approval**
   status waits for a person.
-- **Answer every CodeRabbit comment.** Fix it and push, or reply with the reason you
-  won't. CodeRabbit reviews each push and resolves the comments it sees fixed. It
-  approves only once its blocking comments are resolved. When a commit you pushed
-  fixes a comment it left open, resolve that thread yourself, right after the push.
-  Only resolve what you fixed: leave a comment you declined open for the reviewer. If
-  CodeRabbit approves with comments still open, a workflow dismisses its approval and
-  asks a person, who resolves them and approves. `@coderabbitai resolve` and
-  `@coderabbitai approve` don't work on your own pull request. Its review rules are in
-  [.coderabbit.yaml](.coderabbit.yaml). If you change a rule in this guide, check the
-  instructions there too.
+- **Answer every cubic comment.** Fix it and push, or reply with the reason you
+  won't. cubic reviews each push and resolves the comments it sees fixed. It labels
+  each comment P0 to P3, and approves a change only once all its comments are
+  resolved. When asked, cubic can also fix its own comments and push the fix to your
+  branch, so pull before you push. When a commit you pushed fixes a comment it left
+  open, resolve that thread yourself, right after the push. Only resolve what you fixed:
+  leave a comment you declined open for the reviewer. If cubic approves with comments
+  still open, a workflow dismisses its approval and asks a person, who resolves them
+  and approves. To have cubic review again, comment `@cubic-dev-ai review`. Its review
+  rules are in [cubic.yaml](cubic.yaml); cubic reads that file from `main`, so a
+  change to it takes effect once merged. If you change a rule in this guide, check the
+  rules there too.
 - **Keep the branch up to date** with `main`, and make sure the required checks pass before you
   ask for a review. If a check fails and you think it is not your change, say so in the pull
   request.

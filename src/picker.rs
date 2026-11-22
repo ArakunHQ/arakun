@@ -729,7 +729,7 @@ impl Render for FolderPicker {
         let panel = if self.inline {
             ui::surface_card().id("folder-picker").w_full()
         } else {
-            ui::modal_panel("folder-picker", 600.).child(ui::modal_header(
+            ui::modal_panel("folder-picker", 600., "Add project").child(ui::modal_header(
                 "Add project",
                 Some(self.why.clone().unwrap_or_else(|| {
                     "Pick a git repository. Each branch you work on becomes its own environment."

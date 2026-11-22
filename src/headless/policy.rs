@@ -1412,77 +1412,10 @@ fn simple(
         write_target(t, cwd.as_deref(), cx, out, "writes to");
     }
     let mut w: Vec<&str> = cmd.words.iter().map(String::as_str).collect();
-    // Keywords and assignments before the command itself.
-    loop {
-        match w.first().copied() {
-            Some(
-                "{" | "}" | "!" | "then" | "do" | "else" | "fi" | "done" | "if" | "while" | "until"
-                | "elif" | "esac" | "time",
-            ) => {
-                w.remove(0);
-            }
-            Some("function") => {
-                w.drain(..2.min(w.len()));
-            }
-            Some(x) if is_assignment(x) => {
-                w.remove(0);
-            }
-            _ => break,
-        }
-    }
-    // Wrappers that run the rest as a command of its own.
-    let mut from_stdin = false;
-    // `env -C dir`: the command runs there, while the shell stays where it is.
-    let mut run_in: Option<Option<PathBuf>> = None;
-    while let Some(first) = w.first() {
-        let skip = |w: &[&str], with_value: &[&str]| -> usize {
-            let mut i = 1;
-            while let Some(a) = w.get(i) {
-                if with_value.contains(a) {
-                    i += 2;
-                } else if a.starts_with('-') || is_assignment(a) {
-                    i += 1;
-                } else {
-                    break;
-                }
-            }
-            i
-        };
-        let n = match program(first) {
-            "sudo" | "doas" | "pkexec" | "run0" => {
-                out.push(always(
-                    "runs as root",
-                    format!("Run as root: {}", clip(&w[1..].join(" "), 80)),
-                    "confirm: run as root",
-                ));
-                skip(&w, &["-u", "-g", "-C", "-p", "-h", "-U", "-D"])
-            }
-            "env" if w.len() > 1 => {
-                let n = skip(&w, &["-u", "--unset", "-C", "--chdir", "-S"]);
-                if let Some(dir) = env_chdir(&w[1..n.min(w.len())]) {
-                    let base = run_in.clone().unwrap_or_else(|| cwd.clone());
-                    run_in = Some(expand(dir, base.as_deref(), cx));
-                }
-                n
-            }
-            "nohup" | "time" | "command" | "builtin" | "exec" | "nocorrect" | "noglob"
-            | "stdbuf" | "unbuffer" | "setsid" => skip(&w, &[]),
-            "nice" | "ionice" | "chrt" | "taskset" => skip(&w, &["-n", "-c", "-p"]),
-            "timeout" => {
-                let i = skip(&w, &["-s", "-k", "--signal", "--kill-after"]);
-                i + 1
-            }
-            "watch" => skip(&w, &["-n", "-d"]),
-            "xargs" => {
-                from_stdin = true;
-                skip(&w, &["-I", "-n", "-P", "-d", "-L", "-s", "-E", "-a"])
-            }
-            _ => break,
-        };
-        w.drain(..n.min(w.len()));
-    }
+    strip_keywords(&mut w);
+    let wrapped = unwrap(&mut w, cwd, cx, out);
     let mut in_dir;
-    let cwd: &mut Option<PathBuf> = match run_in {
+    let cwd: &mut Option<PathBuf> = match wrapped.run_in {
         Some(dir) => {
             in_dir = dir;
             &mut in_dir
@@ -1493,7 +1426,21 @@ fn simple(
     let args: Vec<&str> = w[1..].to_vec();
     let line = clip(&w.join(" "), 120);
     let prog = program(first);
+    #[cfg(feature = "coderlabs")]
     let pick = |verbs: &[&str]| args.iter().find(|a| verbs.contains(*a)).copied();
+    // The order matters: the first arm that matches decides, and guarded arms fall
+    // through to the ones below them.
+    let c = Call {
+        cmd,
+        prog,
+        args: &args,
+        line: &line,
+        cwd: cwd.as_deref(),
+        cx,
+        depth,
+        piped,
+        from_stdin: wrapped.from_stdin,
+    };
     match prog {
         "for" | "case" | "select" | "function" | "in" => {}
         "cd" | "pushd" => {
@@ -1504,132 +1451,23 @@ fn simple(
         }
         "popd" => *cwd = None,
         "eval" => script(&args.join(" "), cwd, cx, out, depth + 1),
-        "alias" => {
-            for a in &args {
-                if let Some((_, body)) = a.split_once('=') {
-                    let mut c = cwd.clone();
-                    script(body, &mut c, cx, out, depth + 1);
-                }
-            }
-        }
-        // One the line set itself but we couldn't pin down may stand for anything
-        // on the always-ask list (`X=git; read X; $X push`).
-        p if p.starts_with('$')
-            && SET_ON_LINE.with(|s| {
-                let n = var_name(p);
-                s.borrow().iter().any(|m| m == n || (n == "*" && m == "@"))
-            }) =>
-        {
-            out.push(always(
-                "the command name comes from a variable the line itself changes",
-                format!("Run: {line}"),
-                "confirm: run",
-            ))
-        }
-        p if p.starts_with('$') => out.push(finding(
-            Kind::External,
-            "the command name comes from a variable",
-            format!("Run: {line}"),
-            "confirm: run",
-        )),
+        "alias" => alias(&c, out),
+        p if p.starts_with('$') => variable_program(&c, out),
         "source" | "." => out.push(finding(
             Kind::Write,
             format!("runs the script {}", args.first().unwrap_or(&"")),
             format!("Run: {line}"),
             "confirm: run script",
         )),
-        s if SHELLS.contains(&s) => {
-            if let Some(i) = args.iter().position(|a| {
-                *a == "-c" || (a.starts_with('-') && !a.starts_with("--") && a.ends_with('c'))
-            }) {
-                let body = args.get(i + 1).copied().unwrap_or("");
-                let mut c = cwd.clone();
-                script(body, &mut c, cx, out, depth + 1);
-            } else if let Some(body) = &cmd.heredoc {
-                let mut c = cwd.clone();
-                script(body, &mut c, cx, out, depth + 1);
-            } else if operands(&args, &[]).is_empty() && !piped.is_empty() {
-                for body in piped {
-                    let mut c = cwd.clone();
-                    script(body, &mut c, cx, out, depth + 1);
-                }
-            } else {
-                let file = operands(&args, &[])
-                    .first()
-                    .copied()
-                    .unwrap_or("(stdin)")
-                    .to_string();
-                let text = expand(&file, cwd.as_deref(), cx).and_then(|p| script_text(&p, cx));
-                match text {
-                    Some(t) if t.len() < 200_000 => {
-                        let mut c = cwd.clone();
-                        script(&t, &mut c, cx, out, depth + 1);
-                    }
-                    _ => out.push(finding(
-                        Kind::External,
-                        format!("runs {file}, which could not be reviewed"),
-                        format!("Run: {line}"),
-                        "confirm: run script",
-                    )),
-                }
-            }
-        }
-        s if INTERPRETERS.contains(&s) || s.starts_with("python3.") => {
-            let mut text = args.join(" ");
-            for body in cmd.heredoc.iter().chain(piped) {
-                text.push('\n');
-                text.push_str(body);
-            }
-            backstop(&text, out);
-            out.push(finding(
-                Kind::Write,
-                format!("runs {s} code that can change files"),
-                format!("Run: {line}"),
-                format!("confirm: run {s}"),
-            ));
-            paths_in(&args, cwd.as_deref(), cx, out, &line);
-        }
+        s if SHELLS.contains(&s) => shell(&c, out),
+        s if INTERPRETERS.contains(&s) || s.starts_with("python3.") => interpreter(&c, out),
         "git" => git(&args, cwd.as_deref(), cx, out, &line),
         "himalaya" => himalaya(&args, cmd, out, &line),
         "sendmail" | "msmtp" | "ssmtp" | "swaks" | "mail" | "mailx" | "mutt" | "neomutt"
-        | "s-nail" => {
-            let to = operands(
-                &args,
-                &["-s", "-a", "-c", "-b", "-r", "-f", "-F", "-C", "-i"],
-            )
-            .into_iter()
-            .find(|a| a.contains('@'));
-            let (summary, phrase) = mail_words(to.map(str::to_string), subject_in(cmd, &args));
-            out.push(always(format!("sends mail ({prog})"), summary, phrase));
-        }
+        | "s-nail" => mail(&c, out),
         "curl" => curl(&args, cwd.as_deref(), cx, out, &line),
         "wget" => wget(&args, cwd.as_deref(), cx, out, &line),
-        "http" | "https" | "xh" | "xhs" => {
-            let method = args
-                .iter()
-                .find(|a| a.chars().all(|c| c.is_ascii_uppercase()) && a.len() >= 3)
-                .copied();
-            let data = args.iter().any(|a| {
-                !a.starts_with('-') && (a.contains(":=") || (a.contains('=') && !a.contains("://")))
-            });
-            let url = args
-                .iter()
-                .find(|a| {
-                    !a.starts_with('-')
-                        && (a.contains('.') || a.contains(':') || a.starts_with("localhost"))
-                })
-                .copied();
-            if (data || method.is_some_and(|m| m != "GET" && m != "HEAD"))
-                && url.is_some_and(|u| !local_url(u))
-            {
-                let host = host_of(url.unwrap_or(""));
-                out.push(always(
-                    format!("sends data to {host}"),
-                    format!("Send data to {host}"),
-                    format!("confirm: send to {host}"),
-                ));
-            }
-        }
+        "http" | "https" | "xh" | "xhs" => httpie(&c, out),
         "gh" => gh(&args, out, &line),
         #[cfg(feature = "coderlabs")]
         "okc" if pick(&["submit"]).is_some() => out.push(always(
@@ -1637,84 +1475,8 @@ fn simple(
             format!("Enviar con okc: {line}"),
             "confirmo: okc submit",
         )),
-        "arakun" => match args.first().copied() {
-            Some("restart") | Some("quit") => out.push(always(
-                "restarts arakun",
-                "Restart arakun",
-                "confirm: restart arakun",
-            )),
-            Some("agent") if matches!(args.get(1).copied(), Some("approve" | "deny")) => {
-                out.push(always(
-                    "answers an agent's pending confirmation",
-                    format!("Run: {line}"),
-                    "confirm: answer confirmation",
-                ))
-            }
-            // `--yes` confirms it without the user.
-            Some("agent") if args.get(1) == Some(&"run") && args.contains(&"--no-sandbox") => out
-                .push(always(
-                    "starts an agent without the sandbox",
-                    format!("Run: {line}"),
-                    "confirm: agent without sandbox",
-                )),
-            Some("mem")
-                if matches!(
-                    args.get(1).copied(),
-                    Some("search" | "get" | "list" | "context" | "scripts")
-                ) => {}
-            Some("github") if args.get(1) == Some(&"draft") => {
-                github_draft(&args, &cmd.reads, cwd.as_deref(), cx, out, &line)
-            }
-            Some("agent")
-                if matches!(
-                    args.get(1).copied(),
-                    Some("ls" | "log" | "wait" | "pending")
-                ) => {}
-            Some("ls") | Some("logs") | Some("help") => {}
-            _ => out.push(finding(
-                Kind::Write,
-                "uses arakun",
-                format!("Run: {line}"),
-                "confirm: run arakun",
-            )),
-        },
-        "systemctl" => {
-            let ops = operands(
-                &args,
-                &[
-                    "-H",
-                    "-M",
-                    "--host",
-                    "-t",
-                    "--type",
-                    "-p",
-                    "--property",
-                    "-n",
-                    "--lines",
-                    "-o",
-                ],
-            );
-            let readonly = [
-                "status",
-                "show",
-                "list-units",
-                "list-unit-files",
-                "list-timers",
-                "list-sockets",
-                "is-active",
-                "is-enabled",
-                "is-failed",
-                "cat",
-                "help",
-            ];
-            if !ops.first().is_some_and(|s| readonly.contains(s)) {
-                out.push(always(
-                    "changes system services (systemctl)",
-                    format!("Run: {line}"),
-                    "confirm: systemctl",
-                ));
-            }
-        }
+        "arakun" => arakun(&c, out),
+        "systemctl" => systemctl(&c, out),
         "shutdown" | "reboot" | "poweroff" | "halt" | "init" | "telinit" | "mkfs" | "fdisk"
         | "sfdisk" | "parted" | "wipefs" | "mkswap" | "swapoff" | "cryptsetup" | "mount"
         | "umount" | "chsh" | "passwd" | "useradd" | "userdel" | "usermod" | "visudo"
@@ -1748,256 +1510,42 @@ fn simple(
                 ));
             }
         }
+        // Returns before the check on the folder it runs in, as it always has.
+        "gio" if args.first() != Some(&"trash") && args.first() != Some(&"remove") => {
+            out.push(finding(
+                Kind::Write,
+                "uses gio",
+                format!("Run: {line}"),
+                "confirm: run gio",
+            ));
+            return;
+        }
         "rm" | "rmdir" | "unlink" | "shred" | "trash" | "trash-put" | "gio" | "srm" => {
-            if prog == "gio" && args.first() != Some(&"trash") && args.first() != Some(&"remove") {
-                out.push(finding(
-                    Kind::Write,
-                    "uses gio",
-                    format!("Run: {line}"),
-                    "confirm: run gio",
-                ));
-                return;
-            }
-            let targets = operands(if prog == "gio" { &args[1..] } else { &args }, &[]);
-            if from_stdin || targets.is_empty() {
-                out.push(finding(
-                    Kind::External,
-                    "deletes files from a list not shown here",
-                    format!("Run: {line}"),
-                    "confirm: delete",
-                ));
-            }
-            for t in targets {
-                delete_target(t, cwd.as_deref(), cx, out);
-            }
+            remove(&c, out)
         }
-        "mv" => {
-            let mut ops = operands(&args, &["-t", "--target-directory", "-S", "--suffix"]);
-            let dest = match args
-                .iter()
-                .position(|a| *a == "-t" || *a == "--target-directory")
-            {
-                Some(i) => args.get(i + 1).copied(),
-                None => ops.pop(),
-            };
-            for s in ops {
-                if matches!(place(s, cwd.as_deref(), cx), Place::Inside | Place::Scratch) {
-                    out.push(finding(
-                        Kind::Write,
-                        format!("moves {s}"),
-                        format!("Move {s}"),
-                        "confirm: move",
-                    ));
-                } else {
-                    delete_target(s, cwd.as_deref(), cx, out);
-                }
-            }
-            if let Some(d) = dest {
-                write_target(d, cwd.as_deref(), cx, out, "moves to");
-            }
-        }
-        "cp" | "install" | "ln" | "rsync" | "scp" | "sftp" | "rclone" => {
-            let with_value = [
-                "-t",
-                "--target-directory",
-                "-S",
-                "-e",
-                "--exclude",
-                "--include",
-                "-m",
-                "-o",
-                "-g",
-                "-P",
-                "-i",
-                "-F",
-            ];
-            let mut ops = operands(&args, &with_value);
-            let dest = match args
-                .iter()
-                .position(|a| *a == "-t" || *a == "--target-directory")
-            {
-                Some(i) => args.get(i + 1).copied(),
-                None => ops.pop(),
-            };
-            let remote = |s: &str| {
-                let head = s.split('/').next().unwrap_or("");
-                (head.contains(':') && !s.starts_with('/') && !s.starts_with('.'))
-                    || s.contains("://")
-            };
-            if prog == "sftp" || prog == "rclone" || dest.is_some_and(remote) {
-                let to = dest
-                    .map(|d| d.split(':').next().unwrap_or(d).to_string())
-                    .unwrap_or_default();
-                out.push(always(
-                    format!("copies files to another machine ({to})"),
-                    format!("Copy files to {to}"),
-                    "confirm: copy out",
-                ));
-            } else if let Some(d) = dest {
-                if ops.iter().any(|s| remote(s)) {
-                    out.push(finding(
-                        Kind::External,
-                        "fetches files from another machine",
-                        format!("Run: {line}"),
-                        "confirm: copy",
-                    ));
-                }
-                write_target(d, cwd.as_deref(), cx, out, "writes to");
-            }
-        }
-        "tee" | "touch" | "mkdir" | "truncate" | "mkfifo" | "split" | "csplit" => {
-            let ops = operands(
-                &args,
-                &[
-                    "-s",
-                    "--size",
-                    "-m",
-                    "--mode",
-                    "-r",
-                    "--reference",
-                    "-d",
-                    "-t",
-                    "-l",
-                    "-b",
-                    "-n",
-                ],
-            );
-            if ops.is_empty() && prog != "tee" {
-                out.push(finding(
-                    Kind::Write,
-                    format!("uses {prog}"),
-                    format!("Run: {line}"),
-                    format!("confirm: {prog}"),
-                ));
-            }
-            for t in ops {
-                write_target(t, cwd.as_deref(), cx, out, "writes to");
-            }
-        }
+        "mv" => move_files(&c, out),
+        "cp" | "install" | "ln" | "rsync" | "scp" | "sftp" | "rclone" => copy(&c, out),
+        "tee" | "touch" | "mkdir" | "truncate" | "mkfifo" | "split" | "csplit" => create(&c, out),
         "chmod" | "chown" | "chgrp" | "setfacl" | "chattr" => {
-            let ops = operands(&args, &["--reference"]);
-            for t in ops.iter().skip(1) {
+            for t in operands(&args, &["--reference"]).iter().skip(1) {
                 write_target(t, cwd.as_deref(), cx, out, "changes permissions of");
             }
         }
-        "dd" => {
-            for a in &args {
-                if let Some(of) = a.strip_prefix("of=") {
-                    if of.starts_with("/dev/")
-                        && !matches!(of, "/dev/null" | "/dev/stdout" | "/dev/stderr")
-                    {
-                        out.push(always(
-                            "writes straight to a disk",
-                            format!("Run: {line}"),
-                            "confirm: write disk",
-                        ));
-                    } else {
-                        write_target(of, cwd.as_deref(), cx, out, "writes to");
-                    }
-                }
-            }
-        }
+        "dd" => dd(&c, out),
         "sed" | "perl"
             if has_flag(&args, 'i', &["--in-place"])
                 || args
                     .iter()
                     .any(|a| a.starts_with("-i") || a.starts_with("--in-place")) =>
         {
-            let ops = operands(&args, &["-e", "-f", "--expression", "--file"]);
-            let scripted = args
-                .iter()
-                .any(|a| matches!(*a, "-e" | "-f" | "--expression" | "--file"));
-            let files: Vec<&str> = if scripted {
-                ops
-            } else {
-                ops.into_iter().skip(1).collect()
-            };
-            for f in files {
-                write_target(f, cwd.as_deref(), cx, out, "edits");
-            }
+            in_place(&c, out)
         }
         "sed" => {}
-        "awk" | "gawk" | "mawk" => {
-            let text = args.join(" ");
-            if text.contains("system(")
-                || args.iter().any(|a| *a == "-i" || a.starts_with("inplace"))
-            {
-                backstop(&text, out);
-                out.push(finding(
-                    Kind::Write,
-                    "awk can run commands or edit files",
-                    format!("Run: {line}"),
-                    "confirm: run awk",
-                ));
-            } else if text.contains("> \"") || text.contains(">\"") || text.contains("| \"") {
-                out.push(finding(
-                    Kind::Outside,
-                    "awk writes to a file or runs a command",
-                    format!("Run: {line}"),
-                    "confirm: run awk",
-                ));
-            }
-        }
+        "awk" | "gawk" | "mawk" => awk(&c, out),
         "sort" | "yq" if has_flag(&args, 'o', &["--output"]) || args.contains(&"-i") => {
-            let target = args
-                .iter()
-                .position(|a| *a == "-o" || *a == "--output")
-                .and_then(|i| args.get(i + 1))
-                .copied();
-            match target {
-                Some(t) => write_target(t, cwd.as_deref(), cx, out, "writes to"),
-                None => out.push(finding(
-                    Kind::Write,
-                    format!("{prog} edits files"),
-                    format!("Run: {line}"),
-                    format!("confirm: {prog}"),
-                )),
-            }
+            output_flag(&c, out)
         }
-        "find" => {
-            let starts: Vec<&str> = args
-                .iter()
-                .take_while(|a| !a.starts_with('-') && !matches!(**a, "(" | "!"))
-                .copied()
-                .collect();
-            let starts = if starts.is_empty() { vec!["."] } else { starts };
-            let exec = args
-                .iter()
-                .position(|a| matches!(*a, "-exec" | "-execdir" | "-ok" | "-okdir"));
-            if args.contains(&"-delete")
-                || exec
-                    .and_then(|i| args.get(i + 1))
-                    .is_some_and(|p| matches!(program(p), "rm" | "shred" | "unlink"))
-            {
-                for s in &starts {
-                    delete_target(s, cwd.as_deref(), cx, out);
-                }
-            } else if let Some(i) = exec {
-                let end = args[i + 1..]
-                    .iter()
-                    .position(|a| *a == ";" || *a == "+")
-                    .map_or(args.len(), |e| i + 1 + e);
-                let inner = args[i + 1..end].join(" ").replace("{}", "./_found_");
-                let mut c = cwd.clone();
-                script(&inner, &mut c, cx, out, depth + 1);
-                for s in &starts {
-                    if !matches!(place(s, cwd.as_deref(), cx), Place::Inside | Place::Root)
-                        && out.iter().any(|f| f.kind >= Kind::Write)
-                    {
-                        write_target(s, cwd.as_deref(), cx, out, "runs commands on");
-                    }
-                }
-            }
-            for flag in ["-fprint", "-fprint0", "-fprintf", "-fls"] {
-                if let Some(t) = args
-                    .iter()
-                    .position(|a| *a == flag)
-                    .and_then(|i| args.get(i + 1))
-                {
-                    write_target(t, cwd.as_deref(), cx, out, "writes to");
-                }
-            }
-        }
+        "find" => find(&c, out),
         "kill" | "pkill" | "killall" | "xkill" => out.push(finding(
             Kind::External,
             "stops processes",
@@ -2013,190 +1561,24 @@ fn simple(
             ))
         }
         "pip" | "pip3" | "pipx" | "uv" | "conda" | "mamba" | "gem" | "go" | "rustup" => {
-            if pick(&[
-                "install",
-                "uninstall",
-                "remove",
-                "update",
-                "upgrade",
-                "add",
-                "tool",
-            ])
-            .is_some()
-                && !(prog == "uv"
-                    && pick(&["add", "sync", "run"]).is_some()
-                    && pick(&["tool"]).is_none())
-            {
-                out.push(finding(
-                    Kind::External,
-                    "installs or removes packages",
-                    format!("Run: {line}"),
-                    "confirm: install",
-                ));
-            } else {
-                out.push(finding(
-                    Kind::Write,
-                    format!("uses {prog}"),
-                    format!("Run: {line}"),
-                    format!("confirm: {prog}"),
-                ));
-            }
+            language_packages(&c, out)
         }
         "npm" | "pnpm" | "yarn" | "bun" | "npx" | "cargo" | "twine" | "gem-push" | "poetry"
-        | "dotnet" | "mvn" | "gradle" => {
-            if pick(&[
-                "publish",
-                "yank",
-                "owner",
-                "unpublish",
-                "upload",
-                "deprecate",
-                "login",
-                "adduser",
-            ])
-            .is_some()
-            {
-                out.push(always(
-                    format!("publishes to a public registry ({prog})"),
-                    format!("Publish: {line}"),
-                    "confirm: publish",
-                ));
-            } else if has_flag(&args, 'g', &["--global", "--location=global"])
-                || pick(&["global"]).is_some()
-                || (prog == "cargo" && pick(&["install", "uninstall"]).is_some())
-            {
-                out.push(finding(
-                    Kind::External,
-                    "installs packages outside the project",
-                    format!("Run: {line}"),
-                    "confirm: install",
-                ));
-            } else {
-                out.push(finding(
-                    Kind::Write,
-                    format!("uses {prog}"),
-                    format!("Run: {line}"),
-                    format!("confirm: {prog}"),
-                ));
-                paths_in(&args, cwd.as_deref(), cx, out, &line);
-            }
-        }
+        | "dotnet" | "mvn" | "gradle" => project_packages(&c, out),
         "pacman" | "yay" | "paru" | "apt" | "apt-get" | "dnf" | "yum" | "zypper" | "brew"
-        | "snap" | "flatpak" | "nix-env" => {
-            let query = args.first().is_some_and(|a| {
-                a.starts_with("-Q") || a.starts_with("-Ss") || a.starts_with("-Si")
-            }) || pick(&["search", "list", "info", "show", "query"]).is_some();
-            if !query {
-                out.push(finding(
-                    Kind::External,
-                    "installs or removes system packages",
-                    format!("Run: {line}"),
-                    "confirm: install",
-                ));
-            }
-        }
-        "docker" | "podman" => {
-            if pick(&["push", "login"]).is_some() {
-                out.push(always(
-                    "publishes an image",
-                    format!("Run: {line}"),
-                    "confirm: publish image",
-                ));
-            } else if pick(&["ps", "images", "inspect", "logs", "version", "info"]).is_none() {
-                out.push(finding(
-                    Kind::External,
-                    format!("uses {prog}"),
-                    format!("Run: {line}"),
-                    format!("confirm: {prog}"),
-                ));
-            }
-        }
+        | "snap" | "flatpak" | "nix-env" => system_packages(&c, out),
+        "docker" | "podman" => containers(&c, out),
         "wrangler" | "vercel" | "netlify" | "fly" | "flyctl" | "heroku" | "terraform" | "tofu"
         | "pulumi" | "kubectl" | "helm" | "aws" | "gcloud" | "az" | "doctl" | "runpodctl"
-        | "stripe" | "firebase" | "supabase" | "railway" => {
-            let mutating = [
-                "deploy",
-                "publish",
-                "create",
-                "delete",
-                "destroy",
-                "apply",
-                "put",
-                "update",
-                "remove",
-                "rm",
-                "set",
-                "send",
-                "submit",
-                "pay",
-                "purchase",
-                "buy",
-                "charge",
-                "charges",
-                "payment_intents",
-                "checkout",
-                "refunds",
-                "terminate",
-                "stop",
-                "start",
-                "scale",
-                "release",
-                "push",
-                "upload",
-                "cp",
-                "mv",
-                "sync",
-                "rollout",
-                "patch",
-                "import",
-                "taint",
-                "invoke",
-                "trigger",
-                "prod",
-                "--prod",
-                "secret",
-            ];
-            let dev = [
-                "dev",
-                "login",
-                "whoami",
-                "--version",
-                "version",
-                "help",
-                "plan",
-                "validate",
-                "init",
-                "fmt",
-                "tail",
-                "logs",
-            ];
-            if pick(&mutating).is_some()
-                || (prog == "vercel" && args.iter().all(|a| a.starts_with('-')))
-            {
-                out.push(always(
-                    format!("changes cloud services or charges money ({prog})"),
-                    format!("Run: {line}"),
-                    format!("confirm: {prog}"),
-                ));
-            } else if pick(&dev).is_none() {
-                out.push(finding(
-                    Kind::Write,
-                    format!("uses {prog}"),
-                    format!("Run: {line}"),
-                    format!("confirm: {prog}"),
-                ));
-            }
-        }
-        "signal-cli" | "telegram-send" | "wacli" | "slack" | "discord" | "twilio"
-        | "notify-send" | "osd_cat" => {
-            if prog == "notify-send" {
-                return;
-            }
+        | "stripe" | "firebase" | "supabase" | "railway" => cloud(&c, out),
+        // Returns before the check on the folder it runs in, as it always has.
+        "notify-send" => return,
+        "signal-cli" | "telegram-send" | "wacli" | "slack" | "discord" | "twilio" | "osd_cat" => {
             out.push(always(
                 format!("sends a message ({prog})"),
                 format!("Send a message with {prog}"),
                 "confirm: send message",
-            ));
+            ))
         }
         p if READ_ONLY.contains(&p) => {
             if p == "env" && w.len() > 1 {
@@ -2208,49 +1590,829 @@ fn simple(
                 ));
             }
         }
-        _ => {
-            out.push(finding(
-                Kind::Write,
-                format!("runs {prog}"),
-                format!("Run: {line}"),
-                format!("confirm: run {}", name_of(prog)),
-            ));
-            // A script run by its path (`./send.sh`): what it does is what's inside.
-            if let Some(first) = w.first().filter(|f| f.contains('/'))
-                && let Some(text) = expand(first, cwd.as_deref(), cx)
-                    .and_then(|p| script_text(&p, cx))
-                    .filter(|t| t.starts_with("#!") && t.len() < 200_000)
-            {
-                let mut c = cwd.clone();
-                script(&text, &mut c, cx, out, depth + 1);
+        _ => unknown(&c, first, out),
+    }
+    ran_outside(cwd.as_deref(), cx, prog, &line, before, out);
+}
+
+/// One simple command, as the rules for its program see it.
+struct Call<'a> {
+    cmd: &'a Simple,
+    prog: &'a str,
+    args: &'a [&'a str],
+    line: &'a str,
+    cwd: Option<&'a Path>,
+    cx: &'a Ctx,
+    depth: usize,
+    /// The commands piped into this one, for a shell or interpreter that reads stdin.
+    piped: &'a [String],
+    /// Under `xargs`: its operands come from stdin.
+    from_stdin: bool,
+}
+
+impl Call<'_> {
+    /// The first argument that is one of `verbs`.
+    fn pick(&self, verbs: &[&str]) -> Option<&str> {
+        self.args.iter().find(|a| verbs.contains(*a)).copied()
+    }
+
+    /// Judges `src` as a script run in a copy of this command's folder.
+    fn nested(&self, src: &str, out: &mut Vec<Finding>) {
+        let mut c = self.cwd.map(Path::to_path_buf);
+        script(src, &mut c, self.cx, out, self.depth + 1);
+    }
+
+    fn run(&self) -> String {
+        format!("Run: {}", self.line)
+    }
+}
+
+/// Drops the shell keywords and assignments in front of the command itself.
+fn strip_keywords(w: &mut Vec<&str>) {
+    loop {
+        match w.first().copied() {
+            Some(
+                "{" | "}" | "!" | "then" | "do" | "else" | "fi" | "done" | "if" | "while" | "until"
+                | "elif" | "esac" | "time",
+            ) => {
+                w.remove(0);
             }
-            paths_in(&args, cwd.as_deref(), cx, out, &line);
-            if let Some(body) = &cmd.heredoc {
-                backstop(body, out);
+            Some("function") => {
+                w.drain(..2.min(w.len()));
             }
+            Some(x) if is_assignment(x) => {
+                w.remove(0);
+            }
+            _ => break,
         }
     }
-    // Run from a folder outside the workspace, what it changes is out there. The
-    // sandbox's /tmp is the session's own, so working there counts as scratch.
-    let here = cwd
-        .as_deref()
-        .map(|d| place(&d.display().to_string(), None, cx));
-    let scratch_dir = cwd
-        .as_deref()
-        .is_some_and(|d| d == Path::new("/tmp") || d == Path::new("/var/tmp"));
+}
+
+/// What the wrappers in front of a command changed about how it runs.
+struct Wrapped {
+    /// Under `xargs`: the operands come from stdin.
+    from_stdin: bool,
+    /// `env -C dir`: the command runs there, while the shell stays where it is.
+    run_in: Option<Option<PathBuf>>,
+}
+
+/// Drops wrappers that run the rest as a command of its own (`sudo`, `env`,
+/// `xargs`, …), asking for the ones that run it as root.
+fn unwrap(w: &mut Vec<&str>, cwd: &Option<PathBuf>, cx: &Ctx, out: &mut Vec<Finding>) -> Wrapped {
+    let mut wrapped = Wrapped {
+        from_stdin: false,
+        run_in: None,
+    };
+    while let Some(first) = w.first() {
+        let skip = |w: &[&str], with_value: &[&str]| -> usize {
+            let mut i = 1;
+            while let Some(a) = w.get(i) {
+                if with_value.contains(a) {
+                    i += 2;
+                } else if a.starts_with('-') || is_assignment(a) {
+                    i += 1;
+                } else {
+                    break;
+                }
+            }
+            i
+        };
+        let n = match program(first) {
+            "sudo" | "doas" | "pkexec" | "run0" => {
+                out.push(always(
+                    "runs as root",
+                    format!("Run as root: {}", clip(&w[1..].join(" "), 80)),
+                    "confirm: run as root",
+                ));
+                skip(w, &["-u", "-g", "-C", "-p", "-h", "-U", "-D"])
+            }
+            "env" if w.len() > 1 => {
+                let n = skip(w, &["-u", "--unset", "-C", "--chdir", "-S"]);
+                if let Some(dir) = env_chdir(&w[1..n.min(w.len())]) {
+                    let base = wrapped.run_in.clone().unwrap_or_else(|| cwd.clone());
+                    wrapped.run_in = Some(expand(dir, base.as_deref(), cx));
+                }
+                n
+            }
+            "nohup" | "time" | "command" | "builtin" | "exec" | "nocorrect" | "noglob"
+            | "stdbuf" | "unbuffer" | "setsid" => skip(w, &[]),
+            "nice" | "ionice" | "chrt" | "taskset" => skip(w, &["-n", "-c", "-p"]),
+            "timeout" => {
+                let i = skip(w, &["-s", "-k", "--signal", "--kill-after"]);
+                i + 1
+            }
+            "watch" => skip(w, &["-n", "-d"]),
+            "xargs" => {
+                wrapped.from_stdin = true;
+                skip(w, &["-I", "-n", "-P", "-d", "-L", "-s", "-E", "-a"])
+            }
+            _ => break,
+        };
+        w.drain(..n.min(w.len()));
+    }
+    wrapped
+}
+
+/// Run from a folder outside the workspace, what a command changes is out there.
+/// The sandbox's /tmp is the session's own, so working there counts as scratch.
+fn ran_outside(
+    cwd: Option<&Path>,
+    cx: &Ctx,
+    prog: &str,
+    line: &str,
+    before: usize,
+    out: &mut Vec<Finding>,
+) {
+    let here = cwd.map(|d| place(&d.display().to_string(), None, cx));
+    let scratch_dir = cwd.is_some_and(|d| d == Path::new("/tmp") || d == Path::new("/var/tmp"));
     if !matches!(here, Some(Place::Inside | Place::Root | Place::Scratch))
         && !scratch_dir
         && out[before..].iter().any(|f| f.kind == Kind::Write)
     {
-        let dir = cwd
-            .as_deref()
-            .map_or_else(|| "an unknown folder".to_string(), |d| short(d, cx));
+        let dir = cwd.map_or_else(|| "an unknown folder".to_string(), |d| short(d, cx));
         out.push(finding(
             Kind::Outside,
             format!("runs {prog} in {dir}, outside the project"),
             format!("Run in {dir}: {line}"),
             format!("confirm: run {}", name_of(prog)),
         ));
+    }
+}
+
+// The rules for one program or family of programs, in the order `simple` tries them.
+
+fn alias(c: &Call, out: &mut Vec<Finding>) {
+    for a in c.args {
+        if let Some((_, body)) = a.split_once('=') {
+            c.nested(body, out);
+        }
+    }
+}
+
+/// A command whose name is a variable.
+fn variable_program(c: &Call, out: &mut Vec<Finding>) {
+    // One the line set itself but we couldn't pin down may stand for anything on
+    // the always-ask list (`X=git; read X; $X push`).
+    let set_on_line = SET_ON_LINE.with(|s| {
+        let n = var_name(c.prog);
+        s.borrow().iter().any(|m| m == n || (n == "*" && m == "@"))
+    });
+    if set_on_line {
+        out.push(always(
+            "the command name comes from a variable the line itself changes",
+            c.run(),
+            "confirm: run",
+        ))
+    } else {
+        out.push(finding(
+            Kind::External,
+            "the command name comes from a variable",
+            c.run(),
+            "confirm: run",
+        ))
+    }
+}
+
+/// A shell judges what it runs: `-c`, a heredoc, a pipe or a script file.
+fn shell(c: &Call, out: &mut Vec<Finding>) {
+    let args = c.args;
+    if let Some(i) = args.iter().position(|a| {
+        *a == "-c" || (a.starts_with('-') && !a.starts_with("--") && a.ends_with('c'))
+    }) {
+        c.nested(args.get(i + 1).copied().unwrap_or(""), out);
+    } else if let Some(body) = &c.cmd.heredoc {
+        c.nested(body, out);
+    } else if operands(args, &[]).is_empty() && !c.piped.is_empty() {
+        for body in c.piped {
+            c.nested(body, out);
+        }
+    } else {
+        let file = operands(args, &[])
+            .first()
+            .copied()
+            .unwrap_or("(stdin)")
+            .to_string();
+        let text = expand(&file, c.cwd, c.cx).and_then(|p| script_text(&p, c.cx));
+        match text {
+            Some(t) if t.len() < 200_000 => c.nested(&t, out),
+            _ => out.push(finding(
+                Kind::External,
+                format!("runs {file}, which could not be reviewed"),
+                c.run(),
+                "confirm: run script",
+            )),
+        }
+    }
+}
+
+fn interpreter(c: &Call, out: &mut Vec<Finding>) {
+    let s = c.prog;
+    let mut text = c.args.join(" ");
+    for body in c.cmd.heredoc.iter().chain(c.piped) {
+        text.push('\n');
+        text.push_str(body);
+    }
+    backstop(&text, out);
+    out.push(finding(
+        Kind::Write,
+        format!("runs {s} code that can change files"),
+        c.run(),
+        format!("confirm: run {s}"),
+    ));
+    paths_in(c.args, c.cwd, c.cx, out, c.line);
+}
+
+fn mail(c: &Call, out: &mut Vec<Finding>) {
+    let to = operands(
+        c.args,
+        &["-s", "-a", "-c", "-b", "-r", "-f", "-F", "-C", "-i"],
+    )
+    .into_iter()
+    .find(|a| a.contains('@'));
+    let (summary, phrase) = mail_words(to.map(str::to_string), subject_in(c.cmd, c.args));
+    out.push(always(format!("sends mail ({})", c.prog), summary, phrase));
+}
+
+/// HTTPie and xh: sending data or a method other than GET to another host.
+fn httpie(c: &Call, out: &mut Vec<Finding>) {
+    let args = c.args;
+    let method = args
+        .iter()
+        .find(|a| a.chars().all(|c| c.is_ascii_uppercase()) && a.len() >= 3)
+        .copied();
+    let data = args.iter().any(|a| {
+        !a.starts_with('-') && (a.contains(":=") || (a.contains('=') && !a.contains("://")))
+    });
+    let url = args
+        .iter()
+        .find(|a| {
+            !a.starts_with('-')
+                && (a.contains('.') || a.contains(':') || a.starts_with("localhost"))
+        })
+        .copied();
+    if (data || method.is_some_and(|m| m != "GET" && m != "HEAD"))
+        && url.is_some_and(|u| !local_url(u))
+    {
+        let host = host_of(url.unwrap_or(""));
+        out.push(always(
+            format!("sends data to {host}"),
+            format!("Send data to {host}"),
+            format!("confirm: send to {host}"),
+        ));
+    }
+}
+
+fn arakun(c: &Call, out: &mut Vec<Finding>) {
+    let args = c.args;
+    match args.first().copied() {
+        Some("restart") | Some("quit") => out.push(always(
+            "restarts arakun",
+            "Restart arakun",
+            "confirm: restart arakun",
+        )),
+        Some("agent") if matches!(args.get(1).copied(), Some("approve" | "deny")) => {
+            out.push(always(
+                "answers an agent's pending confirmation",
+                c.run(),
+                "confirm: answer confirmation",
+            ))
+        }
+        // `--yes` confirms it without the user.
+        Some("agent") if args.get(1) == Some(&"run") && args.contains(&"--no-sandbox") => {
+            out.push(always(
+                "starts an agent without the sandbox",
+                c.run(),
+                "confirm: agent without sandbox",
+            ))
+        }
+        Some("mem")
+            if matches!(
+                args.get(1).copied(),
+                Some("search" | "get" | "list" | "context" | "scripts")
+            ) => {}
+        Some("github") if args.get(1) == Some(&"draft") => {
+            github_draft(args, &c.cmd.reads, c.cwd, c.cx, out, c.line)
+        }
+        Some("agent")
+            if matches!(
+                args.get(1).copied(),
+                Some("ls" | "log" | "wait" | "pending")
+            ) => {}
+        Some("ls") | Some("logs") | Some("help") => {}
+        _ => out.push(finding(
+            Kind::Write,
+            "uses arakun",
+            c.run(),
+            "confirm: run arakun",
+        )),
+    }
+}
+
+/// systemctl subcommands that only look.
+const SYSTEMCTL_READS: &[&str] = &[
+    "status",
+    "show",
+    "list-units",
+    "list-unit-files",
+    "list-timers",
+    "list-sockets",
+    "is-active",
+    "is-enabled",
+    "is-failed",
+    "cat",
+    "help",
+];
+
+fn systemctl(c: &Call, out: &mut Vec<Finding>) {
+    let ops = operands(
+        c.args,
+        &[
+            "-H",
+            "-M",
+            "--host",
+            "-t",
+            "--type",
+            "-p",
+            "--property",
+            "-n",
+            "--lines",
+            "-o",
+        ],
+    );
+    if !ops.first().is_some_and(|s| SYSTEMCTL_READS.contains(s)) {
+        out.push(always(
+            "changes system services (systemctl)",
+            c.run(),
+            "confirm: systemctl",
+        ));
+    }
+}
+
+/// `rm` and the like, and `gio trash` or `gio remove`.
+fn remove(c: &Call, out: &mut Vec<Finding>) {
+    let targets = operands(
+        if c.prog == "gio" {
+            &c.args[1..]
+        } else {
+            c.args
+        },
+        &[],
+    );
+    if c.from_stdin || targets.is_empty() {
+        out.push(finding(
+            Kind::External,
+            "deletes files from a list not shown here",
+            c.run(),
+            "confirm: delete",
+        ));
+    }
+    for t in targets {
+        delete_target(t, c.cwd, c.cx, out);
+    }
+}
+
+/// The destination of `mv`, `cp` and the like: after `-t`, or the last operand.
+fn destination<'a>(args: &[&'a str], ops: &mut Vec<&'a str>) -> Option<&'a str> {
+    match args
+        .iter()
+        .position(|a| *a == "-t" || *a == "--target-directory")
+    {
+        Some(i) => args.get(i + 1).copied(),
+        None => ops.pop(),
+    }
+}
+
+fn move_files(c: &Call, out: &mut Vec<Finding>) {
+    let mut ops = operands(c.args, &["-t", "--target-directory", "-S", "--suffix"]);
+    let dest = destination(c.args, &mut ops);
+    for s in ops {
+        if matches!(place(s, c.cwd, c.cx), Place::Inside | Place::Scratch) {
+            out.push(finding(
+                Kind::Write,
+                format!("moves {s}"),
+                format!("Move {s}"),
+                "confirm: move",
+            ));
+        } else {
+            delete_target(s, c.cwd, c.cx, out);
+        }
+    }
+    if let Some(d) = dest {
+        write_target(d, c.cwd, c.cx, out, "moves to");
+    }
+}
+
+/// `cp`, `rsync`, `scp` and the like: copying to another machine always asks.
+fn copy(c: &Call, out: &mut Vec<Finding>) {
+    let with_value = [
+        "-t",
+        "--target-directory",
+        "-S",
+        "-e",
+        "--exclude",
+        "--include",
+        "-m",
+        "-o",
+        "-g",
+        "-P",
+        "-i",
+        "-F",
+    ];
+    let mut ops = operands(c.args, &with_value);
+    let dest = destination(c.args, &mut ops);
+    let remote = |s: &str| {
+        let head = s.split('/').next().unwrap_or("");
+        (head.contains(':') && !s.starts_with('/') && !s.starts_with('.')) || s.contains("://")
+    };
+    if c.prog == "sftp" || c.prog == "rclone" || dest.is_some_and(remote) {
+        let to = dest
+            .map(|d| d.split(':').next().unwrap_or(d).to_string())
+            .unwrap_or_default();
+        out.push(always(
+            format!("copies files to another machine ({to})"),
+            format!("Copy files to {to}"),
+            "confirm: copy out",
+        ));
+    } else if let Some(d) = dest {
+        if ops.iter().any(|s| remote(s)) {
+            out.push(finding(
+                Kind::External,
+                "fetches files from another machine",
+                c.run(),
+                "confirm: copy",
+            ));
+        }
+        write_target(d, c.cwd, c.cx, out, "writes to");
+    }
+}
+
+/// `touch`, `mkdir`, `tee` and the like write to each operand.
+fn create(c: &Call, out: &mut Vec<Finding>) {
+    let prog = c.prog;
+    let ops = operands(
+        c.args,
+        &[
+            "-s",
+            "--size",
+            "-m",
+            "--mode",
+            "-r",
+            "--reference",
+            "-d",
+            "-t",
+            "-l",
+            "-b",
+            "-n",
+        ],
+    );
+    if ops.is_empty() && prog != "tee" {
+        out.push(finding(
+            Kind::Write,
+            format!("uses {prog}"),
+            c.run(),
+            format!("confirm: {prog}"),
+        ));
+    }
+    for t in ops {
+        write_target(t, c.cwd, c.cx, out, "writes to");
+    }
+}
+
+fn dd(c: &Call, out: &mut Vec<Finding>) {
+    for a in c.args {
+        if let Some(of) = a.strip_prefix("of=") {
+            if of.starts_with("/dev/") && !matches!(of, "/dev/null" | "/dev/stdout" | "/dev/stderr")
+            {
+                out.push(always(
+                    "writes straight to a disk",
+                    c.run(),
+                    "confirm: write disk",
+                ));
+            } else {
+                write_target(of, c.cwd, c.cx, out, "writes to");
+            }
+        }
+    }
+}
+
+/// `sed -i` and `perl -i` edit the files they're given.
+fn in_place(c: &Call, out: &mut Vec<Finding>) {
+    let ops = operands(c.args, &["-e", "-f", "--expression", "--file"]);
+    let scripted = c
+        .args
+        .iter()
+        .any(|a| matches!(*a, "-e" | "-f" | "--expression" | "--file"));
+    let files: Vec<&str> = if scripted {
+        ops
+    } else {
+        ops.into_iter().skip(1).collect()
+    };
+    for f in files {
+        write_target(f, c.cwd, c.cx, out, "edits");
+    }
+}
+
+fn awk(c: &Call, out: &mut Vec<Finding>) {
+    let text = c.args.join(" ");
+    if text.contains("system(")
+        || c.args
+            .iter()
+            .any(|a| *a == "-i" || a.starts_with("inplace"))
+    {
+        backstop(&text, out);
+        out.push(finding(
+            Kind::Write,
+            "awk can run commands or edit files",
+            c.run(),
+            "confirm: run awk",
+        ));
+    } else if text.contains("> \"") || text.contains(">\"") || text.contains("| \"") {
+        out.push(finding(
+            Kind::Outside,
+            "awk writes to a file or runs a command",
+            c.run(),
+            "confirm: run awk",
+        ));
+    }
+}
+
+/// `sort -o` and `yq -i`: writes to the `-o` file, or edits in place.
+fn output_flag(c: &Call, out: &mut Vec<Finding>) {
+    let prog = c.prog;
+    let target = c
+        .args
+        .iter()
+        .position(|a| *a == "-o" || *a == "--output")
+        .and_then(|i| c.args.get(i + 1))
+        .copied();
+    match target {
+        Some(t) => write_target(t, c.cwd, c.cx, out, "writes to"),
+        None => out.push(finding(
+            Kind::Write,
+            format!("{prog} edits files"),
+            c.run(),
+            format!("confirm: {prog}"),
+        )),
+    }
+}
+
+/// `find`: `-delete`, the command after `-exec`, and the `-fprint` files.
+fn find(c: &Call, out: &mut Vec<Finding>) {
+    let args = c.args;
+    let starts: Vec<&str> = args
+        .iter()
+        .take_while(|a| !a.starts_with('-') && !matches!(**a, "(" | "!"))
+        .copied()
+        .collect();
+    let starts = if starts.is_empty() { vec!["."] } else { starts };
+    let exec = args
+        .iter()
+        .position(|a| matches!(*a, "-exec" | "-execdir" | "-ok" | "-okdir"));
+    if args.contains(&"-delete")
+        || exec
+            .and_then(|i| args.get(i + 1))
+            .is_some_and(|p| matches!(program(p), "rm" | "shred" | "unlink"))
+    {
+        for s in &starts {
+            delete_target(s, c.cwd, c.cx, out);
+        }
+    } else if let Some(i) = exec {
+        let end = args[i + 1..]
+            .iter()
+            .position(|a| *a == ";" || *a == "+")
+            .map_or(args.len(), |e| i + 1 + e);
+        let inner = args[i + 1..end].join(" ").replace("{}", "./_found_");
+        c.nested(&inner, out);
+        for s in &starts {
+            if !matches!(place(s, c.cwd, c.cx), Place::Inside | Place::Root)
+                && out.iter().any(|f| f.kind >= Kind::Write)
+            {
+                write_target(s, c.cwd, c.cx, out, "runs commands on");
+            }
+        }
+    }
+    for flag in ["-fprint", "-fprint0", "-fprintf", "-fls"] {
+        if let Some(t) = args
+            .iter()
+            .position(|a| *a == flag)
+            .and_then(|i| args.get(i + 1))
+        {
+            write_target(t, c.cwd, c.cx, out, "writes to");
+        }
+    }
+}
+
+/// pip, uv, gem, go and the like: installing or removing asks.
+fn language_packages(c: &Call, out: &mut Vec<Finding>) {
+    let prog = c.prog;
+    let changes = [
+        "install",
+        "uninstall",
+        "remove",
+        "update",
+        "upgrade",
+        "add",
+        "tool",
+    ];
+    // `uv add`, `uv sync` and `uv run` stay in the project.
+    let in_project =
+        prog == "uv" && c.pick(&["add", "sync", "run"]).is_some() && c.pick(&["tool"]).is_none();
+    if c.pick(&changes).is_some() && !in_project {
+        out.push(finding(
+            Kind::External,
+            "installs or removes packages",
+            c.run(),
+            "confirm: install",
+        ));
+    } else {
+        out.push(finding(
+            Kind::Write,
+            format!("uses {prog}"),
+            c.run(),
+            format!("confirm: {prog}"),
+        ));
+    }
+}
+
+/// npm, cargo and the like: publishing always asks, a global install asks.
+fn project_packages(c: &Call, out: &mut Vec<Finding>) {
+    let prog = c.prog;
+    let publishes = [
+        "publish",
+        "yank",
+        "owner",
+        "unpublish",
+        "upload",
+        "deprecate",
+        "login",
+        "adduser",
+    ];
+    if c.pick(&publishes).is_some() {
+        out.push(always(
+            format!("publishes to a public registry ({prog})"),
+            format!("Publish: {}", c.line),
+            "confirm: publish",
+        ));
+    } else if has_flag(c.args, 'g', &["--global", "--location=global"])
+        || c.pick(&["global"]).is_some()
+        || (prog == "cargo" && c.pick(&["install", "uninstall"]).is_some())
+    {
+        out.push(finding(
+            Kind::External,
+            "installs packages outside the project",
+            c.run(),
+            "confirm: install",
+        ));
+    } else {
+        out.push(finding(
+            Kind::Write,
+            format!("uses {prog}"),
+            c.run(),
+            format!("confirm: {prog}"),
+        ));
+        paths_in(c.args, c.cwd, c.cx, out, c.line);
+    }
+}
+
+/// apt, brew, pacman and the like: anything but a query asks.
+fn system_packages(c: &Call, out: &mut Vec<Finding>) {
+    let query = c
+        .args
+        .first()
+        .is_some_and(|a| a.starts_with("-Q") || a.starts_with("-Ss") || a.starts_with("-Si"))
+        || c.pick(&["search", "list", "info", "show", "query"])
+            .is_some();
+    if !query {
+        out.push(finding(
+            Kind::External,
+            "installs or removes system packages",
+            c.run(),
+            "confirm: install",
+        ));
+    }
+}
+
+fn containers(c: &Call, out: &mut Vec<Finding>) {
+    let prog = c.prog;
+    if c.pick(&["push", "login"]).is_some() {
+        out.push(always(
+            "publishes an image",
+            c.run(),
+            "confirm: publish image",
+        ));
+    } else if c
+        .pick(&["ps", "images", "inspect", "logs", "version", "info"])
+        .is_none()
+    {
+        out.push(finding(
+            Kind::External,
+            format!("uses {prog}"),
+            c.run(),
+            format!("confirm: {prog}"),
+        ));
+    }
+}
+
+/// Words that make a cloud or payments CLI change something or charge money.
+const CLOUD_CHANGES: &[&str] = &[
+    "deploy",
+    "publish",
+    "create",
+    "delete",
+    "destroy",
+    "apply",
+    "put",
+    "update",
+    "remove",
+    "rm",
+    "set",
+    "send",
+    "submit",
+    "pay",
+    "purchase",
+    "buy",
+    "charge",
+    "charges",
+    "payment_intents",
+    "checkout",
+    "refunds",
+    "terminate",
+    "stop",
+    "start",
+    "scale",
+    "release",
+    "push",
+    "upload",
+    "cp",
+    "mv",
+    "sync",
+    "rollout",
+    "patch",
+    "import",
+    "taint",
+    "invoke",
+    "trigger",
+    "prod",
+    "--prod",
+    "secret",
+];
+
+/// Words for a cloud CLI's local work, which doesn't ask.
+const CLOUD_LOCAL: &[&str] = &[
+    "dev",
+    "login",
+    "whoami",
+    "--version",
+    "version",
+    "help",
+    "plan",
+    "validate",
+    "init",
+    "fmt",
+    "tail",
+    "logs",
+];
+
+fn cloud(c: &Call, out: &mut Vec<Finding>) {
+    let prog = c.prog;
+    // A bare `vercel` deploys.
+    if c.pick(CLOUD_CHANGES).is_some()
+        || (prog == "vercel" && c.args.iter().all(|a| a.starts_with('-')))
+    {
+        out.push(always(
+            format!("changes cloud services or charges money ({prog})"),
+            c.run(),
+            format!("confirm: {prog}"),
+        ));
+    } else if c.pick(CLOUD_LOCAL).is_none() {
+        out.push(finding(
+            Kind::Write,
+            format!("uses {prog}"),
+            c.run(),
+            format!("confirm: {prog}"),
+        ));
+    }
+}
+
+/// A program with no rule of its own.
+fn unknown(c: &Call, first: &str, out: &mut Vec<Finding>) {
+    out.push(finding(
+        Kind::Write,
+        format!("runs {}", c.prog),
+        c.run(),
+        format!("confirm: run {}", name_of(c.prog)),
+    ));
+    // A script run by its path (`./send.sh`): what it does is what's inside.
+    if first.contains('/')
+        && let Some(text) = expand(first, c.cwd, c.cx)
+            .and_then(|p| script_text(&p, c.cx))
+            .filter(|t| t.starts_with("#!") && t.len() < 200_000)
+    {
+        c.nested(&text, out);
+    }
+    paths_in(c.args, c.cwd, c.cx, out, c.line);
+    if let Some(body) = &c.cmd.heredoc {
+        backstop(body, out);
     }
 }
 

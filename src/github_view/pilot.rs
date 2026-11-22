@@ -6,7 +6,7 @@
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, AppContext as _, Context, Focusable as _, FontWeight, Hsla,
+    AnyElement, App, AppContext as _, Context, Focusable as _, FontWeight, Hsla,
     InteractiveElement as _, IntoElement, ParentElement as _, StatefulInteractiveElement as _,
     Styled as _, Window, div, px,
 };
@@ -117,20 +117,113 @@ fn quote(color: Hsla, text: impl Into<gpui::SharedString>, strong: bool) -> gpui
         .child(text.into())
 }
 
+/// The keys of a picked card's ready answers, in order (`OPCIONES_MAX`).
+const ANSWER_KEYS: [&str; 4] = ["1", "2", "3", "4"];
+
+/// The card to pick once `gone` is dealt with: the next question after it,
+/// else the next card, wrapping round; None when it was the last.
+fn next_card(cards: &[Item], gone: &str) -> Option<String> {
+    let at = cards.iter().position(|c| c.id == gone).unwrap_or(0);
+    let rest: Vec<&Item> = cards[at..]
+        .iter()
+        .chain(&cards[..at])
+        .filter(|c| c.id != gone)
+        .collect();
+    rest.iter()
+        .find(|c| c.kind == Kind::NeedsYou)
+        .or(rest.first())
+        .map(|c| c.id.clone())
+}
+
+/// The cards keys reach, from the queue's `loose` cards and the board's
+/// `sheet` cards: with the sheet open, those of the pull request it shows;
+/// else the queue's (sheet cards show only in the sheet).
+fn answerable(
+    sheet_open: bool,
+    shown: Option<&ItemRef>,
+    loose: Vec<Item>,
+    sheet: Vec<Item>,
+) -> Vec<Item> {
+    use crate::github::queue::key_of;
+    if !sheet_open {
+        return loose;
+    }
+    let Some(key) = shown.map(key_of) else {
+        return Vec::new();
+    };
+    loose
+        .into_iter()
+        .chain(sheet)
+        .filter(|c| c.item_ref().is_some_and(|r| key_of(&r) == key))
+        .collect()
+}
+
+/// What a key does on the picked card.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum CardKey {
+    Answer(Answer),
+    Other,
+    Done,
+}
+
+/// The key `key` on `card`, when it does something there.
+pub(super) fn card_key(card: &Item, key: &str) -> Option<CardKey> {
+    match (card.kind, key) {
+        (Kind::NeedsYou, "e") => Some(CardKey::Other),
+        (Kind::NeedsYou, k) => {
+            let n = ANSWER_KEYS.iter().position(|a| *a == k)?;
+            let o = card.opciones.get(n)?;
+            Some(CardKey::Answer(Answer::Opcion(o.id.clone())))
+        }
+        (Kind::Fixed | Kind::Failed | Kind::Other, "y") => Some(CardKey::Done),
+        _ => None,
+    }
+}
+
+/// "Settings…" after a pilot problem: the form that fixes it.
+pub(super) fn settings_link(
+    id: &'static str,
+    cx: &mut Context<GitHubView>,
+) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .flex_none()
+        .ty(Type::Caption)
+        .text_color(theme::link())
+        .cursor_pointer()
+        .hover(|s| s.underline())
+        .child("Settings…")
+        .on_click(cx.listener(|_, _, _, cx| cx.emit(super::GitHubViewEvent::ConnectPilot)))
+}
+
 impl GitHubView {
     /// The section's heading and its cards; nothing when no card waits.
     /// With a board, only the cards no sheet shows: "From pilot".
-    pub(super) fn pilot_section(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+    /// The cards the queue shows, in its order: all of them without a
+    /// board, with one those no sheet shows.
+    pub(super) fn pilot_cards(&self, cx: &App) -> Vec<Item> {
         let p = self.pilot.read(cx);
         let board = p.board();
         // The focus menu's promise: what it leaves out doesn't show.
         let focus = self.github.read(cx).focus();
-        let items: Vec<Item> = p
-            .shown_in(focus)
+        p.shown_in(focus)
             .filter(|c| board.is_none_or(|b| board::card_place(b, c) == CardPlace::Loose))
             .cloned()
-            .collect();
-        let problem = p.problem().map(str::to_string);
+            .collect()
+    }
+
+    pub(super) fn pilot_section(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let items = self.pilot_cards(cx);
+        let p = self.pilot.read(cx);
+        let board = p.board();
+        // Broken settings show here too: pilot would just look off.
+        let problem = p
+            .config_problem()
+            .map(|e| format!("pilot is off: {e}"))
+            .or_else(|| {
+                p.problem()
+                    .map(|e| format!("Couldn't read your agent: {e}"))
+            });
         let sent = self.pilot_sent.as_ref().map(|(t, _)| t.clone());
         if items.is_empty() && problem.is_none() && sent.is_none() {
             return Vec::new();
@@ -178,8 +271,9 @@ impl GitHubView {
                             .truncate()
                             .ty(Type::Caption)
                             .text_color(theme::error())
-                            .child(format!("Couldn't reach your agent: {e}")),
+                            .child(e),
                     )
+                    .child(settings_link("gh-pilot-fix", cx))
                     .into_any_element(),
             );
         }
@@ -483,7 +577,7 @@ impl GitHubView {
                 ("gh-pilot-done", ix),
                 Some(("tick02", None)),
                 label,
-                None,
+                focused.then_some("Y"),
                 if primary {
                     PillKind::Primary
                 } else {
@@ -551,7 +645,8 @@ impl GitHubView {
                             ("gh-pilot-opcion", ix * 10 + oi),
                             None,
                             o.texto.clone(),
-                            None,
+                            // The picked card answers from the keyboard.
+                            focused.then(|| ANSWER_KEYS[oi]),
                             kind,
                             !sending,
                         )
@@ -570,7 +665,11 @@ impl GitHubView {
                         .font_weight(FontWeight::NORMAL)
                         .text_color(theme::text_subtle())
                         .hover(|s| s.text_color(theme::text()))
-                        .child("Other answer…")
+                        .child(if focused {
+                            "Other answer… (E)"
+                        } else {
+                            "Other answer…"
+                        })
                         .on_click(cx.listener(move |this, _, window, cx| {
                             cx.stop_propagation();
                             this.pilot_open_other(&other_id, window, cx);
@@ -693,6 +792,45 @@ impl GitHubView {
             .into_any_element()
     }
 
+    /// Whether the picked card is about the pull request `key`.
+    pub(super) fn pilot_focus_on(&self, key: &str, cx: &App) -> bool {
+        self.pilot_focus
+            .as_deref()
+            .and_then(|id| self.pilot.read(cx).find(id).and_then(Item::item_ref))
+            .is_some_and(|r| crate::github::queue::key_of(&r) == key)
+    }
+
+    /// The cards keys can answer now, in the order they show: with the
+    /// sheet open, those of its pull request (in the queue or the sheet);
+    /// else the queue's. The next card after an answer comes from these, so
+    /// focus never lands on one the keys can't reach.
+    fn pilot_answerable(&self, cx: &App) -> Vec<Item> {
+        let p = self.pilot.read(cx);
+        let sheet: Vec<Item> = match p.board() {
+            Some(b) => p
+                .shown()
+                .filter(|c| board::card_place(b, c) == CardPlace::Sheet)
+                .cloned()
+                .collect(),
+            None => Vec::new(),
+        };
+        answerable(
+            self.sheet_open,
+            self.item().as_ref(),
+            self.pilot_cards(cx),
+            sheet,
+        )
+    }
+
+    /// Whether a key goes to the picked card first.
+    pub(super) fn pilot_keys_apply(&self, held: bool, cx: &App) -> bool {
+        let card = self
+            .pilot_focus
+            .as_deref()
+            .and_then(|id| self.pilot.read(cx).find(id).and_then(Item::item_ref));
+        card_keys_apply(held, self.sheet_open, card.as_ref(), self.item().as_ref())
+    }
+
     /// The card's pull request, picked in the tab.
     fn pilot_see(&mut self, item: &Item, cx: &mut Context<Self>) {
         self.pilot_focus = Some(item.id.clone());
@@ -700,6 +838,33 @@ impl GitHubView {
             self.reveal(&r, cx);
         }
         cx.notify();
+    }
+
+    /// A key on the picked card: an answer, "Other answer…" or done. False
+    /// when the key does nothing there, so it keeps its queue meaning.
+    pub(super) fn pilot_key(
+        &mut self,
+        key: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(id) = self.pilot_focus.clone() else {
+            return false;
+        };
+        // Only a card the keys reach now: the sheet's too while it is open,
+        // but not one it hid on Esc, which stays picked.
+        let Some(card) = self.pilot_answerable(cx).into_iter().find(|c| c.id == id) else {
+            return false;
+        };
+        match card_key(&card, key) {
+            Some(CardKey::Answer(a)) => {
+                self.pilot_answer(&id, a, cx);
+            }
+            Some(CardKey::Other) => self.pilot_open_other(&id, window, cx),
+            Some(CardKey::Done) => self.pilot_finish(&id, cx),
+            None => return false,
+        }
+        true
     }
 
     /// "Other answer…": a line under the card for the user's own words.
@@ -749,7 +914,7 @@ impl GitHubView {
         let Some(cfg) = self.pilot.read(cx).config().cloned() else {
             self.pilot_notes.insert(
                 id.to_string(),
-                "Not sent: arakun-pilot's client.json is missing.".into(),
+                "Not sent: arakun-pilot isn't connected (\u{201c}Connect arakun-pilot\u{2026}\u{201d} in the GitHub tab's menu).".into(),
             );
             cx.notify();
             return false;
@@ -773,9 +938,11 @@ impl GitHubView {
                     Ok(()) => {
                         if this.pilot_other.as_deref() == Some(id.as_str()) {
                             this.pilot_other = None;
+                            this.pilot_refocus = true;
                         }
                         if this.pilot_focus.as_deref() == Some(id.as_str()) {
-                            this.pilot_focus = None;
+                            let cards = this.pilot_answerable(cx);
+                            this.pilot_focus = next_card(&cards, &id);
                         }
                         this.pilot_open.remove(&id);
                         let clear = cx.spawn(async move |this, cx| {
@@ -882,7 +1049,8 @@ impl GitHubView {
         self.pilot_notes.remove(id);
         self.pilot_open.remove(id);
         if self.pilot_focus.as_deref() == Some(id) {
-            self.pilot_focus = None;
+            let cards = self.pilot_answerable(cx);
+            self.pilot_focus = next_card(&cards, id);
         }
         let id = id.to_string();
         self.pilot.update(cx, |p, cx| p.done(&id, cx));
@@ -980,6 +1148,26 @@ impl GitHubView {
     }
 }
 
+/// Whether the picked card takes a key: not a held key's repeats (after an
+/// answer the next card is picked, and a repeat would answer it without a
+/// press), and with the sheet open only when it shows the card's own pull
+/// request, so a key never answers a card hidden behind another one.
+fn card_keys_apply(
+    held: bool,
+    sheet_open: bool,
+    card: Option<&ItemRef>,
+    shown: Option<&ItemRef>,
+) -> bool {
+    use crate::github::queue::key_of;
+    if held {
+        return false;
+    }
+    if !sheet_open {
+        return true;
+    }
+    card.zip(shown).is_some_and(|(c, s)| key_of(c) == key_of(s))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -989,6 +1177,87 @@ mod tests {
             id: id.into(),
             texto: id.to_uppercase(),
         }
+    }
+
+    fn card(id: &str, kind: Kind) -> Item {
+        Item {
+            id: id.into(),
+            kind,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_card_with_its_pull_request_open_still_takes_its_keys() {
+        let pr = |number| {
+            Item {
+                repo: pilot::REPO.into(),
+                number,
+                ..card("a", Kind::Other)
+            }
+            .item_ref()
+            .unwrap()
+        };
+        let (card, other) = (pr(95), pr(96));
+        // A click on the card opens the sheet on its pull request.
+        assert!(card_keys_apply(false, true, Some(&card), Some(&card)));
+        assert!(card_keys_apply(false, false, Some(&card), None));
+        assert!(!card_keys_apply(false, true, Some(&card), Some(&other)));
+        assert!(!card_keys_apply(false, true, None, Some(&card)));
+        // A held key's repeats never answer.
+        assert!(!card_keys_apply(true, false, Some(&card), None));
+    }
+
+    #[test]
+    fn after_an_answer_focus_stays_on_cards_the_keys_reach() {
+        let on = |id: &str, number| Item {
+            repo: pilot::REPO.into(),
+            number,
+            ..card(id, Kind::NeedsYou)
+        };
+        let shown = on("x", 95).item_ref().unwrap();
+        let loose = vec![on("a", 95), on("b", 96), on("c", 95)];
+        let sheet = vec![on("s", 95), on("t", 96)];
+        let ids = |cards: Vec<Item>| cards.into_iter().map(|c| c.id).collect::<Vec<_>>();
+        // The sheet on #95: its loose and sheet cards, never #96's.
+        let open = answerable(true, Some(&shown), loose.clone(), sheet.clone());
+        assert_eq!(ids(open.clone()), ["a", "c", "s"]);
+        assert_eq!(next_card(&open, "c").as_deref(), Some("s"));
+        assert_eq!(next_card(&open[2..], "s"), None);
+        // The sheet closed: the queue's cards, the sheet's don't show.
+        let closed = answerable(false, Some(&shown), loose.clone(), sheet.clone());
+        assert_eq!(ids(closed), ["a", "b", "c"]);
+        assert!(answerable(true, None, loose, sheet).is_empty());
+    }
+
+    #[test]
+    fn the_next_question_is_picked_after_an_answer() {
+        let cards = [
+            card("a", Kind::NeedsYou),
+            card("b", Kind::Fixed),
+            card("c", Kind::NeedsYou),
+        ];
+        assert_eq!(next_card(&cards, "a").as_deref(), Some("c"));
+        // Round to the start before settling for a card that asks nothing.
+        assert_eq!(next_card(&cards, "c").as_deref(), Some("a"));
+        assert_eq!(next_card(&cards[1..2], "b"), None);
+        assert_eq!(next_card(&cards[..2], "a").as_deref(), Some("b"));
+    }
+
+    #[test]
+    fn keys_answer_the_picked_card() {
+        let mut q = card("q", Kind::NeedsYou);
+        q.opciones = vec![opcion("migrar"), opcion("quedan")];
+        assert_eq!(
+            card_key(&q, "2"),
+            Some(CardKey::Answer(Answer::Opcion("quedan".into())))
+        );
+        assert_eq!(card_key(&q, "3"), None);
+        assert_eq!(card_key(&q, "e"), Some(CardKey::Other));
+        assert_eq!(card_key(&q, "y"), None);
+        assert_eq!(card_key(&card("f", Kind::Fixed), "y"), Some(CardKey::Done));
+        // A brief's approval asks twice in the sheet: no key skips that.
+        assert_eq!(card_key(&card("b", Kind::Brief), "y"), None);
     }
 
     #[test]

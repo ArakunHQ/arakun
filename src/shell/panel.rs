@@ -9,11 +9,9 @@ impl Shell {
         crate::customize_view::RailLook {
             style: self.sidebar.style,
             width: self.rail_w,
-            preset: crate::sidebar::Preset::ALL
-                .into_iter()
-                .find(|p| p.layout().sections == self.sidebar.sections),
-            can_undo: !self.builder.undo.is_empty(),
-            can_redo: !self.builder.redo.is_empty(),
+            preset: self.sidebar_preset(),
+            can_undo: self.builder.history.can_undo(),
+            can_redo: self.builder.history.can_redo(),
             note: self.builder.flash.clone(),
             summary: {
                 let pieces = self
@@ -111,20 +109,19 @@ impl Shell {
                     }),
             )
             .child(
-                icon_button("panel-search", "search01", 14.)
-                    .tooltip(ui::tip("Search sessions (Ctrl+K)"))
-                    .on_click(cx.listener(|this, _, window, cx| {
+                icon_button("panel-search", "search01", 14., "Search sessions (Ctrl+K)").on_click(
+                    cx.listener(|this, _, window, cx| {
                         this.panel_tab = PanelTab::Sessions;
                         this.env_menu_open = false;
                         let field = this.session_query.clone();
                         window.focus(&field.focus_handle(cx), cx);
                         field.update(cx, |f, cx| f.select_all_text(cx));
                         cx.notify();
-                    })),
+                    }),
+                ),
             )
             .child(
-                icon_button("panel-new", "add01", 14.)
-                    .tooltip(ui::tip("New session (Ctrl+T)"))
+                icon_button("panel-new", "add01", 14., "New session (Ctrl+T)")
                     .on_click(cx.listener(|this, _, window, cx| this.new_session(window, cx))),
             );
 
@@ -279,28 +276,26 @@ impl Shell {
                 )
             })
             .child(
-                icon_button("session-import", "download04", 12.)
-                    .tooltip(ui::tip("Import sessions"))
-                    .on_click(
-                        cx.listener(|this, _, window, cx| this.open_import_dialog(window, cx)),
-                    ),
+                icon_button("session-import", "download04", 12., "Import sessions").on_click(
+                    cx.listener(|this, _, window, cx| this.open_import_dialog(window, cx)),
+                ),
             )
             .child(
-                icon_button("session-filter", "filter", 12.)
-                    .tooltip(ui::tip("Filter by agent"))
+                icon_button("session-filter", "filter", 12., "Filter by agent")
                     .when(self.session_filter.is_some(), |d| {
                         d.bg(theme::fill_selected())
                     })
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.session_filter = match this.session_filter {
-                            None => Some(Agent::Droid),
-                            Some(Agent::Droid) => Some(Agent::Claude),
-                            Some(Agent::Claude) => Some(Agent::OpenCode),
-                            Some(Agent::OpenCode) => Some(Agent::Codex),
-                            Some(Agent::Codex) => Some(Agent::Devin),
-                            Some(Agent::Devin) => Some(Agent::Antigravity),
-                            Some(Agent::Antigravity) => Some(Agent::WorkersAi),
-                            Some(Agent::WorkersAi) => None,
+                            None => Some(AgentKind::Droid),
+                            Some(AgentKind::Droid) => Some(AgentKind::Claude),
+                            Some(AgentKind::Claude) => Some(AgentKind::OpenCode),
+                            Some(AgentKind::OpenCode) => Some(AgentKind::Codex),
+                            Some(AgentKind::Codex) => Some(AgentKind::Devin),
+                            Some(AgentKind::Devin) => Some(AgentKind::Cursor),
+                            Some(AgentKind::Cursor) => Some(AgentKind::Antigravity),
+                            Some(AgentKind::Antigravity) => Some(AgentKind::WorkersAi),
+                            Some(AgentKind::WorkersAi) => None,
                         };
                         cx.notify();
                     })),

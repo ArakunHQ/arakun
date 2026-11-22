@@ -846,6 +846,7 @@ fn paint(frame: &Frame, b: Bounds<Pixels>, window: &mut Window) {
 
 impl Render for AsciiFace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::mascot::note_reduced(cx.reduce_motion());
         if !self.started {
             self.started = true;
             if self.scale == 1. && animated() && claim_intro() {

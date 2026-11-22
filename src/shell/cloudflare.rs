@@ -51,7 +51,7 @@ impl Shell {
             CloudflareEvent::Ask(ask) => self.start_ask(ask, window, cx),
             CloudflareEvent::ConnectMcp(agent, state) => {
                 // The button is off without Codex, but the state it showed can be old.
-                if *agent == model::Agent::Codex && crate::agent::codex_cli().is_none() {
+                if *agent == AgentKind::Codex && crate::agent::codex_cli().is_none() {
                     self.notify(
                         AlertKind::Warning,
                         "Connect Cloudflare to Codex",
@@ -61,14 +61,18 @@ impl Shell {
                     );
                     return;
                 }
-                // The card is hidden for Devin and Antigravity; this covers a
-                // state from before.
+                // The card is hidden for Devin, Cursor and Antigravity; this
+                // covers a state from before.
                 let unsupported = match agent {
-                    model::Agent::Devin => Some((
+                    AgentKind::Devin => Some((
                         "Connect Cloudflare to Devin",
                         "Arakun can't connect Cloudflare's MCP server to Devin yet. Add it with devin mcp in a terminal.",
                     )),
-                    model::Agent::Antigravity => Some((
+                    AgentKind::Cursor => Some((
+                        "Connect Cloudflare to Cursor",
+                        "Arakun can't connect Cloudflare's MCP server to Cursor yet. Add it to ~/.cursor/mcp.json.",
+                    )),
+                    AgentKind::Antigravity => Some((
                         "Connect Cloudflare to Antigravity",
                         "Arakun can't connect Cloudflare's MCP server to Antigravity yet. Add it to ~/.gemini/config/mcp_config.json.",
                     )),
@@ -170,6 +174,10 @@ impl Shell {
             self.select_env(pi, ei, window, cx);
         }
         let title: SharedString = ask.title.clone().into();
+        if self.env().path == env_path {
+            self.ask_agent(title, ask.prompt.clone(), window, cx);
+            return;
+        }
         let agent = self.env().agent;
         self.start_session_in(
             &env_path,

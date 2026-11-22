@@ -17,6 +17,24 @@ use crate::state;
 use crate::theme;
 use crate::ui::icon;
 
+/// A large paste waiting in the composer. The counts are taken once when it
+/// lands, because a paste can be megabytes and the chip shows them every frame.
+pub(super) struct Paste {
+    pub(super) text: String,
+    pub(super) lines: usize,
+    pub(super) chars: usize,
+}
+
+impl Paste {
+    pub(super) fn new(text: String) -> Self {
+        Self {
+            lines: text.lines().count(),
+            chars: text.chars().count(),
+            text,
+        }
+    }
+}
+
 impl Shell {
     pub(super) fn paste_into_composer(
         &mut self,
@@ -37,7 +55,7 @@ impl Shell {
                             self.pastes
                                 .entry(env_path)
                                 .or_default()
-                                .push(text.replace("\r\n", "\n"));
+                                .push(Paste::new(text.replace("\r\n", "\n")));
                         }
                         None => self.env_mut().draft.insert(&text.replace("\r\n", "\n")),
                     }
@@ -242,6 +260,13 @@ fn unique(dir: &Path, stem: &str, ext: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn counts_a_paste_once() {
+        let p = Paste::new("añb\nc\n".to_string());
+        assert_eq!((p.lines, p.chars), (2, 6));
+        assert_eq!(p.text, "añb\nc\n");
+    }
 
     #[test]
     fn decodes_percent_escapes() {

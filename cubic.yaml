@@ -1,0 +1,286 @@
+# yaml-language-server: $schema=https://cubic.dev/schema/cubic-repository-config.schema.json
+#
+# cubic review settings. cubic reads this file from main only, so a change here
+# takes effect once it is merged; until then the dashboard settings apply.
+# An invalid file also falls back to the dashboard settings, and cubic ignores
+# unknown keys with a warning.
+#
+# The rules it reviews against come from AGENTS.md and CONTRIBUTING.md; keep the
+# custom rules below in step with them. The Reviewers workflow
+# (.github/workflows/reviewers.yml) starts on cubic's "cubic · AI code reviewer"
+# check run and reads cubic-dev-ai[bot]'s approval.
+
+version: 1
+
+reviews:
+  enabled: true
+  # These people review cubic's findings and its approvals.
+  senior_reviewers:
+    - rikvisser-dev
+    - daniektj
+    - KarloAldrete
+  # Fewer, surer findings than high. Every comment still has to be answered
+  # (AGENTS.md).
+  sensitivity: medium
+  # Review drafts too, so the review runs next to CI instead of after it.
+  # Agents open a pull request when its content is final and mark it ready
+  # once the required checks pass (tools/wait-checks.sh); waiting for that
+  # cost ~5-7 minutes a pull request. The Reviewers workflow also needs the
+  # check run on every pull request, drafts included.
+  check_drafts: true
+  incremental_commits: true
+  # cubic resolves its own threads when a later commit fixes them.
+  resolve_threads_when_addressed: true
+  architecture_diagrams: false
+  merge_confidence_summary: true
+  # cubic must review outside pull requests without being asked: without its
+  # check run the Reviewers workflow never asks a person. Their approval is
+  # held back below and by the workflow.
+  external_contributors_require_manual_review: false
+  # Ultrareview runs by itself on high-risk pull requests; ask for one on
+  # others by hand.
+  ultrareview: manual
+  auto_ultrareview: high_risk_only
+
+  # Approves a pull request once every finding is resolved, whatever its risk,
+  # unless it touches a path under `exclude`: those stay with a person.
+  # Merging still takes a person with write access.
+  # The Reviewers workflow dismisses an approval of a pull request from
+  # outside the team (the TEAM list there), whatever cubic counts as an
+  # external contributor. It also dismisses one when cubic approves with
+  # threads still open, and asks a person. Authors may resolve cubic's threads
+  # they fixed in the GitHub UI (CONTRIBUTING.md), and cubic checks again when
+  # its last open thread is resolved, so an approval can follow that.
+  auto_approve_behavior: live
+  auto_approve: always
+  auto_approve_rules:
+    exclude_external_contributors: true
+    allow_open_issues: none
+    # Never approve a pull request that touches one of these paths: a person
+    # approves them. They are the parts where a mistake costs the most
+    # (security, credentials, stored formats, what runs on users' machines).
+    exclude:
+      - ".github/**"
+      - "AGENTS.md"
+      - "CLAUDE.md"
+      - "CONTRIBUTING.md"
+      - ".claude/**"
+      - "cubic.yaml"
+      - "lefthook.yml"
+      - "src/headless*"
+      - "src/headless*/**"
+      - "core/src/headless*"
+      - "core/src/headless*/**"
+      - "core/src/host.rs"
+      - "src/control.rs"
+      - "core/src/account.rs"
+      - "core/src/fetch.rs"
+      - "src/voice.rs"
+      - "src/cloudflare/**"
+      - "src/posthog/**"
+      - "src/github/**"
+      - "core/src/phone/**"
+      - "relay/**"
+      - "teams/**"
+      - "src/arakun_teams/**"
+      - "phone/**"
+      - "**/Cargo.toml"
+      - "Cargo.lock"
+      - "deny.toml"
+      - "build.rs"
+      - "rust-toolchain.toml"
+      - "tools/setup-dev.*"
+      - "tools/install*"
+      - "core/src/platform.rs"
+      - "core/src/git.rs"
+      - "core/src/agent/launch.rs"
+      - "core/src/agent/rpc.rs"
+      - "src/state.rs"
+      - "src/memory.rs"
+      - "src/stored.rs"
+      - "core/src/durable.rs"
+      - "src/update.rs"
+      # The public keys the updater checks releases and nightlies against.
+      - "assets/*.pub"
+      - "core/src/server/**"
+      - "core/src/server.rs"
+
+  custom_instructions: |
+    Write in English, in plain, short sentences, as the repository's docs do. Say what breaks and why, then the fix. No praise, no filler, no emoji.
+    Comment only when the change is wrong: a bug, a crash, a security or privacy problem, data loss, a broken build or platform, or a broken rule from AGENTS.md or the custom rules. Leave out style, naming, wording, comment polish, small refactors, extra tests "for completeness", unlikely edge cases and "consider" suggestions. If you are not sure something is a real problem, leave it out. Do not repeat a point you made on an earlier commit.
+    CI runs rustfmt, `clippy -D warnings`, the tests, cargo-deny, zizmor and the Conventional Commits title check; do not repeat what they catch.
+
+  ignore:
+    files:
+      - "Cargo.lock"
+      - "relay/package-lock.json"
+      - "teams/package-lock.json"
+      # Images and fonts only: assets/*.pub are the release signing keys.
+      - "assets/**/*.png"
+      - "assets/**/*.svg"
+      - "assets/**/*.ttf"
+      - "docs/screenshots/**"
+      - "phone/*.png"
+      # Written by `WRITE_VECTORS=1 cargo test phone::e2e::vectors`; the phone
+      # tests and the plain Rust run check them.
+      - "phone/test/vectors/**"
+
+  # Only the first 10,000 characters of each rule count, and only the first
+  # 15 rules if the plan allows no more, so there are 15 at most and the most
+  # important come first.
+  custom_rules:
+    - name: Workflows and actions
+      include:
+        - ".github/workflows/**"
+        - ".github/actions/**"
+      description: |
+        Check permissions are as narrow as the job needs, every action is pinned to a full commit SHA with its version as a comment (`uses: owner/action@<sha> # v1.2.3`), never a tag or branch, untrusted input (PR titles, branch names, issue bodies) never reaches a shell unquoted, and `pull_request_target` never checks out the PR's code. The main ruleset requires the checks "Clippy (no warnings)", "Tests (Linux, no browser)", "Relay (types and tests)", "cla-assistant" and the "Human approval" status (set by the Human approval workflow); renaming those jobs or that status blocks every merge. A change to the paths the "What changed" job in ci.yml sorts must match the globs in lefthook.yml. `reviewers.yml` and `human-approval.yml` run with a write token on pull requests from forks; they must never check out or run the pull request's code. `reviewers.yml` starts on cubic's "cubic · AI code reviewer" check run and reads cubic-dev-ai[bot]'s reviews; a change to that name or login there must match cubic.
+        Composite actions in .github/actions run inside the CI jobs that use them, with those jobs' tokens. Pin every action they use to a full commit SHA with its version as a comment. Pass inputs to shell steps through `env:`, never by putting `${{ inputs.* }}` straight into a `run:` script.
+    - name: Repository rules
+      file_paths:
+        - "AGENTS.md"
+    - name: Contributor rules stay in step
+      include:
+        - "AGENTS.md"
+        - "CLAUDE.md"
+        - "CONTRIBUTING.md"
+        - ".claude/**"
+        - ".github/pull_request_template.md"
+        - "cubic.yaml"
+        - "lefthook.yml"
+      description: |
+        AGENTS.md repeats CONTRIBUTING.md's rules for agents, and CONTRIBUTING.md wins when they disagree. Flag a diff that changes a rule, command or check in one of them (commit format, the checks to run before committing, pull request or stacking steps, code rules) while the other still says the old thing. `cubic.yaml`, `.github/pull_request_template.md` and the skills in `.claude/skills` quote these rules too; check they still match.
+        `.claude/settings.json` and `.claude/hooks` run commands when a Claude Code session starts, including on the web; treat them like the setup scripts. Skills in `.claude/skills` tell agents what to run: check that every command, flag and path they name exists and matches CONTRIBUTING.md and AGENTS.md.
+        lefthook.yml hooks run on contributors' machines. Each job's globs must match what the "What changed" job in `.github/workflows/ci.yml` uses to decide which checks run, and its command must match the one in CONTRIBUTING.md under "Checks".
+        cubic.yaml must follow the schema at https://cubic.dev/schema/cubic-repository-config.schema.json. Flag a change that loosens the approval rules (a wider `auto_approve`, more `allow_open_issues`, fewer `exclude` paths, `exclude_external_contributors` off), turns `check_drafts` off or `external_contributors_require_manual_review` on (the Reviewers workflow needs cubic's check run on every pull request, drafts included).
+    - name: Headless agent sandbox
+      include:
+        - "src/headless*"
+        - "src/headless*/**"
+        - "core/src/headless*"
+        - "core/src/headless*/**"
+      description: |
+        This is the security boundary for headless agents. `sandbox.rs` must keep credentials, the host's sockets and the network out of the sandbox unless a `--allow` grants them. `policy.rs` reads commands the way a shell would; a new rule must hold up against quoting, `;`, `&&`, pipes, `$(…)`, `bash -c` and env prefixes, and must err toward asking. Actions in `broker.rs` that send, push, publish or pay must wait for the user's approval. Ask for a test for every new policy rule or way around one.
+        `src/headless.rs` is the headless agent host. Check that the host process keeps the API keys and the broker's actions outside the sandbox, and that a crashed or killed host leaves no agent process behind.
+    - name: Phone encryption and wire format
+      include:
+        - "core/src/phone/**"
+        - "phone/**"
+      description: |
+        core/src/phone is the phone's end-to-end encryption and wire format. A change to the encryption, keys or framing there needs the same change in the phone (`phone/*.js`) and new test vectors (`phone/test/vectors`). A new or changed message kind or field needs `phone/*.js` to handle or ignore it, and no vector: the vectors cover encryption, labels and framing, not messages. Review crypto carefully: nonce reuse, key handling, constant-time comparison, and anything that logs secrets.
+        The phone web app in phone/ talks to the Rust side in `core/src/phone` through the relay. Never log keys, tokens or message contents. The app embeds these files, so a change here ships with the desktop build. `sw.js` caches nothing on purpose; flag a change that starts caching the page.
+        Flag a diff that changes the encryption, keys, nonces, framing or the messages the desktop sends or reads (field names, envelopes such as `res`, message kinds) anywhere in core/src/phone/ (e2e.rs, identity.rs, wire.rs, relay.rs and the rest) while neither phone/*.js nor phone/test/vectors/ changes in the same pull request, and the other way round: phone/*.js changes the format and core/src/phone does not. It is fine when the change is a refactor with no change to bytes on the wire and the description says so, or when neither side changes the format.
+    - name: Credentials and sign-ins
+      include:
+        - "core/src/account.rs"
+        - "core/src/fetch.rs"
+        - "src/account.rs"
+        - "src/fetch.rs"
+        - "src/voice.rs"
+        - "core/src/voice.rs"
+        - "src/cloudflare/**"
+        - "src/posthog/**"
+        - "src/github/**"
+      description: |
+        account.rs, fetch.rs and voice.rs read and use API keys. Keys come from the desktop keyring or an environment variable and must never be logged, shown in full, or written to a file other than the keyring.
+        src/cloudflare, src/posthog and src/github use the user's sign-ins (the `cf` profile, PostHog API keys in a 0600 file, the `gh` CLI). Check that tokens are never logged or shown, that files holding them are created 0600, and that network calls run off the UI thread with a timeout.
+    - name: Relay and teams Workers
+      include:
+        - "relay/**"
+        - "teams/**"
+      description: |
+        The relay is a Cloudflare Worker that forwards encrypted frames between the desktop and the phone. It must never see plaintext or keys. Check limits and input validation on every frame, authentication on admin routes, and Durable Object state that can grow without a bound. A new route or limit needs a test in `relay/test`.
+        The teams Worker signs users in with GitHub and keeps per-user feature flags in D1. It must never store or log the GitHub token or a session token; the database holds only SHA-256 hashes of sessions. Users are keyed by numeric GitHub ID, never by login. Every endpoint that needs a user goes through `session()`, and every team feature checks its flag on the server. Admin routes compare `ADMIN_SECRET` in constant time. No GitHub IDs of real users belong in the repository. A schema change is a new file in `teams/migrations`, never an edit to an applied one. A new route or check needs a test in `teams/test`.
+    - name: Control socket and formats stored on disk
+      include:
+        - "src/control.rs"
+        - "src/state.rs"
+        - "src/durable.rs"
+        - "src/memory.rs"
+        - "core/src/state.rs"
+        - "core/src/durable.rs"
+        - "core/src/memory.rs"
+      description: |
+        The control socket lets any process inside arakun open pages, files and terminals. Check that the socket is created with permissions only the user can use, that every JSON line is validated before use, and that Windows (`uds_windows`) behaves the same.
+        These are formats stored on disk. Files written by the last release must still load: new fields need `#[serde(default)]`, and a renamed or removed field breaks users. Writes must go through `durable.rs` so a crash never leaves a half-written file.
+    - name: Dependencies, licenses and install scripts
+      include:
+        - "**/Cargo.toml"
+        - "deny.toml"
+        - "tools/**"
+      description: |
+        - Each new dependency needs a comment above it that says what uses it, like the other entries.
+        - Prefer pure Rust crates and crates GPUI already pulls in.
+        - GPL, LGPL and AGPL crates cannot be used (Arakun is also sold under commercial licenses). MPL-2.0 is allowed one crate at a time.
+        - Adding a license to the allow-list in deny.toml needs a maintainer's agreement in an issue first. Flag any new license or advisory exception and ask for the reason.
+        - Do not add or change the private `team` or `coderlabs` features.
+        The setup and install scripts run on contributors' and users' machines, often with sudo. Check quoting, `set -eu` (or `$ErrorActionPreference = 'Stop'` in PowerShell), idempotence (safe to run again) and that a .sh change has a matching .ps1 change where one exists.
+        Flag a change to what tools/setup-dev.sh installs or checks (a tool, a library, a version, a flag) when tools/setup-dev.ps1 does not change, or the other way round, unless the change is for one platform only (Linux or macOS packages, winget or Visual Studio) and the description says so. Apply the same rule to tools/install-release.sh and tools/install-release.ps1.
+    - name: Rust code
+      include:
+        - "**/*.rs"
+      description: |
+        - Look for logic errors, panics (unwrap, indexing, slicing on char boundaries), blocking work on the UI thread, races and leaked tasks or processes.
+        - Code for one platform must sit behind `cfg(...)`, and the other platforms must still build. Flag a Unix-only or Windows-only API used without a cfg. Windows tests do not run in CI, so Windows-only logic needs extra care.
+        - `#[allow(...)]` needs a comment that says why the lint is wrong there.
+        - Tests belong in a `#[cfg(test)] mod tests` at the bottom of the file they test. A bug fix should add a test when the logic runs without a window.
+        - Comments say why, not what, in plain short sentences. A new module starts with a `//!` comment saying what it is for.
+        - Tests marked `#[ignore]` read this machine's state. A new test that reads the real home directory, sign-ins or network must be `#[ignore]`.
+        - Never print, log or put a token, API key or password in an error message, a URL, a process argument or a panic message.
+        - Flag code added or changed behind `cfg(feature = "team")` or `cfg(feature = "coderlabs")`, and new files under src/team*, src/team_view* or src/shell/team.rs: those are private features.
+    - name: Agent processes and git
+      include:
+        - "core/src/agent/**"
+        - "core/src/git.rs"
+      description: |
+        Agents run as child processes that speak JSON-RPC on stdio. Check that a process is killed and reaped when its thread closes, that reads from its stdio never block the UI thread, and that unknown or missing fields in a message do not panic.
+        Every function in core/src/git.rs blocks; callers must run it on the background executor. Keep `GIT_OPTIONAL_LOCKS=0` on polling commands. Put `--` before paths and pass refs and paths as separate arguments, never through a shell.
+    - name: UI design system, words and terminal painting
+      include:
+        - "src/**/*.rs"
+        - "core/src/**/*.rs"
+        - "core/src/terminal/**"
+      file_paths:
+        - ".claude/skills/ui-change/SKILL.md"
+      description: |
+        UI code (views, dialogs, the sidebar, anything that builds GPUI elements) must use the design system: colors, grays, text sizes, radii, heights and fonts from `theme` and `ui` (`theme::text_muted()`, `theme::border()`, `ui::TEXT_SM`, `ui::RADIUS_*`, `ui::BUTTON_H`, `theme::FONT_MONO`). Flag hand-written values where the system has a name. `src/design_lint.rs` catches colors, text sizes and fonts, but not corner radii or spacing, so check those by eye.
+        Text the user reads uses the glossary under "Words in the interface" in CONTRIBUTING.md (environment, session, palette, color scheme, Workspace panel, notice). `src/words_lint.rs` catches the retired words it knows; flag a new name for something the glossary already names.
+        core/src/ui is the design system itself. A change there affects every view. Check that a new token or component is used consistently and shows up in the gallery (`src/gallery_view.rs`).
+        The terminal paints every frame. Flag allocations, locks held across painting, and work per cell that could be done per line. The PTY and its shell must be cleaned up when the `Terminal` drops.
+    - name: Platform code and the browser feature
+      include:
+        - "core/src/platform.rs"
+        - "core/src/browser/**"
+        - "src/browser/**"
+      description: |
+        Windows-specific behavior lives in core/src/platform.rs. Changes there need a check on a real Windows machine; say so if the pull request does not mention one. Check that docs/windows.md still matches.
+        Browser tabs build only with the `browser` feature. CI builds them with clippy on Linux only, never on Windows or macOS and never in the tests. Check `cfg` gates and platform-specific paths by eye, and that code outside `src/browser` that uses them is behind `cfg(feature = "browser")`.
+    - name: Docs follow the code
+      description: |
+        Flag a pull request that adds, removes or renames a CLI command or subcommand, a command-line flag, a keyboard shortcut or a storage path (a file or directory the app reads or writes under the user's home, config or data directories), when README.md does not change to match. If the change is Windows-specific or behaves differently on Windows, docs/windows.md must change too.
+        In Markdown files, check that commands, flags, paths and shortcuts named in the text match the code. Do not comment on wording, style, line length or Markdown formatting.
+    - name: Isometric scenes
+      include:
+        - "iso/**"
+        - "src/iso/**"
+      file_paths:
+        - ".claude/skills/arakun-iso/SKILL.md"
+      description: |
+        Isometric scene scripts in the line-iso style: thin ink outlines, three-tone faces, one accent color.
+
+pr_descriptions:
+  # cubic adds its summary and a link to its review to the description the
+  # author wrote from .github/pull_request_template.md.
+  generate: true
+  cubic_review_link: true
+  skip_if_author_description: false
+
+issues:
+  # cubic fixes its own findings only when asked: from a button, from a comment
+  # on the pull request, or by turning auto-fix on for that pull request. Its
+  # fixes are commits on the pull request's branch.
+  fix_with_cubic_buttons: true
+  pr_comment_fixes: true
+  fix_commits_to_pr: true
+  coding_agent_provider: cubic
+  auto_fix: on_demand

@@ -6,7 +6,7 @@ use std::time::Instant;
 
 use tiny_skia::{Color, FillRule, Paint, PathBuilder, Pixmap, PixmapPaint, Transform};
 
-use super::raster::{self, Fit};
+use super::export;
 use super::script::ScriptScene;
 use super::svg::{Palette, Rgb};
 use super::{Rect, Seg};
@@ -26,6 +26,12 @@ arakun iso anim <scene.rhai> [--fps N] [--px P] [--look paper|arakun] [--out FIL
     T writes instead the exact frame at T in the loop's view, to compare
 arakun iso check <scene.rhai>
     runs the whole loop: errors, empty frames, the loop seam, time per frame
+arakun iso docs
+    the guide to writing scenes and every function, for agents without the
+    arakun-iso skill
+arakun iso example [name]
+    a complete scene that ships with Arakun (billing, cpu, ec2, raccoon), or
+    their names
 ";
 
 struct Opts {
@@ -133,11 +139,7 @@ fn out_path(o: &Opts, ext: &str, tag: &str) -> PathBuf {
 }
 
 fn extent(scene: &ScriptScene) -> Result<Rect, String> {
-    let mut frames = Vec::new();
-    for i in 0..=48 {
-        frames.push(scene.frame(i as f32 / 48.)?);
-    }
-    super::rest_bounds(frames.into_iter()).ok_or_else(|| "the scene draws nothing".into())
+    export::extent(&|t, tau| scene.frame_at(t, tau), scene.meta.seconds)
 }
 
 /// One frame `w` px wide, as tall as the scene needs.
@@ -149,13 +151,7 @@ fn frame_pixmap(
     pal: &Palette,
     w: u32,
 ) -> Result<Pixmap, String> {
-    let pad = w as f32 * 0.04;
-    let aspect = (ext[3] - ext[1]) / (ext[2] - ext[0]).max(1.);
-    let h = ((w as f32 - 2. * pad) * aspect + 2. * pad).ceil() as u32;
-    let fit = Fit::new(ext, w as f32, h as f32, pad).ok_or("the scene has no size")?;
-    let items = super::shoot(&scene.frame_at(t, tau)?, ext);
-    raster::frame(&items, pal, w, h, fit, (w as f32 / 1000.).max(1.) * 1.25)
-        .ok_or_else(|| "could not draw".into())
+    export::pixmap(&|t, tau| scene.frame_at(t, tau), ext, t, tau, pal, w)
 }
 
 /// Writes `text` small in the corner of a sheet cell.
@@ -279,13 +275,19 @@ fn svg(o: &Opts) -> Result<String, String> {
     );
     pal.soft = scene.meta.soft;
     let ext = extent(&scene)?;
-    let items = super::shoot(&scene.frame(o.at)?, ext);
+    let svg = export::svg(
+        &scene.meta.name,
+        &|t, tau| scene.frame_at(t, tau),
+        ext,
+        o.at,
+        o.at * scene.meta.seconds,
+        &pal,
+    )?;
     let p = out_path(o, "svg", &format!("{:03}", (o.at * 1000.).round() as u32));
     if let Some(dir) = p.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
-    std::fs::write(&p, super::svg::frame(&scene.meta.name, &items, &pal, 16.))
-        .map_err(|e| e.to_string())?;
+    std::fs::write(&p, svg).map_err(|e| e.to_string())?;
     Ok(p.display().to_string())
 }
 
@@ -300,17 +302,9 @@ fn anim(o: &Opts) -> Result<String, String> {
     pal.soft = scene.meta.soft;
     let ext = extent(&scene)?;
     let secs = scene.meta.seconds;
-    let n = ((secs * o.fps).round() as usize).max(2);
-    let mut frames = Vec::with_capacity(n);
-    let mut cams = Vec::with_capacity(n);
-    for i in 0..n {
-        let t = i as f32 / n as f32;
-        let nodes = scene
-            .frame_at(t, t * secs)
-            .map_err(|e| format!("at t {t:.3}: {e}"))?;
-        cams.push(super::lens(&nodes, ext));
-        frames.push(super::shoot(&nodes, ext));
-    }
+    let frame = |t, tau| scene.frame_at(t, tau);
+    let (frames, cams) = export::samples(&frame, ext, secs, o.fps)?;
+    let n = frames.len();
     let p = out_path(o, "svg", "loop");
     if let Some(dir) = p.parent() {
         let _ = std::fs::create_dir_all(dir);
@@ -438,6 +432,30 @@ fn same_frame(a: &[super::Item], b: &[super::Item]) -> bool {
         })
 }
 
+/// The guide to writing scenes: the arakun-iso skill and its reference, for
+/// agents in projects that don't have the skill.
+pub fn docs() -> String {
+    format!(
+        "{}\n\n{}",
+        include_str!("../../.claude/skills/arakun-iso/SKILL.md"),
+        include_str!("../../.claude/skills/arakun-iso/reference.md")
+    )
+}
+
+/// A starter's source by file stem (`cpu`), or the list of them.
+pub fn example(name: Option<&str>) -> Result<String, String> {
+    let stem = |f: &str| f.trim_end_matches(".rhai").to_string();
+    let Some(name) = name else {
+        let names: Vec<String> = super::starters::ALL.iter().map(|s| stem(s.file)).collect();
+        return Ok(names.join("\n"));
+    };
+    super::starters::ALL
+        .iter()
+        .find(|s| stem(s.file) == stem(name))
+        .map(|s| s.source.to_string())
+        .ok_or_else(|| format!("no example {name}; `arakun iso example` lists them"))
+}
+
 /// Runs `arakun iso …`; the exit code.
 pub fn run(args: &[String], cwd: &Path) -> i32 {
     let Some((cmd, rest)) = args.split_first() else {
@@ -448,6 +466,26 @@ pub fn run(args: &[String], cwd: &Path) -> i32 {
     if cmd == "help" || help(cmd) || rest.iter().any(help) {
         print!("{USAGE}");
         return 0;
+    }
+    // These read no scene file, so they skip the option parsing.
+    match cmd.as_str() {
+        "docs" => {
+            print!("{}", docs());
+            return 0;
+        }
+        "example" => {
+            return match example(rest.first().map(String::as_str)) {
+                Ok(out) => {
+                    println!("{out}");
+                    0
+                }
+                Err(e) => {
+                    eprintln!("arakun iso: {e}");
+                    1
+                }
+            };
+        }
+        _ => {}
     }
     let result = parse(rest, cwd).and_then(|o| match cmd.as_str() {
         "render" => render(&o),
@@ -465,5 +503,28 @@ pub fn run(args: &[String], cwd: &Path) -> i32 {
             eprintln!("arakun iso: {e}");
             1
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn docs_hold_the_guide_and_the_reference() {
+        let d = docs();
+        assert!(d.contains("# Isometric scenes in Arakun"));
+        assert!(d.contains("scene(#{"));
+    }
+
+    #[test]
+    fn example_lists_and_prints_starters() {
+        let list = example(None).unwrap();
+        for name in ["billing", "cpu", "ec2", "raccoon"] {
+            assert!(list.contains(name), "{name}");
+        }
+        assert!(example(Some("cpu")).unwrap().contains("name: \"CPU\""));
+        assert!(example(Some("cpu.rhai")).is_ok());
+        assert!(example(Some("nope")).is_err());
     }
 }

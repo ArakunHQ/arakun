@@ -25,6 +25,7 @@ pub enum View {
     Extensions,
     Cloudflare,
     PostHog,
+    Doop,
     #[cfg(feature = "coderlabs")]
     Site,
     Isometric,
@@ -53,6 +54,7 @@ impl View {
         View::Extensions,
         View::Cloudflare,
         View::PostHog,
+        View::Doop,
         #[cfg(feature = "coderlabs")]
         View::Site,
         View::Isometric,
@@ -74,6 +76,7 @@ impl View {
         View::Usage,
         View::Cloudflare,
         View::PostHog,
+        View::Doop,
         View::Isometric,
         View::Phone,
         View::Servers,
@@ -98,6 +101,7 @@ impl View {
             View::Extensions => "Marketplace",
             View::Cloudflare => "Cloudflare",
             View::PostHog => "PostHog",
+            View::Doop => "Doop",
             #[cfg(feature = "coderlabs")]
             View::Site => "arakun.dev",
             View::Isometric => "Isometric",
@@ -125,6 +129,7 @@ impl View {
             View::Extensions => "store01",
             View::Cloudflare => "internet",
             View::PostHog => "chart-breakout-square",
+            View::Doop => "paint-board",
             #[cfg(feature = "coderlabs")]
             View::Site => "globe",
             View::Isometric => "cube",
@@ -153,6 +158,7 @@ impl View {
             View::Extensions => "Plugins, MCP servers and skills",
             View::Cloudflare => "Workers, tunnels and DNS",
             View::PostHog => "Product analytics for each repo",
+            View::Doop => "Design canvases and their frames",
             #[cfg(feature = "coderlabs")]
             View::Site => "Your arakun.dev account",
             View::Isometric => "Animated isometric scenes",
@@ -635,6 +641,19 @@ impl Preset {
         }
     }
 
+    /// The preset applied over `current`: the preset's layout, collapse and
+    /// density, with the look the user chose (card, side, badges, shortcuts)
+    /// kept. The Icons preset is its collapse and density, so those can't stay.
+    pub fn apply(self, current: &Style) -> Sidebar {
+        let mut s = self.layout();
+        s.style = Style {
+            collapse: s.style.collapse,
+            density: s.style.density,
+            ..*current
+        };
+        s
+    }
+
     pub fn layout(self) -> Sidebar {
         let views = |vs: &[View]| vs.iter().map(|v| Piece::view(*v)).collect::<Vec<_>>();
         let more = [
@@ -644,6 +663,7 @@ impl Preset {
             View::Extensions,
             View::Cloudflare,
             View::PostHog,
+            View::Doop,
             #[cfg(feature = "coderlabs")]
             View::Site,
             View::Isometric,
@@ -874,6 +894,18 @@ impl Default for Sidebar {
 }
 
 impl Sidebar {
+    /// The preset the sidebar is laid out as, if it is one.
+    pub fn preset(&self) -> Option<Preset> {
+        Preset::ALL.into_iter().find(|p| {
+            let mut sections = p.layout().sections;
+            for (expected, current) in sections.iter_mut().zip(&self.sections) {
+                // Folding a section in the rail doesn't rearrange it.
+                expected.collapsed = current.collapsed;
+            }
+            sections == self.sections
+        })
+    }
+
     pub fn load() -> Self {
         Self::load_from(&file())
     }
@@ -1069,10 +1101,15 @@ impl Sidebar {
     }
 
     pub fn add_section(&mut self, at: usize) -> usize {
-        let n = self.sections.len() + 1;
+        // The first number no segment is called by: after one is removed,
+        // counting them would give a name already in use.
+        let title = (self.sections.len() + 1..)
+            .map(|n| format!("Segment {n}"))
+            .find(|t| self.sections.iter().all(|s| s.title != *t))
+            .unwrap_or_default();
         // Born titled and foldable: a group is how a long sidebar keeps
         // room for the projects.
-        let s = Section::new(&format!("Segment {n}"), Mode::Scroll, vec![]).folding(false);
+        let s = Section::new(&title, Mode::Scroll, vec![]).folding(false);
         let at = at.min(self.sections.len());
         self.sections.insert(at, s);
         at
@@ -1118,29 +1155,38 @@ impl Sidebar {
         true
     }
 
-    /// Puts a view the rail does not hold at the end of the segment with the
-    /// most views, else of the first scrolling one. False when it is there.
+    /// Where a new piece goes when nobody said where: the segment with the
+    /// most views, else the first scrolling one, else the first. `None` with
+    /// no segment at all. Inbox beside Search is part of the search box, not
+    /// a list of views to add to.
+    pub fn home(&self) -> Option<usize> {
+        let views = |s: &Section| {
+            let by_search = s.inbox_by_search().map(|(_, inbox)| inbox);
+            s.items
+                .iter()
+                .enumerate()
+                .filter(|(i, it)| matches!(it.piece, Piece::View { .. }) && Some(*i) != by_search)
+                .count()
+        };
+        // On a tie the first segment wins: max_by_key would take the last.
+        self.sections
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| views(s) > 0)
+            .min_by_key(|(i, s)| (std::cmp::Reverse(views(s)), *i))
+            .map(|(i, _)| i)
+            .or_else(|| self.sections.iter().position(|s| s.mode == Mode::Scroll))
+            .or((!self.sections.is_empty()).then_some(0))
+    }
+
+    /// Puts a view the rail does not hold at the end of its `home`. False
+    /// when it is there, or there is no segment to hold it.
     pub fn place(&mut self, view: View) -> bool {
         let piece = Piece::view(view);
         if self.has(&piece) {
             return false;
         }
-        let views = |s: &Section| {
-            s.items
-                .iter()
-                .filter(|i| matches!(i.piece, Piece::View { .. }))
-                .count()
-        };
-        // On a tie the first segment wins: max_by_key would take the last.
-        let most = self
-            .sections
-            .iter()
-            .enumerate()
-            .filter(|(_, s)| views(s) > 0)
-            .min_by_key(|(i, s)| (std::cmp::Reverse(views(s)), *i))
-            .map(|(i, _)| i);
-        let Some(s) = most.or_else(|| self.sections.iter().position(|s| s.mode == Mode::Scroll))
-        else {
+        let Some(s) = self.home() else {
             return false;
         };
         let end = self.sections[s].items.len();
@@ -1405,8 +1451,13 @@ mod tests {
         let at = s.add_section(1);
         assert_eq!(at, 1);
         assert_eq!(names(&s)[1], "Segment 4[]");
-        s.remove_section(1);
-        assert_eq!(names(&s), names(&small()));
+        // Another one after a removal does not take a name still in use.
+        s.remove_section(0);
+        let again = s.add_section(0);
+        assert_eq!(names(&s)[again], "Segment 5[]");
+        s.remove_section(0);
+        s.remove_section(0);
+        assert_eq!(names(&s), names(&small())[1..]);
         assert!(s.hidden_views().contains(&View::Notes));
     }
 
@@ -1541,6 +1592,32 @@ mod tests {
     }
 
     #[test]
+    fn folding_or_unfolding_sections_keeps_the_preset() {
+        for preset in Preset::ALL {
+            let mut sidebar = preset.layout();
+            for section in sidebar.sections.iter_mut().filter(|s| s.collapsible) {
+                section.collapsed = !section.collapsed;
+            }
+            assert_eq!(sidebar.preset(), Some(preset), "{}", preset.label());
+        }
+    }
+
+    #[test]
+    fn rearranging_or_editing_sections_and_items_loses_the_preset() {
+        fn after(edit: impl FnOnce(&mut Vec<Section>)) -> Option<Preset> {
+            let mut sidebar = Preset::Notion.layout();
+            edit(&mut sidebar.sections);
+            sidebar.preset()
+        }
+        assert_eq!(after(|_| {}), Some(Preset::Notion));
+        assert_eq!(after(|s| s.swap(0, 1)), None);
+        assert_eq!(after(|s| s.truncate(s.len() - 1)), None);
+        assert_eq!(after(|s| s[1].collapsible = false), None);
+        assert_eq!(after(|s| s[0].items.swap(0, 1)), None);
+        assert_eq!(after(|s| s[0].items[0].label = Some("Mine".into())), None);
+    }
+
+    #[test]
     fn the_core_views_are_not_extensions() {
         for v in [View::Inbox, View::Runs, View::Branches, View::Extensions] {
             assert!(!v.is_extension(), "{}", v.label());
@@ -1591,15 +1668,21 @@ mod tests {
     fn a_view_turned_on_lands_beside_the_other_views() {
         let mut s = small();
         assert!(s.place(View::Cloudflare));
-        // A and B hold one view each; the first of them wins.
+        // Beside Runs: Inbox in A shares the search box's row.
         assert_eq!(
             names(&s),
             [
-                "A[Search,Inbox,Cloudflare]",
-                "B[Projects,Runs]",
+                "A[Search,Inbox]",
+                "B[Projects,Runs,Cloudflare]",
                 "C[Settings]"
             ]
         );
+        // On a tie the first segment wins.
+        let mut tie = small();
+        tie.sections[2]
+            .items
+            .push(Item::new(Piece::view(View::Notes)));
+        assert_eq!(tie.home(), Some(1));
         assert!(!s.place(View::Cloudflare), "already there");
         // With no view anywhere, it goes to the first scrolling segment.
         let mut bare = Sidebar {
@@ -1624,6 +1707,23 @@ mod tests {
             trial_of: None,
         };
         assert!(!none.place(View::Notes));
+        // Only fixed segments: the first still takes it, rather than nothing.
+        let mut fixed = Sidebar {
+            sections: vec![Section::new("A", Mode::Fixed, vec![Piece::Search])],
+            ..none
+        };
+        assert!(fixed.place(View::Notes));
+        assert_eq!(names(&fixed), ["A[Search,Notes]"]);
+    }
+
+    #[test]
+    fn a_new_piece_has_a_home_in_every_preset() {
+        // The default layout: the row of views, not the Active list above it.
+        let s = Sidebar::default();
+        assert_eq!(s.sections[s.home().unwrap()].title, "Views");
+        for p in Preset::ALL {
+            assert!(p.layout().home().is_some(), "{}", p.label());
+        }
     }
 
     #[test]
@@ -1737,5 +1837,26 @@ mod tests {
             small().as_switcher().sections,
             Preset::Switcher.layout().sections
         );
+    }
+
+    #[test]
+    fn preset_sets_collapse_and_density_but_keeps_the_look() {
+        let mine = Style {
+            variant: Variant::Floating,
+            side: Side::Right,
+            badges: false,
+            ..Style::default()
+        };
+        let icons = Preset::Compact.apply(&mine);
+        assert_eq!(icons.style.collapse, Collapse::Icons);
+        assert_eq!(icons.style.density, Density::Compact);
+        assert_eq!(icons.style.variant, Variant::Floating);
+        assert_eq!(icons.style.side, Side::Right);
+        assert!(!icons.style.badges);
+        // Leaving Icons for another preset widens the rail again.
+        let back = Preset::Focused.apply(&icons.style);
+        assert_eq!(back.style.collapse, Collapse::Hide);
+        assert_eq!(back.style.density, Density::Normal);
+        assert_eq!(back.style.side, Side::Right);
     }
 }

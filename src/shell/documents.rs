@@ -1,6 +1,7 @@
 //! File and diff tabs and the Explorer: opening, reloading and drawing documents.
 
 use super::*;
+use crate::git_call::DiffText;
 
 impl Shell {
     pub(super) fn ensure_explorer(&mut self, cx: &mut Context<Self>) {
@@ -22,8 +23,9 @@ impl Shell {
         dirs: Vec<std::path::PathBuf>,
         cx: &mut Context<Self>,
     ) {
-        // A server's folder has no files here to list.
+        // A server's folder: listed over there.
         if crate::model::Remote::is_path(&env_path) {
+            self.server_list_dirs(&env_path, dirs);
             return;
         }
         cx.spawn(async move |this, cx| {
@@ -106,7 +108,11 @@ impl Shell {
             _ => false,
         });
         let index = match existing {
-            Some(i) => i,
+            Some(i) => {
+                // A diff opened again after staging reads it as tracked.
+                strip.tabs[i].kind = kind.clone();
+                i
+            }
             None => {
                 let mut tab = Tab::of(env_path, title, kind.clone());
                 tab.doc = Some(Document::Loading);
@@ -158,6 +164,13 @@ impl Shell {
         kind: TabKind,
         cx: &mut Context<Self>,
     ) {
+        // A server's file: read over there. Its diffs go through `git_at`.
+        if crate::model::Remote::is_path(&env_path)
+            && let TabKind::File { path } = &kind
+        {
+            self.server_read_file(&env_path, path, cx);
+            return;
+        }
         if let TabKind::File { path } = &kind
             && explorer::file_kind(path) == explorer::FileKind::Image
         {
@@ -167,6 +180,13 @@ impl Shell {
             }
             return;
         }
+        // A tab closed and opened again counts from zero: its id tells the two apart.
+        let Some(load) = self.doc_tab_mut(&env_path, &kind).map(|tab| {
+            tab.loads += 1;
+            (tab.id, tab.loads)
+        }) else {
+            return;
+        };
         if let TabKind::File { path } = &kind
             && explorer::file_kind(path) == explorer::FileKind::Sheet
         {
@@ -181,7 +201,9 @@ impl Shell {
                     }))
                     .await;
                 let _ = this.update(cx, |this, cx| {
-                    if let Some(tab) = this.doc_tab_mut(&env_path, &kind) {
+                    if let Some(tab) = this.doc_tab_mut(&env_path, &kind)
+                        && (tab.id, tab.loads) == load
+                    {
                         if let Document::Sheet(book) = &doc {
                             tab.sheet = tab.sheet.min(book.sheets.len() - 1);
                         }
@@ -196,28 +218,24 @@ impl Shell {
         let large = self
             .doc_tab_mut(&env_path, &kind)
             .is_some_and(|tab| tab.large);
+        // A server's diff is read there: its files are not here.
+        let at = self.git_at(&env_path);
         cx.spawn(async move |this, cx| {
             let k = kind.clone();
-            let ep = env_path.clone();
             let doc = cx
                 .background_spawn(crate::guard::task(async move {
-                    if let TabKind::Diff { path, .. } = &k
-                        && !large
-                        && let Some(size) = diff_too_large(&ep, path, None)
-                    {
-                        return Document::TooLarge(size);
-                    }
                     let result: Result<(String, Vec<SharedString>), String> = match &k {
                         TabKind::File { path } => explorer::read_lines(path)
                             .map(|lines| (path.display().to_string(), lines)),
                         TabKind::Diff { path, untracked } => {
-                            let d = match git::diff(&ep, path, *untracked) {
-                                Ok(d) => d,
+                            let limit = (!large).then_some(explorer::MAX_VIEW_BYTES);
+                            let d = match at.diff(path, *untracked, limit) {
+                                Ok(DiffText::Text(d)) => d,
+                                Ok(DiffText::TooLarge(size)) => {
+                                    return Document::TooLarge(too_large(size));
+                                }
                                 Err(e) => return Document::Failed(e.to_string().into()),
                             };
-                            if !large && let Some(size) = diff_too_large(&ep, path, Some(d.len())) {
-                                return Document::TooLarge(size);
-                            }
                             let lines = d
                                 .lines()
                                 .map(|l| SharedString::from(l.replace('\t', "    ")));
@@ -227,41 +245,17 @@ impl Shell {
                     };
                     match result {
                         Ok((path, lines)) => {
-                            let is_diff = matches!(&k, TabKind::Diff { .. });
-                            // Diff markers are not code; headers feed nothing.
-                            let code: Vec<String> = if is_diff {
-                                lines
-                                    .iter()
-                                    .map(|l| highlight::diff_code(l).to_string())
-                                    .collect()
-                            } else {
-                                lines.iter().map(|l| l.to_string()).collect()
-                            };
-                            let mut doc = model::Doc::plain(lines);
-                            if let Some(spans) = highlight::highlight(&path, &code) {
-                                doc.spans = spans
-                                    .into_iter()
-                                    .enumerate()
-                                    .map(|(i, spans)| {
-                                        if is_diff && highlight::diff_shifted(&doc.lines[i]) {
-                                            spans
-                                                .into_iter()
-                                                .map(|(r, c)| (r.start + 1..r.end + 1, c))
-                                                .collect()
-                                        } else {
-                                            spans
-                                        }
-                                    })
-                                    .collect();
-                            }
-                            Document::Lines(Arc::new(doc))
+                            lines_document(&path, lines, matches!(&k, TabKind::Diff { .. }))
                         }
                         Err(e) => Document::Failed(e.into()),
                     }
                 }))
                 .await;
             let _ = this.update(cx, |this, cx| {
-                if let Some(tab) = this.doc_tab_mut(&env_path, &kind) {
+                // An older load that finishes late would undo a newer one.
+                if let Some(tab) = this.doc_tab_mut(&env_path, &kind)
+                    && (tab.id, tab.loads) == load
+                {
                     tab.doc = Some(doc);
                     if tab.markdown.is_some() {
                         tab.markdown = parse_markdown(tab);
@@ -295,7 +289,11 @@ impl Shell {
     }
 
     /// The open file or diff tab of an environment that shows `kind`.
-    fn doc_tab_mut(&mut self, env_path: &std::path::Path, kind: &TabKind) -> Option<&mut Tab> {
+    pub(super) fn doc_tab_mut(
+        &mut self,
+        env_path: &std::path::Path,
+        kind: &TabKind,
+    ) -> Option<&mut Tab> {
         self.strip
             .tabs
             .iter_mut()
@@ -303,24 +301,46 @@ impl Shell {
     }
 }
 
-/// How large a diff is, when it is over the limit for a file tab. Checks the
-/// working file before running git, and the diff's own size after.
-fn diff_too_large(
-    env: &std::path::Path,
-    path: &str,
-    diff_len: Option<usize>,
-) -> Option<SharedString> {
-    let size = match diff_len {
-        Some(len) => len as u64,
-        None => std::fs::metadata(env.join(path)).ok()?.len(),
+/// The lines of a file or a diff (`is_diff`) as a document, colored by the
+/// language `path` names when it is a known one. Slow on a large file: run
+/// it to the side.
+pub(super) fn lines_document(path: &str, lines: Vec<SharedString>, is_diff: bool) -> Document {
+    // Diff markers are not code; headers feed nothing.
+    let code: Vec<String> = if is_diff {
+        lines
+            .iter()
+            .map(|l| highlight::diff_code(l).to_string())
+            .collect()
+    } else {
+        lines.iter().map(|l| l.to_string()).collect()
     };
-    (size > explorer::MAX_VIEW_BYTES).then(|| {
-        format!(
-            "This diff is too large to show ({:.1} MB)",
-            size as f64 / 1e6
-        )
-        .into()
-    })
+    let mut doc = model::Doc::plain(lines);
+    if let Some(spans) = highlight::highlight(path, &code) {
+        doc.spans = spans
+            .into_iter()
+            .enumerate()
+            .map(|(i, spans)| {
+                if is_diff && highlight::diff_shifted(&doc.lines[i]) {
+                    spans
+                        .into_iter()
+                        .map(|(r, c)| (r.start + 1..r.end + 1, c))
+                        .collect()
+                } else {
+                    spans
+                }
+            })
+            .collect();
+    }
+    Document::Lines(Arc::new(doc))
+}
+
+/// Why a diff over the limit for a file tab is held back (`git_call::diff`).
+fn too_large(size: u64) -> SharedString {
+    format!(
+        "This diff is too large to show ({:.1} MB)",
+        size as f64 / 1e6
+    )
+    .into()
 }
 
 /// A file tab whose file is markdown, so it can be shown rendered.
@@ -332,7 +352,7 @@ pub(super) fn is_markdown(tab: &Tab) -> bool {
 }
 
 /// The loaded text of a markdown tab, parsed for the MD Viewer.
-fn parse_markdown(tab: &Tab) -> Option<Rc<Vec<crate::agent::markdown::Block>>> {
+pub(super) fn parse_markdown(tab: &Tab) -> Option<Rc<Vec<crate::agent::markdown::Block>>> {
     let Some(Document::Lines(doc)) = &tab.doc else {
         return None;
     };
@@ -386,7 +406,8 @@ impl Shell {
         let env = self.env();
         let ex = &env.explorer;
         if !ex.children.contains_key(&ex.root) {
-            return panel_empty("Loading files…").into_any_element();
+            let why = ex.failed.as_ref().map_or("Loading files…", |w| w.as_ref());
+            return panel_empty(why).into_any_element();
         }
         let rows = Rc::new(ex.rows());
         if rows.is_empty() {
@@ -506,8 +527,18 @@ impl Shell {
     /// The working file behind a file or diff tab, and the line to open it at
     /// (a diff's first hunk).
     pub(super) fn doc_edit_target(&self, tab: &Tab) -> Option<(std::path::PathBuf, Option<usize>)> {
+        // A server's file is not on this machine to edit or open.
+        if tab
+            .env
+            .as_deref()
+            .is_some_and(crate::model::Remote::is_path)
+        {
+            return None;
+        }
         match &tab.kind {
             TabKind::File { path } => Some((path.clone(), None)),
+            // A server's file is not on this computer to open or edit.
+            TabKind::Diff { .. } if self.env().remote.is_some() => None,
             TabKind::Diff { path, .. } => {
                 let line = match &tab.doc {
                     Some(Document::Lines(doc)) => doc.lines.iter().find_map(|l| hunk_start(l)),
@@ -767,6 +798,7 @@ impl Shell {
                                 None,
                                 &[],
                                 base.as_deref(),
+                                None,
                                 None,
                                 None,
                             )),
@@ -1130,25 +1162,4 @@ pub(super) fn editor_command(path: &std::path::Path, line: Option<usize>) -> Opt
         _ => cmd.push(file),
     }
     Some(cmd)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_diff_over_the_file_limit_is_held_back() {
-        let dir = std::env::temp_dir().join(format!("arakun-large-diff-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let log = dir.join("build.log");
-        let file = std::fs::File::create(&log).unwrap();
-        file.set_len(explorer::MAX_VIEW_BYTES).unwrap();
-        assert!(diff_too_large(&dir, "build.log", None).is_none());
-        file.set_len(explorer::MAX_VIEW_BYTES + 1).unwrap();
-        assert!(diff_too_large(&dir, "build.log", None).is_some());
-        // A file that is gone (deleted) is checked by the size of its diff.
-        assert!(diff_too_large(&dir, "gone.txt", None).is_none());
-        assert!(diff_too_large(&dir, "gone.txt", Some(9 << 20)).is_some());
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
 }

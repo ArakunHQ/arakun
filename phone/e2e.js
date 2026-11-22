@@ -1,5 +1,5 @@
 // The phone's half of the end-to-end encryption with the computer, through the
-// relay (src/phone/e2e.rs is the computer's). WebCrypto only: P-256 ECDH for the
+// relay (core/src/phone/e2e.rs is the computer's). WebCrypto only: P-256 ECDH for the
 // shared secret, the computer's P-256 ECDSA signature over the whole handshake,
 // HKDF-SHA256 for the two session keys, AES-256-GCM for the frames. Loaded as a
 // plain script before app.js; phone/test/e2e.test.mjs checks it against the

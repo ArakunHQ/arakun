@@ -227,7 +227,7 @@ impl Render for AccountDialog {
                             .gap(crate::ui::sp(8.))
                             .text_size(px(ui::TEXT_SM))
                             .text_color(theme::text_subtle())
-                            .child(ui::spinner("acct-loading", 12., theme::mix(0.5)))
+                            .child(ui::spinner(12., theme::mix(0.5)))
                             .child("Reading usage…"),
                     );
                 }
@@ -309,9 +309,7 @@ impl Render for AccountDialog {
                 }))
                 .child(
                     ui::button("acct-refresh", "Refresh", ButtonKind::Ghost, !busy)
-                        .when(busy, |d| {
-                            d.child(ui::spinner("acct-refresh-spin", 11., theme::mix(0.6)))
-                        })
+                        .when(busy, |d| d.child(ui::spinner(11., theme::mix(0.6))))
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.account.update(cx, |a, cx| a.refresh(cx))
                         })),
@@ -347,7 +345,7 @@ impl Render for AccountDialog {
             );
         }
 
-        ui::modal_panel("account", 460.)
+        ui::modal_panel("account", 460., "Factory account")
             .child(ui::modal_header(
                 "Factory account",
                 Some(description),
@@ -376,9 +374,11 @@ pub fn rail_shows(agent: AgentKind) -> bool {
         AgentKind::Droid => RAIL_DROID.load(Ordering::Relaxed),
         AgentKind::OpenCode => RAIL_OPENCODE.load(Ordering::Relaxed),
         AgentKind::Devin => RAIL_DEVIN.load(Ordering::Relaxed),
-        // Pay as you go: no plan to keep an eye on. Codex's ChatGPT limits are
-        // not read yet.
-        AgentKind::Codex | AgentKind::Antigravity | AgentKind::WorkersAi => false,
+        // Pay as you go: no plan to keep an eye on. Codex's ChatGPT limits and
+        // Cursor's and Antigravity's plans are not read yet.
+        AgentKind::Codex | AgentKind::Cursor | AgentKind::Antigravity | AgentKind::WorkersAi => {
+            false
+        }
     }
 }
 
@@ -388,7 +388,7 @@ pub fn set_rail_shows(agent: AgentKind, on: bool) {
         AgentKind::Droid => RAIL_DROID.store(on, Ordering::Relaxed),
         AgentKind::OpenCode => RAIL_OPENCODE.store(on, Ordering::Relaxed),
         AgentKind::Devin => RAIL_DEVIN.store(on, Ordering::Relaxed),
-        AgentKind::Codex | AgentKind::Antigravity | AgentKind::WorkersAi => {}
+        AgentKind::Codex | AgentKind::Cursor | AgentKind::Antigravity | AgentKind::WorkersAi => {}
     }
 }
 
@@ -489,7 +489,7 @@ pub fn rail_card(
         .child(icon("gauge", 14.).text_color(theme::text_faint()))
         .child(div().flex_1().truncate().child("Usage"))
         .when(account.busy() && show_droid, |d| {
-            d.child(ui::spinner("rail-usage-spin", 10., theme::text_faint()))
+            d.child(ui::spinner(10., theme::text_faint()))
         })
         .when(
             account.error().is_some() && !account.busy() && show_droid,

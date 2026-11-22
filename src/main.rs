@@ -1,24 +1,24 @@
-mod accept;
-mod account;
+// The code shared with `arakun-server` and the examples (core/), named as if it were here.
+use arakun_core::{
+    accept, account, agent, assets, browser, caret, clone_source, durable, explorer, fetch,
+    frame_timer, git, git_call, guard, highlight, input, island, mascot, phone, platform, poll,
+    redact, schedule, server, signals, terminal, theme, ui, zoom,
+};
 mod account_view;
-mod agent;
 mod app_menu;
 mod ascii_face;
-mod assets;
 mod attach_picker;
 mod automations_view;
 mod background;
+mod branch_history;
 mod branches;
 mod branches_view;
-mod browser;
 #[cfg(feature = "coderlabs")]
 mod canvas;
 #[cfg(feature = "coderlabs")]
 mod canvas_view;
-mod caret;
 mod ci;
 mod cleanup;
-mod clone_source;
 mod cloudflare;
 mod cloudflare_view;
 #[cfg(feature = "coderlabs")]
@@ -30,24 +30,18 @@ mod customize_view;
 mod design_lint;
 mod dev;
 mod dialogs;
+mod doop;
+mod doop_view;
 mod draft;
-mod durable;
 mod env_name;
-mod explorer;
 mod extensions_view;
-mod fetch;
-mod frame_timer;
+mod flags;
 mod gallery_view;
-mod git;
 mod git_dialogs;
 mod github;
 mod github_view;
-mod guard;
 mod headless;
-mod highlight;
 mod history;
-mod input;
-mod island;
 mod island_host;
 mod iso;
 mod iso_view;
@@ -55,7 +49,6 @@ mod iso_view;
 mod lab;
 mod logos;
 mod look;
-mod mascot;
 mod memory;
 mod memory_view;
 mod model;
@@ -63,35 +56,30 @@ mod notices;
 mod onboarding;
 mod palette;
 mod palettes;
-mod phone;
-mod phone_page;
 mod phone_view;
 mod picker;
-mod platform;
 mod posthog;
 mod posthog_view;
 mod pr_writer;
 mod prompts;
-mod redact;
 mod repeats;
-mod rotate;
 mod runs_view;
-mod schedule;
-mod server;
 mod servers;
 mod servers_view;
 mod settings_view;
 mod settle;
 mod sheet;
 mod shell;
+mod shrink;
 mod sidebar;
-mod signals;
 #[cfg(feature = "coderlabs")]
 mod site;
 #[cfg(feature = "coderlabs")]
 mod site_view;
 mod state;
 mod stored;
+mod subnav;
+mod tab_layout;
 #[cfg(feature = "coderlabs")]
 mod tasks_view;
 #[cfg(feature = "team")]
@@ -100,11 +88,9 @@ mod team;
 mod team_view;
 mod telemetry;
 mod telemetry_dialog;
-mod terminal;
-mod theme;
-mod ui;
 mod ui_zoom;
 mod update;
+mod update_dialog;
 mod usage_history;
 mod usage_view;
 mod voice;
@@ -113,7 +99,6 @@ mod window_error;
 mod words_lint;
 #[cfg(feature = "coderlabs")]
 mod xlog;
-mod zoom;
 
 use gpui::{
     App, AppContext as _, Bounds, KeyBinding, TitlebarOptions, WindowBackgroundAppearance,
@@ -152,6 +137,13 @@ fn saved_place(cx: &App) -> Option<(WindowBounds, Option<gpui::DisplayId>)> {
 }
 
 fn main() {
+    arakun_core::host::set(arakun_core::host::Host {
+        memory_prompt: memory::prompt_for,
+        memory_root: memory::root,
+        sandbox_socket: control::sandbox_socket_path,
+        shim_dir: control::shim_dir,
+        github_read_only: github::pr::READ_ONLY,
+    });
     browser::handle_subprocess();
     if control::run_cli() {
         return;
@@ -239,6 +231,11 @@ fn main() {
             bind("ctrl-pageup", shell::PrevTab, "Shell"),
             bind("ctrl-shift-pagedown", shell::MoveTabRight, "Shell"),
             bind("ctrl-shift-pageup", shell::MoveTabLeft, "Shell"),
+            bind(
+                "alt-p",
+                shell::TogglePin,
+                "Shell && !Terminal && !TextInput",
+            ),
             bind("ctrl-alt-t", shell::ReopenClosedTab, "Shell && !Terminal"),
             bind("ctrl-1", shell::SelectTab1, "Shell"),
             bind("ctrl-2", shell::SelectTab2, "Shell"),
@@ -307,6 +304,7 @@ fn main() {
         })
         .detach();
         ui::motion::follow_system(cx);
+        ui::contrast::follow_system(cx);
         cx.on_window_closed(|cx, _| {
             if cx.windows().is_empty() {
                 // Now: the shell saves as it is released, which can come before
@@ -363,6 +361,13 @@ fn main() {
             shell.sync_island(window, cx);
             #[cfg(feature = "team")]
             shell.sync_team(window, cx);
+            // After the first frame, so warming the syntax colors doesn't
+            // compete with it, and off the UI thread, so no render waits on it.
+            window.on_next_frame(|_, cx| {
+                cx.background_executor()
+                    .spawn(async { highlight::warm() })
+                    .detach();
+            });
         });
         // A click on one of Arakun's notifications shows what it was about, as
         // "View" on the island does. Outside a bundle they come from osascript.

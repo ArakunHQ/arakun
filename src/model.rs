@@ -14,105 +14,30 @@ use crate::explorer::Explorer;
 use crate::git;
 use crate::terminal::{Terminal, TerminalView};
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Agent {
-    Claude,
-    Droid,
-    OpenCode,
-    Codex,
-    Devin,
-    Antigravity,
-    WorkersAi,
-}
-
-/// The agent picked last, anywhere, as its place in `Agent::ALL`: new environments start with it.
+/// The agent picked last, anywhere, as its place in `AgentKind::ALL`: new environments start with it.
 static LAST_AGENT: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(1);
 
 /// The agent a new environment starts with: the last one picked (Droid until one is).
-pub fn default_agent() -> Agent {
+pub fn default_agent() -> AgentKind {
     let i = LAST_AGENT.load(std::sync::atomic::Ordering::Relaxed);
-    Agent::ALL.get(i as usize).copied().unwrap_or(Agent::Droid)
+    AgentKind::ALL
+        .get(i as usize)
+        .copied()
+        .unwrap_or(AgentKind::Droid)
 }
 
-pub fn set_default_agent(agent: Agent) {
-    let i = Agent::ALL.iter().position(|a| *a == agent).unwrap_or(1);
+pub fn set_default_agent(agent: AgentKind) {
+    let i = AgentKind::ALL.iter().position(|a| *a == agent).unwrap_or(1);
     LAST_AGENT.store(i as u8, std::sync::atomic::Ordering::Relaxed);
 }
 
-impl Agent {
-    pub const ALL: [Agent; 7] = [
-        Agent::Claude,
-        Agent::Droid,
-        Agent::OpenCode,
-        Agent::Codex,
-        Agent::Devin,
-        Agent::Antigravity,
-        Agent::WorkersAi,
-    ];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Agent::Claude => "Claude Code",
-            Agent::Droid => "Droid",
-            Agent::OpenCode => "OpenCode",
-            Agent::Codex => "Codex",
-            Agent::Devin => "Devin",
-            Agent::Antigravity => "Antigravity",
-            Agent::WorkersAi => "Workers AI",
-        }
-    }
-
-    pub fn key(self) -> &'static str {
-        match self {
-            Agent::Claude => "claude",
-            Agent::Droid => "droid",
-            Agent::OpenCode => "opencode",
-            Agent::Codex => "codex",
-            Agent::Devin => "devin",
-            Agent::Antigravity => "antigravity",
-            Agent::WorkersAi => "workers-ai",
-        }
-    }
-
-    pub fn kind(self) -> AgentKind {
-        match self {
-            Agent::Claude => AgentKind::Claude,
-            Agent::Droid => AgentKind::Droid,
-            Agent::OpenCode => AgentKind::OpenCode,
-            Agent::Codex => AgentKind::Codex,
-            Agent::Devin => AgentKind::Devin,
-            Agent::Antigravity => AgentKind::Antigravity,
-            Agent::WorkersAi => AgentKind::WorkersAi,
-        }
-    }
-
-    /// Unknown keys (and old files' missing ones) read as Droid.
-    pub fn from_key(key: &str) -> Self {
-        match key {
-            "claude" => Agent::Claude,
-            "opencode" => Agent::OpenCode,
-            "codex" => Agent::Codex,
-            "devin" => Agent::Devin,
-            "antigravity" => Agent::Antigravity,
-            "workers-ai" => Agent::WorkersAi,
-            _ => Agent::Droid,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Status {
-    Idle,
-    Working,
-    NeedsInput,
-    Error,
-}
+pub use arakun_core::model::{Status, unix_now};
 
 #[derive(Clone)]
 pub enum TabKind {
     NewSession,
     Session {
-        agent: Agent,
+        agent: AgentKind,
         id: SharedString,
     },
     Browser {
@@ -149,6 +74,8 @@ pub enum TabKind {
     Site,
     /// The PostHog project of the open project (`posthog_view`).
     PostHog,
+    /// The canvases of a Doop instance (`doop_view`).
+    Doop,
     /// What agent sessions used: cost, tokens and credits over time.
     Usage,
     /// The design system's tokens and components (`gallery_view`).
@@ -208,8 +135,8 @@ fn yes() -> bool {
 pub const GRACE_SECS: u64 = 3600;
 
 impl Automation {
-    pub fn agent(&self) -> Option<Agent> {
-        self.agent.as_deref().map(Agent::from_key)
+    pub fn agent(&self) -> Option<AgentKind> {
+        self.agent.as_deref().map(AgentKind::from_id)
     }
 
     /// The next scheduled run, if it is scheduled and enabled.
@@ -281,6 +208,12 @@ pub struct Tab {
     pub sheet: usize,
     /// A diff tab loads its diff even past the size limit ("Show anyway").
     pub large: bool,
+    /// Counts the loads of a file or diff tab: only the latest one shows,
+    /// whichever finishes last.
+    pub loads: u64,
+    /// Pinned to the title bar, which then shows it whatever else it hides
+    /// (`tab_layout::BarShows::Pinned`).
+    pub pinned: bool,
 }
 
 impl Tab {
@@ -303,6 +236,8 @@ impl Tab {
             markdown: None,
             sheet: 0,
             large: false,
+            loads: 0,
+            pinned: false,
         }
     }
 
@@ -322,6 +257,14 @@ impl Tab {
     pub fn is_in(&self, env: &Path) -> bool {
         self.env.as_deref() == Some(env)
     }
+
+    /// The session a session tab shows.
+    pub fn session_id(&self) -> Option<&SharedString> {
+        match &self.kind {
+            TabKind::Session { id, .. } => Some(id),
+            _ => None,
+        }
+    }
 }
 
 /// One agent conversation in an environment. Its transcript lives in
@@ -334,7 +277,7 @@ pub struct BrowserTab {
 pub struct Session {
     pub id: SharedString,
     pub title: SharedString,
-    pub agent: Agent,
+    pub agent: AgentKind,
     pub status: Status,
     /// Unix seconds of the last activity.
     pub updated: u64,
@@ -380,7 +323,7 @@ pub struct LiveSession {
 }
 
 impl Session {
-    pub fn new(id: SharedString, title: SharedString, agent: Agent) -> Self {
+    pub fn new(id: SharedString, title: SharedString, agent: AgentKind) -> Self {
         Self {
             id,
             title,
@@ -411,12 +354,6 @@ impl Session {
             self.status
         }
     }
-}
-
-pub fn unix_now() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs())
 }
 
 /// "now", "5m", "3h", "2d" for the session list.
@@ -496,7 +433,7 @@ pub struct Environment {
     pub draft: crate::draft::Draft,
     /// Images waiting in the composer, sent along with the draft.
     pub draft_images: Vec<PathBuf>,
-    pub agent: Agent,
+    pub agent: AgentKind,
     /// Native Droid settings picked on the New session tab, for the next session.
     pub draft_settings: Vec<(crate::agent::Setting, String)>,
     /// Claude Code settings for the next session: picked on the New session tab,
@@ -508,6 +445,8 @@ pub struct Environment {
     pub codex_settings: Vec<(crate::agent::Setting, String)>,
     /// The same for Devin.
     pub devin_settings: Vec<(crate::agent::Setting, String)>,
+    /// The same for Cursor.
+    pub cursor_settings: Vec<(crate::agent::Setting, String)>,
     /// The same for Antigravity.
     pub antigravity_settings: Vec<(crate::agent::Setting, String)>,
     /// The same for Workers AI.
@@ -520,6 +459,9 @@ pub struct Environment {
     /// A push, pull or PR running from the Changes panel.
     pub git_busy: Option<GitOp>,
     pub git_error: Option<SharedString>,
+    /// Why a server's changes could not be read the last time it was asked:
+    /// the panel then shows what it had, or nothing, and says so.
+    pub status_error: Option<SharedString>,
     /// Unix seconds it was last on screen, for the cleanup of old environments.
     pub used: u64,
     /// A folder on a paired server, not here. Its sessions run there; nothing
@@ -878,6 +820,74 @@ impl TabStrip {
             .unwrap_or(0);
         true
     }
+
+    /// The tabs the title bar holds, by index, as `bar` asks. With pinned
+    /// tabs, a session's tab shows when pinned, or while it is the one on
+    /// screen; other tabs (pages, files, views) show as always. For one
+    /// project, the tabs `in_project` picks and the views. The active tab
+    /// always shows.
+    pub fn shown(
+        &self,
+        bar: crate::tab_layout::BarShows,
+        in_project: impl Fn(&Tab) -> bool,
+    ) -> Vec<usize> {
+        use crate::tab_layout::BarShows;
+        (0..self.tabs.len())
+            .filter(|&i| {
+                let t = &self.tabs[i];
+                i == self.active_tab
+                    || match bar {
+                        BarShows::AllOpen => true,
+                        BarShows::Project => t.env.is_none() || in_project(t),
+                        BarShows::Pinned => t.pinned || t.session_id().is_none(),
+                    }
+            })
+            .collect()
+    }
+
+    /// Session tabs that are neither pinned nor on screen (`keep` is the
+    /// other pane's): with pinned tabs they show nowhere, so they close.
+    pub fn strays(&self, keep: Option<u64>) -> Vec<u64> {
+        let active = self.active().map(|t| t.id);
+        self.tabs
+            .iter()
+            .filter(|t| t.session_id().is_some() && !t.pinned)
+            .map(|t| t.id)
+            .filter(|id| Some(*id) != active && Some(*id) != keep)
+            .collect()
+    }
+
+    /// With nothing pinned, the session on screen pins itself, so a bar of
+    /// pinned tabs never sits empty. True when it did.
+    pub fn pin_lone(&mut self) -> bool {
+        if self.tabs.iter().any(|t| t.pinned) {
+            return false;
+        }
+        match self.tabs.get_mut(self.active_tab) {
+            Some(t) if t.session_id().is_some() => {
+                t.pinned = true;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Moves the tab `id` into the gap before the tab at `gap` (`tabs.len()`
+    /// for after the last), where a dragged tab was dropped. False when it
+    /// lands where it was.
+    pub fn move_to_gap(&mut self, id: u64, gap: usize) -> bool {
+        self.position(id)
+            .and_then(|from| Some((from, drop_index(from, gap)?)))
+            .is_some_and(|(from, to)| self.move_tab(from, to))
+    }
+}
+
+/// Where a tab taken from `from` ends up when dropped in the gap before the
+/// tab at `gap`: the tabs after it shift left once it is out. `None` for
+/// the two gaps beside it, which leave it where it is.
+pub fn drop_index(from: usize, gap: usize) -> Option<usize> {
+    let to = if gap > from { gap - 1 } else { gap };
+    (to != from).then_some(to)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -910,6 +920,7 @@ impl Environment {
             opencode_settings: Vec::new(),
             codex_settings: Vec::new(),
             devin_settings: Vec::new(),
+            cursor_settings: Vec::new(),
             antigravity_settings: Vec::new(),
             workers_ai_settings: Vec::new(),
             sync: git::Sync::default(),
@@ -917,6 +928,7 @@ impl Environment {
             pr_checked: None,
             git_busy: None,
             git_error: None,
+            status_error: None,
             used: unix_now(),
             remote: None,
         };
@@ -1012,6 +1024,8 @@ pub struct Project {
     pub check: Option<String>,
     /// The user doesn't want arakun to suggest a check here.
     pub check_declined: bool,
+    /// Its agents run in a sandbox (`agent::sandbox`).
+    pub sandbox: bool,
     /// The branch new environments start from; None for origin's default branch.
     pub base: Option<String>,
     /// Scratch notes, shown by the Notes tab.
@@ -1312,9 +1326,9 @@ mod tests {
         // A worktree waiting for its first session stays in the list.
         assert!(!env.archived());
         env.sessions
-            .push(Session::new("a".into(), "A".into(), Agent::Claude));
+            .push(Session::new("a".into(), "A".into(), AgentKind::Claude));
         env.sessions
-            .push(Session::new("b".into(), "B".into(), Agent::Claude));
+            .push(Session::new("b".into(), "B".into(), AgentKind::Claude));
         env.sessions[0].settled = true;
         assert!(!env.archived());
         env.sessions[1].settled = true;
@@ -1488,6 +1502,79 @@ mod tests {
         assert_eq!(titles(&env), ["c", "a", "b"]);
         assert!(!env.move_tab(2, 2));
         assert!(!env.move_tab(5, 0));
+    }
+
+    fn session(id: &str) -> Tab {
+        Tab::of(
+            Path::new("/p"),
+            id.to_string(),
+            TabKind::Session {
+                agent: AgentKind::Droid,
+                id: id.to_string().into(),
+            },
+        )
+    }
+
+    #[test]
+    fn a_pinned_bar_shows_pins_the_open_tab_and_the_rest() {
+        use crate::tab_layout::BarShows;
+        let mut a = session("a");
+        a.pinned = true;
+        let other = Tab::of(Path::new("/elsewhere"), "page", browser("page"));
+        let mut env = TabStrip {
+            tabs: vec![a, session("b"), session("c"), other],
+            ..Default::default()
+        };
+        env.active_tab = 2;
+        assert_eq!(env.shown(BarShows::Pinned, |_| true), [0, 2, 3]);
+        assert_eq!(env.shown(BarShows::AllOpen, |_| true), [0, 1, 2, 3]);
+        let here = |t: &Tab| t.is_in(Path::new("/p"));
+        assert_eq!(env.shown(BarShows::Project, here), [0, 1, 2]);
+        // b shows nowhere: it closes. The other pane's tab stays.
+        assert_eq!(env.strays(None), [env.tabs[1].id]);
+        assert!(env.strays(Some(env.tabs[1].id)).is_empty());
+    }
+
+    #[test]
+    fn the_first_session_pins_itself() {
+        let mut env = TabStrip {
+            tabs: vec![
+                Tab::of(Path::new("/p"), "page", browser("page")),
+                session("a"),
+            ],
+            ..Default::default()
+        };
+        env.active_tab = 0;
+        assert!(!env.pin_lone(), "a page is not a session");
+        env.active_tab = 1;
+        assert!(env.pin_lone());
+        assert!(env.tabs[1].pinned);
+        env.tabs.push(session("b"));
+        env.active_tab = 2;
+        assert!(!env.pin_lone(), "something is pinned already");
+    }
+
+    #[test]
+    fn a_tab_dropped_in_a_gap_lands_there() {
+        // Gaps beside the tab itself move nothing.
+        assert_eq!(drop_index(2, 2), None);
+        assert_eq!(drop_index(2, 3), None);
+        // Left of it: the gap's own index. Right of it: one less, as it leaves its place.
+        assert_eq!(drop_index(2, 0), Some(0));
+        assert_eq!(drop_index(0, 3), Some(2));
+        assert_eq!(drop_index(0, 1), None);
+
+        let mut env = env_with(vec![browser("a"), browser("b"), browser("c")]);
+        env.active_tab = 0;
+        let a = env.tabs[0].id;
+        // After the last tab.
+        assert!(env.move_to_gap(a, 3));
+        assert_eq!(titles(&env), ["b", "c", "a"]);
+        assert_eq!(env.active_tab, 2);
+        assert!(!env.move_to_gap(a, 2));
+        assert!(env.move_to_gap(a, 1));
+        assert_eq!(titles(&env), ["b", "a", "c"]);
+        assert!(!env.move_to_gap(999, 0));
     }
 
     #[test]

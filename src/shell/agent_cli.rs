@@ -169,7 +169,7 @@ impl Shell {
             }
             let Some(id) = self.start_session_with(
                 &env_path,
-                model::Agent::Claude,
+                AgentKind::Claude,
                 title,
                 prompt.clone(),
                 false,
@@ -257,9 +257,9 @@ impl Shell {
             extra.push((Setting::Effort, effort.to_string()));
         }
         let agent = if native.is_some() {
-            model::Agent::WorkersAi
+            AgentKind::WorkersAi
         } else {
-            model::Agent::OpenCode
+            AgentKind::OpenCode
         };
         let started = self.start_session_with(
             &env_path,
@@ -414,7 +414,7 @@ impl Shell {
         let mut rows: Vec<(u64, String)> = Vec::new();
         for e in self.projects.iter().flat_map(|p| &p.environments) {
             let listed = |s: &&model::Session| {
-                (all || matches!(s.agent, model::Agent::OpenCode | model::Agent::WorkersAi))
+                (all || matches!(s.agent, AgentKind::OpenCode | AgentKind::WorkersAi))
                     && !crate::headless::shown(&s.id)
             };
             for s in e.sessions.iter().filter(listed) {

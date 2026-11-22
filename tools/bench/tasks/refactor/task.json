@@ -1,0 +1,5 @@
+{
+  "prompt": "Rename the function `calc` in shop/pricing.py to `order_total` everywhere in this project, and its parameter `d` to `discount`. Keep behavior the same and the tests passing.",
+  "check": "python3 -m unittest discover -s bench_hidden -t . -q",
+  "timeout": 600
+}

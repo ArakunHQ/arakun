@@ -233,6 +233,7 @@ mod host {
     #[cfg(feature = "coderlabs")]
     use crate::island::Levels;
     use crate::island::{self, Alert, AlertKind, Feed, Island, IslandEvent, Phase};
+    use crate::ui::motion;
 
     /// How often the headless folders are read.
     const WATCH_EVERY: Duration = Duration::from_secs(1);
@@ -242,6 +243,10 @@ mod host {
     const QUIT_AFTER: Duration = Duration::from_millis(100);
     /// A second click on the shape a button just shrank is not one on the resting island.
     const AFTER_BUTTON: Duration = Duration::from_secs(1);
+    /// How long the host waits after the app leaves before it quits too: an
+    /// update restart connects again within it.
+    #[cfg(target_os = "macos")]
+    const LEAVE_AFTER: Duration = Duration::from_secs(3);
 
     /// How often finished and silent outside sessions are looked for.
     #[cfg(windows)]
@@ -280,6 +285,9 @@ mod host {
         },
         #[cfg(feature = "coderlabs")]
         Wake(super::wake::Wake),
+        /// Arakun.app was opened (a Dock click) and macOS gave it to this process.
+        #[cfg(target_os = "macos")]
+        Reopen,
         /// A desktop notification (`desktop.rs`), which only Linux passes on.
         #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
         Notice(Alert),
@@ -312,6 +320,8 @@ mod host {
             }
         };
         let (tx, rx) = mpsc::unbounded();
+        #[cfg(target_os = "macos")]
+        let reopened = tx.clone();
         #[cfg(feature = "coderlabs")]
         {
             let woke = tx.clone();
@@ -342,33 +352,38 @@ mod host {
             eprintln!("arakun: island socket: {e}");
             return 1;
         }
-        gpui::Application::with_platform(crate::ui_zoom::platform())
-            .with_assets(crate::assets::Assets)
-            .run(move |cx: &mut App| {
-                crate::assets::load_fonts(cx);
-                crate::signals::quit_on_signals(cx);
-                island::hide_from_dock();
-                if !island::supported(cx) {
-                    eprintln!("arakun: {}", super::NEEDS);
-                    EXIT.store(1, Ordering::Relaxed);
-                    cx.quit();
-                    return;
-                }
-                // Wayland names its screens a moment after start: wait for them so the
-                // island can pick the landscape one, then open it.
-                cx.spawn(async move |cx| {
-                    for _ in 0..80 {
-                        if cx.update(|cx| !cx.displays().is_empty()) {
-                            break;
-                        }
-                        cx.background_executor()
-                            .timer(Duration::from_millis(25))
-                            .await;
+        let app = gpui::Application::with_platform(crate::ui_zoom::platform())
+            .with_assets(crate::assets::Assets);
+        // macOS counts this process as a running Arakun.app, so opening the app
+        // (a Dock click) comes here instead of starting it.
+        #[cfg(target_os = "macos")]
+        app.on_reopen(move |_| drop(reopened.unbounded_send(Msg::Reopen)));
+        app.run(move |cx: &mut App| {
+            crate::assets::load_fonts(cx);
+            crate::signals::quit_on_signals(cx);
+            crate::ui::motion::follow_system(cx);
+            island::hide_from_dock();
+            if !island::supported(cx) {
+                eprintln!("arakun: {}", super::NEEDS);
+                EXIT.store(1, Ordering::Relaxed);
+                cx.quit();
+                return;
+            }
+            // Wayland names its screens a moment after start: wait for them so the
+            // island can pick the landscape one, then open it.
+            cx.spawn(async move |cx| {
+                for _ in 0..80 {
+                    if cx.update(|cx| !cx.displays().is_empty()) {
+                        break;
                     }
-                    cx.update(|cx| open(cx, rx));
-                })
-                .detach();
-            });
+                    cx.background_executor()
+                        .timer(Duration::from_millis(25))
+                        .await;
+                }
+                cx.update(|cx| open(cx, rx));
+            })
+            .detach();
+        });
         let _ = std::fs::remove_file(&path);
         #[cfg(feature = "coderlabs")]
         super::call::kill_all();
@@ -521,6 +536,12 @@ mod host {
         #[cfg(windows)]
         external: super::external::Sessions,
         launched: Option<Instant>,
+        /// An app connected and has left since: the host goes too once nothing holds it.
+        #[cfg(target_os = "macos")]
+        app_left: bool,
+        /// The wait before quitting; replacing it drops the one before.
+        #[cfg(target_os = "macos")]
+        leaving: Option<Task<()>>,
         /// When a card's button or a row was last pressed.
         button_at: Option<Instant>,
         /// The voice call going on, and its number: what a finished one says is ignored.
@@ -620,6 +641,10 @@ mod host {
                 #[cfg(windows)]
                 external: super::external::Sessions::default(),
                 launched: None,
+                #[cfg(target_os = "macos")]
+                app_left: false,
+                #[cfg(target_os = "macos")]
+                leaving: None,
                 button_at: None,
                 #[cfg(feature = "coderlabs")]
                 call: None,
@@ -651,6 +676,13 @@ mod host {
             match msg {
                 Msg::Hello { conn, pid, out } => {
                     eprintln!("arakun: island: app {pid} connected");
+                    // It came up: a Dock click after it quits must start it again.
+                    self.launched = None;
+                    #[cfg(target_os = "macos")]
+                    {
+                        self.app_left = false;
+                        self.leaving = None;
+                    }
                     self.app = Some(AppLink {
                         conn,
                         pid,
@@ -696,6 +728,13 @@ mod host {
                         }
                     });
                     self.push(cx);
+                    #[cfg(target_os = "macos")]
+                    {
+                        self.app_left = true;
+                        // A full wait from this departure, not an earlier one.
+                        self.leaving = None;
+                        self.leave_if_alone(cx);
+                    }
                 }
                 Msg::Gone { .. } => {}
                 Msg::Request { msg, done } => {
@@ -703,10 +742,48 @@ mod host {
                 }
                 #[cfg(feature = "coderlabs")]
                 Msg::Wake(w) => self.wake(w, cx),
+                #[cfg(target_os = "macos")]
+                Msg::Reopen => match &self.app {
+                    Some(app) => focus(app.pid),
+                    None => self.launch(),
+                },
                 Msg::Notice(alert) => {
                     self.apply(ToIsland::Alert { alert }, cx);
                 }
             }
+        }
+
+        /// On macOS this process counts as a running Arakun.app. While it stays,
+        /// the island outlives Quit and the Dock brings this process forward
+        /// instead of starting the app (`Msg::Reopen` covers that). So once the
+        /// app has left, it quits as soon as no headless session runs.
+        #[cfg(target_os = "macos")]
+        fn leave_if_alone(&mut self, cx: &mut Context<Self>) {
+            if !self.app_left || self.leaving.is_some() || self.held() {
+                return;
+            }
+            self.leaving = Some(cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(LEAVE_AFTER).await;
+                let alone = this.update(cx, |host, _| {
+                    let alone = host.app_left && !host.held();
+                    if !alone {
+                        host.leaving = None;
+                    }
+                    alone
+                });
+                if alone.unwrap_or(false) {
+                    eprintln!("arakun: island: the app left; quitting with it");
+                    // macOS ends the process inside `quit`, before `main` gets to it.
+                    let _ = std::fs::remove_file(proto::socket_path());
+                    cx.update(|cx| cx.quit());
+                }
+            }));
+        }
+
+        /// An app or a running headless session keeps the host.
+        #[cfg(target_os = "macos")]
+        fn held(&self) -> bool {
+            self.app.is_some() || self.headless.rows.iter().any(|r| r.status.active())
         }
 
         /// What any source asks of the island.
@@ -823,6 +900,9 @@ mod host {
             if changed {
                 self.push(cx);
             }
+            // The last headless session that held the host after the app left ended.
+            #[cfg(target_os = "macos")]
+            self.leave_if_alone(cx);
         }
 
         /// An agent outside Arakun changed: its row, and a card when its turn
@@ -839,6 +919,20 @@ mod host {
 
         fn push(&mut self, cx: &mut Context<Self>) {
             let feed = watch::merge(self.app.as_ref().map(|a| &a.feed), &self.headless);
+            // The app's choice wins while it is connected; then the system's.
+            let choice = match feed.reduce_motion {
+                Some(true) => motion::Reduce::On,
+                Some(false) => motion::Reduce::Off,
+                None => motion::Reduce::System,
+            };
+            if choice != motion::choice() {
+                motion::set_choice(choice, cx);
+                // The system's setting was read at start; it may have changed
+                // while the app's choice ruled.
+                if choice == motion::Reduce::System {
+                    motion::follow_system(cx);
+                }
+            }
             #[cfg(windows)]
             let feed = super::external::merge(feed, &mut self.external);
             self.island

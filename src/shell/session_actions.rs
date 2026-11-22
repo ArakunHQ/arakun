@@ -13,9 +13,10 @@ use gpui::{
 };
 
 use super::{ContextMenu, MenuTarget, Modal, Shell};
+use crate::agent::AgentKind;
 use crate::agent::catalog::{self, AgentSession};
 use crate::input::{InputEvent, TextInput};
-use crate::model::{self, Agent, Status};
+use crate::model::{self, Status};
 use crate::theme;
 use crate::ui::{self, ButtonKind, icon};
 
@@ -74,7 +75,7 @@ impl Focusable for RenameDialog {
 impl Render for RenameDialog {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let ready = !self.title(cx).is_empty();
-        ui::modal_panel("rename-session", 420.)
+        ui::modal_panel("rename-session", 420., "Rename session")
             .child(ui::modal_header(
                 "Rename session",
                 None,
@@ -137,7 +138,7 @@ impl Render for RenameDialog {
 
 pub struct RemoveDialog {
     title: SharedString,
-    agent: Agent,
+    agent: AgentKind,
     busy: bool,
     focus: FocusHandle,
 }
@@ -147,7 +148,7 @@ impl EventEmitter<SessionDialogEvent> for RemoveDialog {}
 impl RemoveDialog {
     pub fn new(
         title: SharedString,
-        agent: Agent,
+        agent: AgentKind,
         busy: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -172,15 +173,16 @@ impl Focusable for RemoveDialog {
 impl Render for RemoveDialog {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let kept = match self.agent {
-            Agent::Droid => "Droid keeps its own copy, so it can be imported again later.",
-            Agent::Claude => "Claude Code keeps its own copy of the session.",
-            Agent::OpenCode => "OpenCode keeps its own copy of the session.",
-            Agent::Codex => "Codex keeps its own copy of the session.",
-            Agent::Devin => "Devin keeps its own copy of the session.",
-            Agent::Antigravity => "Antigravity keeps its own copy of the session.",
-            Agent::WorkersAi => "arakun keeps the messages the model saw until then.",
+            AgentKind::Droid => "Droid keeps its own copy, so it can be imported again later.",
+            AgentKind::Claude => "Claude Code keeps its own copy of the session.",
+            AgentKind::OpenCode => "OpenCode keeps its own copy of the session.",
+            AgentKind::Codex => "Codex keeps its own copy of the session.",
+            AgentKind::Devin => "Devin keeps its own copy of the session.",
+            AgentKind::Cursor => "Cursor keeps its own copy of the session.",
+            AgentKind::Antigravity => "Antigravity keeps its own copy of the session.",
+            AgentKind::WorkersAi => "arakun keeps the messages the model saw until then.",
         };
-        ui::modal_panel("remove-session", 420.)
+        ui::modal_panel("remove-session", 420., "Remove session from Arakun?")
             .track_focus(&self.focus)
             .on_key_down(cx.listener(|_, ev: &gpui::KeyDownEvent, _, cx| match ev.keystroke.key.as_str() {
                 "escape" => cx.emit(SessionDialogEvent::Dismissed),
@@ -340,7 +342,7 @@ impl Render for ImportDialog {
                 .justify_center()
                 .text_size(px(ui::TEXT_MD))
                 .text_color(theme::text_subtle())
-                .child(ui::spinner("import-spin", 14., theme::mix(0.5)))
+                .child(ui::spinner(14., theme::mix(0.5)))
                 .child("Looking for sessions…")
                 .into_any_element()
         } else if self.found.is_empty() {
@@ -403,7 +405,7 @@ impl Render for ImportDialog {
                 }))
                 .into_any_element()
         };
-        ui::modal_panel("import-sessions", 480.)
+        ui::modal_panel("import-sessions", 480., "Import sessions")
             .track_focus(&self.focus)
             .on_key_down(cx.listener(|this, ev: &gpui::KeyDownEvent, _, cx| {
                 match ev.keystroke.key.as_str() {
@@ -532,9 +534,9 @@ impl Shell {
             || s.meta.as_ref().is_some_and(|m| m.session_id.is_some());
         // On a server, its agent decides, and says so when it cannot.
         let can_compact = if env.remote.is_some() {
-            matches!(s.agent, Agent::Claude | Agent::Droid)
+            matches!(s.agent, AgentKind::Claude | AgentKind::Droid)
         } else {
-            known && (s.agent == Agent::Claude || catalog::droid_native())
+            known && (s.agent == AgentKind::Claude || catalog::droid_native())
         };
         let can_fork =
             can_compact && (env.remote.is_some() || live.is_none_or(|t| t.supports_fork()));

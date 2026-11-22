@@ -118,6 +118,10 @@ impl Shell {
                 if let Some(ei) = self.projects[pi].env_index(path) {
                     self.select_env(pi, ei, window, cx);
                 }
+                if self.env().path == *path {
+                    self.ask_agent(title.clone().into(), prompt.clone(), window, cx);
+                    return;
+                }
                 let agent = self.env().agent;
                 self.start_session_in(
                     path,

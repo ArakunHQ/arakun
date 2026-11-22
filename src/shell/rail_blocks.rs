@@ -69,6 +69,7 @@ pub(super) fn view_id(view: View) -> &'static str {
         View::Extensions => "nav-extensions",
         View::Cloudflare => "nav-cloudflare",
         View::PostHog => "nav-posthog",
+        View::Doop => "nav-doop",
         #[cfg(feature = "coderlabs")]
         View::Site => "nav-site",
         View::Isometric => "nav-isometric",
@@ -142,6 +143,15 @@ pub(super) fn avatar(name: &str, size: f32) -> gpui::Div {
         .font_weight(FontWeight::SEMIBOLD)
         .text_color(theme::text())
         .child(letter)
+}
+
+/// What the rail says when a segment went: "Tools removed", or "Segment
+/// removed" for one with no name. Short, to fit beside Undo in a narrow rail.
+fn section_gone(section: &Section, how: &str) -> String {
+    match section.title.trim() {
+        "" => format!("Segment {how}"),
+        title => format!("{title} {how}"),
+    }
 }
 
 impl Shell {
@@ -242,6 +252,7 @@ impl Shell {
             View::Extensions => self.open_extensions_tab(window, cx),
             View::Cloudflare => self.open_cloudflare_tab(window, cx),
             View::PostHog => self.open_posthog_tab(window, cx),
+            View::Doop => self.open_doop_tab(window, cx),
             #[cfg(feature = "coderlabs")]
             View::Site => self.open_site_tab(window, cx),
             #[cfg(feature = "team")]
@@ -319,6 +330,9 @@ impl Shell {
     /// folded segment or the narrowed rail. Only then does the project list
     /// leave what waits or runs to it.
     pub(super) fn active_list_shown(&self) -> bool {
+        if crate::tab_layout::current().tree() {
+            return false;
+        }
         let Some((s, _)) = self.sidebar.find(&Piece::active()) else {
             return false;
         };
@@ -332,9 +346,13 @@ impl Shell {
 
     pub(super) fn hide_rail_item(&mut self, path: crate::sidebar::Path, cx: &mut Context<Self>) {
         self.menu = None;
-        self.edit_sidebar(cx, |s| {
-            s.remove(path);
-        });
+        self.remove_from_rail(
+            |s| s.get(path).map(|i| format!("{} hidden", i.name())),
+            cx,
+            |s| {
+                s.remove(path);
+            },
+        );
     }
 
     // ── Drawing ─────────────────────────────────────────────────────────
@@ -574,6 +592,20 @@ impl Shell {
                 t.into_any_element()
             }
         });
+        // A row of icons holding the open view: its pages go under the row.
+        let pages = if in_row && !folded {
+            self.subnav_view()
+                .filter(|v| {
+                    section
+                        .items
+                        .iter()
+                        .any(|i| i.piece.same(&Piece::View { view: *v }))
+                })
+                .and_then(|v| self.rail_subnav(v, 0., cx))
+                .map(|p| div().px(crate::ui::sp(8.)).pt(crate::ui::sp(4.)).child(p))
+        } else {
+            None
+        };
         let end = (arranging && !folded).then(|| self.arrange_end(si, section.items.len(), cx));
         let selected = arranging && self.builder.sel == Some(BuilderSel::Section(si));
         div()
@@ -594,6 +626,7 @@ impl Shell {
             })
             .children(title)
             .child(body)
+            .children(pages)
             .children(end)
             .when(arranging, |d| {
                 d.child(super::arrange::dashed_outline(
@@ -625,11 +658,18 @@ impl Shell {
             Piece::View { view } if style.badges => self.view_badge(*view, cx),
             _ => None,
         };
-        // Arranging, a quiet piece still shows, so it can be selected and moved.
+        // The view of the focused tab, whose pages go under its row.
+        let open = match item.piece {
+            Piece::View { view } => self.subnav_view() == Some(view),
+            _ => false,
+        };
+        // Arranging, a quiet piece still shows, so it can be selected and
+        // moved; open, it shows too, with its pages.
         if item.only_when_busy
             && badge.is_none()
             && matches!(item.piece, Piece::View { .. })
             && !self.arranging()
+            && !open
         {
             return None;
         }
@@ -707,7 +747,7 @@ impl Shell {
             Piece::View { view } => {
                 let view = *view;
                 let pill = badge.and_then(|b| badge_pill(b, item.badge));
-                row(pill.map(|p| p.into_any_element()))
+                let row = row(pill.map(|p| p.into_any_element()))
                     // Narrowed, a count shows as a dot on the icon.
                     .when(narrow && badge.is_some(), |d| {
                         d.relative().child(
@@ -720,10 +760,25 @@ impl Shell {
                                 .bg(badge.map_or(theme::text_faint(), |b| b.color())),
                         )
                     })
+                    .when(open && (!narrow || in_row), |d| {
+                        d.bg(theme::fill_selected()).text_color(theme::content())
+                    })
                     .on_click(cx.listener(move |this, ev: &gpui::ClickEvent, window, cx| {
                         this.open_view(view, ev.position(), window, cx)
-                    }))
-                    .into_any_element()
+                    }));
+                match self
+                    .rail_subnav(view, super::subnav::RAIL_INSET, cx)
+                    .filter(|_| open && !in_row)
+                {
+                    Some(pages) => div()
+                        .flex()
+                        .flex_col()
+                        .gap(crate::ui::sp(1.))
+                        .child(row)
+                        .child(pages)
+                        .into_any_element(),
+                    None => row.into_any_element(),
+                }
             }
             Piece::Pin { pin } => {
                 let open = pin.clone();
@@ -836,13 +891,16 @@ impl Shell {
             } => {
                 if narrow {
                     self.render_projects_narrow(cx).into_any_element()
+                } else if crate::tab_layout::current().tree() {
+                    self.render_session_tree(false, cx)
                 } else {
                     self.render_projects_block(*envs, *changes, *only_open, cx)
                         .into_any_element()
                 }
             }
             Piece::Active => {
-                if narrow {
+                // The tree lists every session already, with its state.
+                if narrow || crate::tab_layout::current().tree() {
                     return None;
                 }
                 self.render_active_block(cx)?
@@ -1149,9 +1207,13 @@ impl Shell {
                     ui::menu_item("rsm-ungroup", "ungroup-items", "Ungroup", false, true).on_click(
                         cx.listener(move |this, _, _, cx| {
                             this.menu = None;
-                            this.edit_sidebar(cx, |sb| {
-                                sb.ungroup_section(s);
-                            })
+                            this.remove_from_rail(
+                                |sb| Some(section_gone(sb.sections.get(s)?, "ungrouped")),
+                                cx,
+                                |sb| {
+                                    sb.ungroup_section(s);
+                                },
+                            )
                         }),
                     ),
                 )
@@ -1160,9 +1222,13 @@ impl Shell {
                 ui::menu_item("rsm-hide", "view-off", "Remove segment", true, true).on_click(
                     cx.listener(move |this, _, _, cx| {
                         this.menu = None;
-                        this.edit_sidebar(cx, |sb| {
-                            sb.remove_section(s);
-                        })
+                        this.remove_from_rail(
+                            |sb| Some(section_gone(sb.sections.get(s)?, "removed")),
+                            cx,
+                            |sb| {
+                                sb.remove_section(s);
+                            },
+                        )
                     }),
                 ),
             )
@@ -1187,6 +1253,14 @@ impl Shell {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_segment_that_went_is_called_by_its_title() {
+        let mut s = Section::new("Tools", Mode::Scroll, vec![]);
+        assert_eq!(section_gone(&s, "removed"), "Tools removed");
+        s.title = " ".into();
+        assert_eq!(section_gone(&s, "ungrouped"), "Segment ungrouped");
+    }
 
     #[test]
     fn the_inbox_count_stops_at_nine() {

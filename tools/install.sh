@@ -1,7 +1,7 @@
 #!/bin/sh
-# Builds arakun in release mode and installs it for the current user.
+# Builds arakun and installs it for the current user.
 #
-#   tools/install.sh [--debug] [--no-browser] [--prefix DIR]
+#   tools/install.sh [--debug | --full] [--no-browser] [--prefix DIR]
 #   tools/install.sh --uninstall [--prefix DIR]
 #
 # PREFIX defaults to ~/.local:
@@ -11,8 +11,11 @@
 #
 # macOS: ~/Applications/Arakun.app (CEF inside it) and PREFIX/bin/arakun linking into it.
 #
-# --debug installs the dev-profile build instead: ready in seconds, for trying
-# changes; it runs slower and without the release polish.
+# By default it builds the release-local profile (Cargo.toml): optimized like a
+# release, but rebuilt in seconds after a change. --full builds the release profile
+# that releases use (one codegen unit and LTO: a smaller, somewhat faster binary,
+# several minutes per build). --debug installs the dev-profile build: ready in
+# seconds, for trying changes; it runs slower and without the release polish.
 #
 # Browser tabs also need the CEF runtime in ${XDG_DATA_HOME:-~/.local/share}/arakun/cef.
 # When it is missing and an unpacked CEF distribution is around, tools/install-cef.sh
@@ -30,20 +33,22 @@ prefix=$HOME/.local
 browser=1
 uninstall=0
 debug=0
+full=0
 while [ $# -gt 0 ]; do
   case $1 in
     --no-browser) browser=0 ;;
     --debug) debug=1 ;;
+    --full) full=1 ;;
     --uninstall) uninstall=1 ;;
     --prefix) prefix=$2; shift ;;
-    -h|--help) sed -n '2,15p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,18p' "$0"; exit 0 ;;
     *) echo "install: unknown option $1" >&2; exit 2 ;;
   esac
   shift
 done
 
 # macOS: an Arakun.app in ~/Applications, with CEF inside it (Contents/Frameworks, which
-# src/browser/loader.rs looks in first) and PREFIX/bin/arakun pointing into it.
+# core/src/browser/loader.rs looks in first) and PREFIX/bin/arakun pointing into it.
 if [ "$(uname)" = Darwin ]; then
   app=$HOME/Applications/Arakun.app
   if [ $uninstall = 1 ]; then
@@ -53,10 +58,11 @@ if [ "$(uname)" = Darwin ]; then
     exit 0
   fi
   cd "$here"
-  profile=release
+  profile=release-local
+  [ $full = 1 ] && profile=release
   [ $debug = 1 ] && profile=debug
   flags=
-  [ $debug = 1 ] || flags=--release
+  [ $debug = 1 ] || flags="--profile $profile"
   [ $browser = 1 ] || flags="$flags --no-default-features"
   # shellcheck disable=SC2086
   cargo build $flags $features
@@ -112,7 +118,8 @@ if [ $uninstall = 1 ]; then
 fi
 
 cd "$here"
-profile=release
+profile=release-local
+[ $full = 1 ] && profile=release
 [ $debug = 1 ] && profile=dev
 
 if [ $browser = 1 ]; then
@@ -132,13 +139,16 @@ if [ $browser = 1 ]; then
     fi
   fi
   # shellcheck disable=SC2086
-  if [ $debug = 1 ]; then cargo build $features; else cargo build --release $features; fi
+  if [ $debug = 1 ]; then cargo build $features; else cargo build --profile $profile $features; fi
 else
   # shellcheck disable=SC2086
-  if [ $debug = 1 ]; then cargo build --no-default-features $features; else cargo build --release --no-default-features $features; fi
+  if [ $debug = 1 ]; then cargo build --no-default-features $features; else cargo build --profile $profile --no-default-features $features; fi
 fi
 
-install -Dm755 "target/$profile/arakun" "$prefix/bin/arakun"
+# The dev profile's binary lives in target/debug.
+dir=$profile
+[ "$profile" = dev ] && dir=debug
+install -Dm755 "target/$dir/arakun" "$prefix/bin/arakun"
 # The release profile keeps debug info for profiling; symbols stay for backtraces.
 if [ $debug = 0 ]; then
   command -v strip >/dev/null && strip --strip-debug "$prefix/bin/arakun"

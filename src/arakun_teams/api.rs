@@ -185,9 +185,15 @@ pub fn poll_token(device_code: &str) -> Result<TokenAnswer, ApiError> {
                 ("grant_type", DEVICE_GRANT),
             ]),
     )?;
-    match serde_json::from_str::<TokenAnswer>(&body) {
+    token_answer(status, &body)
+}
+
+fn token_answer(status: u16, body: &str) -> Result<TokenAnswer, ApiError> {
+    match serde_json::from_str::<TokenAnswer>(body) {
         Ok(a) if status == 200 || a.error.is_some() => Ok(a),
-        _ => Err(ApiError::Status(status, github_error(&body))),
+        // A 200 that is not JSON (a proxy's page, say) is not "answered 200".
+        Err(_) if status == 200 => Err(ApiError::Unreadable),
+        _ => Err(ApiError::Status(status, github_error(body))),
     }
 }
 
@@ -414,6 +420,20 @@ mod tests {
             Err(ApiError::Status(429, "too many sign-ins".into()))
         );
         assert_eq!(json::<Me>(200, "<html>"), Err(ApiError::Unreadable));
+    }
+
+    #[test]
+    fn a_token_poll_that_is_not_json_is_unreadable() {
+        assert!(matches!(
+            token_answer(200, "<html>"),
+            Err(ApiError::Unreadable)
+        ));
+        assert!(matches!(
+            token_answer(502, "<html>"),
+            Err(ApiError::Status(502, _))
+        ));
+        let pending = token_answer(200, r#"{"error": "authorization_pending"}"#).unwrap();
+        assert_eq!(pending.error.as_deref(), Some("authorization_pending"));
     }
 
     #[test]

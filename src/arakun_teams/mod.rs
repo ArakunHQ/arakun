@@ -832,6 +832,14 @@ mod tests {
         assert!(can_cancel(&Phase::Waiting {
             user_code: "ABCD-1234".into(),
             verification_uri: "https://github.com/login/device".into(),
+            expires_at: Instant::now(),
+        }));
+        // A sign-in that ended without a session is put away the same way.
+        assert!(can_cancel(&Phase::Expired {
+            user_code: "ABCD-1234".into(),
+        }));
+        assert!(can_cancel(&Phase::Denied {
+            user_code: "ABCD-1234".into(),
         }));
         assert!(!can_cancel(&Phase::Finishing));
         assert!(!can_cancel(&Phase::Idle));

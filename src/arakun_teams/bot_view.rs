@@ -52,13 +52,32 @@ pub(super) struct Stale {
     pub id: String,
 }
 
+/// The channel's edited messages by ID, which is all [`stale_of`] looks up:
+/// made once per render, not searched for again for each line of a range.
+pub(super) fn edited_by_id(messages: &[Msg]) -> HashMap<&str, &Msg> {
+    messages
+        .iter()
+        .filter(|m| m.edited.is_some())
+        .map(|m| (m.id.as_str(), m))
+        .collect()
+}
+
 /// The first message of a bot answer's range edited after the answer.
-pub(super) fn stale_of(messages: &[Msg], answer: &Msg) -> Option<Stale> {
+/// `edited` is [`edited_by_id`] of `messages`.
+pub(super) fn stale_of(
+    messages: &[Msg],
+    edited: &HashMap<&str, &Msg>,
+    answer: &Msg,
+) -> Option<Stale> {
+    // Nothing was edited in most channels: then no range is read at all.
+    if edited.is_empty() {
+        return None;
+    }
     let meta = bot::meta(answer)?;
     let after = answer.seq?;
     let range = bot::select_range(messages, &meta.range[1]).ok()?;
     range.lines.iter().find_map(|l| {
-        let m = messages.iter().find(|m| m.id == l.id)?;
+        let m = edited.get(l.id.as_str())?;
         let e = m.edited.as_ref()?;
         // An edit still on its way is newer than anything stored.
         e.seq.is_none_or(|s| s > after).then(|| Stale {
@@ -227,10 +246,11 @@ impl TeamsView {
                 bot::meta(m).map(|_| (m.id.clone(), a))
             })
             .collect();
+        let edited = edited_by_id(messages);
         let stale: HashMap<String, Stale> = messages
             .iter()
             .filter(|m| m.body.kind == "bot")
-            .filter_map(|m| Some((m.id.clone(), stale_of(messages, m)?)))
+            .filter_map(|m| Some((m.id.clone(), stale_of(messages, &edited, m)?)))
             .collect();
         let mut reversals = decisions::reversals(messages);
         let reversed: HashMap<String, Reversal> = messages
@@ -1219,14 +1239,15 @@ mod tests {
         let mut answer = m("bot", 3, 2, bot::bot_body(&range, 2, &outcome));
         answer.github_id = 2;
         all.push(answer.clone());
-        assert_eq!(stale_of(&all, &answer), None);
+        assert!(edited_by_id(&all).is_empty());
+        assert_eq!(stale_of(&all, &edited_by_id(&all), &answer), None);
         let mut edit = Body::text("a better idea", Some("a".into()));
         edit.kind = "edit".into();
         all.push(m("e", 4, 1, edit));
         apply_edits(&mut all);
         assert!(matches!(all[0].edited, Some(Edited { seq: Some(4), .. })));
         assert_eq!(
-            stale_of(&all, &answer),
+            stale_of(&all, &edited_by_id(&all), &answer),
             Some(Stale {
                 n: 1,
                 login: "u1".into(),

@@ -647,20 +647,24 @@ impl TeamsView {
             m.id.clone(),
         );
         let (rid, aid) = (id.clone(), id.clone());
+        // Only on a stored answer: a follow-up that replies to one the team
+        // doesn't have finds no range to read.
         let ask = ui::button(
             ("teams-bot-more", index),
             "Ask for more detail",
             ButtonKind::Ghost,
-            true,
+            sent,
         )
-        .on_click(cx.listener(move |this, _, window, cx| {
-            this.reply_to = Some(aid.clone());
-            this.composer
-                .update(cx, |i, cx| i.set_text("@bot more detail on ", cx));
-            let handle = this.composer.read(cx).focus_handle(cx);
-            window.focus(&handle, cx);
-            cx.notify();
-        }));
+        .when(sent, |b| {
+            b.on_click(cx.listener(move |this, _, window, cx| {
+                this.reply_to = Some(aid.clone());
+                this.composer
+                    .update(cx, |i, cx| i.set_text("@bot more detail on ", cx));
+                let handle = this.composer.read(cx).focus_handle(cx);
+                window.focus(&handle, cx);
+                cx.notify();
+            }))
+        });
         let actions = div()
             .flex()
             .flex_wrap()

@@ -51,6 +51,15 @@ enum Pane {
     Devices,
 }
 
+impl Pane {
+    /// A team just made opens from the form that asked for it. Anywhere else
+    /// the user moved on while it loaded: the pane stays, and what they
+    /// typed there with it. The new team is in the team menu.
+    fn opens_created(&self) -> bool {
+        matches!(self, Pane::NewTeam | Pane::None)
+    }
+}
+
 /// What the panel at the right of a channel shows.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Side {
@@ -371,7 +380,9 @@ impl TeamsView {
         } else if let Some(team) = created {
             self.creating = false;
             self.team_name.update(cx, |i, cx| i.set_text("", cx));
-            self.pane = Pane::Team(team);
+            if self.pane.opens_created() {
+                self.pane = Pane::Team(team);
+            }
         } else if create_failed {
             self.creating = false;
         } else if gone && !loading {
@@ -3638,6 +3649,24 @@ mod tests {
         // Other panes have no composer.
         drafts.keep(&Pane::Team("team".into()), "not a draft");
         assert_eq!(drafts.channels.len(), 1);
+    }
+
+    #[test]
+    fn a_created_team_opens_only_from_the_form() {
+        assert!(Pane::NewTeam.opens_created());
+        // The first team's form shows on the empty pane.
+        assert!(Pane::None.opens_created());
+        for pane in [
+            Pane::Channel("a".into(), "general".into()),
+            Pane::Team("a".into()),
+            Pane::Invite("a".into()),
+            Pane::Pending("a".into()),
+            Pane::Invites,
+            Pane::Asked("a".into()),
+            Pane::Devices,
+        ] {
+            assert!(!pane.opens_created(), "{pane:?}");
+        }
     }
 
     #[test]

@@ -1,5 +1,5 @@
-//! The Flags tab: every feature flag of the project, live first, read-only.
-//! Changing a flag comes in a later version.
+//! The Flags tab: every feature flag of the project, live first. A flag
+//! opens its details inside the tab.
 
 use super::overview::section;
 use super::*;
@@ -22,48 +22,53 @@ impl PostHogView {
             list = list.child(quiet("No feature flags in this project."));
         }
         for (i, f) in o.flags.iter().take(shown).enumerate() {
-            let path = format!("/feature_flags/{}", f.id);
+            let detail = Detail::Flag(f.id);
             list = list.child(
-                div()
-                    .id(("ph-flag", i))
-                    .flex()
-                    .items_center()
-                    .gap(crate::ui::sp(10.))
-                    .px(crate::ui::sp(8.))
-                    .py(crate::ui::sp(6.))
-                    .rounded(crate::ui::rad(ui::RADIUS))
-                    .cursor_pointer()
-                    .hover(|d| d.bg(theme::fill_hover()))
-                    .when(!f.active, |d| d.opacity(0.6))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .child(
+                ui::labelled(
+                    div().id(("ph-flag", i)),
+                    gpui::Role::Button,
+                    format!("Open flag {}", f.key),
+                )
+                .map(ui::focusable)
+                .flex()
+                .items_center()
+                .gap(crate::ui::sp(10.))
+                .px(crate::ui::sp(8.))
+                .py(crate::ui::sp(6.))
+                .rounded(crate::ui::rad(ui::RADIUS))
+                .cursor_pointer()
+                .hover(|d| d.bg(theme::fill_hover()))
+                .when(!f.active, |d| d.opacity(0.6))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .child(
+                            div()
+                                .truncate()
+                                .ty(Type::Mono)
+                                .text_color(theme::text())
+                                .child(f.key.clone()),
+                        )
+                        .when(!f.name.is_empty() && f.name != f.key, |d| {
+                            d.child(
                                 div()
                                     .truncate()
-                                    .ty(Type::Mono)
-                                    .text_color(theme::text())
-                                    .child(f.key.clone()),
+                                    .ty(Type::Caption)
+                                    .text_color(theme::text_faint())
+                                    .child(f.name.clone()),
                             )
-                            .when(!f.name.is_empty() && f.name != f.key, |d| {
-                                d.child(
-                                    div()
-                                        .truncate()
-                                        .ty(Type::Caption)
-                                        .text_color(theme::text_faint())
-                                        .child(f.name.clone()),
-                                )
-                            }),
-                    )
-                    .child(
-                        ui::text(Type::Caption, theme::text_subtle(), f.rollout.clone())
-                            .w(px(120.)),
-                    )
-                    .child(ui::switch(f.active))
-                    .on_click(cx.listener(move |this, _, _, cx| this.open(&path, cx))),
+                        }),
+                )
+                .child(ui::text(Type::Caption, theme::text_subtle(), f.rollout.clone()).w(px(120.)))
+                .child(ui::switch(f.active))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.tab = Tab::Flags;
+                    this.inspect(detail.clone(), cx);
+                    cx.notify();
+                })),
             );
         }
         list.flex_1().min_w(px(360.)).into_any_element()

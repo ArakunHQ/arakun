@@ -134,11 +134,7 @@ pub fn list_query(f: &Filter, page: Paging, after: Option<(&str, &str)>) -> Hogq
         ));
     }
     q.push(" ORDER BY timestamp DESC, uuid DESC");
-    if after.is_some() {
-        q.push(&format!(" LIMIT {}", page.size + 1));
-    } else {
-        q.push(&page.clause());
-    }
+    q.push(&page.clause());
     q
 }
 
@@ -372,7 +368,7 @@ mod tests {
                 key: "os') OR 1=1 --".into(),
                 value: "macOS' OR '1'='1".into(),
             }],
-            person: " rik@tallerlabs.mx ".into(),
+            person: " reader@example.test ".into(),
             range: Range::Day,
             until: None,
         }
@@ -387,13 +383,13 @@ mod tests {
              WHERE timestamp > now() - INTERVAL 86400 SECOND AND timestamp <= now() AND event = {v0} \
              AND replaceRegexpAll(JSONExtractRaw(properties, {v1}), '^\"|\"$', '') = {v2} \
              AND (distinct_id = {v3} OR person.properties.email = {v3}) \
-             ORDER BY timestamp DESC, uuid DESC LIMIT 51 OFFSET 0"
+             ORDER BY timestamp DESC, uuid DESC LIMIT 51"
         );
         assert!(!q.text.contains("OR 1=1") && !q.text.contains("macOS"));
         assert_eq!(q.values["v0"], "agent turn finished");
         assert_eq!(q.values["v1"], "os') OR 1=1 --");
         assert_eq!(q.values["v2"], "macOS' OR '1'='1");
-        assert_eq!(q.values["v3"], "rik@tallerlabs.mx");
+        assert_eq!(q.values["v3"], "reader@example.test");
         // The next page continues from the last row, not a live offset.
         let mut f = filter();
         f.until = Some(1_700_000_000);
@@ -442,9 +438,9 @@ mod tests {
     fn fixture() -> Vec<Event> {
         let rows: Vec<Value> = serde_json::from_str(
             r#"[
-              ["u1", "agent turn finished", "2026-11-18T14:01:47Z", "rik-mac", "p1", "rik@tallerlabs.mx",
+              ["u1", "agent turn finished", "2026-11-18T14:01:47Z", "rik-mac", "p1", "reader@example.test",
                "{\"agent\":\"claude-code\",\"model\":\"opus-5.5\",\"turn_ms\":41208,\"$app_version\":\"0.6.0\",\"$session_id\":\"s1\",\"$lib\":\"posthog-rs\",\"$set\":{\"plan\":\"pro\"},\"$feature/new-composer\":\"inline-tools\"}",
-               {"email":"rik@tallerlabs.mx","plan":"pro","$initial_os":"macOS"}],
+               {"email":"reader@example.test","plan":"pro","$initial_os":"macOS"}],
               ["u2", "agent turn finished", "2026-11-18T14:01:40Z", "4f2c91e0", "p2", null,
                {"agent":"claude-code","model":"haiku-4.5","$app_version":"0.5.9"}, "{}"],
               [null, null, null, null, null, null, null, null]
@@ -458,7 +454,7 @@ mod tests {
     fn parses_events_with_json_text_or_objects() {
         let e = fixture();
         assert_eq!(e.len(), 2);
-        assert_eq!(e[0].who(), "rik@tallerlabs.mx");
+        assert_eq!(e[0].who(), "reader@example.test");
         assert_eq!(e[1].who(), "4f2c91e0");
         assert_eq!(e[0].session(), Some("s1"));
         assert_eq!(e[1].session(), None);
@@ -493,7 +489,7 @@ mod tests {
         let keys: Vec<&str> = session.iter().map(|r| r.0.as_str()).collect();
         assert_eq!(keys, vec!["$session_id", "$app_version", "$lib"]);
         let person = person_rows(e);
-        assert_eq!(person[0], ("email".into(), "rik@tallerlabs.mx".into()));
+        assert_eq!(person[0], ("email".into(), "reader@example.test".into()));
         assert_eq!(person.len(), 2);
         let json: Value = serde_json::from_str(&to_json(e)).unwrap();
         assert_eq!(json["properties"]["model"], "opus-5.5");

@@ -4,9 +4,10 @@
 //! and switches between them.
 //!
 //! A strip of tabs under the header, each in its own module: Overview (24
-//! hours of events and visitors, flags, errors), Events and People (their
-//! own views, reading pages through `posthog::query`), Flags and Errors
-//! (read-only lists), and Experiments and Ask, which come next.
+//! hours of events and visitors, flags, experiments, errors), Events and
+//! People (their own views, reading pages through `posthog::query`), Flags,
+//! Experiments and Errors (lists whose rows open in `detail`), and Ask
+//! (PostHog AI).
 //!
 //! PostHog's hourly query budget: an answer is kept on disk and shown at
 //! once, read again only when the tab opens and it is older than `STALE`
@@ -16,6 +17,7 @@
 mod accounts;
 mod ask;
 mod bars;
+mod detail;
 mod errors;
 mod events;
 mod experiments;
@@ -38,6 +40,7 @@ use crate::input::{InputEvent, TextInput};
 use crate::posthog::{self, ApiError, Directory, Overview, Project, Region, Resolved, Session};
 use crate::theme;
 use crate::ui::{self, AreaChart, ButtonKind, Format, Series, Tone, Type, Typography as _, icon};
+use detail::Detail;
 use events::{EventsEvent, EventsTab};
 use people::{PeopleEvent, PeopleTab};
 
@@ -51,6 +54,8 @@ const DIRECTORY_STALE: u64 = 6 * 3600;
 pub enum PostHogEvent {
     /// Open a PostHog page in a browser tab.
     Open(String),
+    /// Put text in the new-session composer, without sending it.
+    Draft(String),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -123,6 +128,10 @@ pub struct PostHogView {
     asked_at: u64,
     page: Page,
     tab: Tab,
+    detail: Option<Detail>,
+    inspection: Option<Result<posthog::inspection::Inspection, ApiError>>,
+    _inspect: Option<Task<()>>,
+    ask: Entity<ask::Ask>,
     events: Entity<EventsTab>,
     people: Entity<PeopleTab>,
     menu: Option<Point<Pixels>>,
@@ -192,6 +201,10 @@ impl PostHogView {
             asked_at: 0,
             page: Page::Main,
             tab: Tab::Overview,
+            detail: None,
+            inspection: None,
+            _inspect: None,
+            ask: cx.new(ask::Ask::new),
             events,
             people,
             menu: None,
@@ -199,7 +212,7 @@ impl PostHogView {
             region: None,
             connecting: false,
             connect_note: None,
-            chart: cx.new(|_| AreaChart::new(180.)),
+            chart: cx.new(|_| AreaChart::new(96.)),
             focus: cx.focus_handle(),
             scroll: ScrollHandle::new(),
             _load: None,
@@ -220,6 +233,7 @@ impl PostHogView {
         if self.root.as_deref() == Some(root) {
             return;
         }
+        self.close_detail();
         self.root = Some(root.to_path_buf());
         self.keys = None;
         self.current = None;
@@ -327,6 +341,8 @@ impl PostHogView {
                 project: p,
             })
         });
+        self.ask
+            .update(cx, |a, cx| a.set_target(target.clone(), cx));
         let t = target.clone();
         self.events.update(cx, |e, cx| e.set_target(t, cx));
         self.people.update(cx, |e, cx| e.set_target(target, cx));
@@ -343,6 +359,7 @@ impl PostHogView {
     }
 
     pub(super) fn show_tab(&mut self, tab: Tab, _: &mut Window, cx: &mut Context<Self>) {
+        self.close_detail();
         self.tab = tab;
         self.menu = None;
         self.show_current(cx);
@@ -353,6 +370,10 @@ impl PostHogView {
         if self.current.as_ref() == Some(&p) {
             return;
         }
+        self.close_detail();
+        self._load = None;
+        self.loading = false;
+        self.asked_at = 0;
         self.overview = posthog::cached(&p);
         self.error = None;
         self.current = Some(p);
@@ -475,18 +496,11 @@ impl PostHogView {
             })
             .collect();
         let ticks = vec!["24 h ago".into(), "12 h ago".into(), "Now".into()];
-        let series = vec![
-            Series {
-                name: "Events".into(),
-                color: Tone::Info.color(),
-                values: o.hourly.iter().map(|h| h.0 as f64).collect(),
-            },
-            Series {
-                name: "Visitors".into(),
-                color: Tone::Accent.color(),
-                values: o.hourly.iter().map(|h| h.1 as f64).collect(),
-            },
-        ];
+        let series = vec![Series {
+            name: "Visitors".into(),
+            color: gpui::rgb(theme::CATEGORY[5]).into(),
+            values: o.hourly.iter().map(|h| h.1 as f64).collect(),
+        }];
         let fmt: Format = std::rc::Rc::new(|v| count(v as u64));
         self.chart.update(cx, |c, cx| {
             c.set(series, labels, ticks, vec![None; n], fmt.clone(), fmt, cx)
@@ -520,27 +534,17 @@ fn notice(icon_name: &str, tone: Tone, text: String) -> AnyElement {
         .rounded(crate::ui::rad(ui::RADIUS))
         .bg(tone.color().opacity(0.1))
         .child(icon(icon_name, 14.).text_color(tone.color()))
-        .child(ui::text(Type::Body, theme::text_muted(), text))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .child(ui::text(Type::Body, theme::text_muted(), text)),
+        )
         .into_any_element()
 }
 
 fn quiet(text: impl Into<SharedString>) -> gpui::Div {
     ui::text(Type::Body, theme::text_subtle(), text).py(crate::ui::sp(8.))
-}
-
-/// A tab that a later version fills.
-fn coming_next(title: &str, what: &str) -> AnyElement {
-    div()
-        .flex()
-        .justify_center()
-        .pt(crate::ui::sp(48.))
-        .child(ui::empty_state(
-            "clock01",
-            &format!("{title} · coming next"),
-            what,
-            None,
-        ))
-        .into_any_element()
 }
 
 const MONTHS: [&str; 12] = [
@@ -732,6 +736,9 @@ impl PostHogView {
         let mut strip = ui::segmented();
         for (i, tab) in Tab::ALL.into_iter().enumerate() {
             let n = match tab {
+                Tab::Experiments => o
+                    .filter(|o| o.experiment_error.is_none())
+                    .map(|o| o.experiments.len()),
                 Tab::Flags => o.map(|o| o.flags.len()),
                 Tab::Errors => o.map(|o| o.issues.len()),
                 _ => None,
@@ -883,6 +890,7 @@ impl PostHogView {
             .max_w(px(640.))
             .child(ui::heading(format!("Which PostHog project is {name}?")))
             .child(ui::text(Type::Body, theme::text_muted(), why))
+            .when(keys == 0, |d| d.child(self.setup_draft(cx)))
             .when(empty, |d| {
                 d.child(quiet(if self.dir_loading {
                     "Reading your projects…"
@@ -974,18 +982,27 @@ impl PostHogView {
                 .flex()
                 .justify_center()
                 .pt(crate::ui::sp(24.))
+                .flex_col()
+                .items_center()
+                .gap(ui::sp(12.))
                 .child(self.render_connect(true, cx))
+                .child(self.setup_draft(cx))
                 .into_any_element();
         }
         if self.page == Page::Accounts {
             return self.render_accounts(cx);
         }
+        if self.current.is_some()
+            && let (Some(o), Some(d)) = (&self.overview, &self.detail)
+        {
+            return self.render_detail(d, o, cx);
+        }
         match (&self.current, &self.overview, self.tab) {
             (None, _, _) => self.render_picker(cx),
             (Some(_), _, Tab::Events) => self.events.clone().into_any_element(),
             (Some(_), _, Tab::People) => self.people.clone().into_any_element(),
-            (Some(_), _, Tab::Experiments) => experiments::render(),
-            (Some(_), _, Tab::Ask) => ask::render(),
+            (Some(_), Some(o), Tab::Experiments) => self.render_experiments(o, None, cx),
+            (Some(_), _, Tab::Ask) => self.ask.clone().into_any_element(),
             (Some(_), Some(o), Tab::Overview) => self.render_overview(o, cx),
             (Some(_), Some(o), Tab::Flags) => self.render_flags(o, None, cx),
             (Some(_), Some(o), Tab::Errors) => self.render_issues(o, None, cx),

@@ -4,7 +4,7 @@
 use super::*;
 
 /// What a personal API key needs to show the tab.
-const KEY_SCOPES: &str = "user:read, organization:read, project:read, query:read, feature_flag:read, error_tracking:read, person:read, event_definition:read, property_definition:read";
+const KEY_SCOPES: &str = "user:read, organization:read, project:read, query:read, feature_flag:read, experiment:read, error_tracking:read, person:read, event_definition:read, property_definition:read, insight:read";
 
 impl PostHogView {
     /// After a sign-in was saved: the new session's projects, and back to the project.
@@ -16,6 +16,11 @@ impl PostHogView {
         ));
         self.key_input.update(cx, |i, cx| i.set_text("", cx));
         self.page = Page::Main;
+        self.current = None;
+        self.close_detail();
+        self.overview = None;
+        self.directory = None;
+        self.sync_tabs(cx);
         self.directory_force(cx);
     }
 
@@ -57,16 +62,27 @@ impl PostHogView {
     fn remove(&mut self, id: String, cx: &mut Context<Self>) {
         if let Err(e) = posthog::remove_session(&id) {
             self.connect_note = Some((e, true));
+            cx.notify();
+            return;
         }
         self.sessions = posthog::sessions();
+        // A read still running used the removed account: start it again
+        // without it, or the picker waits on a read that was dropped.
+        let reading = self.dir_loading;
+        self._dir = None;
+        self.dir_loading = false;
         if let Some(d) = &mut self.directory {
             d.projects.retain(|p| p.session != id);
+            d.problems.clear();
         }
         if self.current.as_ref().is_some_and(|p| p.session == id) {
             self.current = None;
             self.overview = None;
             self.resolve(cx);
             self.sync_tabs(cx);
+        }
+        if reading {
+            self.refresh_directory(cx);
         }
         cx.notify();
     }

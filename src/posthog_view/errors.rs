@@ -14,7 +14,7 @@ impl PostHogView {
         let now = crate::model::unix_now();
         let mut list = section(
             "Errors",
-            Some("last 7 days · newest first".into()),
+            Some("last 7 days · most people first".into()),
             limit.map(|_| (o.issues.len(), Tab::Errors)),
             cx,
         );
@@ -27,68 +27,76 @@ impl PostHogView {
             .take(limit.unwrap_or(usize::MAX))
             .enumerate()
         {
-            let path = format!("/error_tracking/{}", issue.id);
+            let detail = Detail::Issue(issue.id.clone());
             let title = if issue.kind.is_empty() {
                 "Exception".to_string()
             } else {
                 issue.kind.clone()
             };
             list = list.child(
-                div()
-                    .id(("ph-issue", i))
-                    .flex()
-                    .items_center()
-                    .gap(crate::ui::sp(12.))
-                    .px(crate::ui::sp(8.))
-                    .py(crate::ui::sp(8.))
-                    .rounded(crate::ui::rad(ui::RADIUS))
-                    .cursor_pointer()
-                    .hover(|d| d.bg(theme::fill_hover()))
-                    .child(icon("alert-circle", 14.).text_color(theme::error()))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .gap(crate::ui::sp(2.))
-                            .child(
-                                div()
-                                    .truncate()
-                                    .ty(Type::Body)
-                                    .text_color(theme::text())
-                                    .child(title),
-                            )
-                            .child(
-                                div()
-                                    .truncate()
-                                    .ty(Type::Mono)
-                                    .text_color(theme::text_subtle())
-                                    .child(issue.message.clone()),
-                            ),
-                    )
-                    .child(ui::text(Type::Label, theme::text(), count(issue.count)))
-                    .child(
-                        ui::text(
-                            Type::Caption,
-                            theme::text_faint(),
-                            format!("{} people", count(issue.users)),
+                ui::labelled(
+                    div().id(("ph-issue", i)),
+                    gpui::Role::Button,
+                    format!("Open {title}: {}", crate::redact::text(&issue.message)),
+                )
+                .map(ui::focusable)
+                .flex()
+                .items_center()
+                .gap(crate::ui::sp(12.))
+                .px(crate::ui::sp(8.))
+                .py(crate::ui::sp(8.))
+                .rounded(crate::ui::rad(ui::RADIUS))
+                .cursor_pointer()
+                .hover(|d| d.bg(theme::fill_hover()))
+                .child(icon("alert-circle", 14.).text_color(theme::error()))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .gap(crate::ui::sp(2.))
+                        .child(
+                            div()
+                                .truncate()
+                                .ty(Type::Body)
+                                .text_color(theme::text())
+                                .child(title),
                         )
-                        .w(px(70.)),
+                        .child(
+                            div()
+                                .truncate()
+                                .ty(Type::Mono)
+                                .text_color(theme::text_subtle())
+                                .child(issue.message.clone()),
+                        ),
+                )
+                .child(ui::text(Type::Label, theme::text(), count(issue.count)))
+                .child(
+                    ui::text(
+                        Type::Caption,
+                        theme::text_faint(),
+                        format!("{} people", count(issue.users)),
                     )
-                    .child(
-                        ui::text(
-                            Type::Caption,
-                            theme::text_subtle(),
-                            if issue.last_seen > 0 {
-                                crate::memory::ago(issue.last_seen, now)
-                            } else {
-                                String::new()
-                            },
-                        )
-                        .w(px(80.)),
+                    .w(px(70.)),
+                )
+                .child(
+                    ui::text(
+                        Type::Caption,
+                        theme::text_subtle(),
+                        if issue.last_seen > 0 {
+                            crate::memory::ago(issue.last_seen, now)
+                        } else {
+                            String::new()
+                        },
                     )
-                    .on_click(cx.listener(move |this, _, _, cx| this.open(&path, cx))),
+                    .w(px(80.)),
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.tab = Tab::Errors;
+                    this.inspect(detail.clone(), cx);
+                    cx.notify();
+                })),
             );
         }
         list.flex_1().min_w(px(360.)).into_any_element()

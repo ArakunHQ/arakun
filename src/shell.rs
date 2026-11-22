@@ -570,6 +570,9 @@ pub struct Shell {
     menu_agent: Option<AgentKind>,
     /// The row the arrow keys are on, in `menu_keys` order.
     menu_cursor: Option<usize>,
+    /// The reasoning level under the pointer, by its id: the meter shows it
+    /// lit as a preview, and its name, until the pointer leaves.
+    effort_hover: Option<String>,
     /// The model list's scroll, kept on the row the keys are on.
     menu_scroll: ScrollHandle,
     /// The alert level (`limits::level`) each plan window last notified at.
@@ -1121,6 +1124,7 @@ impl Shell {
             composer_flash: None,
             menu_agent: None,
             menu_cursor: None,
+            effort_hover: None,
             menu_scroll: ScrollHandle::new(),
             limit_alerts: std::collections::HashMap::new(),
             limits_seen: false,

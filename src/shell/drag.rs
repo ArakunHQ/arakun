@@ -25,6 +25,15 @@ const SLIDE: Duration = crate::ui::motion::SLOW;
 /// How much of another session's conversation "Add to context" sends.
 const CONTEXT_BUDGET: usize = 16 * 1024;
 
+/// The entries saved for session `id`; none if it has no transcript.
+fn saved_entries(id: &str) -> Vec<Entry> {
+    std::fs::read(state::transcript_path(id))
+        .ok()
+        .and_then(|b| serde_json::from_slice::<crate::agent::Transcript>(&b).ok())
+        .map(|t| t.entries)
+        .unwrap_or_default()
+}
+
 #[derive(Clone)]
 pub(super) struct DraggedSession {
     pub env: PathBuf,
@@ -336,39 +345,82 @@ impl Shell {
             .and_then(|e| e.sessions.iter().find(|s| s.id.as_ref() == id))
             .and_then(|s| s.live.as_ref())
             .map(|l| l.thread.read(cx).entries().to_vec());
-        live.unwrap_or_else(|| {
-            std::fs::read(state::transcript_path(id))
-                .ok()
-                .and_then(|b| serde_json::from_slice::<crate::agent::Transcript>(&b).ok())
-                .map(|t| t.entries)
-                .unwrap_or_default()
+        live.unwrap_or_else(|| saved_entries(id))
+    }
+
+    /// Calls `f` with a session's entries: a live thread's right away, a
+    /// saved one's once its transcript is read and parsed on the background
+    /// executor, so a long transcript does not hold up the window.
+    fn with_dragged_entries(
+        &mut self,
+        d: &DraggedSession,
+        cx: &mut Context<Self>,
+        f: impl FnOnce(&mut Self, &DraggedSession, Vec<Entry>, &mut Context<Self>) + 'static,
+    ) {
+        let live = self
+            .find_env(&d.env)
+            .and_then(|e| e.sessions.iter().find(|s| s.id == d.id))
+            .and_then(|s| s.live.as_ref())
+            .map(|l| l.thread.read(cx).entries().to_vec());
+        if let Some(entries) = live {
+            f(self, d, entries, cx);
+            return;
+        }
+        let id = d.id.clone();
+        let read = cx.background_spawn(async move { saved_entries(&id) });
+        let d = d.clone();
+        cx.spawn(async move |this, cx| {
+            let entries = read.await;
+            let _ = this.update(cx, |this, cx| {
+                f(this, &d, entries, cx);
+                cx.notify();
+            });
         })
+        .detach();
     }
 
     fn add_session_context(&mut self, d: &DraggedSession, cx: &mut Context<Self>) {
-        let entries = self.session_entries(&d.env, &d.id, cx);
-        if entries.is_empty() {
-            self.composer_flash = Some("That session has no messages yet.".into());
-            return;
-        }
-        let block =
-            crate::agent::notes::context_block(&d.title, d.agent.label(), &entries, CONTEXT_BUDGET);
+        // The composer it was dropped on, even if another is shown by the time the read lands.
         let env = self.env().path.clone();
-        let list = self.attached.entry(env).or_default();
-        list.retain(|c| c.title != d.title);
-        list.push(AttachedContext {
-            title: d.title.clone(),
-            block,
+        self.with_dragged_entries(d, cx, move |this, d, entries, _| {
+            if entries.is_empty() {
+                this.composer_flash = Some("That session has no messages yet.".into());
+                return;
+            }
+            let block = crate::agent::notes::context_block(
+                &d.title,
+                d.agent.label(),
+                &entries,
+                CONTEXT_BUDGET,
+            );
+            let list = this.attached.entry(env).or_default();
+            list.retain(|c| c.title != d.title);
+            list.push(AttachedContext {
+                title: d.title.clone(),
+                block,
+            });
         });
     }
 
     /// Writes the session out as markdown and mentions the file in the draft,
     /// so the agent can read as much of it as it needs.
     fn link_session(&mut self, d: &DraggedSession, cx: &mut Context<Self>) {
-        let entries = self.session_entries(&d.env, &d.id, cx);
+        let env = self.env().path.clone();
+        self.with_dragged_entries(d, cx, move |this, d, entries, cx| {
+            this.link_session_entries(&env, d, &entries, cx);
+        });
+    }
+
+    fn link_session_entries(
+        &mut self,
+        env: &Path,
+        d: &DraggedSession,
+        entries: &[Entry],
+        cx: &mut Context<Self>,
+    ) {
         let path = state::linked_path(&d.id);
         let dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
-        let text = crate::agent::notes::transcript_markdown(&d.title, d.agent.label(), &entries);
+        let text = crate::agent::notes::transcript_markdown(&d.title, d.agent.label(), entries);
         if let Err(e) = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, text)) {
             self.composer_flash = Some(format!("Could not link the session: {e}").into());
             return;
@@ -383,8 +435,13 @@ impl Shell {
             d.agent.label(),
             crate::agent::attach::mention(&path.to_string_lossy())
         );
-        self.env_mut().draft.insert_word(&line);
-        self.composer_changed(cx);
+        // The draft it was dropped on, even if another is shown by now.
+        if self.env().path == env {
+            self.env_mut().draft.insert_word(&line);
+            self.composer_changed(cx);
+        } else if let Some(e) = self.find_env_mut(env) {
+            e.draft.insert_word(&line);
+        }
     }
 
     pub(super) fn render_session_drop_menu(&self, cx: &mut Context<Self>) -> Option<AnyElement> {

@@ -174,6 +174,7 @@ impl SignInDialog {
         let teams = self.teams.read(cx);
         let me = teams.me().cloned();
         let enabled = teams.enabled();
+        let error = teams.error().cloned();
         let login = me
             .as_ref()
             .map(|m| crate::redact::value(&m.login))
@@ -232,6 +233,16 @@ impl SignInDialog {
                     "Nothing Arakun is trying out is on for this account yet."
                 },
             ))
+            // Signed in, but something still went wrong: the keyring could
+            // not keep the session, so the next start asks again.
+            .when_some(error, |d, e| {
+                d.child(Self::note(
+                    icon("alert-circle", 14.)
+                        .text_color(theme::attention())
+                        .into_any_element(),
+                    crate::redact::text(&e).into_owned(),
+                ))
+            })
             .child(
                 Self::buttons()
                     .child(

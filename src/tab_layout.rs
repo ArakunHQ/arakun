@@ -3,10 +3,6 @@
 //! set every option at once; each option can then be changed alone. Kept in
 //! `state.json` as `tabs`.
 
-// The sidebar tree, the pinned bar and the settings page read this as they
-// land, one pull request each; the last one drops this line.
-#![allow(dead_code)]
-
 use std::sync::{Mutex, PoisonError};
 
 use serde::{Deserialize, Serialize};
@@ -145,9 +141,6 @@ pub const SIDEBAR_W: f32 = 248.;
 /// An option of the Tabs and sessions settings.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Opt {
-    SessionsIn,
-    BarShows,
-    State,
     Group,
     Quiet,
     Titles,
@@ -198,18 +191,11 @@ impl TabLayout {
         self.bar_shows == BarShows::Pinned
     }
 
-    /// Whether the window looks as it did before this setting: every open
-    /// tab in one row, the sidebar with projects and environments.
-    pub fn classic(&self) -> bool {
-        !self.tree() && self.bar_shows == BarShows::AllOpen
-    }
-
     /// Whether `opt` means something with the other options as they are.
     /// With sessions only in the title bar there is no tree to group, fold
     /// or wrap, and nothing to pin from; without groups nothing folds.
     pub fn applies(&self, opt: Opt) -> bool {
         match opt {
-            Opt::SessionsIn | Opt::BarShows | Opt::State => true,
             Opt::Group | Opt::Titles => self.tree(),
             Opt::Quiet => self.tree() && self.group,
         }
@@ -263,11 +249,10 @@ mod tests {
     #[test]
     fn classic_is_the_strip_from_before() {
         let c = Preset::Classic.layout();
-        assert!(c.classic());
         assert!(!c.tree());
-        assert!(!c.pinned_bar());
-        assert!(!Preset::Focused.layout().classic());
-        assert!(!Preset::Everything.layout().classic());
+        assert_eq!(c.bar_shows, BarShows::AllOpen);
+        assert!(Preset::Focused.layout().tree());
+        assert!(Preset::Everything.layout().tree());
     }
 
     #[test]
@@ -304,7 +289,6 @@ mod tests {
         assert!(!bar_only.applies(Opt::Group));
         assert!(!bar_only.applies(Opt::Quiet));
         assert!(!bar_only.applies(Opt::Titles));
-        assert!(bar_only.applies(Opt::State));
 
         let flat = Preset::Focused.layout().with(|l| l.group = false);
         assert!(flat.applies(Opt::Titles));

@@ -91,8 +91,10 @@ off, and do not add code behind them.
 CI runs the checks below that a pull request can affect. A change to docs, `iso/` or
 `tools/` (apart from `tools/rustfmt.sh` and the layout audit) alone skips the Rust
 jobs, the relay job runs only when `relay/`, `phone/` or CI itself changes, the teams
-job only when `teams/` or CI itself changes, cargo-deny runs only when `Cargo.toml`,
-`Cargo.lock` or `deny.toml` changes, and zizmor runs only when `.github/` changes.
+job only when `teams/` or CI itself changes, the iOS job only when `ios/`, `phone/`,
+the mascot's drawing or the fonts in `assets/`, or CI itself changes (a change to `ios/`
+alone skips the Rust jobs), cargo-deny runs only when `Cargo.toml`, `Cargo.lock` or
+`deny.toml` changes, and zizmor runs only when `.github/` changes.
 
 CI is the gate, not your machine. Before you push, run the quick checks for what you
 changed: `tools/rustfmt.sh --check` and clippy for Rust, and the tests of the modules
@@ -119,6 +121,11 @@ cargo deny check
 
 # teams/ changed
 (cd teams && npm ci && npx tsc --noEmit && npx vitest run)
+
+# ios/ changed (macOS with Xcode; brew install xcodegen)
+(cd ios/ArakunKit && swift test)
+(cd ios && xcodegen generate && xcodebuild build -quiet -project Arakun.xcodeproj \
+  -scheme Arakun -destination "generic/platform=iOS Simulator" CODE_SIGNING_ALLOWED=NO)
 
 # .github/ changed (brew install zizmor, or pipx install zizmor)
 zizmor .github
@@ -181,8 +188,9 @@ lefthook install
 - **On commit:** clippy if Rust files changed, the relay's types if `relay/` changed,
   the teams Worker's types if `teams/` changed, and the phone tests if `phone/` or
   `core/src/phone/` changed. They check the files on disk, not only what you staged.
-- **On push:** `cargo test`, the relay tests and the teams tests, if the commits you
-  push change those parts.
+- **On push:** `cargo test`, the relay tests, the teams tests and, on macOS, the iOS
+  protocol tests (`swift test` in `ios/ArakunKit`), if the commits you push change
+  those parts.
 - **On the commit message:** the Conventional Commits check (see
   [Pull requests](#pull-requests)).
 
@@ -244,6 +252,17 @@ tools/bench/releases.sh v0.10.0 v0.11.1       # the same on your own Linux machi
   on.
 - **Docs.** If you change a command, a flag, a shortcut or a storage path, update the
   README (and [docs/windows.md](docs/windows.md) if it is different on Windows).
+
+### The iOS app
+
+- `ios/ArakunKit` is the phone page's protocol in Swift: a change to its encryption,
+  framing or messages must match `core/src/phone` and `phone/`, and its tests read
+  `phone/test/vectors`.
+- Pairing credentials stay in the Keychain (`ios/Arakun/Keychain.swift`), never in
+  `UserDefaults` or logs.
+- Views take colors, fonts and corners from `ios/Arakun/Theme.swift`, never
+  hand-written values.
+- The `-demo` mode is behind `#if DEBUG` and must not reach a release build.
 
 ### UI changes
 

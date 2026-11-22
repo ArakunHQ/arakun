@@ -8,9 +8,10 @@
 # It waits for the checks main's ruleset requires, apart from "Human approval",
 # which waits for a review that only comes after `gh pr ready`. It also waits
 # for the macOS job when the pull request changes macOS code or a Rust file that
-# has some. Other checks, such as the macOS job for other changes and CodeQL,
-# can still be running: they take a shared runner pool, and waiting for them
-# cost up to 100 minutes a pull request.
+# has some, and for the iOS job when it touches the iOS app or what it reads.
+# Other checks, such as the macOS job for other changes and CodeQL, can still
+# be running: they take a shared runner pool, and waiting for them cost up to
+# 100 minutes a pull request.
 #
 # The required checks come from the ruleset, not from the checks already on
 # the pull request, so it does not stop early before they have started.
@@ -19,6 +20,7 @@ set -euo pipefail
 export LC_ALL=C
 
 MACOS_CHECK="Clippy and tests (macOS, no browser)"
+IOS_CHECK="iOS (Swift tests and simulator build)"
 SKIP_CHECK="Human approval"
 INTERVAL=20
 TIMEOUT_MIN=${WAIT_CHECKS_TIMEOUT:-60}
@@ -89,6 +91,22 @@ classify() {
   else
     echo "The diff touches no macOS code; not waiting for the macOS job."
     wanted=$required
+  fi
+  # The paths ci.yml's `changes` job runs the iOS job for, read as it reads
+  # them: a renamed file counts by its old path too, and a list that cannot
+  # be read runs every job, so the wait must include iOS then.
+  local names
+  if ! names=$(gh api --paginate "repos/{owner}/{repo}/pulls/$pr/files" \
+    --jq '.[] | .filename, (.previous_filename // empty)'); then
+    echo "Waiting for the iOS job too: could not list the changed files."
+    wanted=$(printf '%s\n%s\n' "$wanted" "$IOS_CHECK")
+  elif [ "$(grep -c . <<< "$names")" -ge 3000 ]; then
+    # The API lists at most 3000 files; ci.yml runs every job past that.
+    echo "Waiting for the iOS job too: too many changed files to list."
+    wanted=$(printf '%s\n%s\n' "$wanted" "$IOS_CHECK")
+  elif grep -qE '^(ios|phone)/|^assets/brand/mascot\.json$|^assets/fonts/|^\.github/workflows/ci\.yml$|^\.github/actions/' <<< "$names"; then
+    echo "Waiting for the iOS job too: the diff touches the iOS app or what it reads."
+    wanted=$(printf '%s\n%s\n' "$wanted" "$IOS_CHECK")
   fi
   wanted=$(grep -v '^$' <<< "$wanted" || true)
 }

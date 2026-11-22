@@ -119,6 +119,10 @@ cargo test --locked --no-default-features <module>   # only the modules you touc
 (cd relay && npx tsc --noEmit)
 # teams/ changed
 (cd teams && npm ci && npm run check)
+# ios/ changed (macOS with Xcode; brew install xcodegen)
+(cd ios/ArakunKit && swift test)
+(cd ios && xcodegen generate && xcodebuild build -quiet -project Arakun.xcodeproj \
+  -scheme Arakun -destination "generic/platform=iOS Simulator" CODE_SIGNING_ALLOWED=NO)
 ```
 
 Leave the rest to CI on the draft pull request: the full `cargo test`, the
@@ -150,6 +154,10 @@ request that also fixes the new lints.
   Workspace panel, notice (the glossary under "Words in the interface" in
   CONTRIBUTING.md). `src/words_lint.rs` fails the tests on a retired word.
 - Code for one platform goes behind `cfg(...)`, and the other platforms must still build.
+- The iOS app (`ios/`): `ios/ArakunKit` must match `core/src/phone` and `phone/` on the
+  wire. Pairing credentials stay in the Keychain, never in `UserDefaults` or logs. Views
+  take colors, fonts and corners from `ios/Arakun/Theme.swift`. The `-demo` mode stays
+  behind `#if DEBUG`.
 - Do not add or change code behind the private `team` or `coderlabs` features.
 - Comments say why, not what. Docs and comments use plain, short sentences.
 - If you change a command, flag, shortcut or storage path, update the README (and

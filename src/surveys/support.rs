@@ -133,13 +133,14 @@ fn message(s: &Survey, props: &Map<String, Value>) -> String {
     out
 }
 
-/// A question as a label line: it keeps its own `?` or `:`, else gets a `:`.
+/// A question as a label line: it keeps its own `?` or `:`, else ends in a
+/// `:`, in place of a `.` or `!`, so the answer below reads as its answer.
 fn label(question: &str) -> String {
     let q = question.trim();
-    if q.ends_with(['?', ':', '.', '!']) {
+    if q.ends_with(['?', ':']) {
         q.to_string()
     } else {
-        format!("{q}:")
+        format!("{}:", q.trim_end_matches(['.', '!']))
     }
 }
 
@@ -260,6 +261,8 @@ mod tests {
     fn question_without_mark_gets_a_colon() {
         assert_eq!(label("Steps to reproduce"), "Steps to reproduce:");
         assert_eq!(label("How bad was it? "), "How bad was it?");
+        assert_eq!(label("Tell us more."), "Tell us more:");
+        assert_eq!(label("Anything else!"), "Anything else:");
     }
 
     #[test]

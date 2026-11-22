@@ -6,7 +6,7 @@
 [package]
 name = "arakun-core"
 # The app's version: `ARAKUN_VERSION` falls back to it (build.rs).
-version = "0.18.0"
+version = "0.18.1"
 edition = "2024"
 publish = false
 license = "AGPL-3.0-only"

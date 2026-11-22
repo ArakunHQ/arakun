@@ -1,10 +1,12 @@
 //! Durable file replacement for state, transcripts and caches.
 
+use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fs::File;
 use std::io::{self, Write as _};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 static SEQ: AtomicU64 = AtomicU64::new(0);
 
@@ -15,12 +17,14 @@ static SEQ: AtomicU64 = AtomicU64::new(0);
 /// gets its own temp file, so two saves of the same file can't interleave.
 /// Creates the parent directory.
 pub fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    after_queued(path);
     write_in(path, bytes, true, false)
 }
 
 /// `write` into a directory that must already be there: when it is gone,
 /// this fails instead of making it again.
 pub fn replace(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    after_queued(path);
     write_in(path, bytes, false, false)
 }
 
@@ -29,7 +33,17 @@ pub fn replace(path: &Path, bytes: &[u8]) -> io::Result<()> {
 /// created that way before anything goes in, and a directory it creates is
 /// 0700. Elsewhere it is `write`.
 pub fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    after_queued(path);
     write_in(path, bytes, true, true)
+}
+
+/// What `path` holds, or will once the `write_soon` queued for it lands: a
+/// load right after a save must not see the file from before it.
+pub fn read(path: &Path) -> io::Result<Vec<u8>> {
+    match queued_bytes(path) {
+        Some(bytes) => Ok(bytes.to_vec()),
+        None => std::fs::read(path),
+    }
 }
 
 /// `write` with `v` as JSON.
@@ -50,7 +64,7 @@ pub fn cache_json(path: &Path, v: &impl serde::Serialize) {
 /// that must not be lost goes through `stored::load`, which keeps a file it
 /// can't read.
 pub fn load_json<T: serde::de::DeserializeOwned>(path: impl AsRef<Path>) -> Option<T> {
-    serde_json::from_slice(&std::fs::read(path).ok()?).ok()
+    serde_json::from_slice(&read(path.as_ref()).ok()?).ok()
 }
 
 fn write_in(path: &Path, bytes: &[u8], make_dir: bool, private: bool) -> io::Result<()> {
@@ -95,13 +109,14 @@ fn write_in(path: &Path, bytes: &[u8], make_dir: bool, private: bool) -> io::Res
 /// disk flushes would stall the window (a settings switch, a field saved on
 /// every key). One thread writes them in the order they came, so the file ends
 /// with the last one. A failure is logged after `what`.
-pub fn write_soon(path: std::path::PathBuf, bytes: Vec<u8>, what: &'static str) {
+pub fn write_soon(path: PathBuf, bytes: Vec<u8>, what: &'static str) {
     queue(Save {
         path,
-        bytes,
+        bytes: bytes.into(),
         what,
         private: false,
         done: None,
+        seq: 0,
     });
 }
 
@@ -109,22 +124,50 @@ pub fn write_soon(path: std::path::PathBuf, bytes: Vec<u8>, what: &'static str) 
 /// What comes back says whether the file holds these bytes, or a later save
 /// that replaced them before they were written: false when that failed.
 pub fn write_private_soon(
-    path: std::path::PathBuf,
+    path: PathBuf,
     bytes: Vec<u8>,
     what: &'static str,
 ) -> futures::channel::oneshot::Receiver<bool> {
     let (done, saved) = futures::channel::oneshot::channel();
     queue(Save {
         path,
-        bytes,
+        bytes: bytes.into(),
         what,
         private: true,
         done: Some(vec![done]),
+        seq: 0,
     });
     saved
 }
 
-fn queue(save: Save) {
+/// The saves queued and not yet on disk, by file: the last one for each, and
+/// the number it was queued under.
+type Queued = HashMap<PathBuf, (u64, Arc<[u8]>)>;
+
+fn queued() -> &'static Mutex<Queued> {
+    static QUEUED: std::sync::OnceLock<Mutex<Queued>> = std::sync::OnceLock::new();
+    QUEUED.get_or_init(Default::default)
+}
+
+fn queued_bytes(path: &Path) -> Option<Arc<[u8]>> {
+    let queued = queued().lock().unwrap_or_else(|e| e.into_inner());
+    queued.get(path).map(|(_, bytes)| bytes.clone())
+}
+
+/// Lets the saves queued for `path` land first, so an older one can't land
+/// over a write made on the spot after it.
+fn after_queued(path: &Path) {
+    if queued_bytes(path).is_some() {
+        flush();
+    }
+}
+
+fn queue(mut save: Save) {
+    {
+        let mut queued = queued().lock().unwrap_or_else(|e| e.into_inner());
+        save.seq = SEQ.fetch_add(1, Ordering::Relaxed) + 1;
+        queued.insert(save.path.clone(), (save.seq, save.bytes.clone()));
+    }
     if let Err(std::sync::mpsc::SendError(Soon::Write(save))) = soon().send(Soon::Write(save)) {
         save.write();
     }
@@ -139,10 +182,13 @@ pub fn flush() {
 }
 
 struct Save {
-    path: std::path::PathBuf,
-    bytes: Vec<u8>,
+    path: PathBuf,
+    bytes: Arc<[u8]>,
     what: &'static str,
     private: bool,
+    /// Its number in `queued`, which it leaves once written unless a later
+    /// save of the same file took its place there.
+    seq: u64,
     /// Told whether it was written. Those of the saves it replaced in a batch
     /// are told too: what they waited for is now this one.
     done: Option<Vec<futures::channel::oneshot::Sender<bool>>>,
@@ -150,11 +196,17 @@ struct Save {
 
 impl Save {
     fn write(self) {
-        let written = if self.private {
-            write_private(&self.path, &self.bytes)
-        } else {
-            write(&self.path, &self.bytes)
-        };
+        // Not `write`: that waits for the queue, which is this thread.
+        let written = write_in(&self.path, &self.bytes, true, self.private);
+        {
+            let mut queued = queued().lock().unwrap_or_else(|e| e.into_inner());
+            if queued
+                .get(&self.path)
+                .is_some_and(|(seq, _)| *seq == self.seq)
+            {
+                queued.remove(&self.path);
+            }
+        }
         if let Err(e) = &written {
             eprintln!("arakun: {}: {e}", self.what);
         }
@@ -362,13 +414,46 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    #[test]
+    fn a_read_right_after_a_save_soon_sees_it() {
+        let dir = scratch("read-soon");
+        let path = dir.join("pins.json");
+        super::write(&path, b"old").unwrap();
+        for n in 0..20 {
+            let bytes = format!("{n}").into_bytes();
+            super::write_soon(path.clone(), bytes.clone(), "test");
+            assert_eq!(super::read(&path).unwrap(), bytes);
+        }
+        super::flush();
+        assert_eq!(super::read(&path).unwrap(), b"19");
+        assert!(
+            super::queued_bytes(&path).is_none(),
+            "nothing is left queued"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_write_on_the_spot_lands_after_the_saves_queued_before_it() {
+        let dir = scratch("spot-after-soon");
+        let path = dir.join("phone.json");
+        for n in 0..20 {
+            super::write_soon(path.clone(), format!("{n}").into_bytes(), "test");
+        }
+        super::write_private(&path, b"now").unwrap();
+        super::flush();
+        assert_eq!(std::fs::read(&path).unwrap(), b"now");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     fn save(path: &std::path::Path, bytes: &[u8]) -> super::Soon {
         super::Soon::Write(super::Save {
             path: path.to_path_buf(),
-            bytes: bytes.to_vec(),
+            bytes: bytes.into(),
             what: "test",
             private: false,
             done: None,
+            seq: 0,
         })
     }
 

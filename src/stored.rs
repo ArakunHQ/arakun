@@ -34,7 +34,7 @@ pub fn load<T: DeserializeOwned>(path: &Path) -> Option<T> {
 
 /// `load` with a parser of its own, for files that skip what they don't know.
 pub fn load_with<T>(path: &Path, parse: impl FnOnce(&[u8]) -> Result<T, String>) -> Option<T> {
-    let bytes = match std::fs::read(path) {
+    let bytes = match crate::durable::read(path) {
         Ok(bytes) => bytes,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
         Err(e) => {
@@ -62,6 +62,20 @@ pub fn write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         )));
     }
     crate::durable::write(path, bytes)
+}
+
+/// `write` on the background writer, for saves made in a click handler, where
+/// the disk flushes would stall the window. A load right after still sees it.
+/// A failure is logged after `what`.
+pub fn write_soon(path: &Path, bytes: Vec<u8>, what: &'static str) {
+    if !clear(path, crate::model::unix_now()) {
+        eprintln!(
+            "arakun: not saving {}: it holds data that could not be read",
+            path.display()
+        );
+        return;
+    }
+    crate::durable::write_soon(path.to_path_buf(), bytes, what);
 }
 
 /// The files set aside since the last call.

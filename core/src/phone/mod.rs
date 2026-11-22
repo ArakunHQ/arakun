@@ -890,7 +890,7 @@ impl Settings {
     }
 
     fn read_from(path: &Path) -> Result<Option<Settings>, String> {
-        match std::fs::read(path) {
+        match crate::durable::read(path) {
             Ok(bytes) => serde_json::from_slice(&bytes).map(Some).map_err(|e| {
                 format!(
                     "{} is not what Arakun wrote ({e}); move it aside to start over",
@@ -909,6 +909,20 @@ impl Settings {
         let path = settings_file();
         if let Err(e) = self.save_to(&path) {
             eprintln!("arakun: could not save {}: {e}", path.display());
+        }
+    }
+
+    /// `save` on the background writer, for the window's click handlers, where
+    /// the disk flushes would stall it. A `load` right after still sees it.
+    pub fn save_soon(&self) {
+        let path = settings_file();
+        match serde_json::to_vec_pretty(self) {
+            Ok(json) => drop(crate::durable::write_private_soon(
+                path,
+                json,
+                "could not save the phone settings",
+            )),
+            Err(e) => eprintln!("arakun: could not save {}: {e}", path.display()),
         }
     }
 

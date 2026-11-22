@@ -190,14 +190,14 @@ impl Shell {
             PhoneEvent::Enable => {
                 let mut settings = phone::Settings::load();
                 settings.enabled = true;
-                settings.save();
+                settings.save_soon();
                 self.start_phone(&settings, window, cx);
             }
             PhoneEvent::Disable => {
                 self.save_devices();
                 let mut settings = phone::Settings::load();
                 settings.enabled = false;
-                settings.save();
+                settings.save_soon();
                 self.stop_phone(cx);
                 self.sync_phone_view(cx);
             }
@@ -208,7 +208,7 @@ impl Shell {
                     return;
                 }
                 settings.reach = *reach;
-                settings.save();
+                settings.save_soon();
                 if self.phone.is_some() {
                     self.stop_phone(cx);
                     self.start_phone(&settings, window, cx);
@@ -282,7 +282,7 @@ impl Shell {
         };
         let mut settings = phone::Settings::load();
         settings.devices = link.access.lock().unwrap().devices.clone();
-        settings.save();
+        settings.save_soon();
         link.server.sync_tickets(&link.access);
     }
 

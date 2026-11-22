@@ -58,6 +58,8 @@ pub enum ExtensionsEvent {
     ConnectServers,
     /// A message for the paired server with this id (the phone's `ClientMsg`).
     Server(String, serde_json::Value),
+    /// Something changed on this computer: the paired servers get what they lack.
+    Mirror,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -484,7 +486,7 @@ impl ExtensionsView {
     fn run_op(
         &mut self,
         name: String,
-        done: &'static str,
+        done: impl Into<String>,
         job: impl FnOnce() -> anyhow::Result<()> + Send + 'static,
         then: Option<String>,
         cx: &mut Context<Self>,
@@ -496,6 +498,7 @@ impl ExtensionsView {
         self.error = None;
         self.notice = None;
         self.confirm_remove = None;
+        let done = done.into();
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_spawn(crate::guard::task(async move { job() }))
@@ -511,6 +514,7 @@ impl ExtensionsView {
                             cx.emit(ExtensionsEvent::Run(command));
                         }
                         this.load_claude(cx);
+                        cx.emit(ExtensionsEvent::Mirror);
                     }
                     Err(e) => this.error = Some(format!("{}: {e:#}", display_name(&name)).into()),
                 }

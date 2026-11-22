@@ -753,7 +753,7 @@ fn read_json(path: &Path) -> Value {
 }
 
 /// This folder's entry in `~/.claude.json` (keyed by absolute path).
-fn project_entry<'a>(state: &'a Value, cwd: &Path) -> &'a Value {
+pub(super) fn project_entry<'a>(state: &'a Value, cwd: &Path) -> &'a Value {
     let key = cwd.to_string_lossy();
     let entry = &state["projects"][key.trim_end_matches('/')];
     if entry.is_null() {

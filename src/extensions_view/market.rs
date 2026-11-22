@@ -12,6 +12,7 @@ use super::*;
 use serde_json::json;
 
 use crate::agent::marketplace::{self, Input, Install, PluginEntry, RegistryServer};
+use crate::agent::mirror::{self, RepoItem, Where};
 use crate::agent::publishers;
 use crate::agent::skills_sh::{self, SkillEntry, SkillSource};
 
@@ -89,6 +90,9 @@ pub(super) struct MarketState {
     rows_for: std::cell::RefCell<Synced>,
     pub(super) last_width: std::cell::Cell<f32>,
     pub(super) check_pending: std::cell::Cell<bool>,
+    /// Where Install puts things on this computer: for the user, or in the
+    /// environment's repository.
+    pub(super) at: Where,
 }
 
 impl ExtensionsView {
@@ -202,15 +206,19 @@ impl ExtensionsView {
             _ => None,
         };
         let e = entry.clone();
+        let at = self.ms.at;
+        let Some(dir) = self.install_dir() else {
+            return;
+        };
         self.run_op(
             entry.name.clone(),
-            "is installed for every project",
+            format!("is installed {}", at.done()),
             move || {
                 let found = match found {
                     Some(f) => f,
                     None => skills_sh::locate(&e)?,
                 };
-                skills_sh::install(&e, &found, &skills_sh::skills_root()).map(|_| ())
+                mirror::install_skill(&e, &found, at, &dir)
             },
             None,
             cx,
@@ -365,11 +373,24 @@ impl ExtensionsView {
             self.install_remote(name, id, msg, done, cx);
             return;
         }
-        let Some(cwd) = self.cwd.clone() else { return };
+        let Some(cwd) = self.install_dir() else {
+            return;
+        };
+        let at = self.ms.at;
         self.run_op(
             name,
-            "is installed and on in every project",
-            move || marketplace::install_plugin(&cwd, &id),
+            format!("is installed and on {}", at.done()),
+            move || {
+                marketplace::install_plugin_as(&cwd, &id, at.claude())?;
+                if at != Where::User {
+                    mirror::remember_repo_install(
+                        &cwd,
+                        at == Where::Shared,
+                        RepoItem::Plugin { id },
+                    );
+                }
+                Ok(())
+            },
             None,
             cx,
         );
@@ -484,12 +505,33 @@ impl ExtensionsView {
             }
             return;
         }
-        let Some(cwd) = self.cwd.clone() else { return };
+        let Some(cwd) = self.install_dir() else {
+            return;
+        };
+        let at = self.ms.at;
+        // One that signs in gets a name of its own per repository, so its
+        // sign-in is its own too: Claude keeps one per name and address.
+        let n = if at != Where::User && sign_in {
+            mirror::repo_server_name(&n, &cwd)
+        } else {
+            n
+        };
+        let login = claude_ext::login_command(&n);
         self.ms.installing = None;
         self.run_op(
-            name,
-            "was added for every project",
-            move || marketplace::install_server(&cwd, &n, &method, &values).map(|_| ()),
+            n.clone(),
+            format!("was added {}", at.done()),
+            move || {
+                marketplace::install_server_as(&cwd, &n, &method, &values, at.claude())?;
+                if at != Where::User {
+                    mirror::remember_repo_install(
+                        &cwd,
+                        at == Where::Shared,
+                        RepoItem::Server { name: n },
+                    );
+                }
+                Ok(())
+            },
             sign_in.then_some(login),
             cx,
         );
@@ -620,6 +662,11 @@ impl ExtensionsView {
     }
 
     fn installed(&self, item: &Item) -> bool {
+        // What the user has says nothing of a repository: Claude Code says so
+        // itself when it is there already.
+        if self.targets.target.is_none() && self.ms.at != Where::User {
+            return false;
+        }
         match item {
             // A server's list says what is installed there; Claude's files here
             // know of an install the list was read before.
@@ -1557,6 +1604,9 @@ impl ExtensionsView {
                     .child(description),
             )
         });
+        if let Some(picker) = self.render_where(cx) {
+            panel = panel.child(picker);
+        }
         match &item {
             Item::Plugin(p) => {
                 let busy = self.op.as_ref() == Some(&p.name);
@@ -1611,7 +1661,7 @@ impl ExtensionsView {
                             Some("download04"),
                             match self.target_server() {
                                 Some(s) => format!("Install on {}", s.name),
-                                None => "Install for every project".to_string(),
+                                None => self.install_label().to_string(),
                             },
                             ButtonKind::Primary,
                             self.op.is_none(),
@@ -1731,7 +1781,7 @@ impl ExtensionsView {
             ui::button_with(
                 "ext-detail-install",
                 Some("download04"),
-                "Install for every project",
+                self.install_label(),
                 ButtonKind::Primary,
                 self.op.is_none() && !matches!(located, Some(Located::Failed(_))),
             )
@@ -1751,6 +1801,44 @@ impl ExtensionsView {
     }
 
     /// How to install the picked registry server: the way, what it needs, the command.
+    /// The folder a per-repository install goes into: the environment's.
+    fn install_dir(&self) -> Option<PathBuf> {
+        self.cwd.clone()
+    }
+
+    fn install_label(&self) -> &'static str {
+        match self.ms.at {
+            Where::User => "Install for every project",
+            Where::Shared | Where::Mine => "Install in this repo",
+        }
+    }
+
+    /// Picks where Install puts things on this computer.
+    fn render_where(&self, cx: &mut Context<Self>) -> Option<Div> {
+        if self.targets.target.is_some() || self.cwd.is_none() {
+            return None;
+        }
+        let mut picker = ui::segmented();
+        for (i, at) in Where::ALL.into_iter().enumerate() {
+            picker = picker.child(
+                ui::segment(("ext-where", i), None, at.label(), self.ms.at == at).on_click(
+                    cx.listener(move |this, _, _, cx| {
+                        this.ms.at = at;
+                        cx.notify();
+                    }),
+                ),
+            );
+        }
+        Some(
+            div()
+                .flex()
+                .flex_col()
+                .gap(crate::ui::sp(6.))
+                .child(ui::overline("Install in"))
+                .child(div().flex().child(picker)),
+        )
+    }
+
     fn render_install_form(&self, installed: bool, cx: &mut Context<Self>) -> Option<Div> {
         let ins = self.ms.installing.as_ref()?;
         let s = &ins.server;
@@ -1879,9 +1967,13 @@ impl ExtensionsView {
                             .ty(Type::Caption)
                             .text_color(theme::text_subtle())
                             .child(format!(
-                                "Added as “{}”{}, for every project. It runs{}:",
+                                "Added as “{}”{}, {}. It runs{}:",
                                 s.short_name(),
                                 self.on_target(),
+                                match self.targets.target {
+                                    Some(_) => Where::User.done(),
+                                    None => self.ms.at.done(),
+                                },
                                 if self.targets.target.is_some() {
                                     " there"
                                 } else {

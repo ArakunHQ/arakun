@@ -28,7 +28,7 @@ use crate::account::Account;
 use crate::agent::log::render_log;
 use crate::agent::{
     self, AgentKind, Entry, Setting, SettingOption, Thread, ThreadEvent, ThreadStatus, Transcript,
-    catalog, marketplace, workers_ai,
+    catalog, marketplace, mirror, workers_ai,
 };
 use crate::clone_source;
 use crate::model::{Status, unix_now};
@@ -2655,6 +2655,11 @@ impl Daemon {
                     move || marketplace::serve_server(&name, &install, &values),
                     cx,
                 );
+            }
+            ClientMsg::Mirror(snapshot) => {
+                let places: Vec<PathBuf> =
+                    self.store.places.iter().map(|p| p.path.clone()).collect();
+                self.answer_off_thread(client, move || mirror::apply(snapshot, &places), cx);
             }
             ClientMsg::Visible { visible } => {
                 if visible {

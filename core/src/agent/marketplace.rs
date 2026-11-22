@@ -209,14 +209,30 @@ fn parse_plugins(v: &Value, manifests: &HashMap<String, Manifest>) -> Vec<Plugin
 
 /// Installs a plugin for your user; it is on in every project.
 pub fn install_plugin(cwd: &Path, id: &str) -> Result<()> {
+    install_plugin_as(cwd, id, "user")
+}
+
+/// Installs a plugin in Claude Code's `scope` (`user`, `project` or `local`);
+/// the last two are for the folder `cwd`.
+pub fn install_plugin_as(cwd: &Path, id: &str, scope: &str) -> Result<()> {
     let bin = launch::which("claude").ok_or_else(|| anyhow!("claude is not on PATH"))?;
-    run(
+    super::claude_ext::run_cli(
         &bin,
-        cwd,
-        &["plugin", "install", id, "-s", "user"],
+        &scope_dir(cwd, scope),
+        &["plugin", "install", id, "-s", scope],
         INSTALL_TIMEOUT,
     )
     .map(|_| ())
+}
+
+/// Where a `scope` install runs: a folder that is gone falls back to home only
+/// for the user's, since the others write into the folder itself.
+fn scope_dir(cwd: &Path, scope: &str) -> PathBuf {
+    if scope == "user" {
+        workdir(cwd)
+    } else {
+        cwd.to_path_buf()
+    }
 }
 
 /// `1266133` → `1.3M`.
@@ -758,12 +774,24 @@ pub fn install_server(
     install: &Install,
     values: &HashMap<String, String>,
 ) -> Result<bool> {
+    install_server_as(cwd, name, install, values, "user")
+}
+
+/// Adds the server in Claude Code's `scope` (`user`, `project` or `local`);
+/// says whether it wants a sign-in next.
+pub fn install_server_as(
+    cwd: &Path,
+    name: &str,
+    install: &Install,
+    values: &HashMap<String, String>,
+    scope: &str,
+) -> Result<bool> {
     let config = config(install, values)?;
     let bin = launch::which("claude").ok_or_else(|| anyhow!("claude is not on PATH"))?;
-    run(
+    super::claude_ext::run_cli(
         &bin,
-        cwd,
-        &["mcp", "add-json", name, &config.to_string(), "-s", "user"],
+        &scope_dir(cwd, scope),
+        &["mcp", "add-json", name, &config.to_string(), "-s", scope],
         CLI_TIMEOUT,
     )?;
     Ok(matches!(install, Install::Remote { headers, .. } if headers.is_empty()))

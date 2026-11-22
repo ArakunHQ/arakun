@@ -324,6 +324,9 @@ pub enum ClientMsg {
         #[serde(default)]
         values: HashMap<String, String>,
     },
+    /// What the app installed from the marketplace on its own computer: the
+    /// server adds what it lacks, removing nothing. Answered with `mirror_done`.
+    Mirror(crate::agent::mirror::Snapshot),
     /// Whether the page is on the phone's screen. A page in the background
     /// keeps its socket, so without this it would pass for someone watching.
     Visible {
@@ -1944,6 +1947,14 @@ mod tests {
         assert_eq!(
             serde_json::from_value::<ClientMsg>(plugin).unwrap(),
             ClientMsg::InstallPlugin { id: "a@b".into() }
+        );
+        let mirror = serde_json::json!({ "type": "mirror", "plugins": ["a@b"] });
+        assert_eq!(
+            serde_json::from_value::<ClientMsg>(mirror).unwrap(),
+            ClientMsg::Mirror(crate::agent::mirror::Snapshot {
+                plugins: vec!["a@b".into()],
+                ..Default::default()
+            })
         );
         let market = serde_json::json!({ "type": "market" });
         assert_eq!(

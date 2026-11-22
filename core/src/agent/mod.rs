@@ -23,6 +23,7 @@ pub mod log;
 mod loops;
 pub mod markdown;
 pub mod marketplace;
+pub mod mirror;
 pub mod notes;
 pub mod opencode_plan;
 pub mod plan;

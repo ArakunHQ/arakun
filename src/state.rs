@@ -76,6 +76,10 @@ pub struct State {
     /// Each environment keeps its own tabs too; this says how they mix.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tab_order: Vec<String>,
+    /// How sessions and tabs show (`tab_layout`). Missing in files from
+    /// before it; see `TabLayout::for_state_without_it`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tabs: Option<crate::tab_layout::TabLayout>,
 }
 
 /// The window's place and size in screen points, as `gpui::WindowBounds`.
@@ -957,6 +961,7 @@ pub fn snapshot_with(
         background: crate::background::enabled(),
         window: layout.window,
         tab_order: tab_order(strip),
+        tabs: Some(crate::tab_layout::current()),
     };
     serde_json::to_vec_pretty(&state).unwrap_or_default()
 }
@@ -969,6 +974,9 @@ pub fn restore(state: State) -> (Vec<Project>, usize, Layout, TabStrip) {
     let last_agent = state.last_agent.clone();
     crate::island::set_enabled(!state.island_off);
     crate::background::set_enabled(state.background);
+    crate::tab_layout::set(state.tabs.unwrap_or_else(|| {
+        crate::tab_layout::TabLayout::for_state_without_it(!state.projects.is_empty())
+    }));
     crate::ui::motion::restore(crate::ui::motion::Reduce::from_id(&state.reduce_motion));
     let projects: Vec<Project> = state
         .projects

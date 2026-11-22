@@ -79,6 +79,7 @@ mod site_view;
 mod state;
 mod stored;
 mod subnav;
+mod tab_layout;
 #[cfg(feature = "coderlabs")]
 mod tasks_view;
 #[cfg(feature = "team")]

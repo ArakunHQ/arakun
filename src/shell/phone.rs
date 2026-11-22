@@ -308,7 +308,7 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let vapid = Arc::new(settings.clone().vapid());
+        let vapid = Arc::new(settings.clone().vapid_soon());
         let access = Access::new(settings.devices.clone(), vapid.public_key());
         let (server, mut incoming) = match settings.reach {
             Reach::Lan | Reach::Tailscale => {
@@ -328,7 +328,7 @@ impl Shell {
             Reach::Relay => {
                 let (r, rx) = RelayClient::start(
                     &settings.relay_base,
-                    settings.clone().identity(),
+                    settings.clone().identity_soon(),
                     access.clone(),
                 );
                 (Transport::Relay(r), rx)
@@ -424,7 +424,7 @@ impl Shell {
         let reach = self.phone.as_ref().map_or(settings.reach, |l| l.reach);
         // The identity is made the first time the relay is chosen, not before.
         let relay = (reach == Reach::Relay).then(|| {
-            let label = settings.identity().label();
+            let label = settings.identity_soon().label();
             RelayInfo {
                 url: settings.relay_address(&label),
             }

@@ -339,7 +339,15 @@ impl TeamsView {
 
     /// The project @bot reads: the environment the window shows.
     pub fn set_project(&mut self, dir: std::path::PathBuf, cx: &mut Context<Self>) {
-        self.hub.update(cx, |h, _| h.set_bot_project(Some(dir)));
+        self.hub
+            .update(cx, |h, _| h.set_bot_project(Self::local_project(dir)));
+    }
+
+    /// A remote environment's path is an `arakun-server://` address, not a
+    /// folder here: Claude Code could not start in it. @bot then runs as it
+    /// does with no project open.
+    fn local_project(dir: std::path::PathBuf) -> Option<std::path::PathBuf> {
+        (!crate::model::Remote::is_path(&dir)).then_some(dir)
     }
 
     fn owner(teams: &Teams) -> Option<u64> {
@@ -4065,6 +4073,14 @@ fn when(at: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_remote_environment_is_no_project_for_the_bot() {
+        let here = std::path::PathBuf::from("/home/me/code/app");
+        assert_eq!(TeamsView::local_project(here.clone()), Some(here));
+        let there = crate::model::Remote::project_path("app");
+        assert_eq!(TeamsView::local_project(there), None);
+    }
 
     #[test]
     fn switching_members_or_signing_out_discards_shared_channel_drafts() {

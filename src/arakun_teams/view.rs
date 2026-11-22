@@ -58,6 +58,19 @@ impl Pane {
     fn opens_created(&self) -> bool {
         matches!(self, Pane::NewTeam | Pane::None)
     }
+
+    /// Whether the bar over pages of no team offers "Start a team": an
+    /// invite or a wait for an admin shows in place of the new-team form,
+    /// and must not be the only thing a user without a team can do.
+    /// `waiting` is an open invite or a request an admin has not answered.
+    fn offers_start(&self, no_teams: bool, waiting: bool) -> bool {
+        no_teams
+            && match self {
+                Pane::Invites | Pane::Asked(_) => true,
+                Pane::None => waiting,
+                _ => false,
+            }
+    }
 }
 
 /// What the panel at the right of a channel shows.
@@ -950,16 +963,35 @@ impl TeamsView {
     /// The bar over pages of no team. Without a team there is no team menu,
     /// yet a second device needs Your devices on this one to be let in.
     fn render_teamless_bar(&self, cx: &mut Context<Self>) -> AnyElement {
-        let on_devices = self.pane == Pane::Devices;
+        // The new-team form opened from here has the same way back.
+        let on_devices = matches!(self.pane, Pane::Devices | Pane::NewTeam);
+        let hub = self.hub.read(cx);
+        let waiting = !hub.invites.is_empty() || !hub.asked().is_empty();
+        let start = self.pane.offers_start(hub.teams.is_empty(), waiting);
         div()
             .flex()
             .flex_none()
             .items_center()
             .justify_end()
+            .gap(ui::sp(4.))
             .h(px(ui::BAR_H))
             .px(ui::sp(12.))
             .border_b_1()
             .border_color(theme::border_subtle())
+            .when(start, |d| {
+                d.child(
+                    ui::button_with(
+                        "teams-to-new",
+                        Some("add01"),
+                        "Start a team",
+                        ButtonKind::Ghost,
+                        true,
+                    )
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.show(Pane::NewTeam, window, cx)),
+                    ),
+                )
+            })
             .child(if on_devices {
                 ui::button_with(
                     "teams-devices-back",
@@ -3667,6 +3699,21 @@ mod tests {
         ] {
             assert!(!pane.opens_created(), "{pane:?}");
         }
+    }
+
+    #[test]
+    fn start_a_team_is_offered_over_an_invite_or_a_wait() {
+        // An invite or a wait shows on the empty pane in place of the form.
+        assert!(Pane::None.offers_start(true, true));
+        assert!(Pane::Invites.offers_start(true, false));
+        assert!(Pane::Asked("a".into()).offers_start(true, false));
+        // The empty pane with nothing waiting is the form itself.
+        assert!(!Pane::None.offers_start(true, false));
+        assert!(!Pane::NewTeam.offers_start(true, true));
+        assert!(!Pane::Devices.offers_start(true, true));
+        // With a team, the team menu has it.
+        assert!(!Pane::None.offers_start(false, true));
+        assert!(!Pane::Invites.offers_start(false, true));
     }
 
     #[test]

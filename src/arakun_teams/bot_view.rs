@@ -221,10 +221,11 @@ impl TeamsView {
             .filter(|m| m.body.kind == "bot")
             .filter_map(|m| Some((m.id.clone(), stale_of(messages, m)?)))
             .collect();
+        let mut reversals = decisions::reversals(messages);
         let reversed: HashMap<String, Reversal> = messages
             .iter()
             .filter(|m| m.delivery == Delivery::Sent && bot::meta(m).is_some())
-            .filter_map(|m| Some((m.id.clone(), decisions::reversal(messages, &m.id)?)))
+            .filter_map(|m| Some((m.id.clone(), reversals.remove(m.id.as_str())?)))
             .collect();
         let me = hub.me();
         let accepting = messages

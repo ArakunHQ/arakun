@@ -370,12 +370,16 @@ impl TeamsView {
         self.copied = false;
         self.seen_count = 0;
         self.scroll = ScrollHandle::new();
+        // What the last account searched for and had open in Decisions.
+        self.decision = None;
+        self.decisions_mine = false;
         for field in [
             &self.composer,
             &self.team_name,
             &self.channel_name,
             &self.invite,
             &self.device_code,
+            &self.decision_query,
         ] {
             field.update(cx, |i, cx| i.set_text("", cx));
         }

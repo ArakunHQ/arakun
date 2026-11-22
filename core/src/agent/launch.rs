@@ -64,14 +64,27 @@ pub fn open_log(kind: AgentKind) -> Option<crate::rotate::Writer> {
 /// Apps started from a compositor keybinding often get a bare PATH without
 /// `~/.local/bin`, which is where both CLIs install themselves.
 fn search_path() -> Vec<PathBuf> {
-    let mut dirs: Vec<PathBuf> = std::env::var_os("PATH")
+    let mut dirs = Vec::new();
+    let current: Vec<PathBuf> = std::env::var_os("PATH")
         .map(|p| std::env::split_paths(&p).collect())
         .unwrap_or_default();
     if let Some(login) = crate::platform::login_path_override() {
+        // Keep the Arakun shim directory first, then prioritize the freshly
+        // resolved login-shell PATH ahead of cached startup entries.
+        for dir in current.iter().filter(|d| d.ends_with("arakun/bin")) {
+            if !dirs.contains(dir) {
+                dirs.push(dir.clone());
+            }
+        }
         for dir in std::env::split_paths(login) {
             if !dirs.contains(&dir) {
                 dirs.push(dir);
             }
+        }
+    }
+    for dir in current {
+        if !dirs.contains(&dir) {
+            dirs.push(dir);
         }
     }
     for extra in extra_dirs() {

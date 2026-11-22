@@ -1017,6 +1017,16 @@ pub fn import_login_path() {
     }
 }
 
+#[cfg(target_os = "macos")]
+fn write_login_path_cache(file: &Path, path: &str) -> std::io::Result<()> {
+    if let Some(parent) = file.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let tmp = file.with_extension("txt.tmp");
+    std::fs::write(&tmp, path)?;
+    std::fs::rename(&tmp, file)
+}
+
 /// Refreshes the user's login-shell `PATH` off the startup critical path on
 /// macOS so subsequent child spawns and launches see any `.zshrc` updates
 /// without blocking window creation.
@@ -1033,14 +1043,7 @@ pub fn refresh_login_path_async() {
                     return;
                 };
                 let _ = LOGIN_PATH.set(std::ffi::OsString::from(&path));
-                let file = login_path_cache_file();
-                if let Some(parent) = file.parent() {
-                    let _ = std::fs::create_dir_all(parent);
-                }
-                let tmp = file.with_extension("txt.tmp");
-                if std::fs::write(&tmp, &path).is_ok() {
-                    let _ = std::fs::rename(&tmp, &file);
-                }
+                let _ = write_login_path_cache(&login_path_cache_file(), &path);
             });
     }
 }
@@ -1873,6 +1876,19 @@ mod tests {
         assert_eq!(dirs[0], PathBuf::from("/opt/homebrew/bin"));
         assert!(dirs.contains(&PathBuf::from("/Users/test/.local/bin")));
         assert!(dirs.contains(&PathBuf::from("/usr/bin")));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_login_shell_path_reads_and_caches_atomically() {
+        let path = read_login_shell_path().expect("login shell should return PATH on macOS");
+        assert!(path.contains('/'), "unexpected PATH: {path}");
+        let dir = std::env::temp_dir().join(format!("arakun-path-test-{}", std::process::id()));
+        let file = dir.join("login-path.txt");
+        write_login_path_cache(&file, &path).unwrap();
+        let read = std::fs::read_to_string(&file).unwrap();
+        assert_eq!(parse_login_path(&read), Some(path));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

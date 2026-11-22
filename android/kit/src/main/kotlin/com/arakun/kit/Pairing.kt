@@ -5,10 +5,16 @@ import kotlinx.serialization.json.JsonElement
 import java.io.ByteArrayOutputStream
 import java.net.URI
 
+/** Whether `s` is shaped like a computer's label (relay/src/label.ts). */
+fun isLabel(s: String): Boolean = LABEL_SHAPE.matches(s)
+
+private val LABEL_SHAPE = Regex("[a-z2-7]{16}")
+
 /**
  * The link Arakun's Phone tab shows (as a QR code) to pair a phone through the
  * relay: `https://<label>.<relay>/#p=<code>&s=<secret>`. The label is the
- * host's first part; the fragment holds the code the relay admits the phone
+ * host's first part, unless the relay is run by hand (`wrangler dev`) and the
+ * link has none: the relay then says it. The fragment holds the code the relay admits the phone
  * with and the secret it shows the computer inside the encrypted channel.
  */
 data class PairingLink(

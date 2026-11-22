@@ -14,6 +14,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
@@ -41,6 +42,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import com.arakun.kit.array
 import com.arakun.kit.double
 import com.arakun.kit.get
@@ -218,7 +220,12 @@ fun Mascot(mood: Mood, width: Dp, modifier: Modifier = Modifier, props: Boolean 
     val height = width * ((BOX.height + top) / BOX.width)
     val state = remember { MascotState() }
     val art = remember(small) { MascotArt.get(context, small) }
-    val still = remember { animationsOff(context) }
+    // Read again on each return: the setting can change while the app is away.
+    var still by remember { mutableStateOf(animationsOff(context)) }
+    LifecycleResumeEffect(context) {
+        still = animationsOff(context)
+        onPauseOrDispose {}
+    }
     val c = Palette.current
     // The symbols over the head: in the text color, so they read on white too.
     val propColor = if (c.dark) Brand.fur else Brand.furInk

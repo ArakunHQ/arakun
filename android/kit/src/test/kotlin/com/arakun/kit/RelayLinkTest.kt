@@ -212,6 +212,21 @@ class RelayLinkTest {
     }
 
     @Test
+    fun aRelayRunByHandSaysItsLabel() = runBlocking {
+        val computer = Computer(channel = 3)
+        // `wrangler dev` has no subdomains, so the link carries no label.
+        server.enqueue(MockResponse.Builder().body("""{"label":"$label"}""").build())
+        server.enqueue(MockResponse.Builder().webSocketUpgrade(computer).build())
+        val link = PairingLink.parse("http://127.0.0.1:${server.port}/#p=c&s=s")!!
+        withContext(thread) {
+            RelayLink(RelayLink.Mode.Pairing(link, "Pixel"), scope, client) { events.trySend(it) }.start()
+        }
+        assertEquals("s", computer.heard.poll(10, TimeUnit.SECONDS)!!["pair"]["secret"].str)
+        assertEquals("/_relay", server.takeRequest().target)
+        assertEquals("/ws?p=c", server.takeRequest().target)
+    }
+
+    @Test
     fun theComputerGoingAwayAndBackIsAnEvent() = runBlocking {
         val computer = Computer(channel = 2)
         server.enqueue(MockResponse.Builder().webSocketUpgrade(computer).build())

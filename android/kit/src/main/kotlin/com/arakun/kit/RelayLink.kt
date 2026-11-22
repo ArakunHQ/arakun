@@ -7,11 +7,13 @@ package com.arakun.kit
 
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
@@ -66,7 +68,7 @@ class RelayLink(
 
     class ClosedException : Exception("closed")
 
-    private val label: String
+    private var label: String
     private val host: String
     private val secure: Boolean
     private var credentials: Credentials? = null
@@ -108,6 +110,40 @@ class RelayLink(
     val isReady: Boolean get() = ready && !ended
 
     fun start() {
+        if (mode is Mode.Pairing && !isLabel(label)) {
+            // A relay run by hand (`wrangler dev`) has no label in its address
+            // and says its own, as the phone page asks it. Only then: a label
+            // in the address is what the computer's key is checked against.
+            scope.launch {
+                val said = withContext(Dispatchers.IO) { relayLabel() }
+                if (ended) return@launch
+                if (said == null) {
+                    end(EndKind.GONE, "the relay did not say its label")
+                } else {
+                    label = said
+                    open()
+                }
+            }
+            return
+        }
+        open()
+    }
+
+    /** The label the relay at `host` goes by, from its `/_relay`. */
+    private fun relayLabel(): String? = try {
+        val b = HttpUrl.Builder()
+            .scheme(if (secure) "https" else "http")
+            .host(host.substringBefore(':'))
+            .addPathSegment("_relay")
+        host.substringAfter(':', "").toIntOrNull()?.let(b::port)
+        client.newCall(Request.Builder().url(b.build()).build()).execute().use { res ->
+            parseJson(res.body.bytes())?.get("label")?.str?.takeIf(::isLabel)
+        }
+    } catch (_: Exception) {
+        null
+    }
+
+    private fun open() {
         val url = try {
             val b = HttpUrl.Builder()
                 .scheme(if (secure) "https" else "http")

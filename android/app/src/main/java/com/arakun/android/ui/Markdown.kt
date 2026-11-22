@@ -27,8 +27,16 @@ fun markdown(s: String, c: Palette): AnnotatedString = buildAnnotatedString {
             plain.clear()
         }
     }
-    fun closes(marker: String, from: Int): Int {
-        val end = s.indexOf(marker, from)
+    // Whether the character at `at` follows an odd run of backslashes.
+    fun escaped(at: Int): Boolean {
+        var n = 0
+        while (at - n - 1 >= 0 && s[at - n - 1] == '\\') n++
+        return n % 2 == 1
+    }
+    // A backslash in code is itself, so only other spans skip escaped markers.
+    fun closes(marker: String, from: Int, escapes: Boolean = true): Int {
+        var end = s.indexOf(marker, from)
+        while (escapes && end >= 0 && escaped(end)) end = s.indexOf(marker, end + 1)
         // An empty span or one across a blank line is not one.
         return if (end > from && !s.substring(from, end).contains("\n\n")) end else -1
     }
@@ -40,7 +48,7 @@ fun markdown(s: String, c: Palette): AnnotatedString = buildAnnotatedString {
                 i += 2
             }
             ch == '`' -> {
-                val end = closes("`", i + 1)
+                val end = closes("`", i + 1, escapes = false)
                 if (end < 0) { plain.append(ch); i++ } else {
                     flush()
                     withStyle(code) { append(s.substring(i + 1, end)) }

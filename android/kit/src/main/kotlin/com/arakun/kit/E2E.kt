@@ -236,7 +236,7 @@ internal object P256 {
         val curve = params.curve
         val p = (curve.field as ECFieldFp).p
         if (x >= p || y >= p) return null
-        val lhs = y.modPow(BigInteger.TWO, p)
+        val lhs = y.modPow(BigInteger.valueOf(2), p)
         val rhs = x.modPow(BigInteger.valueOf(3), p).add(curve.a.multiply(x)).add(curve.b).mod(p)
         if (lhs != rhs) return null
         return try {

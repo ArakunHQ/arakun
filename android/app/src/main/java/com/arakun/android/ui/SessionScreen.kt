@@ -74,7 +74,9 @@ fun SessionScreen(model: AppModel, id: String) {
     var followed by remember { mutableStateOf(false) }
     val lastIndex = (s?.let { 1 + (if (it.from > 0) 1 else 0) + it.entries.size + it.queue.size + 1 }) ?: 1
 
-    LaunchedEffect(s?.count, s?.queue?.size) {
+    val working = s?.status == SessionStatus.WORKING && s.turnStarted != null
+    // The working line counts too: a turn can start without a new entry.
+    LaunchedEffect(s?.count, s?.queue?.size, working) {
         if (s == null) return@LaunchedEffect
         if (!followed) {
             // Opened at the end, as a chat is.
@@ -118,7 +120,7 @@ fun SessionScreen(model: AppModel, id: String) {
                     }
                     itemsIndexed(s.entries, key = { i, _ -> "e" + (s.from + i) }) { _, e -> EntryView(e) }
                     itemsIndexed(s.queue, key = { i, _ -> "q$i" }) { _, q -> QueuedView(q) }
-                    if (s.status == SessionStatus.WORKING && s.turnStarted != null) {
+                    if (working) {
                         item(key = "working") { WorkingLine(s.turnStarted!!) }
                     }
                 }
@@ -168,8 +170,8 @@ fun SessionScreen(model: AppModel, id: String) {
                     send = {
                         val text = draft.text.trim().toString()
                         if (text.isNotEmpty()) {
-                            model.say(text)
-                            draft.clearText()
+                            // Offline the prompt stays in the box, to send again.
+                            if (model.say(text)) draft.clearText()
                         }
                     },
                     stop = model::stop,

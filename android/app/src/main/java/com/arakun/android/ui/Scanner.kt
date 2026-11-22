@@ -132,7 +132,11 @@ private fun Camera(found: (String) -> Unit) {
     DisposableEffect(owner) {
         val future = ProcessCameraProvider.getInstance(context)
         var provider: ProcessCameraProvider? = null
+        // The provider can resolve after the sheet has closed; binding then
+        // would hand frames to an executor that is already shut down.
+        var disposed = false
         future.addListener({
+            if (disposed) return@addListener
             val p = future.get()
             provider = p
             val shown = Preview.Builder().build().also { it.surfaceProvider = preview.surfaceProvider }
@@ -166,6 +170,7 @@ private fun Camera(found: (String) -> Unit) {
             }
         }, ContextCompat.getMainExecutor(context))
         onDispose {
+            disposed = true
             provider?.unbindAll()
             scanner.close()
             analysis.shutdown()

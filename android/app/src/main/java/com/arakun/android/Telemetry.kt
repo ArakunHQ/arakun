@@ -100,8 +100,9 @@ private const val MAX_MESSAGE = 300
 
 /**
  * `text` without what may be private: URLs, paths, emails, the value of a
- * `key=value` and anything shaped like a secret. The same rules as the
- * desktop's `telemetry::scrub`.
+ * `key=value` and anything shaped like a secret. The desktop's
+ * `telemetry::scrub` rules, plus: a value whose name reads as a credential
+ * (`password=`, `api_key:`) goes whatever its shape.
  */
 fun scrub(text: String): String {
     val out = StringBuilder()
@@ -133,13 +134,21 @@ private fun redact(word: String): String? {
             val value = word.substring(sep + 1)
             val inner = value.trimStart { it in "([{<\"'`" }
             val quotes = value.substring(0, value.length - inner.length)
-            val redacted = redact(inner) ?: return null
+            // A credential's name says its value is secret, whatever its shape.
+            val redacted = if (credentialName(name)) "<secret>" else redact(inner) ?: return null
             return name + word[sep] + quotes + redacted
         }
     }
     if ('@' in word && '.' in word && !word.startsWith('@')) return "<email>"
     if ('/' in word || '\\' in word || word.startsWith('~')) return "<path>"
     return if (secretShaped(word)) "<secret>" else null
+}
+
+private val CREDENTIAL_NAMES = listOf("pass", "pwd", "secret", "token", "key", "auth", "credential", "session", "cookie")
+
+private fun credentialName(name: String): Boolean {
+    val n = name.trimStart { it in "([{<\"'`" }.lowercase()
+    return CREDENTIAL_NAMES.any { it in n }
 }
 
 private val SECRET_PREFIXES = listOf(

@@ -80,7 +80,8 @@ private fun AskFrame(icon: Int, title: String, trailing: String? = null, content
 fun PermissionCard(ask: PermissionAsk, enabled: Boolean, pick: (PermissionAsk.Option) -> Unit) {
     val c = Palette.current
     // The allow-always option waiting for its second yes.
-    var always by remember { mutableStateOf<PermissionAsk.Option?>(null) }
+    // Keyed by the ask, so a newer ask never confirms the older one's option.
+    var always by remember(ask.toolCallId) { mutableStateOf<PermissionAsk.Option?>(null) }
     AskFrame(R.drawable.ic_hand, "Permission") {
         Text(
             ask.title,

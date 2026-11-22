@@ -258,7 +258,11 @@ class AppModel(app: Application) : AndroidViewModel(app) {
                     EndKind.UNTRUSTED -> connection = Connection.Failed(
                         "This address does not answer with the key Arakun showed. Check the address in its Phone tab before trying again.",
                     )
-                    EndKind.LIMIT -> {
+                    EndKind.LIMIT -> if (credentials == null) {
+                        // Pairing has nothing to retry with; a pairing link is used once.
+                        connection = Connection.Unpaired
+                        pairError = "The relay is busy (${event.detail}). Try the link again in a moment."
+                    } else {
                         notice = "The relay is busy (${event.detail}). Trying again in a moment."
                         lost()
                     }
@@ -333,9 +337,12 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         send("type" to "entries", "session" to s.id, "from" to maxOf(0, s.from - 50), "to" to s.from)
     }
 
-    fun say(text: String) {
-        val s = session ?: return
+    /** Whether the prompt went out; the composer keeps it when it did not. */
+    fun say(text: String): Boolean {
+        val s = session ?: return false
+        if (!canSend) return false
         send("type" to "send", "session" to s.id, "text" to text)
+        return true
     }
 
     fun stop() {
@@ -369,6 +376,11 @@ class AppModel(app: Application) : AndroidViewModel(app) {
     /** Whether the start went out; the form keeps its prompt when it did not. */
     fun startSession(place: Place, text: String): Boolean {
         if (!canSend) return false
+        if (demo != null) {
+            // No computer answers a demo: open one as if it had started.
+            session = demoSession("s2").copy(id = "demo-new", title = text.lineSequence().first().take(80))
+            return true
+        }
         starting = true
         send("type" to "start", "env" to place.path, "agent" to place.agent, "text" to text)
         return true

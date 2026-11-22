@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.layout.PaddingValues
@@ -100,7 +101,8 @@ fun NewSessionSheet(model: AppModel, onDismiss: () -> Unit) {
             ) {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Eyebrow("Where")
-                    Column(Modifier.fillMaxWidth().card()) {
+                    // One choice among the rows, for screen readers.
+                    Column(Modifier.fillMaxWidth().card().selectableGroup()) {
                         model.places.forEachIndexed { i, p ->
                             if (i > 0) Box(Modifier.padding(start = 44.dp).fillMaxWidth().height(1.dp).background(c.line))
                             PlaceRow(p, p.path == placePath) { placePath = p.path }

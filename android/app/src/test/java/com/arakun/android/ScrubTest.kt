@@ -26,6 +26,9 @@ class ScrubTest {
         assertEquals("no such file: '<path>'", scrub("no such file: '/srv/acme/repo/main.rs'"))
         assertEquals("from <email> failed", scrub("from ann@example.com failed"))
         assertEquals("token=<secret> rejected", scrub("token=ghp_abcdefghijklmnop rejected"))
+        assertEquals("login password=<secret> failed", scrub("login password=hunter2 failed"))
+        assertEquals("\"api_key\":\"<secret>\"", scrub("\"api_key\":\"abc\""))
+        assertEquals("status=404", scrub("status=404"))
     }
 
     @Test

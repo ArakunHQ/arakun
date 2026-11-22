@@ -529,7 +529,8 @@ jobs:
 
   # The Android app (android/): the protocol's tests, which check the Kotlin
   # crypto against phone/test/vectors and play a relay over a real socket, then
-  # the app's tests, lint, a debug build and an unsigned release bundle. Not a
+  # the app's tests, lint, a debug build and a release bundle signed with a
+  # throwaway key. Not a
   # required check: it runs only when those files change, and
   # tools/wait-checks.sh waits for it then. android-release.yml signs and uploads.
   android:
@@ -563,7 +564,25 @@ jobs:
 
       - run: ./gradlew :kit:test :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
 
-      # The release bundle, unsigned, as android-release.yml builds it signed:
-      # a change that breaks R8 or the bundle fails here, not at a release.
+      # The release bundle as android-release.yml builds it, signed the same
+      # way but with a throwaway key made here: a change that breaks R8, the
+      # bundle or its signing fails here, not at a release.
+      - name: Throwaway upload key
+        run: |
+          keytool -genkeypair -noprompt -keystore "$RUNNER_TEMP/throwaway.jks" \
+            -storepass throwaway -keypass throwaway -alias upload \
+            -keyalg RSA -keysize 2048 -validity 1 -dname "CN=Arakun CI"
+
       - name: Release bundle
-        run: ./gradlew :app:bundleRelease
+        env:
+          ORG_GRADLE_PROJECT_versionName: 0.0.0
+          ORG_GRADLE_PROJECT_versionCode: 1
+          ORG_GRADLE_PROJECT_uploadStoreFile: ${{ runner.temp }}/throwaway.jks
+          ORG_GRADLE_PROJECT_uploadStorePassword: throwaway
+          ORG_GRADLE_PROJECT_uploadKeyAlias: upload
+          ORG_GRADLE_PROJECT_uploadKeyPassword: throwaway
+        run: |
+          ./gradlew :app:bundleRelease
+          aab=app/build/outputs/bundle/release/app-release.aab
+          jarsigner -verify "$aab" | grep -q "jar verified" || { echo "::error::$aab is not signed"; exit 1; }
+          jarsigner -verify -verbose -certs "$aab" | grep -q "CN=Arakun CI" || { echo "::error::$aab is not signed with the throwaway key"; exit 1; }

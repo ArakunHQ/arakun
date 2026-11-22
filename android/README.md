@@ -64,8 +64,8 @@ animations" on, it holds still.
 ## CI
 
 CI's Android job (`.github/workflows/ci.yml`) runs the kit's and the app's tests, lint,
-a debug build and an unsigned release bundle (`.aab`) when `android/`, `phone/`, the
-mascot's drawing or the fonts change.
+a debug build and a release bundle (`.aab`) signed with a throwaway key, when
+`android/`, `phone/`, the mascot's drawing or the fonts change.
 
 `.github/workflows/android-release.yml` delivers the app: after a release is published
 (release.yml calls it on the `v*` tag, not for a pre-release), or by hand on main, it

@@ -29,7 +29,7 @@ android {
 
     // The upload key Google Play knows the app by, for a bundle that goes
     // there (android-release.yml passes it as ORG_GRADLE_PROJECT_* variables).
-    // Without it a release build is unsigned, as CI builds it.
+    // Without it a release build is unsigned; CI signs with a throwaway key.
     val uploadStore = providers.gradleProperty("uploadStoreFile").orNull
     signingConfigs {
         if (uploadStore != null) {

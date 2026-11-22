@@ -265,6 +265,15 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         when (event) {
             is RelayLink.Event.Open -> {
                 event.credentials?.let {
+                    // A new computer (its label is its key): nothing open on
+                    // the old one exists here, so the inbox starts over.
+                    if (credentials?.label != it.label) {
+                        session = null
+                        openWhenLinked = null
+                        loadingOlder = false
+                        inbox = emptyList()
+                        places = emptyList()
+                    }
                     credentials = it
                     if (!store.save(it)) {
                         notice = "Could not keep the pairing on this phone. You may need to pair again after the app restarts."

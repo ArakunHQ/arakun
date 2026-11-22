@@ -1,8 +1,8 @@
 name: Android release
 
 # Builds the Android app (android/) as an App Bundle, signs it with the upload
-# key and uploads it to Google Play. CI's Android job only builds the bundle
-# unsigned; this is the delivery.
+# key and uploads it to Google Play. CI's Android job builds and signs the
+# bundle only with a throwaway key; this is the delivery.
 #
 # Two ways in:
 #

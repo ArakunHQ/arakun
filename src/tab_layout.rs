@@ -172,11 +172,11 @@ impl Default for TabLayout {
 }
 
 impl TabLayout {
-    /// The layout for a state file saved before this setting existed. A new
-    /// install starts on Focused. Someone who already used Arakun keeps the
+    /// The layout for a state without this setting. A new install (no state
+    /// file) starts on Focused. Someone who already used Arakun keeps the
     /// one row of tabs they know, and finds Focused in Settings.
-    pub fn for_state_without_it(has_projects: bool) -> Self {
-        if has_projects {
+    pub fn for_state_without_it(existing: bool) -> Self {
+        if existing {
             Preset::Classic.layout()
         } else {
             Preset::Focused.layout()
@@ -241,8 +241,10 @@ pub fn current() -> TabLayout {
         .unwrap_or_default()
 }
 
+/// Uses `layout`, made sensible first: a file edited by hand, or written by
+/// another version, may hold a combination the settings rule out.
 pub fn set(layout: TabLayout) {
-    *CURRENT.lock().unwrap_or_else(PoisonError::into_inner) = Some(layout);
+    *CURRENT.lock().unwrap_or_else(PoisonError::into_inner) = Some(layout.with(|_| {}));
 }
 
 #[cfg(test)]
@@ -278,6 +280,13 @@ mod tests {
             TabLayout::for_state_without_it(false).preset(),
             Some(Preset::Focused)
         );
+        // Set by hand to a pinned bar with nothing to pin from: `set` makes
+        // it sensible the way `with` does, so the bar shows every open tab.
+        let by_hand = TabLayout {
+            sessions_in: SessionsIn::TitleBar,
+            ..Preset::Focused.layout()
+        };
+        assert_eq!(by_hand.with(|_| {}).bar_shows, BarShows::AllOpen);
         // A file that has the setting reads it; a field it lacks takes Focused's.
         let read: TabLayout = serde_json::from_str(r#"{"bar_shows":"project"}"#).unwrap();
         assert_eq!(read.bar_shows, BarShows::Project);

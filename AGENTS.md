@@ -72,6 +72,10 @@ Every commit message and pull request title follows
   branch, so pull before you push. If you change a rule here or in
   CONTRIBUTING.md, check the rules in `cubic.yaml` too.
 
+- A version bump pull request also adds the changelog entry,
+  `release-notes/v<version>.md`; CI fails it otherwise. Write it with the
+  `release-notes` skill.
+
 ### Stacked pull requests
 
 A stack is a chain of pull requests where each one targets the branch of the one below

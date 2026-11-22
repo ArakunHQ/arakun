@@ -368,6 +368,10 @@ that keeps one on purpose goes on its allow-list.
 - **Keep the branch up to date** with `main`, and make sure the required checks pass before you
   ask for a review. If a check fails and you think it is not your change, say so in the pull
   request.
+- **A version bump** also adds the release's changelog entry,
+  `release-notes/v<version>.md`, written for people who use the app. The **Changelog
+  entry** check fails the pull request without it. See
+  [release-notes/README.md](release-notes/README.md).
 - **Stack pull requests** when one step needs another that is not merged yet. See
   [Stacked pull requests](#stacked-pull-requests).
 - **Coding agents are welcome.** Arakun is a tool for working with them, after all. You

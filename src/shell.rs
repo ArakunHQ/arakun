@@ -2691,11 +2691,14 @@ impl Shell {
     ) {
         use crate::survey_dialog::{SurveyDialog, SurveyEvent};
         use crate::surveys::{ids, send, store};
-        if matches!(self.modal, Some((Modal::Survey(_), _))) {
-            return;
-        }
-        if self.modal.is_some() {
-            self.close_modal(window, cx);
+        match survey_card::decide(self.modal.is_some() || self.onboarding.is_some(), src) {
+            survey_card::Ask::Open => {}
+            survey_card::Ask::Drop => return,
+            // One request at a time: a newer one replaces an older.
+            survey_card::Ask::Defer => {
+                self.survey.pending = Some(survey_card::PendingAsk { survey, src, extra });
+                return;
+            }
         }
         // The built-in forms can be sent any number of times; others once.
         let builtin = ids::is_builtin(&survey.id);
@@ -2892,6 +2895,8 @@ impl Shell {
                     this.open_account(window, cx);
                 }
                 SettingsEvent::SendFeedback => {
+                    // Their own choice goes first, not a notice's earlier request.
+                    this.survey.pending = None;
                     this.close_modal(window, cx);
                     this.send_feedback(window, cx);
                 }
@@ -3358,6 +3363,7 @@ impl Shell {
         } else {
             window.focus(&self.focus, cx);
         }
+        self.open_pending_survey(window, cx);
         cx.notify();
     }
 

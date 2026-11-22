@@ -347,6 +347,7 @@ impl Shell {
             window.focus(&self.focus, cx);
         }
         self.ask_telemetry(window, cx);
+        self.open_pending_survey(window, cx);
         cx.notify();
     }
 

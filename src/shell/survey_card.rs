@@ -25,6 +25,38 @@ pub(super) struct CardState {
     pub shown_this_launch: bool,
     /// The survey on screen.
     pub card: Option<Survey>,
+    /// A request from a notice that found a dialog open. It opens when the
+    /// dialog closes.
+    pub pending: Option<PendingAsk>,
+}
+
+/// A survey a person asked for from a notice, with what `open_survey` needs.
+pub(super) struct PendingAsk {
+    pub survey: Survey,
+    pub src: crate::telemetry::Source,
+    pub extra: Vec<(String, serde_json::Value)>,
+}
+
+/// What to do with a request to open a survey.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum Ask {
+    Open,
+    /// Another dialog or the setup is open: drop the request.
+    Drop,
+    /// Keep it, and open it when the dialog closes.
+    Defer,
+}
+
+/// A dialog that is open is never replaced. A request the person made
+/// from the palette, the menu or Settings is dropped, since they can ask
+/// again. One from the error or crash notice is kept, since the notice is gone
+/// once it is clicked.
+pub(super) fn decide(busy: bool, src: crate::telemetry::Source) -> Ask {
+    match (busy, src) {
+        (false, _) => Ask::Open,
+        (true, crate::telemetry::Source::Error) => Ask::Defer,
+        (true, _) => Ask::Drop,
+    }
 }
 
 impl CardState {
@@ -34,6 +66,7 @@ impl CardState {
             last_typed: now,
             shown_this_launch: false,
             card: None,
+            pending: None,
         }
     }
 
@@ -142,8 +175,19 @@ impl Shell {
         cx.notify();
     }
 
+    /// Opens the survey a notice asked for while a dialog was open, once
+    /// nothing is open.
+    pub(super) fn open_pending_survey(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.modal.is_some() || self.onboarding.is_some() {
+            return;
+        }
+        if let Some(p) = self.survey.pending.take() {
+            self.open_survey(p.survey, p.src, p.extra, window, cx);
+        }
+    }
+
     fn answer_survey_card(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        // Opening one closes the other modal, so wait for it to be done.
+        // An open dialog is never replaced, so wait for it to be done.
         if self.modal.is_some() || self.onboarding.is_some() {
             return;
         }
@@ -219,6 +263,18 @@ impl Shell {
 mod tests {
     use super::*;
     use crate::surveys::model::{Conditions, SurveyType};
+
+    #[test]
+    fn open_dialogs_are_never_replaced() {
+        use crate::telemetry::Source;
+        for src in [Source::User, Source::Error, Source::Agent, Source::Popover] {
+            assert_eq!(decide(false, src), Ask::Open);
+        }
+        assert_eq!(decide(true, Source::Error), Ask::Defer);
+        for src in [Source::User, Source::Agent, Source::Popover] {
+            assert_eq!(decide(true, src), Ask::Drop);
+        }
+    }
 
     #[test]
     fn moment_from_shell_state() {

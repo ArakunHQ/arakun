@@ -99,6 +99,17 @@ enum Ended {
 
 type Socket = WebSocket<MaybeTlsStream<TcpStream>>;
 
+/// How long a connection must hold before a drop is dialed again at once.
+const STEADY: Duration = Duration::from_secs(30);
+
+/// The wait before the next dial, after a connection that held for `held`.
+/// One that dropped right away keeps the wait it had, which then doubles as
+/// for a failed dial: a server that accepts and hangs up would otherwise be
+/// dialed every second, with a handshake and a history read each time.
+fn wait_after(wait: Duration, held: Duration) -> Duration {
+    if held >= STEADY { RETRY_MIN } else { wait }
+}
+
 struct Runner {
     key: String,
     dial: Dial,
@@ -118,10 +129,11 @@ impl Runner {
             self.set_status(Status::Connecting);
             let ended = match connect(&self.dial) {
                 Ok(mut ws) => {
-                    wait = RETRY_MIN;
+                    let since = Instant::now();
                     while self.queued.try_recv().is_ok() {}
                     self.set_status(Status::Connected);
                     let ended = self.talk(&mut ws);
+                    wait = wait_after(wait, since.elapsed());
                     let _ = ws.close(None);
                     let _ = ws.flush();
                     ended
@@ -309,5 +321,18 @@ mod tests {
         );
         assert_eq!(host_port("ws://[::1]:8787/x"), Some(("::1".into(), 8787)));
         assert_eq!(host_port("https://teams.arakun.dev"), None);
+    }
+
+    #[test]
+    fn a_connection_that_drops_right_away_does_not_reset_the_wait() {
+        let waited = Duration::from_secs(8);
+        assert_eq!(wait_after(waited, Duration::ZERO), waited);
+        assert_eq!(
+            wait_after(waited, STEADY - Duration::from_millis(1)),
+            waited
+        );
+        assert_eq!(wait_after(RETRY_MAX, Duration::from_secs(1)), RETRY_MAX);
+        assert_eq!(wait_after(waited, STEADY), RETRY_MIN);
+        assert_eq!(wait_after(RETRY_MAX, Duration::from_secs(3600)), RETRY_MIN);
     }
 }

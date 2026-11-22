@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures::StreamExt as _;
-use gpui::{App, Context, SharedString, Task, Window};
+use gpui::{App, AppContext as _, Context, SharedString, Task, Window};
 use serde_json::json;
 
 use super::Shell;
@@ -27,7 +27,8 @@ use crate::state;
 /// Entry changes wait this long for more before they are sent.
 const GATHER: Duration = Duration::from_millis(90);
 /// The tick: counts the pairing code down, and compares the inbox with what phones
-/// last saw as a safety net (changes normally reach them through the flush).
+/// last saw as a safety net (changes normally reach them through the flush). It
+/// hashes what the inbox shows and builds it only when that moved.
 const INBOX_EVERY: Duration = Duration::from_secs(1);
 /// How often Tailscale is asked again while something is in the way: quickly at
 /// first, while the user is probably fixing it, then slowly, in case it stays so
@@ -59,6 +60,8 @@ pub(super) struct PhoneLink {
     inbox_dirty: bool,
     flush: Option<Task<()>>,
     last_inbox: String,
+    /// What [`Shell::phone_inbox_stamp`] gave when the inbox was last built.
+    last_inbox_stamp: Option<u64>,
     /// The plan limits phones last got, so a refresh that changed nothing stays quiet.
     last_usage: String,
     /// Photos phones are sending, in pieces.
@@ -372,6 +375,7 @@ impl Shell {
             inbox_dirty: false,
             flush: None,
             last_inbox: String::new(),
+            last_inbox_stamp: None,
             last_usage: String::new(),
             uploads: phone::Uploads::default(),
             last_read: Default::default(),
@@ -554,17 +558,23 @@ impl Shell {
                     // when it opens another of a server's.
                     self.servers_look_away(super::servers::Watcher::Phone(client));
                 }
-                let reply = self.phone_session_json(&env_path, &sid, &pid, cx);
-                self.phone_send(client, reply);
+                let path = env_path.clone();
+                self.phone_when_read(&env_path, &sid.clone(), cx, move |this, cx| {
+                    let reply = this.phone_session_json(&path, &sid, &pid, cx);
+                    this.phone_send(client, reply);
+                });
             }
             ClientMsg::Close { .. } => self.phone_stop_watching(client, cx),
             ClientMsg::Entries { session, from, to } => {
                 let Some((env_path, sid)) = self.phone_session(&session) else {
                     return;
                 };
-                let (entries, count) = self.phone_entries(&env_path, &sid, from, to.max(from), cx);
-                let reply = json!({ "type": "entries", "id": session, "from": from, "count": count, "entries": entries, "older": true });
-                self.phone_send(client, reply.to_string());
+                let path = env_path.clone();
+                self.phone_when_read(&env_path, &sid.clone(), cx, move |this, cx| {
+                    let (entries, count) = this.phone_entries(&path, &sid, from, to.max(from), cx);
+                    let reply = json!({ "type": "entries", "id": session, "from": from, "count": count, "entries": entries, "older": true });
+                    this.phone_send(client, reply.to_string());
+                });
             }
             ClientMsg::Send {
                 session,
@@ -817,9 +827,12 @@ impl Shell {
                     self.phone_send(client, wire::error("that session is gone"));
                     return;
                 };
-                let mut msg = self.with_session_entries(&env_path, &sid, cx, wire::changes);
-                msg["id"] = json!(session);
-                self.phone_send(client, msg.to_string());
+                let path = env_path.clone();
+                self.phone_when_read(&env_path, &sid.clone(), cx, move |this, cx| {
+                    let mut msg = this.with_session_entries(&path, &sid, cx, wire::changes);
+                    msg["id"] = json!(session);
+                    this.phone_send(client, msg.to_string());
+                });
             }
             ClientMsg::Diff {
                 session,
@@ -830,33 +843,39 @@ impl Shell {
                     self.phone_send(client, wire::error("that session is gone"));
                     return;
                 };
-                let diff = self.with_session_entries(&env_path, &sid, cx, |all, cwd| {
-                    wire::diff_message(all, entry, index, cwd)
+                let path = env_path.clone();
+                self.phone_when_read(&env_path, &sid.clone(), cx, move |this, cx| {
+                    let diff = this.with_session_entries(&path, &sid, cx, |all, cwd| {
+                        wire::diff_message(all, entry, index, cwd)
+                    });
+                    let reply = match diff {
+                        Some(mut msg) => {
+                            msg["id"] = json!(session);
+                            msg.to_string()
+                        }
+                        None => wire::error("that change is gone"),
+                    };
+                    this.phone_send(client, reply);
                 });
-                let reply = match diff {
-                    Some(mut msg) => {
-                        msg["id"] = json!(session);
-                        msg.to_string()
-                    }
-                    None => wire::error("that change is gone"),
-                };
-                self.phone_send(client, reply);
             }
             ClientMsg::Transcript { session, from } => {
                 let Some((env_path, sid)) = self.phone_session(&session) else {
                     self.phone_send(client, wire::error("that session is gone"));
                     return;
                 };
-                let agent = self
-                    .find_env(&env_path)
-                    .and_then(|e| e.sessions.iter().find(|s| *s.id == *sid))
-                    .map_or("", |s| s.agent.id());
-                let frames = self.with_session_entries(&env_path, &sid, cx, |all, cwd| {
-                    wire::transcript_message(&session, agent, cwd, all, from)
+                let path = env_path.clone();
+                self.phone_when_read(&env_path, &sid.clone(), cx, move |this, cx| {
+                    let agent = this
+                        .find_env(&path)
+                        .and_then(|e| e.sessions.iter().find(|s| *s.id == *sid))
+                        .map_or("", |s| s.agent.id());
+                    let frames = this.with_session_entries(&path, &sid, cx, |all, cwd| {
+                        wire::transcript_message(&session, agent, cwd, all, from)
+                    });
+                    for frame in frames {
+                        this.phone_send(client, frame);
+                    }
                 });
-                for frame in frames {
-                    self.phone_send(client, frame);
-                }
             }
             ClientMsg::Usage => {
                 // Fresh numbers follow through `phone_usage_changed` once the read lands.
@@ -1015,10 +1034,40 @@ impl Shell {
         let mut sessions: Vec<serde_json::Value> = Vec::new();
         // Where the phone can start a session, with the agent each place picks.
         let mut places: Vec<serde_json::Value> = Vec::new();
+        self.phone_inbox_walk(
+            cx,
+            |p| places.push(wire::inbox_place(p)),
+            |s| sessions.push(wire::inbox_session(s)),
+        );
+        wire::inbox(&phone::host_name(), sessions, places)
+    }
+
+    /// A hash of what the inbox shows. The tick compares it with the last one
+    /// and builds the inbox only when it moved: building it for every
+    /// session each second costs more than hashing the same fields.
+    fn phone_inbox_stamp(&self, cx: &App) -> u64 {
+        use std::hash::{Hash, Hasher};
+        // Both walkers write to the one hasher, in the order the inbox lists.
+        let h = std::cell::RefCell::new(std::collections::hash_map::DefaultHasher::new());
+        self.phone_inbox_walk(
+            cx,
+            |p| (0u8, p).hash(&mut *h.borrow_mut()),
+            |s| (1u8, s).hash(&mut *h.borrow_mut()),
+        );
+        h.into_inner().finish()
+    }
+
+    /// Hands each place, then each of its sessions, as the inbox shows them.
+    fn phone_inbox_walk(
+        &self,
+        cx: &App,
+        mut place: impl FnMut(wire::InboxPlace),
+        mut session: impl FnMut(wire::InboxSession),
+    ) {
         for p in &self.projects {
             // A server's folders too: the phone works there through this app.
             for e in &p.environments {
-                places.push(wire::inbox_place(wire::InboxPlace {
+                place(wire::InboxPlace {
                     path: &e.path,
                     project: &p.name,
                     env: &e.name,
@@ -1027,13 +1076,13 @@ impl Shell {
                     repo: Some(&p.path),
                     // The page a phone opens has no use for it.
                     origin: None,
-                }));
+                });
                 for s in &e.sessions {
                     let id = match &e.remote {
                         Some(r) => super::servers::phone_session_id(&r.server, &s.id),
                         None => s.id.to_string(),
                     };
-                    sessions.push(wire::inbox_session(wire::InboxSession {
+                    session(wire::InboxSession {
                         id: &id,
                         title: &s.title,
                         agent: s.agent.label(),
@@ -1046,11 +1095,10 @@ impl Shell {
                         place: &e.path,
                         pr: s.meta.as_ref().and_then(|m| m.pr.as_deref()),
                         asks: s.live.as_ref().and_then(|l| wire::asks(l.thread.read(cx))),
-                    }));
+                    });
                 }
             }
         }
-        wire::inbox(&phone::host_name(), sessions, places)
     }
 
     /// Sends the inbox to every phone when it differs from what they last got.
@@ -1070,13 +1118,17 @@ impl Shell {
         if link.server.client_count() == 0 {
             return;
         }
-        let inbox = self.phone_inbox(cx);
         let phones = link.server.client_count();
-        if let Some(link) = &mut self.phone
-            && link.last_inbox != inbox
-        {
-            link.server.broadcast(&inbox);
-            link.last_inbox = inbox;
+        let stamp = self.phone_inbox_stamp(cx);
+        if link.last_inbox_stamp != Some(stamp) {
+            let inbox = self.phone_inbox(cx);
+            if let Some(link) = &mut self.phone {
+                link.last_inbox_stamp = Some(stamp);
+                if link.last_inbox != inbox {
+                    link.server.broadcast(&inbox);
+                    link.last_inbox = inbox;
+                }
+            }
         }
         self.phone_view.update(cx, |v, cx| v.set_phones(phones, cx));
     }
@@ -1113,10 +1165,14 @@ impl Shell {
                 wire::session_live(&head, t, status, &self.phone_scope(env_path, t.cwd()))
             }
             None => {
-                let (all, cwd, queue) = Thread::read_transcript(&state::transcript_path(id))
-                    .map(|t| (t.entries, t.meta.cwd, t.queue))
-                    .unwrap_or_default();
-                wire::session_saved(&head, &all, &queue, &self.phone_scope(env_path, &cwd))
+                let Some(link) = &self.phone else {
+                    return wire::error("that session is gone");
+                };
+                let path = state::transcript_path(id);
+                let queue = link.last_read.queue_kept(&path);
+                link.last_read.with_kept(&path, |all, cwd| {
+                    wire::session_saved(&head, all, &queue, &self.phone_scope(env_path, cwd))
+                })
             }
         }
     }
@@ -1145,7 +1201,8 @@ impl Shell {
     }
 
     /// Runs `f` over a session's entries and directory: the live thread's, or
-    /// the transcript's when the session is not running.
+    /// the transcript's when the session is not running. The transcript is
+    /// the one [`Shell::phone_when_read`] read; this never reads it.
     fn with_session_entries<R>(
         &self,
         env_path: &Path,
@@ -1158,19 +1215,45 @@ impl Shell {
                 let t = thread.read(cx);
                 f(t.entries(), t.cwd())
             }
-            None => {
-                let path = state::transcript_path(id);
-                match &self.phone {
-                    Some(link) => link.last_read.with(&path, f),
-                    None => {
-                        let (all, cwd) = Thread::read_transcript(&path)
-                            .map(|t| (t.entries, t.meta.cwd))
-                            .unwrap_or_default();
-                        f(&all, &cwd)
-                    }
-                }
-            }
+            None => match &self.phone {
+                Some(link) => link.last_read.with_kept(&state::transcript_path(id), f),
+                None => f(&[], Path::new("")),
+            },
         }
+    }
+
+    /// Calls `f` once a session's entries are at hand: right away for a
+    /// running session or a transcript read before, else after its
+    /// transcript is read and parsed on the background executor, so a long
+    /// one does not hold up the window.
+    fn phone_when_read(
+        &mut self,
+        env_path: &Path,
+        id: &str,
+        cx: &mut Context<Self>,
+        f: impl FnOnce(&mut Self, &mut Context<Self>) + 'static,
+    ) {
+        let path = state::transcript_path(id);
+        let ready = self.phone_thread(env_path, id).is_some()
+            || self
+                .phone
+                .as_ref()
+                .is_none_or(|l| l.last_read.is_kept(&path));
+        if ready {
+            f(self, cx);
+            return;
+        }
+        let read = cx.background_spawn(async move { crate::agent::saved::read(&path) });
+        cx.spawn(async move |this, cx| {
+            let read = read.await;
+            let _ = this.update(cx, |this, cx| {
+                if let Some(link) = &this.phone {
+                    link.last_read.keep(read);
+                }
+                f(this, cx);
+            });
+        })
+        .detach();
     }
 
     /// Called for every event of a live thread; notes what phones should hear about.

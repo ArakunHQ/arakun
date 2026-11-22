@@ -450,6 +450,7 @@ impl TeamsView {
         self.decisions_opened.clear();
         self.decision = None;
         self.decisions_filter = decisions_view::Filter::All;
+        self.reversing = None;
         for field in [
             &self.composer,
             &self.team_name,
@@ -457,6 +458,7 @@ impl TeamsView {
             &self.invite,
             &self.device_code,
             &self.decision_query,
+            &self.reverse_reason,
         ] {
             field.update(cx, |i, cx| i.set_text("", cx));
         }

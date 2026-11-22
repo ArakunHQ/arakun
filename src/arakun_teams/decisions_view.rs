@@ -554,6 +554,10 @@ impl TeamsView {
                         )
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.reversing = Some(id.clone());
+                            // Whatever way the last form was left (Esc,
+                            // Cancel, another decision), its reason is not
+                            // this one's.
+                            this.reverse_reason.update(cx, |i, cx| i.set_text("", cx));
                             let handle = this.reverse_reason.read(cx).focus_handle(cx);
                             window.focus(&handle, cx);
                             cx.notify();

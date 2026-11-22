@@ -126,20 +126,6 @@ pub enum Delivery {
     Failed(String),
 }
 
-/// Marks the message `id` as refused by the server, with why. Only one still
-/// on its way: a replay of a stored message may be refused for another
-/// reason (a rate limit, say), and that must not offer to send it twice.
-fn refuse(messages: &mut [Msg], id: &str, why: &str) -> bool {
-    let Some(m) = messages
-        .iter_mut()
-        .find(|m| m.id == id && m.delivery == Delivery::Sending)
-    else {
-        return false;
-    };
-    m.delivery = Delivery::Failed(why.to_string());
-    true
-}
-
 #[derive(Clone, Debug, PartialEq)]
 pub struct Msg {
     pub id: String,
@@ -163,6 +149,25 @@ pub struct Edited {
     pub at: u64,
     /// The text as first sent.
     pub original: String,
+}
+
+/// Marks the message `id` as refused by the server, with why. Only one still
+/// on its way: a replay of a stored message may be refused for another
+/// reason (a rate limit, say), and that must not offer to send it twice. A
+/// refused edit showed while it was on its way, so the edits are applied
+/// again: the message goes back to the text the server has.
+fn refuse(messages: &mut [Msg], id: &str, why: &str) -> bool {
+    let Some(m) = messages
+        .iter_mut()
+        .find(|m| m.id == id && m.delivery == Delivery::Sending)
+    else {
+        return false;
+    };
+    m.delivery = Delivery::Failed(why.to_string());
+    if m.body.kind == "edit" {
+        apply_edits(messages);
+    }
+    true
 }
 
 /// Applies every `edit` to the text message it names: only one by the same
@@ -3213,6 +3218,28 @@ mod tests {
         apply_edits(&mut all);
         assert_eq!(all[0].body.text, "third");
         assert_eq!(all[0].edited.as_ref().unwrap().original, "first");
+        // A newer edit shows while it is on its way. Once the server refuses
+        // it, the message is back at the last edit the server has.
+        let mut queued = m("e3", 0, 7, edit("fourth", "a"));
+        (queued.seq, queued.delivery) = (None, Delivery::Sending);
+        all.push(queued);
+        apply_edits(&mut all);
+        assert_eq!(all[0].body.text, "fourth");
+        assert!(refuse(&mut all, "e3", "too long"));
+        assert_eq!(all[6].delivery, Delivery::Failed("too long".into()));
+        assert_eq!(all[0].body.text, "third");
+        assert_eq!(all[0].edited.as_ref().unwrap().id, "e2");
+        assert!(!refuse(&mut all, "nope", "x"));
+        // With no other edit, it is the original again and not "(edited)".
+        let mut one = vec![m("a", 1, 7, Body::text("first", None))];
+        let mut queued = m("e1", 0, 7, edit("second", "a"));
+        (queued.seq, queued.delivery) = (None, Delivery::Sending);
+        one.push(queued);
+        apply_edits(&mut one);
+        assert_eq!(one[0].body.text, "second");
+        assert!(refuse(&mut one, "e1", "refused"));
+        assert_eq!(one[0].body.text, "first");
+        assert!(one[0].edited.is_none());
     }
 
     #[test]

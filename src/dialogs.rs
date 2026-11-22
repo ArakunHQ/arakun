@@ -616,7 +616,7 @@ impl Render for CreateEnvDialog {
                                     ready,
                                 )
                                 .when(self.busy, |d| {
-                                    d.child(ui::spinner("create-env-spin", 12., theme::background()))
+                                    d.child(ui::spinner(12., theme::background()))
                                 })
                                 .on_click(cx.listener(|this, _, _, cx| this.submit(cx))),
                             ),
@@ -1171,9 +1171,7 @@ impl Render for DeleteEnvDialog {
                                     !self.busy,
                                 )
                                 .when(self.busy, |d| {
-                                    d.child(ui::spinner(
-                                        "delete-env-spin",
-                                        12.,
+                                    d.child(ui::spinner(12.,
                                         theme::error().into(),
                                     ))
                                 })

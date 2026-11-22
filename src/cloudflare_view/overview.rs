@@ -77,11 +77,7 @@ impl CloudflareView {
                 .gap(crate::ui::sp(6.))
                 .ty(Type::Caption)
                 .text_color(theme::text_subtle())
-                .child(ui::spinner(
-                    SharedString::from(format!("{id}-busy")),
-                    12.,
-                    theme::text_faint(),
-                ))
+                .child(ui::spinner(12., theme::text_faint()))
                 .child("Applying…")
                 .into_any_element();
         }
@@ -240,7 +236,7 @@ impl CloudflareView {
                         .bg(theme::fill_raised())
                         .ty(Type::Caption)
                         .text_color(theme::text_subtle())
-                        .child(ui::spinner("cf-analytics", 11., theme::text_faint()))
+                        .child(ui::spinner(11., theme::text_faint()))
                         .child("Updating analytics"),
                 )
             })
@@ -2044,10 +2040,7 @@ impl CloudflareView {
             .bg(theme::background());
         let t = match self.traffic.get(&z.id) {
             None => {
-                return shell.child(ui::loading(
-                    SharedString::from(format!("cf-traffic-load-{}", z.id)),
-                    "Reading the last 24 hours…",
-                ));
+                return shell.child(ui::loading("Reading the last 24 hours…"));
             }
             Some(Err(e)) => {
                 return shell.child(note(format!("Couldn't read the traffic: {e}"), true));

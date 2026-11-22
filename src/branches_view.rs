@@ -780,11 +780,7 @@ impl BranchesView {
                             .child(crate::shell::agent_icon(s.agent, 12.))
                             .child(div().min_w_0().truncate().child(s.title.clone()))
                             .when(matches!(s.status, SessionStatus::Working), |d| {
-                                d.child(ui::spinner(
-                                    SharedString::from(format!("bs-spin-{}", s.id)),
-                                    10.,
-                                    theme::working(),
-                                ))
+                                d.child(ui::spinner(10., theme::working()))
                             })
                             .on_click(cx.listener(move |_, _, _, cx| {
                                 cx.emit(BranchesEvent::OpenSession {
@@ -910,11 +906,7 @@ fn row_status(b: &Branch, status: Status, env: Option<&EnvInfo>, now: u64) -> Ve
                 .items_center()
                 .gap(crate::ui::sp(4.))
                 .child(crate::shell::agent_icon(s.agent, 12.))
-                .child(ui::spinner(
-                    SharedString::from(format!("bw-{}", s.id)),
-                    10.,
-                    session_color(s.status),
-                ))
+                .child(ui::spinner(10., session_color(s.status)))
                 .into_any_element(),
         );
     } else {
@@ -1481,7 +1473,7 @@ impl Render for BranchesView {
             .into_any_element(),
             None => div()
                 .pt(crate::ui::sp(60.))
-                .child(ui::loading("branches-first", "Reading branches…"))
+                .child(ui::loading("Reading branches…"))
                 .into_any_element(),
             Some(map) if map.main.is_empty() => ui::empty_state(
                 "git-branch",

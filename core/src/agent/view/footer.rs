@@ -17,12 +17,7 @@ impl ThreadView {
                 .py(crate::ui::sp(10.))
                 .text_size(px(crate::ui::TEXT_MD))
                 .text_color(theme::text_subtle())
-                .child(spinner(
-                    "connecting-spin",
-                    self.active,
-                    14.,
-                    theme::mix(0.45),
-                ))
+                .child(spinner(self.active, 14., theme::mix(0.45)))
                 .child(
                     t.status_detail()
                         .unwrap_or_else(|| format!("Starting {}…", t.kind().label()).into()),
@@ -367,7 +362,7 @@ impl ThreadView {
                                             .when(stuck.is_some() || offer.is_some() || paused || !queue.is_empty(), |d| {
                                                 d.border_b_1().border_color(theme::stroke())
                                             })
-                                            .child(spinner("background-spin", self.active, 14., theme::text_subtle()))
+                                            .child(spinner(self.active, 14., theme::text_subtle()))
                                             .child(
                                                 div()
                                                     .id("background-subagents")

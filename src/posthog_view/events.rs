@@ -1208,7 +1208,7 @@ impl Render for EventsTab {
             None => None,
         };
         let body: AnyElement = if self.loading && self.events.is_empty() {
-            ui::loading("ph-ev-loading", "Reading events…").into_any_element()
+            ui::loading("Reading events…").into_any_element()
         } else {
             self.render_table(cx)
         };

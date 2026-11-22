@@ -552,7 +552,7 @@ impl AttachPicker {
                     .child("Can't preview this image")
                     .into_any_element(),
                 _ => frame
-                    .child(ui::spinner("attach-preview-spin", 16., theme::mix(0.4)))
+                    .child(ui::spinner(16., theme::mix(0.4)))
                     .into_any_element(),
             },
             _ => match &self.peek {
@@ -879,9 +879,7 @@ impl Render for AttachPicker {
                 .px(crate::ui::sp(24.))
                 .text_size(px(ui::TEXT_SM))
                 .text_color(theme::text_subtle())
-                .when(spin, |d| {
-                    d.child(ui::spinner("attach-list-spin", 16., theme::mix(0.4)))
-                })
+                .when(spin, |d| d.child(ui::spinner(16., theme::mix(0.4))))
                 .child(msg)
                 .into_any_element()
         } else {

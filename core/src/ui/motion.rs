@@ -6,8 +6,12 @@
 //! nothing here needs its own check. Drawings that run their own timers check
 //! `cx.reduce_motion()`.
 
+use std::cell::{Cell, RefCell};
+use std::future::{Future, poll_fn};
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
-use std::time::Duration;
+use std::task::{Poll, Waker};
+use std::time::{Duration, Instant};
 
 use gpui::{
     Animation, AnimationElement, AnimationExt as _, App, ElementId, IntoElement, Styled, px,
@@ -166,9 +170,95 @@ fn reduced() -> bool {
 
 /// Hands `reduced` to gpui, which stills its own animations and redraws
 /// every window, so the drawings with timers of their own (the mascot, the
-/// ASCII face) see `cx.reduce_motion()` change too.
+/// ASCII face) see `cx.reduce_motion()` change too. Starts the loop clock the
+/// first time.
 pub fn apply(cx: &mut App) {
     cx.set_reduce_motion(reduced());
+    start_loop_clock(cx);
+}
+
+/// How often looping effects (spinners, the shimmer, the beacon, the pulse)
+/// redraw. A gpui animation that repeats asks for every display frame, and a
+/// frame re-renders the whole window: at 165 Hz that held the UI thread at
+/// about half a core for as long as an agent worked.
+pub const LOOP_FPS: f32 = 15.;
+
+thread_local! {
+    /// A loop was drawn since the clock last ticked.
+    static LOOPING: Cell<bool> = const { Cell::new(false) };
+    static CLOCK_STARTED: Cell<bool> = const { Cell::new(false) };
+    /// The sleeping clock's waker.
+    static PARKED: RefCell<Option<Waker>> = const { RefCell::new(None) };
+}
+
+/// Ready once a loop has been drawn. Until then the clock parks here with no
+/// timer running, and `mark_looping` wakes it.
+fn loop_drawn() -> impl Future<Output = ()> {
+    poll_fn(|task| {
+        if LOOPING.with(|l| l.get()) {
+            Poll::Ready(())
+        } else {
+            PARKED.with(|p| *p.borrow_mut() = Some(task.waker().clone()));
+            Poll::Pending
+        }
+    })
+}
+
+/// Records that a loop was drawn, and wakes the clock if it is parked.
+fn mark_looping() {
+    LOOPING.with(|l| l.set(true));
+    let waker = PARKED.with(|p| p.borrow_mut().take());
+    if let Some(waker) = waker {
+        waker.wake();
+    }
+}
+
+/// The clock every loop reads, so loops side by side move together.
+static EPOCH: OnceLock<Instant> = OnceLock::new();
+
+/// How far (0 to 1) a loop of `period` is now, and a request for the next
+/// tick of the loop clock. Call it while rendering. 0 and no request while
+/// motion is reduced.
+pub fn loop_t(period: Duration) -> f32 {
+    if reduced() {
+        return 0.;
+    }
+    mark_looping();
+    let secs = EPOCH.get_or_init(Instant::now).elapsed().as_secs_f64();
+    phase(secs, period)
+}
+
+/// `secs` into a loop of `period`, from 0 up to (not including) 1.
+fn phase(secs: f64, period: Duration) -> f32 {
+    let p = period.as_secs_f64();
+    if p <= 0. {
+        return 0.;
+    }
+    (secs / p).fract() as f32
+}
+
+/// Redraws the windows [`LOOP_FPS`] times a second while a loop was drawn
+/// since the last tick, so every loop on screen shares one timer and a
+/// window with none stays still. Otherwise the clock sleeps without a timer
+/// until [`loop_t`] wakes it.
+fn start_loop_clock(cx: &mut App) {
+    if CLOCK_STARTED.with(|s| s.replace(true)) {
+        return;
+    }
+    let tick = Duration::from_secs_f32(1. / LOOP_FPS);
+    cx.spawn(async move |cx| {
+        loop {
+            loop_drawn().await;
+            loop {
+                cx.background_executor().timer(tick).await;
+                if !LOOPING.with(|l| l.replace(false)) {
+                    break;
+                }
+                cx.update(|cx| cx.refresh_windows());
+            }
+        }
+    })
+    .detach();
 }
 
 /// Reads the system's setting (macOS's Reduce motion, GNOME's Animations
@@ -243,6 +333,40 @@ pub(super) fn read(program: &str, args: &[&str]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicUsize;
+    use std::task::{Context, Wake};
+
+    #[test]
+    fn the_loop_clock_sleeps_until_a_loop_is_drawn() {
+        struct WakeCount(AtomicUsize);
+
+        impl Wake for WakeCount {
+            fn wake(self: Arc<Self>) {
+                self.0.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+
+        LOOPING.with(|l| l.set(false));
+        PARKED.with(|p| *p.borrow_mut() = None);
+        let count = Arc::new(WakeCount(AtomicUsize::new(0)));
+        let waker = Waker::from(count.clone());
+        let mut cx = Context::from_waker(&waker);
+        let mut drawn = std::pin::pin!(loop_drawn());
+
+        assert_eq!(drawn.as_mut().poll(&mut cx), Poll::Pending);
+        assert_eq!(count.0.load(Ordering::Relaxed), 0);
+        mark_looping();
+        assert_eq!(count.0.load(Ordering::Relaxed), 1);
+        assert_eq!(drawn.as_mut().poll(&mut cx), Poll::Ready(()));
+        mark_looping();
+        assert_eq!(count.0.load(Ordering::Relaxed), 1);
+
+        LOOPING.with(|l| l.set(false));
+        let mut drawn = std::pin::pin!(loop_drawn());
+        assert_eq!(drawn.as_mut().poll(&mut cx), Poll::Pending);
+        PARKED.with(|p| *p.borrow_mut() = None);
+    }
 
     #[test]
     fn the_choice_overrides_the_system_and_round_trips() {
@@ -293,5 +417,16 @@ mod tests {
         assert!(y.abs() < 1e-4);
         // Fully opaque well before it stops moving.
         assert_eq!(enter_at(0.7, From::Below, 8.).0, 1.);
+    }
+
+    #[test]
+    fn a_loop_wraps_at_its_period() {
+        let p = Duration::from_millis(1000);
+        assert_eq!(phase(0., p), 0.);
+        assert!((phase(0.25, p) - 0.25).abs() < 1e-6);
+        assert!((phase(2.5, p) - 0.5).abs() < 1e-6);
+        // A whole number of periods is the start again, never 1.
+        assert!(phase(3., p) < 1e-6);
+        assert_eq!(phase(1., Duration::ZERO), 0.);
     }
 }

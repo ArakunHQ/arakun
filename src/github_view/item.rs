@@ -867,7 +867,7 @@ impl GitHubView {
         }
         let g = self.github.read(cx);
         let Some(details) = g.details(&item) else {
-            return ui::loading("gh-body-loading", "Reading the pull request…").into_any_element();
+            return ui::loading("Reading the pull request…").into_any_element();
         };
         let tab = if matches!(details, Details::Issue(_)) {
             Tab::Timeline

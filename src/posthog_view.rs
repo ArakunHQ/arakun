@@ -853,8 +853,7 @@ impl PostHogView {
     fn render_picker(&self, cx: &mut Context<Self>) -> AnyElement {
         let waiting = self.keys.is_none() || (self.directory.is_none() && self.dir_loading);
         if waiting {
-            return ui::loading("ph-scan", "Looking for this project's PostHog key…")
-                .into_any_element();
+            return ui::loading("Looking for this project's PostHog key…").into_any_element();
         }
         let name = self
             .root
@@ -908,7 +907,7 @@ impl PostHogView {
 
     fn render_state(&self, cx: &mut Context<Self>) -> AnyElement {
         let state = match &self.error {
-            None => return ui::loading("ph-loading", "Reading PostHog…").into_any_element(),
+            None => return ui::loading("Reading PostHog…").into_any_element(),
             Some(ApiError::SignedOut(why)) => ui::empty_state(
                 "square-lock02",
                 "PostHog refused this sign-in",

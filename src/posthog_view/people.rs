@@ -890,7 +890,7 @@ impl Render for PeopleTab {
             });
         let profile: AnyElement = match &self.profile {
             Some(p) => self.render_profile(&p.clone(), cx),
-            None if self.profile_loading => ui::loading("ph-pp-loading", "Reading the profile…")
+            None if self.profile_loading => ui::loading("Reading the profile…")
                 .flex_1()
                 .into_any_element(),
             None => div().flex_1().into_any_element(),

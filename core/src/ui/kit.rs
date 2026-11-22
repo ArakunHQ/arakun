@@ -702,14 +702,14 @@ pub fn empty_state(
 }
 
 /// A place waiting on its data: a spinner and what it is reading.
-pub fn loading(id: impl Into<ElementId>, label: impl Into<SharedString>) -> gpui::Div {
+pub fn loading(label: impl Into<SharedString>) -> gpui::Div {
     div()
         .flex()
         .flex_col()
         .items_center()
         .gap(crate::ui::sp(10.))
         .py(crate::ui::sp(32.))
-        .child(super::spinner(id, 16., theme::text_faint()))
+        .child(super::spinner(16., theme::text_faint()))
         .child(text(Type::Body, theme::text_subtle(), label))
 }
 
@@ -739,7 +739,7 @@ pub fn refresh_control(
                 .items_center()
                 .justify_center()
                 .size(px(super::ICON_BUTTON))
-                .child(super::spinner(id, 13., theme::mix(0.5)))
+                .child(super::spinner(13., theme::mix(0.5)))
                 .into_any_element()
         } else {
             super::icon_button(id, "refresh01", 13., "Refresh")
@@ -1562,8 +1562,8 @@ pub fn lead_icon(name: &str, tint: Tint) -> gpui::Div {
 }
 
 /// A working session: a ring with a turning arc in the working blue.
-pub fn lead_spinner(id: impl Into<ElementId>) -> AnyElement {
-    use gpui::AnimationExt as _;
+pub fn lead_spinner() -> AnyElement {
+    let t = super::motion::loop_t(std::time::Duration::from_millis(1100));
     div()
         .flex()
         .flex_none()
@@ -1573,13 +1573,7 @@ pub fn lead_spinner(id: impl Into<ElementId>) -> AnyElement {
         .child(
             icon("loading03", 15.)
                 .text_color(theme::working())
-                .with_animation(
-                    id,
-                    gpui::Animation::new(std::time::Duration::from_millis(1100)).repeat_synced(),
-                    |svg, t| {
-                        svg.with_transformation(gpui::Transformation::rotate(gpui::percentage(t)))
-                    },
-                ),
+                .with_transformation(gpui::Transformation::rotate(gpui::percentage(t))),
         )
         .into_any_element()
 }

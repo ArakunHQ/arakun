@@ -1260,11 +1260,7 @@ impl TeamsView {
                                     .flex()
                                     .items_center()
                                     .gap(ui::sp(12.))
-                                    .child(Self::tile(ui::spinner(
-                                        "teams-waiting-spin",
-                                        16.,
-                                        theme::accent(),
-                                    )))
+                                    .child(Self::tile(ui::spinner(16., theme::accent())))
                                     .child(
                                         div()
                                             .flex()
@@ -1313,7 +1309,7 @@ impl TeamsView {
     fn render_team(&self, team_id: &str, faces: &Faces, cx: &mut Context<Self>) -> AnyElement {
         let hub = self.hub.read(cx);
         let Some(t) = hub.team.get(team_id) else {
-            return ui::loading("teams-team-loading", "Reading the team…").into_any_element();
+            return ui::loading("Reading the team…").into_any_element();
         };
         let me = hub.me().map_or(0, |m| m.github_id);
         let my_login = hub.me().map(|m| m.login.clone());
@@ -1644,7 +1640,7 @@ impl TeamsView {
     fn render_pending(&self, team_id: &str, faces: &Faces, cx: &mut Context<Self>) -> AnyElement {
         let hub = self.hub.read(cx);
         let Some(t) = hub.team.get(team_id) else {
-            return ui::loading("teams-pending-loading", "Reading the team…").into_any_element();
+            return ui::loading("Reading the team…").into_any_element();
         };
         let keyless = t.keyless;
         let pending = t.pending.clone();
@@ -1929,8 +1925,7 @@ impl TeamsView {
                     .border_color(theme::border())
                     .ty(Type::Body)
                     .child(if making {
-                        ui::spinner("teams-making-channel", 12., theme::text_faint())
-                            .into_any_element()
+                        ui::spinner(12., theme::text_faint()).into_any_element()
                     } else {
                         icon("comment01", 14.)
                             .text_color(theme::text_faint())
@@ -2435,7 +2430,7 @@ impl TeamsView {
     ) -> AnyElement {
         let hub = self.hub.read(cx);
         let Some(t): Option<&TeamState> = hub.team.get(team_id) else {
-            return ui::loading("teams-channel-loading", "Reading the team…").into_any_element();
+            return ui::loading("Reading the team…").into_any_element();
         };
         let key = hub::channel_key(team_id, channel_id);
         let c: Option<&ChannelState> = hub.channels.get(&key);
@@ -2540,7 +2535,7 @@ impl TeamsView {
             ));
         }
         let first = if loading && messages.is_empty() {
-            ui::loading("teams-history", "Reading the channel…").into_any_element()
+            ui::loading("Reading the channel…").into_any_element()
         } else if messages.is_empty() && hidden + locked == 0 && !joined {
             ui::empty_state(
                 "comment01",
@@ -3127,11 +3122,7 @@ impl TeamsView {
                                     .flex()
                                     .items_center()
                                     .gap(ui::sp(8.))
-                                    .child(ui::spinner(
-                                        "teams-endorse-wait",
-                                        14.,
-                                        theme::text_subtle(),
-                                    ))
+                                    .child(ui::spinner(14., theme::text_subtle()))
                                     .child(
                                         ui::text(
                                             Type::Label,
@@ -3256,11 +3247,7 @@ impl TeamsView {
                     (None, None, self.render_waiting(&name, subtitle, who, faces))
                 }
                 Pane::None if no_teams => (None, None, self.render_new_team(cx)),
-                Pane::None => (
-                    None,
-                    None,
-                    Self::centered(ui::loading("teams-opening", "Opening the team…")),
-                ),
+                Pane::None => (None, None, Self::centered(ui::loading("Opening the team…"))),
             };
         let header = match header_team {
             Some(t) => self.render_header(&t, header_channel, faces, cx),
@@ -3340,7 +3327,7 @@ impl Render for TeamsView {
         if self.drafts.owner != Self::owner(teams)
             || self.drafts.owner != hub.me().map(|me| me.github_id)
         {
-            return Self::centered(ui::loading("teams-account", "Loading account…"));
+            return Self::centered(ui::loading("Loading account…"));
         }
         let device = hub.device.clone();
         let load = hub.load.clone();
@@ -3395,7 +3382,7 @@ impl Render for TeamsView {
         } else {
             match (&device, &load) {
                 (DeviceState::Starting, _) => {
-                    Self::centered(ui::loading("teams-starting", "Setting up this device…"))
+                    Self::centered(ui::loading("Setting up this device…"))
                 }
                 (DeviceState::Unendorsed { code, id }, _) => {
                     let (code, id) = (code.clone(), id.clone());
@@ -3413,9 +3400,7 @@ impl Render for TeamsView {
                     &crate::redact::text(e),
                     Some(retry("teams-retry-load", cx)),
                 )),
-                (_, Load::Loading) if empty => {
-                    Self::centered(ui::loading("teams-loading", "Reading your teams…"))
-                }
+                (_, Load::Loading) if empty => Self::centered(ui::loading("Reading your teams…")),
                 _ => self.render_ready(&faces, cx),
             }
         };

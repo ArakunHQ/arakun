@@ -355,8 +355,7 @@ impl SignInDialog {
                                 .justify_between()
                                 .gap(ui::sp(8.))
                                 .child(Self::note(
-                                    ui::spinner("signin-wait", 14., theme::text_subtle())
-                                        .into_any_element(),
+                                    ui::spinner(14., theme::text_subtle()).into_any_element(),
                                     format!(
                                         "Waiting for GitHub · the code lasts {}:{:02}",
                                         left / 60,
@@ -379,7 +378,7 @@ impl SignInDialog {
                 "Sign in with GitHub".into(),
                 "Arakun never sees your password.".into(),
                 div().p(ui::sp(16.)).child(Self::note(
-                    ui::spinner("signin-busy", 14., theme::text_subtle()).into_any_element(),
+                    ui::spinner(14., theme::text_subtle()).into_any_element(),
                     if phase == Phase::Starting {
                         "Asking GitHub for a code…"
                     } else {

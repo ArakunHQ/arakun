@@ -160,6 +160,7 @@ fn store_lock() -> std::sync::MutexGuard<'static, ()> {
 }
 
 pub fn sessions() -> Vec<Session> {
+    forget_shared_cache();
     if let Some(s) = fixture::sessions() {
         return s;
     }
@@ -170,7 +171,15 @@ pub fn save_session(s: Session) -> Result<(), String> {
     let _g = store_lock();
     let mut store = Store::read_from(&store_file());
     invalidate_directory()?;
-    clear_answers(&s.id)?;
+    // The same key again keeps its answers and pins; a new one may see less.
+    if store
+        .sessions
+        .iter()
+        .find(|o| o.id == s.id)
+        .is_none_or(|o| o.credential != s.credential)
+    {
+        clear_answers(&s.id)?;
+    }
     store.upsert(s);
     store.write_to(&store_file())
 }
@@ -210,7 +219,6 @@ fn clear_answers(id: &str) -> Result<(), String> {
 /// when the sign-in was removed or its key replaced while the request ran, so
 /// a late answer can't come back after its cache was cleared.
 fn cache_answer(s: &Session, file: &Path, value: &impl Serialize) -> std::io::Result<()> {
-    forget_shared_cache();
     let _guard = store_lock();
     if !sessions().contains(s) {
         return Err(std::io::Error::other("The sign-in changed."));
@@ -219,7 +227,8 @@ fn cache_answer(s: &Session, file: &Path, value: &impl Serialize) -> std::io::Re
 }
 
 /// Earlier versions kept every account's answers together in `cache/posthog`,
-/// readable by other users. Nothing reads them now, so they go once per run.
+/// readable by other users. Nothing reads them now, so they go once per run,
+/// the first time the tab looks for its accounts.
 fn forget_shared_cache() {
     static DONE: OnceLock<()> = OnceLock::new();
     if DONE.set(()).is_ok() {
@@ -524,10 +533,14 @@ pub(crate) fn call(
     if bucket(path) == "query" {
         query::reserve(&s.id, now)?;
     }
-    let reply = fetch(&s.host, s.credential.bearer(), method, path, body)?;
+    let reply = fetch(&s.host, s.credential.bearer(), method, path, body);
     if bucket(path) == "query" {
-        query::note_headers(&s.id, reply.remaining, reply.limit, now);
+        let (remaining, limit) = reply
+            .as_ref()
+            .map_or((None, None), |r| (r.remaining, r.limit));
+        query::note_headers(&s.id, remaining, limit, now);
     }
+    let reply = reply?;
     let got = answer(reply.status, reply.retry_after.as_deref(), &reply.text, now);
     match got {
         Err(ApiError::RateLimited(until)) => {

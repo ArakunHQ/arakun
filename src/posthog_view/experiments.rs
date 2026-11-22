@@ -39,6 +39,7 @@ impl PostHogView {
                     gpui::Role::Button,
                     format!("Open experiment {}", e.name),
                 )
+                .map(ui::focusable)
                 .flex()
                 .items_center()
                 .gap(ui::sp(12.))

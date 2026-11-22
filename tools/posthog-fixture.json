@@ -218,6 +218,17 @@
       }
     },
     {
+      "path": "/query/",
+      "query": "SELECT uniq(person_id) FROM events WHERE",
+      "body": {
+        "results": [
+          [
+            1
+          ]
+        ]
+      }
+    },
+    {
       "path": "/persons/",
       "status": 403,
       "body": {

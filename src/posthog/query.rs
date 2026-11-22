@@ -118,6 +118,8 @@ pub struct Budget {
     spent: Vec<u64>,
     /// (remaining, limit, when) from PostHog's rate-limit headers.
     told: Option<(u64, u64, u64)>,
+    /// Queries reserved and sent that PostHog has not answered yet.
+    in_flight: u64,
 }
 
 impl Budget {
@@ -129,10 +131,14 @@ impl Budget {
         }
     }
 
+    /// One query came back (with PostHog's headers when it has them). Its
+    /// count can't know of the queries still on their way, so those still
+    /// come off it.
     pub fn note(&mut self, remaining: Option<u64>, limit: Option<u64>, now: u64) {
+        self.in_flight = self.in_flight.saturating_sub(1);
         if let Some(r) = remaining {
             let limit = limit.or(self.told.map(|t| t.1)).unwrap_or(HOURLY_QUERIES);
-            self.told = Some((r, limit, now));
+            self.told = Some((r.saturating_sub(self.in_flight), limit, now));
         }
     }
 
@@ -180,9 +186,11 @@ pub fn reserve(session: &str, now: u64) -> Result<(), ApiError> {
         return Err(ApiError::RateLimited(until));
     }
     b.spend(now);
+    b.in_flight += 1;
     Ok(())
 }
 
+/// After each query `reserve` let through, answered or not.
 pub fn note_headers(session: &str, remaining: Option<u64>, limit: Option<u64>, now: u64) {
     budgets()
         .entry(session.to_string())
@@ -378,6 +386,22 @@ mod tests {
         assert!(reserve(session, 1000).is_ok());
         assert_eq!(reserve(session, 1000), Err(ApiError::RateLimited(4600)));
         assert!(reserve(session, 4600).is_ok());
+    }
+
+    #[test]
+    fn an_answer_does_not_give_back_a_slot_another_query_holds() {
+        let session = "test-reserve-in-flight";
+        note_headers(session, Some(10), None, 1000);
+        // Two queries go out; the first answer was counted before the second.
+        reserve(session, 1001).unwrap();
+        reserve(session, 1001).unwrap();
+        note_headers(session, Some(9), None, 1001);
+        assert_eq!(left(session, 1001), 8);
+        // A query that got no answer still frees its place.
+        note_headers(session, None, None, 1002);
+        reserve(session, 1002).unwrap();
+        note_headers(session, Some(7), None, 1002);
+        assert_eq!(left(session, 1002), 7);
     }
 
     #[test]

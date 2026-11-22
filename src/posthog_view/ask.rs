@@ -103,7 +103,10 @@ impl Ask {
             pins.insert(0, a.clone());
         }
         match ask::save_pins(&t.session, t.project.id, &pins) {
-            Ok(()) => self.pins = pins,
+            Ok(()) => {
+                self.pins = pins;
+                self.error = None;
+            }
             Err(e) => self.error = Some(format!("Could not save the pinned answers: {e}")),
         }
         cx.notify();

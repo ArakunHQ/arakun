@@ -143,6 +143,8 @@ impl PeopleTab {
         self.selected = None;
         self.profile = None;
         self.profile_error = None;
+        self._profile = None;
+        self.profile_loading = false;
         let generation = self.debounce.bump();
         self.loading = true;
         cx.notify();
@@ -163,7 +165,15 @@ impl PeopleTab {
         self.loaded = true;
         self.loading = true;
         cx.notify();
-        let until = crate::model::unix_now();
+        // The cutoff is part of the query text, so a load inside the cache's
+        // window keeps the last one and finds its answer on disk; a refresh
+        // or an older one moves it to now.
+        let now = crate::model::unix_now();
+        let until = if fresh > 0 && now.saturating_sub(self.until) < fresh {
+            self.until
+        } else {
+            now
+        };
         let text = self.search.read(cx).text().trim().to_string();
         self._load = Some(cx.spawn(async move |this, cx| {
             let got = cx

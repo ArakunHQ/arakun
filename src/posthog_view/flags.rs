@@ -29,6 +29,7 @@ impl PostHogView {
                     gpui::Role::Button,
                     format!("Open flag {}", f.key),
                 )
+                .map(ui::focusable)
                 .flex()
                 .items_center()
                 .gap(crate::ui::sp(10.))

@@ -66,6 +66,9 @@ impl PostHogView {
             return;
         }
         self.sessions = posthog::sessions();
+        // A read still running used the removed account: start it again
+        // without it, or the picker waits on a read that was dropped.
+        let reading = self.dir_loading;
         self._dir = None;
         self.dir_loading = false;
         if let Some(d) = &mut self.directory {
@@ -77,6 +80,9 @@ impl PostHogView {
             self.overview = None;
             self.resolve(cx);
             self.sync_tabs(cx);
+        }
+        if reading {
+            self.refresh_directory(cx);
         }
         cx.notify();
     }

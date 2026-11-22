@@ -37,8 +37,9 @@ impl PostHogView {
                 ui::labelled(
                     div().id(("ph-issue", i)),
                     gpui::Role::Button,
-                    format!("Open {title}"),
+                    format!("Open {title}: {}", crate::redact::text(&issue.message)),
                 )
+                .map(ui::focusable)
                 .flex()
                 .items_center()
                 .gap(crate::ui::sp(12.))

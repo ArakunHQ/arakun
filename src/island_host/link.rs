@@ -23,13 +23,49 @@ const FIRST_TRY: Duration = Duration::from_millis(250);
 const MOST_WAIT: Duration = Duration::from_secs(5);
 const RESTART_EVERY: Duration = Duration::from_secs(20);
 
+enum Cmd {
+    Send(ToIsland),
+    PeerClosed,
+}
+
+#[cfg(test)]
+pub(crate) struct TestReceiver(mpsc::Receiver<Cmd>);
+
+#[cfg(test)]
+impl TestReceiver {
+    pub(crate) fn try_recv(&self) -> Result<ToIsland, mpsc::TryRecvError> {
+        loop {
+            match self.0.try_recv()? {
+                Cmd::Send(m) => return Ok(m),
+                Cmd::PeerClosed => {}
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn test_channel() -> (Sender, TestReceiver) {
+    let (tx, rx) = mpsc::channel();
+    (Sender(tx), TestReceiver(rx))
+}
+
+/// Sender handle to the island link thread; dropping it closes the link.
+#[derive(Clone)]
+pub struct Sender(mpsc::Sender<Cmd>);
+
+impl Sender {
+    pub fn send(&self, msg: ToIsland) -> bool {
+        self.0.send(Cmd::Send(msg)).is_ok()
+    }
+}
+
 /// Connects in the background; dropping the sender closes the connection. The
 /// flag says whether the island is connected right now: until it is, only the
 /// newest feed is kept and anything else sent is dropped.
 pub fn connect(
     start: bool,
 ) -> (
-    mpsc::Sender<ToIsland>,
+    Sender,
     fmpsc::UnboundedReceiver<FromIsland>,
     Arc<AtomicBool>,
 ) {
@@ -37,17 +73,19 @@ pub fn connect(
     let (events, presses) = fmpsc::unbounded();
     let up = Arc::new(AtomicBool::new(false));
     let flag = up.clone();
+    let notify = tx.clone();
     let spawned = std::thread::Builder::new()
         .name("arakun-island-link".into())
-        .spawn(move || run(rx, events, &flag, start));
+        .spawn(move || run(rx, notify, events, &flag, start));
     if let Err(e) = spawned {
         eprintln!("arakun: no island link: {e}");
     }
-    (tx, presses, up)
+    (Sender(tx), presses, up)
 }
 
 fn run(
-    rx: mpsc::Receiver<ToIsland>,
+    rx: mpsc::Receiver<Cmd>,
+    notify: mpsc::Sender<Cmd>,
     events: fmpsc::UnboundedSender<FromIsland>,
     up: &Arc<AtomicBool>,
     start: bool,
@@ -60,7 +98,7 @@ fn run(
         match UnixStream::connect(&path) {
             Ok(stream) => {
                 wait = FIRST_TRY;
-                let alive = session(stream, &rx, &events, up, &mut feed);
+                let alive = session(stream, &rx, &notify, &events, up, &mut feed);
                 up.store(false, Ordering::Relaxed);
                 if !alive {
                     return;
@@ -78,8 +116,8 @@ fn run(
         let until = Instant::now() + wait;
         loop {
             match rx.recv_timeout(until.saturating_duration_since(Instant::now())) {
-                Ok(msg @ ToIsland::Feed { .. }) => feed = Some(msg),
-                Ok(_) => {}
+                Ok(Cmd::Send(msg @ ToIsland::Feed { .. })) => feed = Some(msg),
+                Ok(Cmd::Send(_) | Cmd::PeerClosed) => {}
                 Err(RecvTimeoutError::Timeout) => break,
                 Err(RecvTimeoutError::Disconnected) => return,
             }
@@ -91,7 +129,8 @@ fn run(
 /// One connection, until it drops (`true`) or the shell lets go of the link (`false`).
 fn session(
     stream: UnixStream,
-    rx: &mpsc::Receiver<ToIsland>,
+    rx: &mpsc::Receiver<Cmd>,
+    notify: &mpsc::Sender<Cmd>,
     events: &fmpsc::UnboundedSender<FromIsland>,
     up: &Arc<AtomicBool>,
     feed: &mut Option<ToIsland>,
@@ -108,7 +147,7 @@ fn session(
     }
     let gone = Arc::new(AtomicBool::new(false));
     let reader = stream.try_clone().map(|s| {
-        let (gone, up, events) = (gone.clone(), up.clone(), events.clone());
+        let (gone, up, events, notify) = (gone.clone(), up.clone(), events.clone(), notify.clone());
         std::thread::spawn(move || {
             for line in BufReader::new(s).lines() {
                 let Ok(line) = line else { break };
@@ -121,6 +160,7 @@ fn session(
             }
             up.store(false, Ordering::Relaxed);
             gone.store(true, Ordering::Relaxed);
+            let _ = notify.send(Cmd::PeerClosed);
         })
     });
     if reader.is_err() {
@@ -131,8 +171,8 @@ fn session(
         if gone.load(Ordering::Relaxed) {
             break true;
         }
-        match rx.recv_timeout(Duration::from_millis(500)) {
-            Ok(msg) => {
+        match rx.recv() {
+            Ok(Cmd::Send(msg)) => {
                 let sent = out.write_all(proto::encode(&msg).as_bytes()).is_ok();
                 if matches!(msg, ToIsland::Feed { .. }) {
                     *feed = Some(msg);
@@ -141,8 +181,12 @@ fn session(
                     break true;
                 }
             }
-            Err(RecvTimeoutError::Timeout) => {}
-            Err(RecvTimeoutError::Disconnected) => break false,
+            Ok(Cmd::PeerClosed) => {
+                if gone.load(Ordering::Relaxed) {
+                    break true;
+                }
+            }
+            Err(_) => break false,
         }
     };
     let _ = stream.shutdown(Shutdown::Both);

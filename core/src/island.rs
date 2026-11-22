@@ -26,6 +26,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
+use futures::StreamExt as _;
 use gpui::{
     AnimationExt as _, App, Bounds, Context, DispatchPhase, Entity, EventEmitter, FontWeight, Hsla,
     IntoElement, MouseButton, MouseExitEvent, MouseMoveEvent, ParentElement as _, PathBuilder,
@@ -134,6 +135,14 @@ const LEAVE_GRACE: Duration = Duration::from_millis(150);
 const POINTER_NEAR: Duration = Duration::from_millis(16);
 #[cfg(target_os = "macos")]
 const POINTER_FAR: Duration = Duration::from_millis(60);
+#[cfg(target_os = "macos")]
+const POINTER_STILL: Duration = Duration::from_millis(250);
+#[cfg(target_os = "macos")]
+const POINTER_IDLE: Duration = Duration::from_millis(500);
+#[cfg(target_os = "macos")]
+const POINTER_STILL_AFTER: Duration = Duration::from_secs(2);
+#[cfg(target_os = "macos")]
+const POINTER_IDLE_AFTER: Duration = Duration::from_secs(10);
 /// How close to the island the pointer is "near".
 #[cfg(target_os = "macos")]
 const POINTER_MARGIN: f32 = 80.;
@@ -724,6 +733,19 @@ impl Alerts {
         }
     }
 
+    /// How long until the front alert times out, or `None` if no alert is timed.
+    pub fn next_deadline(&self, now: Instant, hovered: bool) -> Option<Duration> {
+        let (_, front) = self.front()?;
+        let stay = alert_for(front)?;
+        if hovered {
+            return Some(Duration::from_millis(500));
+        }
+        let elapsed = self
+            .since
+            .map_or(Duration::ZERO, |at| now.saturating_duration_since(at));
+        Some(stay.saturating_sub(elapsed).max(Duration::from_millis(50)))
+    }
+
     /// Times the front alert out; hovering holds it. Returns whether it went.
     pub fn tick(&mut self, now: Instant, hovered: bool) -> bool {
         let Some((_, front)) = self.front() else {
@@ -1259,7 +1281,13 @@ pub struct Island {
     #[cfg(target_os = "macos")]
     pointer_on: bool,
     #[cfg(target_os = "macos")]
+    last_pointer: Option<(f32, f32)>,
+    #[cfg(target_os = "macos")]
+    pointer_still_since: Instant,
+    #[cfg(target_os = "macos")]
     screens_at: Instant,
+    tick_wake: futures::channel::mpsc::UnboundedSender<()>,
+    tick_asleep: std::rc::Rc<std::cell::Cell<bool>>,
     call: Option<CallView>,
     /// A meeting being recorded: its levels and the one the green wave shows.
     recording: Option<(Arc<Levels>, f32)>,
@@ -1271,12 +1299,31 @@ impl EventEmitter<IslandEvent> for Island {}
 
 impl Island {
     pub fn new(cx: &mut Context<Self>) -> Self {
-        // Times alerts out and lets the raccoon doze off; redraws only on a change.
+        let (tick_wake, mut tick_rx) = futures::channel::mpsc::unbounded();
+        let tick_asleep = std::rc::Rc::new(std::cell::Cell::new(false));
+        let asleep = tick_asleep.clone();
+        // Times alerts out and lets the raccoon doze off; sleeps with no timer when idle.
         cx.spawn(async move |this, cx| {
             loop {
-                cx.background_executor()
-                    .timer(Duration::from_millis(500))
-                    .await;
+                let wait = match this.update(cx, |island, _| island.next_tick_wait()) {
+                    Ok(wait) => wait,
+                    Err(_) => break,
+                };
+                asleep.set(true);
+                match wait {
+                    Some(d) => {
+                        let timer = std::pin::pin!(cx.background_executor().timer(d));
+                        futures::future::select(timer, tick_rx.next()).await;
+                    }
+                    None => {
+                        if tick_rx.next().await.is_none() {
+                            break;
+                        }
+                    }
+                }
+                asleep.set(false);
+                // Drain any queued wake signals before computing the next deadline.
+                while tick_rx.try_recv().is_ok() {}
                 let alive = this.update(cx, |island, cx| {
                     // A card waits while it is really hovered; one that just
                     // sits under a resting pointer times out as usual.
@@ -1295,8 +1342,7 @@ impl Island {
         // macOS says nothing while a window ignores the pointer: ask where it is.
         #[cfg(target_os = "macos")]
         cx.spawn(async move |this, cx| {
-            while let Ok(near) = this.update(cx, |island, cx| island.track_pointer(cx)) {
-                let wait = if near { POINTER_NEAR } else { POINTER_FAR };
+            while let Ok(wait) = this.update(cx, |island, cx| island.track_pointer(cx)) {
                 cx.background_executor().timer(wait).await;
             }
         })
@@ -1334,7 +1380,13 @@ impl Island {
             #[cfg(target_os = "macos")]
             pointer_on: false,
             #[cfg(target_os = "macos")]
+            last_pointer: None,
+            #[cfg(target_os = "macos")]
+            pointer_still_since: Instant::now(),
+            #[cfg(target_os = "macos")]
             screens_at: Instant::now(),
+            tick_wake,
+            tick_asleep,
             call: None,
             recording: None,
             small: cx.new(|cx| Mascot::new(SMALL_W, cx).awake().color(gpui::white())),
@@ -1353,7 +1405,7 @@ impl Island {
     /// comes and goes. Returns whether it is near, to look again soon. Now and
     /// then it also follows the screen (a lid closed, a monitor plugged in).
     #[cfg(target_os = "macos")]
-    fn track_pointer(&mut self, cx: &mut Context<Self>) -> bool {
+    fn track_pointer(&mut self, cx: &mut Context<Self>) -> Duration {
         if self.screens_at.elapsed() >= SCREENS_EVERY {
             self.screens_at = Instant::now();
             if let Some(edge) = mac::follow_screen()
@@ -1364,8 +1416,15 @@ impl Island {
             }
         }
         let Some((x, y)) = mac::pointer() else {
-            return false;
+            return POINTER_IDLE;
         };
+        let moved = self
+            .last_pointer
+            .is_none_or(|(px, py)| (px - x).abs() > 0.5 || (py - y).abs() > 0.5);
+        if moved {
+            self.last_pointer = Some((x, y));
+            self.pointer_still_since = Instant::now();
+        }
         let on = !passthrough()
             && self.region.iter().flatten().any(|r| {
                 let (x, y) = (x - r[0] as f32, y - r[1] as f32);
@@ -1378,13 +1437,49 @@ impl Island {
         }
         // Near is a margin around the island itself, so the fast poll runs
         // only while the pointer is about to reach it.
-        self.region.iter().flatten().any(|r| {
+        let near = self.region.iter().flatten().any(|r| {
             let (x, y) = (x - r[0] as f32, y - r[1] as f32);
             x >= -POINTER_MARGIN
                 && y >= -POINTER_MARGIN
                 && x < r[2] as f32 + POINTER_MARGIN
                 && y < r[3] as f32 + POINTER_MARGIN
-        })
+        });
+        if near {
+            POINTER_NEAR
+        } else {
+            let still = self.pointer_still_since.elapsed();
+            if still >= POINTER_IDLE_AFTER {
+                POINTER_IDLE
+            } else if still >= POINTER_STILL_AFTER {
+                POINTER_STILL
+            } else {
+                POINTER_FAR
+            }
+        }
+    }
+
+    /// How long until an alert expires or the island falls asleep; `None` when
+    /// already asleep with no timed alerts so the background loop parks at zero wakeups.
+    fn next_tick_wait(&self) -> Option<Duration> {
+        let now = Instant::now();
+        let hold = self.hovered && (self.card.is_none() || self.card_is_hot());
+        let alert_wait = self.alerts.next_deadline(now, hold);
+        let sleep_wait = if self.feed.rows.iter().any(|r| r.status.active()) {
+            None
+        } else {
+            self.busy_at.and_then(|t| {
+                let elapsed = t.elapsed();
+                (elapsed < SLEEP_AFTER).then(|| {
+                    SLEEP_AFTER
+                        .saturating_sub(elapsed)
+                        .max(Duration::from_millis(50))
+                })
+            })
+        };
+        match (alert_wait, sleep_wait) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
     }
 
     /// New data from the shell; redraws only when something shown changed.
@@ -1514,6 +1609,9 @@ impl Island {
             self.small.update(cx, |m, _| m.set_mood(mood));
         }
         self.sync_card(cx);
+        if self.next_tick_wait().is_some() && self.tick_asleep.replace(false) {
+            let _ = self.tick_wake.unbounded_send(());
+        }
     }
 
     /// Starts the front alert's card dripping out, or melts the one out back
@@ -3240,6 +3338,40 @@ mod tests {
         let c = rearm(b, Some(9), true, late);
         assert!(!may_approve(c, Some(9), late + Duration::from_secs(5)));
         assert_eq!(rearm(c, None, false, late), None);
+    }
+
+    #[test]
+    fn alerts_next_deadline_sleeps_when_empty_and_tracks_expiry() {
+        let t0 = Instant::now();
+        let mut alerts = Alerts::default();
+        assert_eq!(alerts.next_deadline(t0, false), None);
+
+        alerts.push(
+            Alert {
+                key: "a".into(),
+                kind: AlertKind::Warning,
+                title: "Done".into(),
+                subtitle: "".into(),
+                req: "".into(),
+                image: "".into(),
+                brand: "".into(),
+            },
+            t0,
+        );
+        let d = alerts
+            .next_deadline(t0 + Duration::from_secs(1), false)
+            .unwrap();
+        assert!(d > Duration::from_secs(1));
+        assert_eq!(
+            alerts.next_deadline(t0 + Duration::from_secs(1), true),
+            Some(Duration::from_millis(500))
+        );
+
+        alerts.dismiss(t0 + Duration::from_secs(2));
+        assert_eq!(
+            alerts.next_deadline(t0 + Duration::from_secs(2), false),
+            None
+        );
     }
 
     #[test]

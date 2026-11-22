@@ -588,6 +588,7 @@ mod host {
                         cx.background_executor().timer(WATCH_EVERY).await;
                         continue;
                     };
+                    let has_sessions = !scan.sessions.is_empty();
                     let Ok(mut seen) = this.update(cx, |host, _| host.watch.update(&scan)) else {
                         break;
                     };
@@ -600,7 +601,12 @@ mod host {
                     if this.update(cx, |host, cx| host.headless(seen, cx)).is_err() {
                         break;
                     }
-                    cx.background_executor().timer(WATCH_EVERY).await;
+                    let wait = if has_sessions {
+                        WATCH_EVERY
+                    } else {
+                        Duration::from_secs(10)
+                    };
+                    cx.background_executor().timer(wait).await;
                 }
             });
             // Outside agents may go quiet for good: their rows still have to leave.

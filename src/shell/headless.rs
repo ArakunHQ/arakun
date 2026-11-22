@@ -57,6 +57,7 @@ impl Shell {
             // background one in five seconds keeps the sidebar and the
             // phone's statuses close; coming to the front scans within one.
             let mut skipped = 0;
+            let mut has_sessions = false;
             loop {
                 let Ok(active) = this.update_in(cx, |_, window, _| window.is_window_active())
                 else {
@@ -72,6 +73,7 @@ impl Shell {
                                 .collect::<Vec<_>>()
                         }))
                         .await;
+                    has_sessions = !found.is_empty();
                     if this
                         .update_in(cx, |this, window, cx| this.sync_headless(found, window, cx))
                         .is_err()
@@ -81,7 +83,12 @@ impl Shell {
                 } else {
                     skipped += 1;
                 }
-                cx.background_executor().timer(Duration::from_secs(1)).await;
+                let wait = if has_sessions {
+                    Duration::from_secs(1)
+                } else {
+                    Duration::from_secs(10)
+                };
+                cx.background_executor().timer(wait).await;
             }
         })
         .detach();

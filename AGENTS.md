@@ -54,8 +54,9 @@ Every commit message and pull request title follows
   commands you actually ran. Leave a checklist item unchecked if you did not run it.
 - Always open a pull request as a draft: `gh pr create --draft --body-file -`. Run the
   checks below, wait for the checks it needs with `tools/wait-checks.sh`, then mark it
-  ready with `gh pr ready`, never before. That script waits for the required checks, and
-  for macOS only when the diff touches macOS code; don't wait for the rest. The required
+  ready with `gh pr ready`, never before. That script waits for the required checks, for
+  macOS only when the diff touches macOS code, and for iOS or Android only when the diff
+  touches what that job builds; don't wait for the rest. The required
   **Human approval** status is a merge gate, not part of this wait: it only resolves once
   a person approves, and marking ready is what asks for the review. cubic, the review
   bot, reviews drafts too, so its review is often done before the checks. The
@@ -123,6 +124,8 @@ cargo test --locked --no-default-features <module>   # only the modules you touc
 (cd ios/ArakunKit && swift test)
 (cd ios && xcodegen generate && xcodebuild build -quiet -project Arakun.xcodeproj \
   -scheme Arakun -destination "generic/platform=iOS Simulator" CODE_SIGNING_ALLOWED=NO)
+# android/ changed
+(cd android && ./gradlew :kit:test :app:testDebugUnitTest :app:lintDebug :app:assembleDebug)
 ```
 
 Leave the rest to CI on the draft pull request: the full `cargo test`, the

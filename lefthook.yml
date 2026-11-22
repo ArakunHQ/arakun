@@ -63,6 +63,13 @@ pre-push:
       glob: ["ios/*", "ios/**/*", "phone/*", "phone/**/*", ".github/workflows/ci.yml", ".github/actions/*", ".github/actions/**/*"]
       run: if [ "$(uname)" = Darwin ]; then cd ios/ArakunKit && swift test; else echo "ios-tests skipped, macOS only"; fi
 
+    # The Android app's tests (its protocol against the phone's vectors too), lint and build.
+    # Needs JDK 17 and the Android SDK, as android/README.md says.
+    - name: android
+      # The paths ci.yml's changes job sends to the Android job.
+      glob: ["android/*", "android/**/*", "phone/*", "phone/**/*", "assets/brand/mascot.json", "assets/fonts/*", ".github/workflows/ci.yml", ".github/actions/*", ".github/actions/**/*"]
+      run: cd android && ./gradlew --quiet :kit:test :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
+
 commit-msg:
   jobs:
     - name: conventional-commits

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Release builds talk to the relay over TLS only. The debug build's copy
+     (src/debug) also allows plain http, for a relay run by hand (`wrangler dev`). -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />
+</network-security-config>

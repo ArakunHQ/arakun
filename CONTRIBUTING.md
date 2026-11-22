@@ -79,7 +79,9 @@ a while and later ones are quick.
 
 The phone relay in [`relay/`](relay) is a separate TypeScript project. It needs Node 24
 or newer; see [relay/README.md](relay/README.md). So is the teams Worker in
-[`teams/`](teams); see [teams/README.md](teams/README.md).
+[`teams/`](teams); see [teams/README.md](teams/README.md). The Android app in
+[`android/`](android) is a Gradle project that needs JDK 17 and the Android SDK; see
+[android/README.md](android/README.md).
 
 ### Features you can ignore
 
@@ -93,8 +95,9 @@ CI runs the checks below that a pull request can affect. A change to docs, `iso/
 jobs, the relay job runs only when `relay/`, `phone/` or CI itself changes, the teams
 job only when `teams/` or CI itself changes, the iOS job only when `ios/`, `phone/`,
 the mascot's drawing or the fonts in `assets/`, or CI itself changes (a change to `ios/`
-alone skips the Rust jobs), cargo-deny runs only when `Cargo.toml`, `Cargo.lock` or
-`deny.toml` changes, and zizmor runs only when `.github/` changes.
+alone skips the Rust jobs), the Android job likewise for `android/`, cargo-deny runs only
+when `Cargo.toml`, `Cargo.lock` or `deny.toml` changes, and zizmor runs only when
+`.github/` changes.
 
 CI is the gate, not your machine. Before you push, run the quick checks for what you
 changed: `tools/rustfmt.sh --check` and clippy for Rust, and the tests of the modules
@@ -126,6 +129,10 @@ cargo deny check
 (cd ios/ArakunKit && swift test)
 (cd ios && xcodegen generate && xcodebuild build -quiet -project Arakun.xcodeproj \
   -scheme Arakun -destination "generic/platform=iOS Simulator" CODE_SIGNING_ALLOWED=NO)
+
+# android/ changed (JDK 17 and the Android SDK)
+(cd android && ./gradlew :kit:test :app:testDebugUnitTest :app:lintDebug :app:assembleDebug)
+# CI also builds the release bundle, signed with a throwaway key; R8 is slow, so leave it to CI.
 
 # .github/ changed (brew install zizmor, or pipx install zizmor)
 zizmor .github
@@ -171,8 +178,9 @@ Some notes:
 - Tests marked `#[ignore]` read this machine's own state (Claude Code, the Cloudflare
   sign-in and so on), so CI skips them. Run one with `cargo test <name> -- --ignored` if
   you work on that part.
-- The phone tests check the phone's encryption against vectors the Rust side writes. If
-  you change the format in `core/src/phone`, update both sides.
+- The phone tests check the phone's encryption against vectors the Rust side writes, and
+  so do the Android app's (`android/kit`). If you change the format in
+  `core/src/phone`, update every side.
 
 ### Git hooks
 
@@ -188,9 +196,9 @@ lefthook install
 - **On commit:** clippy if Rust files changed, the relay's types if `relay/` changed,
   the teams Worker's types if `teams/` changed, and the phone tests if `phone/` or
   `core/src/phone/` changed. They check the files on disk, not only what you staged.
-- **On push:** `cargo test`, the relay tests, the teams tests and, on macOS, the iOS
-  protocol tests (`swift test` in `ios/ArakunKit`), if the commits you push change
-  those parts.
+- **On push:** `cargo test`, the relay tests, the teams tests, on macOS the iOS
+  protocol tests (`swift test` in `ios/ArakunKit`), and the Android app's tests, lint
+  and build, if the commits you push change those parts.
 - **On the commit message:** the Conventional Commits check (see
   [Pull requests](#pull-requests)).
 
@@ -361,9 +369,10 @@ that keeps one on purpose goes on its allow-list.
   GitHub). Nobody is asked to review a draft, so you can push while CI and cubic (the
   review bot) run: cubic reviews drafts too, so its comments are usually waiting when the
   checks are. Once the required checks pass, mark it ready with `gh pr ready` or the
-  button on GitHub. `tools/wait-checks.sh` waits for them, and for the macOS job only
-  when the diff touches macOS code. Don't wait for the other checks (macOS for other
-  changes, CodeQL), which can queue for a long time. Don't wait for the **Human approval**
+  button on GitHub. `tools/wait-checks.sh` waits for them, for the macOS job only
+  when the diff touches macOS code, and for the iOS or Android job only when the diff
+  touches what that job builds (the paths under "Checks"). Don't wait for the other checks
+  (macOS for other changes, CodeQL), which can queue for a long time. Don't wait for the **Human approval**
   status either: for a pull request from outside the team it is required, but it only
   resolves after a person approves, and marking ready is what asks for the review. It
   stays a merge gate, not a pre-ready one. The Reviewers workflow asks people to review

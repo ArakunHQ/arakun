@@ -3501,11 +3501,13 @@ impl TeamsView {
                 },
             )
             .child(list)
-            .child(div().px(ui::sp(16.)).child(ui::text(
-                Type::Caption,
-                theme::text_subtle(),
-                peer_hint,
-            )))
+            .child(
+                div()
+                    .px(ui::sp(16.))
+                    .pt(ui::sp(4.))
+                    .pb(ui::sp(8.))
+                    .child(ui::text(Type::Caption, theme::text_subtle(), peer_hint)),
+            )
             .child(self.render_composer(
                 can_send,
                 keyless,

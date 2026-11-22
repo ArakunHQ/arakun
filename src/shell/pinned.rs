@@ -141,7 +141,11 @@ impl Shell {
             }
         }
         crate::tab_layout::set(layout);
-        if let Some(min) = preset.and_then(|p| p.min_sidebar_w())
+        // The tree needs its width: when it comes, or when a preset is picked.
+        let min = preset
+            .and_then(|p| p.min_sidebar_w())
+            .or((layout.tree() && !was.tree()).then_some(crate::tab_layout::SIDEBAR_W));
+        if let Some(min) = min
             && self.rail_w < min
         {
             self.rail_w = min;

@@ -1862,12 +1862,18 @@ impl SettingsDialog {
         };
         let layout = crate::tab_layout::current();
         let chosen = layout.preset();
-        let tiles = div().flex().gap(crate::ui::sp(12.)).children(
-            Preset::ALL
-                .into_iter()
-                .enumerate()
-                .map(|(i, p)| preset_tile(i, p, chosen == Some(p), cx)),
-        );
+        let tiles = div()
+            .id("tabs-presets")
+            .role(gpui::Role::RadioGroup)
+            .aria_label("Tabs and sessions preset")
+            .flex()
+            .gap(crate::ui::sp(12.))
+            .children(
+                Preset::ALL
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, p)| preset_tile(i, p, chosen == Some(p), cx)),
+            );
         let note = match chosen {
             Some(p) => format!("Set by {}", p.label()),
             None => "Arranged by you".to_string(),
@@ -1885,7 +1891,11 @@ impl SettingsDialog {
                     ui::segment((id, i), None, label, picked)
                         .when(!live, |d| d.opacity(0.4))
                         .when(live, |d| {
-                            d.on_click(cx.listener(move |_, _, _, cx| {
+                            d.on_click(cx.listener(move |this, _, _, cx| {
+                                // The window widens a sidebar too narrow for the tree.
+                                if next.tree() && !layout.tree() {
+                                    this.rail_w = this.rail_w.max(crate::tab_layout::SIDEBAR_W);
+                                }
                                 cx.emit(SettingsEvent::TabLayout(next, None));
                                 cx.notify();
                             }))
@@ -1977,6 +1987,7 @@ impl SettingsDialog {
         let grouped = with(&|t| t.group = !layout.group);
         let group_switch = div()
             .id("tabs-group")
+            .map(crate::ui::focusable)
             .role(gpui::Role::Switch)
             .aria_label("Group by project")
             .aria_toggled(crate::ui::toggled(layout.group))
@@ -2454,6 +2465,7 @@ fn preset_tile(
         );
     div()
         .id(("tabs-preset", i))
+        .map(crate::ui::focusable)
         .map(|d| ui::labelled(d, gpui::Role::RadioButton, p.label()))
         .aria_toggled(crate::ui::toggled(chosen))
         .flex_1()

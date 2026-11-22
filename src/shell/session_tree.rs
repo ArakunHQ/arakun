@@ -287,6 +287,24 @@ impl Shell {
                 }
             }
         }
+        // Archived sessions are a click away, as in the projects list.
+        let archived = self
+            .projects
+            .iter()
+            .flat_map(|p| &p.environments)
+            .flat_map(|e| &e.sessions)
+            .filter(|s| s.settled)
+            .count();
+        if !menu && archived > 0 {
+            list = list.child(
+                super::panel::archived_toggle("tree-archived", archived, "", self.show_settled)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.show_settled = !this.show_settled;
+                        this.drop_pick();
+                        cx.notify();
+                    })),
+            );
+        }
         // Rows picked with Ctrl or Shift get the bar that acts on them.
         list.children(self.render_pick_bar(cx)).into_any_element()
     }

@@ -93,6 +93,20 @@ pub fn enter<E: IntoElement + Styled + 'static>(
     })
 }
 
+/// Like `enter` from below, for a surface placed by its bottom inset (a card
+/// or notice pinned to a bottom edge), where a top margin would not move it.
+pub fn rise<E: IntoElement + Styled + 'static>(
+    el: E,
+    id: impl Into<ElementId>,
+    distance: f32,
+    duration: Duration,
+) -> AnimationElement<E> {
+    el.with_animation(id, Animation::new(duration), move |el, t| {
+        let (opacity, offset) = enter_at(t, From::Below, distance);
+        el.opacity(opacity).mb(px(-offset))
+    })
+}
+
 /// Fades `el` in. For backdrops, which dim the app rather than travel.
 pub fn fade_in<E: IntoElement + Styled + 'static>(
     el: E,

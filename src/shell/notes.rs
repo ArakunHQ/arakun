@@ -270,7 +270,7 @@ impl Shell {
                                 .on_click(cx.listener(|this, _, window, cx| this.finish_review(true, window, cx))),
                         ),
                 )
-                .map(|d| crate::ui::motion::enter(d, "review-box-in", crate::ui::motion::From::Below, 6., crate::ui::motion::FAST))
+                .map(|d| crate::ui::motion::rise(d, "review-box-in", 6., crate::ui::motion::FAST))
                 .into_any_element(),
         )
     }

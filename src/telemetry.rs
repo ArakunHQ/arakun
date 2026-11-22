@@ -23,6 +23,7 @@
 //! the answer was.
 
 use std::cell::Cell;
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Condvar, Mutex, MutexGuard, OnceLock};
@@ -306,7 +307,7 @@ fn flush() {
     if STARTED.get().is_none() {
         return;
     }
-    let batch = std::mem::take(&mut *lock(&queue().events));
+    let batch: Vec<Value> = std::mem::take(&mut *lock(&queue().events)).into();
     send(&batch, quick_agent());
 }
 
@@ -501,14 +502,15 @@ fn home() -> String {
 // ---- sending ----------------------------------------------------------------
 
 struct Queue {
-    events: Mutex<Vec<Value>>,
+    // A deque, so dropping the oldest event when full does not shift the rest.
+    events: Mutex<VecDeque<Value>>,
     wake: Condvar,
 }
 
 fn queue() -> &'static Queue {
     static QUEUE: OnceLock<Queue> = OnceLock::new();
     QUEUE.get_or_init(|| Queue {
-        events: Mutex::new(Vec::new()),
+        events: Mutex::new(VecDeque::new()),
         wake: Condvar::new(),
     })
 }
@@ -516,13 +518,18 @@ fn queue() -> &'static Queue {
 fn enqueue(event: Value) {
     let q = queue();
     let mut events = lock(&q.events);
-    if events.len() >= MAX_QUEUE {
-        events.remove(0);
-    }
-    events.push(event);
+    push_capped(&mut events, event);
     if events.len() >= 50 {
         q.wake.notify_one();
     }
+}
+
+/// Adds `event`, dropping the oldest first when the queue is full.
+fn push_capped(events: &mut VecDeque<Value>, event: Value) {
+    if events.len() >= MAX_QUEUE {
+        events.pop_front();
+    }
+    events.push_back(event);
 }
 
 fn send_loop() {
@@ -534,7 +541,7 @@ fn send_loop() {
                 .wake
                 .wait_timeout(events, BATCH_EVERY)
                 .unwrap_or_else(|e| e.into_inner());
-            std::mem::take(&mut *events)
+            Vec::from(std::mem::take(&mut *events))
         };
         send(&batch, agent());
     }
@@ -1006,9 +1013,21 @@ mod tests {
         hold(event(2));
         release_held(true);
         assert!(lock(held()).is_empty());
-        let queued = std::mem::take(&mut *lock(&queue().events));
+        let queued = Vec::from(std::mem::take(&mut *lock(&queue().events)));
         assert_eq!(queued, vec![event(2)]);
         assert!(!HOLDING.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn a_full_queue_drops_the_oldest_event() {
+        let event = |n: usize| json!({"event": "app launched", "n": n});
+        let mut events = VecDeque::new();
+        for n in 0..MAX_QUEUE + 2 {
+            push_capped(&mut events, event(n));
+        }
+        assert_eq!(events.len(), MAX_QUEUE);
+        assert_eq!(events.front(), Some(&event(2)));
+        assert_eq!(events.back(), Some(&event(MAX_QUEUE + 1)));
     }
 
     #[test]

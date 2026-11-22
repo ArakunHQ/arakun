@@ -163,6 +163,15 @@ impl GitHubView {
         true
     }
 
+    /// The corners of the main card the view fills: all of them in a
+    /// project's tab, two in a split, none on the window with no project.
+    pub fn set_card_corners(&mut self, corners: gpui::Corners<bool>, cx: &mut Context<Self>) {
+        if self.card_corners != corners {
+            self.card_corners = corners;
+            cx.notify();
+        }
+    }
+
     /// The GitHub tab came to the front: the floating sheet stays open in it.
     pub fn unfloat(&mut self, cx: &mut Context<Self>) {
         if std::mem::take(&mut self.floating) {

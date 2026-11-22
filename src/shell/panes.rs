@@ -585,6 +585,39 @@ impl Shell {
         cx.notify();
     }
 
+    /// The corners of the main card that the pane showing tab `index`
+    /// touches: all of them alone, the two on its side in a split.
+    pub(super) fn pane_card_corners(&self, index: usize) -> gpui::Corners<bool> {
+        let (Some(other), Some(split)) = (self.split_other(), self.strip.split) else {
+            return gpui::Corners {
+                top_left: true,
+                top_right: true,
+                bottom_right: true,
+                bottom_left: true,
+            };
+        };
+        let first = if split.focus_first {
+            self.strip.active_tab
+        } else {
+            other
+        };
+        let (a, b) = (index == first, index != first);
+        match split.dir {
+            SplitDir::Right => gpui::Corners {
+                top_left: a,
+                bottom_left: a,
+                top_right: b,
+                bottom_right: b,
+            },
+            SplitDir::Down => gpui::Corners {
+                top_left: a,
+                top_right: a,
+                bottom_left: b,
+                bottom_right: b,
+            },
+        }
+    }
+
     pub(super) fn render_split(
         &self,
         other: usize,

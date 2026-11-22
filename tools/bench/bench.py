@@ -225,7 +225,7 @@ def scenario_terminal(dev):
 def focus_window(dev):
     """Gives the test Arakun's window the X input focus. Xvfb has no window
     manager, so the window never reads as active, and the session view stills
-    its loops in an inactive window. Linux only; elsewhere it does nothing."""
+    its loops in an inactive window. Linux only."""
     try:
         env = Path(f"/proc/{dev.pid()}/environ").read_bytes().split(b"\0")
     except OSError:
@@ -256,7 +256,9 @@ SCENARIOS = {
     "zoom": scenario_zoom,
     "scroll": scenario_scroll,
     "terminal": scenario_terminal,
-    "working": scenario_working,
+    # Only Linux can give the test window the focus (focus_window); on macOS the
+    # session would still its loops and the numbers would mean nothing.
+    **({"working": scenario_working} if platform.system() == "Linux" else {}),
 }
 
 
@@ -273,9 +275,21 @@ def watch_first_frame(log_file, t0, found):
         time.sleep(0.005)
 
 
-def perf_run(binary, only, workdir):
-    fake = f"{sys.executable} {Path(__file__).resolve().parent / 'fake_acp.py'}"
-    dev = Dev(binary, workdir, {"ZED_MEASUREMENTS": "1", "ARAKUN_CLAUDE_ACP": fake})
+def fake_agent(tmp):
+    """A launcher for fake_acp.py, for ARAKUN_CLAUDE_ACP. The app splits that
+    variable on whitespace, so a Python or checkout path with a space in it
+    would break; the launcher quotes both and lives where there is no space."""
+    if any(c.isspace() for c in str(tmp)):
+        sys.exit(f"the temporary directory {tmp} has a space in it; set TMPDIR to one without")
+    launcher = Path(tmp) / "fake-acp"
+    fake = Path(__file__).resolve().parent / "fake_acp.py"
+    launcher.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{fake}" "$@"\n')
+    launcher.chmod(0o755)
+    return str(launcher)
+
+
+def perf_run(binary, only, workdir, agent):
+    dev = Dev(binary, workdir, {"ZED_MEASUREMENTS": "1", "ARAKUN_CLAUDE_ACP": agent})
     dev.run("stop", check=False)
     dev.root = Path(dev.run("socket")).parent
     found = {"wall": time.time()}
@@ -329,9 +343,10 @@ def cmd_perf(args):
     with tempfile.TemporaryDirectory(prefix="arakun-bench-") as tmp:
         fixture = Path(tmp) / "project"
         make_fixture(fixture)
+        agent = fake_agent(tmp)
         for i in range(args.runs):
             log(f"perf run {i + 1}/{args.runs}")
-            runs.append(perf_run(binary, only, fixture))
+            runs.append(perf_run(binary, only, fixture, agent))
     result = {**meta("perf", binary), "runs": runs, "summary": median_runs(runs)}
     if args.label:
         result["label"] = args.label

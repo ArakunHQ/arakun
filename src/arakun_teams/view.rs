@@ -8,7 +8,7 @@ use gpui::{
     div, px,
 };
 
-use super::Teams;
+use super::{Access, Teams};
 use crate::theme;
 use crate::ui::{self, ButtonKind};
 
@@ -42,25 +42,38 @@ impl TeamsView {
 impl Render for TeamsView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let teams = self.teams.read(cx);
-        let login = teams
-            .me()
-            .filter(|_| teams.enabled())
-            .map(|m| crate::redact::value(&m.login));
-        let subtitle = login
-            .as_ref()
-            .map(|l| format!("Signed in as @{l}"))
-            .unwrap_or_else(|| "Signed out".into());
-        let body = if login.is_some() {
-            ui::empty_state(
+        let signed_in = teams.signed_in();
+        let login = teams.me().map(|m| crate::redact::value(&m.login));
+        let subtitle = match &login {
+            Some(l) => format!("Signed in as @{l}"),
+            None if signed_in => "Signed in".into(),
+            None => "Signed out".into(),
+        };
+        // The tab can stay open after a sign-out, or after the server took
+        // the flag away. Only a signed-out account is asked to sign in.
+        let body = match teams.access() {
+            Access::On => ui::empty_state(
                 "message-multiple01",
                 "Nothing here yet",
                 "Teams is on for your account. Team channels come in a later version of Arakun.",
                 None,
-            )
-        } else {
-            // The tab can stay open after a sign-out, or after the server took
-            // the flag away.
-            ui::empty_state(
+            ),
+            Access::Unknown => ui::empty_state(
+                "user",
+                "Checking your account",
+                teams.error().map_or(
+                    "The Teams server has not said yet whether Teams is on for this account.",
+                    |e| e.as_ref(),
+                ),
+                None,
+            ),
+            Access::Off => ui::empty_state(
+                "user",
+                "Teams is not on for this account",
+                "The Teams server has not turned Teams on for the account you signed in with.",
+                None,
+            ),
+            Access::SignedOut => ui::empty_state(
                 "user",
                 "Teams is not on here",
                 "Sign in with GitHub in Settings, with an account that has Teams.",
@@ -74,9 +87,8 @@ impl Render for TeamsView {
                     .on_click(cx.listener(|_, _, _, cx| cx.emit(TeamsViewEvent::OpenSettings)))
                     .into_any_element(),
                 ),
-            )
+            ),
         };
-        let signed_in = login.is_some();
         div()
             .track_focus(&self.focus)
             .flex()

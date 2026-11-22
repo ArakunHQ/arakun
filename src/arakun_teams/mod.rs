@@ -126,6 +126,14 @@ impl Teams {
         self.me.as_ref().is_some_and(|m| m.has(api::TEAMS_FLAG))
     }
 
+    /// What the Teams tab can say about this account.
+    pub fn access(&self) -> Access {
+        access(
+            self.signed_in(),
+            self.me.as_ref().map(|m| m.has(api::TEAMS_FLAG)),
+        )
+    }
+
     pub fn phase(&self) -> &Phase {
         &self.phase
     }
@@ -299,6 +307,28 @@ impl Teams {
             );
         })
         .detach();
+    }
+}
+
+/// Whether the account may use Teams. Signed out, not answered yet and turned
+/// off are told apart, so a signed-in account is never told to sign in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Access {
+    SignedOut,
+    /// Signed in, but the server has not said who it is.
+    Unknown,
+    /// Signed in, and the server has not turned Teams on for the account.
+    Off,
+    On,
+}
+
+/// `flag` is the account's `teams` flag, once the server answered.
+fn access(signed_in: bool, flag: Option<bool>) -> Access {
+    match (signed_in, flag) {
+        (false, _) => Access::SignedOut,
+        (true, None) => Access::Unknown,
+        (true, Some(false)) => Access::Off,
+        (true, Some(true)) => Access::On,
     }
 }
 
@@ -485,6 +515,15 @@ mod tests {
         assert!(!stale(Some(now), now));
         assert!(!stale(Some(now), now + STALE - Duration::from_secs(1)));
         assert!(stale(Some(now), now + STALE));
+    }
+
+    #[test]
+    fn a_signed_in_account_is_not_taken_for_signed_out() {
+        assert_eq!(access(false, None), Access::SignedOut);
+        // Offline at start, or `/me` still on its way.
+        assert_eq!(access(true, None), Access::Unknown);
+        assert_eq!(access(true, Some(false)), Access::Off);
+        assert_eq!(access(true, Some(true)), Access::On);
     }
 
     #[test]

@@ -239,7 +239,7 @@ impl Teams {
 
     /// Stops a sign-in that is waiting on GitHub.
     pub fn cancel(&mut self, cx: &mut Context<Self>) {
-        if self.phase == Phase::Idle {
+        if !can_cancel(&self.phase) {
             return;
         }
         self._task = None;
@@ -274,6 +274,13 @@ impl Teams {
         })
         .detach();
     }
+}
+
+/// Once GitHub said yes, the last step can't be stopped: dropping its task
+/// would not keep it from making the session and storing it, and the UI would
+/// say signed out with a session in the keyring. So it runs to its end.
+fn can_cancel(phase: &Phase) -> bool {
+    !matches!(phase, Phase::Idle | Phase::Finishing)
 }
 
 /// Forgets the session here before asking the server to end it. The server
@@ -443,6 +450,17 @@ mod tests {
         assert!(already_asking(true, false));
         // A retry waits, or its request is on its way.
         assert!(already_asking(false, true));
+    }
+
+    #[test]
+    fn a_sign_in_that_github_approved_is_not_cancelled() {
+        assert!(can_cancel(&Phase::Starting));
+        assert!(can_cancel(&Phase::Waiting {
+            user_code: "ABCD-1234".into(),
+            verification_uri: "https://github.com/login/device".into(),
+        }));
+        assert!(!can_cancel(&Phase::Finishing));
+        assert!(!can_cancel(&Phase::Idle));
     }
 
     #[test]

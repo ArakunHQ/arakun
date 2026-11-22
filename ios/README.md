@@ -59,7 +59,7 @@ for the simulator when `ios/`, `phone/`, the mascot's drawing or the fonts chang
 `.github/workflows/ios-release.yml` signs the app and uploads it to TestFlight: after
 every release that is not a pre-release, or by hand (`gh workflow run ios-release.yml --ref main`). It needs an
 App Store Connect API key, the `release` environment's one that macOS notarization uses
-too, with the App Manager role, and skips until there is one;
+too, with the Admin role (App Manager can't use cloud signing, so the export fails), and skips until there is one;
 the steps are at the top of that workflow.
 
 ## Pairing

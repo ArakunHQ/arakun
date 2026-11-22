@@ -157,6 +157,7 @@ struct PairingTests {
     @Test func endKinds() {
         #expect(EndKind.of(reason: "", code: 4401) == .unpaired)
         #expect(EndKind.of(reason: "bad_code", code: 1000) == .pairing)
+        #expect(EndKind.of(reason: "wrong_secret", code: 1000) == .pairing)
         #expect(EndKind.of(reason: "bad_hello", code: 1000) == .untrusted)
         #expect(EndKind.of(reason: "limit:daily", code: 1000) == .limit)
         #expect(EndKind.of(reason: "", code: 1006) == .gone)

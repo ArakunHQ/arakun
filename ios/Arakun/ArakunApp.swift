@@ -74,6 +74,7 @@ struct RootView: View {
     @Environment(AppModel.self) private var model
     /// The one question about crash reports, until it has an answer.
     @State private var askCrashReports = Telemetry.consent == nil && !AppModel.isDemoLaunch
+    @Environment(\.accessibilityReduceMotion) private var still
 
     var body: some View {
         Group {
@@ -97,7 +98,7 @@ struct RootView: View {
         .foregroundStyle(Color.text)
         .tint(.amberInk)
         .background(Color.ground.ignoresSafeArea())
-        .animation(.smooth, value: model.credentials == nil)
+        .animation(still ? nil : .smooth, value: model.credentials == nil)
         .alert("Send crash reports?", isPresented: $askCrashReports) {
             Button("Send crash reports") { Telemetry.set(true) }
             Button("Don't send", role: .cancel) { Telemetry.set(false) }

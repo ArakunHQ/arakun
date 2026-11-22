@@ -214,6 +214,7 @@ struct Mascot: View {
             if state.mood == .idle { state.moodStart = now }
         }
         .accessibilityElement()
+        .accessibilityAddTraits(.isButton)
         .accessibilityLabel("Arakun")
         .accessibilityValue(moodWord)
     }
@@ -359,6 +360,9 @@ struct Mascot: View {
         s.nextGlance = .infinity
         // Far enough in that the mood's opening moves are over, short of the doze.
         let p = pose(s, now: s.moodStart + 1)
+        // Due at once when motion comes back; infinity above only kept this
+        // pose from glancing.
+        s.nextGlance = 0
         for i in 0..<5 { s.head[i] = Spring(p.head[i]) }
         for i in 0..<2 { s.look[i] = Spring(p.look[i]) }
         for i in 0..<3 { s.eye[i] = Spring(p.eye[i]) }

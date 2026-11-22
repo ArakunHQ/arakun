@@ -76,6 +76,7 @@ private struct HoldButton: View {
     let action: () -> Void
     @State private var holding = false
     @Environment(\.isEnabled) private var enabled
+    @Environment(\.accessibilityReduceMotion) private var still
     private static let hold: Double = 0.7
 
     var body: some View {
@@ -89,7 +90,8 @@ private struct HoldButton: View {
                 GeometryReader { g in
                     Rectangle().fill(Color.onAmber.opacity(0.18)).frame(width: holding ? g.size.width : 0)
                 }
-                .animation(holding ? .linear(duration: Self.hold) : .easeOut(duration: 0.15), value: holding)
+                // Reduce Motion: the fill snaps full while held.
+                .animation(still ? nil : holding ? Animation.linear(duration: Self.hold) : Animation.easeOut(duration: 0.15), value: holding)
             }
             .clipShape(RoundedRectangle(cornerRadius: Radius.control))
             .opacity(enabled ? 1 : 0.4)

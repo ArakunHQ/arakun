@@ -82,6 +82,8 @@ struct InboxView: View {
             .onChange(of: model.session?.id) { _, id in
                 // A session started from the sheet opens on its own.
                 if let id, path.last != id { path = [id] }
+                // Paired with another computer: the session on screen was the old one's.
+                if id == nil, !path.isEmpty { path = [] }
             }
             .confirmationDialog("Unpair this phone from \(model.host)?", isPresented: $confirmUnpair, titleVisibility: .visible) {
                 Button("Unpair", role: .destructive) { model.unpair() }
@@ -275,6 +277,7 @@ struct StatusChip: View {
 struct StatusDot: View {
     let status: SessionStatus
     @State private var pulse = false
+    @Environment(\.accessibilityReduceMotion) private var still
 
     var body: some View {
         Circle()
@@ -282,8 +285,10 @@ struct StatusDot: View {
             .frame(width: 7, height: 7)
             .opacity(status == .working && pulse ? 0.35 : 1)
             .animation(status == .working ? .easeInOut(duration: 0.9).repeatForever() : .default, value: pulse)
-            .onAppear { pulse = status == .working }
-            .onChange(of: status) { _, s in pulse = s == .working }
+            // Reduce Motion: a steady dot; the color alone says it is working.
+            .onAppear { pulse = status == .working && !still }
+            .onChange(of: status) { _, s in pulse = s == .working && !still }
+            .onChange(of: still) { _, now in pulse = status == .working && !now }
             .accessibilityHidden(true)
     }
 

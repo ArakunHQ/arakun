@@ -123,8 +123,10 @@ struct EntryView: View {
 private struct PasteView: View {
     let text: String
     @State private var open = false
+    @Environment(\.accessibilityReduceMotion) private var still
 
-    private var long: Bool { text.split(separator: "\n", omittingEmptySubsequences: false).count > 4 }
+    /// Past four lines, or long enough that wrapping takes it past them on a phone.
+    private var long: Bool { text.split(separator: "\n", omittingEmptySubsequences: false).count > 4 || text.count > 160 }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -132,7 +134,7 @@ private struct PasteView: View {
                 .textSelection(.enabled)
             if long {
                 Button(open ? "Show less" : "Show all") {
-                    withAnimation(.snappy(duration: 0.2)) { open.toggle() }
+                    withAnimation(still ? nil : .snappy(duration: 0.2)) { open.toggle() }
                 }
                 .font(.mono(11.5))
                 .foregroundStyle(Color.amberInk)
@@ -153,6 +155,7 @@ struct Fold<Content: View, Trailing: View>: View {
     @ViewBuilder var content: Content
     @ViewBuilder var trailing: Trailing
     @State private var open = false
+    @Environment(\.accessibilityReduceMotion) private var still
 
     init(icon: String, title: String, mono: Bool = false, @ViewBuilder content: () -> Content,
          @ViewBuilder trailing: () -> Trailing = { EmptyView() }) {
@@ -166,7 +169,7 @@ struct Fold<Content: View, Trailing: View>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Button {
-                withAnimation(.snappy(duration: 0.2)) { open.toggle() }
+                withAnimation(still ? nil : .snappy(duration: 0.2)) { open.toggle() }
             } label: {
                 HStack(spacing: 10) {
                     Icon(icon, size: 15).foregroundStyle(Color.textFaint)

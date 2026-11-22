@@ -10,6 +10,7 @@ struct SessionView: View {
     /// Whether the end of the transcript is on screen; new entries follow only then.
     @State private var atEnd = true
     @State private var unseen = false
+    @Environment(\.accessibilityReduceMotion) private var still
 
     var body: some View {
         let s = model.session?.id == id ? model.session : nil
@@ -22,7 +23,8 @@ struct SessionView: View {
                             Button(model.loadingOlder ? "Loading…" : "Show \(s.from) earlier entries") { model.loadOlder() }
                                 .buttonStyle(.outline)
                                 .frame(maxWidth: .infinity)
-                                .disabled(model.loadingOlder)
+                                // Offline it would ask nothing.
+                                .disabled(model.loadingOlder || !model.isLinked)
                         }
                         ForEach(Array(s.entries.enumerated()), id: \.offset) { i, e in
                             EntryView(entry: e).id(s.from + i)
@@ -50,7 +52,7 @@ struct SessionView: View {
             .onChange(of: s?.count) { _, _ in
                 // Someone reading further up keeps their place.
                 if atEnd {
-                    withAnimation { proxy.scrollTo("end", anchor: .bottom) }
+                    withAnimation(still ? nil : .default) { proxy.scrollTo("end", anchor: .bottom) }
                 } else {
                     unseen = true
                 }
@@ -58,7 +60,7 @@ struct SessionView: View {
             .overlay(alignment: .bottom) {
                 if unseen {
                     Button {
-                        withAnimation { proxy.scrollTo("end", anchor: .bottom) }
+                        withAnimation(still ? nil : .default) { proxy.scrollTo("end", anchor: .bottom) }
                     } label: {
                         HStack(spacing: 6) {
                             Icon("arrow-down01", size: 14)
@@ -140,8 +142,8 @@ struct SessionView: View {
     private func send() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
-        model.say(text)
-        draft = ""
+        // Not sent (the link is down): the text stays to send again.
+        if model.say(text) { draft = "" }
     }
 }
 

@@ -33,8 +33,9 @@ final class AppModel {
     var notice: String?
     /// A session asked for before the link was up (from a started session).
     private var openWhenLinked: String?
-    /// A start sent and not yet answered with `started` or `error`.
-    private var starting = false
+    /// A start sent and not yet answered with `started` or `error`. Here, not
+    /// in the form, so closing and reopening it cannot send a second start.
+    private(set) var starting = false
 
     private var link: RelayLink?
     private var retry: Duration = .milliseconds(500)
@@ -111,8 +112,11 @@ final class AppModel {
     }
 
     func unpair() {
+        guard let l = link else { return forget() }
         Task {
-            _ = try? await link?.fetch("/unpair", method: "POST")
+            _ = try? await l.fetch("/unpair", method: "POST")
+            // A new pairing began while this waited: leave it be.
+            guard link === l else { return }
             forget()
         }
     }
@@ -159,6 +163,11 @@ final class AppModel {
         switch event {
         case .open(let who, let new):
             if let new {
+                if let old = credentials, old.label != new.label || old.host != new.host {
+                    // Another computer now: the old one's session means nothing to it.
+                    session = nil
+                    openWhenLinked = nil
+                }
                 credentials = new
                 if !Keychain.save(new) {
                     notice = "Could not keep the pairing in the Keychain. You may need to pair again after the app restarts."
@@ -179,6 +188,9 @@ final class AppModel {
             if !online { interrupted() }
             connection = online ? .connecting : .computerAway(since: since)
         case .closed(let kind, let detail):
+            // Pairing again while paired: the inbox stays on screen, and it
+            // shows notices, not the pairing screen's errors.
+            let replacing = connection == .pairing && credentials != nil
             link = nil
             interrupted()
             switch kind {
@@ -187,7 +199,8 @@ final class AppModel {
                 pairError = "This phone is no longer paired. Pair it again from Arakun."
             case .pairing:
                 connection = credentials == nil ? .unpaired : .connecting
-                pairError = "That link is wrong or has expired. Make a new one in Arakun."
+                let why = "That link is wrong or has expired. Make a new one in Arakun."
+                if replacing { notice = why } else { pairError = why }
                 if credentials != nil { lost() }
             case .untrusted:
                 connection = .failed("This address does not answer with the key Arakun showed. Check the address in its Phone tab before trying again.")
@@ -199,6 +212,7 @@ final class AppModel {
                     connection = .unpaired
                     pairError = "Could not reach your computer (\(detail))."
                 } else {
+                    if replacing { notice = "Could not reach the new computer (\(detail)). Still paired with the one before." }
                     lost()
                 }
             }
@@ -267,9 +281,12 @@ final class AppModel {
         send(["type": "entries", "session": s.id, "from": max(0, s.from - 50), "to": s.from])
     }
 
-    func say(_ text: String) {
-        guard let s = session else { return }
+    /// Whether it went out; the composer keeps the text when it did not.
+    @discardableResult
+    func say(_ text: String) -> Bool {
+        guard let s = session, canSend else { return false }
         send(["type": "send", "session": s.id, "text": text])
+        return true
     }
 
     func stop() {

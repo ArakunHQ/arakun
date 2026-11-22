@@ -7,7 +7,6 @@ struct NewSessionView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var placePath = ""
     @State private var text = ""
-    @State private var sent = false
     @FocusState private var writing: Bool
     let started: (String) -> Void
 
@@ -41,16 +40,18 @@ struct NewSessionView: View {
             .safeAreaInset(edge: .bottom) {
                 Button {
                     guard let p = model.places.first(where: { $0.path == placePath }) else { return }
-                    sent = model.startSession(in: p, text: text.trimmingCharacters(in: .whitespacesAndNewlines))
+                    model.startSession(in: p, text: text.trimmingCharacters(in: .whitespacesAndNewlines))
                 } label: {
                     HStack(spacing: 10) {
-                        if sent { ProgressView().tint(Color.onAmber) }
-                        Text(sent ? "Starting…" : "Start session")
+                        if model.starting { ProgressView().tint(Color.onAmber) }
+                        Text(model.starting ? "Starting…" : "Start session")
                     }
                     .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.primary)
-                .disabled(sent || !model.places.contains(where: { $0.path == placePath }) || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !model.isLinked)
+                // The model's flag, not the form's: a start sent before Cancel
+                // still blocks another until it is answered.
+                .disabled(model.starting || !model.places.contains(where: { $0.path == placePath }) || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !model.isLinked)
                 .padding(16)
                 .background(Color.ground)
             }
@@ -67,12 +68,7 @@ struct NewSessionView: View {
                 if !places.contains(where: { $0.path == placePath }) { placePath = places.first?.path ?? "" }
             }
             .onChange(of: model.session?.id) { _, id in
-                if sent, let id { started(id) }
-            }
-            .onChange(of: model.notice) { _, n in
-                // The computer refused it, or the link dropped before it
-                // answered: let the form be sent again, prompt and all.
-                if n != nil { sent = false }
+                if let id { started(id) }
             }
         }
         .presentationBackground(Color.ground)

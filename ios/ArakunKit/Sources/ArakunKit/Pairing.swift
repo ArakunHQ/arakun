@@ -100,10 +100,12 @@ public enum EndKind: Equatable, Sendable {
     case gone
 
     public static func of(reason: String, code: Int) -> EndKind {
-        if code == 4401 || ["unauthorized", "revoked", "bad_ticket", "unpaired", "wrong_secret"].contains(reason) {
+        if code == 4401 || ["unauthorized", "revoked", "bad_ticket", "unpaired"].contains(reason) {
             return .unpaired
         }
-        if ["no_pairing", "bad_code", "no_credentials"].contains(reason) { return .pairing }
+        // The computer sends `wrong_secret` only to a phone pairing with a link,
+        // so it says the link failed, not that the phone's credentials did.
+        if ["no_pairing", "bad_code", "no_credentials", "wrong_secret"].contains(reason) { return .pairing }
         if reason == "untrusted" || reason == "bad_hello" { return .untrusted }
         if code == 4429 || reason.hasPrefix("limit:") { return .limit }
         return .gone

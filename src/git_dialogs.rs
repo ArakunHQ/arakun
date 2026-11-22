@@ -47,9 +47,15 @@ pub struct CommitDialog {
     input: Entity<TextInput>,
     /// Some(all) while a commit runs.
     busy: Option<bool>,
+    /// The agent of this environment's sessions: the only one that may
+    /// read the diff.
+    session: AgentKind,
     /// The agent that writes the message; None until it is found, and when
     /// none can.
     writer: Option<AgentKind>,
+    /// Whether looking for the writer is done: until then, a missing one
+    /// says nothing.
+    looked: bool,
     /// While the agent writes.
     writing: bool,
     /// Stops the agent when the dialog closes before it answers.
@@ -83,6 +89,7 @@ impl CommitDialog {
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.writer = writer;
+                this.looked = true;
                 cx.notify();
             });
         })
@@ -111,7 +118,9 @@ impl CommitDialog {
             staged,
             input,
             busy: None,
+            session,
             writer: None,
+            looked: false,
             writing: false,
             stop: Default::default(),
             kept: None,
@@ -187,9 +196,7 @@ impl CommitDialog {
                 "Sends the diff of {what} to {}, which writes the message",
                 agent.label()
             ),
-            None => "Needs this environment's agent, or the one picked for naming branches, \
-                     to be installed"
-                .to_string(),
+            None => crate::pr_writer::no_writer(self.session),
         };
         ui::button_with(
             "commit-write",
@@ -334,6 +341,13 @@ impl Render for CommitDialog {
                     .when_some(self.kept.clone(), |d, kept| {
                         d.child(ui::text(ui::Type::Caption, theme::text_muted(), kept))
                     })
+                    .when(self.looked && self.writer.is_none(), |d| {
+                        d.child(ui::text(
+                            ui::Type::Caption,
+                            theme::text_faint(),
+                            crate::pr_writer::no_writer(self.session),
+                        ))
+                    })
                     .when_some(self.error.clone(), |d, e| d.child(error_box(e)))
                     .child(
                         div()
@@ -401,7 +415,11 @@ pub struct PullRequestDialog {
     needs_push: bool,
     plan: git::PrPlan,
     desc: Description,
-    /// The agent the "Write with" button asks; None when none can answer here.
+    /// The agent of this environment's sessions: the only one that may
+    /// read the diff.
+    session: AgentKind,
+    /// The agent the "Write with" button asks; None when the session's
+    /// can't answer here.
     writer: Option<AgentKind>,
     /// The agent is writing.
     writing: bool,
@@ -433,6 +451,7 @@ impl PullRequestDialog {
         branch: String,
         needs_push: bool,
         plan: git::PrPlan,
+        session: AgentKind,
         writer: Option<AgentKind>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -488,6 +507,7 @@ impl PullRequestDialog {
             needs_push,
             desc: Description::new(&plan.base, plan.body.clone()),
             plan,
+            session,
             writer,
             writing: false,
             stop: Default::default(),
@@ -770,9 +790,7 @@ impl PullRequestDialog {
     /// The button beside the description's label.
     fn write_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let can = self.writer.is_some() && !self.writing && self.busy.is_none();
-        // The writer can be the agent picked for naming branches, not this
-        // environment's: its name on the button says where the diff goes
-        // before the click sends it.
+        // Its name says where the diff goes before the click sends it.
         let label: SharedString = match (self.writing, self.desc.written_by, self.writer) {
             (true, _, _) => "Writing…".into(),
             (false, Some(_), _) => "Write again".into(),
@@ -784,9 +802,7 @@ impl PullRequestDialog {
                 "Sends the branch's commits and diff to {}, which writes the title and description",
                 agent.label()
             ),
-            None => "Needs this environment's agent, or the one picked for naming branches, \
-                     to be installed"
-                .to_string(),
+            None => crate::pr_writer::no_writer(self.session),
         };
         ui::button_with(
             "pull-request-write",
@@ -934,6 +950,15 @@ impl Render for PullRequestDialog {
                                     .bg(theme::fill_raised())
                                     .child(body),
                             )
+                            // The template or the commits stay: no other
+                            // agent is asked instead.
+                            .when(self.writer.is_none(), |d| {
+                                d.child(ui::text(
+                                    ui::Type::Caption,
+                                    theme::text_faint(),
+                                    crate::pr_writer::no_writer(self.session),
+                                ))
+                            })
                             .child(ui::text(
                                 ui::Type::Caption,
                                 theme::text_faint(),

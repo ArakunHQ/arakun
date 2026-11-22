@@ -2036,13 +2036,18 @@ impl Hub {
     /// What was read stays, and `open_channel` dials again and reads what
     /// the channel missed.
     pub fn close_spare_links(&mut self, in_view: &str) {
+        // A paired review needs its channel connected until it ends.
+        let paired = self.peer_review.as_ref().map(|g| g.channel.clone());
         let open = self
             .channels
             .iter()
             .filter(|(_, c)| c.link.is_some())
             .map(|(key, c)| {
-                let busy =
-                    c.loading || c.reading || !c.outbox.is_empty() || !c.bot_waiting.is_empty();
+                let busy = c.loading
+                    || c.reading
+                    || !c.outbox.is_empty()
+                    || !c.bot_waiting.is_empty()
+                    || paired.as_deref() == Some(key.as_str());
                 (key.clone(), c.shown, busy)
             })
             .collect();
@@ -2062,7 +2067,12 @@ impl Hub {
     /// reads on from there. A channel with something still to send, or an
     /// @bot question waiting for its history, keeps its link.
     pub fn close_channel(&mut self, team_id: &str, channel_id: &str, cx: &mut Context<Self>) {
-        let Some(c) = self.channels.get_mut(&channel_key(team_id, channel_id)) else {
+        let key = channel_key(team_id, channel_id);
+        // A paired review needs its channel connected until it ends.
+        if self.peer_review.as_ref().is_some_and(|g| g.channel == key) {
+            return;
+        }
+        let Some(c) = self.channels.get_mut(&key) else {
             return;
         };
         if c.link.is_none() || !c.outbox.is_empty() || !c.bot_waiting.is_empty() {

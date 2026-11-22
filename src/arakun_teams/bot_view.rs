@@ -1091,7 +1091,7 @@ impl TeamsView {
                         )
                         .child(format!("{done} of {} parts", run.parts))
                 });
-                card.child(ui::spinner(("teams-bot-spin", row), 14., theme::accent()))
+                card.child(ui::spinner(14., theme::accent()))
                     .child(
                         div()
                             .flex_1()

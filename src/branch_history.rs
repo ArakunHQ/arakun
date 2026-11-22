@@ -379,6 +379,26 @@ pub fn noreply_login(email: &str) -> Option<String> {
     (!login.is_empty()).then(|| login.to_string())
 }
 
+/// Lower-case letters and digits only: "Ana Lima" → "analima".
+fn squash(name: &str) -> String {
+    name.chars()
+        .filter(char::is_ascii_alphanumeric)
+        .map(|c| c.to_ascii_lowercase())
+        .collect()
+}
+
+/// Could `name` be the person behind `login`? Their login holds the name or
+/// the other way round ("karlo", "KarloAldrete"), or they signed with it from
+/// that login's noreply email. Keeps a collaborator's commits on someone
+/// else's pull request from taking that person's login.
+fn fits(name: &str, login: &str, known: &HashMap<String, Vec<String>>) -> bool {
+    let (n, l) = (squash(name), squash(login));
+    !n.is_empty()
+        && (l.contains(&n)
+            || n.contains(&l)
+            || known.get(login).is_some_and(|names| names.contains(&n)))
+}
+
 /// "Ana Lima" over "ana": a name with a space first, then the longer one.
 fn fuller(a: &str, b: &str) -> bool {
     (a.contains(' '), a.len()) > (b.contains(' '), b.len())
@@ -386,8 +406,9 @@ fn fuller(a: &str, b: &str) -> bool {
 
 /// Groups the authors of `map` into people. An email belongs to a login when
 /// it is that login's noreply address, or when most of its commits are in
-/// that login's pull requests (on the PR's branch, or its squash on main);
-/// emails of one login are one person, and an email with no login is one too.
+/// that login's pull requests (on the PR's branch, or its squash on main)
+/// under a name that [`fits`] the login; emails of one login are one person,
+/// and an email with no login is one too.
 pub fn people(map: &Map) -> People {
     let by_pr: HashMap<u64, &str> = map
         .branches
@@ -396,6 +417,17 @@ pub fn people(map: &Map) -> People {
         .filter(|p| !p.author.is_empty())
         .map(|p| (p.number, p.author.as_str()))
         .collect();
+    // The names each login signed with from its noreply email.
+    let mut known: HashMap<String, Vec<String>> = HashMap::new();
+    let all = map
+        .main_commits
+        .iter()
+        .chain(map.branches.iter().flat_map(|b| b.commits.iter()));
+    for c in all {
+        if let Some(login) = noreply_login(&c.email) {
+            known.entry(login).or_default().push(squash(&c.author));
+        }
+    }
     let mut sure: HashMap<String, String> = HashMap::new();
     let mut votes: HashMap<String, HashMap<String, usize>> = HashMap::new();
     let mut names: HashMap<String, String> = HashMap::new();
@@ -410,7 +442,9 @@ pub fn people(map: &Map) -> People {
         }
         if let Some(login) = noreply_login(&email) {
             sure.insert(email, login);
-        } else if let Some(login) = pr_author {
+        } else if let Some(login) = pr_author
+            && fits(&c.author, &login.to_ascii_lowercase(), &known)
+        {
             *votes
                 .entry(email)
                 .or_default()
@@ -781,6 +815,17 @@ mod tests {
         assert_eq!(p.name(&m.main_commits[1]), "Bo");
         assert_eq!(p.of(&m.main_commits[1]).and_then(|x| x.login.clone()), None);
         assert_eq!(p.logins(), vec!["analima".to_string()]);
+        // A collaborator's commit on Ana's pull request keeps its own identity.
+        m.branches[0]
+            .commits
+            .push(signed("b0", "Rik Visser", "rik@work.test", "fix: w"));
+        let p = people(&m);
+        assert_eq!(p.name(&m.branches[0].commits[1]), "Rik Visser");
+        assert_eq!(
+            p.of(&m.branches[0].commits[1])
+                .and_then(|x| x.login.clone()),
+            None
+        );
         assert_eq!(
             noreply_login("dependabot[bot]@users.noreply.github.com").as_deref(),
             Some("dependabot[bot]")

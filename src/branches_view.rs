@@ -374,21 +374,31 @@ impl BranchesView {
             let got = cx
                 .background_spawn(crate::guard::task_or_default(async move {
                     let dir = crate::github::avatars::dir();
-                    want.into_iter()
-                        .map(|login| {
-                            let path = match crate::github::avatars::cached(&dir, &login) {
-                                Some((path, false)) => Some(path),
-                                // Due again: a failed download keeps the old one.
-                                Some((path, true)) => {
-                                    crate::github::avatars::download(&dir, &login)
-                                        .ok()
-                                        .or(Some(path))
-                                }
-                                None => crate::github::avatars::download(&dir, &login).ok(),
-                            };
-                            (login, path)
-                        })
-                        .collect::<Vec<_>>()
+                    let one = |login: String| {
+                        let path = match crate::github::avatars::cached(&dir, &login) {
+                            Some((path, false)) => Some(path),
+                            // Due again: a failed download keeps the old one.
+                            Some((path, true)) => crate::github::avatars::download(&dir, &login)
+                                .ok()
+                                .or(Some(path)),
+                            None => crate::github::avatars::download(&dir, &login).ok(),
+                        };
+                        (login, path)
+                    };
+                    // Four at a time, like the GitHub tab.
+                    let size = want.len().div_ceil(4).max(1);
+                    std::thread::scope(|sc| {
+                        let jobs: Vec<_> = want
+                            .chunks(size)
+                            .map(|part| {
+                                let one = &one;
+                                sc.spawn(move || part.iter().cloned().map(one).collect::<Vec<_>>())
+                            })
+                            .collect();
+                        jobs.into_iter()
+                            .flat_map(|j| j.join().unwrap_or_default())
+                            .collect::<Vec<_>>()
+                    })
                 }))
                 .await;
             let _ = this.update(cx, |this, cx| {

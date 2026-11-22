@@ -158,6 +158,11 @@ pub fn select_range(messages: &[Msg], ask_id: &str) -> Result<Range, RangeError>
         .iter()
         .filter(|m| m.seq.is_some() || m.id == ask_id)
         .collect();
+    range_of(&stored, ask_id)
+}
+
+/// [`select_range`] over the messages that count, by reference.
+fn range_of(stored: &[&Msg], ask_id: &str) -> Result<Range, RangeError> {
     let end = stored
         .iter()
         .position(|m| m.id == ask_id)
@@ -203,8 +208,7 @@ const DRAFT_ID: &str = "\u{0}draft";
 /// The range a message still being typed would read, replying to
 /// `reply_to` when given: what the composer shows before it is sent.
 pub fn draft_range(messages: &[Msg], reply_to: Option<&str>) -> Result<Range, RangeError> {
-    let mut all = messages.to_vec();
-    all.push(Msg {
+    let draft = Msg {
         id: DRAFT_ID.into(),
         seq: None,
         at: 0,
@@ -212,8 +216,14 @@ pub fn draft_range(messages: &[Msg], reply_to: Option<&str>) -> Result<Range, Ra
         login: String::new(),
         body: Body::text("", reply_to.map(String::from)),
         delivery: Delivery::Sending,
-    });
-    select_range(&all, DRAFT_ID)
+    };
+    // By reference: this runs on every render while @bot is being typed.
+    let stored: Vec<&Msg> = messages
+        .iter()
+        .filter(|m| m.seq.is_some())
+        .chain([&draft])
+        .collect();
+    range_of(&stored, DRAFT_ID)
 }
 
 // ---- the answer ------------------------------------------------------------------

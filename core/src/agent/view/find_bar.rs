@@ -94,9 +94,8 @@ impl ThreadView {
         let hits = self.collect_hits(&query, cx);
         // The first match from the top of what is on screen, like a browser.
         let from = self
-            .turns
-            .get(self.list.logical_scroll_top().item_ix)
-            .map_or(usize::MAX, |t| t.start);
+            .row_start_entry(self.list.logical_scroll_top().item_ix)
+            .unwrap_or(usize::MAX);
         let current = hits
             .iter()
             .position(|h| h.0 >= from)
@@ -158,7 +157,7 @@ impl ThreadView {
     /// Unfolds what hides the current match and scrolls it into view.
     pub(super) fn show_hit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(old) = self.search.as_mut().and_then(|s| s.revealed.take()) {
-            self.unreveal(old);
+            self.unreveal(old, cx);
         }
         let Some(entry) = self
             .search
@@ -178,7 +177,9 @@ impl ThreadView {
         self.spot.set(None);
         self.settle_tries = 0;
         self.list.pause_following_tail();
-        self.list.scroll_to_reveal_item(turn);
+        if let Some(row_ix) = self.row_for_entry(entry, cx) {
+            self.list.scroll_to_reveal_item(row_ix);
+        }
         cx.on_next_frame(window, |this, window, cx| {
             this.settle_search_scroll(window, cx)
         });
@@ -205,7 +206,7 @@ impl ThreadView {
         }
     }
 
-    pub(super) fn unreveal(&mut self, r: Revealed) {
+    pub(super) fn unreveal(&mut self, r: Revealed, cx: &App) {
         if let Some(f) = r.fold {
             self.folds.remove(&f);
         }
@@ -221,8 +222,9 @@ impl ThreadView {
         if let Some(row) = r.row {
             self.open.remove(&row);
         }
+        self.sync_rows(None, cx);
         if r.turn < self.turns.len() {
-            self.list.remeasure_items(r.turn..r.turn + 1);
+            self.remeasure_turn_rows(r.turn);
         }
     }
 
@@ -283,7 +285,7 @@ impl ThreadView {
         if row && self.open.insert(entry) {
             revealed.row = Some(entry);
         }
-        self.list.remeasure_items(turn..turn + 1);
+        self.sync_rows(Some(entry), cx);
         revealed
     }
 

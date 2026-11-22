@@ -17,9 +17,24 @@ pub(super) struct State {
     sheet: Option<Sheet>,
     // Clicks carry the revision of the controls that were actually on screen.
     revision: u64,
+    // Whether the project wanted the sandbox, asked once per session rather
+    // than every frame: it can read Git metadata. A click asks again.
+    sandbox: Option<(String, bool)>,
 }
 
 impl State {
+    /// Connect SSH is offered only once the session exists and its project
+    /// doesn't want the sandbox.
+    fn offered(&mut self, thread: &Thread) -> bool {
+        let Some(session) = thread.session_id() else {
+            return false;
+        };
+        if self.sandbox.as_ref().is_none_or(|(s, _)| s != session) {
+            self.sandbox = Some((session.to_owned(), sandboxed(thread)));
+        }
+        self.sandbox.as_ref().is_some_and(|(_, wanted)| !wanted)
+    }
+
     pub(super) fn sync(&mut self, thread: &Thread, reset: bool) {
         if self.sheet.as_ref().is_some_and(|s| {
             reset || !local_session(thread) || s.session.as_deref() != thread.session_id()
@@ -129,6 +144,13 @@ fn local_session(thread: &Thread) -> bool {
     !thread.is_remote() && !thread.is_subagent_view() && !thread.is_confined()
 }
 
+/// A project that wants the sandbox, or whose Git folder can't be trusted to
+/// say, gets no SSH: fail closed. The setting may have changed since the
+/// agent started, so this asks the project, not the running agent.
+fn sandboxed(thread: &Thread) -> bool {
+    !matches!(crate::agent::sandbox::wanted(thread.cwd()), Ok(false))
+}
+
 fn agent_ready(thread: &Thread) -> bool {
     local_session(thread)
         && thread.session_id().is_some()
@@ -221,10 +243,7 @@ impl ThreadView {
     fn ssh_action(&mut self, action: Action, window: &mut Window, cx: &mut Context<Self>) {
         self.ssh.sync(self.thread.read(cx), false);
         let thread = self.thread.read(cx);
-        // A project that wants the sandbox, or whose Git folder can't be
-        // trusted to say, gets no SSH: fail closed.
-        let sandboxed = !matches!(crate::agent::sandbox::wanted(thread.cwd()), Ok(false));
-        if !local_session(thread) || sandboxed {
+        if !local_session(thread) || sandboxed(thread) {
             self.ssh.sheet = None;
             return;
         }
@@ -805,6 +824,9 @@ impl ThreadView {
             .gap(ui::sp(6.))
             .px(ui::sp(10.))
             .py(ui::sp(2.));
+        if self.ssh.sheet.is_none() && !self.ssh.offered(thread) {
+            return (None, None);
+        }
         let Some(sheet) = &self.ssh.sheet else {
             return (
                 Some(

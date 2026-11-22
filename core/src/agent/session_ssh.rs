@@ -314,8 +314,13 @@ fn command_output(capture: Capture) -> Result<Output, String> {
     bytes.extend(capture.stderr);
     let text = display(&bytes);
     if capture.status.code() == Some(255) {
-        // OpenSSH also uses 255 for a failed pin or login. Invalidate the session.
-        return Err(format!("SSH exited with status 255: {text}"));
+        // OpenSSH uses 255 for a changed host key or a failed login too, and
+        // the exit code can't tell those from a command that exited 255. Fail
+        // closed: end the connection, but keep the output readable.
+        return Err(format!(
+            "SSH, or the remote command, exited with status 255. \
+             Connect again to check the host key. Output: {text}"
+        ));
     }
     if capture.status.code().is_none() {
         return Err("SSH was interrupted".into());
@@ -691,7 +696,11 @@ mod tests {
             16,
         )
         .unwrap();
-        assert!(command_output(capture).is_err());
+        // 255 ends the connection, but what it printed stays readable.
+        let Err(err) = command_output(capture) else {
+            panic!("status 255 must end the connection");
+        };
+        assert!(err.contains("status 255") && err.ends_with("changed"));
     }
 
     #[test]

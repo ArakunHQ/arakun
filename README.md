@@ -275,7 +275,9 @@ sees the project's skills.
   the panel unless you share it with that session. Disconnect cancels the
   local SSH client and forgets the connection; it cannot undo a command or
   guarantee that a process on the remote machine stops. Connections are not
-  saved across restarts.
+  saved across restarts. The panel is not a boundary: an agent that isn't
+  sandboxed runs as you and can reach your `ssh-agent` without it. Sandbox the
+  project to keep your SSH keys from the agent.
 - **Server.** `arakun server serve` is Arakun without a window, for a machine nobody
   sits at: a build box, the workstation at the office, a VPS. It runs sessions of any
   agent signed in on that machine and keeps them going while nothing is connected.

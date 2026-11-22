@@ -654,18 +654,28 @@ after a week).
   [teams/PROTOCOL.md](teams/PROTOCOL.md)). With no team yet it offers **Start a team**,
   which makes one with a `general` channel. A channel shows the team's channels
   (**+** adds one) and people on the left, and the chat with a composer at the bottom.
+  A channel's row counts the messages from others you have not read there, up to
+  "99+"; a message counts as read once its channel is on screen. Under **Here now**
+  the people who have this channel open come first, with a green dot.
   Click the team's name for your other teams, **Start a team** and **Your devices**;
   "N invites" at the top opens invites to other teams; click the people at the top
   right for the team's page, which invites people by GitHub login and removes members.
-  "N waiting" at the top opens the people who accepted an invite, each device with its
-  code: approving hands the team key to all their devices, from yours, only if every
-  device's endorsement chain checks out; one that doesn't blocks the approval. It
-  doesn't wait for **Compare**, but a device marked as not matching is refused. The server still
+  **Withdraw** takes back an invite nobody answered yet. An invite you got shows with
+  **Accept** and **Decline**; after you accept, the waiting page has **Remind**, which
+  tells the team's admins once an hour at most. "N waiting" at the top opens the people
+  who accepted an invite, each device with its code: approving hands the team key to all
+  their devices, from yours, only if every device's endorsement chain checks out; one
+  that doesn't blocks the approval. It doesn't wait for **Compare**, but a device marked
+  as not matching is refused. The server still
   supplies the membership and roles; it is not an independent proof of who belongs to
   the team. Removing someone rotates the key for the remaining members, not messages
   already seen. Hover a message and press the reply arrow to answer it: the quote
   shows above your message, and clicking it scrolls to the original. **Esc** drops the
-  reply. Messages whose signature does not check out are hidden and counted. The **+**
+  reply. To edit a message of yours, hover it and press the pencil, or press `Up` in
+  an empty composer for your last one; `Enter` sends the edit, **Esc** drops it, and
+  the message then ends with "(edited)". An edit or a decision the server refuses
+  says why, with **Send again**.
+  Messages whose signature does not check out are hidden and counted. The **+**
   of the composer (files) is not there yet.
 
   **@bot** reviews a discussion and proposes a decision. Reply to the first message
@@ -687,7 +697,10 @@ after a week).
   tells the team; **Reject** marks it on this device only, and the team is not told; **Ask for more detail**
   starts a reply to it. While it runs, the chat shows its progress and **Stop**; if
   it fails, **Try again**. Once someone accepts, the channel says "Decided." and who
-  accepted it. **Decisions**, at the top of a channel, lists what the team accepted,
+  accepted it. A member can take an accepted decision back: open it in Decisions and
+  press **Reverse it**, with a reason if you like. The channel then says "Reversed."
+  with who and why, and the **Reversed** filter of Decisions shows only those.
+  **Decisions**, at the top of a channel, lists what the team accepted,
   with who accepted it and when, the messages it came from (click to jump there) and
   what @bot checked; search it, or show only yours.
 
@@ -1558,7 +1571,8 @@ forward through tabs, `Ctrl+Cmd+F` toggles full screen, and `Cmd+H`, `Cmd+M` and
   Settings › Appearance › Zoom does it too
 - `Ctrl+Shift+H` turns [redacted mode](#redacted-mode) on or off
 - In the composer: `Enter` sends, `Shift+Enter` new line, `Up` on an empty composer
-  recalls earlier prompts; paste or drop images to attach them. While the agent works,
+  recalls earlier prompts (in a Team channel it edits your last message instead);
+  paste or drop images to attach them. While the agent works,
   `Enter` queues the message, `Ctrl+Enter` stops the turn and sends it now, and `Esc`
   stops the turn. A queued message has a button to send it now too
 - In the composer's agent and model menu: the strip of agent icons at the bottom shows

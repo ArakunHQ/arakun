@@ -5,7 +5,7 @@
 //!
 //! Frames are what PROTOCOL.md says: `send` out, `message` and `error` in.
 //! Nothing is replayed after a drop; the app reads the history it missed
-//! when the socket is back (`Event::Connected`).
+//! when the socket is back (`Event::Status(Status::Connected)`).
 
 use std::net::{TcpStream, ToSocketAddrs as _};
 use std::sync::atomic::{AtomicBool, Ordering};

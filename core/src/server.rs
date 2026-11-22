@@ -422,6 +422,7 @@ fn serve(opts: Options) -> i32 {
         // SAFETY: the first thing this process does, before it starts any thread.
         unsafe { std::env::set_var("ARAKUN_AGENT_HINT", "off") };
     }
+    crate::platform::refresh_login_path_async();
     daemon::run(opts)
 }
 

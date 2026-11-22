@@ -265,9 +265,7 @@ impl Shell {
 
     /// The preset the sidebar is laid out as, if it is one.
     pub(super) fn sidebar_preset(&self) -> Option<Preset> {
-        Preset::ALL
-            .into_iter()
-            .find(|p| p.layout().sections == self.sidebar.sections)
+        self.sidebar.preset()
     }
 
     pub(super) fn undo_sidebar(&mut self, redo: bool, cx: &mut Context<Self>) {

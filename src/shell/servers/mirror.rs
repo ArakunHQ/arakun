@@ -42,22 +42,44 @@ impl Shell {
             .is_some_and(in_the_clear);
         let sender = conn.client.sender();
         let server = server.to_string();
-        cx.background_spawn(crate::guard::task(async move {
-            let snapshot = mirror::snapshot(secrets);
-            if snapshot.is_empty() {
+        cx.spawn(async move |this, cx| {
+            let too_big = cx
+                .background_spawn(crate::guard::task_or_default(async move {
+                    let snapshot = mirror::snapshot(secrets);
+                    if snapshot.is_empty() {
+                        return None;
+                    }
+                    let msg = snapshot.message();
+                    // A message bigger than a frame would not get there.
+                    if msg.to_string().len() > wire::FRAME_TEXT {
+                        return Some(());
+                    }
+                    sender.send(&msg);
+                    None
+                }))
+                .await;
+            if too_big.is_none() {
                 return;
             }
-            let msg = snapshot.message();
-            // A message bigger than a frame would not get there.
-            if msg.to_string().len() > wire::FRAME_TEXT {
-                eprintln!(
-                    "arakun: not mirroring to {server}: what this computer has is too big to send"
+            let _ = this.update(cx, |this, cx| {
+                let machine = this.server_name_of(&server);
+                this.notify(
+                    AlertKind::Error,
+                    &format!("Could not mirror to {machine}"),
+                    "What this computer has installed is too big to send in one message. Install the rest there from the Marketplace.",
+                    None,
+                    cx,
                 );
-                return;
-            }
-            sender.send(&msg);
-        }))
+            });
+        })
         .detach();
+    }
+
+    fn server_name_of(&self, server: &str) -> String {
+        self.server_targets()
+            .into_iter()
+            .find(|t| t.id == server)
+            .map_or_else(|| "the server".to_string(), |t| t.name)
     }
 
     /// A server's answer to a mirror: a notice when it added or failed something.
@@ -81,11 +103,7 @@ impl Shell {
         if added.is_empty() && failed.is_empty() {
             return;
         }
-        let machine = self
-            .server_targets()
-            .into_iter()
-            .find(|t| t.id == server)
-            .map_or_else(|| "the server".to_string(), |t| t.name);
+        let machine = self.server_name_of(server);
         if !added.is_empty() {
             self.extensions_view
                 .update(cx, |v, cx| v.server_changed(server, cx));

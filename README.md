@@ -598,14 +598,15 @@ after a week).
 - **Marketplace.** Plugins, MCP servers and skills to add, and the MCP servers, plugins,
   skills and permission rules the agents load now. Discover › Skills searches
   [skills.sh](https://skills.sh); Install copies the skill's folder from its GitHub
-  repository into `~/.claude/skills`, where Claude Code and Workers AI find it. It uses
+  repository into `~/.claude/skills`, where Claude Code and Workers AI find it, or into
+  the repo's `.claude/skills` when "Install in" (below) picks this repo. It uses
   your `gh` sign-in (or `GH_TOKEN`) when there is one, since GitHub answers few
   requests without one. "Install in" picks where Install puts a plugin, skill or MCP
   server on this computer: every repo (your user), this repo shared (its committed
   `.claude/settings.json`, `.mcp.json` or `.claude/skills`), or this repo just for you
   (Claude Code's `local` scope; a skill goes in `.claude/skills` and is listed in
   `.git/info/exclude`). An MCP server that signs in gets the repo in its name when it is
-  installed in a repo (`github-web`), so each repo has its own sign-in. Paired servers
+  installed in a repo (`github-acme-web` in acme/web), so each repo has its own sign-in. Paired servers
   get what you install by the mirror (see Servers). Under Arakun › Extensions (or Settings ›
   General › Sidebar) you turn on the tabs the sidebar shows besides Inbox, Runs, Branches and Marketplace: GitHub, Notes,
   Memory, Usage, Cloudflare, PostHog, Doop, Isometric, Phone, Servers and Automations. The

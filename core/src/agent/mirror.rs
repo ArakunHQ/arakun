@@ -340,17 +340,23 @@ pub fn repo_of(dir: &Path) -> Option<String> {
     crate::clone_source::repo_key(&git(dir, &["remote", "get-url", "origin"])?)
 }
 
-/// Blocking: the name an MCP server installed in one repository goes by, so
-/// it has a sign-in of its own there: `github` in acme/web is `github-web`.
-pub fn repo_server_name(name: &str, dir: &Path) -> String {
+/// Blocking: what an MCP server installed in the repository at `dir` has
+/// after its name, so it has a sign-in of its own there: `acme-web` for
+/// acme/web. The owner is in it, so acme/web and other/web differ.
+pub fn repo_slug(dir: &Path) -> String {
     let repo = repo_of(dir)
-        .and_then(|r| r.rsplit('/').next().map(str::to_string))
+        .map(|r| {
+            let mut parts: Vec<&str> = r.trim_end_matches('/').rsplit('/').take(2).collect();
+            parts.reverse();
+            parts.join("-")
+        })
         .or_else(|| dir.file_name().map(|f| f.to_string_lossy().into_owned()))
         .unwrap_or_default();
-    suffixed(name, &repo)
+    repo.trim_end_matches(".git").to_string()
 }
 
-fn suffixed(name: &str, repo: &str) -> String {
+/// `name` with the repository's [`repo_slug`] after it: `github-acme-web`.
+pub fn suffixed(name: &str, repo: &str) -> String {
     let slug: String = repo
         .trim_end_matches(".git")
         .chars()
@@ -367,6 +373,76 @@ fn suffixed(name: &str, repo: &str) -> String {
         name.to_string()
     } else {
         format!("{name}-{slug}")
+    }
+}
+
+/// What a repository has already, so Discover does not offer it again.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RepoHas {
+    pub dir: PathBuf,
+    /// [`repo_slug`], for the name of a server that signs in.
+    pub slug: String,
+    pub shared_plugins: BTreeSet<String>,
+    pub my_plugins: BTreeSet<String>,
+    pub shared_servers: BTreeSet<String>,
+    pub my_servers: BTreeSet<String>,
+    /// Folder names in its `.claude/skills`, lower case.
+    pub skills: BTreeSet<String>,
+}
+
+impl RepoHas {
+    pub fn plugin(&self, at: Where, id: &str) -> bool {
+        match at {
+            Where::Shared => self.shared_plugins.contains(id),
+            Where::Mine => self.my_plugins.contains(id),
+            Where::User => false,
+        }
+    }
+
+    pub fn server(&self, at: Where, name: &str) -> bool {
+        match at {
+            Where::Shared => self.shared_servers.contains(name),
+            Where::Mine => self.my_servers.contains(name),
+            Where::User => false,
+        }
+    }
+
+    pub fn skill(&self, skill_id: &str) -> bool {
+        self.skills.contains(&skill_id.to_lowercase())
+    }
+}
+
+/// Blocking: what the repository at `dir` has, in its files and for you.
+pub fn repo_has(dir: &Path) -> RepoHas {
+    let on = |v: &Value| -> BTreeSet<String> {
+        v["enabledPlugins"]
+            .as_object()
+            .into_iter()
+            .flatten()
+            .filter(|(_, on)| on.as_bool() == Some(true))
+            .map(|(id, _)| id.clone())
+            .collect()
+    };
+    let names = |v: &Value| -> BTreeSet<String> {
+        v.as_object()
+            .map(|m| m.keys().cloned().collect())
+            .unwrap_or_default()
+    };
+    let claude = dir.join(".claude");
+    let state = read_json(&launch::home().join(".claude.json"));
+    RepoHas {
+        dir: dir.to_path_buf(),
+        slug: repo_slug(dir),
+        shared_plugins: on(&read_json(&claude.join("settings.json"))),
+        my_plugins: on(&read_json(&claude.join("settings.local.json"))),
+        shared_servers: names(&read_json(&dir.join(".mcp.json"))["mcpServers"]),
+        my_servers: names(&super::claude_ext::project_entry(&state, dir)["mcpServers"]),
+        skills: std::fs::read_dir(claude.join("skills"))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().to_lowercase())
+            .collect(),
     }
 }
 
@@ -503,13 +579,7 @@ pub fn apply(s: Snapshot, places: &[PathBuf]) -> Value {
         if !have_servers[name].is_null() {
             continue;
         }
-        let r = runs_here(config).and_then(|()| {
-            claude(
-                &home,
-                &["mcp", "add-json", name, &config.to_string(), "-s", "user"],
-                CLI_TIMEOUT,
-            )
-        });
+        let r = runs_here(config).and_then(|()| add_server(&home, name, config, "user"));
         note(name.clone(), r);
     }
 
@@ -626,13 +696,7 @@ fn apply_repo(
         if !have[name].is_null() {
             continue;
         }
-        let done = runs_here(config).and_then(|()| {
-            claude(
-                dir,
-                &["mcp", "add-json", name, &config.to_string(), "-s", "local"],
-                CLI_TIMEOUT,
-            )
-        });
+        let done = runs_here(config).and_then(|()| add_server(dir, name, config, "local"));
         note(format!("{name} in {folder}"), done);
     }
     let root = repo_skills(dir);
@@ -648,6 +712,20 @@ fn apply_repo(
             .and_then(|dest| keep_out_of_git(dir, &dest));
         note(format!("{} in {folder}", entry.name), done);
     }
+}
+
+/// Adds an MCP server with `claude mcp add-json`, its config on stdin: it can
+/// hold keys, which the process list would show.
+fn add_server(dir: &Path, name: &str, config: &Value, scope: &str) -> Result<()> {
+    let bin = launch::which("claude").ok_or_else(|| anyhow!("claude is not on PATH"))?;
+    super::claude_ext::run_cli_input(
+        &bin,
+        dir,
+        &["mcp", "add-json", name, "-", "-s", scope],
+        config.to_string().as_bytes(),
+        CLI_TIMEOUT,
+    )
+    .map(|_| ())
 }
 
 fn claude(home: &Path, args: &[&str], timeout: Duration) -> Result<()> {
@@ -669,12 +747,19 @@ fn source_arg(source: &Value) -> Result<String> {
 
 /// A server started from a full path runs only where that path is.
 fn runs_here(config: &Value) -> Result<()> {
-    match config["command"].as_str() {
-        Some(cmd) if Path::new(cmd).is_absolute() && !Path::new(cmd).exists() => {
-            bail!("it runs {cmd}, which this machine does not have")
-        }
-        _ => Ok(()),
+    let Some(cmd) = config["command"].as_str() else {
+        return Ok(());
+    };
+    // A full path of the other kind (`C:\…` here, `/…` on Windows) is not here either.
+    let unix = cmd.starts_with('/');
+    let windows = cmd.starts_with("\\\\")
+        || cmd.as_bytes().get(1) == Some(&b':')
+            && cmd.as_bytes().first().is_some_and(u8::is_ascii_alphabetic);
+    let foreign = if cfg!(windows) { unix } else { windows };
+    if foreign || Path::new(cmd).is_absolute() && !Path::new(cmd).exists() {
+        bail!("it runs {cmd}, which this machine does not have");
     }
+    Ok(())
 }
 
 /// Adds the sign-ins this machine lacks, or holds an older copy of, to Claude
@@ -774,6 +859,13 @@ mod tests {
         assert!(runs_here(&json!({ "type": "http", "url": "https://x" })).is_ok());
         let gone = std::env::temp_dir().join("arakun-no-such-mcp-server");
         assert!(runs_here(&json!({ "command": gone })).is_err());
+        // A full path of the other system's kind cannot run here either.
+        let other = if cfg!(windows) {
+            "/usr/bin/x"
+        } else {
+            "C:\\tools\\x.exe"
+        };
+        assert!(runs_here(&json!({ "command": other })).is_err());
     }
 
     #[test]
@@ -803,7 +895,7 @@ mod tests {
 
     #[test]
     fn a_server_per_repo_is_named_after_the_repo() {
-        assert_eq!(suffixed("github", "web"), "github-web");
+        assert_eq!(suffixed("github", "acme-web"), "github-acme-web");
         assert_eq!(suffixed("github", "My.Repo.git"), "github-my-repo");
         assert_eq!(suffixed("github", ""), "github");
     }

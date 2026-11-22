@@ -1280,14 +1280,36 @@ pub(crate) fn run_cli(bin: &Path, cwd: &Path, args: &[&str], timeout: Duration) 
     run(bin, cwd, args, timeout)
 }
 
+/// [`run_cli`] with `input` on stdin: for what must not show in the process
+/// list, such as an MCP server's config with its keys.
+pub(crate) fn run_cli_input(
+    bin: &Path,
+    cwd: &Path,
+    args: &[&str],
+    input: &[u8],
+    timeout: Duration,
+) -> Result<String> {
+    run_with(bin, cwd, args, Some(input), timeout)
+}
+
 fn run(bin: &Path, cwd: &Path, args: &[&str], timeout: Duration) -> Result<String> {
+    run_with(bin, cwd, args, None, timeout)
+}
+
+fn run_with(
+    bin: &Path,
+    cwd: &Path,
+    args: &[&str],
+    input: Option<&[u8]>,
+    timeout: Duration,
+) -> Result<String> {
     let mut cmd: Command = crate::platform::command(bin);
     cmd.args(args)
         .current_dir(cwd)
         .env("PATH", launch::child_path_env())
         .env("NO_COLOR", "1");
     // The CLI runs node, which may start more; all of it ends on a timeout.
-    let output = crate::platform::output_within(&mut cmd, None, timeout).map_err(|e| {
+    let output = crate::platform::output_within(&mut cmd, input, timeout).map_err(|e| {
         if e.kind() == std::io::ErrorKind::TimedOut {
             return anyhow!("{e}");
         }

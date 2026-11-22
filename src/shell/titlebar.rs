@@ -118,6 +118,13 @@ impl Shell {
         let in_other_pane = self.split_other();
         let shell = cx.entity();
         let lifted = self.lifted_tab(cx);
+        // The line between two tabs where a dragged tab would land; none
+        // where it would land in its own place.
+        let drop_gap = lifted
+            .and_then(|id| Some((strip_tabs.position(id)?, self.tab_drop(cx)?)))
+            .filter(|(from, gap)| model::drop_index(*from, *gap).is_some())
+            .map(|(_, gap)| gap);
+        let tab_count = strip_tabs.tabs.len();
         // Tabs past the bar's width scroll instead of running under the title and the
         // window buttons.
         let mut list = div()
@@ -129,7 +136,10 @@ impl Shell {
             .h_full()
             .gap(crate::ui::sp(2.))
             .overflow_x_scroll()
-            .track_scroll(&self.tab_scroll);
+            .track_scroll(&self.tab_scroll)
+            .on_drag_move::<drag::DraggedTab>(
+                cx.listener(|this, ev, _, cx| this.tab_drag_out(ev, cx)),
+            );
         let active_id = strip_tabs.active().map(|t| t.id);
         if self.tab_revealed.replace(active_id) != active_id {
             self.tab_scroll.scroll_to_item(strip_tabs.active_tab);
@@ -365,14 +375,21 @@ impl Shell {
                                 this.pin_preview(cx);
                             }
                         }))
-                        .on_drag(dragged, move |d, offset, _, cx| {
-                            shell.update(cx, |this, cx| this.start_tab_drag(d, offset, cx))
+                        .on_drag(dragged, move |d, _, _, cx| {
+                            shell.update(cx, |this, cx| this.start_tab_drag(d, cx))
                         })
-                        // Dropping a tab on another moves it there.
-                        .drag_over::<drag::DraggedTab>(|s, _, _, _| s.bg(theme::fill_selected()))
+                        // A dragged tab marks the gap it would land in, on
+                        // the side of this tab's middle the pointer is on.
+                        .on_drag_move::<drag::DraggedTab>(
+                            cx.listener(move |this, ev, _, cx| this.tab_drag_over(i, ev, cx)),
+                        )
                         .on_drop(cx.listener(move |this, d: &drag::DraggedTab, _, cx| {
                             this.drop_tab_at(d.id, i, cx)
                         }))
+                        .when(drop_gap == Some(i), |d| d.child(drop_line(true, i == 0)))
+                        .when(drop_gap == Some(tab_count) && i + 1 == tab_count, |d| {
+                            d.child(drop_line(false, true))
+                        })
                         .when(lifted == Some(tab.id), |d| d.opacity(0.4)),
                 ),
             );
@@ -495,6 +512,21 @@ impl Shell {
                 )
             })
     }
+}
+
+/// Where a dragged tab would land: a line on the left edge of the tab after
+/// the gap, or on the right edge of the last tab. Between two tabs it sits in
+/// the gap; at an end of the bar, inside the tab, as the list clips past it.
+pub(super) fn drop_line(left: bool, end: bool) -> gpui::Div {
+    let at = px(if end { 0. } else { -2. });
+    div()
+        .absolute()
+        .top(px(4.))
+        .bottom(px(4.))
+        .w(px(2.))
+        .rounded_full()
+        .bg(theme::active())
+        .map(|d| if left { d.left(at) } else { d.right(at) })
 }
 
 /// On Windows the caption buttons are left to the native hit test: a mousedown

@@ -778,13 +778,6 @@ impl Shell {
             None => lit.map(|i| effort_short(&levels[i].id, &levels[i].name)),
         };
         let previewing = hovered.is_some_and(|o| o.id != now);
-        // Only a dimmed level needs a tooltip: the label names the others.
-        let tip = |o: &crate::agent::SettingOption| {
-            o.disabled
-                .clone()
-                .or_else(|| effort_tip(&o.id).map(str::to_string))
-                .unwrap_or_else(|| o.name.clone())
-        };
         let hover = |id: String| {
             cx.listener(move |this: &mut Self, over: &bool, _, cx| {
                 if *over {
@@ -827,8 +820,11 @@ impl Shell {
                             .hover(|s| s.bg(theme::fill_hover()).text_color(theme::text()))
                     })
                     .child(effort_short(&o.id, &o.name))
-                    .tooltip(ui::tip_text(tip(o)))
-                    .when_some(o.disabled.clone(), |d, why| d.aria_description(why))
+                    // Only a dimmed level needs a tooltip, for its reason: the
+                    // label names the others on hover.
+                    .when_some(o.disabled.clone(), |d, why| {
+                        d.aria_description(why.clone()).tooltip(ui::tip_text(why))
+                    })
                     .when(enabled, |d| {
                         let key = MenuKey::Choice(agent, Setting::Effort, o.id.clone(), true);
                         d.on_hover(hover(o.id.clone())).on_click(cx.listener(
@@ -882,7 +878,7 @@ impl Shell {
                                 this.menu_run(key.clone(), window, cx)
                             }))
                     })
-                    .when(!enabled, |d| d.tooltip(ui::tip_text(tip(o))))
+                    .when_some(o.disabled.clone(), |d, why| d.tooltip(ui::tip_text(why)))
                     .into_any_element()
             })
             .collect();
@@ -1493,22 +1489,6 @@ fn effort_is_zero(id: &str) -> bool {
     matches!(id, "default" | "auto" | "none" | "off")
 }
 
-/// What a reasoning level's bar says on hover.
-fn effort_tip(id: &str) -> Option<&'static str> {
-    Some(match id {
-        "default" | "auto" => "The model's own default",
-        "none" | "off" => "No reasoning",
-        "minimal" => "Minimal reasoning",
-        "low" => "Low reasoning",
-        "medium" => "Medium reasoning",
-        "high" => "High reasoning",
-        "xhigh" => "Extra high reasoning",
-        "max" => "Maximum reasoning",
-        "ultra" => "Ultra reasoning",
-        _ => return None,
-    })
-}
-
 /// Whether picking `agent`'s choice of `s` closes the menu. Reasoning stays
 /// open to compare levels, and so does a model of the agent in use: the
 /// reasoning row sits below the models and may change with them, so it comes
@@ -1582,10 +1562,8 @@ mod tests {
             "default", "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
         ] {
             assert!(effort_short(id, id).len() <= 5, "{id}");
-            assert!(effort_tip(id).is_some(), "{id}");
         }
         assert_eq!(effort_short("turbo", "Turbo"), "Turbo");
-        assert_eq!(effort_tip("turbo"), None);
     }
 
     #[test]

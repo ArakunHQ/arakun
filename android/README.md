@@ -63,9 +63,29 @@ animations" on, it holds still.
 
 ## CI
 
-CI's Android job (`.github/workflows/ci.yml`) runs the kit's tests, lint and a debug
-build when `android/`, `phone/`, the mascot's drawing or the fonts change. There is no
-signed release or Play Store upload yet.
+CI's Android job (`.github/workflows/ci.yml`) runs the kit's and the app's tests, lint,
+a debug build and an unsigned release bundle (`.aab`) when `android/`, `phone/`, the
+mascot's drawing or the fonts change.
+
+`.github/workflows/android-release.yml` delivers the app: on a `v*` tag (not a
+pre-release), or by hand on main, it builds the bundle with Arakun's version, signs it
+with the upload key and uploads it to a Google Play track (internal unless asked):
+
+```sh
+gh workflow run android-release.yml --ref main                    # internal track
+gh workflow run android-release.yml --ref main -f track=beta -f status=draft
+```
+
+It needs the upload keystore and a Play service account in the `release` environment;
+the workflow's header lists the secrets. Without the keystore it skips; without the
+service account the signed bundle is the run's artifact. Play takes the app's first
+bundle only by hand in Play Console, and `android/tools/play-upload.py` sends the ones
+after it. To build a signed bundle yourself:
+
+```sh
+./gradlew :app:bundleRelease -PversionName=0.18.0 -PversionCode=2 \
+  -PuploadStoreFile=upload.jks -PuploadStorePassword=… -PuploadKeyAlias=upload -PuploadKeyPassword=…
+```
 
 ## Crash reports
 

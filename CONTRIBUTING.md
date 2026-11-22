@@ -125,6 +125,7 @@ cargo deny check
 
 # android/ changed (JDK 17 and the Android SDK)
 (cd android && ./gradlew :kit:test :app:testDebugUnitTest :app:lintDebug :app:assembleDebug)
+# CI also builds the unsigned release bundle (:app:bundleRelease); R8 is slow, so leave it to CI.
 
 # .github/ changed (brew install zizmor, or pipx install zizmor)
 zizmor .github

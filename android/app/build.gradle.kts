@@ -15,8 +15,10 @@ android {
         applicationId = "com.arakun.android"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.13.0"
+        // android-release.yml sets both: the version is Arakun's, the code a
+        // number that only goes up, as Google Play wants.
+        versionCode = providers.gradleProperty("versionCode").map(String::toInt).getOrElse(1)
+        versionName = providers.gradleProperty("versionName").getOrElse("0.13.0")
         // Crash reports go to Arakun's PostHog project, as the desktop's do
         // (src/telemetry.rs). The token is write-only, so it is safe in the
         // app. `-PposthogKey=` (empty) builds an app that sends nothing.
@@ -25,8 +27,24 @@ android {
         buildConfigField("String", "POSTHOG_HOST", "\"https://us.i.posthog.com\"")
     }
 
+    // The upload key Google Play knows the app by, for a bundle that goes
+    // there (android-release.yml passes it as ORG_GRADLE_PROJECT_* variables).
+    // Without it a release build is unsigned, as CI builds it.
+    val uploadStore = providers.gradleProperty("uploadStoreFile").orNull
+    signingConfigs {
+        if (uploadStore != null) {
+            create("upload") {
+                storeFile = file(uploadStore)
+                storePassword = providers.gradleProperty("uploadStorePassword").get()
+                keyAlias = providers.gradleProperty("uploadKeyAlias").get()
+                keyPassword = providers.gradleProperty("uploadKeyPassword").get()
+            }
+        }
+    }
+
     buildTypes {
         release {
+            if (uploadStore != null) signingConfig = signingConfigs.getByName("upload")
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")

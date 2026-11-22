@@ -517,3 +517,8 @@ jobs:
       - uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
 
       - run: ./gradlew :kit:test :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
+
+      # The release bundle, unsigned, as android-release.yml builds it signed:
+      # a change that breaks R8 or the bundle fails here, not at a release.
+      - name: Release bundle
+        run: ./gradlew :app:bundleRelease

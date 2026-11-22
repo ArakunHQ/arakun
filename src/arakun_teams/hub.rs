@@ -1782,11 +1782,13 @@ impl Hub {
                     let c = self.channels.get_mut(key).expect("looked up above");
                     // The reply to a replay may arrive after catch-up finished.
                     if why.contains("exists") {
-                        c.outbox.remove(&id);
+                        stored_already(&mut c.outbox, &c.messages, &mut c.bot_waiting, &id);
                         c.needs_history = true;
                         self.catch_up(key, cx);
                     } else if refuse(&mut c.messages, &id, &why) {
                         c.outbox.remove(&id);
+                        // Send again asks with the project open then.
+                        self.bot.asked.remove(&id);
                         if why.contains("epoch") {
                             let team = c.team_id.clone();
                             self.load_team(&team, cx);
@@ -2068,6 +2070,28 @@ impl Hub {
             c.messages.retain(|m| m.id != id);
             self.bot.asked.remove(id);
         }
+    }
+}
+
+/// The server says it already holds message `id`, so nothing is left to
+/// send. `ingest` starts a question's @bot run only while the question is in
+/// the outbox, and history may file it after this (the replay raced the
+/// page, or the message is parked). So a question waits in `waiting`, which
+/// `ingest` starts once history is read.
+fn stored_already(
+    outbox: &mut BTreeMap<String, String>,
+    messages: &[Msg],
+    waiting: &mut Vec<String>,
+    id: &str,
+) {
+    if outbox.remove(id).is_none() {
+        return;
+    }
+    let asks = messages
+        .iter()
+        .any(|m| m.id == id && m.body.kind == "text" && m.body.mentions.iter().any(|m| m == "bot"));
+    if asks && !waiting.iter().any(|w| w == id) {
+        waiting.push(id.to_string());
     }
 }
 
@@ -2607,6 +2631,40 @@ mod tests {
         c.live(44);
         assert_eq!(c.through, 44);
         assert!(!c.gap());
+    }
+
+    #[test]
+    fn a_bot_question_the_server_already_holds_still_runs() {
+        let msg = |id: &str, text: &str, bot: bool| {
+            let mut body = Body::text(text, None);
+            if bot {
+                body.mentions = vec!["bot".into()];
+            }
+            Msg {
+                id: id.into(),
+                seq: None,
+                at: 0,
+                github_id: 1,
+                login: "dani".into(),
+                body,
+                delivery: Delivery::Sending,
+            }
+        };
+        let messages = [msg("q", "@bot review", true), msg("plain", "hello", false)];
+        let mut outbox: BTreeMap<String, String> = ["q", "plain"]
+            .into_iter()
+            .map(|id| (id.to_string(), "frame".to_string()))
+            .collect();
+        let mut waiting = Vec::new();
+        stored_already(&mut outbox, &messages, &mut waiting, "q");
+        stored_already(&mut outbox, &messages, &mut waiting, "plain");
+        assert!(outbox.is_empty());
+        assert_eq!(waiting, ["q"]);
+        // History filed it first and started the run: the late reply to the
+        // replay must not start a second one.
+        let mut waiting = Vec::new();
+        stored_already(&mut outbox, &messages, &mut waiting, "q");
+        assert!(waiting.is_empty());
     }
 
     #[test]

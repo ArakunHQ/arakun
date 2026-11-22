@@ -420,6 +420,8 @@ impl Shell {
                     let count = rows.len();
                     div()
                         .id("subagent-list")
+                        // Its own height, or it grows with its rows and never scrolls.
+                        .size_full()
                         .flex()
                         .flex_col()
                         .gap(crate::ui::sp(2.))

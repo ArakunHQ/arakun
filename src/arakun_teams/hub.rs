@@ -281,6 +281,12 @@ impl Cursor {
     fn gap(&self) -> bool {
         self.through < self.newest
     }
+
+    /// The last message with none missing before it: what counts as read.
+    /// A live one past a gap does not, the ones before it are still unread.
+    fn shown(&self) -> u64 {
+        self.through
+    }
 }
 
 /// "@rik added a new device".
@@ -2244,11 +2250,7 @@ impl Hub {
         let Some(c) = self.channels.get(key) else {
             return;
         };
-        // A channel read only through history has no live frame yet.
-        if self
-            .kept
-            .mark_read(key, c.history.newest.max(c.history.through))
-        {
+        if self.kept.mark_read(key, c.history.shown()) {
             self.save(cx);
         }
     }
@@ -3134,6 +3136,21 @@ mod tests {
         let mut waiting = Vec::new();
         stored_already(&mut outbox, &messages, &mut waiting, "q");
         assert!(waiting.is_empty());
+    }
+
+    #[test]
+    fn only_what_was_loaded_counts_as_read() {
+        let mut c = Cursor::default();
+        // Read only through history, no live frame yet.
+        c.page(40);
+        assert_eq!(c.shown(), 40);
+        // 41 and 42 are not here yet: 43 must not mark them read.
+        c.live(43);
+        assert_eq!(c.shown(), 40);
+        c.page(43);
+        assert_eq!(c.shown(), 43);
+        c.live(44);
+        assert_eq!(c.shown(), 44);
     }
 
     #[test]

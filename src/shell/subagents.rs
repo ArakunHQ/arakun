@@ -255,6 +255,7 @@ impl Shell {
         {
             return;
         }
+        let child_thread = child.clone();
         let view = cx.new(|cx| ThreadView::new(child, window, cx));
         let (env, sid) = (self.env().path.clone(), session.clone());
         let events = cx.subscribe_in(
@@ -267,7 +268,14 @@ impl Shell {
                 ThreadViewEvent::OpenSubagent(id) => {
                     this.open_subagent(sid.clone(), id.clone(), window, cx)
                 }
-                ThreadViewEvent::AddNote { .. } | ThreadViewEvent::TellUs { .. } => {}
+                ThreadViewEvent::AddNote { .. } => {}
+                ThreadViewEvent::TellUs { error_event, agent } => this.tell_us(
+                    &child_thread,
+                    error_event.clone(),
+                    agent.clone(),
+                    window,
+                    cx,
+                ),
             },
         );
         self.subagent_view = Some(SubagentView {

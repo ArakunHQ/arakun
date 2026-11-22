@@ -50,6 +50,26 @@ pub(super) fn report_failure(thread: &Entity<Thread>, closing: bool, cx: &mut Ap
     }
 }
 
+impl Shell {
+    /// Opens the error survey for `thread`'s failure, from the footer button
+    /// of the session's view or of a subagent's.
+    pub(super) fn tell_us(
+        &mut self,
+        thread: &Entity<Thread>,
+        error_event: Option<String>,
+        agent: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // The category, never the message: see `telemetry::error`.
+        let category = match thread.read(cx).status() {
+            ThreadStatus::Error(m) => Some(crate::telemetry::category(&m).to_string()),
+            _ => None,
+        };
+        self.open_error_feedback(error_event, Some(agent), category, window, cx)
+    }
+}
+
 /// The version at the end of an agent's title ("Factory Droid 0.240.1"), and
 /// nothing else of it: the title is the agent's own text.
 fn agent_version(title: &str) -> Option<&str> {
@@ -378,20 +398,13 @@ impl Shell {
                 ThreadViewEvent::OpenSubagent(subagent) => {
                     this.open_subagent(sid_for_notes.clone(), subagent.clone(), window, cx)
                 }
-                ThreadViewEvent::TellUs { error_event, agent } => {
-                    // The category, never the message: see `telemetry::error`.
-                    let category = match thread_for_feedback.read(cx).status() {
-                        ThreadStatus::Error(m) => Some(crate::telemetry::category(&m).to_string()),
-                        _ => None,
-                    };
-                    this.open_error_feedback(
-                        error_event.clone(),
-                        Some(agent.clone()),
-                        category,
-                        window,
-                        cx,
-                    )
-                }
+                ThreadViewEvent::TellUs { error_event, agent } => this.tell_us(
+                    &thread_for_feedback,
+                    error_event.clone(),
+                    agent.clone(),
+                    window,
+                    cx,
+                ),
                 ThreadViewEvent::AddNote {
                     surface,
                     range,

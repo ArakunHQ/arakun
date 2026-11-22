@@ -68,21 +68,15 @@ pub fn eligible<'a>(surveys: &'a [Survey], seen: &SeenMap, m: &Moment) -> Option
     let last_shown = seen.values().map(|e| e.at).max();
     surveys.iter().find(|s| {
         s.kind == SurveyType::Popover
-            && !is_builtin(&s.id)
+            // The feedback forms have their own screens. Someone setting one to
+            // popover in PostHog must not pop it up on its own.
+            && !ids::is_builtin(&s.id)
             && !s.archived
             && !seen.contains_key(&s.id)
             && model::drawable(s)
             && in_schedule(s, m.now_unix)
             && conditions_met(&s.conditions, m, last_shown)
     })
-}
-
-/// The feedback forms have their own screens. Someone setting one to popover
-/// in PostHog must not pop it up on its own.
-fn is_builtin(id: &str) -> bool {
-    [&ids::USER, &ids::AGENT, &ids::ERROR]
-        .iter()
-        .any(|b| b.survey_id == id)
 }
 
 fn in_schedule(s: &Survey, now: u64) -> bool {

@@ -2691,9 +2691,7 @@ impl Shell {
             self.close_modal(window, cx);
         }
         // The built-in forms can be sent any number of times; others once.
-        let builtin = [&ids::USER, &ids::AGENT, &ids::ERROR]
-            .iter()
-            .any(|b| b.survey_id == survey.id);
+        let builtin = ids::is_builtin(&survey.id);
         let dialog = cx.new(|cx| SurveyDialog::new(survey, src, extra, window, cx));
         let sub = cx.subscribe_in(
             &dialog,

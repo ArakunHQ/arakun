@@ -7,15 +7,9 @@
 
 use serde_json::{Map, Value, json};
 
-use super::ids::{self, Builtin};
+use super::ids;
 use super::model::{Answer, Body, Question, Survey, kind_of};
 use crate::telemetry::{self, Refused, Source};
-
-fn builtin_of(s: &Survey) -> Option<&'static Builtin> {
-    [&ids::USER, &ids::AGENT, &ids::ERROR]
-        .into_iter()
-        .find(|b| b.survey_id == s.id)
-}
 
 /// Whether the answer to `q` must not get a scrubbed copy.
 fn is_email(s: &Survey, q: &Question) -> bool {
@@ -58,7 +52,7 @@ pub fn response_props(
     m.insert("source".into(), src.as_str().into());
 
     let mut kind = None;
-    let kind_q = builtin_of(s).and_then(|b| b.kind_question);
+    let kind_q = ids::builtin(&s.id).and_then(|b| b.kind_question);
     for (i, a) in answers {
         let Some(q) = s.questions.get(*i) else {
             continue;
@@ -127,6 +121,7 @@ pub fn dismissed(s: &Survey) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::surveys::ids::Builtin;
     use crate::surveys::model::{Branching, Conditions, SurveyType};
 
     fn survey(b: &'static Builtin) -> Survey {

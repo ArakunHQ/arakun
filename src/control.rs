@@ -1644,11 +1644,6 @@ fn resolve_dir(cwd: &Path, dir: &str) -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
 
-    fn feedback(args: &[&str], stdin: &str, agent: Option<&str>) -> Result<Vec<String>, Stop> {
-        let rest: Vec<String> = args.iter().map(|a| a.to_string()).collect();
-        feedback_args(&rest, stdin.as_bytes(), agent.map(String::from))
-    }
-
     #[test]
     fn feedback_needs_kind() {
         assert_eq!(feedback(&["too slow"], "", None), Err(Stop::Usage));
@@ -1713,6 +1708,11 @@ mod tests {
         assert!(!side_flag("feedback", &s(&["--kind", "bug", "use", "-s"])).0);
     }
     use super::*;
+
+    fn feedback(args: &[&str], stdin: &str, agent: Option<&str>) -> Result<Vec<String>, Stop> {
+        let rest: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+        feedback_args(&rest, stdin.as_bytes(), agent.map(String::from))
+    }
 
     #[test]
     fn an_isolated_instance_keeps_its_own_shim() {

@@ -123,3 +123,32 @@ pub const ERROR: Builtin = Builtin {
         },
     ],
 };
+
+/// The feedback forms. They have their own screens, and can be sent any
+/// number of times.
+pub const ALL: [&Builtin; 3] = [&USER, &AGENT, &ERROR];
+
+/// Whether `id` is the survey of one of the feedback forms.
+pub fn is_builtin(id: &str) -> bool {
+    builtin(id).is_some()
+}
+
+/// The feedback form with survey id `id`.
+pub fn builtin(id: &str) -> Option<&'static Builtin> {
+    ALL.into_iter().find(|b| b.survey_id == id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn builtins_are_found_by_survey_id() {
+        for b in ALL {
+            assert!(is_builtin(b.survey_id));
+            assert_eq!(builtin(b.survey_id).unwrap().survey_id, b.survey_id);
+        }
+        assert!(!is_builtin("something-else"));
+        assert!(builtin("").is_none());
+    }
+}

@@ -1,7 +1,7 @@
 //! Decisions: what the team accepted from @bot, read back from every
 //! channel's history, with who accepted it, when, and where it was argued.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
@@ -64,6 +64,17 @@ fn wants_open(linked: Option<bool>, only_new: bool) -> bool {
     }
 }
 
+/// The channels Decisions opened, without the one now shown.
+fn links_to_close(
+    opened: HashSet<(String, String)>,
+    shown: Option<(String, String)>,
+) -> Vec<(String, String)> {
+    opened
+        .into_iter()
+        .filter(|k| Some(k) != shown.as_ref())
+        .collect()
+}
+
 /// How far the log has read one channel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Read {
@@ -101,7 +112,8 @@ fn read_note(reading: usize, unread: usize) -> Option<String> {
 }
 
 impl TeamsView {
-    /// Opens every channel of the team, so the log reads all of them.
+    /// Opens every channel of the team, so the log reads all of them, and
+    /// notes the ones it opened: leaving Decisions closes those again.
     /// `only_new` is for a change while the pane is open: see `wants_open`.
     pub(super) fn open_every_channel(
         &mut self,
@@ -130,6 +142,31 @@ impl TeamsView {
         self.hub.update(cx, |h, cx| {
             for c in &ids {
                 h.open_channel(team_id, c, cx);
+            }
+        });
+        let hub = self.hub.read(cx);
+        for c in ids {
+            let key = hub::channel_key(team_id, &c);
+            if hub.channels.get(&key).is_some_and(|s| s.linked()) {
+                self.decisions_opened.insert((team_id.to_string(), c));
+            }
+        }
+    }
+
+    /// Off Decisions, hangs up the channels it opened to read the log. The
+    /// one being shown stays, and so do the ones the user had open before.
+    pub(super) fn close_decision_links(&mut self, cx: &mut Context<Self>) {
+        if self.decisions_opened.is_empty() || matches!(self.pane, Pane::Decisions(_)) {
+            return;
+        }
+        let shown = match &self.pane {
+            Pane::Channel(t, c) => Some((t.clone(), c.clone())),
+            _ => None,
+        };
+        let close = links_to_close(std::mem::take(&mut self.decisions_opened), shown);
+        self.hub.update(cx, |h, cx| {
+            for (t, c) in &close {
+                h.close_channel(t, c, cx);
             }
         });
     }
@@ -461,7 +498,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_change_opens_only_channels_never_opened() {
+    fn decisions_opens_and_closes_only_its_own_links() {
         // Entering the pane: everything with no link, a refused one too.
         assert!(wants_open(None, false));
         assert!(wants_open(Some(false), false));
@@ -470,6 +507,11 @@ mod tests {
         assert!(wants_open(None, true));
         assert!(!wants_open(Some(false), true));
         assert!(!wants_open(Some(true), true));
+
+        let key = |c: &str| ("team".to_string(), c.to_string());
+        let opened: HashSet<_> = [key("a"), key("b")].into();
+        assert_eq!(links_to_close(opened.clone(), Some(key("a"))), [key("b")]);
+        assert_eq!(links_to_close(opened, None).len(), 2);
     }
 
     #[test]

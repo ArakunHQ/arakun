@@ -229,6 +229,8 @@ pub struct TeamsView {
     decision: Option<String>,
     /// Decisions shows only the ones this user accepted or proposed.
     decisions_mine: bool,
+    /// The channels (team, channel) Decisions opened to read the log.
+    decisions_opened: HashSet<(String, String)>,
     decision_query: Entity<TextInput>,
     focus: FocusHandle,
     _subs: Vec<Subscription>,
@@ -327,6 +329,7 @@ impl TeamsView {
             pending_jump: None,
             decision: None,
             decisions_mine: false,
+            decisions_opened: HashSet::new(),
             decision_query,
             focus: cx.focus_handle(),
             _subs: subs,
@@ -371,6 +374,7 @@ impl TeamsView {
         self.seen_count = 0;
         self.scroll = ScrollHandle::new();
         // What the last account searched for and had open in Decisions.
+        self.decisions_opened.clear();
         self.decision = None;
         self.decisions_mine = false;
         for field in [
@@ -497,6 +501,8 @@ impl TeamsView {
         if let Pane::Decisions(t) = &self.pane {
             let t = t.clone();
             self.open_every_channel(&t, true, cx);
+        } else {
+            self.close_decision_links(cx);
         }
         self.teams.update(cx, |t, cx| t.want_pictures(people, cx));
         cx.notify();
@@ -576,6 +582,7 @@ impl TeamsView {
             self.adding_channel = None;
             self.channel_name.update(cx, |i, cx| i.set_text("", cx));
         }
+        self.close_decision_links(cx);
         if let Some(field) = field {
             let handle = field.read(cx).focus_handle(cx);
             window.focus(&handle, cx);

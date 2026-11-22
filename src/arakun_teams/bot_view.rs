@@ -96,6 +96,18 @@ fn run_numbers<'a>(ranges: impl IntoIterator<Item = &'a [String]>) -> HashMap<St
         .collect()
 }
 
+/// What the composer holds after Ask for more detail: the question to
+/// finish, or the draft the user was typing, now addressed to @bot.
+fn more_detail_text(draft: &str) -> String {
+    if draft.trim().is_empty() {
+        "@bot more detail on ".into()
+    } else if bot::mentions_bot(draft) {
+        draft.to_string()
+    } else {
+        format!("@bot {}", draft.trim_start())
+    }
+}
+
 impl TeamsView {
     pub(super) fn bot_state(
         &self,
@@ -658,8 +670,8 @@ impl TeamsView {
         .when(sent, |b| {
             b.on_click(cx.listener(move |this, _, window, cx| {
                 this.reply_to = Some(aid.clone());
-                this.composer
-                    .update(cx, |i, cx| i.set_text("@bot more detail on ", cx));
+                let text = more_detail_text(this.composer.read(cx).text());
+                this.composer.update(cx, |i, cx| i.set_text(text, cx));
                 let handle = this.composer.read(cx).focus_handle(cx);
                 window.focus(&handle, cx);
                 cx.notify();
@@ -965,6 +977,18 @@ mod tests {
         assert_eq!(names(&l(&["Karlo"])), "Karlo");
         assert_eq!(names(&l(&["Karlo", "Dani"])), "Karlo and Dani");
         assert_eq!(names(&l(&["Karlo", "Dani", "Rik"])), "Karlo, Dani and Rik");
+    }
+
+    #[test]
+    fn asking_for_more_detail_keeps_a_draft() {
+        assert_eq!(more_detail_text(""), "@bot more detail on ");
+        assert_eq!(more_detail_text("  \n"), "@bot more detail on ");
+        assert_eq!(
+            more_detail_text("half a long message"),
+            "@bot half a long message"
+        );
+        assert_eq!(more_detail_text("@bot why B?"), "@bot why B?");
+        assert_eq!(more_detail_text("and why B, @bot?"), "and why B, @bot?");
     }
 
     #[test]

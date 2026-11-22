@@ -83,6 +83,8 @@ reviews:
       - "teams/**"
       - "src/arakun_teams/**"
       - "phone/**"
+      - "android/kit/**"
+      - "android/tools/play-upload.py"
       - "**/Cargo.toml"
       - "Cargo.lock"
       - "deny.toml"

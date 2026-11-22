@@ -37,7 +37,10 @@ import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.vector.PathParser
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.onClick
+import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.unit.Dp
@@ -235,20 +238,25 @@ fun Mascot(mood: Mood, width: Dp, modifier: Modifier = Modifier, props: Boolean 
         if (still) return@LaunchedEffect
         while (true) withFrameNanos { frame = it }
     }
+    fun hop() {
+        val t = now()
+        state.hopStart = t
+        if (state.mood == Mood.IDLE) state.moodStart = t
+    }
     Canvas(
         modifier
             .size(width, height)
             .semantics {
                 contentDescription = "Arakun"
                 stateDescription = mood.word
-            }
-            .pointerInput(Unit) {
-                detectTapGestures {
-                    val t = now()
-                    state.hopStart = t
-                    if (state.mood == Mood.IDLE) state.moodStart = t
+                // The hop a tap gives, for TalkBack's double tap too.
+                role = Role.Button
+                onClick(label = "Hop") {
+                    hop()
+                    true
                 }
-            },
+            }
+            .pointerInput(Unit) { detectTapGestures { hop() } },
     ) {
         // Read so each frame redraws.
         frame

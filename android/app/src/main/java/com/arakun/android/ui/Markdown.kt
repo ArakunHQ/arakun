@@ -82,7 +82,11 @@ fun markdown(s: String, c: Palette): AnnotatedString = buildAnnotatedString {
                 val url = if (close > 0 && close + 1 < s.length && s[close + 1] == '(') s.indexOf(')', close + 2) else -1
                 if (url < 0) { plain.append(ch); i++ } else {
                     flush()
-                    withLink(LinkAnnotation.Url(s.substring(close + 2, url), link)) { append(markdown(s.substring(i + 1, close), c)) }
+                    val target = s.substring(close + 2, url)
+                    val label = markdown(s.substring(i + 1, close), c)
+                    // Only web links, as the phone page has it: another scheme
+                    // could open some other app. The text stays, unlinked.
+                    if (WEB.matches(target)) withLink(LinkAnnotation.Url(target, link)) { append(label) } else append(label)
                     i = url + 1
                 }
             }
@@ -94,3 +98,5 @@ fun markdown(s: String, c: Palette): AnnotatedString = buildAnnotatedString {
     }
     flush()
 }
+
+private val WEB = Regex("https?://\\S+", RegexOption.IGNORE_CASE)

@@ -20,6 +20,7 @@ import com.posthog.PostHog
 import com.posthog.PostHogEvent
 import com.posthog.android.PostHogAndroid
 import com.posthog.android.PostHogAndroidConfig
+import java.io.File
 
 object Telemetry {
     private const val PREFS = "telemetry"
@@ -43,7 +44,7 @@ object Telemetry {
         this.app = app
         val prefs = app.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         crashes = if (prefs.contains(CRASHES)) prefs.getBoolean(CRASHES, false) else null
-        if (crashes == true) setUp(app)
+        if (crashes == true) setUp(app) else if (crashes == false) dropQueued(app)
     }
 
     /** The user's answer, from the first-launch question or the menu. */
@@ -52,10 +53,22 @@ object Telemetry {
         crashes = yes
         app.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit { putBoolean(CRASHES, yes) }
         when {
-            !yes -> if (started) PostHog.optOut()
+            !yes -> {
+                if (started) PostHog.optOut()
+                dropQueued(app)
+            }
             started -> PostHog.optIn()
             else -> setUp(app)
         }
+    }
+
+    /**
+     * Deletes the crash reports PostHog still holds on disk, say from a crash
+     * while offline. Opting out stops new ones but would still send these;
+     * the SDK drops a queued file that is gone.
+     */
+    private fun dropQueued(app: Application) {
+        File(app.cacheDir, "posthog-disk-queue").deleteRecursively()
     }
 
     private fun setUp(app: Application) {
@@ -106,15 +119,28 @@ private const val MAX_MESSAGE = 300
  */
 fun scrub(text: String): String {
     val out = StringBuilder()
-    var afterScheme = false
+    // The next word is a secret: after `Bearer`, or after a credential's name
+    // and its `:` or `=` (`password: hunter2`, `api_key = abc`).
+    var secretNext = false
+    // The last word was a credential's name, its `:` or `=` still to come.
+    var named = false
     text.split(' ').forEachIndexed { i, word ->
         if (i > 0) out.append(' ')
         val body = word.trimStart { it in "([{<\"'`" }
         val lead = word.substring(0, word.length - body.length)
         val core = body.trimEnd { it in ")]}>\"'`,.;:!?" }
         val tail = body.substring(core.length)
-        val replaced = if (afterScheme && core.isNotEmpty()) "<secret>" else redact(core)
-        afterScheme = core.lowercase() in setOf("bearer", "basic")
+        val separator = core == "=" || (core.isEmpty() && tail.startsWith(':'))
+        val replaced = if (secretNext && core.isNotEmpty() && !separator) "<secret>" else redact(core)
+        val sepAfter = tail.startsWith(':') || (core.length > 1 && core.endsWith('='))
+        secretNext = when {
+            secretNext && (core.isEmpty() || separator) -> true
+            core.lowercase() in setOf("bearer", "basic") -> true
+            '=' !in core.dropLast(1) && credentialName(core) && sepAfter -> true
+            named && separator -> true
+            else -> false
+        }
+        named = !sepAfter && '=' !in core && credentialName(core)
         out.append(lead).append(replaced ?: core).append(tail)
     }
     val s = out.toString()

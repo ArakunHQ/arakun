@@ -54,6 +54,7 @@ import androidx.compose.ui.unit.dp
 import com.arakun.android.R
 import com.arakun.kit.PermissionAsk
 import com.arakun.kit.QuestionAsk
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /** The frame both asks share: amber, since they are what the session waits on. */
@@ -150,13 +151,17 @@ private fun HoldButton(title: String, enabled: Boolean, action: () -> Unit) {
             .pointerInput(enabled) {
                 if (!enabled) return@pointerInput
                 detectTapGestures(onPress = {
+                    // The fill only shows the hold: with animations off it is
+                    // full at once, so the time is kept apart from it.
+                    val filling = scope.launch { fill.animateTo(1f, tween(HOLD_MS, easing = LinearEasing)) }
                     val held = scope.launch {
-                        fill.animateTo(1f, tween(HOLD_MS, easing = LinearEasing))
+                        delay(HOLD_MS.toLong())
                         view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
                         action()
                     }
                     tryAwaitRelease()
                     if (held.isActive) held.cancel()
+                    filling.cancel()
                     scope.launch { fill.animateTo(0f, tween(150)) }
                 })
             },

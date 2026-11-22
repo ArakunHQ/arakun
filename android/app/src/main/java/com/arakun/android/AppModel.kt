@@ -231,10 +231,14 @@ class AppModel(app: Application) : AndroidViewModel(app) {
                 interrupted()
                 connection = Connection.Connected
                 retry = 500
-                session?.let { send("type" to "open", "session" to it.id) }
-                openWhenLinked?.let {
-                    openWhenLinked = null
-                    open(it)
+                // One open per session: a session opened while the link was
+                // down is the one waiting, so it is not asked for twice.
+                val waiting = openWhenLinked
+                openWhenLinked = null
+                if (waiting != null) {
+                    open(waiting)
+                } else {
+                    session?.let { send("type" to "open", "session" to it.id) }
                 }
             }
             is RelayLink.Event.Message -> parseJson(event.bytes)?.let(::receive)
@@ -409,10 +413,12 @@ class AppModel(app: Application) : AndroidViewModel(app) {
 
     private fun demoSession(id: String): LiveSession {
         val line = inbox.firstOrNull { it.id == id }
-        val working = line?.status == com.arakun.kit.SessionStatus.WORKING
+        // A new session (not in the inbox) is working, as a start leaves it.
+        val status = line?.status ?: com.arakun.kit.SessionStatus.WORKING
         val s = LiveSession(id, line?.title ?: "", line?.agent ?: "")
-            .applySession(parseJson(Demo.session(System.currentTimeMillis() / 1000 - 600, working))!!)
-        return if (working) s.copy(permission = null) else s
+            .applySession(parseJson(Demo.session(System.currentTimeMillis() / 1000 - 600, status))!!)
+        // Only a session that needs input is asking.
+        return if (status == com.arakun.kit.SessionStatus.NEEDS_INPUT) s else s.copy(permission = null)
     }
 
     private companion object {

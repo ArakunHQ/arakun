@@ -29,6 +29,11 @@ class ScrubTest {
         assertEquals("login password=<secret> failed", scrub("login password=hunter2 failed"))
         assertEquals("\"api_key\":\"<secret>\"", scrub("\"api_key\":\"abc\""))
         assertEquals("status=404", scrub("status=404"))
+        // A credential's value after a space, as logs and exceptions write it.
+        assertEquals("login password: <secret> failed", scrub("login password: hunter2 failed"))
+        assertEquals("api_key = <secret> rejected", scrub("api_key = abc rejected"))
+        assertEquals("password : <secret>", scrub("password : x"))
+        assertEquals("auth failed: Bearer <secret>", scrub("auth failed: Bearer abc.def"))
     }
 
     @Test

@@ -57,12 +57,14 @@ head_sha() {
 # in this checkout. The greps read all their input: an early exit could kill
 # the writer with SIGPIPE and, under pipefail, hide a match.
 classify() {
-  local files diff hit rust file url source reason=""
+  local files diff hit rust file url source reason="" listed=true
   local mac_cfg='target_os *= *"macos"|target_vendor *= *"apple"'
   # A rename lists its old path too, as ci.yml's changes job does: moving a
   # file out of android/ still runs the Android job.
   if ! files=$(gh api --paginate "repos/{owner}/{repo}/pulls/$pr/files" \
     --jq '.[] | .filename, (.previous_filename // empty)'); then
+    # A later page can fail after earlier ones printed: the list is partial.
+    listed=false
     reason="could not list the changed files"
   elif hit=$(grep -iE 'macos|(^|/)mac(\.rs$|/)|(^|/)Cargo\.(toml|lock)$|(^|/)build\.rs$|^rust-toolchain\.toml$' <<< "$files" | sed -n 1p) && [ -n "$hit" ]; then
     reason="$hit changed"
@@ -96,8 +98,8 @@ classify() {
   fi
   # The files ci.yml's changes job sends to the Android job. Unlisted, a
   # failing Android build would not hold the pull request back.
-  # Without the list, wait: a skipped job counts as passed.
-  if [ -z "${files:-}" ] ||
+  # Without the whole list, wait: a skipped job counts as passed.
+  if [ "$listed" = false ] || [ -z "${files:-}" ] ||
     grep -qE '^(android/|phone/|assets/brand/mascot\.json$|assets/fonts/|\.github/workflows/ci\.yml$|\.github/actions/)' <<< "$files"; then
     echo "Waiting for the Android job too."
     wanted=$(printf '%s\n%s\n' "$wanted" "$ANDROID_CHECK")

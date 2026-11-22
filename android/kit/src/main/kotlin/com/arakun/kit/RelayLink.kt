@@ -117,12 +117,13 @@ class RelayLink(
             scope.launch {
                 val said = withContext(Dispatchers.IO) { relayLabel() }
                 if (ended) return@launch
-                if (said == null) {
-                    end(EndKind.GONE, "the relay did not say its label")
-                } else {
-                    label = said
-                    open()
-                }
+                said.fold(
+                    onSuccess = {
+                        label = it
+                        open()
+                    },
+                    onFailure = { end(EndKind.GONE, it.message ?: "the relay did not say its label") },
+                )
             }
             return
         }
@@ -130,17 +131,24 @@ class RelayLink(
     }
 
     /** The label the relay at `host` goes by, from its `/_relay`. */
-    private fun relayLabel(): String? = try {
+    private fun relayLabel(): Result<String> = try {
         val b = HttpUrl.Builder()
             .scheme(if (secure) "https" else "http")
             .host(host.substringBefore(':'))
             .addPathSegment("_relay")
         host.substringAfter(':', "").toIntOrNull()?.let(b::port)
-        client.newCall(Request.Builder().url(b.build()).build()).execute().use { res ->
+        // The socket's client never times out a read; this asks once and gives up.
+        val probe = client.newBuilder().callTimeout(PROBE_WITHIN, TimeUnit.MILLISECONDS).build()
+        probe.newCall(Request.Builder().url(b.build()).build()).execute().use { res ->
             parseJson(res.body.bytes())?.get("label")?.str?.takeIf(::isLabel)
+                ?.let { Result.success(it) }
+                ?: Result.failure(IllegalStateException("the relay did not say its label"))
         }
-    } catch (_: Exception) {
-        null
+    } catch (e: java.net.UnknownServiceException) {
+        // Android lets only a debug build speak plain http (network_security_config.xml).
+        Result.failure(IllegalStateException("plain http is for debug builds", e))
+    } catch (e: Exception) {
+        Result.failure(IllegalStateException("could not ask the relay its label", e))
     }
 
     private fun open() {
@@ -398,6 +406,9 @@ class RelayLink(
 
         /** How long the computer may take to answer a hello. */
         const val HELLO_WITHIN = 15_000L
+
+        /** How long a relay run by hand may take to say its label. */
+        const val PROBE_WITHIN = 10_000L
 
         /**
          * This app's own name to the relay. It stays the same across reconnects,

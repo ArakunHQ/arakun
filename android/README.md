@@ -105,6 +105,11 @@ paste the link, or open an `arakun://pair?link=<link>` link). The credentials ar
 sealed with a key the Android Keystore keeps on this device; the app's data is left out
 of backups and device transfers.
 
+A relay run by hand (`npx wrangler dev`, see relay/README.md) speaks plain http and has
+no label in its address; the app asks it for its label at `/_relay`. Only a debug build
+may use plain http (`src/debug/res/xml/network_security_config.xml`); a release build
+talks to relays over TLS only.
+
 ## What it does
 
 - The inbox: every session, the ones waiting for you first, grouped by project.

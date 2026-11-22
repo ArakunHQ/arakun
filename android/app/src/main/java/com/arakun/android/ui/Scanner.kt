@@ -152,7 +152,8 @@ private fun Camera(found: (String) -> Unit) {
                 scanner.process(InputImage.fromMediaImage(image, frame.imageInfo.rotationDegrees))
                     .addOnSuccessListener { codes ->
                         val text = codes.firstNotNullOfOrNull { it.rawValue }
-                        if (text != null && !done) {
+                        // A frame read after the sheet closed must not pair.
+                        if (text != null && !done && !disposed) {
                             done = true
                             view.performHapticFeedback(
                                 if (Build.VERSION.SDK_INT >= 30) HapticFeedbackConstants.CONFIRM else HapticFeedbackConstants.VIRTUAL_KEY,

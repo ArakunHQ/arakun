@@ -1,6 +1,7 @@
 package com.arakun.android
 
 import android.content.Intent
+import com.arakun.kit.SessionStatus
 
 /**
  * A computer played here, for screenshots and design work without one. Debug
@@ -24,6 +25,13 @@ data class Demo(val unpaired: Boolean, val open: String?, val new: Boolean, val 
             )
         }
 
+        private fun wire(status: SessionStatus) = when (status) {
+            SessionStatus.IDLE -> "idle"
+            SessionStatus.WORKING -> "working"
+            SessionStatus.NEEDS_INPUT -> "needs_input"
+            SessionStatus.ERROR -> "error"
+        }
+
         fun inbox(now: Long) = """
         {"host":"studio","sessions":[
          {"id":"s1","title":"Fix the relay pairing limit","agent":"Opus 5.5","status":"needs_input","updated":${now - 40},"added":42,"removed":7,"project":"arakun","env":"env/brave-otter","place":"/w/a","pr":"#631","asks":{"kind":"permission","text":"cargo test -p arakun relay"}},
@@ -34,8 +42,9 @@ data class Demo(val unpaired: Boolean, val open: String?, val new: Boolean, val 
          "places":[{"path":"/w/a","project":"arakun","env":"env/brave-otter","branch":"env/brave-otter","agent":"claude"},{"path":"/w/e","project":"site","env":"main","branch":"main","agent":"claude"}]}
         """
 
-        fun session(at: Long, working: Boolean) = """
-        {"from":0,"count":7,"status":"${if (working) "working" else "needs_input"}","usage":{"summary":"48k tokens · ${'$'}0.41"},
+        /** A session in `status`, as the computer would send it. */
+        fun session(at: Long, status: SessionStatus) = """
+        {"from":0,"count":7,"status":"${wire(status)}","usage":{"summary":"48k tokens · ${'$'}0.41"},
          "changes":{"files":3,"added":42,"removed":7},"elapsed_ms":95000,
          "entries":[
           {"type":"user","text":"Pairing links fail with limit:phones. Find out why and fix it.","at":$at,"elapsed_ms":null,"pastes":[]},

@@ -243,8 +243,10 @@ fn has_unsupported_rule(v: &Value) -> bool {
         "linked_flag",
         "targeting_flag_key",
         "targeting_flag",
-        "internal_targeting_flag_key",
     ];
+    // `internal_targeting_flag_key` is not listed: PostHog sets it on every
+    // launched survey, and it only hides a survey from a person who saw it or
+    // another survey too recently. `surveys-seen.json` and `wait_days` do that.
     let cond = [
         "url",
         "selector",
@@ -679,6 +681,21 @@ mod tests {
         assert!(!all[0].questions[0].optional);
         assert!(all[1].conditions.events.is_empty());
         assert!(!all[1].conditions.unsupported);
+    }
+
+    #[test]
+    fn internal_flag_is_supported_but_targeting_flag_is_not() {
+        // The shape of a launched popover in a real `/api/surveys/?token=` reply.
+        let json = r#"{"surveys":[{"id":"a","name":"a","type":"popover",
+            "internal_targeting_flag_key":"survey-targeting-2bd88208c6-custom",
+            "schedule":"once","start_date":"2026-11-22T00:00:00Z","end_date":null,
+            "conditions":{"events":{"values":[{"name":"agent turn finished"}]}},
+            "questions":[{"id":"q","type":"rating","question":"?","scale":5,"display":"number"}]},
+            {"id":"b","name":"b","type":"popover","targeting_flag_key":"beta-users",
+             "questions":[]}]}"#;
+        let all = parse(json);
+        assert!(!all[0].conditions.unsupported);
+        assert!(all[1].conditions.unsupported);
     }
 
     #[test]

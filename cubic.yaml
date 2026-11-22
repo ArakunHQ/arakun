@@ -88,6 +88,8 @@ reviews:
       - "ios/ArakunKit/**"
       - "ios/Arakun/AppModel.swift"
       - "ios/Arakun/Keychain.swift"
+      # Crash-report consent and what may leave for PostHog.
+      - "ios/Arakun/Telemetry.swift"
       - "**/Cargo.toml"
       - "Cargo.lock"
       - "deny.toml"

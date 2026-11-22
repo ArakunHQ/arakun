@@ -33,7 +33,7 @@ one row (`Cargo.lock` needs the Rust checks and cargo-deny).
 | any path outside `relay/` and `ios/` that the last row does not list (`src/`, `examples/`, `assets/`, `Cargo.*`, `tools/rustfmt.sh`, `lefthook.yml`, a `.md` inside a folder such as `examples/`...) | rustfmt, clippy, tests |
 | `phone/` | rustfmt, clippy, tests, relay, phone |
 | `relay/` | relay, phone |
-| `ios/` | `swift test` in `ios/ArakunKit` (macOS with Xcode); CI also builds the app for the simulator. Only `ios/` changed: no Rust checks |
+| `ios/` | on macOS with Xcode: `swift test` in `ios/ArakunKit`, then `xcodegen generate` and the `xcodebuild` simulator build in `ios/` (the commands under "Before you commit" in AGENTS.md). Only `ios/` changed: no Rust checks |
 | `.github/workflows/ci.yml`, `.github/actions/` | everything: rustfmt, clippy, tests, relay, phone |
 | `tools/install-cef.sh` | rustfmt, clippy, tests (CI also builds with the browser) |
 | `Cargo.toml`, `Cargo.lock`, `deny.toml` | also `cargo deny check` |

@@ -20,20 +20,24 @@ use crate::island::{self as isl, AlertKind, one_line};
 use crate::island_host::brief;
 use crate::island_host::proto::{FromIsland, ToIsland};
 
-/// How often the island hears from the sessions: elapsed times tick in seconds.
+/// How often the island hears from active sessions: elapsed times tick in seconds.
 const FEED_EVERY: Duration = Duration::from_secs(1);
+/// Fallback poll when no sessions are active or recent; state changes still push at once.
+const FEED_IDLE: Duration = Duration::from_secs(30);
 /// Finished and failed sessions stay in the list this long.
 const RECENT_SECS: u64 = 10 * 60;
 
 pub(super) struct IslandLink {
     /// To the link's thread; dropped, it hangs up.
-    tx: std::sync::mpsc::Sender<ToIsland>,
+    tx: crate::island_host::link::Sender,
     /// The island is connected: what is sent now reaches it.
     up: Arc<AtomicBool>,
     /// The feed the island has, so an unchanged one isn't sent again.
     sent: Option<isl::Feed>,
     _events: Task<()>,
     _feed: Task<()>,
+    /// Wakes the feed loop early when sessions become active.
+    wake_feed: futures::channel::mpsc::UnboundedSender<()>,
     /// What each session showed while it was live, for after it is retired.
     seen: HashMap<SharedString, Seen>,
 }
@@ -189,13 +193,13 @@ impl Open {
 /// would drop it, so it isn't sent and the caller tells it some other way.
 /// The Inbox keeps the alert as it was; only what goes on screen is masked.
 fn send_alert(
-    tx: &std::sync::mpsc::Sender<ToIsland>,
+    tx: &crate::island_host::link::Sender,
     up: &AtomicBool,
     mut alert: isl::Alert,
 ) -> bool {
     alert.title = crate::redact::text(&alert.title).into_owned().into();
     alert.subtitle = crate::redact::text(&alert.subtitle).into_owned().into();
-    up.load(Ordering::Relaxed) && tx.send(ToIsland::Alert { alert }).is_ok()
+    up.load(Ordering::Relaxed) && tx.send(ToIsland::Alert { alert })
 }
 
 /// What the island is told when this app lets go of it: to quit, when the
@@ -264,9 +268,20 @@ impl Shell {
                     }
                 }
             });
+            let (wake_feed, mut feed_rx) = futures::channel::mpsc::unbounded();
             let feed = cx.spawn_in(window, async move |this, cx| {
                 loop {
-                    cx.background_executor().timer(FEED_EVERY).await;
+                    let has_rows = this
+                        .update_in(cx, |this, _, _| {
+                            this.island
+                                .as_ref()
+                                .and_then(|l| l.sent.as_ref())
+                                .is_some_and(|f| !f.rows.is_empty())
+                        })
+                        .unwrap_or(false);
+                    let wait = if has_rows { FEED_EVERY } else { FEED_IDLE };
+                    let timer = std::pin::pin!(cx.background_executor().timer(wait));
+                    futures::future::select(timer, feed_rx.next()).await;
                     if this
                         .update_in(cx, |this, window, cx| this.feed_island(window, cx))
                         .is_err()
@@ -281,6 +296,7 @@ impl Shell {
                 sent: None,
                 _events: events,
                 _feed: feed,
+                wake_feed,
                 seen: HashMap::new(),
             });
             self.feed_island(window, cx);
@@ -547,8 +563,13 @@ impl Shell {
                 .flatten(),
             reduce_motion: Some(cx.reduce_motion()),
         };
+        let wake =
+            !feed.rows.is_empty() && link.sent.as_ref().is_none_or(|prev| prev.rows.is_empty());
         if let Some(feed) = changed(&mut link.sent, feed) {
             let _ = link.tx.send(ToIsland::Feed { feed });
+        }
+        if wake {
+            let _ = link.wake_feed.unbounded_send(());
         }
         self.island = Some(link);
     }
@@ -909,7 +930,7 @@ mod tests {
             image: SharedString::default(),
             brand: SharedString::default(),
         };
-        let (tx, rx) = std::sync::mpsc::channel();
+        let (tx, rx) = crate::island_host::link::test_channel();
         let up = AtomicBool::new(false);
         // Reconnecting: the link would drop it, so the desktop gets it instead.
         assert!(!send_alert(&tx, &up, alert()));

@@ -592,14 +592,18 @@ impl AsciiFace {
                 if now - f.asked > 0.3 {
                     f.hidden = true;
                 }
-                !f.hidden
+                if f.hidden {
+                    crate::frame_timer::Next::Idle
+                } else {
+                    crate::frame_timer::Next::Tick
+                }
             } else if f.wants_frame() {
                 f.rendered = false;
                 f.asked = now;
                 cx.notify();
-                true
+                crate::frame_timer::Next::Tick
             } else {
-                false
+                crate::frame_timer::Next::Idle
             }
         });
         let keys = cx.observe_keystrokes(|f, _, _, _| f.typed());

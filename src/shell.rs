@@ -698,6 +698,7 @@ enum SideDrag {
     Panel,
 }
 const POLL: Duration = Duration::from_secs(3);
+const POLL_IDLE: Duration = Duration::from_secs(15);
 /// A `git fetch` of the visible environment at most this often while the window is
 /// active, so the pull count notices commits pushed elsewhere.
 const FETCH_EVERY: Duration = Duration::from_secs(120);
@@ -1649,7 +1650,17 @@ impl Shell {
         self.maybe_fetch(cx);
         self.poll = Some(cx.spawn(async move |this, cx| {
             loop {
-                cx.background_executor().timer(POLL).await;
+                let wait = this
+                    .update(cx, |this, _| {
+                        let busy =
+                            this.has_projects()
+                                && this.env().sessions.iter().any(|s| {
+                                    matches!(s.status, Status::Working | Status::NeedsInput)
+                                });
+                        if busy { POLL } else { POLL_IDLE }
+                    })
+                    .unwrap_or(POLL_IDLE);
+                cx.background_executor().timer(wait).await;
                 let Some(path) = this
                     .update(cx, |this, _| {
                         this.has_projects().then(|| this.env().path.clone())

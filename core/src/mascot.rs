@@ -618,11 +618,11 @@ impl Mascot {
         // render wakes it. An event that comes due waits at most the sleep.
         let (tick, wake) = crate::frame_timer::start(cx, |m: &mut Self, cx| {
             if !m.wants_frame() {
-                return false;
+                return m.next_wait();
             }
             m.rendered = false;
             cx.notify();
-            true
+            crate::frame_timer::Next::Tick
         });
         let keys = cx.observe_keystrokes(|m, _, _, _| m.input());
         let seed = std::time::SystemTime::now()
@@ -795,6 +795,7 @@ impl Mascot {
         let left = dir.is_some() && self.away.is_none();
         self.away = dir;
         self.moving = true;
+        self.wake.wake();
         // Not while the app is still starting and focus settles.
         if left && self.state == State::Idle && animated() && now > 3. {
             self.spy_until = now + SPY_FOR;
@@ -821,6 +822,7 @@ impl Mascot {
             self.perch = px;
         }
         self.moving = true;
+        self.wake.wake();
     }
 
     fn now(&self) -> f64 {
@@ -854,6 +856,7 @@ impl Mascot {
         self.act = None;
         self.auto_sleep = false;
         self.fired.clear();
+        self.wake.wake();
     }
 
     fn start_act(&mut self, act: Act, now: f64) {
@@ -1284,6 +1287,30 @@ impl Mascot {
             t = t.min(self.next_wander);
         }
         t
+    }
+
+    /// How long the frame timer should sleep after `wants_frame()` returns false.
+    fn next_wait(&self) -> crate::frame_timer::Next {
+        use crate::frame_timer::Next;
+        if !self.rendered || !self.active || !animated() {
+            return Next::Idle;
+        }
+        if self.state == State::Sleeping {
+            if self.small {
+                return Next::Idle;
+            }
+            let elapsed = self.now() - self.last_frame.unwrap_or(0.);
+            let wait = (0.2 - elapsed).max(0.05);
+            return Next::After(std::time::Duration::from_secs_f64(wait));
+        }
+        if self.state == State::Idle {
+            let next = self.next_event();
+            if next.is_finite() {
+                let wait = (next - self.now()).max(0.05);
+                return Next::After(std::time::Duration::from_secs_f64(wait));
+            }
+        }
+        Next::Idle
     }
 
     fn wants_frame(&self) -> bool {
@@ -1823,7 +1850,7 @@ impl Render for Mascot {
         self.rendered = true;
         self.active = self.awake || window.is_window_active();
         let frame = self.step(now, dt);
-        if self.wants_frame() {
+        if self.wants_frame() || matches!(self.next_wait(), crate::frame_timer::Next::After(_)) {
             self.wake.wake();
         }
         let color = self.color.unwrap_or_else(theme::brand_paper);

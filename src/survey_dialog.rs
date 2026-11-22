@@ -138,6 +138,29 @@ impl Flow {
         &self.survey
     }
 
+    /// Picks the kind question's choice for `kind` (one of `ids::KINDS`),
+    /// by position, so rewording a choice in PostHog changes nothing.
+    pub fn preset_kind(&mut self, kind: &str) {
+        let Some(b) = crate::surveys::ids::builtin(&self.survey.id) else {
+            return;
+        };
+        let Some(qid) = b.kind_question else {
+            return;
+        };
+        let Some(i) = self.survey.questions.iter().position(|q| q.id == qid) else {
+            return;
+        };
+        let Some(pos) = crate::surveys::ids::KINDS.iter().position(|k| *k == kind) else {
+            return;
+        };
+        if let Body::Single { choices, .. } = &self.survey.questions[i].body
+            && let Some(choice) = choices.get(pos)
+        {
+            let choice = choice.clone();
+            self.set_at(i, Answer::Choice(choice));
+        }
+    }
+
     pub fn src(&self) -> Source {
         self.src
     }
@@ -392,6 +415,11 @@ impl SurveyDialog {
         };
         this.focus_current(window, cx);
         this
+    }
+
+    /// Opens with the kind already picked (`Flow::preset_kind`).
+    pub fn preset_kind(&mut self, kind: &str) {
+        self.flow.preset_kind(kind);
     }
 
     pub fn is_sent(&self) -> bool {
@@ -777,6 +805,40 @@ mod tests {
             archived: false,
             conditions: Conditions::default(),
         }
+    }
+
+    #[test]
+    fn preset_kind_picks_the_choice_by_position() {
+        let ids = &crate::surveys::ids::USER;
+        let mut s = survey(vec![
+            q(
+                ids.questions[0].id,
+                Body::Single {
+                    choices: vec![
+                        "Broken".into(),
+                        "Idea".into(),
+                        "Looks".into(),
+                        "Else".into(),
+                    ],
+                    open_choice: false,
+                },
+                false,
+                Branching::Next,
+            ),
+            q(ids.questions[1].id, Body::Open, false, Branching::Next),
+        ]);
+        s.id = ids.survey_id.into();
+        let mut f = Flow::new(s.clone(), Source::User);
+        f.preset_kind("feature");
+        assert_eq!(f.answer(), Some(&Answer::Choice("Idea".into())));
+        // Unknown kinds and surveys that are not a feedback form change nothing.
+        let mut f = Flow::new(s.clone(), Source::User);
+        f.preset_kind("hologram");
+        assert_eq!(f.answer(), None);
+        s.id = "other".into();
+        let mut f = Flow::new(s, Source::User);
+        f.preset_kind("bug");
+        assert_eq!(f.answer(), None);
     }
 
     fn rating() -> Body {

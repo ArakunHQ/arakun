@@ -248,6 +248,8 @@ enum MenuTarget {
     MoreTabs,
     /// The tree of sessions, from the title bar while the sidebar is hidden.
     Sessions,
+    /// The rail's Help: the feedback forms and the docs.
+    Help,
 }
 
 /// An environment made with one click, shown while its worktree is made.
@@ -2699,6 +2701,16 @@ impl Shell {
     }
 
     fn send_feedback(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.send_feedback_as(None, window, cx);
+    }
+
+    /// The feedback form, with its kind (one of `ids::KINDS`) picked when given.
+    fn send_feedback_as(
+        &mut self,
+        kind: Option<&'static str>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         use crate::surveys::{ids, store};
         let survey = store::builtin(&ids::USER);
         self.open_survey(
@@ -2708,6 +2720,14 @@ impl Shell {
             window,
             cx,
         );
+        // Only when this form opened: a busy modal defers it, and then it
+        // opens later without the kind, which is still a working form.
+        if let (Some(kind), Some((Modal::Survey(dialog), _))) = (kind, &self.modal) {
+            dialog.update(cx, |d, cx| {
+                d.preset_kind(kind);
+                cx.notify();
+            });
+        }
     }
 
     fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -4097,10 +4117,12 @@ impl Render for Shell {
         let viewport_h = window.viewport_size().height.as_f32();
         let floating_sheet = self.render_floating_sheet(cx);
         let context_menu = self.menu.as_ref().map(|m| {
-            let above = matches!(
-                m.target,
-                MenuTarget::ModelMenu | MenuTarget::PermissionMenu | MenuTarget::RailUsage
-            );
+            let above = match m.target {
+                MenuTarget::ModelMenu | MenuTarget::PermissionMenu | MenuTarget::RailUsage => true,
+                // Help can be anywhere in the rail; low down it opens upward.
+                MenuTarget::Help => m.at.y.as_f32() > viewport_h / 2.,
+                _ => false,
+            };
             // The room between the anchor and the window edge the menu opens toward.
             let room = if above {
                 m.at.y.as_f32() - 24.

@@ -1191,6 +1191,7 @@ impl Shell {
             MenuTarget::TreeSession(pi, ei, si) => return self.render_tree_menu(pi, ei, si, cx),
             MenuTarget::MoreTabs => return self.render_more_menu(cx),
             MenuTarget::Sessions => return self.render_sessions_menu(cx),
+            MenuTarget::Help => return self.render_help_menu(cx),
             MenuTarget::Change(i) => {
                 let change = self
                     .has_projects()
@@ -1476,6 +1477,45 @@ fn closes_on_pick(s: crate::agent::Setting, agent: AgentKind, composer_agent: Ag
         Setting::Effort => false,
         Setting::Model => agent != composer_agent,
         _ => true,
+    }
+}
+
+/// Where the Help menu's Documentation row goes.
+const DOCS_URL: &str = "https://arakun.dev/docs";
+
+impl Shell {
+    /// The rail's Help: the feedback form, by kind, and the docs.
+    pub(super) fn render_help_menu(&self, cx: &mut Context<Self>) -> AnyElement {
+        let feedback = [
+            ("help-feedback", "message01", "Send feedback…", None),
+            ("help-bug", "alert-circle", "Report a bug…", Some("bug")),
+            (
+                "help-feature",
+                "ai-idea",
+                "Request a feature…",
+                Some("feature"),
+            ),
+        ];
+        let mut panel = ui::menu_panel("help-menu", 220.);
+        for (id, icon_name, label, kind) in feedback {
+            panel = panel.child(ui::menu_item(id, icon_name, label, false, true).on_click(
+                cx.listener(move |this, _, window, cx| {
+                    this.menu = None;
+                    this.send_feedback_as(kind, window, cx);
+                }),
+            ));
+        }
+        panel
+            .child(div().my(px(4.)).h(px(1.)).bg(theme::stroke()))
+            .child(
+                ui::menu_item("help-docs", "link-square02", "Documentation", false, true).on_click(
+                    cx.listener(|this, _, window, cx| {
+                        this.menu = None;
+                        this.open_page(DOCS_URL.into(), window, cx);
+                    }),
+                ),
+            )
+            .into_any_element()
     }
 }
 

@@ -739,7 +739,8 @@ one for usage counts, and a button for feedback:
   stopped and how many seconds it took), project added, environment created, a
   built-in view opened (with its name) and a browser tab opened.
 - **Feedback:** what you write when you press Send on a feedback form or after an
-  agent error or a crash. It is sent even with crash reports and usage counts off,
+  agent error or a crash. Help in the sidebar opens the form, set to a bug or a
+  feature request if you pick one, and links to the [docs](https://arakun.dev/docs). It is sent even with crash reports and usage counts off,
   because pressing Send is your yes. An agent can also send feedback with
   `arakun feedback`, but only with usage counts on, and you get a notice with the
   full text in the Inbox. Surveys made in PostHog show up only with usage counts on,

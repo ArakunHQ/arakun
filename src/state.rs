@@ -1693,8 +1693,6 @@ mod tests {
             panel_open: true,
             rail_w: RAIL_W,
             panel_w: PANEL_W,
-            subagents_open: false,
-            subagents_w: SUBAGENTS_W,
             arcade: false,
             diff_palette: crate::theme::DiffPalette::Default,
             glass: false,

@@ -915,45 +915,133 @@ pub fn detach_own_console() {
     }
 }
 
+#[cfg(target_os = "macos")]
+static LOGIN_PATH: std::sync::OnceLock<std::ffi::OsString> = std::sync::OnceLock::new();
+
+/// Refreshed login-shell `PATH` discovered in the background on macOS after
+/// launching from Finder/Dock, if available.
+pub fn login_path_override() -> Option<&'static std::ffi::OsStr> {
+    #[cfg(target_os = "macos")]
+    {
+        LOGIN_PATH.get().map(std::ffi::OsString::as_os_str)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        None
+    }
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn parse_login_path(stdout: &str) -> Option<String> {
+    stdout
+        .trim_end_matches(['\r', '\n'])
+        .rsplit('\n')
+        .next()
+        .map(str::trim)
+        .filter(|p| p.contains('/'))
+        .map(str::to_string)
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn fallback_macos_path(current: Option<&std::ffi::OsStr>, home: &Path) -> std::ffi::OsString {
+    let mut dirs = vec![
+        PathBuf::from("/opt/homebrew/bin"),
+        PathBuf::from("/opt/homebrew/sbin"),
+        PathBuf::from("/usr/local/bin"),
+        home.join(".local/bin"),
+        home.join(".cargo/bin"),
+    ];
+    if let Some(cur) = current {
+        for d in std::env::split_paths(cur) {
+            if !dirs.contains(&d) {
+                dirs.push(d);
+            }
+        }
+    }
+    std::env::join_paths(dirs).unwrap_or_default()
+}
+
+#[cfg(target_os = "macos")]
+fn login_path_cache_file() -> PathBuf {
+    app_dir().join("login-path.txt")
+}
+
+#[cfg(target_os = "macos")]
+fn read_login_shell_path() -> Option<String> {
+    let shell = std::env::var("SHELL")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "/bin/zsh".into());
+    let mut child = Command::new(shell)
+        .args(["-l", "-i", "-c", r#"printf '\n%s' "$PATH""#])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let started = std::time::Instant::now();
+    while matches!(child.try_wait(), Ok(None)) {
+        if started.elapsed() > std::time::Duration::from_secs(5) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let mut out = String::new();
+    let _ = std::io::Read::read_to_string(&mut child.stdout.take()?, &mut out);
+    // What an interactive rc prints comes before the newline the command starts with.
+    parse_login_path(&out)
+}
+
 /// Started from Finder or the Dock, macOS gives an app launchd's `PATH`
 /// (`/usr/bin:/bin:/usr/sbin:/sbin`), where no agent, Homebrew or `~/.local/bin` is.
-/// The user's login shell is asked for its `PATH` instead, as their terminal would have it;
-/// a shell that takes more than 5 s is left behind. Call before any thread starts.
+/// Applies the cached login-shell `PATH` (or standard macOS tool directories on
+/// first launch) synchronously with zero subprocess startup cost. Call before
+/// any thread starts, then call [`refresh_login_path_async`] once env setup is done.
 pub fn import_login_path() {
     #[cfg(target_os = "macos")]
     {
         if std::os::unix::process::parent_id() != 1 {
             return;
         }
-        let shell = std::env::var("SHELL")
+        let cached = std::fs::read_to_string(login_path_cache_file())
             .ok()
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| "/bin/zsh".into());
-        let Ok(mut child) = Command::new(shell)
-            .args(["-l", "-i", "-c", r#"printf '\n%s' "$PATH""#])
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-        else {
-            return;
+            .and_then(|s| parse_login_path(&s));
+        let path = match cached {
+            Some(p) => std::ffi::OsString::from(p),
+            None => fallback_macos_path(std::env::var_os("PATH").as_deref(), &home()),
         };
-        let started = std::time::Instant::now();
-        while matches!(child.try_wait(), Ok(None)) {
-            if started.elapsed() > std::time::Duration::from_secs(5) {
-                let _ = child.kill();
-                let _ = child.wait();
-                return;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(20));
+        // SAFETY: called first thing in `main`, before the app starts any thread.
+        unsafe { std::env::set_var("PATH", path) };
+    }
+}
+
+/// Refreshes the user's login-shell `PATH` off the startup critical path on
+/// macOS so subsequent child spawns and launches see any `.zshrc` updates
+/// without blocking window creation.
+pub fn refresh_login_path_async() {
+    #[cfg(target_os = "macos")]
+    {
+        if std::os::unix::process::parent_id() != 1 {
+            return;
         }
-        let mut out = String::new();
-        let _ = std::io::Read::read_to_string(&mut child.stdout.take().unwrap(), &mut out);
-        // What an interactive rc prints comes before the newline the command starts with.
-        if let Some(path) = out.rsplit('\n').next().filter(|p| p.contains('/')) {
-            // SAFETY: called first thing in `main`, before the app starts any thread.
-            unsafe { std::env::set_var("PATH", path) };
-        }
+        let _ = std::thread::Builder::new()
+            .name("arakun-login-path".into())
+            .spawn(|| {
+                let Some(path) = read_login_shell_path() else {
+                    return;
+                };
+                let _ = LOGIN_PATH.set(std::ffi::OsString::from(&path));
+                let file = login_path_cache_file();
+                if let Some(parent) = file.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                let tmp = file.with_extension("txt.tmp");
+                if std::fs::write(&tmp, &path).is_ok() {
+                    let _ = std::fs::rename(&tmp, &file);
+                }
+            });
     }
 }
 
@@ -1765,6 +1853,27 @@ mod tests {
     use super::*;
     #[cfg(unix)]
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn login_path_parses_last_line_and_prepends_macos_defaults() {
+        assert_eq!(
+            parse_login_path("noise from .zshrc\n/opt/homebrew/bin:/usr/bin\n"),
+            Some("/opt/homebrew/bin:/usr/bin".into())
+        );
+        assert_eq!(parse_login_path("no slashes here"), None);
+        assert_eq!(
+            parse_login_path("noise from .zshrc\n/opt/homebrew/bin:/usr/bin"),
+            Some("/opt/homebrew/bin:/usr/bin".into())
+        );
+        let fallback = fallback_macos_path(
+            Some(std::ffi::OsStr::new("/usr/bin:/bin")),
+            Path::new("/Users/test"),
+        );
+        let dirs: Vec<PathBuf> = std::env::split_paths(&fallback).collect();
+        assert_eq!(dirs[0], PathBuf::from("/opt/homebrew/bin"));
+        assert!(dirs.contains(&PathBuf::from("/Users/test/.local/bin")));
+        assert!(dirs.contains(&PathBuf::from("/usr/bin")));
+    }
 
     #[test]
     fn relaunch_opens_the_bundle_a_binary_belongs_to() {

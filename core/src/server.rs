@@ -416,6 +416,7 @@ pub fn cli(args: &[String]) -> i32 {
 fn serve(opts: Options) -> i32 {
     // Under launchd the PATH has no agent in it; the login shell's has.
     crate::platform::import_login_path();
+    crate::platform::refresh_login_path_async();
     // The agents' prompts describe the app's window and the commands that
     // drive it; there is no window here.
     if std::env::var_os("ARAKUN_AGENT_HINT").is_none() {

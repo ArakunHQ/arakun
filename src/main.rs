@@ -153,6 +153,7 @@ fn main() {
     }
     platform::import_login_path();
     control::export_env();
+    platform::refresh_login_path_async();
     platform::detach_own_console();
     // After the CLI: `arakun <command>` runs in agents' shells and reports nothing.
     crash::install();

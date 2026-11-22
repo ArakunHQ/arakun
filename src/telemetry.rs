@@ -21,6 +21,12 @@
 //! panicking thread, since the process may not outlive it. The panic hook
 //! itself is `crash`'s, which also keeps a crash log on this machine whatever
 //! the answer was.
+//!
+//! Feedback is different. A survey response the user sends on purpose (user
+//! and error feedback) goes out even if usage is off, because pressing Send is
+//! the consent (`feedback_allowed`). Agent feedback and popover surveys still
+//! need usage. `DO_NOT_TRACK` and `ARAKUN_TELEMETRY=0` block all of it, and a
+//! response never waits in `hold`.
 
 use std::cell::Cell;
 use std::collections::VecDeque;
@@ -208,14 +214,116 @@ fn apply(choice: Consent) {
     USAGE.store(choice.usage, Ordering::Relaxed);
     // What was queued while a choice was on is not sent once it is off.
     lock(&queue().events).retain(|e| allowed(e, choice));
-    if (choice.crashes || choice.usage)
-        && STARTED.set(()).is_ok()
+    if choice.crashes || choice.usage {
+        start_sender();
+    }
+}
+
+fn start_sender() {
+    if STARTED.set(()).is_ok()
         && let Err(e) = std::thread::Builder::new()
             .name("telemetry".into())
             .spawn(send_loop)
     {
         eprintln!("arakun: telemetry not started: {e}");
     }
+}
+
+/// Where a survey response comes from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Source {
+    User,
+    Error,
+    Agent,
+    Popover,
+}
+
+impl Source {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Source::User => "user",
+            Source::Error => "error",
+            Source::Agent => "agent",
+            Source::Popover => "popover",
+        }
+    }
+
+    /// Whether the person pressed Send themselves, which is their consent.
+    fn on_purpose(self) -> bool {
+        matches!(self, Source::User | Source::Error)
+    }
+}
+
+/// Why a response was not sent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Refused {
+    /// `DO_NOT_TRACK` or `ARAKUN_TELEMETRY=0`.
+    Blocked,
+    NoUsage,
+    DevBuild,
+}
+
+impl std::fmt::Display for Refused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Refused::Blocked => "Telemetry is turned off by DO_NOT_TRACK or ARAKUN_TELEMETRY=0.",
+            Refused::NoUsage => "Usage telemetry is off, so this was not sent.",
+            Refused::DevBuild => "Debug builds and arakun dev send nothing.",
+        })
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Blocked {
+    No,
+    Env,
+    Dev,
+}
+
+fn blocked_by() -> Blocked {
+    if env() == EnvChoice::Off {
+        Blocked::Env
+    } else if blocked() {
+        Blocked::Dev
+    } else {
+        Blocked::No
+    }
+}
+
+/// The consent table for survey responses, apart from the live state so a
+/// test can reach every row.
+fn feedback_decision(src: Source, blocked: Blocked, consent: Consent) -> Result<(), Refused> {
+    match blocked {
+        Blocked::Env => return Err(Refused::Blocked),
+        Blocked::Dev => return Err(Refused::DevBuild),
+        Blocked::No => {}
+    }
+    if src.on_purpose() || consent.usage {
+        Ok(())
+    } else {
+        Err(Refused::NoUsage)
+    }
+}
+
+/// Whether a response from `src` may be sent now.
+pub fn feedback_allowed(src: Source) -> Result<(), Refused> {
+    feedback_decision(src, blocked_by(), effective())
+}
+
+/// Sends a survey response. It never waits in `hold`: user and error feedback
+/// goes out even while the first-launch question is open.
+pub fn send_feedback(event: &str, props: Map<String, Value>) -> Result<(), Refused> {
+    let src = props.get("source").and_then(Value::as_str);
+    let src = match src {
+        Some("user") => Source::User,
+        Some("error") => Source::Error,
+        Some("agent") => Source::Agent,
+        _ => Source::Popover,
+    };
+    feedback_allowed(src)?;
+    enqueue(event_json(event, props));
+    start_sender();
+    Ok(())
 }
 
 /// Queues a usage event. `props` must say nothing about the user's work: a
@@ -282,9 +390,11 @@ pub fn quit() {
 /// `message` is sent (`category`), never its text: an agent's error can hold
 /// a project's name or a credential no scrubbing would recognise. `props` must
 /// hold only fixed labels, numbers and flags for the same reason.
-pub fn error(kind: &'static str, message: &str, props: &[(&str, Value)]) {
+///
+/// Returns the event's id, or None when nothing was sent.
+pub fn error(kind: &'static str, message: &str, props: &[(&str, Value)]) -> Option<String> {
     if !CRASHES.load(Ordering::Relaxed) {
-        return;
+        return None;
     }
     let mut map: Map<String, Value> = props
         .iter()
@@ -299,7 +409,10 @@ pub fn error(kind: &'static str, message: &str, props: &[(&str, Value)]) {
             "mechanism": {"type": "generic", "handled": true, "synthetic": false},
         }]),
     );
-    enqueue(event_json("$exception", map));
+    let event = event_json("$exception", map);
+    let id = event["uuid"].as_str().map(str::to_string);
+    enqueue(event);
+    id
 }
 
 /// Sends what is queued, waiting at most a couple of seconds.
@@ -316,6 +429,10 @@ fn flush() {
 fn allowed(event: &Value, choice: Consent) -> bool {
     if event["event"] == "$exception" {
         choice.crashes
+    } else if event["event"] == events::SURVEY_SENT {
+        // Feedback the person sent on purpose is its own consent.
+        let src = event["properties"]["source"].as_str();
+        matches!(src, Some("user" | "error")) || choice.usage
     } else {
         choice.usage
     }
@@ -397,6 +514,7 @@ pub mod events {
     pub const ONBOARDING_FINISHED: &str = "onboarding finished";
     pub const APP_QUIT: &str = "app quit";
     pub const UPDATE_ASKED: &str = "update asked";
+    pub const SURVEY_SENT: &str = "survey sent";
 }
 
 // ---- events -----------------------------------------------------------------
@@ -432,12 +550,32 @@ fn event_json(name: &str, mut props: Map<String, Value>) -> Value {
         .map_or(0, |d| d.as_millis() as u64);
     json!({
         "event": name,
+        "uuid": uuid_v4(),
         "distinct_id": install_id(),
         "properties": props,
         // When it happened: an event can wait for the first answer, or for
         // the next batch, before it is sent.
         "timestamp": timestamp(now),
     })
+}
+
+/// A random version 4 UUID, which PostHog keeps as the event's id.
+fn uuid_v4() -> String {
+    let mut b = [0u8; 16];
+    // A failed read leaves zeros: still well formed, and PostHog drops a
+    // repeat, so nothing worse than a lost event.
+    let _ = getrandom::fill(&mut b);
+    b[6] = (b[6] & 0x0f) | 0x40;
+    b[8] = (b[8] & 0x3f) | 0x80;
+    let h: String = b.iter().map(|x| format!("{x:02x}")).collect();
+    format!(
+        "{}-{}-{}-{}-{}",
+        &h[..8],
+        &h[8..12],
+        &h[12..16],
+        &h[16..20],
+        &h[20..]
+    )
 }
 
 /// `unix_ms` as RFC 3339 in UTC, as PostHog's capture API takes it.
@@ -493,7 +631,7 @@ pub(crate) fn flags_id() -> String {
     .clone()
 }
 
-fn home() -> String {
+pub(crate) fn home() -> String {
     static HOME: OnceLock<String> = OnceLock::new();
     HOME.get_or_init(|| crate::platform::home().to_string_lossy().into_owned())
         .clone()
@@ -952,6 +1090,98 @@ mod tests {
         assert!(allowed(&crash, only_crashes));
         assert!(!allowed(&usage, only_crashes));
         assert!(!allowed(&crash, Consent::NONE));
+    }
+
+    #[test]
+    fn user_sends_without_usage() {
+        for src in [Source::User, Source::Error] {
+            for consent in [Consent::NONE, Consent::ALL] {
+                assert_eq!(feedback_decision(src, Blocked::No, consent), Ok(()));
+            }
+        }
+    }
+
+    #[test]
+    fn agent_needs_usage() {
+        for src in [Source::Agent, Source::Popover] {
+            let crashes_only = Consent {
+                crashes: true,
+                usage: false,
+            };
+            assert_eq!(
+                feedback_decision(src, Blocked::No, Consent::NONE),
+                Err(Refused::NoUsage)
+            );
+            assert_eq!(
+                feedback_decision(src, Blocked::No, crashes_only),
+                Err(Refused::NoUsage)
+            );
+            assert_eq!(feedback_decision(src, Blocked::No, Consent::ALL), Ok(()));
+        }
+    }
+
+    #[test]
+    fn blocked_refuses_all() {
+        for src in [Source::User, Source::Error, Source::Agent, Source::Popover] {
+            assert_eq!(
+                feedback_decision(src, Blocked::Env, Consent::ALL),
+                Err(Refused::Blocked)
+            );
+            assert_eq!(
+                feedback_decision(src, Blocked::Dev, Consent::ALL),
+                Err(Refused::DevBuild)
+            );
+        }
+    }
+
+    #[test]
+    fn feedback_is_refused_in_tests() {
+        assert_eq!(feedback_allowed(Source::User), Err(Refused::DevBuild));
+    }
+
+    #[test]
+    fn feedback_event_passes_send_filter() {
+        let sent = |src: &str| {
+            event_json(
+                events::SURVEY_SENT,
+                json!({ "source": src }).as_object().unwrap().clone(),
+            )
+        };
+        for src in ["user", "error"] {
+            assert!(allowed(&sent(src), Consent::NONE), "{src}");
+        }
+        for src in ["agent", "popover"] {
+            assert!(!allowed(&sent(src), Consent::NONE), "{src}");
+            assert!(allowed(&sent(src), Consent::ALL), "{src}");
+        }
+    }
+
+    #[test]
+    fn events_have_a_v4_uuid() {
+        let id = uuid_v4();
+        let b = id.as_bytes();
+        assert_eq!(id.len(), 36);
+        assert_eq!(b[14], b'4');
+        assert!(matches!(b[19], b'8' | b'9' | b'a' | b'b'));
+        assert_ne!(id, uuid_v4());
+        assert_eq!(
+            event_json("x", Map::new())["uuid"].as_str().map(str::len),
+            Some(36)
+        );
+    }
+
+    #[test]
+    fn error_returns_event_uuid() {
+        assert_eq!(error("AgentError", "boom", &[]), None);
+        CRASHES.store(true, Ordering::Relaxed);
+        let id = error("AgentError", "boom", &[]);
+        CRASHES.store(false, Ordering::Relaxed);
+        let id = id.expect("sent");
+        assert_eq!(id.len(), 36);
+        let queued = lock(&queue().events)
+            .iter()
+            .any(|e| e["uuid"] == id.as_str());
+        assert!(queued);
     }
 
     #[test]

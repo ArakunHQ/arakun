@@ -363,8 +363,9 @@ pub fn scan() -> Vec<Record> {
                 tail: None,
             });
             let mut tail = entry.tail.take().unwrap_or_default();
-            if meta.len() < tail.offset {
-                // Shorter than what was read: rewritten, so read it all again.
+            if meta.len() < tail.offset || meta.len() < entry.len {
+                // Shorter than before: rewritten, so read it all again. The read
+                // can stop short of the old length at a half-written last line.
                 tail = ClaudeTail::default();
                 entry.records.clear();
                 entry.keys.clear();

@@ -364,6 +364,10 @@ pub struct Shell {
     rail_pick: Vec<std::path::PathBuf>,
     /// The row Shift+click picks from.
     rail_pick_anchor: Option<std::path::PathBuf>,
+    /// Sessions of the sidebar's tree picked with Ctrl or Shift+click, by id,
+    /// and the one clicked last, where Shift starts.
+    tree_pick: Vec<SharedString>,
+    tree_pick_anchor: Option<SharedString>,
     /// Polls `git status` of the visible environment while the window is active.
     poll: Option<Task<()>>,
     /// When the last background `git fetch` ended, so the network is asked rarely.
@@ -988,6 +992,8 @@ impl Shell {
             menu: None,
             rail_pick: Vec::new(),
             rail_pick_anchor: None,
+            tree_pick: Vec::new(),
+            tree_pick_anchor: None,
             poll: None,
             last_fetch: None,
             fetching: false,

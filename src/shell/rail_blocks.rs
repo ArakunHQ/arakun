@@ -892,7 +892,13 @@ impl Shell {
                 if narrow {
                     self.render_projects_narrow(cx).into_any_element()
                 } else if crate::tab_layout::current().tree() {
-                    self.render_session_tree(false, cx)
+                    // A segment that shows its title heads the tree already.
+                    let titled = self
+                        .sidebar
+                        .sections
+                        .get(path.0)
+                        .is_some_and(|s| s.show_title || self.arranging());
+                    self.render_session_tree(false, !titled, cx)
                 } else {
                     self.render_projects_block(*envs, *changes, *only_open, cx)
                         .into_any_element()

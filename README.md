@@ -643,8 +643,10 @@ after a week).
   signing in to a local server leaves the one for `teams.arakun.dev` alone.
 
   The Teams tab is an end-to-end encrypted team chat. Each account on this
-  profile has its own device key pairs in the system keyring; the
-  server only stores and forwards what they seal and sign (see
+  profile has its own device key pairs in the system keyring. Messages and
+  channel names are sealed on the device, and the server never sees them or the
+  team keys. It does see team names, who is in which team and with which role,
+  device names, invites, and who sent a message when and how large it was (see
   [teams/PROTOCOL.md](teams/PROTOCOL.md)). The **+** beside Teams creates a team with
   a `#general` channel; the team page invites people by GitHub user name, adds
   channels and approves the people who accepted. Approving hands the team key to

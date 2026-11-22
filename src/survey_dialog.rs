@@ -26,6 +26,46 @@ pub const THANKS: &str = "Thanks. Sent to the Arakun team.";
 const LINK_CLICKED: &str = "link clicked";
 /// Rating labels: a 10-point scale runs from 0 (NPS), the others from 1.
 const NUMBERS: [&str; 11] = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10"];
+/// Faces for emoji ratings, worst to best, in posthog-js's order. They are
+/// icons, not emoji: the app's font has no emoji, and a system without an
+/// emoji font would draw boxes. 3 points: 😞 😐 😊.
+const FACES_3: [&str; 3] = ["face-sad", "face-neutral", "face-happy"];
+/// 5 points: 😡 😞 😐 🙂 😍.
+const FACES_5: [&str; 5] = [
+    "face-angry",
+    "face-sad",
+    "face-neutral",
+    "face-smile",
+    "face-love",
+];
+
+/// How a rating value is labelled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Label {
+    Number(&'static str),
+    /// An icon name.
+    Face(&'static str),
+}
+
+/// The values a rating offers and their labels. The value sent is the
+/// number either way; PostHog only has faces for 3 and 5 points.
+fn rating_options(scale: u8, emoji: bool) -> Vec<(u8, Label)> {
+    let faces: &[&'static str] = match (emoji, scale) {
+        (true, 3) => &FACES_3,
+        (true, 5) => &FACES_5,
+        _ => &[],
+    };
+    let from = if scale == 10 { 0 } else { 1 };
+    (from..=scale)
+        .filter_map(|n| {
+            let label = match faces.get(usize::from(n - from)) {
+                Some(face) => Label::Face(face),
+                None => Label::Number(NUMBERS.get(usize::from(n))?),
+            };
+            Some((n, label))
+        })
+        .collect()
+}
 
 pub enum SurveyEvent {
     /// Sent; the dialog now thanks the person.
@@ -300,7 +340,11 @@ impl SurveyDialog {
                 continue;
             }
             let placeholder = if open { "Type here" } else { "Say more" };
-            let input = cx.new(|cx| TextInput::new(placeholder, cx));
+            // Open answers wrap and grow; the open choice's note stays one line.
+            let input = cx.new(|cx| {
+                let input = TextInput::new(placeholder, cx);
+                if open { input.multiline(3, 8) } else { input }
+            });
             subs.push(cx.subscribe_in(
                 &input,
                 window,
@@ -314,7 +358,9 @@ impl SurveyDialog {
                         }
                         cx.notify();
                     }
-                    InputEvent::Submit => this.go_next(window, cx),
+                    // Enter types a newline in an open answer; Ctrl+Enter (Cmd+Enter
+                    // on macOS) moves on there, and Enter does in the one-line note.
+                    InputEvent::Submit | InputEvent::SubmitAlt => this.go_next(window, cx),
                     InputEvent::Cancel => cx.emit(SurveyEvent::Dismissed),
                     _ => {}
                 },
@@ -398,13 +444,18 @@ impl SurveyDialog {
             Body::Open => self.field(at),
             Body::Rating {
                 scale,
+                emoji,
                 lower,
                 upper,
-                ..
             } => {
-                let from = if *scale == 10 { 0 } else { 1 };
-                let options: Vec<(u8, &'static str)> = (from..=*scale)
-                    .filter_map(|n| Some((n, *NUMBERS.get(n as usize)?)))
+                let labelled = rating_options(*scale, *emoji);
+                // A face is drawn into its segment, so its text is empty.
+                let options: Vec<(u8, &'static str)> = labelled
+                    .iter()
+                    .map(|(n, l)| match l {
+                        Label::Number(t) => (*n, *t),
+                        Label::Face(_) => (*n, ""),
+                    })
                     .collect();
                 let current = match answer {
                     Some(Answer::Rating(n)) => *n,
@@ -420,12 +471,25 @@ impl SurveyDialog {
                         current,
                         |seg, n| {
                             // Equal steps across the dialog, under the scale's labels.
-                            seg.flex_1().justify_center().on_click(cx.listener(
-                                move |this, _, _, cx| {
+                            let face = labelled.iter().find_map(|(v, l)| match l {
+                                Label::Face(name) if *v == n => Some(*name),
+                                _ => None,
+                            });
+                            let color = if n == current {
+                                theme::text()
+                            } else {
+                                theme::text_subtle()
+                            };
+                            seg.flex_1()
+                                .justify_center()
+                                .when_some(face, |s, name| {
+                                    s.h(gpui::px(28.))
+                                        .child(ui::icon(name, 18.).text_color(color))
+                                })
+                                .on_click(cx.listener(move |this, _, _, cx| {
                                     this.flow.set(Answer::Rating(n));
                                     cx.notify();
-                                },
-                            ))
+                                }))
                         },
                     ))
                     .when(!lower.is_empty() || !upper.is_empty(), |d| {
@@ -544,7 +608,20 @@ impl SurveyDialog {
     }
 
     fn field(&self, i: usize) -> gpui::AnyElement {
+        let open = self
+            .flow
+            .survey()
+            .questions
+            .get(i)
+            .is_some_and(|q| matches!(q.body, Body::Open));
         match self.inputs.get(&i) {
+            // As tall as its rows: the input grows from 3 to 8 lines.
+            Some(input) if open => ui::field()
+                .h_auto()
+                .items_start()
+                .py(ui::sp(6.))
+                .child(input.clone())
+                .into_any_element(),
             Some(input) => ui::field().child(input.clone()).into_any_element(),
             None => div().into_any_element(),
         }
@@ -850,5 +927,39 @@ mod tests {
                 (1, Answer::Choices(vec!["Bug".into(), "slow".into()])),
             ]
         );
+    }
+
+    #[test]
+    fn emoji_rating_labels() {
+        let faces = |scale| -> Vec<(u8, Label)> { rating_options(scale, true) };
+        assert_eq!(
+            faces(5),
+            vec![
+                (1, Label::Face("face-angry")),
+                (2, Label::Face("face-sad")),
+                (3, Label::Face("face-neutral")),
+                (4, Label::Face("face-smile")),
+                (5, Label::Face("face-love")),
+            ]
+        );
+        assert_eq!(
+            faces(3),
+            vec![
+                (1, Label::Face("face-sad")),
+                (2, Label::Face("face-neutral")),
+                (3, Label::Face("face-happy")),
+            ]
+        );
+        // Other scales have no faces, so they stay numbers.
+        assert_eq!(rating_options(5, false)[0], (1, Label::Number("1")));
+        assert_eq!(faces(7).len(), 7);
+        assert_eq!(faces(7)[6], (7, Label::Number("7")));
+        assert_eq!(rating_options(10, false)[0], (0, Label::Number("0")));
+        assert_eq!(rating_options(10, false).len(), 11);
+        // Every face is an icon the app ships.
+        for name in FACES_3.iter().chain(&FACES_5) {
+            let path = format!("{}/assets/icons/{name}.svg", env!("CARGO_MANIFEST_DIR"));
+            assert!(std::path::Path::new(&path).exists(), "{path}");
+        }
     }
 }

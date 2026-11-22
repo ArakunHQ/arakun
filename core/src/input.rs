@@ -1,6 +1,10 @@
-//! Single-line text field, adapted from GPUI's `examples/input.rs`: IME-aware via
+//! Text field, adapted from GPUI's `examples/input.rs`: IME-aware via
 //! `EntityInputHandler`, mouse selection, clipboard, word motions. Owners listen to
 //! `InputEvent` for edits, Enter, Escape and list navigation keys.
+//!
+//! One line by default. `multiline` makes it wrap to its width and grow
+//! between a least and a most number of rows, then scroll; Enter then types a
+//! newline, and Ctrl+Enter (Cmd+Enter on macOS) is the only Submit.
 
 use std::ops::Range;
 
@@ -8,8 +12,8 @@ use gpui::{
     App, Bounds, ClipboardItem, Context, CursorStyle, ElementId, ElementInputHandler, Entity,
     EntityInputHandler, EventEmitter, FocusHandle, Focusable, GlobalElementId, KeyBinding,
     LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point,
-    ShapedLine, SharedString, Style, TextRun, UTF16Selection, UnderlineStyle, Window, actions, div,
-    fill, point, prelude::*, px, relative, size,
+    ShapedLine, SharedString, Style, TextRun, UTF16Selection, UnderlineStyle, Window, WrappedLine,
+    actions, div, fill, point, prelude::*, px, relative, size,
 };
 use unicode_segmentation::UnicodeSegmentation as _;
 
@@ -117,6 +121,12 @@ pub struct TextInput {
     /// How far long content is shifted left to keep the caret in view.
     scroll_x: Pixels,
     is_selecting: bool,
+    /// The least and most rows shown; `None` is one line.
+    multiline: Option<(usize, usize)>,
+    /// The wrapped text as last painted, in multiline mode.
+    last_wrapped: Option<Wrapped>,
+    /// How far multiline content is shifted up to keep the caret in view.
+    scroll_y: Pixels,
 }
 
 impl EventEmitter<InputEvent> for TextInput {}
@@ -139,7 +149,18 @@ impl TextInput {
             last_bounds: None,
             scroll_x: px(0.),
             is_selecting: false,
+            multiline: None,
+            last_wrapped: None,
+            scroll_y: px(0.),
         }
+    }
+
+    /// Wraps to the field's width and shows `min` to `max` rows, then
+    /// scrolls. Enter types a newline; Ctrl+Enter submits (`SubmitAlt`).
+    pub fn multiline(mut self, min: usize, max: usize) -> Self {
+        let min = min.max(1);
+        self.multiline = Some((min, max.max(min)));
+        self
     }
 
     pub fn mono(mut self) -> Self {
@@ -266,11 +287,51 @@ impl TextInput {
     }
 
     fn home(&mut self, _: &Home, _: &mut Window, cx: &mut Context<Self>) {
-        self.move_to(0, cx);
+        let to = match (&self.multiline, &self.last_wrapped) {
+            (Some(_), Some(w)) => w.rows[w.row_of(self.cursor_offset())].start,
+            (Some(_), None) => line_start(&self.content, self.cursor_offset()),
+            (None, _) => 0,
+        };
+        self.move_to(to, cx);
     }
 
     fn end(&mut self, _: &End, _: &mut Window, cx: &mut Context<Self>) {
-        self.move_to(self.content.len(), cx);
+        let to = match (&self.multiline, &self.last_wrapped) {
+            (Some(_), Some(w)) => row_end(&w.rows, &self.content, w.row_of(self.cursor_offset())),
+            (Some(_), None) => line_end(&self.content, self.cursor_offset()),
+            (None, _) => self.content.len(),
+        };
+        self.move_to(to, cx);
+    }
+
+    /// Enter: a newline in multiline mode, else Submit.
+    fn enter(&mut self, _: &Submit, window: &mut Window, cx: &mut Context<Self>) {
+        match entered(self.multiline.is_some()) {
+            Some(text) => self.replace_text_in_range(None, text, window, cx),
+            None => cx.emit(InputEvent::Submit),
+        }
+    }
+
+    /// Up and Down: a row up or down in multiline mode, else the owner's.
+    fn vertical(&mut self, by: isize, cx: &mut Context<Self>) {
+        let (Some(_), Some(w)) = (&self.multiline, &self.last_wrapped) else {
+            return cx.emit(if by < 0 {
+                InputEvent::Up
+            } else {
+                InputEvent::Down
+            });
+        };
+        let at = self.cursor_offset();
+        let row = w.row_of(at);
+        let to = match row.checked_add_signed(by).filter(|r| *r < w.rows.len()) {
+            Some(r) => {
+                let x = w.position(at).x;
+                w.index_at(point(x, w.line_height * r as f32 + w.line_height / 2.))
+            }
+            None if by < 0 => 0,
+            None => self.content.len(),
+        };
+        self.move_to(to, cx);
     }
 
     fn backspace(&mut self, _: &Backspace, window: &mut Window, cx: &mut Context<Self>) {
@@ -333,7 +394,7 @@ impl TextInput {
 
     fn paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-            self.replace_text_in_range(None, &text.replace('\n', " "), window, cx);
+            self.replace_text_in_range(None, &pasted(&text, self.multiline.is_some()), window, cx);
         }
     }
 
@@ -370,6 +431,11 @@ impl TextInput {
     fn index_for_mouse_position(&self, position: Point<Pixels>) -> usize {
         if self.content.is_empty() {
             return 0;
+        }
+        if let (Some(_), Some(w), Some(bounds)) =
+            (&self.multiline, &self.last_wrapped, &self.last_bounds)
+        {
+            return w.index_at(position - bounds.origin);
         }
         let (Some(bounds), Some(line)) = (self.last_bounds.as_ref(), self.last_layout.as_ref())
         else {
@@ -574,8 +640,18 @@ impl EntityInputHandler for TextInput {
         _: &mut Window,
         _: &mut Context<Self>,
     ) -> Option<Bounds<Pixels>> {
-        let last_layout = self.last_layout.as_ref()?;
         let range = self.range_from_utf16(&range_utf16);
+        if let (Some(_), Some(w), Some(text)) =
+            (&self.multiline, &self.last_wrapped, &self.last_bounds)
+        {
+            let start = text.origin + w.position(range.start);
+            let end = text.origin + w.position(range.end);
+            return Some(Bounds::from_corners(
+                start,
+                point(end.x.max(start.x), end.y + w.line_height),
+            ));
+        }
+        let last_layout = self.last_layout.as_ref()?;
         Some(Bounds::from_corners(
             point(
                 bounds.left() + last_layout.x_for_index(range.start),
@@ -594,6 +670,11 @@ impl EntityInputHandler for TextInput {
         _: &mut Window,
         _: &mut Context<Self>,
     ) -> Option<usize> {
+        if let (Some(_), Some(w), Some(text)) =
+            (&self.multiline, &self.last_wrapped, &self.last_bounds)
+        {
+            return Some(self.offset_to_utf16(w.index_at(point - text.origin)));
+        }
         let line_point = self.last_bounds?.localize(&point)?;
         let last_layout = self.last_layout.as_ref()?;
         let utf8_index = last_layout.index_for_x(point.x - line_point.x)?;
@@ -612,6 +693,12 @@ struct PrepaintState {
     selection: Option<PaintQuad>,
     /// Horizontal shift that keeps the caret visible in long content.
     scroll: Pixels,
+    /// Multiline mode: the wrapped text, the caret's point in it, one quad
+    /// per selected row, and the vertical shift that keeps the caret in view.
+    wrapped: Option<Wrapped>,
+    cursor_at: Option<Point<Pixels>>,
+    selections: Vec<PaintQuad>,
+    scroll_y: Pixels,
 }
 
 impl IntoElement for TextElement {
@@ -622,49 +709,15 @@ impl IntoElement for TextElement {
     }
 }
 
-impl Element for TextElement {
-    type RequestLayoutState = ();
-    type PrepaintState = PrepaintState;
-
-    fn id(&self) -> Option<ElementId> {
-        None
-    }
-
-    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
-        None
-    }
-
-    fn request_layout(
-        &mut self,
-        _: Option<&GlobalElementId>,
-        _: Option<&gpui::InspectorElementId>,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> (LayoutId, Self::RequestLayoutState) {
-        let mut style = Style::default();
-        style.size.width = relative(1.).into();
-        style.size.height = window.line_height().into();
-        (window.request_layout(style, [], cx), ())
-    }
-
-    fn prepaint(
-        &mut self,
-        _: Option<&GlobalElementId>,
-        _: Option<&gpui::InspectorElementId>,
-        bounds: Bounds<Pixels>,
-        _: &mut Self::RequestLayoutState,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> Self::PrepaintState {
-        let input = self.input.read(cx);
-        let content = input.content.clone();
-        let selected_range = input.selected_range.clone();
-        let cursor = input.cursor_offset();
+impl TextInput {
+    /// What the field shows, and its runs: the placeholder when empty,
+    /// stars when masked, the marked text underlined.
+    fn display(&self, window: &Window) -> (SharedString, Vec<TextRun>) {
         let style = window.text_style();
-
+        let content = self.content.clone();
         let (display_text, text_color) = if content.is_empty() {
-            (input.placeholder.clone(), theme::text_subtle())
-        } else if input.secret || (input.redacted && crate::redact::on()) {
+            (self.placeholder.clone(), theme::text_subtle())
+        } else if self.secret || (self.redacted && crate::redact::on()) {
             // Same byte length per char, so offsets into `content` still index the line.
             let masked: String = content.chars().map(|c| "*".repeat(c.len_utf8())).collect();
             (masked.into(), style.color)
@@ -679,7 +732,7 @@ impl Element for TextElement {
             underline: None,
             strikethrough: None,
         };
-        let runs = match input.marked_range.as_ref() {
+        let runs = match self.marked_range.as_ref() {
             Some(marked) => vec![
                 TextRun {
                     len: marked.start,
@@ -704,8 +757,147 @@ impl Element for TextElement {
             .collect(),
             None => vec![run],
         };
+        (display_text, runs)
+    }
+}
 
-        let font_size = style.font_size.to_pixels(window.rem_size());
+/// Shapes `text` wrapped to `width`.
+fn wrap(
+    text: SharedString,
+    runs: &[TextRun],
+    font_size: Pixels,
+    width: Pixels,
+    line_height: Pixels,
+    window: &Window,
+) -> Wrapped {
+    let lines = window
+        .text_system()
+        .shape_text(text, font_size, runs, Some(width), None)
+        .map(|l| l.into_iter().collect())
+        .unwrap_or_default();
+    Wrapped::new(lines, line_height)
+}
+
+impl Element for TextElement {
+    type RequestLayoutState = ();
+    type PrepaintState = PrepaintState;
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&gpui::InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, Self::RequestLayoutState) {
+        let mut style = Style::default();
+        style.size.width = relative(1.).into();
+        let input = self.input.read(cx);
+        let Some((min, max)) = input.multiline else {
+            style.size.height = window.line_height().into();
+            return (window.request_layout(style, [], cx), ());
+        };
+        // As tall as the wrapped text, between `min` and `max` rows.
+        let (text, runs) = input.display(window);
+        let line_height = window.line_height();
+        let font_size = window.text_style().font_size.to_pixels(window.rem_size());
+        let id = window.request_measured_layout(style, move |known, available, window, _| {
+            let width = known.width.unwrap_or(match available.width {
+                gpui::AvailableSpace::Definite(w) => w,
+                _ => px(0.),
+            });
+            let rows = wrap(text.clone(), &runs, font_size, width, line_height, window)
+                .rows
+                .len();
+            size(width, line_height * rows.clamp(min, max) as f32)
+        });
+        (id, ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&gpui::InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _: &mut Self::RequestLayoutState,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Self::PrepaintState {
+        let input = self.input.read(cx);
+        let selected_range = input.selected_range.clone();
+        let cursor = input.cursor_offset();
+        let (display_text, runs) = input.display(window);
+        let font_size = window.text_style().font_size.to_pixels(window.rem_size());
+
+        if input.multiline.is_some() {
+            let line_height = window.line_height();
+            let w = wrap(
+                display_text,
+                &runs,
+                font_size,
+                bounds.size.width,
+                line_height,
+                window,
+            );
+            let at = if input.content.is_empty() {
+                point(px(0.), px(0.))
+            } else {
+                w.position(cursor)
+            };
+            let scroll_y = follow(
+                input.scroll_y,
+                at.y,
+                at.y + line_height,
+                bounds.size.height,
+                w.height(),
+            );
+            let top = bounds.top() - scroll_y;
+            let selections = if selected_range.is_empty() {
+                Vec::new()
+            } else {
+                w.rows
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, r)| r.start <= selected_range.end && selected_range.start <= r.end)
+                    .map(|(i, r)| {
+                        let from = selected_range.start.max(r.start);
+                        let to = selected_range.end.min(r.end);
+                        let y = top + line_height * i as f32;
+                        // A selected newline shows as a little room past the row.
+                        let past = if to < selected_range.end {
+                            px(4.)
+                        } else {
+                            px(0.)
+                        };
+                        fill(
+                            Bounds::from_corners(
+                                point(bounds.left() + w.x_in_row(i, from), y),
+                                point(bounds.left() + w.x_in_row(i, to) + past, y + line_height),
+                            ),
+                            theme::text_selection(),
+                        )
+                    })
+                    .collect()
+            };
+            return PrepaintState {
+                line: None,
+                cursor: None,
+                selection: None,
+                scroll: px(0.),
+                cursor_at: selected_range.is_empty().then_some(at),
+                wrapped: Some(w),
+                selections,
+                scroll_y,
+            };
+        }
+
         let line = window
             .text_system()
             .shape_line(display_text, font_size, &runs, None);
@@ -747,6 +939,10 @@ impl Element for TextElement {
             cursor,
             selection,
             scroll,
+            wrapped: None,
+            cursor_at: None,
+            selections: Vec::new(),
+            scroll_y: px(0.),
         }
     }
 
@@ -766,6 +962,47 @@ impl Element for TextElement {
             ElementInputHandler::new(bounds, self.input.clone()),
             cx,
         );
+        if let Some(w) = prepaint.wrapped.take() {
+            let origin = point(bounds.left(), bounds.top() - prepaint.scroll_y);
+            window.with_content_mask(Some(gpui::ContentMask { bounds }), |window| {
+                for quad in prepaint.selections.drain(..) {
+                    window.paint_quad(quad);
+                }
+                let mut y = origin.y;
+                for line in &w.lines {
+                    let _ = line.paint(
+                        point(origin.x, y),
+                        w.line_height,
+                        gpui::TextAlign::Left,
+                        None,
+                        window,
+                        cx,
+                    );
+                    y += line.size(w.line_height).height;
+                }
+                match prepaint.cursor_at.take() {
+                    Some(at) if focus_handle.is_focused(window) => {
+                        let (caret, (at, alpha)) = self.input.update(cx, |input, cx| {
+                            (input.caret, input.motion.frame(at, window, cx))
+                        });
+                        let row = Bounds::new(
+                            point(origin.x, origin.y + at.y),
+                            size(bounds.size.width, w.line_height),
+                        );
+                        window.paint_quad(caret_quad(origin.x + at.x, row, caret, alpha));
+                    }
+                    _ => self.input.update(cx, |input, _| input.motion.hide()),
+                }
+            });
+            let text_bounds = Bounds::new(origin, bounds.size);
+            let scroll_y = prepaint.scroll_y;
+            self.input.update(cx, |input, _| {
+                input.last_wrapped = Some(w);
+                input.last_bounds = Some(text_bounds);
+                input.scroll_y = scroll_y;
+            });
+            return;
+        }
         let origin = point(bounds.left() - prepaint.scroll, bounds.top());
         window.with_content_mask(Some(gpui::ContentMask { bounds }), |window| {
             if let Some(selection) = prepaint.selection.take() {
@@ -801,6 +1038,183 @@ impl Element for TextElement {
             });
         });
     }
+}
+
+/// Text shaped and wrapped to the field, with each row's byte range.
+struct Wrapped {
+    /// One per line between newlines; each may wrap into several rows.
+    lines: Vec<WrappedLine>,
+    /// Where each line starts in the text.
+    starts: Vec<usize>,
+    /// Each row's range in the text, top to bottom.
+    rows: Vec<Range<usize>>,
+    /// The line each row belongs to.
+    row_line: Vec<usize>,
+    line_height: Pixels,
+}
+
+impl Wrapped {
+    fn new(lines: Vec<WrappedLine>, line_height: Pixels) -> Self {
+        let mut starts = Vec::with_capacity(lines.len());
+        let mut at = 0;
+        for l in &lines {
+            starts.push(at);
+            at += l.len() + 1;
+        }
+        let spans: Vec<(usize, usize, Vec<usize>)> = lines
+            .iter()
+            .zip(&starts)
+            .map(|(l, s)| {
+                let breaks = l
+                    .wrap_boundaries()
+                    .iter()
+                    .map(|b| l.runs()[b.run_ix].glyphs[b.glyph_ix].index)
+                    .collect();
+                (*s, l.len(), breaks)
+            })
+            .collect();
+        let (rows, row_line) = row_ranges(&spans);
+        Self {
+            lines,
+            starts,
+            rows,
+            row_line,
+            line_height,
+        }
+    }
+
+    fn height(&self) -> Pixels {
+        self.line_height * self.rows.len() as f32
+    }
+
+    fn row_of(&self, offset: usize) -> usize {
+        row_index(&self.rows, offset)
+    }
+
+    /// Where `offset` sits, from the top left of the text.
+    fn position(&self, offset: usize) -> Point<Pixels> {
+        let r = self.row_of(offset);
+        point(self.x_in_row(r, offset), self.line_height * r as f32)
+    }
+
+    /// How far along row `r` the offset is, clamped to the row.
+    fn x_in_row(&self, r: usize, offset: usize) -> Pixels {
+        let (Some(row), Some(&li)) = (self.rows.get(r), self.row_line.get(r)) else {
+            return px(0.);
+        };
+        let layout = &self.lines[li].unwrapped_layout;
+        let s = self.starts[li];
+        let at = offset.clamp(row.start, row.end);
+        layout.x_for_index(at - s) - layout.x_for_index(row.start - s)
+    }
+
+    /// The offset closest to a point from the top left of the text.
+    fn index_at(&self, p: Point<Pixels>) -> usize {
+        if self.rows.is_empty() {
+            return 0;
+        }
+        let r = ((p.y / self.line_height).floor().max(0.) as usize).min(self.rows.len() - 1);
+        let row = &self.rows[r];
+        let li = self.row_line[r];
+        let layout = &self.lines[li].unwrapped_layout;
+        let s = self.starts[li];
+        let x0 = layout.x_for_index(row.start - s);
+        // A wrapped row's end starts the row below; stop before it.
+        let text = &self.lines[li].text;
+        let end = if self.rows.get(r + 1).is_some_and(|n| n.start == row.end) {
+            text[..row.end - s]
+                .char_indices()
+                .next_back()
+                .map_or(row.end, |(at, _)| (s + at).max(row.start))
+        } else {
+            row.end
+        };
+        (layout.closest_index_for_x(p.x.max(px(0.)) + x0) + s).clamp(row.start, end)
+    }
+}
+
+/// The rows of wrapped text, from each line's start, length and the line
+/// offsets where it wraps. Returns each row's range in the whole text, and
+/// the line it is on.
+fn row_ranges(lines: &[(usize, usize, Vec<usize>)]) -> (Vec<Range<usize>>, Vec<usize>) {
+    let mut rows = Vec::new();
+    let mut row_line = Vec::new();
+    for (i, (start, len, breaks)) in lines.iter().enumerate() {
+        let mut from = 0;
+        for &b in breaks.iter().chain(std::iter::once(len)) {
+            rows.push(start + from..start + b);
+            row_line.push(i);
+            from = b;
+        }
+    }
+    (rows, row_line)
+}
+
+/// The row an offset is on. An offset where a line wraps starts the row
+/// below, so Home on a wrapped row puts the caret at its start; the end of
+/// a line, before its newline, stays on its own row.
+fn row_index(rows: &[Range<usize>], offset: usize) -> usize {
+    rows.iter()
+        .enumerate()
+        .position(|(i, r)| {
+            let wraps_on = rows.get(i + 1).is_some_and(|n| n.start == r.end);
+            offset < r.end || (offset == r.end && !wraps_on)
+        })
+        .unwrap_or(rows.len().saturating_sub(1))
+}
+
+/// Where End goes on row `i`: its end, or just before the space a wrapped
+/// row breaks after, so the caret stays on that row.
+fn row_end(rows: &[Range<usize>], text: &str, i: usize) -> usize {
+    let Some(r) = rows.get(i) else {
+        return text.len();
+    };
+    let wraps_on = rows.get(i + 1).is_some_and(|n| n.start == r.end);
+    if !wraps_on || r.is_empty() {
+        return r.end;
+    }
+    text[r.start..r.end]
+        .char_indices()
+        .next_back()
+        .map_or(r.end, |(at, _)| r.start + at)
+}
+
+/// The vertical shift that keeps the caret's row (`top` to `bottom`) in a
+/// view `view` tall, moving the last shift only as far as needed.
+fn follow(scroll: Pixels, top: Pixels, bottom: Pixels, view: Pixels, content: Pixels) -> Pixels {
+    let mut scroll = scroll;
+    if bottom - scroll > view {
+        scroll = bottom - view;
+    }
+    if top < scroll {
+        scroll = top;
+    }
+    scroll.min((content - view).max(px(0.))).max(px(0.))
+}
+
+/// What Enter types: a newline in multiline mode; `None` submits.
+fn entered(multiline: bool) -> Option<&'static str> {
+    multiline.then_some("\n")
+}
+
+/// Pasted text as the field keeps it: newlines become spaces on one line.
+fn pasted(text: &str, multiline: bool) -> String {
+    let text = text.replace("\r\n", "\n");
+    if multiline {
+        text
+    } else {
+        text.replace('\n', " ")
+    }
+}
+
+/// The start of the line `offset` is on.
+fn line_start(text: &str, offset: usize) -> usize {
+    text[..offset].rfind('\n').map_or(0, |i| i + 1)
+}
+
+/// The end of the line `offset` is on, before its newline.
+fn line_end(text: &str, offset: usize) -> usize {
+    text[offset..].find('\n').map_or(text.len(), |i| offset + i)
 }
 
 /// The caret at `x`: 2 px in its own `color`, or the thin one in the text color.
@@ -858,11 +1272,11 @@ impl Render for TextInput {
             .on_action(cx.listener(Self::paste))
             .on_action(cx.listener(Self::cut))
             .on_action(cx.listener(Self::copy))
-            .on_action(cx.listener(|_, _: &Submit, _, cx| cx.emit(InputEvent::Submit)))
+            .on_action(cx.listener(Self::enter))
             .on_action(cx.listener(|_, _: &SubmitAlt, _, cx| cx.emit(InputEvent::SubmitAlt)))
             .on_action(cx.listener(|_, _: &Cancel, _, cx| cx.emit(InputEvent::Cancel)))
-            .on_action(cx.listener(|_, _: &Up, _, cx| cx.emit(InputEvent::Up)))
-            .on_action(cx.listener(|_, _: &Down, _, cx| cx.emit(InputEvent::Down)))
+            .on_action(cx.listener(|this, _: &Up, _, cx| this.vertical(-1, cx)))
+            .on_action(cx.listener(|this, _: &Down, _, cx| this.vertical(1, cx)))
             .on_action(cx.listener(|_, _: &Complete, _, cx| cx.emit(InputEvent::Complete)))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
@@ -881,7 +1295,81 @@ impl Focusable for TextInput {
 
 #[cfg(test)]
 mod tests {
-    use super::composed_selection;
+    use super::*;
+
+    #[test]
+    fn enter_types_a_newline_only_in_multiline() {
+        assert_eq!(entered(true), Some("\n"));
+        // One line: Enter stays Submit, as every existing field expects.
+        assert_eq!(entered(false), None);
+    }
+
+    #[test]
+    fn paste_keeps_newlines_only_in_multiline() {
+        assert_eq!(pasted("a\r\nb\nc", true), "a\nb\nc");
+        assert_eq!(pasted("a\r\nb\nc", false), "a b c");
+    }
+
+    #[test]
+    fn line_ends_around_newlines() {
+        let t = "one\ntwo two\n\nend";
+        assert_eq!(line_start(t, 0), 0);
+        assert_eq!(line_start(t, 6), 4);
+        assert_eq!(line_end(t, 6), 11);
+        assert_eq!(line_start(t, 12), 12);
+        assert_eq!(line_end(t, 12), 12);
+        assert_eq!(line_end(t, 14), t.len());
+    }
+
+    #[test]
+    fn rows_of_wrapped_lines() {
+        // "hello world again" wraps after "hello " and "world "; then a
+        // newline and "x"; then a trailing newline's empty line.
+        let text = "hello world again\nx\n";
+        let lines = vec![(0, 17, vec![6, 12]), (18, 1, vec![]), (20, 0, vec![])];
+        let (rows, line_of) = row_ranges(&lines);
+        assert_eq!(rows, vec![0..6, 6..12, 12..17, 18..19, 20..20]);
+        assert_eq!(line_of, vec![0, 0, 0, 1, 2]);
+        assert_eq!(&text[rows[1].clone()], "world ");
+        assert_eq!(row_index(&rows, 0), 0);
+        // Where a line wraps, the offset starts the row below.
+        assert_eq!(row_index(&rows, 5), 0);
+        assert_eq!(row_index(&rows, 6), 1);
+        assert_eq!(row_index(&rows, 12), 2);
+        // The end of a line, before its newline, stays on its row.
+        assert_eq!(row_index(&rows, 17), 2);
+        assert_eq!(row_index(&rows, 18), 3);
+        assert_eq!(row_index(&rows, 19), 3);
+        assert_eq!(row_index(&rows, 20), 4);
+        assert_eq!(row_index(&rows, 99), 4);
+        // End stays on a wrapped row, before the space it breaks after.
+        assert_eq!(row_end(&rows, text, 0), 5);
+        assert_eq!(row_end(&rows, text, 1), 11);
+        assert_eq!(row_end(&rows, text, 2), 17);
+        assert_eq!(row_end(&rows, text, 4), 20);
+    }
+
+    #[test]
+    fn scroll_follows_the_caret_row() {
+        let (h, view, content) = (px(20.), px(60.), px(200.));
+        // In view: no shift.
+        assert_eq!(follow(px(0.), px(20.), px(20.) + h, view, content), px(0.));
+        // Below the view: shift just enough to show the row.
+        assert_eq!(
+            follow(px(0.), px(100.), px(100.) + h, view, content),
+            px(60.)
+        );
+        // Above it: shift up to the row's top.
+        assert_eq!(
+            follow(px(60.), px(20.), px(20.) + h, view, content),
+            px(20.)
+        );
+        // Never past the end of the content.
+        assert_eq!(
+            follow(px(500.), px(180.), px(200.), view, content),
+            px(140.)
+        );
+    }
 
     #[test]
     fn composed_selection_counts_from_the_composed_text() {

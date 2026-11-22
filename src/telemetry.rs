@@ -349,6 +349,7 @@ pub fn capture_with(event: &str, props: &[(&str, &str)], counts: &[(&str, u64)])
     if event == events::SURVEY_SENT {
         return;
     }
+    note_event(event);
     let usage = USAGE.load(Ordering::Relaxed);
     if !usage && !HOLDING.load(Ordering::Relaxed) {
         return;
@@ -366,6 +367,32 @@ pub fn capture_with(event: &str, props: &[(&str, &str)], counts: &[(&str, u64)])
     } else {
         hold(event);
     }
+}
+
+/// Most event names kept; a popover survey names a handful.
+const SEEN_EVENTS_MAX: usize = 256;
+
+fn seen_names() -> &'static Mutex<std::collections::HashSet<String>> {
+    static SEEN: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+    SEEN.get_or_init(Default::default)
+}
+
+/// Remembers a name, never its properties, and before the consent check: a
+/// survey can ask for an event that was not sent.
+fn note_event(name: &str) {
+    let mut set = seen_names().lock().unwrap_or_else(|e| e.into_inner());
+    if set.len() < SEEN_EVENTS_MAX {
+        set.insert(name.to_string());
+    }
+}
+
+/// The names of the events captured since launch, whether or not they were
+/// sent. Popover surveys use it for their event conditions.
+pub(crate) fn seen_events() -> std::collections::HashSet<String> {
+    seen_names()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
 }
 
 fn held() -> &'static Mutex<Vec<Value>> {
@@ -987,6 +1014,12 @@ mod tests {
     use super::*;
 
     const HOME: &str = "/home/ann";
+
+    #[test]
+    fn seen_events_keeps_names_even_when_nothing_is_sent() {
+        capture_with("seen-events-probe", &[("secret", "x")], &[]);
+        assert!(seen_events().contains("seen-events-probe"));
+    }
 
     #[test]
     fn scrub_keeps_plain_words() {

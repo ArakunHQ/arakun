@@ -72,6 +72,7 @@ mod site;
 mod subagents;
 mod subnav;
 mod switching;
+mod survey_card;
 #[cfg(feature = "coderlabs")]
 mod tasks;
 #[cfg(feature = "team")]
@@ -346,6 +347,8 @@ pub struct Shell {
     _caret_focus: Subscription,
     _composer_blur: Subscription,
     modal: Option<(Modal, Subscription)>,
+    /// The popover survey card and what its clock knows (`shell::survey_card`).
+    survey: survey_card::CardState,
     /// Refreshes the open palette when GitHub brings in more.
     palette_watch: Option<Subscription>,
     /// Each project's `owner/name` on GitHub (None when it has none), by
@@ -1009,6 +1012,7 @@ impl Shell {
             _caret_focus: caret_focus,
             _composer_blur: composer_blur,
             modal: None,
+            survey: survey_card::CardState::new(Instant::now()),
             palette_watch: None,
             repo_slugs: Default::default(),
             repo_slugs_read: None,
@@ -4338,6 +4342,8 @@ impl Render for Shell {
             })
             .capture_key_down(cx.listener(|this, ev: &gpui::KeyDownEvent, window, cx| {
                 let k = &ev.keystroke;
+                // A survey never pops up while someone is typing.
+                this.survey.last_typed = Instant::now();
                 // The update dialog's Enter and Space press its own buttons.
                 if this.menu.is_some()
                     && this.update_dialog.is_none()
@@ -4535,6 +4541,7 @@ impl Render for Shell {
                 )
                 .child(self.render_env_menu(viewport_h, cx))
             })
+            .when_some(self.render_survey_card(cx), |d, card| d.child(card))
             .when_some(crate::agent::markdown::preview(), |d, image| {
                 d.child(crate::agent::markdown::render_preview(image, window, cx))
             })

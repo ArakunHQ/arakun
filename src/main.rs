@@ -361,6 +361,7 @@ fn main() {
             shell.onboard_if_new(window, cx);
             shell.ask_telemetry(window, cx);
             shell.sync_island(window, cx);
+            shell.start_survey_card(window, cx);
             #[cfg(feature = "team")]
             shell.sync_team(window, cx);
             // After the first frame, so warming the syntax colors doesn't

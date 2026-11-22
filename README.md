@@ -523,8 +523,9 @@ after a week).
   on a seat says so. Seats can't work
   while `~/.claude/settings.json` sets `CLAUDE_CODE_OAUTH_TOKEN` in its `env` block,
   because Claude Code applies that over each session's environment; the Usage tab says
-  so, sessions start as before, and one that was on a seat says so. Without a saved
-  seat nothing changes.
+  so, sessions start as before, and one that was on a seat says so. The same goes
+  while Claude Code runs on an API key, a gateway or a cloud provider, which win over
+  any seat's token. Without a saved seat nothing changes.
 - **Marketplace.** Plugins, MCP servers and skills to add, and the MCP servers, plugins,
   skills and permission rules the agents load now. Discover › Skills searches
   [skills.sh](https://skills.sh); Install copies the skill's folder from its GitHub

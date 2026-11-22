@@ -115,21 +115,102 @@ impl Shell {
             );
         }
         let strip_tabs = &self.strip;
+        let layout = crate::tab_layout::current();
+        // Pinned tabs carry their project's icon, so no run of tabs needs a label.
+        let pinned_bar = layout.pinned_bar();
+        // While the sidebar is hidden, its tree is a menu here.
+        if layout.tree() && !self.rail_shown() {
+            strip = strip.child(self.render_sessions_button(cx));
+        }
         let in_other_pane = self.split_other();
         let shell = cx.entity();
         let lifted = self.lifted_tab(cx);
-        // The line between two tabs where a dragged tab would land; none
-        // where it would land in its own place.
-        let drop_gap = lifted
-            .and_then(|id| Some((strip_tabs.position(id)?, self.tab_drop(cx)?)))
-            .filter(|(from, gap)| model::drop_index(*from, *gap).is_some())
-            .map(|(_, gap)| gap);
-        let tab_count = strip_tabs.tabs.len();
+        let session_lifted = self.lifted_session(cx).is_some();
+        // The line between two tabs where a dragged tab or session would land;
+        // none where a tab would land in its own place.
+        let drop_gap = if session_lifted {
+            self.tab_drop(cx)
+        } else {
+            lifted
+                .and_then(|id| Some((strip_tabs.position(id)?, self.tab_drop(cx)?)))
+                .filter(|(from, gap)| model::drop_index(*from, *gap).is_some())
+                .map(|(_, gap)| gap)
+        };
+        let here = self.projects.get(self.active_project);
+        let mut order = strip_tabs.shown(layout.bar_shows, |t| {
+            here.is_some_and(|p| t.env.as_deref().is_some_and(|e| p.env_index(e).is_some()))
+        });
+        // Pinned tabs fit the bar as measured last frame: left of the island,
+        // then right of it, narrower, then under "N more".
+        let area = self.bar_area.get();
+        let (left_room, right_room) = pinned::split_room(
+            (area.origin.x.into(), area.size.width.into()),
+            self.bar_notch(window),
+        );
+        let fit = (pinned_bar && area.size.width > px(0.)).then(|| {
+            let fit = pinned::fit_tabs(order.len(), left_room, right_room);
+            pinned::bring_into_view(&mut order, fit.shown(), strip_tabs.active_tab);
+            fit
+        });
+        let more: Vec<u64> = match fit {
+            Some(fit) if fit.shown() < order.len() => order
+                .split_off(fit.shown())
+                .into_iter()
+                .map(|i| strip_tabs.tabs[i].id)
+                .collect(),
+            _ => Vec::new(),
+        };
+        *self.bar_more.borrow_mut() = more.clone();
+        // The space the island takes, after the tabs left of it and "N more"
+        // when it goes there.
+        let notch_gap = fit.zip(right_room).map(|(fit, right)| {
+            let more = if fit.more_left && !more.is_empty() {
+                pinned::MORE_W + 2.
+            } else {
+                0.
+            };
+            let used = fit.left as f32 * (fit.width + 2.) + more;
+            (f32::from(area.size.width) - right - used - 2.).max(0.)
+        });
+        let mut more_button = (!more.is_empty()).then(|| {
+            let n = more.len();
+            div()
+                .id("tab-more")
+                .map(|d| ui::labelled(d, gpui::Role::Button, format!("{n} more pinned tabs")))
+                .flex()
+                .flex_none()
+                .items_center()
+                .gap(crate::ui::sp(4.))
+                .h(px(ui::TAB_H))
+                .min_w(px(pinned::MORE_W))
+                .px(crate::ui::sp(8.))
+                .rounded(crate::ui::rad(8.))
+                .cursor_pointer()
+                .text_size(px(ui::TEXT_MD))
+                .text_color(theme::text_subtle())
+                .hover(|s| s.bg(theme::hover()).text_color(theme::content()))
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .child(format!("{n} more"))
+                .child(icon("arrow-down01", 12.))
+                .on_click(cx.listener(|this, ev: &gpui::ClickEvent, _, cx| {
+                    let at = ev.position();
+                    this.menu = Some(ContextMenu {
+                        target: MenuTarget::MoreTabs,
+                        at: point(at.x - px(120.), px(44.)),
+                    });
+                    cx.notify();
+                }))
+                .into_any_element()
+        });
+
         // Tabs past the bar's width scroll instead of running under the title and the
-        // window buttons.
+        // window buttons. Pinned tabs fit instead, and the part of the bar
+        // they leave empty moves the window.
+        let bar_area = self.bar_area.clone();
         let mut list = div()
             .id("tab-list")
             .role(gpui::Role::TabList)
+            .relative()
             .flex()
             .items_center()
             .min_w_0()
@@ -137,19 +218,56 @@ impl Shell {
             .gap(crate::ui::sp(2.))
             .overflow_x_scroll()
             .track_scroll(&self.tab_scroll)
-            .on_drag_move::<drag::DraggedTab>(
-                cx.listener(|this, ev, _, cx| this.tab_drag_out(ev, cx)),
-            );
+            .on_drag_move::<drag::DraggedTab>(cx.listener(
+                |this, ev: &gpui::DragMoveEvent<drag::DraggedTab>, _, cx| {
+                    this.bar_drag_out(ev.bounds, ev.event.position, cx)
+                },
+            ))
+            .when(pinned_bar, |d| {
+                d.flex_1()
+                    .on_mouse_down(MouseButton::Left, |ev, window, _| {
+                        crate::ui::drag_window(ev, window)
+                    })
+                    .child(
+                        canvas(
+                            move |b, window, _| {
+                                if bar_area.get() != b {
+                                    bar_area.set(b);
+                                    window.refresh();
+                                }
+                            },
+                            |_, _, _, _| {},
+                        )
+                        .absolute()
+                        .size_full(),
+                    )
+                    // A session row dropped on the bar pins, at the end
+                    // unless a gap is marked.
+                    .on_drag_move::<drag::DraggedSession>(cx.listener(
+                        |this, ev: &gpui::DragMoveEvent<drag::DraggedSession>, _, cx| {
+                            this.bar_drag_out(ev.bounds, ev.event.position, cx)
+                        },
+                    ))
+                    .drag_over::<drag::DraggedSession>(|s, _, _, _| s.bg(theme::hover()))
+                    .on_drop(cx.listener(|this, d: &drag::DraggedSession, _, cx| {
+                        this.drop_session_on_bar(d, None, cx)
+                    }))
+            });
         let active_id = strip_tabs.active().map(|t| t.id);
-        if self.tab_revealed.replace(active_id) != active_id {
-            self.tab_scroll.scroll_to_item(strip_tabs.active_tab);
+        if self.tab_revealed.replace(active_id) != active_id
+            && let Some(pos) = order.iter().position(|&i| i == strip_tabs.active_tab)
+        {
+            self.tab_scroll.scroll_to_item(pos);
         }
         // With tabs of several environments in the row, the first tab of each
         // run says which environment the run works in.
-        let mut envs = strip_tabs.tabs.iter().filter_map(|t| t.env.as_ref());
-        let labelled = envs
-            .next()
-            .is_some_and(|first| envs.any(|other| other != first));
+        let mut envs = order
+            .iter()
+            .filter_map(|&i| strip_tabs.tabs[i].env.as_ref());
+        let labelled = !layout.tree()
+            && envs
+                .next()
+                .is_some_and(|first| envs.any(|other| other != first));
         let projects = self
             .projects
             .iter()
@@ -160,10 +278,23 @@ impl Shell {
                     .any(|t| t.env.as_deref().is_some_and(|e| p.env_index(e).is_some()))
             })
             .count();
-        for (i, tab) in strip_tabs.tabs.iter().enumerate() {
+        let shown = order.len();
+        for (pos, &i) in order.iter().enumerate() {
+            let tab = &strip_tabs.tabs[i];
+            // The tab shown after this one: a gap right of this tab is the one
+            // before it.
+            let next = order.get(pos + 1).copied().unwrap_or(i + 1);
+            let last = pos + 1 == shown;
+            if let Some(gap) = notch_gap.filter(|_| fit.is_some_and(|f| f.left == pos)) {
+                if fit.is_some_and(|f| f.more_left) {
+                    list = list.children(more_button.take());
+                }
+                list = list.child(div().flex_none().w(px(gap)));
+            }
             let starts_run = labelled
-                && i.checked_sub(1)
-                    .is_none_or(|b| strip_tabs.tabs[b].env != tab.env);
+                && pos
+                    .checked_sub(1)
+                    .is_none_or(|b| strip_tabs.tabs[order[b]].env != tab.env);
             let run_label: Option<SharedString> =
                 tab.env
                     .as_deref()
@@ -176,91 +307,9 @@ impl Shell {
             let shell = shell.clone();
             let active = i == strip_tabs.active_tab;
             let shown_beside = in_other_pane == Some(i);
-            let closable = self.can_close_tab(i);
-            let tab_icon: AnyElement = match &tab.kind {
-                TabKind::Session { agent, .. } => agent_icon(*agent, 14.).into_any_element(),
-                TabKind::NewSession => agent_icon(self.tab_env(tab).agent, 14.).into_any_element(),
-                TabKind::Browser { .. } => {
-                    let page = tab.browser.as_ref().map(|b| b.view.read(cx));
-                    match (
-                        page.is_some_and(|p| p.is_loading()),
-                        page.and_then(|p| p.favicon()),
-                    ) {
-                        (true, _) => icon("loading03", 14.)
-                            .text_color(theme::text_subtle())
-                            .into_any_element(),
-                        (false, Some(f)) => img(f).size(px(14.)).into_any_element(),
-                        (false, None) => icon("globe", 14.)
-                            .text_color(theme::content())
-                            .into_any_element(),
-                    }
-                }
-                TabKind::File { .. } => {
-                    let (name, color) = file_icon(&tab.title);
-                    icon(name, 14.).text_color(color).into_any_element()
-                }
-                TabKind::Diff { .. } => icon("file-diff", 14.)
-                    .text_color(theme::content())
-                    .into_any_element(),
-                TabKind::Notes => icon("file01", 14.)
-                    .text_color(theme::content())
-                    .into_any_element(),
-                TabKind::Memory => icon("ai-idea", 14.)
-                    .text_color(theme::content())
-                    .into_any_element(),
-                #[cfg(feature = "coderlabs")]
-                TabKind::Tasks => icon("checkmark-circle02", 14.)
-                    .text_color(theme::content())
-                    .into_any_element(),
-                TabKind::Runs => icon("activity01", 14.)
-                    .text_color(theme::content())
-                    .into_any_element(),
-                TabKind::Branches => icon("git-branch", 14.)
-                    .text_color(theme::content())
-                    .into_any_element(),
-                TabKind::GitHub => icon("github", 14.)
-                    .text_color(theme::content())
-                    .into_any_element(),
-                TabKind::Cloudflare => icon("internet", 14.)
-                    .text_color(theme::content())
-                    .into_any_element(),
-                #[cfg(feature = "team")]
-                TabKind::Team => icon("ungroup-items", 14.)
-                    .text_color(theme::content())
-                    .into_any_element(),
-                #[cfg(feature = "coderlabs")]
-                TabKind::Site => icon("globe", 14.)
-                    .text_color(theme::content())
-                    .into_any_element(),
-                TabKind::PostHog => icon("chart-breakout-square", 14.)
-                    .text_color(theme::content())
-                    .into_any_element(),
-                TabKind::Doop => icon("paint-board", 14.)
-                    .text_color(theme::content())
-                    .into_any_element(),
-                TabKind::Phone => icon("signal-full02", 14.)
-                    .text_color(theme::content())
-                    .into_any_element(),
-                TabKind::Servers => icon("computer", 14.)
-                    .text_color(theme::content())
-                    .into_any_element(),
-                TabKind::Usage => icon("dashboard-square01", 14.)
-                    .text_color(theme::content())
-                    .into_any_element(),
-                TabKind::Gallery => icon("paint-board", 14.)
-                    .text_color(theme::content())
-                    .into_any_element(),
-                TabKind::Isometric => icon("cube", 14.)
-                    .text_color(theme::content())
-                    .into_any_element(),
-                #[cfg(feature = "coderlabs")]
-                TabKind::Canvas => icon("artboard", 14.)
-                    .text_color(theme::content())
-                    .into_any_element(),
-                TabKind::Extensions => icon("store01", 14.)
-                    .text_color(theme::content())
-                    .into_any_element(),
-            };
+            // A pinned tab can always be closed: that unpins it.
+            let closable = self.can_close_tab(i) || (pinned_bar && tab.pinned);
+            let tab_icon = self.tab_lead(tab, cx);
             let group: SharedString = format!("tab-{i}").into();
             // One child per tab, so `tab_scroll` finds a tab by its index.
             let mut slot = div()
@@ -268,7 +317,7 @@ impl Shell {
                 .flex_none()
                 .items_center()
                 .gap(crate::ui::sp(2.));
-            if starts_run && i > 0 {
+            if starts_run && pos > 0 {
                 slot = slot.child(
                     div()
                         .flex_none()
@@ -296,6 +345,12 @@ impl Shell {
                 slot.child(
                     ui::tab(("tab", i), title, active)
                         .group(group.clone())
+                        .when_some(fit, |d, fit| {
+                            d.flex_none()
+                                .w(px(fit.width))
+                                .min_w(px(fit.width))
+                                .max_w(px(fit.width))
+                        })
                         // The close button keeps its size; only the air beside it scales.
                         .when(closable, |d| {
                             d.pr(crate::ui::sp(4.) + px(ui::TAB_CLOSE_ROOM))
@@ -378,23 +433,51 @@ impl Shell {
                         .on_drag(dragged, move |d, _, _, cx| {
                             shell.update(cx, |this, cx| this.start_tab_drag(d, cx))
                         })
-                        // A dragged tab marks the gap it would land in, on
-                        // the side of this tab's middle the pointer is on.
-                        .on_drag_move::<drag::DraggedTab>(
-                            cx.listener(move |this, ev, _, cx| this.tab_drag_over(i, ev, cx)),
-                        )
+                        // A dragged tab or session row marks the gap it would
+                        // land in, on the side of this tab's middle the
+                        // pointer is on.
+                        .on_drag_move::<drag::DraggedTab>(cx.listener(
+                            move |this, ev: &gpui::DragMoveEvent<drag::DraggedTab>, _, cx| {
+                                this.bar_drag_over(i, next, ev.bounds, ev.event.position, cx)
+                            },
+                        ))
                         .on_drop(cx.listener(move |this, d: &drag::DraggedTab, _, cx| {
                             this.drop_tab_at(d.id, i, cx)
                         }))
-                        .when(drop_gap == Some(i), |d| d.child(drop_line(true, i == 0)))
-                        .when(drop_gap == Some(tab_count) && i + 1 == tab_count, |d| {
+                        .when(pinned_bar, |d| {
+                            d.on_drag_move::<drag::DraggedSession>(cx.listener(
+                                move |this,
+                                      ev: &gpui::DragMoveEvent<drag::DraggedSession>,
+                                      _,
+                                      cx| {
+                                    this.bar_drag_over(i, next, ev.bounds, ev.event.position, cx)
+                                },
+                            ))
+                            .on_drop(cx.listener(
+                                move |this, d: &drag::DraggedSession, _, cx| {
+                                    cx.stop_propagation();
+                                    this.drop_session_on_bar(d, Some(i), cx)
+                                },
+                            ))
+                        })
+                        .when(drop_gap == Some(i), |d| d.child(drop_line(true, pos == 0)))
+                        .when(drop_gap == Some(i + 1) && last, |d| {
                             d.child(drop_line(false, true))
                         })
                         .when(lifted == Some(tab.id), |d| d.opacity(0.4)),
                 ),
             );
         }
-        strip = strip.child(list);
+        // No tab right of the island: "N more" still keeps clear of it.
+        if let Some(gap) = notch_gap.filter(|_| fit.is_some_and(|f| f.left >= shown)) {
+            if fit.is_some_and(|f| f.more_left) {
+                list = list.children(more_button.take());
+            } else if more_button.is_some() {
+                list = list.child(div().flex_none().w(px(gap)));
+            }
+        }
+        list = list.children(more_button.take());
+        strip = strip.when(pinned_bar, |d| d.flex_1()).child(list);
 
         strip = strip.child(
             div()
@@ -464,6 +547,8 @@ impl Shell {
                 div()
                     .flex_1()
                     .min_w(px(48.))
+                    // Pinned tabs take the bar; the empty part of it moves the window too.
+                    .when(crate::tab_layout::current().pinned_bar(), |d| d.flex_none())
                     .h_full()
                     .on_mouse_down(MouseButton::Left, |ev, window, _| {
                         crate::ui::drag_window(ev, window)
@@ -511,6 +596,129 @@ impl Shell {
                         ),
                 )
             })
+    }
+
+    /// The icon a tab starts with: its kind's, or for a session with
+    /// sessions in the sidebar, its state's mark and its project's icon.
+    pub(super) fn tab_lead(&self, tab: &Tab, cx: &App) -> AnyElement {
+        let layout = crate::tab_layout::current();
+        if layout.tree()
+            && let Some(state) = self.tab_state(tab, cx)
+        {
+            return div()
+                .flex()
+                .items_center()
+                .gap(crate::ui::sp(6.))
+                .children(state.mark(layout.state))
+                .children(self.tab_project_icon(tab))
+                .into_any_element();
+        }
+        self.tab_icon(tab, cx)
+    }
+
+    /// The icon of the project a tab works in.
+    pub(super) fn tab_project_icon(&self, tab: &Tab) -> Option<AnyElement> {
+        let env = tab.env.as_deref()?;
+        let p = self.projects.iter().find(|p| p.env_index(env).is_some())?;
+        let logo: gpui::Hsla = gpui::rgb(p.logo).into();
+        Some(
+            div()
+                .flex()
+                .flex_none()
+                .items_center()
+                .justify_center()
+                .size(px(14.))
+                .child(ui::project_icon(p.icon, 1.25, logo))
+                .into_any_element(),
+        )
+    }
+
+    /// The icon of a tab's kind.
+    pub(super) fn tab_icon(&self, tab: &Tab, cx: &App) -> AnyElement {
+        match &tab.kind {
+            TabKind::Session { agent, .. } => agent_icon(*agent, 14.).into_any_element(),
+            TabKind::NewSession => agent_icon(self.tab_env(tab).agent, 14.).into_any_element(),
+            TabKind::Browser { .. } => {
+                let page = tab.browser.as_ref().map(|b| b.view.read(cx));
+                match (
+                    page.is_some_and(|p| p.is_loading()),
+                    page.and_then(|p| p.favicon()),
+                ) {
+                    (true, _) => icon("loading03", 14.)
+                        .text_color(theme::text_subtle())
+                        .into_any_element(),
+                    (false, Some(f)) => img(f).size(px(14.)).into_any_element(),
+                    (false, None) => icon("globe", 14.)
+                        .text_color(theme::content())
+                        .into_any_element(),
+                }
+            }
+            TabKind::File { .. } => {
+                let (name, color) = file_icon(&tab.title);
+                icon(name, 14.).text_color(color).into_any_element()
+            }
+            TabKind::Diff { .. } => icon("file-diff", 14.)
+                .text_color(theme::content())
+                .into_any_element(),
+            TabKind::Notes => icon("file01", 14.)
+                .text_color(theme::content())
+                .into_any_element(),
+            TabKind::Memory => icon("ai-idea", 14.)
+                .text_color(theme::content())
+                .into_any_element(),
+            #[cfg(feature = "coderlabs")]
+            TabKind::Tasks => icon("checkmark-circle02", 14.)
+                .text_color(theme::content())
+                .into_any_element(),
+            TabKind::Runs => icon("activity01", 14.)
+                .text_color(theme::content())
+                .into_any_element(),
+            TabKind::Branches => icon("git-branch", 14.)
+                .text_color(theme::content())
+                .into_any_element(),
+            TabKind::GitHub => icon("github", 14.)
+                .text_color(theme::content())
+                .into_any_element(),
+            TabKind::Cloudflare => icon("internet", 14.)
+                .text_color(theme::content())
+                .into_any_element(),
+            #[cfg(feature = "team")]
+            TabKind::Team => icon("ungroup-items", 14.)
+                .text_color(theme::content())
+                .into_any_element(),
+            #[cfg(feature = "coderlabs")]
+            TabKind::Site => icon("globe", 14.)
+                .text_color(theme::content())
+                .into_any_element(),
+            TabKind::PostHog => icon("chart-breakout-square", 14.)
+                .text_color(theme::content())
+                .into_any_element(),
+            TabKind::Doop => icon("paint-board", 14.)
+                .text_color(theme::content())
+                .into_any_element(),
+            TabKind::Phone => icon("signal-full02", 14.)
+                .text_color(theme::content())
+                .into_any_element(),
+            TabKind::Servers => icon("computer", 14.)
+                .text_color(theme::content())
+                .into_any_element(),
+            TabKind::Usage => icon("dashboard-square01", 14.)
+                .text_color(theme::content())
+                .into_any_element(),
+            TabKind::Gallery => icon("paint-board", 14.)
+                .text_color(theme::content())
+                .into_any_element(),
+            TabKind::Isometric => icon("cube", 14.)
+                .text_color(theme::content())
+                .into_any_element(),
+            #[cfg(feature = "coderlabs")]
+            TabKind::Canvas => icon("artboard", 14.)
+                .text_color(theme::content())
+                .into_any_element(),
+            TabKind::Extensions => icon("store01", 14.)
+                .text_color(theme::content())
+                .into_any_element(),
+        }
     }
 }
 

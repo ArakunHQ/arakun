@@ -373,6 +373,10 @@ pub struct EnvState {
     /// Ids of the sessions open as tabs, in order.
     #[serde(default)]
     pub open: Vec<String>,
+    /// Those of them pinned to the title bar. Missing in files from before
+    /// pins: every open session counts as pinned, so none disappears.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pinned: Option<Vec<String>>,
     #[serde(default)]
     pub active_tab: usize,
     /// URLs of the browser tabs, which reopen after the session tabs.
@@ -918,6 +922,13 @@ pub fn snapshot_with(
                                 _ => None,
                             })
                             .collect(),
+                        pinned: Some(
+                            tabs_of(strip, e)
+                                .into_iter()
+                                .filter(|t| t.pinned)
+                                .filter_map(|t| t.session_id().map(|id| id.to_string()))
+                                .collect(),
+                        ),
                         active_tab: active_session_tab(strip, e),
                         browsers: tabs_of(strip, e)
                             .into_iter()
@@ -1080,14 +1091,16 @@ pub fn restore(state: State) -> (Vec<Project>, usize, Layout, TabStrip) {
                         .iter()
                         .filter_map(|id| {
                             let s = &env.sessions[env.session_index(id)?];
-                            Some(Tab::of(
+                            let mut tab = Tab::of(
                                 &env.path,
                                 s.title.clone(),
                                 TabKind::Session {
                                     agent: s.agent,
                                     id: s.id.clone(),
                                 },
-                            ))
+                            );
+                            tab.pinned = e.pinned.as_ref().is_none_or(|p| p.contains(id));
+                            Some(tab)
                         })
                         .collect();
                     let sessions_open = tabs.len();
@@ -1679,7 +1692,7 @@ mod tests {
         );
         // Mixed across environments, a page between two sessions: the
         // per-environment lists alone would put them back as s1 s2 docs s3.
-        let strip = TabStrip {
+        let mut strip = TabStrip {
             tabs: vec![
                 session(&a, "s2"),
                 session(&b, "s3"),
@@ -1688,6 +1701,7 @@ mod tests {
             ],
             ..Default::default()
         };
+        strip.tabs[0].pinned = true;
         let layout = Layout {
             dock_open: false,
             dock_height: DOCK_HEIGHT,
@@ -1711,13 +1725,21 @@ mod tests {
         let (_, _, _, strip) = restore(serde_json::from_slice(&bytes).unwrap());
         let titles: Vec<&str> = strip.tabs.iter().map(|t| t.title.as_ref()).collect();
         assert_eq!(titles, ["Two", "Three", "https://example.com", "One"]);
+        let pinned: Vec<bool> = strip.tabs.iter().map(|t| t.pinned).collect();
+        assert_eq!(pinned, [true, false, false, false]);
 
         // A file from before the order was kept: each environment's tabs in turn.
         let mut old: State = serde_json::from_slice(&bytes).unwrap();
         old.tab_order.clear();
+        for e in &mut old.projects[0].envs {
+            e.pinned = None;
+        }
         let (_, _, _, strip) = restore(old);
         let titles: Vec<&str> = strip.tabs.iter().map(|t| t.title.as_ref()).collect();
         assert_eq!(titles, ["Two", "One", "https://example.com", "Three"]);
+        // From before pins, every open session stays in the bar.
+        let pinned: Vec<bool> = strip.tabs.iter().map(|t| t.pinned).collect();
+        assert_eq!(pinned, [true, true, false, true]);
     }
 
     #[test]

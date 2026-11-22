@@ -77,17 +77,41 @@ impl Shell {
         )
         .on_action(cx.listener(|this, _: &MoveTabLeft, _, cx| this.move_active_tab(-1, cx)))
         .on_action(cx.listener(|this, _: &MoveTabRight, _, cx| this.move_active_tab(1, cx)))
+        .on_action(cx.listener(|this, _: &TogglePin, window, cx| {
+            // In the composer, with no tree row under the pointer, the key is
+            // the composer's: on macOS Option+P types π.
+            if this.tree_hover.is_none() && this.composer_focus.is_focused(window) {
+                cx.propagate();
+                return;
+            }
+            this.toggle_pin_here(cx)
+        }))
+    }
+
+    /// The tabs the title bar shows, by index, in its order.
+    pub(super) fn shown_tabs(&self) -> Vec<usize> {
+        let here = self.projects.get(self.active_project);
+        self.strip
+            .shown(crate::tab_layout::current().bar_shows, |t| {
+                here.is_some_and(|p| t.env.as_deref().is_some_and(|e| p.env_index(e).is_some()))
+            })
     }
 
     fn cycle_tab(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
         if !self.has_projects() {
             return;
         }
-        let n = self.strip.tabs.len() as isize;
+        // Through the tabs the bar shows, the hidden ones skipped.
+        let shown = self.shown_tabs();
+        let n = shown.len() as isize;
         if n < 2 {
             return;
         }
-        let next = (self.strip.active_tab as isize + delta).rem_euclid(n) as usize;
+        let at = shown
+            .iter()
+            .position(|&i| i == self.strip.active_tab)
+            .unwrap_or(0);
+        let next = shown[(at as isize + delta).rem_euclid(n) as usize];
         self.select_tab(next, window, cx);
         self.focus_active_content(window, cx);
     }
@@ -97,13 +121,15 @@ impl Shell {
         if !self.has_projects() {
             return;
         }
-        let len = self.strip.tabs.len();
-        let index = if n == usize::MAX {
-            len.saturating_sub(1)
+        let shown = self.shown_tabs();
+        let pick = if n == usize::MAX {
+            shown.last()
         } else {
-            n
+            shown.get(n)
         };
-        if index < len && index != self.strip.active_tab {
+        if let Some(&index) = pick
+            && index != self.strip.active_tab
+        {
             self.select_tab(index, window, cx);
             self.focus_active_content(window, cx);
         }
@@ -756,6 +782,36 @@ impl Shell {
         let any_right = mine.iter().skip(index + 1).any(|m| *m);
         let can_reopen = !self.strip.closed_tabs.is_empty();
         let can_close = self.can_close_tab(index);
+        // With sessions in the sidebar, a session's tab pins and unpins here.
+        if crate::tab_layout::current().tree() && tab.session_id().is_some() {
+            let (id, pinned) = (tab.id, tab.pinned);
+            panel = panel
+                .child(
+                    ui::menu_item(
+                        "tm-pin",
+                        if pinned { "pin-off" } else { "pin" },
+                        if pinned {
+                            "Unpin from the title bar"
+                        } else {
+                            "Pin to the title bar"
+                        },
+                        false,
+                        true,
+                    )
+                    .child(ui::shortcut(&["Alt", "P"]))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.menu = None;
+                        if pinned {
+                            this.unpin_tab(id, cx);
+                        } else if let Some(i) = this.strip.position(id) {
+                            this.strip.tabs[i].pinned = true;
+                            this.save(cx);
+                            cx.notify();
+                        }
+                    })),
+                )
+                .child(div().my(px(4.)).h(px(1.)).bg(theme::stroke()));
+        }
         panel =
             panel
                 .child(

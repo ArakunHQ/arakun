@@ -892,7 +892,7 @@ impl Shell {
                 if narrow {
                     self.render_projects_narrow(cx).into_any_element()
                 } else if crate::tab_layout::current().tree() {
-                    self.render_session_tree(cx)
+                    self.render_session_tree(false, cx)
                 } else {
                     self.render_projects_block(*envs, *changes, *only_open, cx)
                         .into_any_element()

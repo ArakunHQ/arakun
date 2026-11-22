@@ -483,8 +483,15 @@ after a week).
   `insight:read`. A tab whose scope is missing says which one and the others keep
   working. PostHog counts queries per hour: the tab shows how many are left, keeps
   each account's answers on disk (cleared when its key is replaced or removed) and
-  reads again only when they are 15 minutes old or you refresh. To try the tab
-  without a key (Linux and macOS), start a test Arakun with
+  reads again only when they are 15 minutes old or you refresh.
+  Changing something in PostHog always asks you to type the flag key first. On a
+  flag, stage enable or disable (or a 10% rollout step, for release conditions in
+  PostHog's classic format), then review it; it needs `feature_flag:write`, and
+  PostHog refuses it if someone else changed the flag since. On a running experiment, **End experiment** freezes its results and leaves
+  the flag as it is; **Ship**, offered only for a variant the results call a
+  winner, also gives that variant to everyone the flag already matches. Both need
+  `experiment:write`. To try the tab without a key (Linux and macOS), start a test
+  Arakun with
   `ARAKUN_POSTHOG_FIXTURE="$PWD/tools/posthog-fixture.json" arakun dev start`.
 - **Doop.** The canvases of a [Doop](https://doop.design) instance and the frames
   of the one you pick, page by page, each with its render; a click opens the frame on

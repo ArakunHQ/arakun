@@ -1,6 +1,7 @@
 //! What an error or an experiment shows once opened: read then, not on every
 //! overview refresh. An error gets its latest stack trace and replay; an
-//! experiment, each metric's result per variant (at most four per kind).
+//! experiment, each metric's result per variant (at most four per kind), and
+//! what may be done to it.
 
 use super::{
     ApiError, Session,
@@ -12,6 +13,8 @@ use serde_json::{Value, json};
 pub struct Inspection {
     pub sections: Vec<(String, Vec<String>)>,
     pub replay: Option<String>,
+    pub experiment: Option<super::lifecycle::ReviewedExperiment>,
+    pub winners: Vec<String>,
 }
 
 pub fn issue(s: &Session, p: u64, id: &str) -> Result<Inspection, ApiError> {
@@ -114,6 +117,82 @@ fn variants(v: &Value) -> Vec<String> {
     lines
 }
 
+/// An experiment's metrics of `slot` ("Primary" or "Secondary"): its own,
+/// then the saved ones marked that way.
+fn metrics<'a>(e: &'a Value, slot: &str) -> Vec<&'a Value> {
+    let field = if slot == "Primary" {
+        "metrics"
+    } else {
+        "metrics_secondary"
+    };
+    let saved = e["saved_metrics"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|m| {
+            m["metadata"]["type"]
+                .as_str()
+                .is_some_and(|v| v.eq_ignore_ascii_case(slot))
+        })
+        .map(|m| &m["query"]);
+    e[field]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .chain(saved)
+        .collect()
+}
+
+/// Ship is only offered when one primary metric decides: never on a
+/// secondary metric, nor while another primary one is left to weigh.
+fn sole_primary(e: &Value) -> Option<&Value> {
+    match metrics(e, "Primary").as_slice() {
+        [m] => Some(m),
+        _ => None,
+    }
+}
+
+/// What PostHog computes for metric `m` of experiment `id` right now.
+fn result(s: &Session, p: u64, id: u64, m: &Value) -> Result<Value, ApiError> {
+    let body = json!({ "query": { "kind": "ExperimentQuery", "experiment_id": id, "metric": m } });
+    super::call(
+        s,
+        "POST",
+        &format!("/api/environments/{p}/query/"),
+        Some(&body),
+    )
+}
+
+/// The winners of experiment `e`'s sole primary metric as PostHog computes
+/// them now: none when no single primary metric decides.
+pub(super) fn winners_now(s: &Session, p: u64, e: &Value) -> Result<Vec<String>, ApiError> {
+    let (Some(id), Some(m)) = (e["id"].as_u64(), sole_primary(e)) else {
+        return Ok(vec![]);
+    };
+    Ok(winners(&result(s, p, id, m)?))
+}
+
+/// The variants a metric's result calls significant winners, each with
+/// enough valid data on both sides.
+fn winners(result: &Value) -> Vec<String> {
+    if !valid(&result["baseline"]) {
+        return vec![];
+    }
+    result["variant_results"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|v| {
+            valid(v)
+                && v["significant"] == true
+                && v["chance_to_win"]
+                    .as_f64()
+                    .is_some_and(|p| p > 0.5 && p <= 1.)
+        })
+        .filter_map(|v| v["key"].as_str().map(str::to_owned))
+        .collect()
+}
+
 pub fn experiment(s: &Session, p: u64, id: u64) -> Result<Inspection, ApiError> {
     let e = super::call(
         s,
@@ -121,7 +200,10 @@ pub fn experiment(s: &Session, p: u64, id: u64) -> Result<Inspection, ApiError> 
         &format!("/api/projects/{p}/experiments/{id}/"),
         None,
     )?;
-    let mut out = Inspection::default();
+    let mut out = Inspection {
+        experiment: super::lifecycle::ReviewedExperiment::read(&e),
+        ..Default::default()
+    };
     if !e["start_date"].is_string() {
         out.sections.push((
             "Results".into(),
@@ -129,20 +211,8 @@ pub fn experiment(s: &Session, p: u64, id: u64) -> Result<Inspection, ApiError> 
         ));
         return Ok(out);
     }
-    for (slot, field) in [("Primary", "metrics"), ("Secondary", "metrics_secondary")] {
-        let metrics = e[field].as_array().into_iter().flatten().chain(
-            e["saved_metrics"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter(|m| {
-                    m["metadata"]["type"]
-                        .as_str()
-                        .is_some_and(|v| v.eq_ignore_ascii_case(slot))
-                })
-                .map(|m| &m["query"]),
-        );
-        for (i, m) in metrics.enumerate() {
+    for slot in ["Primary", "Secondary"] {
+        for (i, m) in metrics(&e, slot).into_iter().enumerate() {
             if i >= 4 {
                 out.sections.push((
                     format!("More {slot} metrics"),
@@ -154,15 +224,14 @@ pub fn experiment(s: &Session, p: u64, id: u64) -> Result<Inspection, ApiError> 
                 .as_str()
                 .or(m["metric_type"].as_str())
                 .unwrap_or("metric");
-            let body = json!({"query":{"kind":"ExperimentQuery","experiment_id":id,"metric":m}});
-            let lines = super::call(
-                s,
-                "POST",
-                &format!("/api/environments/{p}/query/"),
-                Some(&body),
-            )
-            .map(|v| variants(&v))
-            .unwrap_or_else(|e| vec![e.message()]);
+            let lines = result(s, p, id, m)
+                .map(|v| {
+                    if slot == "Primary" && sole_primary(&e).is_some() {
+                        out.winners = winners(&v);
+                    }
+                    variants(&v)
+                })
+                .unwrap_or_else(|e| vec![e.message()]);
             out.sections.push((format!("{slot} · {label}"), lines));
         }
     }
@@ -180,5 +249,32 @@ mod tests {
         assert!(!variants(&result)[1].contains("Winning"));
         result["baseline"]["validation_failures"] = json!(["small_sample_size"]);
         assert!(variants(&result)[1].contains("Not enough data"));
+    }
+
+    #[test]
+    fn ship_is_offered_only_for_a_significant_winner_of_the_sole_primary_metric() {
+        let mut result = json!({
+            "baseline": { "key": "control", "number_of_samples": 100 },
+            "variant_results": [
+                { "key": "a", "number_of_samples": 90, "chance_to_win": 0.97, "significant": true },
+                { "key": "b", "number_of_samples": 90, "chance_to_win": 0.40, "significant": true },
+                { "key": "c", "number_of_samples": 90, "chance_to_win": 0.99, "significant": false }
+            ]
+        });
+        assert_eq!(winners(&result), ["a"]);
+        result["variant_results"][0]["validation_failures"] = json!(["not_enough_exposures"]);
+        assert!(winners(&result).is_empty());
+        result["variant_results"][0]["validation_failures"] = json!([]);
+        result["baseline"]["number_of_samples"] = json!(0);
+        assert!(winners(&result).is_empty());
+
+        let one = json!({ "metrics": [{}], "saved_metrics": [] });
+        assert!(sole_primary(&one).is_some());
+        assert!(sole_primary(&json!({ "metrics": [{}, {}] })).is_none());
+        assert!(sole_primary(&json!({ "metrics": [] })).is_none());
+        let saved = |kind: &str| json!({ "metrics": [{}], "saved_metrics": [{ "metadata": { "type": kind }, "query": {} }] });
+        assert!(sole_primary(&saved("primary")).is_none());
+        // A saved secondary metric doesn't compete with the primary one.
+        assert!(sole_primary(&saved("secondary")).is_some());
     }
 }

@@ -1,5 +1,5 @@
 //! The Flags tab: every feature flag of the project, live first. A flag
-//! opens its details inside the tab.
+//! opens its details, where one change at a time can be staged and sent.
 
 use super::overview::section;
 use super::*;

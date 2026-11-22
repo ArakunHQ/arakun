@@ -14,6 +14,38 @@
   ],
   "replies": [
     {
+      "path": "/experiments/2/ship_variant/",
+      "method": "POST",
+      "request": {
+        "variant_key": "inline",
+        "release_to_everyone": false,
+        "open_cleanup_pr": false
+      },
+      "status": 403,
+      "body": {
+        "detail": "Fixture key is read-only."
+      }
+    },
+    {
+      "path": "/experiments/2/end/",
+      "method": "POST",
+      "request": {
+        "open_cleanup_pr": false
+      },
+      "status": 403,
+      "body": {
+        "detail": "Fixture key is read-only."
+      }
+    },
+    {
+      "path": "/feature_flags/1/",
+      "method": "PATCH",
+      "status": 403,
+      "body": {
+        "detail": "Fixture key is read-only."
+      }
+    },
+    {
       "path": "/max_tools/create_and_query_insight/",
       "method": "POST",
       "request": {

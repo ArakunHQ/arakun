@@ -21,7 +21,9 @@ pub mod ask;
 pub mod defs;
 pub mod events;
 mod fixture;
+pub mod flag_edit;
 pub mod inspection;
+pub mod lifecycle;
 pub mod people;
 pub mod query;
 pub mod scan;
@@ -464,12 +466,22 @@ fn fetch(
     let retry_after = header("retry-after");
     let remaining = number(&["x-ratelimit-remaining", "ratelimit-remaining"]);
     let limit = number(&["x-ratelimit-limit", "ratelimit-limit"]);
-    let text = response
+    let text = match response
         .body_mut()
         .with_config()
         .limit(16 * 1024 * 1024)
         .read_to_string()
-        .unwrap_or_default();
+    {
+        Ok(text) => text,
+        // A success whose answer was cut off is not a success: for a change,
+        // `call` then says it may still have gone through.
+        Err(e) if (200..300).contains(&status) => {
+            return Err(ApiError::Failed(format!(
+                "Couldn't read PostHog's answer: {e}"
+            )));
+        }
+        Err(_) => String::new(),
+    };
     Ok(Reply {
         status,
         retry_after,
@@ -533,7 +545,12 @@ pub(crate) fn call(
     if bucket(path) == "query" {
         query::reserve(&s.id, now)?;
     }
-    let reply = fetch(&s.host, s.credential.bearer(), method, path, body);
+    let reply = match fetch(&s.host, s.credential.bearer(), method, path, body) {
+        Err(ApiError::Failed(e)) if writes(method, path) => Err(ApiError::Failed(format!(
+            "{e} The change may still have been saved. Reload before trying again."
+        ))),
+        other => other,
+    };
     if bucket(path) == "query" {
         let (remaining, limit) = reply
             .as_ref()
@@ -547,11 +564,35 @@ pub(crate) fn call(
             block(&s.id, path, until);
             Err(ApiError::RateLimited(until))
         }
+        // A refused change is not a missing read scope: the tab keeps
+        // working, and the person needs PostHog's reason.
+        Err(ApiError::SignedOut(detail)) if reply.status == 403 && writes(method, path) => {
+            Err(ApiError::Failed(format!(
+                "PostHog refused this change. The key needs {}, and the project may \
+                 require approval for it. PostHog said: {detail}",
+                write_scope(path)
+            )))
+        }
         Err(ApiError::SignedOut(detail)) if reply.status == 403 => {
             Err(scope::forbidden(path, &detail)
                 .map_or(ApiError::SignedOut(detail), ApiError::MissingScope))
         }
         other => other,
+    }
+}
+
+/// Whether a call changes something in PostHog, rather than reading or
+/// running a query.
+fn writes(method: &str, path: &str) -> bool {
+    method != "GET" && bucket(path) != "query"
+}
+
+/// The scope a change on `path` needs.
+fn write_scope(path: &str) -> &'static str {
+    if path.contains("/experiments/") {
+        "experiment:write"
+    } else {
+        "feature_flag:write"
     }
 }
 
@@ -913,6 +954,13 @@ pub struct Flag {
     pub active: bool,
     /// "100%", "25%", "3 conditions", "multivariate".
     pub rollout: String,
+    /// PostHog's count of changes to the flag, sent back with a change so
+    /// PostHog can refuse it when the flag changed since it was read.
+    #[serde(default)]
+    pub version: Option<u64>,
+    /// The release conditions as PostHog stores them, for changing a rollout.
+    #[serde(default)]
+    pub filters: Value,
 }
 
 /// An experiment as the project's list gives it.
@@ -986,6 +1034,11 @@ const ISSUES: &str = "SELECT properties.$exception_issue_id AS issue, any(proper
 
 fn overview_file(p: &Project) -> PathBuf {
     answers_dir(&p.session).join(format!("{}-overview.json", p.id))
+}
+
+/// Drops what the last read of `p` found, so the next look reads it again.
+pub fn forget_cached(p: &Project) {
+    let _ = std::fs::remove_file(overview_file(p));
 }
 
 /// What the last read of `p` found, to show at once.
@@ -1088,6 +1141,8 @@ fn parse_flags(v: &Value) -> Vec<Flag> {
                 name: f["name"].as_str().unwrap_or_default().to_string(),
                 active: f["active"].as_bool().unwrap_or(false),
                 rollout,
+                version: f["version"].as_u64(),
+                filters: f["filters"].clone(),
             })
         })
         .collect();
@@ -1243,6 +1298,27 @@ mod tests {
         let b = project("us#b", 7, "");
         assert_ne!(overview_file(&a), overview_file(&b));
         assert!(overview_file(&a).starts_with(answers_dir(&a.session)));
+    }
+
+    #[test]
+    fn only_flag_and_experiment_changes_count_as_writes() {
+        assert!(writes("PATCH", "/api/projects/1/feature_flags/2/"));
+        assert!(writes("POST", "/api/projects/1/experiments/3/end/"));
+        assert!(!writes("GET", "/api/projects/1/experiments/3/"));
+        // Queries and PostHog AI are POSTs too, but only read.
+        assert!(!writes("POST", "/api/environments/1/query/"));
+        assert!(!writes(
+            "POST",
+            "/api/environments/1/max_tools/create_and_query_insight/"
+        ));
+        assert_eq!(
+            write_scope("/api/projects/1/experiments/3/ship_variant/"),
+            "experiment:write"
+        );
+        assert_eq!(
+            write_scope("/api/projects/1/feature_flags/2/"),
+            "feature_flag:write"
+        );
     }
 
     #[test]

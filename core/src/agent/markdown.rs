@@ -677,8 +677,10 @@ pub struct Doc {
     pub blocks: Vec<Block>,
     /// `(offset, blocks before)` for every top-level block start.
     marks: Vec<(usize, usize)>,
-    len: usize,
-    hash: u64,
+    /// The text parsed. Comparing against it is a memcmp, far cheaper than
+    /// hashing the whole message on every render, and exact where a hash
+    /// is not.
+    src: String,
 }
 
 impl Doc {
@@ -688,13 +690,12 @@ impl Doc {
         Doc {
             blocks,
             marks,
-            len: src.len(),
-            hash: hash_of(src),
+            src: src.to_string(),
         }
     }
 
     pub fn is_current(&self, src: &str) -> bool {
-        src.len() == self.len && hash_of(src) == self.hash
+        src == self.src
     }
 
     /// Brings the doc up to `src`. When `src` extends the text parsed before,
@@ -705,9 +706,7 @@ impl Doc {
         if self.is_current(src) {
             return;
         }
-        let extends = src.len() > self.len
-            && src.is_char_boundary(self.len)
-            && hash_of(&src[..self.len]) == self.hash;
+        let extends = src.len() > self.src.len() && src.starts_with(self.src.as_str());
         let keep = if extends && self.marks.len() >= 2 {
             Some(self.marks[self.marks.len() - 2])
         } else {
@@ -724,8 +723,9 @@ impl Doc {
         self.marks.retain(|&(o, _)| o < offset);
         self.marks
             .extend(marks.into_iter().map(|(o, n)| (o + offset, n + before)));
-        self.len = src.len();
-        self.hash = hash_of(src);
+        // Only an extension gets here, so the old text is a prefix of the new.
+        let added = &src[self.src.len()..];
+        self.src.push_str(added);
     }
 }
 
@@ -2119,6 +2119,25 @@ mod tests {
         let mut doc = Doc::parse("one\n\ntwo\n\nthree");
         doc.update("uno\n\ndos\n\ntres\n\ncuatro");
         assert_eq!(shape(&doc.blocks), "p(uno) p(dos) p(tres) p(cuatro)");
+    }
+
+    #[test]
+    fn same_length_different_text_is_not_current() {
+        let mut doc = Doc::parse("one\n\ntwo");
+        assert!(doc.is_current("one\n\ntwo"));
+        assert!(!doc.is_current("one\n\ntwx"));
+        assert!(!doc.is_current("one\n\ntw"));
+        doc.update("one\n\ntwx");
+        assert!(doc.is_current("one\n\ntwx"));
+        assert_eq!(shape(&doc.blocks), "p(one) p(twx)");
+    }
+
+    #[test]
+    fn an_extension_keeps_the_doc_current() {
+        let mut doc = Doc::parse("one\n\ntwo\n\nthr");
+        doc.update("one\n\ntwo\n\nthree\n\nfour");
+        assert!(doc.is_current("one\n\ntwo\n\nthree\n\nfour"));
+        assert_eq!(shape(&doc.blocks), "p(one) p(two) p(three) p(four)");
     }
 
     #[test]

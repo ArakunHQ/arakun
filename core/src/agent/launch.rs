@@ -383,45 +383,13 @@ const LAB_HINT: &str =
 #[cfg(not(feature = "coderlabs"))]
 const LAB_HINT: &str = "";
 
-const HINT: &str = "You are running inside arakun, a desktop app where the user reads this conversation. \
-         The `arakun` command on your PATH controls its window, acting on this project:\n\
-         - `arakun browse -s <url>` shows a web page (for example a dev server you started) beside the chat.\n\
-         - `arakun open -s <file[:line]>` shows a file beside the chat, at that line.\n\
-         - `arakun feedback --kind <bug|feature|ux|other> \"<text>\"` tells the Arakun team about a problem or a missing feature in Arakun itself (not in the user's project). Write plain text with line breaks, not Markdown: the team reads it where Markdown does not render. Never include code, paths or secrets.\n\
-         - `arakun run <command>` starts a long-running command (dev server, watcher) in a terminal \
-         the user can see, instead of blocking your own shell. To wait until it is up, put \
-         `--port <n>` and/or `--ready <text>` before the command (`arakun run --port 5173 npm run dev`): \
-         it returns once the port answers or the text shows in its output, and fails with the output \
-         if the command exits first or is not up within `--timeout <secs>` (default 60).\n\
-         - `arakun logs [terminal]` prints the recent output of a terminal in that dock (one you started \
-         or the user's dev server), to read errors without asking; alone it lists the terminals. \
-         `arakun logs <terminal> --until <text> [--timeout <secs>]` waits until the terminal prints the text \
-         (a watcher's `compiled` line after an edit) and prints what it printed meanwhile.\n\
-         - `arakun page <command>` works with this project's browser tabs the way the user would: \
-         `screenshot` (prints a PNG path to look at), `console` (errors and logs since the page loaded), \
-         `text`, `open <url>`, `reload`, and on local pages `click <selector|text>`, \
-         `type <field> <text>`, `press <key>`, `eval <js>`. Use it to check UI changes you made; \
-         `arakun page` alone lists the tabs.\n\
-         - `arakun check` runs the project's check command, if the user set one. arakun also runs it after \
-         each of your turns that edits files and sends you the output when it fails.\n\
-         - `arakun fetch <url>` prints a web page as Markdown (`--html` for HTML, `--links` for its links), \
-         rendered in Cloudflare Browser Run for JavaScript pages; `arakun crawl [--limit N] [--depth N] <url>` \
-         crawls a site the same way (honoring robots.txt and Content Signals). Don't use them to work around \
-         a site's 403, 429 or bot challenge; if a site refuses, stop and tell the user.\n\
-         - `arakun shrink -- <command>` runs a command and prints a summary of its output: the \
-         failures and result line of a test run, a log's repeated lines collapsed, JSON's outline, \
-         a table's header and a few rows. It saves the whole output to a file and prints its path, \
-         so read that when you need more. Use it for test runs, builds and logs that print a lot, \
-         rather than cutting them with `| tail`.\n\
-         - `arakun rename <branch>` renames this environment's branch, before it is pushed, when the \
-         work turns out to be something its name doesn't say.\n\
-         - `arakun notify <message>` sends the user a desktop notification.\n\
-         - `arakun agent new [--model <provider/model>] [--effort <level>] <prompt>` starts a background agent in this \
-         project that the user can watch in the sidebar: OpenCode, or arakun's own Workers AI agent with \
-         `--model workers-ai/@cf/deepseek-ai/deepseek-v4.1-flash-1017` or `--model workers-ai/@cf/zai-org/glm-5.3` \
-         (an unknown `--model` or `--effort` prints the ones on offer); \
-         `arakun agent wait <id>`, `arakun agent log <id>`, `arakun agent send <id> <text>`, \
-         `arakun agent stop <id>` and `arakun agent ls` follow it up.\n";
+const HINT: &str = "Running inside arakun. Optional `arakun` CLI commands (`arakun <cmd> --help` for flags):\n\
+         - `arakun browse -s <url>` / `arakun open -s <file[:line]>` show a page or file beside the chat.\n\
+         - `arakun run [--port N] [--ready TEXT] <cmd>` starts a long-running process in a visible dock terminal; `arakun logs [term] [--until TEXT]` reads it.\n\
+         - `arakun page <screenshot|console|text|open|reload|click|type|press|eval>` drives project browser tabs.\n\
+         - `arakun check` runs the project check command; `arakun shrink -- <cmd>` summarizes verbose test/build output and saves the full log.\n\
+         - `arakun fetch <url>` reads a page; `arakun crawl <url>` reads site pages (honoring robots.txt and Content Signals). Stop on 403/429/bot challenges.\n\
+         - `arakun agent <new|wait|log|send|stop|ls>` runs background agents; `arakun rename <branch>`, `arakun notify <msg>`, `arakun feedback --kind <bug|feature|ux|other> \"<text>\"` (about Arakun itself, not this project; plain text, no Markdown/code/paths/secrets).\n";
 
 const HINT_END: &str = "Use them when showing something helps the user; they are optional.";
 

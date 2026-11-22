@@ -636,22 +636,9 @@ pub fn context(project: &Store, global: &Store, name: &str, now: u64) -> String 
 
 /// How agents are told to use memory; the index follows it.
 pub const PROTOCOL: &str = "\
-Memory: `arakun mem` keeps what was learned here across sessions, for you and the next agent. \
-The index below is what is known so far. arakun itself records what each session was asked, how \
-those turns ended, what it committed and which files it changed, so you never need to write session summaries.
-- Before working in an area the index mentions, read the entry: `arakun mem get <id>`. When the user \
-refers to earlier work, a task looks like something solved before, or you hit an error that may be \
-known, `arakun mem search <words>` first.
-- Save sparingly: only what a later session would otherwise get wrong or spend real time rediscovering, \
-right when you learn it, with a short searchable title and What/Why/Where text: \
-`arakun mem save \"<title>\" --kind <kind> [--files a,b] [--topic area/name] --body \"<text>\"`. \
-Kinds: gotcha (a non-obvious trap: env vars, ordering, commands that must be run a certain way), \
-bugfix (root cause and fix), decision (what was chosen and why), convention (how this project wants \
-things done), config, pattern, discovery. Reuse a --topic to update knowledge that evolves instead of adding another.
-- When the user corrects you or states how they want things, save it: --kind preference, and \
---global when it is about them rather than this project.
-- Do not save what the code, the git log or the session record already says, raw output, or temporary state.
-- If an entry is wrong or outdated, fix it with the same --topic or `arakun mem forget <id>`.";
+Memory (`arakun mem --help`): cross-session notes (sessions are recorded automatically; skip summaries). \
+Use `arakun mem get <id>` / `search <words>`, save sparingly (`save \"<title>\" --kind <gotcha|bugfix|decision|convention|config|pattern|discovery|preference> [--global] [--topic t] --body \"<text>\"`; use `--global` for user-wide preferences), \
+or update/remove with `--topic` / `forget <id>`.";
 
 /// The memory part of a session's system prompt for work in `dir`.
 pub fn prompt_for(dir: &Path) -> String {
@@ -667,6 +654,11 @@ pub fn prompt_for(dir: &Path) -> String {
 }
 
 fn prompt(project: &Store, global: &Store, name: &str, now: u64) -> String {
+    if project.items.is_empty() && global.items.is_empty() {
+        return format!(
+            "Memory: `arakun mem --help` (save durable project gotchas with `arakun mem save` and user-wide preferences with `--kind preference --global`; nothing saved yet for {name})."
+        );
+    }
     format!("{PROTOCOL}\n\n{}", context(project, global, name, now))
 }
 

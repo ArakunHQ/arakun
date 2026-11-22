@@ -56,6 +56,12 @@ pre-push:
       glob: *teams
       run: cd teams && (test node_modules/.package-lock.json -nt package-lock.json || npm ci) && npm test
 
+    # The Android app's protocol against the phone's vectors, and its lint.
+    # Needs JDK 17 and the Android SDK, as android/README.md says.
+    - name: android
+      glob: ["android/*", "android/**/*", "phone/test/vectors/*", "assets/brand/mascot.json", "assets/fonts/*"]
+      run: cd android && ./gradlew --quiet :kit:test :app:lintDebug
+
 commit-msg:
   jobs:
     - name: conventional-commits

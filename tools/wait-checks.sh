@@ -8,7 +8,7 @@
 # It waits for the checks main's ruleset requires, apart from "Human approval",
 # which waits for a review that only comes after `gh pr ready`. It also waits
 # for the macOS job when the pull request changes macOS code or a Rust file that
-# has some. Other checks, such as the macOS job for other changes and CodeQL,
+# has some, and for the Android job when it changes what that job reads. Other checks, such as the macOS job for other changes and CodeQL,
 # can still be running: they take a shared runner pool, and waiting for them
 # cost up to 100 minutes a pull request.
 #
@@ -19,6 +19,7 @@ set -euo pipefail
 export LC_ALL=C
 
 MACOS_CHECK="Clippy and tests (macOS, no browser)"
+ANDROID_CHECK="Android (Kotlin tests, lint and build)"
 SKIP_CHECK="Human approval"
 INTERVAL=20
 TIMEOUT_MIN=${WAIT_CHECKS_TIMEOUT:-60}
@@ -89,6 +90,14 @@ classify() {
   else
     echo "The diff touches no macOS code; not waiting for the macOS job."
     wanted=$required
+  fi
+  # The files ci.yml's changes job sends to the Android job. Unlisted, a
+  # failing Android build would not hold the pull request back.
+  # Without the list, wait: a skipped job counts as passed.
+  if [ -z "${files:-}" ] ||
+    grep -qE '^(android/|phone/|assets/brand/mascot\.json$|assets/fonts/|\.github/workflows/ci\.yml$|\.github/actions/)' <<< "$files"; then
+    echo "Waiting for the Android job too."
+    wanted=$(printf '%s\n%s\n' "$wanted" "$ANDROID_CHECK")
   fi
   wanted=$(grep -v '^$' <<< "$wanted" || true)
 }

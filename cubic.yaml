@@ -165,8 +165,10 @@ reviews:
       include:
         - "core/src/phone/**"
         - "phone/**"
+        - "android/kit/**"
       description: |
         core/src/phone is the phone's end-to-end encryption and wire format. A change to the encryption, keys or framing there needs the same change in the phone (`phone/*.js`) and new test vectors (`phone/test/vectors`). A new or changed message kind or field needs `phone/*.js` to handle or ignore it, and no vector: the vectors cover encryption, labels and framing, not messages. Review crypto carefully: nonce reuse, key handling, constant-time comparison, and anything that logs secrets.
+        The Android app speaks the same protocol in `android/kit` (E2E.kt, RelayLink.kt, Models.kt) and tests it against `phone/test/vectors`: a change to the encryption, keys or framing needs it there too, and a new message field needs its models to read or ignore it. It must check that a peer's point is on the curve before ECDH, never reuse a handshake, and never log keys, tokens or message contents.
         The phone web app in phone/ talks to the Rust side in `core/src/phone` through the relay. Never log keys, tokens or message contents. The app embeds these files, so a change here ships with the desktop build. `sw.js` caches nothing on purpose; flag a change that starts caching the page.
         Flag a diff that changes the encryption, keys, nonces, framing or the messages the desktop sends or reads (field names, envelopes such as `res`, message kinds) anywhere in core/src/phone/ (e2e.rs, identity.rs, wire.rs, relay.rs and the rest) while neither phone/*.js nor phone/test/vectors/ changes in the same pull request, and the other way round: phone/*.js changes the format and core/src/phone does not. It is fine when the change is a refactor with no change to bytes on the wire and the description says so, or when neither side changes the format.
     - name: Credentials and sign-ins

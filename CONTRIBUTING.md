@@ -79,7 +79,9 @@ a while and later ones are quick.
 
 The phone relay in [`relay/`](relay) is a separate TypeScript project. It needs Node 24
 or newer; see [relay/README.md](relay/README.md). So is the teams Worker in
-[`teams/`](teams); see [teams/README.md](teams/README.md).
+[`teams/`](teams); see [teams/README.md](teams/README.md). The Android app in
+[`android/`](android) is a Gradle project that needs JDK 17 and the Android SDK; see
+[android/README.md](android/README.md).
 
 ### Features you can ignore
 
@@ -91,7 +93,8 @@ off, and do not add code behind them.
 CI runs the checks below that a pull request can affect. A change to docs, `iso/` or
 `tools/` (apart from `tools/rustfmt.sh` and the layout audit) alone skips the Rust
 jobs, the relay job runs only when `relay/`, `phone/` or CI itself changes, the teams
-job only when `teams/` or CI itself changes, cargo-deny runs only when `Cargo.toml`,
+job only when `teams/` or CI itself changes, the Android job only when `android/`,
+`phone/`, the mascot's drawing, the fonts or CI itself changes, cargo-deny runs only when `Cargo.toml`,
 `Cargo.lock` or `deny.toml` changes, and zizmor runs only when `.github/` changes.
 
 CI is the gate, not your machine. Before you push, run the quick checks for what you
@@ -119,6 +122,9 @@ cargo deny check
 
 # teams/ changed
 (cd teams && npm ci && npx tsc --noEmit && npx vitest run)
+
+# android/ changed (JDK 17 and the Android SDK)
+(cd android && ./gradlew :kit:test :app:lintDebug :app:assembleDebug)
 
 # .github/ changed (brew install zizmor, or pipx install zizmor)
 zizmor .github
@@ -164,8 +170,9 @@ Some notes:
 - Tests marked `#[ignore]` read this machine's own state (Claude Code, the Cloudflare
   sign-in and so on), so CI skips them. Run one with `cargo test <name> -- --ignored` if
   you work on that part.
-- The phone tests check the phone's encryption against vectors the Rust side writes. If
-  you change the format in `core/src/phone`, update both sides.
+- The phone tests check the phone's encryption against vectors the Rust side writes, and
+  so do the Android app's (`android/kit`). If you change the format in
+  `core/src/phone`, update every side.
 
 ### Git hooks
 
@@ -181,8 +188,8 @@ lefthook install
 - **On commit:** clippy if Rust files changed, the relay's types if `relay/` changed,
   the teams Worker's types if `teams/` changed, and the phone tests if `phone/` or
   `core/src/phone/` changed. They check the files on disk, not only what you staged.
-- **On push:** `cargo test`, the relay tests and the teams tests, if the commits you
-  push change those parts.
+- **On push:** `cargo test`, the relay tests, the teams tests and the Android app's
+  tests and lint, if the commits you push change those parts.
 - **On the commit message:** the Conventional Commits check (see
   [Pull requests](#pull-requests)).
 

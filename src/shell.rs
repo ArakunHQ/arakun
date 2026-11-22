@@ -513,6 +513,9 @@ pub struct Shell {
     lifted: Option<SharedString>,
     /// The tab being dragged onto a pane, while a drag is on.
     lifted_tab: Option<u64>,
+    /// The gap in the tab bar a dragged tab would drop into: before the tab
+    /// at this index, or after the last one.
+    tab_drop: Option<usize>,
     slide: Option<drag::SessionSlide>,
     drop_menu: Option<drag::DropMenu>,
     /// Other sessions' conversations waiting in each environment's composer.
@@ -1086,6 +1089,7 @@ impl Shell {
             review_draft: None,
             lifted: None,
             lifted_tab: None,
+            tab_drop: None,
             slide: None,
             drop_menu: None,
             attached: std::collections::HashMap::new(),

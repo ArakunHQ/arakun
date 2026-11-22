@@ -1371,7 +1371,8 @@ forward through tabs, `Ctrl+Cmd+F` toggles full screen, and `Cmd+H`, `Cmd+M` and
   switch environments
 - `Ctrl+W` close the tab, `Ctrl+Alt+T` reopen the last closed tab where it was;
   `Ctrl+Shift+PageUp` / `Ctrl+Shift+PageDown` move the tab left / right. A middle click
-  closes a tab, dragging it onto another moves it there, and its right-click menu also
+  closes a tab, dragging it left or right moves it there (a line marks where it lands,
+  and the order stays after a restart), and its right-click menu also
   opens a new session or closes the other tabs of its environment or those to its
   right. The tab on screen stays open when its environment has no other. GNOME, Ubuntu
   and some KDE setups keep `Ctrl+Alt+T` to open their own terminal; there, use Reopen

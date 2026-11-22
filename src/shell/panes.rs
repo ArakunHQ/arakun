@@ -571,15 +571,17 @@ impl Shell {
         }
     }
 
-    /// A tab dragged onto another in the tab bar takes that tab's place.
-    pub(super) fn drop_tab_at(&mut self, id: u64, to: usize, cx: &mut Context<Self>) {
+    /// A tab dropped in the tab bar goes into the gap marked under the
+    /// pointer, `gap` when none is.
+    pub(super) fn drop_tab_at(&mut self, id: u64, gap: usize, cx: &mut Context<Self>) {
         self.lifted_tab = None;
+        let gap = self.tab_drop.take().unwrap_or(gap);
         if !self.has_projects() {
             return;
         }
-        if let Some(from) = self.strip.position(id)
-            && self.strip.move_tab(from, to)
-        {
+        if self.strip.move_to_gap(id, gap) {
+            let at = self.strip.active_tab;
+            self.tab_scroll.scroll_to_item(at);
             self.save(cx);
         }
         cx.notify();

@@ -806,6 +806,23 @@ impl TabStrip {
             .unwrap_or(0);
         true
     }
+
+    /// Moves the tab `id` into the gap before the tab at `gap` (`tabs.len()`
+    /// for after the last), where a dragged tab was dropped. False when it
+    /// lands where it was.
+    pub fn move_to_gap(&mut self, id: u64, gap: usize) -> bool {
+        self.position(id)
+            .and_then(|from| Some((from, drop_index(from, gap)?)))
+            .is_some_and(|(from, to)| self.move_tab(from, to))
+    }
+}
+
+/// Where a tab taken from `from` ends up when dropped in the gap before the
+/// tab at `gap`: the tabs after it shift left once it is out. `None` for
+/// the two gaps beside it, which leave it where it is.
+pub fn drop_index(from: usize, gap: usize) -> Option<usize> {
+    let to = if gap > from { gap - 1 } else { gap };
+    (to != from).then_some(to)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -1419,6 +1436,29 @@ mod tests {
         assert_eq!(titles(&env), ["c", "a", "b"]);
         assert!(!env.move_tab(2, 2));
         assert!(!env.move_tab(5, 0));
+    }
+
+    #[test]
+    fn a_tab_dropped_in_a_gap_lands_there() {
+        // Gaps beside the tab itself move nothing.
+        assert_eq!(drop_index(2, 2), None);
+        assert_eq!(drop_index(2, 3), None);
+        // Left of it: the gap's own index. Right of it: one less, as it leaves its place.
+        assert_eq!(drop_index(2, 0), Some(0));
+        assert_eq!(drop_index(0, 3), Some(2));
+        assert_eq!(drop_index(0, 1), None);
+
+        let mut env = env_with(vec![browser("a"), browser("b"), browser("c")]);
+        env.active_tab = 0;
+        let a = env.tabs[0].id;
+        // After the last tab.
+        assert!(env.move_to_gap(a, 3));
+        assert_eq!(titles(&env), ["b", "c", "a"]);
+        assert_eq!(env.active_tab, 2);
+        assert!(!env.move_to_gap(a, 2));
+        assert!(env.move_to_gap(a, 1));
+        assert_eq!(titles(&env), ["b", "a", "c"]);
+        assert!(!env.move_to_gap(999, 0));
     }
 
     #[test]

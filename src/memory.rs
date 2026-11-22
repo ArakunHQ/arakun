@@ -637,7 +637,7 @@ pub fn context(project: &Store, global: &Store, name: &str, now: u64) -> String 
 /// How agents are told to use memory; the index follows it.
 pub const PROTOCOL: &str = "\
 Memory (`arakun mem --help`): cross-session notes (sessions are recorded automatically; skip summaries). \
-Use `arakun mem get <id>` / `search <words>`, save sparingly (`save \"<title>\" --kind <gotcha|bugfix|decision|convention|config|pattern|discovery|preference> [--global] [--topic t] --body \"<text>\"`), \
+Use `arakun mem get <id>` / `search <words>`, save sparingly (`save \"<title>\" --kind <gotcha|bugfix|decision|convention|config|pattern|discovery|preference> [--global] [--topic t] --body \"<text>\"`; use `--global` for user-wide preferences), \
 or update/remove with `--topic` / `forget <id>`.";
 
 /// The memory part of a session's system prompt for work in `dir`.
@@ -656,7 +656,7 @@ pub fn prompt_for(dir: &Path) -> String {
 fn prompt(project: &Store, global: &Store, name: &str, now: u64) -> String {
     if project.items.is_empty() && global.items.is_empty() {
         return format!(
-            "Memory: `arakun mem --help` (save durable project gotchas/preferences with `arakun mem save`; nothing saved yet for {name})."
+            "Memory: `arakun mem --help` (save durable project gotchas with `arakun mem save` and user-wide preferences with `--kind preference --global`; nothing saved yet for {name})."
         );
     }
     format!("{PROTOCOL}\n\n{}", context(project, global, name, now))

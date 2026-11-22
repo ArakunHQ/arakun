@@ -103,6 +103,15 @@ pub fn apply(
             "This experiment changed. Reopen it and review the change again.".into(),
         ));
     }
+    // The results on screen can be old: a variant ships only while
+    // PostHog still calls it a winner.
+    if let Action::Ship(key) = action
+        && !super::inspection::winners_now(s, p.id, &live)?.contains(key)
+    {
+        return Err(ApiError::Failed(format!(
+            "The results no longer call {key} a winner. Nothing was changed."
+        )));
+    }
     let (path, body) = action.request();
     super::call(s, "POST", &format!("{base}{path}/"), Some(&body))?;
     Ok(())

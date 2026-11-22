@@ -117,11 +117,59 @@ fn variants(v: &Value) -> Vec<String> {
     lines
 }
 
+/// An experiment's metrics of `slot` ("Primary" or "Secondary"): its own,
+/// then the saved ones marked that way.
+fn metrics<'a>(e: &'a Value, slot: &str) -> Vec<&'a Value> {
+    let field = if slot == "Primary" {
+        "metrics"
+    } else {
+        "metrics_secondary"
+    };
+    let saved = e["saved_metrics"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|m| {
+            m["metadata"]["type"]
+                .as_str()
+                .is_some_and(|v| v.eq_ignore_ascii_case(slot))
+        })
+        .map(|m| &m["query"]);
+    e[field]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .chain(saved)
+        .collect()
+}
+
 /// Ship is only offered when one primary metric decides: never on a
 /// secondary metric, nor while another primary one is left to weigh.
-fn sole_primary(e: &Value) -> bool {
-    e["metrics"].as_array().is_some_and(|m| m.len() == 1)
-        && e["saved_metrics"].as_array().is_none_or(Vec::is_empty)
+fn sole_primary(e: &Value) -> Option<&Value> {
+    match metrics(e, "Primary").as_slice() {
+        [m] => Some(m),
+        _ => None,
+    }
+}
+
+/// What PostHog computes for metric `m` of experiment `id` right now.
+fn result(s: &Session, p: u64, id: u64, m: &Value) -> Result<Value, ApiError> {
+    let body = json!({ "query": { "kind": "ExperimentQuery", "experiment_id": id, "metric": m } });
+    super::call(
+        s,
+        "POST",
+        &format!("/api/environments/{p}/query/"),
+        Some(&body),
+    )
+}
+
+/// The winners of experiment `e`'s sole primary metric as PostHog computes
+/// them now: none when no single primary metric decides.
+pub(super) fn winners_now(s: &Session, p: u64, e: &Value) -> Result<Vec<String>, ApiError> {
+    let (Some(id), Some(m)) = (e["id"].as_u64(), sole_primary(e)) else {
+        return Ok(vec![]);
+    };
+    Ok(winners(&result(s, p, id, m)?))
 }
 
 /// The variants a metric's result calls significant winners, each with
@@ -163,20 +211,8 @@ pub fn experiment(s: &Session, p: u64, id: u64) -> Result<Inspection, ApiError> 
         ));
         return Ok(out);
     }
-    for (slot, field) in [("Primary", "metrics"), ("Secondary", "metrics_secondary")] {
-        let metrics = e[field].as_array().into_iter().flatten().chain(
-            e["saved_metrics"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter(|m| {
-                    m["metadata"]["type"]
-                        .as_str()
-                        .is_some_and(|v| v.eq_ignore_ascii_case(slot))
-                })
-                .map(|m| &m["query"]),
-        );
-        for (i, m) in metrics.enumerate() {
+    for slot in ["Primary", "Secondary"] {
+        for (i, m) in metrics(&e, slot).into_iter().enumerate() {
             if i >= 4 {
                 out.sections.push((
                     format!("More {slot} metrics"),
@@ -188,20 +224,14 @@ pub fn experiment(s: &Session, p: u64, id: u64) -> Result<Inspection, ApiError> 
                 .as_str()
                 .or(m["metric_type"].as_str())
                 .unwrap_or("metric");
-            let body = json!({"query":{"kind":"ExperimentQuery","experiment_id":id,"metric":m}});
-            let lines = super::call(
-                s,
-                "POST",
-                &format!("/api/environments/{p}/query/"),
-                Some(&body),
-            )
-            .map(|v| {
-                if slot == "Primary" && sole_primary(&e) {
-                    out.winners = winners(&v);
-                }
-                variants(&v)
-            })
-            .unwrap_or_else(|e| vec![e.message()]);
+            let lines = result(s, p, id, m)
+                .map(|v| {
+                    if slot == "Primary" && sole_primary(&e).is_some() {
+                        out.winners = winners(&v);
+                    }
+                    variants(&v)
+                })
+                .unwrap_or_else(|e| vec![e.message()]);
             out.sections.push((format!("{slot} · {label}"), lines));
         }
     }
@@ -239,10 +269,12 @@ mod tests {
         assert!(winners(&result).is_empty());
 
         let one = json!({ "metrics": [{}], "saved_metrics": [] });
-        assert!(sole_primary(&one));
-        assert!(!sole_primary(&json!({ "metrics": [{}, {}] })));
-        assert!(!sole_primary(
-            &json!({ "metrics": [{}], "saved_metrics": [{ "metadata": { "type": "primary" } }] })
-        ));
+        assert!(sole_primary(&one).is_some());
+        assert!(sole_primary(&json!({ "metrics": [{}, {}] })).is_none());
+        assert!(sole_primary(&json!({ "metrics": [] })).is_none());
+        let saved = |kind: &str| json!({ "metrics": [{}], "saved_metrics": [{ "metadata": { "type": kind }, "query": {} }] });
+        assert!(sole_primary(&saved("primary")).is_none());
+        // A saved secondary metric doesn't compete with the primary one.
+        assert!(sole_primary(&saved("secondary")).is_some());
     }
 }

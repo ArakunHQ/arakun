@@ -18,6 +18,27 @@ pub(super) struct Confirm {
 }
 
 impl PostHogView {
+    /// Numbers a change about to be sent, or None while another is on its way.
+    pub(super) fn start_sending(&mut self) -> Option<u64> {
+        if self.sending.is_some() {
+            return None;
+        }
+        self.sent += 1;
+        self.sending = Some(self.sent);
+        Some(self.sent)
+    }
+
+    /// Change `seq` got its answer. When its project is no longer the one on
+    /// screen, its saved overview is dropped so the next visit reads it again.
+    pub(super) fn done_sending(&mut self, seq: u64, project: &Project) {
+        if self.sending == Some(seq) {
+            self.sending = None;
+        }
+        if self.current.as_ref() != Some(project) {
+            posthog::forget_cached(project);
+        }
+    }
+
     /// `cancel` runs on Cancel, the close button and Escape; `submit` on the
     /// Danger button and Enter, and must check the typed key itself.
     pub(super) fn confirm_dialog(
@@ -30,13 +51,18 @@ impl PostHogView {
         let Confirm {
             id,
             title,
-            lines,
+            mut lines,
             key,
             error,
             busy,
             ready,
             submit: label,
         } = ask;
+        let other = self.sending.is_some() && !busy;
+        if other {
+            lines.push("Another change is still on its way to PostHog. Wait for it first.".into());
+        }
+        let ready = ready && !other;
         let send = ui::button(
             (id, 1usize),
             if busy {
@@ -62,11 +88,15 @@ impl PostHogView {
             .child(ui::modal_header(
                 title,
                 None,
-                ui::close_button((id, 3usize)).on_click(cx.listener(move |this, _, _, cx| {
-                    if !busy {
-                        cancel(this, cx);
-                    }
-                })),
+                // While the change is on its way there is nothing to close:
+                // the dialog stays until PostHog answers.
+                if busy {
+                    div().into_any_element()
+                } else {
+                    ui::close_button((id, 3usize))
+                        .on_click(cx.listener(move |this, _, _, cx| cancel(this, cx)))
+                        .into_any_element()
+                },
             ))
             .child(
                 div()

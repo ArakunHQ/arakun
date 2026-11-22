@@ -27,6 +27,17 @@
       }
     },
     {
+      "path": "/experiments/2/end/",
+      "method": "POST",
+      "request": {
+        "open_cleanup_pr": false
+      },
+      "status": 403,
+      "body": {
+        "detail": "Fixture key is read-only."
+      }
+    },
+    {
       "path": "/feature_flags/1/",
       "method": "PATCH",
       "status": 403,

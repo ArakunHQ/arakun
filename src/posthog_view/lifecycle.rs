@@ -11,6 +11,8 @@ pub(super) struct Pending {
     experiment: ReviewedExperiment,
     action: Action,
     busy: bool,
+    /// The number of the send in flight, when `busy`.
+    seq: u64,
     error: Option<String>,
 }
 
@@ -50,6 +52,7 @@ impl PostHogView {
                         experiment: e.clone(),
                         action: action.clone(),
                         busy: false,
+                        seq: 0,
                         error: None,
                     });
                     window.focus(&this.confirm.focus_handle(cx), cx);
@@ -115,9 +118,16 @@ impl PostHogView {
         else {
             return;
         };
-        e.busy = true;
-        e.error = None;
         let (p, review, action) = (e.project.clone(), e.experiment.clone(), e.action.clone());
+        let Some(seq) = self.start_sending() else {
+            return;
+        };
+        let Some(e) = self.exp_change.as_mut() else {
+            return;
+        };
+        e.busy = true;
+        e.seq = seq;
+        e.error = None;
         cx.notify();
         cx.spawn(async move |this, cx| {
             let target = p.clone();
@@ -129,16 +139,14 @@ impl PostHogView {
                 }))
                 .await;
             this.update(cx, |this, cx| {
+                this.done_sending(seq, &p);
                 if this.current.as_ref() != Some(&p) {
                     return;
                 }
                 this._load = None;
                 this.loading = false;
                 this.refresh(false, cx);
-                let open = this
-                    .exp_change
-                    .as_mut()
-                    .filter(|e| e.busy && e.experiment.id == id);
+                let open = this.exp_change.as_mut().filter(|e| e.busy && e.seq == seq);
                 match (open, result) {
                     // Read the experiment again, which also closes the dialog.
                     (Some(_), Ok(())) => {

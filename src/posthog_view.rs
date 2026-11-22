@@ -141,6 +141,10 @@ pub struct PostHogView {
     exp_change: Option<lifecycle::Pending>,
     /// What the last change sent did, shown on its details.
     write_note: Option<String>,
+    /// The change on its way to PostHog, by its number: one at a time, and
+    /// its answer goes only to the dialog that sent it.
+    sending: Option<u64>,
+    sent: u64,
     /// Where the flag key is typed to confirm a change.
     confirm: Entity<TextInput>,
     _confirm: Subscription,
@@ -232,6 +236,8 @@ impl PostHogView {
             edit: None,
             exp_change: None,
             write_note: None,
+            sending: None,
+            sent: 0,
             confirm,
             _confirm: confirm_sub,
             ask: cx.new(ask::Ask::new),

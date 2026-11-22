@@ -466,12 +466,22 @@ fn fetch(
     let retry_after = header("retry-after");
     let remaining = number(&["x-ratelimit-remaining", "ratelimit-remaining"]);
     let limit = number(&["x-ratelimit-limit", "ratelimit-limit"]);
-    let text = response
+    let text = match response
         .body_mut()
         .with_config()
         .limit(16 * 1024 * 1024)
         .read_to_string()
-        .unwrap_or_default();
+    {
+        Ok(text) => text,
+        // A success whose answer was cut off is not a success: for a change,
+        // `call` then says it may still have gone through.
+        Err(e) if (200..300).contains(&status) => {
+            return Err(ApiError::Failed(format!(
+                "Couldn't read PostHog's answer: {e}"
+            )));
+        }
+        Err(_) => String::new(),
+    };
     Ok(Reply {
         status,
         retry_after,
@@ -1024,6 +1034,11 @@ const ISSUES: &str = "SELECT properties.$exception_issue_id AS issue, any(proper
 
 fn overview_file(p: &Project) -> PathBuf {
     answers_dir(&p.session).join(format!("{}-overview.json", p.id))
+}
+
+/// Drops what the last read of `p` found, so the next look reads it again.
+pub fn forget_cached(p: &Project) {
+    let _ = std::fs::remove_file(overview_file(p));
 }
 
 /// What the last read of `p` found, to show at once.

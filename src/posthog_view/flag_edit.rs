@@ -16,6 +16,8 @@ pub(super) struct Edit {
     /// The confirmation dialog is open.
     review: bool,
     busy: bool,
+    /// The number of the send in flight, when `busy`.
+    seq: u64,
     error: Option<String>,
 }
 
@@ -116,6 +118,7 @@ impl PostHogView {
             change,
             review: false,
             busy: false,
+            seq: 0,
             error: None,
         });
         cx.notify();
@@ -145,19 +148,25 @@ impl PostHogView {
         else {
             return;
         };
-        e.busy = true;
-        e.error = None;
         let (project, flag, change) = (e.target.clone(), e.flag.clone(), e.change);
+        let Some(seq) = self.start_sending() else {
+            return;
+        };
+        let Some(e) = self.edit.as_mut() else { return };
+        e.busy = true;
+        e.seq = seq;
+        e.error = None;
         cx.notify();
         cx.spawn(async move |this, cx| {
             let target = project.clone();
-            let (id, key) = (flag.id, flag.key.clone());
+            let key = flag.key.clone();
             let result = cx
                 .background_spawn(crate::guard::task(async move {
                     flag_edit::apply(&session, &target, &flag, change, &typed)
                 }))
                 .await;
             this.update(cx, |this, cx| {
+                this.done_sending(seq, &project);
                 if this.current.as_ref() != Some(&project) {
                     return;
                 }
@@ -166,7 +175,7 @@ impl PostHogView {
                 this._load = None;
                 this.loading = false;
                 this.refresh(false, cx);
-                if let Some(e) = this.edit.as_mut().filter(|e| e.busy && e.flag.id == id) {
+                if let Some(e) = this.edit.as_mut().filter(|e| e.busy && e.seq == seq) {
                     match result {
                         Ok(()) => {
                             this.edit = None;

@@ -493,6 +493,11 @@ impl TeamsView {
                 self.pane = Pane::Team(t);
             }
         }
+        // A channel made, or a membership read, while Decisions is open.
+        if let Pane::Decisions(t) = &self.pane {
+            let t = t.clone();
+            self.open_every_channel(&t, true, cx);
+        }
         self.teams.update(cx, |t, cx| t.want_pictures(people, cx));
         cx.notify();
     }
@@ -558,7 +563,7 @@ impl TeamsView {
             self.hub.update(cx, |h, cx| h.load_team(&t, cx));
         }
         if let Pane::Decisions(t) = &pane {
-            self.open_every_channel(t, cx);
+            self.open_every_channel(t, false, cx);
         }
         if let Pane::Channel(t, c) = pane {
             self.open_channel(t, c, cx);

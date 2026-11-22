@@ -11,6 +11,7 @@ use gpui::{
 
 use super::super::decisions::Decision;
 use super::super::hub;
+use super::super::socket;
 use super::bot_view::names;
 use super::{Faces, Pane, TeamsView, clock, day_label};
 use crate::theme;
@@ -52,16 +53,80 @@ fn finds(d: &Decision, channel: &str, query: &str) -> bool {
     hay.iter().any(|h| h.to_lowercase().contains(&q))
 }
 
+/// Whether Decisions opens a channel, given whether it has a link (`None`:
+/// it was never opened). Entering the pane dials every channel with no link.
+/// A change while it is open dials only the ones never opened: a refused
+/// channel has no link either, and would be dialed again on every change.
+fn wants_open(linked: Option<bool>, only_new: bool) -> bool {
+    match linked {
+        None => true,
+        Some(linked) => !linked && !only_new,
+    }
+}
+
+/// How far the log has read one channel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Read {
+    Done,
+    Reading,
+    /// Refused, or never opened (no network, or no membership yet): its
+    /// decisions are not in the log.
+    Failed,
+}
+
+/// `state` is the channel's `loading` and socket status, when it was opened.
+fn read_of(state: Option<(bool, &socket::Status)>) -> Read {
+    match state {
+        None | Some((_, socket::Status::Refused(_))) => Read::Failed,
+        Some((true, _)) => Read::Reading,
+        Some((false, _)) => Read::Done,
+    }
+}
+
+/// The line over the log while it does not hold every channel: the list
+/// must not read as complete, nor as "No decisions yet".
+fn read_note(reading: usize, unread: usize) -> Option<String> {
+    let channels = |n: usize| if n == 1 { "channel" } else { "channels" };
+    let reading = (reading > 0).then(|| format!("Still reading {reading} {}…", channels(reading)));
+    let unread = (unread > 0).then(|| {
+        format!(
+            "{unread} {} could not be read, so decisions may be missing.",
+            channels(unread)
+        )
+    });
+    match (reading, unread) {
+        (Some(r), Some(u)) => Some(format!("{r} {u}")),
+        (r, u) => r.or(u),
+    }
+}
+
 impl TeamsView {
     /// Opens every channel of the team, so the log reads all of them.
-    pub(super) fn open_every_channel(&mut self, team_id: &str, cx: &mut Context<Self>) {
-        let ids: Vec<String> = self
-            .hub
-            .read(cx)
+    /// `only_new` is for a change while the pane is open: see `wants_open`.
+    pub(super) fn open_every_channel(
+        &mut self,
+        team_id: &str,
+        only_new: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let hub = self.hub.read(cx);
+        let linked = |c: &str| {
+            hub.channels
+                .get(&hub::channel_key(team_id, c))
+                .map(|s| s.linked())
+        };
+        let ids: Vec<String> = hub
             .team
             .get(team_id)
             .map(|t| t.channels.iter().map(|c| c.id.clone()).collect())
             .unwrap_or_default();
+        let ids: Vec<String> = ids
+            .into_iter()
+            .filter(|c| wants_open(linked(c), only_new))
+            .collect();
+        if ids.is_empty() {
+            return;
+        }
         self.hub.update(cx, |h, cx| {
             for c in &ids {
                 h.open_channel(team_id, c, cx);
@@ -102,13 +167,20 @@ impl TeamsView {
                     .collect()
             })
             .unwrap_or_default();
-        let reading = hub.team.get(team_id).is_none_or(|t| {
-            t.channels.iter().any(|c| {
-                hub.channels
-                    .get(&hub::channel_key(team_id, &c.id))
-                    .is_none_or(|s| s.loading)
-            })
+        // The team itself still loading reads as one channel being read.
+        let (reading, unread) = hub.team.get(team_id).map_or((1, 0), |t| {
+            let count = |r: Read| {
+                t.channels
+                    .iter()
+                    .filter(|c| {
+                        let state = hub.channels.get(&hub::channel_key(team_id, &c.id));
+                        read_of(state.map(|s| (s.loading, &s.status))) == r
+                    })
+                    .count()
+            };
+            (count(Read::Reading), count(Read::Failed))
         });
+        let note = read_note(reading, unread);
         let channel = |id: &str| channel_names.get(id).cloned().unwrap_or_default();
         let query = self.decision_query.read(cx).text().trim().to_string();
         let mine = self.decisions_mine;
@@ -153,7 +225,7 @@ impl TeamsView {
             .child(filters);
 
         let list: AnyElement = if shown.is_empty() {
-            if reading && log.is_empty() {
+            if reading > 0 && log.is_empty() {
                 ui::loading("Reading the team's channels…").into_any_element()
             } else if log.is_empty() {
                 ui::empty_state(
@@ -226,6 +298,11 @@ impl TeamsView {
                 ),
             ))
             .child(search)
+            // Not over the spinner, which says the same.
+            .children(
+                note.filter(|_| !(reading > 0 && log.is_empty()))
+                    .map(|n| ui::text(Type::Caption, theme::text_subtle(), n).px(ui::sp(4.))),
+            )
             .child(list);
 
         let side = picked.map(|d| {
@@ -382,6 +459,42 @@ impl TeamsView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_change_opens_only_channels_never_opened() {
+        // Entering the pane: everything with no link, a refused one too.
+        assert!(wants_open(None, false));
+        assert!(wants_open(Some(false), false));
+        assert!(!wants_open(Some(true), false));
+        // A change while it is open: only a channel never opened.
+        assert!(wants_open(None, true));
+        assert!(!wants_open(Some(false), true));
+        assert!(!wants_open(Some(true), true));
+    }
+
+    #[test]
+    fn the_log_says_what_it_has_not_read() {
+        use socket::Status;
+        let refused = Status::Refused("This channel is not open to you.".into());
+        assert_eq!(read_of(Some((true, &Status::Connecting))), Read::Reading);
+        assert_eq!(read_of(Some((false, &Status::Connected))), Read::Done);
+        // Refused clears `loading`: that is not a channel read to the end.
+        assert_eq!(read_of(Some((false, &refused))), Read::Failed);
+        // Never opened is not loading either, or the spinner would never end.
+        assert_eq!(read_of(None), Read::Failed);
+
+        assert_eq!(read_note(0, 0), None);
+        assert_eq!(
+            read_note(3, 0).as_deref(),
+            Some("Still reading 3 channels…")
+        );
+        assert_eq!(
+            read_note(1, 2).as_deref(),
+            Some(
+                "Still reading 1 channel… 2 channels could not be read, so decisions may be missing."
+            )
+        );
+    }
     use crate::arakun_teams::bot::Verified;
     use crate::arakun_teams::decisions::Acceptance;
     use std::collections::BTreeMap;

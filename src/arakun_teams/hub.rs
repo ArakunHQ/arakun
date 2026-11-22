@@ -145,6 +145,11 @@ impl ChannelState {
     pub fn locked(&self) -> usize {
         self.locked.len()
     }
+
+    /// Whether the channel has a socket, connected or still dialing.
+    pub fn linked(&self) -> bool {
+        self.link.is_some()
+    }
 }
 
 pub struct ChannelState {

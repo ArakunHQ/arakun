@@ -1944,6 +1944,8 @@ impl Hub {
         state.link_id = link_id;
         state.link = Some(link);
         state.shown = Instant::now();
+        // Decisions opens channels nobody looks at: the one on screen stays.
+        let in_view = self.viewing.clone().unwrap_or(in_view);
         self.close_spare_links(&in_view);
         cx.notify();
     }
@@ -1968,6 +1970,8 @@ impl Hub {
                 // and `on_socket` ignores what it still sends.
                 c.link = None;
                 c.status = socket::Status::Connecting;
+                // Nobody is known to be here without a socket.
+                c.here.clear();
             }
         }
     }
@@ -1987,6 +1991,7 @@ impl Hub {
         c.history_round += 1;
         c.reading = false;
         c.status = socket::Status::Connecting;
+        c.here.clear();
         cx.notify();
     }
 
@@ -2245,6 +2250,10 @@ impl Hub {
         }
         self.viewing = key.clone();
         if let Some(key) = key {
+            // The newest for the cap on open sockets too.
+            if let Some(c) = self.channels.get_mut(&key) {
+                c.shown = Instant::now();
+            }
             self.unread_read.remove(&key);
             self.mark_read(&key, cx);
         }
@@ -2261,7 +2270,8 @@ impl Hub {
     }
 
     /// Messages from others after the last one this device showed. Channels
-    /// with a socket count what they hold; the rest what history said.
+    /// with a socket count what they hold; the rest what history said. One
+    /// whose socket was closed holds a part, so the larger of the two counts.
     pub fn unread(&self, team_id: &str, channel_id: &str) -> usize {
         let key = channel_key(team_id, channel_id);
         if self.viewing.as_deref() == Some(key.as_str()) {
@@ -2271,11 +2281,17 @@ impl Hub {
         match self.channels.get(&key) {
             Some(c) if !c.loading => {
                 let after = self.kept.last_read(&key).unwrap_or(0);
-                c.messages
+                let held = c
+                    .messages
                     .iter()
                     .filter(|m| m.seq.is_some_and(|s| s > after))
                     .filter(|m| m.github_id != me && counts_as_unread(&m.body.kind))
-                    .count()
+                    .count();
+                if c.link.is_some() {
+                    held
+                } else {
+                    held.max(self.unread_read.get(&key).copied().unwrap_or(0))
+                }
             }
             _ => self.unread_read.get(&key).copied().unwrap_or(0),
         }
@@ -2303,7 +2319,8 @@ impl Hub {
             let keys: HashMap<u64, TeamKey> = self.kept.keys(team_id).into_iter().collect();
             for ch in &t.channels {
                 let key = channel_key(team_id, &ch.id);
-                if self.channels.contains_key(&key) {
+                // A channel whose socket was closed hears nothing new either.
+                if self.channels.get(&key).is_some_and(|c| c.link.is_some()) {
                     continue;
                 }
                 let after = self.kept.last_read(&key).unwrap_or(0);

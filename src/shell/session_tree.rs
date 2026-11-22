@@ -144,6 +144,30 @@ pub(super) fn project_open(
     }
 }
 
+/// A project in the tree, as `Shell::tree_listing` lays it out.
+struct TreeProject {
+    pi: usize,
+    rows: Vec<Row>,
+    /// Its rows show under it.
+    open: bool,
+    urgent: Option<RowState>,
+}
+
+/// The ids from `anchor` to `to`, both included, in the order `order` lists
+/// them. Without the anchor in the list, `to` alone.
+fn pick_range(
+    order: &[SharedString],
+    anchor: Option<&SharedString>,
+    to: &SharedString,
+) -> Vec<SharedString> {
+    let end = order.iter().position(|p| p == to);
+    let start = anchor.and_then(|a| order.iter().position(|p| p == a));
+    match (start, end) {
+        (Some(a), Some(b)) => order[a.min(b)..=a.max(b)].to_vec(),
+        _ => vec![to.clone()],
+    }
+}
+
 /// One session in the tree.
 struct Row {
     ei: usize,
@@ -190,6 +214,252 @@ impl Shell {
         rows
     }
 
+    /// What the tree shows, project by project: each project's rows, whether
+    /// they show under it, and the most urgent state among them. `query`
+    /// narrows to the titles it matches and opens every project.
+    fn tree_listing(&self, query: Option<&str>, cx: &App) -> Vec<TreeProject> {
+        let layout = crate::tab_layout::current();
+        let mut out = Vec::new();
+        for (pi, project) in self.projects.iter().enumerate() {
+            let mut rows = self.tree_rows(pi, cx);
+            if let Some(q) = query {
+                rows.retain(|r| r.title.to_lowercase().contains(q));
+                if rows.is_empty() {
+                    continue;
+                }
+            }
+            let busy = rows.iter().any(|r| r.state.busy());
+            let here = pi == self.active_project;
+            let user = self.tree_open.get(&project.path).copied();
+            let open = if query.is_some() || !layout.group {
+                true
+            } else {
+                match project_open(layout.quiet, busy, here, user) {
+                    Some(open) => open,
+                    None => continue,
+                }
+            };
+            let urgent = rows
+                .iter()
+                .map(|r| r.state)
+                .filter(|s| *s != RowState::Idle)
+                .min_by_key(|s| s.rank());
+            out.push(TreeProject {
+                pi,
+                rows,
+                open,
+                urgent,
+            });
+        }
+        out
+    }
+
+    /// The sessions the tree shows, top to bottom: what Shift+click picks
+    /// a range of.
+    fn tree_order(&self, cx: &App) -> Vec<SharedString> {
+        self.tree_listing(None, cx)
+            .into_iter()
+            .filter(|p| p.open)
+            .flat_map(|p| p.rows.into_iter().map(|r| r.id))
+            .collect()
+    }
+
+    /// A tree row clicked with Ctrl (Cmd) or Shift: Ctrl adds the session to
+    /// the pick or takes it out, Shift picks the rows from the last one
+    /// clicked. Picking here drops a pick made in the projects list.
+    fn click_tree_pick(&mut self, id: SharedString, shift: bool, cx: &mut Context<Self>) {
+        self.rail_pick.clear();
+        self.rail_pick_anchor = None;
+        if shift {
+            let order = self.tree_order(cx);
+            // From the open session when nothing was clicked yet.
+            let anchor = self
+                .tree_pick_anchor
+                .clone()
+                .or_else(|| self.active_session_id());
+            for id in pick_range(&order, anchor.as_ref(), &id) {
+                if !self.tree_pick.contains(&id) {
+                    self.tree_pick.push(id);
+                }
+            }
+        } else {
+            match self.tree_pick.iter().position(|p| *p == id) {
+                Some(i) => {
+                    self.tree_pick.remove(i);
+                }
+                None => self.tree_pick.push(id.clone()),
+            }
+            self.tree_pick_anchor = Some(id);
+        }
+        cx.notify();
+    }
+
+    /// The picked sessions that still exist: their project, environment and id.
+    fn tree_picked(&self) -> Vec<(usize, usize, SharedString)> {
+        self.tree_pick
+            .iter()
+            .filter_map(|id| {
+                let (pi, ei) = self.session_place(id)?;
+                Some((pi, ei, id.clone()))
+            })
+            .collect()
+    }
+
+    /// Pins every picked session to the title bar, or unpins them all when
+    /// they all are.
+    fn pin_tree_picked(&mut self, cx: &mut Context<Self>) {
+        let picked = self.tree_picked();
+        let pin = !picked.iter().all(|(_, _, id)| self.is_pinned(id));
+        for (pi, ei, id) in picked {
+            if self.is_pinned(&id) != pin {
+                self.set_pinned(pi, ei, id, pin, None, cx);
+            }
+        }
+        self.drop_pick();
+        cx.notify();
+    }
+
+    /// Archives the picked sessions that are not working.
+    fn archive_tree_picked(&mut self, cx: &mut Context<Self>) {
+        for (path, ids) in self.picked_by_env() {
+            self.archive_sessions(&path, &ids, cx);
+        }
+        self.drop_pick();
+        cx.notify();
+    }
+
+    /// Closes the tabs of the picked sessions; the sessions stay in the tree.
+    fn close_tree_picked(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        for (path, ids) in self.picked_by_env() {
+            for id in ids {
+                while let Some(i) = self.strip.session_tab(&id) {
+                    self.discard_tab(i, window, cx);
+                }
+                self.retire_if_hidden(&path, &id, cx);
+            }
+        }
+        self.drop_pick();
+        self.save(cx);
+        cx.notify();
+    }
+
+    /// The picked sessions, grouped by the environment that holds them.
+    fn picked_by_env(&self) -> Vec<(std::path::PathBuf, Vec<String>)> {
+        let mut out: Vec<(std::path::PathBuf, Vec<String>)> = Vec::new();
+        for (pi, ei, id) in self.tree_picked() {
+            let path = &self.projects[pi].environments[ei].path;
+            match out.iter_mut().find(|(p, _)| p == path) {
+                Some((_, ids)) => ids.push(id.to_string()),
+                None => out.push((path.clone(), vec![id.to_string()])),
+            }
+        }
+        out
+    }
+
+    /// "N selected" and what to do with the picked sessions, under the tree.
+    fn render_tree_pick_bar(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let picked = self.tree_picked();
+        if picked.is_empty() {
+            return None;
+        }
+        let n = picked.len();
+        let sessions = || {
+            picked.iter().filter_map(|(pi, ei, id)| {
+                let env = &self.projects[*pi].environments[*ei];
+                Some((env, env.sessions.get(env.session_index(id)?)?))
+            })
+        };
+        let can_archive = sessions()
+            .any(|(e, s)| !s.settled && s.status != Status::Working && e.remote.is_none());
+        let can_close = picked
+            .iter()
+            .any(|(_, _, id)| self.strip.session_tab(id).is_some());
+        let pin_bar = crate::tab_layout::current().pinned_bar();
+        let all_pinned = picked.iter().all(|(_, _, id)| self.is_pinned(id));
+        let action = |id: &'static str, icon_name: &'static str, tip: &'static str, on: bool| {
+            // gpui has no disabled state to give screen readers: without a
+            // click handler the button offers no action, and this says why.
+            ui::icon_button(id, icon_name, 14., tip).when(!on, |d| {
+                d.opacity(0.4)
+                    .cursor_default()
+                    .aria_description("Not available for the selected sessions")
+            })
+        };
+        Some(
+            div()
+                .flex()
+                .items_center()
+                .gap(crate::ui::sp(4.))
+                .mt(crate::ui::sp(4.))
+                .h(px(28.))
+                .pl(crate::ui::sp(8.))
+                .pr(crate::ui::sp(4.))
+                .rounded(crate::ui::rad(8.))
+                .bg(theme::selection_strong())
+                .text_size(px(ui::TEXT_SM))
+                .text_color(theme::content())
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .child(format!("{n} selected")),
+                )
+                .when(pin_bar, |d| {
+                    d.child(
+                        action(
+                            "tree-pick-pin",
+                            if all_pinned { "pin-off" } else { "pin" },
+                            if all_pinned {
+                                "Unpin from the title bar"
+                            } else {
+                                "Pin to the title bar"
+                            },
+                            true,
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| this.pin_tree_picked(cx))),
+                    )
+                })
+                .child(
+                    action(
+                        "tree-pick-archive",
+                        "archive02",
+                        "Archive: hide them from the lists",
+                        can_archive,
+                    )
+                    .when(can_archive, |d| {
+                        d.on_click(cx.listener(|this, _, _, cx| this.archive_tree_picked(cx)))
+                    }),
+                )
+                .child(
+                    action(
+                        "tree-pick-close",
+                        "cancel-circle",
+                        "Close their tabs; the sessions stay",
+                        can_close,
+                    )
+                    .when(can_close, |d| {
+                        d.on_click(
+                            cx.listener(|this, _, window, cx| this.close_tree_picked(window, cx)),
+                        )
+                    }),
+                )
+                .child(
+                    ui::icon_button(
+                        "tree-pick-clear",
+                        "cancel01",
+                        14.,
+                        "Clear the selection (Esc)",
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.drop_pick();
+                        cx.notify();
+                    })),
+                )
+                .into_any_element(),
+        )
+    }
+
     /// The checks and the pull request of environment `ei`'s branch, for a
     /// git worktree; the main checkout's branch is no one session's.
     fn env_checks(&self, pi: usize, ei: usize, cx: &App) -> (Option<ci::State>, Option<u64>) {
@@ -220,9 +490,14 @@ impl Shell {
         RowState::of(status, self.env_checks(pi, ei, cx).0)
     }
 
-    /// The tree; in the Sessions menu (`menu`), without its heading and
-    /// narrowed to the titles its search matches.
-    pub(super) fn render_session_tree(&self, menu: bool, cx: &mut Context<Self>) -> AnyElement {
+    /// The tree; in the Sessions menu (`menu`), narrowed to the titles its
+    /// search matches. `heading` puts "Sessions" and its + above it.
+    pub(super) fn render_session_tree(
+        &self,
+        menu: bool,
+        heading: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let layout = crate::tab_layout::current();
         let open_id = self.active_session_id();
         let query = menu
@@ -241,36 +516,17 @@ impl Shell {
                 this.lifted_tab = None;
                 this.unpin_tab(d.id, cx)
             }));
-        if !menu {
+        if heading {
             list = list.child(self.render_tree_heading(cx));
         }
-        for (pi, project) in self.projects.iter().enumerate() {
-            let mut rows = self.tree_rows(pi, cx);
-            if let Some(q) = &query {
-                rows.retain(|r| r.title.to_lowercase().contains(q.as_str()));
-                if rows.is_empty() {
-                    continue;
-                }
-            }
-            let busy = rows.iter().any(|r| r.state.busy());
-            let here = pi == self.active_project;
-            let user = self.tree_open.get(&project.path).copied();
-            let open = if query.is_some() {
-                true
-            } else if layout.group {
-                match project_open(layout.quiet, busy, here, user) {
-                    Some(open) => open,
-                    None => continue,
-                }
-            } else {
-                true
-            };
+        for TreeProject {
+            pi,
+            rows,
+            open,
+            urgent,
+        } in self.tree_listing(query.as_deref(), cx)
+        {
             if layout.group {
-                let urgent = rows
-                    .iter()
-                    .map(|r| r.state)
-                    .filter(|s| *s != RowState::Idle)
-                    .min_by_key(|s| s.rank());
                 list = list.child(self.render_tree_project(
                     pi,
                     rows.len(),
@@ -305,11 +561,28 @@ impl Shell {
                     })),
             );
         }
-        // Rows picked with Ctrl or Shift get the bar that acts on them.
-        list.children(self.render_pick_bar(cx)).into_any_element()
+        // Sessions picked with Ctrl or Shift get the bar that acts on them;
+        // not in the Sessions menu, which closes on the first click.
+        list.when(!menu, |d| d.children(self.render_tree_pick_bar(cx)))
+            .into_any_element()
     }
 
-    /// "Sessions", and the + that starts one in the project on screen.
+    /// Starts a session in project `pi`, which comes on screen first, and
+    /// opens its sessions in the tree so the new one shows.
+    fn new_session_in(&mut self, pi: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(path) = self.projects.get(pi).map(|p| p.path.clone()) else {
+            return;
+        };
+        self.menu = None;
+        self.drop_pick();
+        self.tree_open.insert(path, true);
+        if pi != self.active_project {
+            self.select_project(pi, window, cx);
+        }
+        self.new_session(window, cx);
+    }
+
+    /// "Sessions", and the + for a new session or project.
     fn render_tree_heading(&self, cx: &mut Context<Self>) -> gpui::Div {
         div()
             .flex()
@@ -319,9 +592,11 @@ impl Shell {
             .text_size(px(ui::TEXT_SM))
             .text_color(theme::text_subtle())
             .child(div().flex_1().min_w_0().child("Sessions"))
+            // As the titled segment's +: with the tree in place of the
+            // project switcher, this is where a project is added too.
             .child(
-                icon_button("tree-new-session", "add01", 14., "New session (Ctrl+T)")
-                    .on_click(cx.listener(|this, _, window, cx| this.new_session(window, cx))),
+                icon_button("tree-new", "add01", 14., "New session or project")
+                    .on_click(cx.listener(|this, _, window, cx| this.open_new_dialog(window, cx))),
             )
     }
 
@@ -344,8 +619,10 @@ impl Shell {
         );
         div()
             .id(("tree-project", pi))
+            .group("tree-project")
             .map(|d| ui::labelled(d, gpui::Role::TreeItem, label))
             .aria_expanded(open)
+            .relative()
             .flex()
             .items_center()
             .gap(crate::ui::sp(6.))
@@ -391,7 +668,30 @@ impl Shell {
                     .pr(crate::ui::sp(4.))
                     .text_size(px(ui::TEXT_XS))
                     .text_color(theme::text_faint())
+                    .group_hover("tree-project", |s| s.invisible())
                     .child(count.to_string()),
+            )
+            // On hover, the count gives way to a + for a session in this project.
+            .child(
+                div()
+                    .absolute()
+                    .right(crate::ui::sp(2.))
+                    .invisible()
+                    .group_hover("tree-project", |s| s.visible())
+                    .child(
+                        icon_button(
+                            ("tree-project-new", pi),
+                            "add01",
+                            14.,
+                            format!("New session in {}", project.name),
+                        )
+                        .on_click(cx.listener(
+                            move |this, _, window, cx| {
+                                cx.stop_propagation();
+                                this.new_session_in(pi, window, cx)
+                            },
+                        )),
+                    ),
             )
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.tree_open.insert(path.clone(), !open);
@@ -429,7 +729,7 @@ impl Shell {
         } = row;
         let pinned = layout.pinned_bar() && self.is_pinned(&id);
         let env_path = self.projects[pi].environments[ei].path.clone();
-        let picked = self.is_picked(&env_path);
+        let picked = self.tree_pick.contains(&id);
         let dragged = super::drag::DraggedSession::new(env_path, id.clone(), title.clone(), agent);
         let shell = cx.entity();
         let hovered = id.clone();
@@ -447,10 +747,11 @@ impl Shell {
         let project = &self.projects[pi];
         let logo: Hsla = gpui::rgb(project.logo).into();
         let opens = id.clone();
+        let picks = id.clone();
         div()
             .id(SharedString::from(format!("tree-session-{id}")))
             .map(|d| ui::labelled(d, gpui::Role::TreeItem, label))
-            .aria_selected(selected)
+            .aria_selected(selected || picked)
             .flex()
             .items_center()
             .gap(crate::ui::sp(8.))
@@ -521,20 +822,12 @@ impl Shell {
                 }
             }))
             .when(picked, |d| d.bg(theme::selection_strong()))
-            // Ctrl (Cmd) or Shift picks the session's worktree, as in the
-            // projects list; a plain click opens the session.
+            // Ctrl (Cmd) or Shift picks the session; a plain click opens it.
             .on_click(cx.listener(move |this, ev: &gpui::ClickEvent, window, cx| {
                 this.menu = None;
                 let m = ev.modifiers();
                 if m.secondary() || m.shift {
-                    if let Some(path) = this
-                        .projects
-                        .get(pi)
-                        .and_then(|p| p.environments.get(ei))
-                        .map(|e| e.path.clone())
-                    {
-                        this.toggle_pick(&path, cx);
-                    }
+                    this.click_tree_pick(picks.clone(), m.shift, cx);
                     return;
                 }
                 this.drop_pick();
@@ -612,6 +905,23 @@ mod tests {
         );
         assert_eq!(Idle.end(StateMark::Word, Some(9)).as_deref(), Some("#9"));
         assert!(Working.mark(StateMark::Word).is_none());
+    }
+
+    #[test]
+    fn shift_picks_the_sessions_between_the_anchor_and_the_row() {
+        let ids: Vec<SharedString> = ["a", "b", "c", "d"].map(SharedString::from).to_vec();
+        let id = |s: &str| SharedString::from(s.to_string());
+        assert_eq!(
+            pick_range(&ids, Some(&id("d")), &id("b")),
+            ids[1..=3].to_vec()
+        );
+        assert_eq!(
+            pick_range(&ids, Some(&id("a")), &id("c")),
+            ids[..=2].to_vec()
+        );
+        // An anchor the tree no longer shows picks the row alone.
+        assert_eq!(pick_range(&ids, Some(&id("gone")), &id("c")), vec![id("c")]);
+        assert_eq!(pick_range(&ids, None, &id("b")), vec![id("b")]);
     }
 
     #[test]

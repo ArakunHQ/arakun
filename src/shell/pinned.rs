@@ -517,7 +517,7 @@ impl Shell {
                     .min_h_0()
                     .flex_1()
                     .overflow_y_scroll()
-                    .child(self.render_session_tree(true, cx)),
+                    .child(self.render_session_tree(true, false, cx)),
             )
             .child(div().my(px(4.)).h(px(1.)).bg(theme::stroke()))
             .child(

@@ -187,7 +187,9 @@ impl Shell {
     /// Returns whether anything was picked.
     pub(super) fn drop_pick(&mut self) -> bool {
         self.rail_pick_anchor = None;
-        !std::mem::take(&mut self.rail_pick).is_empty()
+        self.tree_pick_anchor = None;
+        let sessions = !std::mem::take(&mut self.tree_pick).is_empty();
+        !std::mem::take(&mut self.rail_pick).is_empty() || sessions
     }
 
     /// The picked rows that still exist, as (project, environment).

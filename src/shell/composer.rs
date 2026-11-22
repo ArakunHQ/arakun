@@ -555,19 +555,20 @@ impl Shell {
             if name.contains(char::is_whitespace) {
                 return None;
             }
+            let thread = self.active_thread(cx);
             // This computer's skills, where the agent sees them.
             let session = match self.strip.tabs.get(self.composer_tab()).map(|t| &t.kind) {
                 Some(TabKind::Session { id, .. }) => Some(id.as_ref()),
                 _ => None,
             };
-            let skills = (host_skills_reach(self.project(), self.env(), session)
+            let sandboxed = thread.as_ref().map(|t| t.read(cx).sandbox().is_some());
+            let skills = (host_skills_reach(self.project(), self.env(), session, sandboxed)
                 && matches!(
                     self.composer_agent(),
                     AgentKind::Claude | AgentKind::WorkersAi
                 ))
             .then(|| self.skill_index(cx))
             .flatten();
-            let thread = self.active_thread(cx);
             let reported: &[crate::agent::Choice] = match &thread {
                 Some(t) => t.read(cx).commands(),
                 None => &[],
@@ -1694,11 +1695,17 @@ impl EntityInputHandler for Shell {
 /// Whether the agent of `session` in `env` sees the skills on this computer,
 /// so `/` completion may offer them. A server's environment or project, a
 /// sandbox and a headless session each see other files: there only the
-/// commands the session reports count.
-fn host_skills_reach(project: &Project, env: &Environment, session: Option<&str>) -> bool {
+/// commands the session reports count. `sandboxed` is the running session's
+/// own state: the project's switch applies only to sessions started after it.
+fn host_skills_reach(
+    project: &Project,
+    env: &Environment,
+    session: Option<&str>,
+    sandboxed: Option<bool>,
+) -> bool {
     env.remote.is_none()
         && !project.is_remote()
-        && !project.sandbox
+        && !sandboxed.unwrap_or(project.sandbox)
         && !session.is_some_and(crate::headless::shown)
 }
 
@@ -1709,24 +1716,23 @@ mod tests {
 
     #[test]
     fn host_skills_stay_with_agents_on_this_computer() {
+        let reach = |p: &Project, session: Option<&str>, sandboxed: Option<bool>| {
+            host_skills_reach(p, &p.environments[0], session, sandboxed)
+        };
         let mut project =
             crate::state::new_project(std::path::Path::new("/tmp/arakun-skills-test"));
-        fn env(p: &Project) -> &Environment {
-            &p.environments[0]
-        }
-        assert!(host_skills_reach(&project, env(&project), None));
-        assert!(host_skills_reach(&project, env(&project), Some("s-local")));
+        assert!(reach(&project, None, None));
+        assert!(reach(&project, Some("s-local"), Some(false)));
 
         crate::headless::set_shown("s-headless", true);
-        assert!(!host_skills_reach(
-            &project,
-            env(&project),
-            Some("s-headless")
-        ));
+        assert!(!reach(&project, Some("s-headless"), None));
         crate::headless::set_shown("s-headless", false);
 
+        // A running session keeps the sandbox it started with.
+        assert!(!reach(&project, Some("s-local"), Some(true)));
         project.sandbox = true;
-        assert!(!host_skills_reach(&project, env(&project), None));
+        assert!(!reach(&project, None, None));
+        assert!(reach(&project, Some("s-local"), Some(false)));
         project.sandbox = false;
 
         project.environments[0].remote = Some(Remote {
@@ -1734,9 +1740,9 @@ mod tests {
             machine: "box".into(),
             place: "/srv/app".into(),
         });
-        assert!(!host_skills_reach(&project, env(&project), None));
+        assert!(!reach(&project, None, None));
 
         let remote = crate::state::new_project(&Remote::project_path("s1/app"));
-        assert!(!host_skills_reach(&remote, env(&remote), None));
+        assert!(!reach(&remote, None, None));
     }
 }

@@ -65,7 +65,7 @@ fn source_of(d: &Decision, channel: &str) -> String {
 }
 
 /// Whether a search finds the decision: in what was decided, who took part,
-/// what @bot checked, or the channel.
+/// what @bot checked, the channel, or who reversed it and why.
 fn finds(d: &Decision, channel: &str, query: &str) -> bool {
     let q = query.to_lowercase();
     let mut hay = vec![d.decision.clone(), d.via_login.clone(), channel.to_string()];
@@ -75,6 +75,9 @@ fn finds(d: &Decision, channel: &str, query: &str) -> bool {
             .iter()
             .flat_map(|v| [v.source.clone(), v.text.clone()]),
     );
+    if let Some(r) = &d.reversed {
+        hay.extend([r.login.clone(), r.reason.clone()]);
+    }
     hay.iter().any(|h| h.to_lowercase().contains(&q))
 }
 
@@ -784,6 +787,17 @@ mod tests {
             assert!(finds(&d, "protocol", q), "{q}");
         }
         assert!(!finds(&d, "protocol", "rik"));
+        // Who reversed it and why are on the row, so a search finds them.
+        let mut d = d;
+        d.reversed = Some(crate::arakun_teams::decisions::Reversal {
+            github_id: 3,
+            login: "rik".into(),
+            at: 20,
+            reason: "Too slow on a phone".into(),
+            message_id: "r1".into(),
+        });
+        assert!(finds(&d, "protocol", "RIK"));
+        assert!(finds(&d, "protocol", "too slow"));
     }
 
     #[test]

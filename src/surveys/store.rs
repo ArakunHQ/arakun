@@ -8,11 +8,12 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-use super::ids::{Builtin, FallbackBody};
+use super::ids::{self, Builtin, FallbackBody};
 use super::model::{self, Body, Branching, Conditions, Question, Survey, SurveyType};
 
 /// How often the surveys are fetched at most, and the longest a failed fetch
@@ -67,12 +68,21 @@ pub fn eligible<'a>(surveys: &'a [Survey], seen: &SeenMap, m: &Moment) -> Option
     let last_shown = seen.values().map(|e| e.at).max();
     surveys.iter().find(|s| {
         s.kind == SurveyType::Popover
+            && !is_builtin(&s.id)
             && !s.archived
             && !seen.contains_key(&s.id)
             && model::drawable(s)
             && in_schedule(s, m.now_unix)
             && conditions_met(&s.conditions, m, last_shown)
     })
+}
+
+/// The feedback forms have their own screens. Someone setting one to popover
+/// in PostHog must not pop it up on its own.
+fn is_builtin(id: &str) -> bool {
+    [&ids::USER, &ids::AGENT, &ids::ERROR]
+        .iter()
+        .any(|b| b.survey_id == id)
 }
 
 fn in_schedule(s: &Survey, now: u64) -> bool {
@@ -243,17 +253,22 @@ fn mark_in(dir: &Path, id: &str, seen: Seen, now: u64) {
         },
     );
     if let Ok(json) = serde_json::to_vec(&map) {
-        write_file(dir, "surveys-seen.json", &json);
+        let _ = write_file(dir, "surveys-seen.json", &json);
     }
 }
 
 /// Writes through a temp file, so a crash never leaves half a file.
-fn write_file(dir: &Path, name: &str, bytes: &[u8]) {
+fn write_file(dir: &Path, name: &str, bytes: &[u8]) -> bool {
     let _ = std::fs::create_dir_all(dir);
     let tmp = dir.join(format!("{name}.tmp"));
-    if std::fs::write(&tmp, bytes).is_ok() && std::fs::rename(&tmp, dir.join(name)).is_err() {
-        let _ = std::fs::remove_file(&tmp);
+    if std::fs::write(&tmp, bytes).is_err() {
+        return false;
     }
+    if std::fs::rename(&tmp, dir.join(name)).is_err() {
+        let _ = std::fs::remove_file(&tmp);
+        return false;
+    }
+    true
 }
 
 pub fn now_unix() -> u64 {
@@ -283,6 +298,35 @@ fn due(cache_age: Option<Duration>, retry_in: Duration) -> bool {
     retry_in.is_zero() && cache_age.is_none_or(|a| a >= REFETCH)
 }
 
+/// Holds the in-flight flag; clears it when dropped, even on a panic.
+struct InFlight(&'static AtomicBool);
+
+impl InFlight {
+    fn begin(flag: &'static AtomicBool) -> Option<InFlight> {
+        flag.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .ok()
+            .map(|_| InFlight(flag))
+    }
+}
+
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
+static FETCHING: AtomicBool = AtomicBool::new(false);
+
+/// Updates the retry state after a try: cleared on success, doubled on failure.
+fn record(retry: &mut Option<(Instant, Duration)>, ok: bool, now: Instant) {
+    *retry = if ok {
+        None
+    } else {
+        let wait = backoff(retry.map(|(_, w)| w));
+        Some((now + wait, wait))
+    };
+}
+
 /// When the next try may start, and how long the last wait was.
 static RETRY: Mutex<Option<(Instant, Duration)>> = Mutex::new(None);
 
@@ -308,20 +352,19 @@ pub fn refresh() {
     if !due(age, retry_in) {
         return;
     }
+    // One fetch at a time, or two threads would write the same temp file.
+    let Some(guard) = InFlight::begin(&FETCHING) else {
+        return;
+    };
     let _ = std::thread::Builder::new()
         .name("surveys-fetch".into())
         .spawn(move || {
-            let ok = fetch().is_some_and(|body| {
-                write_file(&dir, "surveys.json", body.as_bytes());
-                true
-            });
+            let _guard = guard;
+            // A cache that cannot be written counts as a failure, or an
+            // unwritable disk would refetch on every call.
+            let ok = fetch().is_some_and(|body| write_file(&dir, "surveys.json", body.as_bytes()));
             if let Ok(mut r) = RETRY.lock() {
-                *r = if ok {
-                    None
-                } else {
-                    let wait = backoff(r.map(|(_, w)| w));
-                    Some((Instant::now() + wait, wait))
-                };
+                record(&mut r, ok, Instant::now());
             }
         });
 }
@@ -589,6 +632,43 @@ mod tests {
         assert!(!due(None, Duration::from_secs(5)));
         assert!(!due(Some(Duration::from_secs(60)), Duration::ZERO));
         assert!(due(Some(REFETCH), Duration::ZERO));
+    }
+
+    #[test]
+    fn builtin_ids_never_pop() {
+        for b in [&USER, &AGENT, &ERROR] {
+            let mut s = popover(b.survey_id);
+            s.kind = SurveyType::Popover;
+            assert!(pick(&[s], &SeenMap::new(), &moment()).is_none());
+        }
+    }
+
+    #[test]
+    fn refresh_skips_while_in_flight() {
+        static FLAG: AtomicBool = AtomicBool::new(false);
+        let first = InFlight::begin(&FLAG).expect("first starts");
+        assert!(InFlight::begin(&FLAG).is_none());
+        drop(first);
+        assert!(InFlight::begin(&FLAG).is_some());
+        // The guard cleared the flag on drop, so another can start.
+        assert!(InFlight::begin(&FLAG).is_some());
+    }
+
+    #[test]
+    fn failed_fetch_or_write_backs_off() {
+        let now = Instant::now();
+        let mut retry = None;
+        record(&mut retry, false, now);
+        assert_eq!(retry, Some((now + FIRST_RETRY, FIRST_RETRY)));
+        record(&mut retry, false, now);
+        assert_eq!(retry.unwrap().1, FIRST_RETRY * 2);
+        record(&mut retry, true, now);
+        assert!(retry.is_none());
+        // A folder that cannot be written is a failure.
+        let file = std::env::temp_dir().join(format!("arakun-surveys-file-{}", std::process::id()));
+        std::fs::write(&file, b"x").unwrap();
+        assert!(!write_file(&file, "surveys.json", b"{}"));
+        let _ = std::fs::remove_file(&file);
     }
 
     #[test]

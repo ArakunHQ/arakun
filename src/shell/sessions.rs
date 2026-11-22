@@ -2319,6 +2319,7 @@ impl Shell {
                 updated: d.updated,
                 pr: None,
                 seat: None,
+                seat_key: None,
             });
             env.sessions.insert(0, session);
         }

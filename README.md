@@ -536,13 +536,21 @@ after a week).
   limit, the session starts on the one with the most room and says so. The composer
   shows the seat of the session, and the Usage tab every seat's windows and live
   sessions. Reading a token's windows sends that seat a one-token message, so Arakun
-  does it only while the Usage tab is on screen, for `arakun seat ls`, and when a new
-  session picks its seat (waiting at most 4 seconds), and at most every 15 minutes per
-  token. A seat whose token is refused is skipped, and a session saved on it moves to
-  another seat and says so. Seats can't work
+  reads the windows only while the Usage tab is on screen, for `arakun seat ls`, and
+  when a new session picks its seat (waiting at most 4 seconds), at most every 15
+  minutes per token. Starting a session on a saved seat also checks its token with that
+  message (waiting at most 10 seconds) unless the same token was read in the last
+  minute, so a dead token shows up at the start, not in the middle of a session. A seat whose
+  token is refused is skipped, and a session saved on it moves to another seat and says
+  so. A session also keeps a SHA-256 fingerprint of its seat's token (never the token),
+  so it says so when a different token was saved under the same name. Sessions in the
+  sandbox don't use seats: they run on Claude Code's default account, and one that was
+  on a seat says so. Seats can't work
   while `~/.claude/settings.json` sets `CLAUDE_CODE_OAUTH_TOKEN` in its `env` block,
   because Claude Code applies that over each session's environment; the Usage tab says
-  so, and sessions start as before. Without a saved seat nothing changes.
+  so, sessions start as before, and one that was on a seat says so. The same goes
+  while Claude Code runs on an API key, a gateway or a cloud provider, which win over
+  any seat's token. Without a saved seat nothing changes.
 - **Marketplace.** Plugins, MCP servers and skills to add, and the MCP servers, plugins,
   skills and permission rules the agents load now. Discover › Skills searches
   [skills.sh](https://skills.sh); Install copies the skill's folder from its GitHub

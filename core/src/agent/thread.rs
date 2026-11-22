@@ -125,6 +125,11 @@ pub struct SessionMeta {
     /// whole life so a resumed session goes on with the same account.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seat: Option<String>,
+    /// The [`seats::fingerprint`] of that seat's token when the session last
+    /// started on it, never the token: a different one under the same name
+    /// may be another account.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seat_key: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1193,6 +1198,7 @@ impl Thread {
             updated: now,
             pr: None,
             seat: None,
+            seat_key: None,
         });
         let backend = if kind == AgentKind::Droid && launch::droid_native() {
             Backend::Native
@@ -1784,6 +1790,7 @@ impl Thread {
         let cwd = self.cwd.clone();
         let install = self.take_install_approval();
         let pinned = self.meta.seat.clone();
+        let pinned_key = self.meta.seat_key.clone();
         self._connect = Some(cx.spawn(async move |this, cx| {
             let (progress_tx, mut progress_rx) = fmpsc::unbounded::<String>();
             let resolve = cx.background_executor().spawn(async move {
@@ -1793,19 +1800,20 @@ impl Thread {
                 let mut spec = launch::resolve(kind, Some(&cwd), install, &|line| {
                     let _ = progress_tx.unbounded_send(line);
                 })?;
+                let sandboxed = super::sandbox::wanted(&cwd).map_err(|e| {
+                    anyhow!("{e}. The sandbox won't start an agent in a Git folder it can't trust.")
+                })?;
                 // Each Claude Code session on a seat of its own, in its own
-                // environment only; see `seats`.
-                let seat = (kind == AgentKind::Claude)
-                    .then(|| seats::assign(pinned.as_deref()))
-                    .flatten();
-                if let Some(seat) = &seat {
+                // environment only; none in the sandbox. See `seats`.
+                let seat = (kind == AgentKind::Claude).then(|| {
+                    seats::assign(pinned.as_deref(), pinned_key.as_deref(), sandboxed)
+                });
+                if let Some(seats::Seating::On(seat)) = &seat {
                     let (set, unset) = seat.env();
                     spec.env.extend(set);
                     spec.unset.extend(unset);
                 }
-                if !super::sandbox::wanted(&cwd).map_err(|e| {
-                    anyhow!("{e}. The sandbox won't start an agent in a Git folder it can't trust.")
-                })? {
+                if !sandboxed {
                     return Ok((spec, seat, None));
                 }
                 // Its tools would run in arakun itself, outside any sandbox.
@@ -1833,8 +1841,11 @@ impl Thread {
             progress.await;
             let _ = this.update(cx, |t, cx| match spec {
                 Ok((spec, seat, sandbox)) => {
-                    if let Some(seat) = seat {
-                        t.take_seat(seat, cx);
+                    match seat {
+                        Some(seats::Seating::On(seat)) => t.take_seat(seat, cx),
+                        // Off its seat for this run; the pin stays for the next.
+                        Some(seats::Seating::Off(Some(text))) => t.notice(text, false, cx),
+                        _ => {}
                     }
                     t.sandbox = sandbox;
                     t.launch(spec, cx)
@@ -1853,8 +1864,9 @@ impl Thread {
         // `assign` counted it live when it picked; a pin it kept, here.
         let lease = seat.lease.unwrap_or_else(|| seats::lease(&seat.seat));
         self.lease = Some(lease);
-        if self.meta.seat.as_deref() != Some(seat.seat.as_str()) {
+        if self.meta.seat.as_deref() != Some(seat.seat.as_str()) || self.meta.seat_key != seat.key {
             self.meta.seat = Some(seat.seat);
+            self.meta.seat_key = seat.key;
             self.meta_changed(cx);
         }
         if let Some(text) = seat.notice {
@@ -4551,10 +4563,13 @@ mod tests {
         let mut t = Thread::new(AgentKind::Claude, "/p".into(), None);
         assert_eq!(t.meta().seat, None);
         t.meta.seat = Some("work".into());
+        t.meta.seat_key = Some(seats::fingerprint("tok"));
         // Saved in the session list and the transcript, and read back.
         let json = serde_json::to_string(&t.meta()).unwrap();
+        assert!(!json.contains("\"tok\""), "{json}");
         let meta: SessionMeta = serde_json::from_str(&json).unwrap();
         assert_eq!(meta.seat.as_deref(), Some("work"));
+        assert_eq!(meta.seat_key, Some(seats::fingerprint("tok")));
         // A resumed or restarted session starts from that meta, so `connect`
         // asks `seats::assign` for the same seat.
         let resumed = Thread::new(AgentKind::Claude, "/p".into(), Some(meta));
@@ -4565,7 +4580,7 @@ mod tests {
         let old =
             r#"{"agent":"claude","session_id":"s","title":"t","cwd":"/p","created":1,"updated":2}"#;
         let old: SessionMeta = serde_json::from_str(old).unwrap();
-        assert_eq!(old.seat, None);
+        assert_eq!((old.seat.as_deref(), old.seat_key.as_deref()), (None, None));
         assert!(!serde_json::to_string(&old).unwrap().contains("seat"));
     }
 

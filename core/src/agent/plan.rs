@@ -112,6 +112,10 @@ pub struct NamedSeat {
     /// Why the last read failed, if it did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// The `seats::fingerprint` of the token the last good read used, so a
+    /// read of an older token under the same name never counts for a new one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
 }
 
 impl NamedSeat {
@@ -123,7 +127,7 @@ impl NamedSeat {
 }
 
 /// Whether a read's error says the token was turned away.
-fn is_refusal(error: &str) -> bool {
+pub(crate) fn is_refusal(error: &str) -> bool {
     error.starts_with("HTTP 401") || error.starts_with("HTTP 403")
 }
 
@@ -390,11 +394,7 @@ pub fn seats_probing(probe: &[String]) -> Seats {
 /// turn: waiting for another refresh can take long enough that the reason
 /// to read the named seats (the Usage tab on screen) is gone.
 pub fn seats_probing_if(probe: &[String], still: impl FnOnce() -> bool) -> Seats {
-    // One refresh at a time: two sessions starting together would otherwise
-    // both find a seat due and both send it a message. The second one waits,
-    // then finds the first one's read in the cache.
-    static ONE: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    let _one = ONE.lock().unwrap_or_else(|e| e.into_inner());
+    let _one = one_refresh();
     let probe = if still() { probe } else { &[] };
     let at = now();
     let mut out = cached_seats().unwrap_or_default();
@@ -418,7 +418,9 @@ pub fn seats_probing_if(probe: &[String], still: impl FnOnce() -> bool) -> Seats
         let token = store
             .token(name)
             .ok_or_else(|| anyhow!("the seat's token file is gone"))?;
-        fetch_borrowed(&token).map_err(|e| anyhow!(hide_token(&format!("{e:#}"), &token)))
+        fetch_borrowed(&token)
+            .map(|u| (u, super::seats::fingerprint(&token)))
+            .map_err(|e| anyhow!(hide_token(&format!("{e:#}"), &token)))
     });
     if own_due && let Ok(own) = fetch_own() {
         out.own = own;
@@ -444,6 +446,61 @@ pub fn seats_probing_if(probe: &[String], still: impl FnOnce() -> bool) -> Seats
     remember_seats(out)
 }
 
+/// One refresh at a time: two sessions starting together would otherwise
+/// both find a seat due and both send it a message. The second one waits,
+/// then finds the first one's read in the cache.
+fn one_refresh() -> std::sync::MutexGuard<'static, ()> {
+    static ONE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    ONE.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Checks named seat `name`'s `token` before a session starts on it: one read
+/// of its windows, kept in the cache like any other. A good read of the seat
+/// newer than `within` seconds stands in for it, so a seat a pick has just
+/// read is not sent a second message. The error never carries the token.
+pub fn check_named(name: &str, token: &str, within: u64) -> Result<PlanUsage> {
+    let _one = one_refresh();
+    let at = now();
+    let mut out = cached_seats().unwrap_or_default();
+    let key = super::seats::fingerprint(token);
+    if let Some(usage) = recent_read(&out.named, name, &key, at, within) {
+        return Ok(usage);
+    }
+    let got = fetch_borrowed(token).map_err(|e| anyhow!(hide_token(&format!("{e:#}"), token)));
+    record(
+        &mut out.named,
+        name,
+        at,
+        &got.as_ref()
+            .map(|u| (u.clone(), key))
+            .map_err(|e| anyhow!("{e:#}")),
+    );
+    out.named.sort_by(|a, b| a.name.cmp(&b.name));
+    store_seats(&out);
+    remember_seats(out);
+    got
+}
+
+/// Named seat `name`'s windows when its last read worked, used the token
+/// whose fingerprint is `key`, and is newer than `within` seconds at `at`.
+fn recent_read(
+    named: &[NamedSeat],
+    name: &str,
+    key: &str,
+    at: u64,
+    within: u64,
+) -> Option<PlanUsage> {
+    named
+        .iter()
+        .find(|s| {
+            s.name == name
+                && s.error.is_none()
+                && s.key.as_deref() == Some(key)
+                && at.saturating_sub(s.at) < within
+        })
+        .and_then(|s| s.usage.clone())
+}
+
 /// The named seats whose windows are older than [`BORROWED_STALE`], or were
 /// never read.
 fn named_due(named: &[NamedSeat], names: &[String], at: u64) -> Vec<String> {
@@ -460,21 +517,22 @@ fn named_due(named: &[NamedSeat], names: &[String], at: u64) -> Vec<String> {
 }
 
 /// Brings `named` in line with the seats saved now (`names`): drops the gone
-/// ones and reads the due ones among `probe`, all at once, each with `fetch`.
-/// A read that fails keeps the seat's last windows. Whether anything changed.
+/// ones and reads the due ones among `probe`, all at once, each with `fetch`
+/// (the windows and the token's fingerprint). A read that fails keeps the
+/// seat's last windows. Whether anything changed.
 fn refresh_named(
     named: &mut Vec<NamedSeat>,
     names: &[String],
     probe: &[String],
     at: u64,
-    fetch: impl Fn(&str) -> Result<PlanUsage> + Sync,
+    fetch: impl Fn(&str) -> Result<(PlanUsage, String)> + Sync,
 ) -> bool {
     let before = named.len();
     named.retain(|s| names.contains(&s.name));
     let mut changed = named.len() != before;
     let due = named_due(named, probe, at);
     let fetch = &fetch;
-    let read: Vec<(String, Result<PlanUsage>)> = std::thread::scope(|scope| {
+    let read: Vec<(String, Result<(PlanUsage, String)>)> = std::thread::scope(|scope| {
         let jobs: Vec<_> = due
             .into_iter()
             .map(|name| scope.spawn(move || (name.clone(), fetch(&name))))
@@ -483,35 +541,42 @@ fn refresh_named(
     });
     for (name, got) in read {
         changed = true;
-        let ix = match named.iter().position(|s| s.name == name) {
-            Some(ix) => ix,
-            None => {
-                named.push(NamedSeat {
-                    name,
-                    ..NamedSeat::default()
-                });
-                named.len() - 1
-            }
-        };
-        let seat = &mut named[ix];
-        seat.at = at;
-        match got {
-            Ok(usage) => {
-                seat.usage = Some(usage);
-                seat.error = None;
-            }
-            Err(e) => {
-                let e = format!("{e:#}");
-                // A timeout does not say a refused token works again; only
-                // a good read clears the refusal.
-                if !seat.refused() || is_refusal(&e) {
-                    seat.error = Some(e);
-                }
-            }
-        }
+        record(named, &name, at, &got);
     }
     named.sort_by(|a, b| a.name.cmp(&b.name));
     changed
+}
+
+/// Puts one read of named seat `name`, made at `at`, into `named`. A read
+/// that fails keeps the seat's last windows.
+fn record(named: &mut Vec<NamedSeat>, name: &str, at: u64, got: &Result<(PlanUsage, String)>) {
+    let ix = match named.iter().position(|s| s.name == name) {
+        Some(ix) => ix,
+        None => {
+            named.push(NamedSeat {
+                name: name.to_string(),
+                ..NamedSeat::default()
+            });
+            named.len() - 1
+        }
+    };
+    let seat = &mut named[ix];
+    seat.at = at;
+    match got {
+        Ok((usage, key)) => {
+            seat.usage = Some(usage.clone());
+            seat.error = None;
+            seat.key = Some(key.clone());
+        }
+        Err(e) => {
+            let e = format!("{e:#}");
+            // A timeout does not say a refused token works again; only
+            // a good read clears the refusal.
+            if !seat.refused() || is_refusal(&e) {
+                seat.error = Some(e);
+            }
+        }
+    }
 }
 
 /// `text` with `token` cut out, should an error ever quote it.
@@ -524,7 +589,7 @@ pub(crate) fn hide_token(text: &str, token: &str) -> String {
 
 /// Puts a named seat's windows, read just now, into the cache, so the seat
 /// is not read again at once (`arakun seat add` reads it to check the token).
-pub fn remember_named(name: &str, usage: PlanUsage) {
+pub fn remember_named(name: &str, usage: PlanUsage, key: Option<String>) {
     let mut seats = cached_seats().unwrap_or_default();
     seats.named.retain(|s| s.name != name);
     seats.named.push(NamedSeat {
@@ -532,6 +597,7 @@ pub fn remember_named(name: &str, usage: PlanUsage) {
         at: usage.at,
         usage: Some(usage),
         error: None,
+        key,
     });
     seats.named.sort_by(|a, b| a.name.cmp(&b.name));
     store_seats(&seats);
@@ -1162,12 +1228,14 @@ mod tests {
                 at: 1_000,
                 usage: Some(good.clone()),
                 error: None,
+                key: None,
             },
             NamedSeat {
                 name: "removed".into(),
                 at: 1_000,
                 usage: Some(good.clone()),
                 error: None,
+                key: None,
             },
         ];
         let names: Vec<String> = vec!["fresh".into(), "new".into()];
@@ -1180,7 +1248,7 @@ mod tests {
         assert_eq!(quiet.len(), 1);
         let changed = refresh_named(&mut named, &names, &names, 1_000 + 60, |name| {
             asked.lock().unwrap().push(name.to_string());
-            Ok(good.clone())
+            Ok((good.clone(), "k".into()))
         });
         // Only the seat never read is asked; the removed one is dropped.
         assert!(changed);
@@ -1195,7 +1263,7 @@ mod tests {
             if name == "fresh" {
                 Err(anyhow!("HTTP 429"))
             } else {
-                Ok(good.clone())
+                Ok((good.clone(), "k".into()))
             }
         }));
         assert_eq!(named[0].usage.as_ref().unwrap().five_hour(), Some(25));
@@ -1224,6 +1292,46 @@ mod tests {
     }
 
     #[test]
+    fn only_a_recent_good_read_of_the_same_token_stands_in_for_a_launch_check() {
+        let good = parse_headers(&serde_json::json!({
+            "anthropic-ratelimit-unified-5h-utilization": ["0.25"],
+        }));
+        let named = vec![
+            NamedSeat {
+                name: "ok".into(),
+                at: 1_000,
+                usage: Some(good.clone()),
+                key: Some("k1".into()),
+                ..NamedSeat::default()
+            },
+            NamedSeat {
+                name: "busy".into(),
+                at: 1_000,
+                usage: Some(good),
+                error: Some("HTTP 429".into()),
+                key: Some("k1".into()),
+            },
+        ];
+        assert!(recent_read(&named, "ok", "k1", 1_059, 60).is_some());
+        // Too old, another token under the name, failed last time, or never
+        // read: checked again.
+        assert!(recent_read(&named, "ok", "k1", 1_060, 60).is_none());
+        assert!(recent_read(&named, "ok", "k2", 1_001, 60).is_none());
+        assert!(recent_read(&named, "busy", "k1", 1_001, 60).is_none());
+        assert!(recent_read(&named, "new", "k1", 1_001, 60).is_none());
+        // A good read keeps the fingerprint of the token it used.
+        let mut named = named;
+        record(
+            &mut named,
+            "busy",
+            2_000,
+            &Ok((PlanUsage::default(), "k2".into())),
+        );
+        assert_eq!(named[1].key.as_deref(), Some("k2"));
+        assert!(recent_read(&named, "busy", "k2", 2_001, 60).is_some());
+    }
+
+    #[test]
     fn a_refusal_stays_until_a_good_read() {
         let good = parse_headers(&serde_json::json!({
             "anthropic-ratelimit-unified-5h-utilization": ["0.05"]
@@ -1234,13 +1342,18 @@ mod tests {
             at: 1_000,
             usage: Some(good.clone()),
             error: Some("HTTP 401: refused".into()),
+            key: None,
         }];
         let mut at = 1_000;
         let mut read = |named: &mut Vec<NamedSeat>, got: Result<PlanUsage>| {
             at += BORROWED_STALE;
             let got = std::sync::Mutex::new(Some(got));
             refresh_named(named, &names, &names, at, |_| {
-                got.lock().unwrap().take().unwrap()
+                got.lock()
+                    .unwrap()
+                    .take()
+                    .unwrap()
+                    .map(|u| (u, "k".to_string()))
             });
         };
         // A timeout says nothing about the token: it stays refused.

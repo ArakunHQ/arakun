@@ -11,7 +11,6 @@
 //! Only release builds ask; debug builds, tests and `arakun dev` see no flags.
 
 use std::collections::HashMap;
-use std::sync::OnceLock;
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -41,15 +40,26 @@ pub fn fetch() -> Result<HashMap<String, Flag>, String> {
         return Ok(HashMap::new());
     }
     let body = request_body(&crate::telemetry::flags_id());
-    let text = agent()
-        .post(format!(
-            "{}/flags/?v=2",
-            crate::telemetry::HOST.trim_end_matches('/')
-        ))
-        .header("Content-Type", "application/json")
-        .send(body.to_string())
-        .and_then(|r| r.into_body().read_to_string())
-        .map_err(|e| format!("could not reach PostHog for feature flags: {e}"))?;
+    let url = format!(
+        "{}/flags/?v=2",
+        crate::telemetry::HOST.trim_end_matches('/')
+    );
+    let reply = crate::http::json_call(
+        crate::http::agent(Duration::from_secs(15)),
+        "POST",
+        &url,
+        None,
+        Some(body.to_string()),
+        1024 * 1024,
+    )
+    .map_err(|e| format!("could not reach PostHog for feature flags: {e}"))?;
+    if !reply.ok() {
+        return Err(format!(
+            "PostHog answered {} to the feature flags",
+            reply.status
+        ));
+    }
+    let text = reply.text();
     parse(&text)
 }
 
@@ -123,17 +133,6 @@ fn parse(text: &str) -> Result<HashMap<String, Flag>, String> {
             (key, flag)
         })
         .collect())
-}
-
-fn agent() -> &'static ureq::Agent {
-    static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
-    AGENT.get_or_init(|| {
-        ureq::Agent::config_builder()
-            .timeout_global(Some(Duration::from_secs(15)))
-            .user_agent(concat!("arakun/", env!("ARAKUN_VERSION")))
-            .build()
-            .into()
-    })
 }
 
 #[cfg(test)]

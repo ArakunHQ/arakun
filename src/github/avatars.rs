@@ -137,18 +137,16 @@ fn address(login: &str) -> String {
 pub fn download(dir: &Path, login: &str) -> Result<PathBuf, String> {
     let path = path_in(dir, login).ok_or("no login")?;
     let url = sized(&address(login), SIZE);
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .timeout_global(Some(Duration::from_secs(20)))
-        .user_agent(concat!("arakun/", env!("ARAKUN_VERSION")))
-        .build()
-        .into();
-    let mut answer = agent.get(&url).call().map_err(|e| e.to_string())?;
-    let bytes = answer
-        .body_mut()
-        .with_config()
-        .limit(2 * 1024 * 1024)
-        .read_to_vec()
-        .map_err(|e| e.to_string())?;
+    let reply = crate::http::run(
+        crate::http::agent(Duration::from_secs(20)),
+        ureq::http::Request::get(&url),
+        None,
+        2 * 1024 * 1024,
+    )?;
+    if !reply.ok() {
+        return Err(format!("the avatar server answered {}", reply.status));
+    }
+    let bytes = reply.bytes;
     // An error page is not a picture: keep the initials instead.
     if image::guess_format(&bytes).is_err() && !bytes.starts_with(&[0xff, 0xd8]) {
         return Err("not an image".into());

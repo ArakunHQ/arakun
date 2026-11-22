@@ -380,14 +380,12 @@ fn fetch() -> Option<String> {
         crate::telemetry::HOST.trim_end_matches('/'),
         crate::telemetry::KEY
     );
-    let agent = crate::telemetry::agent_with(Duration::from_secs(10));
-    let body = agent
-        .get(url)
-        .call()
-        .ok()?
-        .into_body()
-        .read_to_string()
-        .ok()?;
+    let agent = crate::http::agent(Duration::from_secs(10));
+    let reply = crate::http::json_call(agent, "GET", &url, None, None, 10 * 1024 * 1024).ok()?;
+    if !reply.ok() {
+        return None;
+    }
+    let body = reply.text();
     let v: serde_json::Value = serde_json::from_str(&body).ok()?;
     v.get("surveys")?.is_array().then_some(body)
 }

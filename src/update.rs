@@ -448,7 +448,9 @@ fn hash_file(path: &Path) -> std::io::Result<String> {
 fn agent() -> &'static ureq::Agent {
     static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
     AGENT.get_or_init(|| {
-        ureq::Agent::config_builder()
+        crate::http::builder()
+            // Release downloads fail on any error status, as they always have.
+            .http_status_as_error(true)
             .timeout_resolve(Some(Duration::from_secs(20)))
             .timeout_connect(Some(Duration::from_secs(20)))
             .timeout_send_request(Some(Duration::from_secs(30)))
@@ -456,7 +458,6 @@ fn agent() -> &'static ureq::Agent {
             // update lock, and Check now, forever.
             .timeout_recv_response(Some(Duration::from_secs(60)))
             .timeout_recv_body(Some(Duration::from_secs(600)))
-            .user_agent(concat!("arakun/", env!("ARAKUN_VERSION")))
             .build()
             .into()
     })

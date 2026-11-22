@@ -42,6 +42,7 @@ mod github;
 mod github_view;
 mod headless;
 mod history;
+mod http;
 mod island_host;
 mod iso;
 mod iso_view;

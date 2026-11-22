@@ -851,18 +851,6 @@ fn percent(value: &str) -> String {
     out
 }
 
-fn agent() -> &'static ureq::Agent {
-    static AGENT: std::sync::OnceLock<ureq::Agent> = std::sync::OnceLock::new();
-    AGENT.get_or_init(|| {
-        ureq::Agent::config_builder()
-            .timeout_global(Some(CONNECT_TIMEOUT))
-            .http_status_as_error(false)
-            .user_agent("arakun")
-            .build()
-            .into()
-    })
-}
-
 /// A small JSON answer to a request, with its status. `bearer` is the token
 /// the server knows this app by, where the request needs one.
 fn fetch(
@@ -871,33 +859,11 @@ fn fetch(
     body: Option<String>,
     bearer: Option<&str>,
 ) -> Result<(u16, Value), String> {
-    let mut request = ureq::http::Request::builder()
-        .method(method)
-        .uri(url)
-        .header("Content-Type", "application/json");
-    if let Some(token) = bearer {
-        request = request.header("Authorization", format!("Bearer {token}"));
-    }
-    let sent = match body {
-        Some(body) => request
-            .body(body)
-            .map_err(|e| e.to_string())
-            .and_then(|r| agent().run(r).map_err(|e| e.to_string())),
-        None => request
-            .body(())
-            .map_err(|e| e.to_string())
-            .and_then(|r| agent().run(r).map_err(|e| e.to_string())),
-    };
-    let mut response = sent?;
-    let text = response
-        .body_mut()
-        .with_config()
-        .limit(64 * 1024)
-        .read_to_string()
-        .unwrap_or_default();
+    let agent = crate::http::agent(CONNECT_TIMEOUT);
+    let reply = crate::http::json_call(agent, method, url, bearer, body, 64 * 1024)?;
     Ok((
-        response.status().as_u16(),
-        serde_json::from_str(&text).unwrap_or_default(),
+        reply.status,
+        serde_json::from_slice(&reply.bytes).unwrap_or_default(),
     ))
 }
 

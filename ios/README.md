@@ -82,8 +82,11 @@ phone page's push is Web Push; native push needs APNs support on the computer).
 The app asks once, on first launch, whether to send crash reports, and the More menu
 changes the answer. Only after a yes does `Arakun/Telemetry.swift` start PostHog's SDK
 (pinned in `project.yml`), with its exception autocapture and nothing else: no
-screens, taps, sessions or person profile, and no location. Reports go to the
-desktop's PostHog project as `$exception` events. Debug builds send nothing.
+screens, taps, sessions or person profile, and no location. A report keeps only
+the crash, its stack trace and the app, system and device model, and its message
+loses links, paths, emails and tokens (`ArakunKit/Sources/ArakunKit/CrashReport.swift`).
+Once the user says no, queued reports wait unsent. Reports go to the desktop's
+PostHog project as `$exception` events. Debug builds send nothing.
 
 The SDK installs its crash handlers only when the project's "Enable exception
 autocapture" setting in PostHog is on. Stack traces are unsymbolicated until the

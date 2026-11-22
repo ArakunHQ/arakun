@@ -452,8 +452,9 @@ pub enum Seating {
 /// seat says so. The resolver that calls this runs off the UI thread.
 pub fn assign(pinned: Option<&str>, key: Option<&str>, sandboxed: bool) -> Seating {
     // The sign-in is what a session runs on without seats, unless Arakun
-    // has a token of its own.
-    let moved = |p: &str| p != OWN || plan::active_is_borrowed();
+    // has a token of its own or Claude Code runs on an API key, a gateway
+    // or a cloud provider.
+    let moved = |p: &str| p != OWN || plan::active_is_borrowed() || claude_auth::access().is_some();
     if sandboxed {
         return Seating::Off(pinned.filter(|p| moved(p)).map(|p| {
             format!(
@@ -753,7 +754,9 @@ pub fn cli(args: &[String]) -> i32 {
                 plan::fetch_borrowed,
                 &mut out,
             )
-            .map(|usage| plan::remember_named(name, usage))
+            .map(|usage| {
+                plan::remember_named(name, usage, store.token(name).map(|t| fingerprint(&t)))
+            })
         }
         [cmd] if cmd == "ls" => {
             let seats = plan::seats_probing(&store.names());
@@ -1013,6 +1016,7 @@ mod tests {
             at: 1,
             usage,
             error: None,
+            key: None,
         }
     }
 

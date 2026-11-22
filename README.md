@@ -511,11 +511,11 @@ after a week).
   limit, the session starts on the one with the most room and says so. The composer
   shows the seat of the session, and the Usage tab every seat's windows and live
   sessions. Reading a token's windows sends that seat a one-token message, so Arakun
-  does it only while the Usage tab is on screen, for `arakun seat ls`, when a new
-  session picks its seat (waiting at most 4 seconds), and at most every 15 minutes per
-  token. Before a session starts on a saved seat, Arakun also checks its token with
-  that message (waiting at most 10 seconds) unless it read the seat in the last minute,
-  so a dead token shows up at the start, not in the middle of a session. A seat whose
+  reads the windows only while the Usage tab is on screen, for `arakun seat ls`, and
+  when a new session picks its seat (waiting at most 4 seconds), at most every 15
+  minutes per token. Starting a session on a saved seat also checks its token with that
+  message (waiting at most 10 seconds) unless the same token was read in the last
+  minute, so a dead token shows up at the start, not in the middle of a session. A seat whose
   token is refused is skipped, and a session saved on it moves to another seat and says
   so. A session also keeps a SHA-256 fingerprint of its seat's token (never the token),
   so it says so when a different token was saved under the same name. Sessions in the

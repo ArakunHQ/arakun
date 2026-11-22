@@ -31,7 +31,11 @@ pub struct Commit {
     pub sha: String,
     /// Committer time, unix seconds.
     pub time: u64,
+    /// The author's name and email, after `.mailmap`.
     pub author: String,
+    pub email: String,
+    /// A merge: more than one parent.
+    pub merge: bool,
     pub title: String,
     pub who: Who,
     /// Who wrote it with the author, from the first Co-Authored-By trailer
@@ -267,7 +271,7 @@ fn default_ref(dir: &Path) -> Option<String> {
 }
 
 // Each record starts with \x1e, so `--shortstat`'s line ends up in its own record.
-const FORMAT: &str = "--format=%x1e%H%x1f%ct%x1f%an%x1f%s%x1f%(trailers:key=Co-authored-by,valueonly,separator=%x1d)%x1f";
+const FORMAT: &str = "--format=%x1e%H%x1f%ct%x1f%aN%x1f%aE%x1f%P%x1f%s%x1f%(trailers:key=Co-authored-by,valueonly,separator=%x1d)%x1f";
 
 /// Claude or Droid when a trailer or the author names them.
 pub fn who(author: &str, trailers: &str) -> Who {
@@ -319,6 +323,8 @@ pub(crate) fn parse_log(text: &str) -> Vec<Commit> {
             let sha = p.next()?.trim().to_string();
             let time = p.next()?.parse().ok()?;
             let author = p.next().unwrap_or_default().to_string();
+            let email = p.next().unwrap_or_default().to_string();
+            let merge = p.next().unwrap_or_default().split_whitespace().count() > 1;
             let title = p.next().unwrap_or_default().to_string();
             let trailers = p.next().unwrap_or_default();
             let stat = parse_stat(p.next().unwrap_or_default());
@@ -329,6 +335,8 @@ pub(crate) fn parse_log(text: &str) -> Vec<Commit> {
                 sha,
                 time,
                 author,
+                email,
+                merge,
                 title,
                 pushed: true,
             })
@@ -337,7 +345,7 @@ pub(crate) fn parse_log(text: &str) -> Vec<Commit> {
 }
 
 fn log(dir: &Path, args: &[&str]) -> Vec<Commit> {
-    let mut full = vec!["log", FORMAT, "--shortstat"];
+    let mut full = vec!["log", "--use-mailmap", FORMAT, "--shortstat"];
     full.extend_from_slice(args);
     git::read(dir, &full)
         .map(|t| parse_log(&t))
@@ -826,7 +834,7 @@ mod tests {
             Who::Droid
         );
         assert_eq!(who("alice", ""), Who::Person);
-        let log = "\x1ea1\x1f100\x1falice\x1fFix\x1fClaude Opus 5.5 <noreply@anthropic.com>\x1dcubic <bot@cubic.dev>\x1f\n\n 1 file changed, 121 insertions(+), 19 deletions(-)\n\x1eb2\x1f90\x1fbob\x1fZoom (#12)\x1f\x1f\n";
+        let log = "\x1ea1\x1f100\x1falice\x1falice@example.com\x1fp1\x1fFix\x1fClaude Opus 5.5 <noreply@anthropic.com>\x1dcubic <bot@cubic.dev>\x1f\n\n 1 file changed, 121 insertions(+), 19 deletions(-)\n\x1eb2\x1f90\x1fbob\x1fbob@example.com\x1fp1 p2\x1fZoom (#12)\x1f\x1f\n";
         let c = parse_log(log);
         assert_eq!(c.len(), 2);
         assert_eq!(
@@ -843,6 +851,8 @@ mod tests {
             })
         );
         assert_eq!((c[1].coauthor.as_deref(), c[1].stat), (None, None));
+        assert_eq!(c[0].email, "alice@example.com");
+        assert!(!c[0].merge && c[1].merge);
     }
 
     #[test]
@@ -918,6 +928,8 @@ mod tests {
             sha: "a".into(),
             time: now,
             author: String::new(),
+            email: String::new(),
+            merge: false,
             title: String::new(),
             who: Who::Person,
             coauthor: None,
@@ -1029,6 +1041,8 @@ mod tests {
             sha: sha.into(),
             time: 0,
             author: String::new(),
+            email: String::new(),
+            merge: false,
             title: title.into(),
             who: Who::Person,
             coauthor: None,

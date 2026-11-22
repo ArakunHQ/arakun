@@ -4,17 +4,21 @@
 //! one leaves the default line at the commit it grew from and comes back at
 //! the commit that took it in (for a squash, the branch's own commits are
 //! still on its ref). At most [`LANES`] lanes run side by side; a branch that
-//! would need another one folds.
+//! would need another one folds. Integration branches (see
+//! [`integration`]) are left out, and merge commits on a lane fold away.
 
 use std::collections::HashMap;
 
-use crate::branches::{Branch, Map};
+use crate::branches::{Branch, Commit, Map};
 
 /// Lanes beside the default branch's line, and colors for them.
 pub const LANES: usize = 3;
 /// A branch's newest commits drawn on its lane; older ones are left out, so
 /// a long-lived branch doesn't push the default branch's history away.
 pub const LANE_COMMITS: usize = 5;
+/// Branches that only gather other branches (a nightly build, a backup):
+/// they are neither drawn nor counted.
+pub const INTEGRATION_PREFIXES: &[&str] = &["nightly/", "backup/"];
 
 /// Where a row's commit comes from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -38,6 +42,8 @@ pub struct Lane {
     /// The row of the commit it grew from; None when that is below the rows.
     pub bottom: Option<usize>,
     pub merged: bool,
+    /// Index in the branch's commits of the newest one drawn: merges are not.
+    pub tip: usize,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -57,6 +63,16 @@ impl History {
         }
     }
 
+    /// Is `row` the newest drawn commit of a branch not in main yet?
+    pub fn is_tip(&self, row: usize) -> bool {
+        match self.rows.get(row) {
+            Some(Source::Side { commit, .. }) => self
+                .lane_of(row)
+                .is_some_and(|l| !l.merged && l.tip == *commit),
+            _ => false,
+        }
+    }
+
     /// The merged lane that comes back into the default line at `row`.
     pub fn merged_at(&self, row: usize) -> Option<&Lane> {
         self.lanes.iter().find(|l| l.merged && l.top == row)
@@ -66,6 +82,20 @@ impl History {
 /// Is `b` a branch not in the default one yet (nor merged by a squash)?
 pub fn not_in_main(b: &Branch) -> bool {
     !b.ghost && !b.contained && !b.pr.as_ref().is_some_and(|p| p.merged()) && b.ahead > 0
+}
+
+/// A branch that gathers others rather than holding work of its own: its
+/// name starts with one of [`INTEGRATION_PREFIXES`], or its newest commit
+/// is a merge and it has merged at least two branches other than `main`.
+pub fn integration(b: &Branch, main: &str) -> bool {
+    if INTEGRATION_PREFIXES.iter().any(|p| b.name.starts_with(p)) {
+        return true;
+    }
+    let of_main = |c: &Commit| {
+        c.title.contains(&format!("'{main}'")) || c.title.contains(&format!("'origin/{main}'"))
+    };
+    b.commits.first().is_some_and(|c| c.merge)
+        && b.commits.iter().filter(|c| c.merge && !of_main(c)).count() >= 2
 }
 
 /// Lays out the history of `map`. `live(b)` says if a branch not in the
@@ -85,11 +115,13 @@ pub fn layout(map: &Map, live: impl Fn(&Branch) -> bool) -> History {
         branch: usize,
         merge: Option<usize>,
         fork: Option<usize>,
-        slots: Vec<(usize, u64)>,
+        /// (index in the branch's commits, slot, time).
+        slots: Vec<(usize, usize, u64)>,
     }
     let mut candidates: Vec<Candidate> = Vec::new();
+    let mut folded = Vec::new();
     for (bi, b) in map.branches.iter().enumerate() {
-        if b.ghost || b.commits.is_empty() {
+        if b.ghost || b.commits.is_empty() || integration(b, &map.main) {
             continue;
         }
         let merge = b.merged_by.as_deref().and_then(|s| row_of.get(s).copied());
@@ -105,7 +137,8 @@ pub fn layout(map: &Map, live: impl Fn(&Branch) -> bool) -> History {
         }
         let mut slots = Vec::with_capacity(LANE_COMMITS);
         let (mut last_slot, mut last_time) = (lo, u64::MAX);
-        for c in b.commits.iter().take(LANE_COMMITS) {
+        let own = b.commits.iter().enumerate().filter(|(_, c)| !c.merge);
+        for (k, c) in own.take(LANE_COMMITS) {
             // Above the first main commit in range that is older; a branch
             // keeps its own order even when its times don't.
             let slot = (lo..hi)
@@ -113,8 +146,15 @@ pub fn layout(map: &Map, live: impl Fn(&Branch) -> bool) -> History {
                 .unwrap_or(hi)
                 .max(last_slot);
             let time = c.time.min(last_time);
-            slots.push((slot, time));
+            slots.push((k, slot, time));
             (last_slot, last_time) = (slot, time);
+        }
+        if slots.is_empty() {
+            // Only merges: nothing to draw, but an open branch stays listed.
+            if merge.is_none() {
+                folded.push(bi);
+            }
+            continue;
         }
         candidates.push(Candidate {
             branch: bi,
@@ -132,11 +172,11 @@ pub fn layout(map: &Map, live: impl Fn(&Branch) -> bool) -> History {
         match c.merge {
             Some(m) => main_key(m),
             None => (
-                c.slots[0].0,
+                c.slots[0].1,
                 0,
-                std::cmp::Reverse(c.slots[0].1),
+                std::cmp::Reverse(c.slots[0].2),
                 c.branch,
-                0,
+                c.slots[0].0,
             ),
         }
     };
@@ -147,7 +187,6 @@ pub fn layout(map: &Map, live: impl Fn(&Branch) -> bool) -> History {
     let mut columns: [Option<(Key, usize)>; LANES] = [None; LANES];
     let mut next_color = 0;
     let mut kept: Vec<(usize, usize, usize)> = Vec::new();
-    let mut folded = Vec::new();
     for (ci, c) in candidates.iter().enumerate() {
         let top = top_key(c);
         let bottom = c
@@ -179,7 +218,7 @@ pub fn layout(map: &Map, live: impl Fn(&Branch) -> bool) -> History {
         .collect();
     for &(ci, ..) in &kept {
         let c = &candidates[ci];
-        for (k, &(slot, time)) in c.slots.iter().enumerate() {
+        for &(k, slot, time) in &c.slots {
             keyed.push((
                 (slot, 0, std::cmp::Reverse(time), c.branch, k),
                 Source::Side {
@@ -209,7 +248,7 @@ pub fn layout(map: &Map, live: impl Fn(&Branch) -> bool) -> History {
                 .position(|s| {
                     *s == Source::Side {
                         branch: c.branch,
-                        commit: 0,
+                        commit: c.slots[0].0,
                     }
                 })
                 .unwrap_or(0);
@@ -220,6 +259,7 @@ pub fn layout(map: &Map, live: impl Fn(&Branch) -> bool) -> History {
                 top: c.merge.map_or(first, |m| main_row[&m]),
                 bottom: c.fork.map(|f| main_row[&f]),
                 merged: c.merge.is_some(),
+                tip: c.slots[0].0,
             }
         })
         .collect();
@@ -290,6 +330,148 @@ pub fn long_ago(t: u64, now: u64) -> String {
     format!("{n} {unit}{} ago", if n == 1 { "" } else { "s" })
 }
 
+/// One person behind several author names and emails.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Person {
+    /// The fullest name they signed with ("Ana Lima" over "ana").
+    pub name: String,
+    /// Their GitHub login, when an email or a pull request gives it.
+    pub login: Option<String>,
+}
+
+/// Who wrote what, by email: a person signs locally as `ana` and on GitHub's
+/// squash merges as `Ana Lima`, and both are one person.
+#[derive(Clone, Debug, Default)]
+pub struct People {
+    /// Lower-case email to index in `people`.
+    by_email: HashMap<String, usize>,
+    people: Vec<Person>,
+}
+
+impl People {
+    pub fn of(&self, c: &Commit) -> Option<&Person> {
+        self.by_email
+            .get(&c.email.to_ascii_lowercase())
+            .map(|&i| &self.people[i])
+    }
+
+    /// The name to show for a commit's author.
+    pub fn name<'a>(&'a self, c: &'a Commit) -> &'a str {
+        self.of(c).map_or(c.author.as_str(), |p| p.name.as_str())
+    }
+
+    pub fn logins(&self) -> Vec<String> {
+        let mut out: Vec<String> = self.people.iter().filter_map(|p| p.login.clone()).collect();
+        out.sort();
+        out.dedup();
+        out
+    }
+}
+
+/// The login in a GitHub noreply email: `123+ana@users.noreply.github.com`
+/// or the older `ana@users.noreply.github.com`.
+pub fn noreply_login(email: &str) -> Option<String> {
+    let local = email
+        .to_ascii_lowercase()
+        .strip_suffix("@users.noreply.github.com")?
+        .to_string();
+    let login = local.split_once('+').map_or(local.as_str(), |(_, l)| l);
+    (!login.is_empty()).then(|| login.to_string())
+}
+
+/// "Ana Lima" over "ana": a name with a space first, then the longer one.
+fn fuller(a: &str, b: &str) -> bool {
+    (a.contains(' '), a.len()) > (b.contains(' '), b.len())
+}
+
+/// Groups the authors of `map` into people. An email belongs to a login when
+/// it is that login's noreply address, or when most of its commits are in
+/// that login's pull requests (on the PR's branch, or its squash on main);
+/// emails of one login are one person, and an email with no login is one too.
+pub fn people(map: &Map) -> People {
+    let by_pr: HashMap<u64, &str> = map
+        .branches
+        .iter()
+        .filter_map(|b| b.pr.as_ref())
+        .filter(|p| !p.author.is_empty())
+        .map(|p| (p.number, p.author.as_str()))
+        .collect();
+    let mut sure: HashMap<String, String> = HashMap::new();
+    let mut votes: HashMap<String, HashMap<String, usize>> = HashMap::new();
+    let mut names: HashMap<String, String> = HashMap::new();
+    let mut see = |c: &Commit, pr_author: Option<&str>| {
+        let email = c.email.to_ascii_lowercase();
+        if email.is_empty() {
+            return;
+        }
+        let name = names.entry(email.clone()).or_default();
+        if fuller(&c.author, name) {
+            *name = c.author.clone();
+        }
+        if let Some(login) = noreply_login(&email) {
+            sure.insert(email, login);
+        } else if let Some(login) = pr_author {
+            *votes
+                .entry(email)
+                .or_default()
+                .entry(login.to_ascii_lowercase())
+                .or_default() += 1;
+        }
+    };
+    for c in &map.main_commits {
+        let pr = split_pr(&c.title).1.and_then(|n| by_pr.get(&n).copied());
+        see(c, pr);
+    }
+    for b in &map.branches {
+        let pr =
+            b.pr.as_ref()
+                .map(|p| p.author.as_str())
+                .filter(|a| !a.is_empty());
+        for c in &b.commits {
+            see(c, pr);
+        }
+    }
+
+    let mut out = People::default();
+    let mut by_login: HashMap<String, usize> = HashMap::new();
+    let mut emails: Vec<&String> = names.keys().collect();
+    emails.sort();
+    for email in emails {
+        let login = sure.get(email).cloned().or_else(|| {
+            votes
+                .get(email)?
+                .iter()
+                .max_by_key(|(login, n)| (**n, std::cmp::Reverse((*login).clone())))
+                .map(|(login, _)| login.clone())
+        });
+        let name = &names[email];
+        let i = match login
+            .as_ref()
+            .and_then(|l| by_login.get(&l.to_ascii_lowercase()))
+        {
+            Some(&i) => {
+                if fuller(name, &out.people[i].name) {
+                    out.people[i].name = name.clone();
+                }
+                i
+            }
+            None => {
+                out.people.push(Person {
+                    name: name.clone(),
+                    login: login.clone(),
+                });
+                let i = out.people.len() - 1;
+                if let Some(l) = login {
+                    by_login.insert(l.to_ascii_lowercase(), i);
+                }
+                i
+            }
+        };
+        out.by_email.insert(email.clone(), i);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -300,6 +482,8 @@ mod tests {
             sha: sha.into(),
             time,
             author: String::new(),
+            email: String::new(),
+            merge: false,
             title: String::new(),
             who: Who::Person,
             coauthor: None,
@@ -359,6 +543,7 @@ mod tests {
                 top: 1,
                 bottom: Some(2),
                 merged: false,
+                tip: 0,
             }]
         );
     }
@@ -499,5 +684,107 @@ mod tests {
         assert_eq!(long_ago(now - 60, now), "1 minute ago");
         assert_eq!(long_ago(now - 49 * 60, now), "49 minutes ago");
         assert_eq!(long_ago(now - 2 * 86_400, now), "2 days ago");
+    }
+
+    #[test]
+    fn integration_branches_get_no_lane_and_merges_fold() {
+        let merge = |sha: &str, title: &str, time| Commit {
+            merge: true,
+            title: title.into(),
+            ..commit(sha, time)
+        };
+        let nightly = branch("nightly/local-1", vec![commit("n1", 350)], "m3");
+        let gather = branch(
+            "gather",
+            vec![
+                merge(
+                    "g2",
+                    "Merge remote-tracking branch 'origin/a' into gather",
+                    360,
+                ),
+                merge(
+                    "g1",
+                    "Merge remote-tracking branch 'origin/b' into gather",
+                    355,
+                ),
+                commit("g0", 350),
+            ],
+            "m3",
+        );
+        assert!(integration(&nightly, "main") && integration(&gather, "main"));
+        let feature = branch(
+            "feature",
+            vec![
+                merge("f2", "Merge branch 'main' into feature", 360),
+                commit("f1", 350),
+            ],
+            "m3",
+        );
+        assert!(!integration(&feature, "main"));
+        let h = layout(&map(vec![nightly, gather, feature]), |_| true);
+        assert_eq!(h.lanes.len(), 1);
+        assert_eq!((h.lanes[0].branch, h.lanes[0].tip), (2, 1));
+        // The merge on the lane is folded; its own commit is the tip.
+        assert!(!h.rows.contains(&Source::Side {
+            branch: 2,
+            commit: 0
+        }));
+        assert!(h.is_tip(1));
+    }
+
+    #[test]
+    fn one_person_signs_with_several_names_and_emails() {
+        let signed = |sha: &str, author: &str, email: &str, title: &str| Commit {
+            author: author.into(),
+            email: email.into(),
+            title: title.into(),
+            ..commit(sha, 100)
+        };
+        let pr = |n: u64, author: &str| crate::branches::Pr {
+            number: n,
+            title: String::new(),
+            url: String::new(),
+            state: "OPEN".into(),
+            draft: false,
+            review: String::new(),
+            mergeable: String::new(),
+            checks: crate::branches::Checks::None,
+            author: author.into(),
+            merged_at: 0,
+            updated_at: 0,
+        };
+        let mut m = map(vec![Branch {
+            pr: Some(pr(7, "AnaLima")),
+            ..branch(
+                "ana/fix",
+                vec![signed("b1", "ana", "ana@home.test", "fix: x")],
+                "m4",
+            )
+        }]);
+        m.main_commits = vec![
+            signed(
+                "m2",
+                "Ana Lima",
+                "1+AnaLima@users.noreply.github.com",
+                "fix: y (#6)",
+            ),
+            signed("m1", "Bo", "bo@work.test", "chore: z"),
+        ];
+        let p = people(&m);
+        let local = &m.branches[0].commits[0];
+        assert_eq!(p.name(local), "Ana Lima");
+        assert_eq!(p.of(local), p.of(&m.main_commits[0]));
+        assert_eq!(
+            p.of(local).and_then(|x| x.login.as_deref()),
+            Some("analima")
+        );
+        assert_eq!(p.name(&m.main_commits[1]), "Bo");
+        assert_eq!(p.of(&m.main_commits[1]).and_then(|x| x.login.clone()), None);
+        assert_eq!(p.logins(), vec!["analima".to_string()]);
+        assert_eq!(
+            noreply_login("dependabot[bot]@users.noreply.github.com").as_deref(),
+            Some("dependabot[bot]")
+        );
+        assert_eq!(noreply_login("ana@home.test"), None);
     }
 }

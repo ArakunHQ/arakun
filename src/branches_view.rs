@@ -23,7 +23,7 @@ use gpui::{
 };
 
 use crate::agent::AgentKind;
-use crate::branch_history::{self, History, Source};
+use crate::branch_history::{self, History, People, Source};
 use crate::branches::{self, Branch, Checks, Commit, Map, Status, Who};
 use crate::input::{InputEvent, TextInput};
 use crate::model::Status as SessionStatus;
@@ -148,6 +148,12 @@ pub struct BranchesView {
     repo_error: Option<String>,
     _repo: gpui::Subscription,
     _load: Option<Task<()>>,
+    /// Who is who among the authors of `map`, worked out with it.
+    people: Rc<People>,
+    /// GitHub pictures by lower-case login; None while one downloads or
+    /// when it failed. Read from disk or GitHub off the UI thread, once.
+    avatars: HashMap<String, Option<PathBuf>>,
+    _avatars: Option<Task<()>>,
 }
 
 impl EventEmitter<BranchesEvent> for BranchesView {}
@@ -171,6 +177,9 @@ struct RowInfo<'a> {
     title: &'a str,
     lane: Option<Hsla>,
     tag: Option<&'a str>,
+    /// The author's name, one per person, and their GitHub login.
+    author: &'a str,
+    login: Option<&'a str>,
 }
 
 impl BranchesView {
@@ -197,6 +206,9 @@ impl BranchesView {
             show_all: false,
             show_folded: false,
             show_repo: false,
+            people: Rc::default(),
+            avatars: HashMap::new(),
+            _avatars: None,
             width: Rc::new(Cell::new(1200.)),
             list_y: Rc::new(Cell::new(0.)),
             focus: cx.focus_handle(),
@@ -312,10 +324,12 @@ impl BranchesView {
         cx.notify();
         self._load = Some(cx.spawn(async move |this, cx| {
             let r = root.clone();
-            let map = cx
-                .background_spawn(crate::guard::task_or_default(
-                    async move { branches::load(&r) },
-                ))
+            let (map, people) = cx
+                .background_spawn(crate::guard::task_or_default(async move {
+                    let map = branches::load(&r);
+                    let people = branch_history::people(&map);
+                    (map, people)
+                }))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 if this.root.as_ref() == Some(&root) {
@@ -329,6 +343,8 @@ impl BranchesView {
                         }
                     }
                     this.map = Some(Rc::new(map));
+                    this.people = Rc::new(people);
+                    this.fetch_avatars(cx);
                     // Rows moved: the card would describe another commit.
                     this.hovered = None;
                     this.cursor = None;
@@ -338,6 +354,59 @@ impl BranchesView {
             });
         }));
     }
+    /// Pictures of the people with a GitHub login that aren't asked for yet:
+    /// from the GitHub tab's cache on disk, else downloaded, in the
+    /// background. A render only reads what arrived.
+    fn fetch_avatars(&mut self, cx: &mut Context<Self>) {
+        let want: Vec<String> = self
+            .people
+            .logins()
+            .into_iter()
+            .filter(|l| !self.avatars.contains_key(l))
+            .collect();
+        if want.is_empty() || self._avatars.is_some() {
+            return;
+        }
+        for l in &want {
+            self.avatars.insert(l.clone(), None);
+        }
+        self._avatars = Some(cx.spawn(async move |this, cx| {
+            let got = cx
+                .background_spawn(crate::guard::task_or_default(async move {
+                    let dir = crate::github::avatars::dir();
+                    want.into_iter()
+                        .map(|login| {
+                            let path = match crate::github::avatars::cached(&dir, &login) {
+                                Some((path, false)) => Some(path),
+                                // Due again: a failed download keeps the old one.
+                                Some((path, true)) => {
+                                    crate::github::avatars::download(&dir, &login)
+                                        .ok()
+                                        .or(Some(path))
+                                }
+                                None => crate::github::avatars::download(&dir, &login).ok(),
+                            };
+                            (login, path)
+                        })
+                        .collect::<Vec<_>>()
+                }))
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this._avatars = None;
+                for (login, path) in got {
+                    this.avatars.insert(login, path);
+                }
+                // People who showed up while these were read.
+                this.fetch_avatars(cx);
+                cx.notify();
+            });
+        }));
+    }
+
+    fn picture(&self, login: Option<&str>) -> Option<&std::path::Path> {
+        self.avatars.get(login?)?.as_deref()
+    }
+
     /// Reads pull requests from the GitHub repository typed in the field.
     fn use_repo(&mut self, cx: &mut Context<Self>) {
         let Some(root) = self.root.clone() else {
@@ -466,7 +535,8 @@ impl BranchesView {
         if r >= h.rows.len() {
             return;
         }
-        let info = row_info(&map, &h, &pr_index(&map), &HashMap::new(), r);
+        let people = self.people.clone();
+        let info = row_info(&map, &h, &pr_index(&map), &HashMap::new(), &people, r);
         if let Some(b) = info.branch {
             self.select(Some(b.name.clone()), cx);
         }
@@ -536,7 +606,9 @@ impl BranchesView {
         let open = map.map_or(0, |m| {
             m.branches
                 .iter()
-                .filter(|b| branch_history::not_in_main(b))
+                .filter(|b| {
+                    branch_history::not_in_main(b) && !branch_history::integration(b, &m.main)
+                })
                 .count()
         });
         let no_remote = map.is_some_and(|m| m.prs_error.as_deref() == Some(branches::NO_REMOTE));
@@ -784,7 +856,7 @@ impl BranchesView {
         let mut list = div().relative().flex().flex_col();
         let mut card = None;
         for r in 0..shown {
-            let info = row_info(map, h, &by_pr, &tags, r);
+            let info = row_info(map, h, &by_pr, &tags, &self.people, r);
             if active == Some(r) {
                 card = Some(self.render_card(map, &info, now));
             }
@@ -969,7 +1041,7 @@ impl BranchesView {
                 .gap(crate::ui::sp(8.))
                 .when(!compact, |d| d.w(px(AUTHOR_W)))
                 .when(info.side, |d| d.opacity(0.7))
-                .child(face(c, 20.))
+                .child(face(c, info.author, self.picture(info.login), 20.))
                 .when(!compact, |d| {
                     d.child(
                         div()
@@ -977,7 +1049,7 @@ impl BranchesView {
                             .truncate()
                             .text_size(px(ui::TEXT_SM))
                             .text_color(theme::text_subtle())
-                            .child(c.author.clone()),
+                            .child(info.author.to_string()),
                     )
                 }),
         )
@@ -1060,7 +1132,7 @@ impl BranchesView {
                     .flex()
                     .items_center()
                     .gap(crate::ui::sp(10.))
-                    .child(face(c, 28.))
+                    .child(face(c, info.author, self.picture(info.login), 28.))
                     .child(
                         div()
                             .flex()
@@ -1071,7 +1143,7 @@ impl BranchesView {
                                     .truncate()
                                     .text_size(px(ui::TEXT_MD))
                                     .font_weight(FontWeight::SEMIBOLD)
-                                    .child(c.author.clone()),
+                                    .child(info.author.to_string()),
                             )
                             .when_some(c.coauthor.clone(), |d, who| {
                                 d.child(
@@ -1621,12 +1693,13 @@ fn row_info<'a>(
     h: &History,
     by_pr: &HashMap<u64, usize>,
     tags: &HashMap<&str, &'a str>,
+    people: &'a People,
     r: usize,
 ) -> RowInfo<'a> {
     let (commit, side, tip) = match h.rows[r] {
         Source::Main(j) => (&map.main_commits[j], false, false),
         Source::Side { branch, commit } => {
-            (&map.branches[branch].commits[commit], true, commit == 0)
+            (&map.branches[branch].commits[commit], true, h.is_tip(r))
         }
     };
     let (title, pr_number) = branch_history::split_pr(&commit.title);
@@ -1662,13 +1735,15 @@ fn row_info<'a>(
         title,
         lane: lane.map(|l| theme::lane(l.color)),
         tag: tags.get(commit.sha.as_str()).copied(),
+        author: people.name(commit),
+        login: people.of(commit).and_then(|p| p.login.as_deref()),
     }
 }
 
 /// What a screen reader says for a row: the card's facts in one line.
 fn row_label(info: &RowInfo, now: u64) -> String {
     let c = info.commit;
-    let mut out = format!("{}, {}", info.title, c.author);
+    let mut out = format!("{}, {}", info.title, info.author);
     if let Some(who) = &c.coauthor {
         out.push_str(&format!(" with {who}"));
     }
@@ -1713,13 +1788,13 @@ fn agent_of(c: &Commit) -> Option<AgentKind> {
 }
 
 /// The author's avatar, with the mark of the agent that wrote it with them.
-fn face(c: &Commit, size: f32) -> Div {
+fn face(c: &Commit, name: &str, picture: Option<&std::path::Path>, size: f32) -> Div {
     let b = (size * 0.6).round();
     div()
         .relative()
         .flex_none()
         .size(px(size))
-        .child(ui::avatar(&c.author, size))
+        .child(ui::avatar_image(name, picture, size))
         .when_some(agent_of(c), |d, agent| {
             d.child(
                 div()
@@ -1843,7 +1918,7 @@ impl Graph {
                     GraphDot {
                         row: r,
                         x: lane.map_or(MAIN_X, |l| lane_x(l.column)),
-                        kind: if commit == 0 && !lane.is_some_and(|l| l.merged) {
+                        kind: if h.is_tip(r) {
                             DotKind::Tip
                         } else {
                             DotKind::Side
@@ -2064,6 +2139,8 @@ mod tests {
             sha: sha.into(),
             time,
             author: "Ana".into(),
+            email: "ana@example.com".into(),
+            merge: false,
             title: String::new(),
             who: Who::Person,
             coauthor: None,
@@ -2202,15 +2279,16 @@ mod tests {
         };
         let h = branch_history::layout(&map, |_| true);
         let (by_pr, tags) = (pr_index(&map), tag_index(&map));
-        let merge = row_info(&map, &h, &by_pr, &tags, 0);
+        let people = branch_history::people(&map);
+        let merge = row_info(&map, &h, &by_pr, &tags, &people, 0);
         assert_eq!(merge.title, "perf(usage): read less");
         assert_eq!(merge.pr.map(|p| p.number), Some(672));
         assert_eq!(merge.merged.map(|b| b.name.as_str()), Some("perf/usage"));
         assert!(!merge.side && merge.tip.is_none());
-        let side = row_info(&map, &h, &by_pr, &tags, 1);
+        let side = row_info(&map, &h, &by_pr, &tags, &people, 1);
         assert!(side.side && side.tip.is_none() && side.pr.is_none());
         assert_eq!(side.branch.map(|b| b.name.as_str()), Some("perf/usage"));
-        let last = row_info(&map, &h, &by_pr, &tags, 2);
+        let last = row_info(&map, &h, &by_pr, &tags, &people, 2);
         assert_eq!(last.tag, Some("v0.14.1"));
         assert_eq!(gutter(&h, 3), MAIN_X + LANE_STEP + 18.);
         let label = row_label(&merge, 100);

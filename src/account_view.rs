@@ -378,7 +378,7 @@ pub fn rail_shows(agent: AgentKind) -> bool {
         AgentKind::Devin => RAIL_DEVIN.load(Ordering::Relaxed),
         // Pay as you go: no plan to keep an eye on. Codex's ChatGPT limits are
         // not read yet.
-        AgentKind::Codex | AgentKind::WorkersAi => false,
+        AgentKind::Codex | AgentKind::Antigravity | AgentKind::WorkersAi => false,
     }
 }
 
@@ -388,7 +388,7 @@ pub fn set_rail_shows(agent: AgentKind, on: bool) {
         AgentKind::Droid => RAIL_DROID.store(on, Ordering::Relaxed),
         AgentKind::OpenCode => RAIL_OPENCODE.store(on, Ordering::Relaxed),
         AgentKind::Devin => RAIL_DEVIN.store(on, Ordering::Relaxed),
-        AgentKind::Codex | AgentKind::WorkersAi => {}
+        AgentKind::Codex | AgentKind::Antigravity | AgentKind::WorkersAi => {}
     }
 }
 

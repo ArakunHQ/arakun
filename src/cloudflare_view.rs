@@ -532,6 +532,7 @@ impl CloudflareView {
             Agent::OpenCode => "Starts an OpenCode session with what Arakun sees",
             Agent::Codex => "Starts a Codex session with what Arakun sees",
             Agent::Devin => "Starts a Devin session with what Arakun sees",
+            Agent::Antigravity => "Starts an Antigravity session with what Arakun sees",
             Agent::WorkersAi => "Starts a Workers AI session with what Arakun sees",
         };
         ui::button_with(
@@ -651,6 +652,7 @@ impl CloudflareView {
             Agent::OpenCode => "Cloudflare MCP for OpenCode",
             Agent::Codex => "Cloudflare MCP for Codex",
             Agent::Devin => "Cloudflare MCP for Devin",
+            Agent::Antigravity => "Cloudflare MCP for Antigravity",
             Agent::WorkersAi => "Cloudflare MCP",
         })
         .child(
@@ -2064,9 +2066,13 @@ impl CloudflareView {
                 div()
                     .flex()
                     .gap(crate::ui::sp(10.))
-                    // Workers AI has no MCP client; Arakun cannot connect Devin's yet.
+                    // Workers AI has no MCP client; Arakun cannot connect Devin's
+                    // or Antigravity's yet.
                     .when(
-                        !matches!(self.agent, Agent::WorkersAi | Agent::Devin),
+                        !matches!(
+                            self.agent,
+                            Agent::WorkersAi | Agent::Devin | Agent::Antigravity
+                        ),
                         |d| d.child(self.render_mcp(cx)),
                     )
                     .child(self.render_share(cx)),
@@ -2264,6 +2270,7 @@ fn agent_name(agent: Agent) -> &'static str {
         Agent::OpenCode => "OpenCode",
         Agent::Codex => "Codex",
         Agent::Devin => "Devin",
+        Agent::Antigravity => "Antigravity",
         Agent::WorkersAi => "Workers AI",
     }
 }

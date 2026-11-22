@@ -768,6 +768,7 @@ impl Daemon {
             }
             catalog::refresh_codex();
             catalog::refresh_devin();
+            catalog::refresh_antigravity();
         })));
         let account = cx.new(Account::new);
         let account_events = cx.observe(&account, |this, _, cx| this.usage_changed(cx));
@@ -3654,15 +3655,20 @@ fn draft_choices(
             }
             Some(agent::setting_options(&settings, &catalog.models, s))
         }
-        AgentKind::Claude | AgentKind::OpenCode | AgentKind::Codex | AgentKind::Devin => {
+        AgentKind::Claude
+        | AgentKind::OpenCode
+        | AgentKind::Codex
+        | AgentKind::Devin
+        | AgentKind::Antigravity => {
             let options = match agent {
                 AgentKind::Claude => catalog::claude_options(),
                 AgentKind::Codex => catalog::codex_options(),
                 AgentKind::Devin => catalog::devin_options(),
+                AgentKind::Antigravity => catalog::antigravity_options(),
                 _ => catalog::opencode_options(),
             };
-            // OpenCode's and Codex's reasoning levels are per model: the cached
-            // ones are the default model's.
+            // OpenCode's, Codex's and maybe Antigravity's reasoning levels are
+            // per model: the cached ones are the default model's.
             if agent != AgentKind::Claude
                 && s == Setting::Effort
                 && let Some(model) = pick(Setting::Model)

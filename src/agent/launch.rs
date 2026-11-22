@@ -1,7 +1,7 @@
 //! Finding (and, for Claude and Codex, installing) the entry point of each agent:
 //! ACP adapters for Claude and Codex, Factory's native `stream-jsonrpc` for Droid
-//! unless `ARAKUN_DROID_ACP=1`, and the ACP servers OpenCode and Devin have
-//! themselves (`opencode acp`, `devin acp`).
+//! unless `ARAKUN_DROID_ACP=1`, and the ACP servers OpenCode, Devin and
+//! Antigravity have themselves (`opencode acp`, `devin acp`, `agy acp`).
 
 use std::ffi::OsString;
 use std::io::Write as _;
@@ -81,12 +81,16 @@ fn extra_dirs() -> Vec<PathBuf> {
 }
 
 /// Where the CLIs land on Windows when the installer's PATH change has not reached arakun
-/// yet: Factory's installer, `npm install -g`, and Claude Code's native installer.
+/// yet: Factory's installer, `npm install -g`, Claude Code's native installer and
+/// Antigravity's.
 #[cfg(windows)]
 fn extra_dirs() -> Vec<PathBuf> {
     let mut dirs = vec![home().join(".local").join("bin"), home().join("bin")];
     if let Some(appdata) = std::env::var_os("APPDATA") {
         dirs.push(PathBuf::from(appdata).join("npm"));
+    }
+    if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+        dirs.push(PathBuf::from(local).join("agy").join("bin"));
     }
     dirs
 }
@@ -104,7 +108,8 @@ fn is_executable(path: &Path) -> bool {
 /// SDK; both share `~/.claude`), plain `droid`, which asks to sign in,
 /// `opencode auth login`, which asks for a provider and its key,
 /// `codex login`, which signs in with ChatGPT in the browser, or
-/// `devin auth login`, which signs in to Devin in the browser.
+/// `devin auth login`, which signs in to Devin in the browser, or
+/// `agy acp --login`, which signs in with Google by pasting a code.
 pub fn login_command(kind: AgentKind) -> Option<Vec<String>> {
     match kind {
         AgentKind::Claude => {
@@ -128,20 +133,28 @@ pub fn login_command(kind: AgentKind) -> Option<Vec<String>> {
             Some(vec![bin.display().to_string(), "login".into()])
         }
         AgentKind::Devin => Some(devin_auth_command(&devin_bin().ok()?, "login")),
+        AgentKind::Antigravity => Some(antigravity_login_command(&agy_bin().ok()?)),
     }
+}
+
+/// `agy acp --login` rather than plain `agy`: it only signs in and exits, and
+/// works without a browser on this computer.
+fn antigravity_login_command(bin: &Path) -> Vec<String> {
+    vec![bin.display().to_string(), "acp".into(), "--login".into()]
 }
 
 /// The interactive sign-out for `kind`, to run in a terminal: Claude's `/logout`,
 /// `opencode auth logout`, which asks which provider, `codex logout` or
 /// `devin auth logout`. Droid's
-/// CLI is signed out from Factory's side.
+/// CLI is signed out from Factory's side, and Antigravity's from its own
+/// session (`/logout`).
 pub fn logout_command(kind: AgentKind) -> Option<Vec<String>> {
     match kind {
         AgentKind::Claude => {
             let bin = claude_cli()?;
             Some(vec![bin.display().to_string(), "/logout".into()])
         }
-        AgentKind::Droid | AgentKind::WorkersAi => None,
+        AgentKind::Droid | AgentKind::Antigravity | AgentKind::WorkersAi => None,
         AgentKind::OpenCode => {
             let bin = opencode_bin().ok()?;
             Some(vec![
@@ -505,6 +518,40 @@ fn devin_credentials(xdg_data: Option<OsString>, home: &Path) -> PathBuf {
         .join("credentials.toml")
 }
 
+/// The user's `agy`. Arakun does not install it: Google's installer also sets
+/// up its updates. `ARAKUN_AGY_BIN` picks another binary.
+pub fn agy_bin() -> Result<PathBuf> {
+    let name = std::env::var("ARAKUN_AGY_BIN").unwrap_or_else(|_| "agy".into());
+    which(&name).ok_or_else(|| {
+        anyhow!(
+            "`{name}` was not found on PATH or in ~/.local/bin. Install the Antigravity CLI first ({}).",
+            AgentKind::Antigravity.install_url()
+        )
+    })
+}
+
+/// Whether agy keeps a sign-in file: `~/.gemini/antigravity-cli/antigravity-oauth-token`.
+/// agy uses that file only when there is no system keyring, and Arakun does
+/// not read the keyring, so `false` may still be signed in.
+pub fn antigravity_signed_in() -> bool {
+    antigravity_token(&home()).is_file()
+}
+
+fn antigravity_token(home: &Path) -> PathBuf {
+    home.join(".gemini")
+        .join("antigravity-cli")
+        .join("antigravity-oauth-token")
+}
+
+/// `GEMINI_API_KEY` when the environment has it, for agy's Gemini API sign-in.
+/// Names it, never reads the key out.
+pub fn antigravity_env_key() -> Option<&'static str> {
+    const VAR: &str = "GEMINI_API_KEY";
+    std::env::var_os(VAR)
+        .is_some_and(|v| !v.is_empty())
+        .then_some(VAR)
+}
+
 /// The variable with Devin's API key when the environment has one. Names it,
 /// never reads the key out.
 pub fn devin_env_key() -> Option<&'static str> {
@@ -751,7 +798,11 @@ pub fn adapter_install(kind: AgentKind) -> Option<AdapterInstall> {
             CODEX_ACP_PACKAGE,
             codex_dir(),
         ),
-        AgentKind::Droid | AgentKind::OpenCode | AgentKind::Devin | AgentKind::WorkersAi => {
+        AgentKind::Droid
+        | AgentKind::OpenCode
+        | AgentKind::Devin
+        | AgentKind::Antigravity
+        | AgentKind::WorkersAi => {
             return None;
         }
     };
@@ -765,7 +816,8 @@ pub fn adapter_install(kind: AgentKind) -> Option<AdapterInstall> {
 /// Claude or Codex adapter is installed with npm into [`agents_dir`]; without it,
 /// the error is an [`AdapterInstall`] that says what would be. `progress` gets a
 /// short status line. `ARAKUN_DROID`, `ARAKUN_CLAUDE_ACP`, `ARAKUN_OPENCODE_ACP`,
-/// `ARAKUN_CODEX_ACP` and `ARAKUN_DEVIN_ACP` replace the command.
+/// `ARAKUN_CODEX_ACP`, `ARAKUN_DEVIN_ACP` and `ARAKUN_ANTIGRAVITY_ACP` replace
+/// the command.
 pub fn resolve(
     kind: AgentKind,
     cwd: Option<&Path>,
@@ -895,6 +947,16 @@ pub fn resolve(
             Some(spec) => spec?,
             None => LaunchSpec {
                 program: devin_bin()?,
+                args: vec!["acp".into()],
+                env: Vec::new(),
+            },
+        },
+        // Like Devin, Antigravity takes no system prompt from arakun; it reads
+        // the project's AGENTS.md itself.
+        AgentKind::Antigravity => match from_override("ARAKUN_ANTIGRAVITY_ACP") {
+            Some(spec) => spec?,
+            None => LaunchSpec {
+                program: agy_bin()?,
                 args: vec!["acp".into()],
                 env: Vec::new(),
             },
@@ -1121,6 +1183,7 @@ mod tests {
             AgentKind::Droid,
             AgentKind::OpenCode,
             AgentKind::Devin,
+            AgentKind::Antigravity,
             AgentKind::WorkersAi,
         ] {
             assert_eq!(adapter_install(kind), None);
@@ -1228,6 +1291,22 @@ mod tests {
         assert_eq!(
             devin_credentials(Some("relative".into()), home),
             Path::new("/home/u/.local/share/devin/credentials.toml")
+        );
+    }
+
+    #[test]
+    fn antigravity_token_is_under_gemini() {
+        assert_eq!(
+            antigravity_token(Path::new("/home/u")),
+            Path::new("/home/u/.gemini/antigravity-cli/antigravity-oauth-token")
+        );
+    }
+
+    #[test]
+    fn antigravity_signs_in_with_acp_login() {
+        assert_eq!(
+            antigravity_login_command(Path::new("/home/u/.local/bin/agy")),
+            ["/home/u/.local/bin/agy", "acp", "--login"]
         );
     }
 

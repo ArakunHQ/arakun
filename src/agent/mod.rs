@@ -48,10 +48,10 @@ pub use kind::AgentKind;
 pub use launch::claude_code_binary;
 #[allow(unused_imports)]
 pub use launch::{
-    adapter_install, child_path_env, claude_cli, codex_cli, codex_env_key, codex_sign_in,
-    devin_bin, devin_env_key, devin_signed_in, droid_bin, install_adapter, login_command,
-    logout_command, opencode_all_models, opencode_bin, opencode_go_login_command, opencode_models,
-    opencode_providers, which,
+    adapter_install, agy_bin, antigravity_env_key, antigravity_signed_in, child_path_env,
+    claude_cli, codex_cli, codex_env_key, codex_sign_in, devin_bin, devin_env_key, devin_signed_in,
+    droid_bin, install_adapter, login_command, logout_command, opencode_all_models, opencode_bin,
+    opencode_go_login_command, opencode_models, opencode_providers, which,
 };
 #[allow(unused_imports)]
 pub use markdown::{copy_with_feedback, was_copied};

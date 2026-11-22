@@ -55,9 +55,9 @@ pub fn mcp_server(agent: Agent) -> Option<String> {
             let toml = std::fs::read_to_string(home.join("config.toml")).ok()?;
             return codex_mcp_server(&toml);
         }
-        // arakun's own agent has no MCP client. Devin has one, but Arakun
-        // does not read or change its MCP config yet.
-        Agent::WorkersAi | Agent::Devin => return None,
+        // arakun's own agent has no MCP client. Devin and Antigravity have
+        // one, but Arakun does not read or change their MCP config yet.
+        Agent::WorkersAi | Agent::Devin | Agent::Antigravity => return None,
     };
     let v: Value = serde_json::from_slice(&std::fs::read(file).ok()?).ok()?;
     v["mcpServers"].as_object()?.iter().find_map(|(name, s)| {
@@ -208,7 +208,7 @@ pub fn mcp_status(agent: Agent) -> Mcp {
         Agent::Claude => "claude",
         Agent::OpenCode => "opencode",
         Agent::Codex => "codex",
-        Agent::WorkersAi | Agent::Devin => return Mcp::Missing,
+        Agent::WorkersAi | Agent::Devin | Agent::Antigravity => return Mcp::Missing,
     };
     let bin = match agent {
         Agent::Codex => crate::agent::codex_cli(),
@@ -228,7 +228,7 @@ pub fn mcp_status(agent: Agent) -> Mcp {
             opencode_line_status(&String::from_utf8_lossy(&o.stdout), &name)
         }
         (Ok(o), Agent::Codex) => codex_list_status(&String::from_utf8_lossy(&o.stdout), &name),
-        (Ok(_), Agent::WorkersAi | Agent::Devin) => Mcp::Missing,
+        (Ok(_), Agent::WorkersAi | Agent::Devin | Agent::Antigravity) => Mcp::Missing,
         (Err(_), _) => Mcp::Added,
     }
 }
@@ -347,7 +347,7 @@ pub fn mcp_connect_command(agent: Agent, state: &Mcp) -> String {
             codex_connect_command(&codex_program(), state, name.as_deref())
         }
         // Not supported: the shell tells the user instead of running this.
-        Agent::WorkersAi | Agent::Devin => String::new(),
+        Agent::WorkersAi | Agent::Devin | Agent::Antigravity => String::new(),
     }
 }
 

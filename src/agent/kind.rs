@@ -14,6 +14,8 @@ pub enum AgentKind {
     Codex,
     /// Cognition's Devin CLI, which speaks ACP itself (`devin acp`).
     Devin,
+    /// Google's Antigravity CLI, which speaks ACP itself (`agy acp`).
+    Antigravity,
     /// Cloudflare Workers AI, run by arakun itself (`workers_ai.rs`).
     #[serde(rename = "workers-ai")]
     WorkersAi,
@@ -36,6 +38,7 @@ impl AgentKind {
             AgentKind::OpenCode => "OpenCode",
             AgentKind::Codex => "Codex",
             AgentKind::Devin => "Devin",
+            AgentKind::Antigravity => "Antigravity",
             AgentKind::WorkersAi => "Workers AI",
         }
     }
@@ -48,6 +51,7 @@ impl AgentKind {
             AgentKind::OpenCode => "opencode",
             AgentKind::Codex => "codex",
             AgentKind::Devin => "devin",
+            AgentKind::Antigravity => "antigravity",
             AgentKind::WorkersAi => "workers-ai",
         }
     }
@@ -59,6 +63,7 @@ impl AgentKind {
             "opencode" | "open-code" => Some(AgentKind::OpenCode),
             "codex" | "chatgpt" | "openai" => Some(AgentKind::Codex),
             "devin" | "cognition" => Some(AgentKind::Devin),
+            "antigravity" | "agy" | "google-antigravity" => Some(AgentKind::Antigravity),
             "workers-ai" | "workersai" | "workers ai" => Some(AgentKind::WorkersAi),
             _ => None,
         }
@@ -72,6 +77,7 @@ impl AgentKind {
             AgentKind::OpenCode | AgentKind::WorkersAi => "https://opencode.ai",
             AgentKind::Codex => "https://github.com/openai/codex",
             AgentKind::Devin => "https://docs.devin.ai/work-with-devin/devin-cli",
+            AgentKind::Antigravity => "https://antigravity.google/docs/install?tab=cli",
         }
     }
 
@@ -104,6 +110,10 @@ impl AgentKind {
                 "Run `devin auth login` in a terminal and sign in in the browser \
                  (or set WINDSURF_API_KEY), then retry."
             }
+            AgentKind::Antigravity => {
+                "Run `agy acp --login` in a terminal and sign in with Google \
+                 (or set GEMINI_API_KEY and pick the Gemini API in agy), then retry."
+            }
             AgentKind::WorkersAi => {
                 "Run `opencode auth login`, pick Cloudflare Workers AI and paste an API token with Workers AI access \
                  (or set CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID), then retry."
@@ -112,7 +122,7 @@ impl AgentKind {
     }
 
     /// The same logos the shell draws: Claude's starburst, Factory's mark for Droid,
-    /// OpenCode's, Codex's and Devin's own; Workers AI gets the Cloudflare tab's globe.
+    /// OpenCode's, Codex's, Devin's and Antigravity's own; Workers AI gets the Cloudflare tab's globe.
     pub fn icon(self, size: f32) -> AnyElement {
         match self {
             AgentKind::Claude => img("providers/claude.svg")
@@ -123,6 +133,7 @@ impl AgentKind {
             AgentKind::OpenCode => ui::opencode_logo(size).into_any_element(),
             AgentKind::Codex => ui::codex_logo(size).into_any_element(),
             AgentKind::Devin => ui::devin_logo(size).into_any_element(),
+            AgentKind::Antigravity => ui::antigravity_logo(size).into_any_element(),
             AgentKind::WorkersAi => ui::icon("internet", size)
                 .text_color(crate::theme::content())
                 .into_any_element(),
@@ -142,6 +153,7 @@ mod tests {
             AgentKind::OpenCode,
             AgentKind::Codex,
             AgentKind::Devin,
+            AgentKind::Antigravity,
             AgentKind::WorkersAi,
         ] {
             assert_eq!(AgentKind::parse(kind.id()), Some(kind));
@@ -153,5 +165,6 @@ mod tests {
             );
         }
         assert_eq!(AgentKind::parse("Devin"), Some(AgentKind::Devin));
+        assert_eq!(AgentKind::parse("agy"), Some(AgentKind::Antigravity));
     }
 }

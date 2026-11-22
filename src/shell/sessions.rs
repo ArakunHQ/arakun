@@ -100,6 +100,7 @@ pub(super) struct QueuedPrompt {
     opencode_settings: Vec<(Setting, String)>,
     codex_settings: Vec<(Setting, String)>,
     devin_settings: Vec<(Setting, String)>,
+    antigravity_settings: Vec<(Setting, String)>,
     workers_ai_settings: Vec<(Setting, String)>,
 }
 
@@ -699,6 +700,7 @@ impl Shell {
             },
             codex_settings: env.codex_settings.clone(),
             devin_settings: env.devin_settings.clone(),
+            antigravity_settings: env.antigravity_settings.clone(),
             workers_ai_settings: env.workers_ai_settings.clone(),
         }
     }
@@ -720,6 +722,7 @@ impl Shell {
         env.opencode_settings = p.opencode_settings;
         env.codex_settings = p.codex_settings;
         env.devin_settings = p.devin_settings;
+        env.antigravity_settings = p.antigravity_settings;
         env.workers_ai_settings = p.workers_ai_settings;
         let text = crate::agent::attach::move_mentions(&p.text, &p.from, env_path);
         let title = summary(&text);
@@ -980,6 +983,7 @@ impl Shell {
         env.opencode_settings = p.opencode_settings;
         env.codex_settings = p.codex_settings;
         env.devin_settings = p.devin_settings;
+        env.antigravity_settings = p.antigravity_settings;
         env.workers_ai_settings = p.workers_ai_settings;
         let picks = server_picks(env, p.agent);
         let note = self.rename_notes.remove(env_path);
@@ -1206,6 +1210,7 @@ impl Shell {
             (model::Agent::OpenCode, Some(env)) => opencode_draft(env),
             (model::Agent::Codex, Some(env)) => codex_draft(env),
             (model::Agent::Devin, Some(env)) => devin_draft(env),
+            (model::Agent::Antigravity, Some(env)) => antigravity_draft(env),
             (model::Agent::WorkersAi, Some(env)) => env.workers_ai_settings.clone(),
             _ => Vec::new(),
         };
@@ -1435,6 +1440,9 @@ impl Shell {
             cx.background_spawn(crate::guard::task(async { catalog::refresh_devin() }))
                 .await;
             let _ = this.update(cx, |_, cx| cx.notify());
+            cx.background_spawn(crate::guard::task(async { catalog::refresh_antigravity() }))
+                .await;
+            let _ = this.update(cx, |_, cx| cx.notify());
         })
         .detach();
     }
@@ -1587,9 +1595,14 @@ impl Shell {
                 }
                 Some((current, choices))
             }
-            model::Agent::Codex => {
-                let options = catalog::codex_options();
-                let draft = codex_draft(env);
+            // Antigravity's thinking levels may be per model too, so it goes
+            // the way Codex does.
+            model::Agent::Codex | model::Agent::Antigravity => {
+                let (options, draft) = if agent == model::Agent::Codex {
+                    (catalog::codex_options(), codex_draft(env))
+                } else {
+                    (catalog::antigravity_options(), antigravity_draft(env))
+                };
                 let picked =
                     |s: Setting| draft.iter().find(|(d, _)| *d == s).map(|(_, v)| v.clone());
                 // Reasoning levels are per model: the cached ones are the default model's.
@@ -1651,6 +1664,7 @@ impl Shell {
             | model::Agent::OpenCode
             | model::Agent::Codex
             | model::Agent::Devin
+            | model::Agent::Antigravity
             | model::Agent::WorkersAi => crate::agent::acp_label(s, &current, &options),
         })
     }
@@ -1713,6 +1727,7 @@ impl Shell {
             model::Agent::OpenCode => &mut env.opencode_settings,
             model::Agent::Codex => &mut env.codex_settings,
             model::Agent::Devin => &mut env.devin_settings,
+            model::Agent::Antigravity => &mut env.antigravity_settings,
             model::Agent::WorkersAi => &mut env.workers_ai_settings,
         };
         put_in_draft(
@@ -1858,6 +1873,9 @@ impl Shell {
                 }
                 model::Agent::Codex => env.codex_settings.retain(|(s, _)| !model_menu(s)),
                 model::Agent::Devin => env.devin_settings.retain(|(s, _)| !model_menu(s)),
+                model::Agent::Antigravity => {
+                    env.antigravity_settings.retain(|(s, _)| !model_menu(s))
+                }
                 model::Agent::WorkersAi => env.workers_ai_settings.retain(|(s, _)| !model_menu(s)),
             }
         }
@@ -1877,11 +1895,15 @@ impl Shell {
                         .filter(|(_, v)| !v.is_empty())
                         .collect()
                 }
-                model::Agent::Claude | model::Agent::Codex | model::Agent::Devin => {
+                model::Agent::Claude
+                | model::Agent::Codex
+                | model::Agent::Devin
+                | model::Agent::Antigravity => {
                     let options = match agent {
                         model::Agent::Claude => catalog::claude_options(),
                         model::Agent::Codex => catalog::codex_options(),
-                        _ => catalog::devin_options(),
+                        model::Agent::Devin => catalog::devin_options(),
+                        _ => catalog::antigravity_options(),
                     };
                     [Setting::Model, Setting::Effort, Setting::Fast]
                         .into_iter()
@@ -2246,6 +2268,7 @@ impl Shell {
                 AgentKind::OpenCode => model::Agent::OpenCode,
                 AgentKind::Codex => model::Agent::Codex,
                 AgentKind::Devin => model::Agent::Devin,
+                AgentKind::Antigravity => model::Agent::Antigravity,
                 AgentKind::WorkersAi => model::Agent::WorkersAi,
             };
             let mut session = Session::new(new_session_id(), d.title.clone().into(), agent);
@@ -2507,6 +2530,12 @@ pub(super) fn devin_draft(env: &model::Environment) -> Vec<(Setting, String)> {
     offered_draft(&env.devin_settings, &catalog::devin_options())
 }
 
+/// The Antigravity settings an environment's next session starts with, the
+/// model first: the thinking levels on offer may depend on it.
+pub(super) fn antigravity_draft(env: &model::Environment) -> Vec<(Setting, String)> {
+    offered_draft(&env.antigravity_settings, &catalog::antigravity_options())
+}
+
 /// `picked`, the model first, without a model the agent no longer offers.
 fn offered_draft(
     picked: &[(Setting, String)],
@@ -2588,6 +2617,7 @@ pub(super) fn agent_draft(env: &model::Environment, agent: model::Agent) -> &[(S
         model::Agent::OpenCode => &env.opencode_settings,
         model::Agent::Codex => &env.codex_settings,
         model::Agent::Devin => &env.devin_settings,
+        model::Agent::Antigravity => &env.antigravity_settings,
         model::Agent::WorkersAi => &env.workers_ai_settings,
     }
 }

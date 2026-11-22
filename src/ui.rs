@@ -112,6 +112,15 @@ pub fn devin_logo(size: f32) -> Svg {
         .text_color(theme::content())
 }
 
+/// Antigravity's mark (Google's, from the ACP registry), tinted like the text around it.
+pub fn antigravity_logo(size: f32) -> Svg {
+    svg()
+        .path("providers/antigravity.svg")
+        .size(px(size))
+        .flex_none()
+        .text_color(theme::content())
+}
+
 /// What a hovered icon-only button shows: one line in a small dark card.
 struct Tip(SharedString);
 

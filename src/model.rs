@@ -21,6 +21,7 @@ pub enum Agent {
     OpenCode,
     Codex,
     Devin,
+    Antigravity,
     WorkersAi,
 }
 
@@ -39,12 +40,13 @@ pub fn set_default_agent(agent: Agent) {
 }
 
 impl Agent {
-    pub const ALL: [Agent; 6] = [
+    pub const ALL: [Agent; 7] = [
         Agent::Claude,
         Agent::Droid,
         Agent::OpenCode,
         Agent::Codex,
         Agent::Devin,
+        Agent::Antigravity,
         Agent::WorkersAi,
     ];
 
@@ -55,6 +57,7 @@ impl Agent {
             Agent::OpenCode => "OpenCode",
             Agent::Codex => "Codex",
             Agent::Devin => "Devin",
+            Agent::Antigravity => "Antigravity",
             Agent::WorkersAi => "Workers AI",
         }
     }
@@ -66,6 +69,7 @@ impl Agent {
             Agent::OpenCode => "opencode",
             Agent::Codex => "codex",
             Agent::Devin => "devin",
+            Agent::Antigravity => "antigravity",
             Agent::WorkersAi => "workers-ai",
         }
     }
@@ -77,6 +81,7 @@ impl Agent {
             Agent::OpenCode => AgentKind::OpenCode,
             Agent::Codex => AgentKind::Codex,
             Agent::Devin => AgentKind::Devin,
+            Agent::Antigravity => AgentKind::Antigravity,
             Agent::WorkersAi => AgentKind::WorkersAi,
         }
     }
@@ -88,6 +93,7 @@ impl Agent {
             "opencode" => Agent::OpenCode,
             "codex" => Agent::Codex,
             "devin" => Agent::Devin,
+            "antigravity" => Agent::Antigravity,
             "workers-ai" => Agent::WorkersAi,
             _ => Agent::Droid,
         }
@@ -502,6 +508,8 @@ pub struct Environment {
     pub codex_settings: Vec<(crate::agent::Setting, String)>,
     /// The same for Devin.
     pub devin_settings: Vec<(crate::agent::Setting, String)>,
+    /// The same for Antigravity.
+    pub antigravity_settings: Vec<(crate::agent::Setting, String)>,
     /// The same for Workers AI.
     pub workers_ai_settings: Vec<(crate::agent::Setting, String)>,
     pub explorer: Explorer,
@@ -902,6 +910,7 @@ impl Environment {
             opencode_settings: Vec::new(),
             codex_settings: Vec::new(),
             devin_settings: Vec::new(),
+            antigravity_settings: Vec::new(),
             workers_ai_settings: Vec::new(),
             sync: git::Sync::default(),
             pr: None,

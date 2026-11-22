@@ -177,6 +177,7 @@ impl Render for RemoveDialog {
             Agent::OpenCode => "OpenCode keeps its own copy of the session.",
             Agent::Codex => "Codex keeps its own copy of the session.",
             Agent::Devin => "Devin keeps its own copy of the session.",
+            Agent::Antigravity => "Antigravity keeps its own copy of the session.",
             Agent::WorkersAi => "arakun keeps the messages the model saw until then.",
         };
         ui::modal_panel("remove-session", 420.)

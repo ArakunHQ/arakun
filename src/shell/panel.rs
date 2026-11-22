@@ -298,7 +298,8 @@ impl Shell {
                             Some(Agent::Claude) => Some(Agent::OpenCode),
                             Some(Agent::OpenCode) => Some(Agent::Codex),
                             Some(Agent::Codex) => Some(Agent::Devin),
-                            Some(Agent::Devin) => Some(Agent::WorkersAi),
+                            Some(Agent::Devin) => Some(Agent::Antigravity),
+                            Some(Agent::Antigravity) => Some(Agent::WorkersAi),
                             Some(Agent::WorkersAi) => None,
                         };
                         cx.notify();

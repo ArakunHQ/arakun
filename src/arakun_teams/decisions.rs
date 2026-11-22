@@ -87,15 +87,34 @@ pub fn acceptances(messages: &[Msg], bot_id: &str) -> Vec<Acceptance> {
         .collect()
 }
 
+/// `text` up to the end of its first sentence. A line break ends it. A dot,
+/// `!` or `?` ends it only at the end of the text, or before a space and
+/// something that is not a lower-case letter: "v1.2", "config.toml" and
+/// "e.g. to" are inside a sentence.
+fn first_sentence(text: &str) -> &str {
+    for (i, ch) in text.char_indices() {
+        let rest = &text[i + ch.len_utf8()..];
+        let ends = match ch {
+            '\n' => true,
+            '.' | '!' | '?' => {
+                let next = rest.trim_start().chars().next();
+                next.is_none()
+                    || (rest.starts_with(char::is_whitespace)
+                        && next.is_some_and(|c| !c.is_lowercase()))
+            }
+            _ => false,
+        };
+        if ends {
+            return &text[..i + ch.len_utf8()];
+        }
+    }
+    text
+}
+
 /// A decision's first sentence, cut to a line.
 pub fn title_of(decision: &str) -> String {
     const MAX: usize = 80;
-    let first = decision
-        .split_inclusive(['.', '!', '?', '\n'])
-        .next()
-        .unwrap_or(decision)
-        .trim()
-        .trim_end_matches('.');
+    let first = first_sentence(decision).trim().trim_end_matches('.');
     if first.chars().count() <= MAX {
         return first.to_string();
     }
@@ -317,6 +336,15 @@ mod tests {
     fn titles_are_the_first_sentence_on_one_line() {
         assert_eq!(title_of("Use A. Then B."), "Use A");
         assert_eq!(title_of("Ship it"), "Ship it");
+        assert_eq!(title_of("Ship it! Then rest."), "Ship it!");
+        assert_eq!(title_of("Use A\nthen B."), "Use A");
+        // A dot inside a version, a file name or an abbreviation is no end.
+        assert_eq!(
+            title_of("Use v1.2 of the protocol and keep config.toml."),
+            "Use v1.2 of the protocol and keep config.toml"
+        );
+        assert_eq!(title_of("Pin it, e.g. to 3.1."), "Pin it, e.g. to 3.1");
+        assert_eq!(title_of("Pin it to 3.1. Then ship."), "Pin it to 3.1");
         let long = "word ".repeat(40);
         let t = title_of(&long);
         assert!(t.ends_with('…') && t.chars().count() <= 81, "{t}");

@@ -10,6 +10,7 @@ mod ascii_face;
 mod attach_picker;
 mod automations_view;
 mod background;
+mod branch_history;
 mod branches;
 mod branches_view;
 #[cfg(feature = "coderlabs")]

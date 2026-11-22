@@ -119,7 +119,11 @@ copy of it, rename it back, and start a version that can read it.
   showed last. With tabs of several environments open, each run of tabs starts with
   its environment's name. The Workspace panel shows Sessions, an Explorer and the
   uncommitted
-  Changes; the Branches tab draws every live branch against the default one.
+  Changes; the Branches tab shows the default branch's history, newest first, with up
+  to three branches as colored lanes beside it (more fold into a list above it). Point
+  at a commit, or move to it with the arrow keys, to see its author and agent, what it
+  changed and its pull request. A click or Enter on a commit of a branch opens that
+  branch.
   In the Commit changes dialog, "Write with <agent>" writes the message from what
   the commit takes (the staged changes, or every change, new files too, when nothing
   is staged; up to 60,000 characters of diff and the first 300 files) in the style of

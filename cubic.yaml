@@ -19,8 +19,9 @@ reviews:
     - rikvisser-dev
     - daniektj
     - KarloAldrete
-  # Thorough feedback. Every comment still has to be answered (AGENTS.md).
-  sensitivity: high
+  # Fewer, surer findings than high. Every comment still has to be answered
+  # (AGENTS.md).
+  sensitivity: medium
   # Review drafts too, so the review runs next to CI instead of after it.
   # Agents open a pull request when its content is final and mark it ready
   # once the required checks pass (tools/wait-checks.sh); waiting for that

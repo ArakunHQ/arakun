@@ -30,13 +30,13 @@ one row (`Cargo.lock` needs the Rust checks and cargo-deny).
 
 | Changed | Run |
 | --- | --- |
-| any path outside `relay/` that the last row does not list (`src/`, `examples/`, `assets/`, `Cargo.*`, `tools/rustfmt.sh`, `lefthook.yml`, `cubic.yaml`, a `.md` inside a folder such as `examples/`...) | rustfmt, clippy, tests |
+| any path outside `relay/` that the last row does not list (`src/`, `examples/`, `assets/`, `Cargo.*`, `tools/rustfmt.sh`, `lefthook.yml`, a `.md` inside a folder such as `examples/`...) | rustfmt, clippy, tests |
 | `phone/` | rustfmt, clippy, tests, relay, phone |
 | `relay/` | relay, phone |
 | `.github/workflows/ci.yml`, `.github/actions/` | everything: rustfmt, clippy, tests, relay, phone |
 | `tools/install-cef.sh` | rustfmt, clippy, tests (CI also builds with the browser) |
 | `Cargo.toml`, `Cargo.lock`, `deny.toml` | also `cargo deny check` |
-| `docs/`, `iso/`, `tools/`, `.claude/`, `.github/`, `LICENSE`, `NOTICE`, `.gitignore`, `deny.toml`, and `*.md` at the top level, apart from the paths named above | nothing to build; proofread (only when no path matched a row above) |
+| `docs/`, `iso/`, `tools/`, `.claude/`, `.github/`, `LICENSE`, `NOTICE`, `.gitignore`, `deny.toml`, `cubic.yaml`, and `*.md` at the top level, apart from the paths named above | nothing to build; proofread (only when no path matched a row above) |
 
 Locally, run only the quick ones and leave the rest to CI on the draft:
 

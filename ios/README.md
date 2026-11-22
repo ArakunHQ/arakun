@@ -58,7 +58,8 @@ CI's iOS job (`.github/workflows/ci.yml`) runs `swift test` and builds the app u
 for the simulator when `ios/`, `phone/`, the mascot's drawing or the fonts change.
 `.github/workflows/ios-release.yml` signs the app and uploads it to TestFlight: after
 every release that is not a pre-release, or by hand (`gh workflow run ios-release.yml --ref main`). It needs an
-App Store Connect API key in the `testflight` environment and skips until there is one;
+App Store Connect API key, the `release` environment's one that macOS notarization uses
+too, with the App Manager role, and skips until there is one;
 the steps are at the top of that workflow.
 
 ## Pairing

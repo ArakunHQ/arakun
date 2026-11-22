@@ -17,30 +17,30 @@ name: iOS release
 # The build number is the UTC date and time (20261121.1930), so it always goes
 # up, whichever way in.
 #
-# The `testflight` environment holds an App Store Connect API key (Users and
-# Access, Integrations, a team key with the App Manager role). With it Xcode
-# makes and renews the signing certificate and the profile itself, so no
-# certificate is stored here:
+# It uses the App Store Connect API key of the `release` environment, the one
+# macOS notarization uses. Its role must be App Manager or higher (Users and
+# Access, Integrations): with it Xcode makes and renews the signing
+# certificate and the profile itself, so no certificate is stored here:
 #
-#   APP_STORE_CONNECT_KEY_ID      the key's id
-#   APP_STORE_CONNECT_ISSUER_ID   the issuer id shown above the keys
-#   APP_STORE_CONNECT_KEY         the .p8 file's contents
+#   APPLE_API_KEY_ID      the key's id
+#   APPLE_API_ISSUER_ID   the issuer id shown above the keys
+#   APPLE_API_KEY         the .p8 file's contents
 #
 # Until they are set, the job says so and skips, so a release is never held up
 # by it. The app record (bundle id com.arakun.ios, team V9JGU28UV7) must exist
-# in App Store Connect before the first upload. Its deployment rules should let
-# main and v* tags through.
+# in App Store Connect before the first upload. The environment's deployment
+# rules already let main and v* tags through.
 
 on:
   workflow_call:
     # A called workflow gets an environment secret only when the caller passes
     # it; otherwise it is empty.
     secrets:
-      APP_STORE_CONNECT_KEY_ID:
+      APPLE_API_KEY_ID:
         required: false
-      APP_STORE_CONNECT_ISSUER_ID:
+      APPLE_API_ISSUER_ID:
         required: false
-      APP_STORE_CONNECT_KEY:
+      APPLE_API_KEY:
         required: false
   workflow_dispatch:
 
@@ -55,7 +55,7 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 45
     environment:
-      name: testflight
+      name: release
       url: https://appstoreconnect.apple.com/apps
     # One upload at a time; never one cancelled half way.
     concurrency:
@@ -64,16 +64,16 @@ jobs:
     permissions:
       contents: read
     env:
-      KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
-      ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+      KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+      ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
     steps:
       - name: Check the App Store Connect key is set
         id: key
         env:
-          KEY: ${{ secrets.APP_STORE_CONNECT_KEY }}
+          KEY: ${{ secrets.APPLE_API_KEY }}
         run: |
           if [ -z "$KEY_ID" ] || [ -z "$ISSUER_ID" ] || [ -z "$KEY" ]; then
-            echo "::notice::The testflight environment has no App Store Connect key yet; skipping the upload"
+            echo "::notice::The release environment has no App Store Connect key yet; skipping the upload"
             echo "ready=false" >> "$GITHUB_OUTPUT"
           else
             echo "ready=true" >> "$GITHUB_OUTPUT"
@@ -115,7 +115,7 @@ jobs:
       - name: Write the API key
         if: steps.key.outputs.ready == 'true'
         env:
-          KEY: ${{ secrets.APP_STORE_CONNECT_KEY }}
+          KEY: ${{ secrets.APPLE_API_KEY }}
         run: |
           umask 077
           printf '%s\n' "$KEY" > "$RUNNER_TEMP/AuthKey.p8"

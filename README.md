@@ -75,6 +75,14 @@ copy of it, rename it back, and start a version that can read it.
 
 ### Workspace
 
+- **Sessions in the sidebar.** A new install lists every session of every project in
+  the sidebar, under its project. Each row has a mark for its state: a ring while it
+  works, `!` when it needs you, a cross when it failed or its checks failed, a check
+  when its checks passed, a faint dot when idle. The end of the row says what wants
+  you, or the pull request's number. Projects with nothing running fold; click a
+  project to fold or open it. This list takes the place of the Active list and the
+  project's worktrees below. A state file from before it keeps the projects and
+  worktrees described next (the Classic layout).
 - **Active.** The top of the sidebar lists the sessions of every project that need
   you (waiting for an answer, or failed), then the ones running. A click opens the
   session in its project. It stays the same whichever project is open. The open

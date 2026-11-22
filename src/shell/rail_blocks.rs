@@ -330,6 +330,9 @@ impl Shell {
     /// folded segment or the narrowed rail. Only then does the project list
     /// leave what waits or runs to it.
     pub(super) fn active_list_shown(&self) -> bool {
+        if crate::tab_layout::current().tree() {
+            return false;
+        }
         let Some((s, _)) = self.sidebar.find(&Piece::active()) else {
             return false;
         };
@@ -888,13 +891,16 @@ impl Shell {
             } => {
                 if narrow {
                     self.render_projects_narrow(cx).into_any_element()
+                } else if crate::tab_layout::current().tree() {
+                    self.render_session_tree(cx)
                 } else {
                     self.render_projects_block(*envs, *changes, *only_open, cx)
                         .into_any_element()
                 }
             }
             Piece::Active => {
-                if narrow {
+                // The tree lists every session already, with its state.
+                if narrow || crate::tab_layout::current().tree() {
                     return None;
                 }
                 self.render_active_block(cx)?

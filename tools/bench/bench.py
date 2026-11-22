@@ -222,6 +222,33 @@ def scenario_terminal(dev):
         time.sleep(0.2)
 
 
+def focus_window(dev):
+    """Gives the test Arakun's window the X input focus. Xvfb has no window
+    manager, so the window never reads as active, and the session view stills
+    its loops in an inactive window. Linux only; elsewhere it does nothing."""
+    try:
+        env = Path(f"/proc/{dev.pid()}/environ").read_bytes().split(b"\0")
+    except OSError:
+        return
+    display = next((e[8:] for e in env if e.startswith(b"DISPLAY=")), None)
+    if display:
+        subprocess.run([sys.executable, Path(__file__).resolve().parent / "xfocus.py", display], check=False,
+                       capture_output=True)
+
+
+def scenario_working(dev):
+    # A session the fake agent (fake_acp.py) holds at work, opened in a focused
+    # window: its beacon, spinner and shimmer loop, and the mascot moves, as
+    # while a real agent works.
+    reply = dev.run("agent", "new", "--model", "claude/haiku", "--title", "bench", "--", "Fix the tests")
+    sid = reply.split()[0]
+    dev.run("wait", "--text", "bench", "--timeout", "20")
+    dev.run("click", "bench", "--nth", "1")
+    focus_window(dev)
+    time.sleep(10)
+    dev.run("agent", "stop", sid, check=False)
+
+
 SCENARIOS = {
     "idle": scenario_idle,
     "palette": scenario_palette,
@@ -229,6 +256,7 @@ SCENARIOS = {
     "zoom": scenario_zoom,
     "scroll": scenario_scroll,
     "terminal": scenario_terminal,
+    "working": scenario_working,
 }
 
 
@@ -246,7 +274,8 @@ def watch_first_frame(log_file, t0, found):
 
 
 def perf_run(binary, only, workdir):
-    dev = Dev(binary, workdir, {"ZED_MEASUREMENTS": "1"})
+    fake = f"{sys.executable} {Path(__file__).resolve().parent / 'fake_acp.py'}"
+    dev = Dev(binary, workdir, {"ZED_MEASUREMENTS": "1", "ARAKUN_CLAUDE_ACP": fake})
     dev.run("stop", check=False)
     dev.root = Path(dev.run("socket")).parent
     found = {"wall": time.time()}

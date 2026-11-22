@@ -268,11 +268,15 @@ impl Shell {
         ) {
             return Reply::err(refused.to_string());
         }
-        self.notify(
+        self.feedback_limits.record(env_path, Instant::now());
+        self.notify_full(
             AlertKind::Info,
             &format!("{} sent feedback", agent_label(&prepared.agent)),
             &prepared.first_line,
+            &prepared.text,
             None,
+            None,
+            "",
             cx,
         );
         Reply::ok("sent to the Arakun team")

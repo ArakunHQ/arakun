@@ -1470,6 +1470,8 @@ fn run_bash(
             c
         }
     };
+    // So `arakun feedback` from its commands says who sent it.
+    cmd.env("ARAKUN_AGENT", super::AgentKind::WorkersAi.id());
     run_streaming(&mut cmd, cwd, timeout, cancel, live)
         .map_err(|e| format!("cannot start {shell}: {e}"))
 }

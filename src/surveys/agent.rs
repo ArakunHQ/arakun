@@ -34,7 +34,7 @@ impl RateLimit {
         times.len() < PER_HOUR
     }
 
-    fn record(&mut self, env: &Path, now: Instant) {
+    pub fn record(&mut self, env: &Path, now: Instant) {
         self.sent
             .entry(env.to_path_buf())
             .or_default()
@@ -50,6 +50,8 @@ pub struct Prepared {
     pub agent: String,
     /// The first line of the scrubbed text, for the notice.
     pub first_line: String,
+    /// The whole scrubbed text, for the Inbox.
+    pub text: String,
 }
 
 /// A label of lowercase letters, digits and dashes, else `agent`. It is sent
@@ -62,8 +64,9 @@ pub fn clean_agent(name: &str) -> String {
     if ok { name.into() } else { "agent".into() }
 }
 
-/// Checks a report and counts it against `env`'s limit. `decide` says whether
-/// telemetry accepts it; a refusal costs no slot.
+/// Checks a report against `env`'s limit. `decide` says whether telemetry
+/// accepts it. The caller calls `limits.record` once the report is sent, so a
+/// refused one costs no slot.
 pub fn agent_feedback(
     survey: &Survey,
     kind: &str,
@@ -97,10 +100,10 @@ pub fn agent_feedback(
     }
     .ok_or("the feedback survey has no kind question")?;
     let text = telemetry::scrub(text, &telemetry::home());
-    limits.record(env, now);
     Ok(Prepared {
         first_line: text.lines().next().unwrap_or_default().trim().to_string(),
-        answers: vec![(0, Answer::Choice(choice)), (1, Answer::Text(text))],
+        answers: vec![(0, Answer::Choice(choice)), (1, Answer::Text(text.clone()))],
+        text,
         agent: clean_agent(agent),
     })
 }
@@ -120,9 +123,24 @@ mod tests {
         decide: Result<(), Refused>,
     ) -> Result<Prepared, String> {
         let s = store::fallback(&ids::AGENT);
-        agent_feedback(&s, kind, text, "codex", Path::new(env), now, limits, || {
+        let p = agent_feedback(&s, kind, text, "codex", Path::new(env), now, limits, || {
             decide
-        })
+        })?;
+        // As the shell does once the submit went through.
+        limits.record(Path::new(env), now);
+        Ok(p)
+    }
+
+    #[test]
+    fn refused_submit_keeps_slot() {
+        let s = store::fallback(&ids::AGENT);
+        let mut l = RateLimit::default();
+        let t = Instant::now();
+        for _ in 0..10 {
+            // Checked but never recorded, as when `submit` is refused.
+            agent_feedback(&s, "bug", "x", "a", Path::new("/e"), t, &mut l, || Ok(())).unwrap();
+        }
+        assert!(run("bug", "x", "/e", t, &mut l, Ok(())).is_ok());
     }
 
     #[test]

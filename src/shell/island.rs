@@ -345,6 +345,22 @@ impl Shell {
         brand: &str,
         cx: &mut Context<Self>,
     ) {
+        self.notify_full(kind, title, body, "", open, image, brand, cx);
+    }
+
+    /// `notify_from` that also keeps `full` (the whole text, when `body` is
+    /// only its start) in the Inbox.
+    pub(super) fn notify_full(
+        &self,
+        kind: AlertKind,
+        title: &str,
+        body: &str,
+        full: &str,
+        open: Option<Open>,
+        image: Option<&std::path::Path>,
+        brand: &str,
+        cx: &mut Context<Self>,
+    ) {
         let key = open.map(|o| o.key()).unwrap_or_default();
         let alert = isl::Alert {
             key: key.clone(),
@@ -358,7 +374,7 @@ impl Shell {
                 .into(),
             brand: brand.to_string().into(),
         };
-        if !self.show_alert(alert, cx) {
+        if !self.show_alert_full(alert, full, cx) {
             super::sessions::send_notification(&key, title, body, kind == AlertKind::Failure, cx);
         }
     }
@@ -376,14 +392,19 @@ impl Shell {
     /// connected; `false` and the caller tells it some other way. Every notice
     /// the shell shows goes through here, so the Inbox misses none.
     pub(super) fn show_alert(&self, alert: isl::Alert, cx: &mut Context<Self>) -> bool {
-        self.record(&alert, cx);
+        self.show_alert_full(alert, "", cx)
+    }
+
+    fn show_alert_full(&self, alert: isl::Alert, full: &str, cx: &mut Context<Self>) -> bool {
+        self.record(&alert, full, cx);
         self.island
             .as_ref()
             .is_some_and(|link| send_alert(&link.tx, &link.up, alert))
     }
 
-    fn record(&self, alert: &isl::Alert, cx: &mut Context<Self>) {
-        let notice = crate::notices::Notice::from_alert(alert, model::unix_now());
+    fn record(&self, alert: &isl::Alert, full: &str, cx: &mut Context<Self>) {
+        let mut notice = crate::notices::Notice::from_alert(alert, model::unix_now());
+        notice.body = crate::notices::cap_body(full);
         let mut history = self.notices.borrow_mut();
         if history.push(notice) {
             crate::notices::store(&mut history);

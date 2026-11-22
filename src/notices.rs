@@ -42,6 +42,10 @@ pub struct Notice {
     pub brand: String,
     #[serde(default)]
     pub seen: bool,
+    /// The whole text when the subtitle is only its start, such as an agent's
+    /// feedback, so the user can see all of what was sent. Empty for most.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub body: String,
 }
 
 impl Notice {
@@ -58,8 +62,16 @@ impl Notice {
             image: alert.image.to_string(),
             brand: alert.brand.to_string(),
             seen: false,
+            body: String::new(),
         }
     }
+}
+
+/// The most characters of a kept body.
+pub const BODY_CHARS: usize = 4000;
+
+pub fn cap_body(text: &str) -> String {
+    text.chars().take(BODY_CHARS).collect()
 }
 
 fn preview(text: &str) -> String {
@@ -491,7 +503,40 @@ mod tests {
             image: String::new(),
             brand: String::new(),
             seen: false,
+            body: String::new(),
         }
+    }
+
+    #[test]
+    fn notice_keeps_full_body_when_given() {
+        let alert = crate::island::Alert {
+            key: Default::default(),
+            kind: AlertKind::Info,
+            title: "t".into(),
+            subtitle: "first".into(),
+            req: Default::default(),
+            image: Default::default(),
+            brand: Default::default(),
+        };
+        assert_eq!(Notice::from_alert(&alert, 1).body, "");
+        let mut n = Notice::from_alert(&alert, 1);
+        n.body = cap_body(&"a".repeat(5000));
+        assert_eq!(n.body.chars().count(), BODY_CHARS);
+        let json = serde_json::to_string(&n).unwrap();
+        assert_eq!(serde_json::from_str::<Notice>(&json).unwrap().body, n.body);
+        // A notice without one writes no field.
+        assert!(
+            !serde_json::to_string(&notice(1, "x"))
+                .unwrap()
+                .contains("body")
+        );
+    }
+
+    #[test]
+    fn old_notices_load_without_body() {
+        let old = r#"{"at":1,"kind":"info","title":"t"}"#;
+        let n: Notice = serde_json::from_str(old).unwrap();
+        assert!(n.body.is_empty());
     }
 
     #[test]

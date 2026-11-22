@@ -3384,6 +3384,15 @@ impl Shell {
     }
 
     fn close_modal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // The backdrop closes the sign-in dialog without its own dismiss:
+        // give up a code still waiting on GitHub here too.
+        if matches!(self.modal, Some((Modal::TeamsSignIn(_), _))) {
+            self.teams.update(cx, |t, cx| {
+                if !t.signed_in() {
+                    t.cancel(cx);
+                }
+            });
+        }
         if let Some((Modal::Attach(picker), _)) = self.modal.take() {
             picker.update(cx, |picker, cx| picker.release(cx));
         }

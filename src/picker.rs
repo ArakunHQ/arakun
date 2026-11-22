@@ -7,14 +7,14 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, Hsla,
     InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Subscription, UniformListScrollHandle, Window,
-    div, px, uniform_list,
+    StatefulInteractiveElement as _, Styled as _, Subscription, Task, UniformListScrollHandle,
+    Window, div, px, uniform_list,
 };
 
 use crate::clone_source::{CloneSource, parse_clone_source};
@@ -54,6 +54,10 @@ struct Row {
     kind: RowKind,
 }
 
+/// How long typing must pause before a folder is read again. Each read checks
+/// every subfolder for `.git` and its HEAD, too slow for every keystroke.
+const LIST_DEBOUNCE: Duration = Duration::from_millis(100);
+
 /// Repositories found by the last scan, shared by every picker opened in this run.
 static REPOS: Mutex<Option<Vec<Repo>>> = Mutex::new(None);
 
@@ -65,6 +69,11 @@ pub struct FolderPicker {
     rows: Vec<Row>,
     /// Folder being browsed in path mode.
     browsing: Option<PathBuf>,
+    /// The pending read of `browsing`; replacing it drops the older one.
+    _listing: Option<Task<()>>,
+    /// The rows were cleared for a new folder and its first read is not back
+    /// yet, so an empty list means "not read", not "no folders".
+    reading: bool,
     selected: usize,
     scroll: UniformListScrollHandle,
     /// A chosen folder that is not a repository yet, waiting for "Initialize".
@@ -97,6 +106,8 @@ impl FolderPicker {
             repos: cached.unwrap_or_default(),
             rows: Vec::new(),
             browsing: None,
+            _listing: None,
+            reading: false,
             selected: 0,
             scroll: UniformListScrollHandle::new(),
             confirm_init: None,
@@ -197,10 +208,26 @@ impl FolderPicker {
         let query = self.query(cx);
         if is_path_query(&query) {
             let (dir, filter) = split_path_query(&query);
-            self.rows = list_folders(&dir, &filter);
-            self.browsing = Some(dir);
+            let delay = if self.browsing.as_ref() == Some(&dir) && !self.reading {
+                // The rows on screen are this folder's: narrow them now so Enter
+                // before the next read still picks from what the filter shows.
+                self.rows.retain(|r| folder_matches(&r.name, &filter));
+                sort_folders(&mut self.rows, &filter);
+                LIST_DEBOUNCE
+            } else {
+                // A new folder (opening it, Tab, a typed `/`) lists at once.
+                // So does one whose first read is still out: there is nothing
+                // on screen to narrow.
+                self.rows.clear();
+                self.reading = true;
+                Duration::ZERO
+            };
+            self.browsing = Some(dir.clone());
+            self.list_later(query, dir, filter, delay, cx);
         } else {
             self.browsing = None;
+            self._listing = None;
+            self.reading = false;
             let q = query.trim().to_lowercase();
             let mut scored: Vec<(i64, &Repo)> = self
                 .repos
@@ -254,6 +281,37 @@ impl FolderPicker {
         cx.notify();
     }
 
+    /// Reads `dir` off the UI thread after `delay`, and shows it if `query`
+    /// is still what the input says.
+    fn list_later(
+        &mut self,
+        query: String,
+        dir: PathBuf,
+        filter: String,
+        delay: Duration,
+        cx: &mut Context<Self>,
+    ) {
+        self._listing = Some(cx.spawn(async move |this, cx| {
+            if !delay.is_zero() {
+                cx.background_executor().timer(delay).await;
+            }
+            let rows = cx
+                .background_spawn(crate::guard::task_or_default(async move {
+                    list_folders(&dir, &filter)
+                }))
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                if this.query(cx) != query {
+                    return;
+                }
+                this.rows = rows;
+                this.reading = false;
+                this.selected = this.selected.min(this.rows.len().saturating_sub(1));
+                cx.notify();
+            });
+        }));
+    }
+
     fn move_selection(&mut self, delta: isize, cx: &mut Context<Self>) {
         if self.rows.is_empty() {
             return;
@@ -275,7 +333,9 @@ impl FolderPicker {
             return;
         }
         let Some(row) = self.rows.get(index).cloned() else {
-            if self.browsing.is_some() {
+            // Before the first read is back, an empty list is not "no
+            // folders": adding the browsed folder would skip its subfolders.
+            if self.browsing.is_some() && !self.reading {
                 self.pick_current_folder(cx);
             }
             return;
@@ -555,6 +615,8 @@ impl Render for FolderPicker {
         };
         let count: SharedString = if self.scanning && !path_mode {
             "Scanning…".into()
+        } else if self.reading && self.rows.is_empty() {
+            "Reading…".into()
         } else if path_mode {
             plural(self.rows.len(), "folder").into()
         } else {
@@ -583,6 +645,8 @@ impl Render for FolderPicker {
         let list: gpui::AnyElement = if rows.is_empty() {
             let msg = if self.scanning && !path_mode {
                 "Looking for git repositories in your home folder…"
+            } else if self.reading {
+                "Reading this folder…"
             } else if path_mode {
                 if cfg!(target_os = "macos") {
                     "No folders here. Press ⌘↩ to add this folder."
@@ -945,18 +1009,12 @@ fn list_folders(dir: &Path, filter: &str) -> Vec<Row> {
     let Ok(read) = std::fs::read_dir(dir) else {
         return Vec::new();
     };
-    let f = filter.to_lowercase();
-    let show_hidden = filter.starts_with('.');
-    let mut rows: Vec<(bool, String, Row)> = read
+    let mut rows: Vec<Row> = read
         .filter_map(Result::ok)
         .filter(|e| e.path().is_dir())
         .filter_map(|e| {
             let name = e.file_name().to_string_lossy().into_owned();
-            if name.starts_with('.') && !show_hidden {
-                return None;
-            }
-            let lower = name.to_lowercase();
-            if !f.is_empty() && !lower.contains(&f) {
+            if !folder_matches(&name, filter) {
                 return None;
             }
             let path = e.path();
@@ -967,18 +1025,33 @@ fn list_folders(dir: &Path, filter: &str) -> Vec<Row> {
             } else {
                 RowKind::Folder
             };
-            let row = Row {
+            Some(Row {
                 detail: pretty_path(&path).into(),
                 name: name.into(),
                 path,
                 kind,
-            };
-            Some((!lower.starts_with(&f), lower, row))
+            })
         })
         .collect();
-    // Prefix matches first, then alphabetical.
-    rows.sort_by(|a, b| (a.0, &a.1).cmp(&(b.0, &b.1)));
-    rows.into_iter().take(1000).map(|(_, _, row)| row).collect()
+    sort_folders(&mut rows, filter);
+    rows
+}
+
+/// Whether a folder named `name` shows for `filter`. Hidden folders show only
+/// once the filter starts with a dot.
+fn folder_matches(name: &str, filter: &str) -> bool {
+    (!name.starts_with('.') || filter.starts_with('.'))
+        && name.to_lowercase().contains(&filter.to_lowercase())
+}
+
+/// Prefix matches first, then alphabetical, capped so a huge folder stays quick to draw.
+fn sort_folders(rows: &mut Vec<Row>, filter: &str) {
+    let f = filter.to_lowercase();
+    rows.sort_by_cached_key(|r| {
+        let lower = r.name.to_lowercase();
+        (!lower.starts_with(&f), lower)
+    });
+    rows.truncate(1000);
 }
 
 /// Subsequence match, rewarding hits at the start of the name and of words.
@@ -1141,6 +1214,26 @@ mod tests {
         assert!(matches!(classify(&empty), Choice::Nested(r) if same_dir(&r, &repo)));
         assert!(matches!(classify(&outside), Choice::NotRepo));
 
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn folders_filter_and_sort_prefix_matches_first() {
+        let base = scratch("list");
+        for d in ["Barn", "arakun", ".hidden", "carab"] {
+            std::fs::create_dir_all(base.join(d)).unwrap();
+        }
+        std::fs::write(base.join("ar-file"), "").unwrap();
+        let names = |rows: &[Row]| rows.iter().map(|r| r.name.to_string()).collect::<Vec<_>>();
+
+        let mut rows = list_folders(&base, "ar");
+        assert_eq!(names(&rows), ["arakun", "Barn", "carab"]);
+        assert_eq!(names(&list_folders(&base, ".")), [".hidden"]);
+
+        // Narrowing what is on screen gives what a fresh read would.
+        rows.retain(|r| folder_matches(&r.name, "ara"));
+        sort_folders(&mut rows, "ara");
+        assert_eq!(names(&rows), names(&list_folders(&base, "ara")));
         let _ = std::fs::remove_dir_all(&base);
     }
 

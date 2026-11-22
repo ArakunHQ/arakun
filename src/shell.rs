@@ -443,6 +443,10 @@ pub struct Shell {
     subagent_view: Option<subagents::SubagentView>,
     /// Redraws the Session tab each second while a subagent in it runs.
     subagent_tick: Option<Task<()>>,
+    /// The session on screen when its branch's pull request was last looked
+    /// at, and whether it had one: a read that finds one counts as connecting
+    /// it, a switch to a session that already has one does not.
+    branch_pr_seen: Option<(SharedString, bool)>,
     arcade: bool,
     /// What the person pinned from the palette (`pins.json`).
     pins: crate::palette::pins::Pins,
@@ -790,7 +794,10 @@ impl Shell {
         let ci = cx.new(Ci::new);
         let runs_view = cx.new(|cx| RunsView::new(ci.clone(), cx));
         let runs_subs = [
-            cx.observe(&ci, |_, _, cx| cx.notify()),
+            cx.observe(&ci, |this, _, cx| {
+                this.branch_pr_read(cx);
+                cx.notify()
+            }),
             cx.subscribe_in(&runs_view, window, |this, _, ev, window, cx| {
                 this.on_runs_event(ev, window, cx)
             }),
@@ -1022,6 +1029,7 @@ impl Shell {
             subagents_dismissed: false,
             subagent_view: None,
             subagent_tick: None,
+            branch_pr_seen: None,
             arcade: layout.arcade,
             pins: crate::palette::pins::Pins::load(),
             rules: crate::palette::rules::Rules::load(),

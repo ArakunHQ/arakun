@@ -251,6 +251,26 @@ impl Shell {
         cx.notify();
     }
 
+    /// A read of the branch's pull request (the environment's own, or the
+    /// project's list) ended. Those don't go through the session, so a pull
+    /// request that turns up there connects it here.
+    pub(super) fn branch_pr_read(&mut self, cx: &mut Context<Self>) {
+        let Some(id) = self.active_session_id() else {
+            self.branch_pr_seen = None;
+            return;
+        };
+        let has = self.session_has_pr(cx);
+        // `None` for a session not looked at yet: it may have had one all along.
+        let had = match &self.branch_pr_seen {
+            Some((seen, had)) if *seen == id => Some(*had),
+            _ => None,
+        };
+        self.branch_pr_seen = Some((id.clone(), has));
+        if has && had == Some(false) {
+            self.session_connected(&id, cx);
+        }
+    }
+
     fn session_thread(&self, session: &str) -> Option<Entity<Thread>> {
         let env = self.env();
         env.sessions[env.session_index(session)?]
@@ -350,6 +370,19 @@ impl Shell {
     pub(super) fn render_subagents(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let session = self.active_session_id();
         let thread = self.active_thread(cx);
+        // The tick stops while the tab is out of sight, and reopening the
+        // panel or switching sessions doesn't pass through `set_panel_tab`:
+        // drawing the tab with a subagent running starts it again.
+        if self.subagent_tick.is_none()
+            && thread
+                .as_ref()
+                .is_some_and(|t| t.read(cx).running_subagents() > 0)
+        {
+            let shell = cx.entity().downgrade();
+            cx.defer(move |cx| {
+                let _ = shell.update(cx, |this, cx| this.sync_subagent_tick(cx));
+            });
+        }
         let opened = self
             .subagent_view
             .as_ref()

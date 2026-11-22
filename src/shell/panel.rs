@@ -145,6 +145,8 @@ impl Shell {
             .px(crate::ui::sp(8.))
             .child(
                 div()
+                    .id("panel-tabs")
+                    .role(gpui::Role::TabList)
                     .flex()
                     .flex_1()
                     // Or its labels' full widths hold it open past the panel.
@@ -170,6 +172,10 @@ impl Shell {
                         };
                         div()
                             .id(label)
+                            // Session shows only an icon: its name comes from here.
+                            .role(gpui::Role::Tab)
+                            .aria_label(label)
+                            .aria_selected(active)
                             .flex()
                             // Sized from their labels, so a tab with a
                             // count gets the room for it. On a narrow

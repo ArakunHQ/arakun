@@ -135,6 +135,7 @@ impl Shell {
                 };
                 if env.sync.branch.as_deref() == Some(branch.as_str()) && env.pr != pr {
                     env.pr = pr;
+                    this.branch_pr_read(cx);
                     cx.notify();
                 }
             });

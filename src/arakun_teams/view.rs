@@ -2520,17 +2520,7 @@ impl TeamsView {
             .flatten()
             .map(|d| (d.device_id.clone(), d.created_at))
             .collect();
-        let notices: Vec<(Notice, u64)> = hub
-            .notices
-            .iter()
-            .filter(|n| n.team_id == team_id)
-            .map(|n| {
-                (
-                    n.clone(),
-                    added.get(&n.device_id).copied().unwrap_or(u64::MAX),
-                )
-            })
-            .collect();
+        let notices = notices_in_order(&hub.notices, team_id, &added);
 
         // Keep the newest in view when it arrives and the list was at its bottom.
         if messages.len() != self.seen_count {
@@ -3540,6 +3530,29 @@ fn device_line(d: &DeviceRow) -> gpui::Div {
         )
 }
 
+/// A team's device notices with when each device was added, oldest first.
+/// The hub lists them as it walks the roster, member by member, so two
+/// devices added between the same messages would show in that order. A
+/// device the roster no longer has goes last.
+fn notices_in_order(
+    notices: &[Notice],
+    team_id: &str,
+    added: &HashMap<String, u64>,
+) -> Vec<(Notice, u64)> {
+    let mut notices: Vec<(Notice, u64)> = notices
+        .iter()
+        .filter(|n| n.team_id == team_id)
+        .map(|n| {
+            (
+                n.clone(),
+                added.get(&n.device_id).copied().unwrap_or(u64::MAX),
+            )
+        })
+        .collect();
+    notices.sort_by_key(|(_, at)| *at);
+    notices
+}
+
 /// The team a new channel goes to: the one on show, when the field was
 /// opened or typed in for it. A name typed for another team makes nothing.
 fn new_channel_team(field: Option<&str>, shown: Option<&str>) -> Option<String> {
@@ -3751,6 +3764,37 @@ mod tests {
         assert_eq!(new_channel_team(Some("a"), Some("b")), None);
         assert_eq!(new_channel_team(None, Some("b")), None);
         assert_eq!(new_channel_team(Some("a"), None), None);
+    }
+
+    #[test]
+    fn device_notices_go_by_when_the_device_was_added() {
+        let notice = |team: &str, id: &str| Notice {
+            team_id: team.into(),
+            login: "rik".into(),
+            device: id.into(),
+            device_id: id.into(),
+        };
+        // The roster's order, not the order the devices were added in.
+        let notices = [
+            notice("t", "late"),
+            notice("t", "gone"),
+            notice("other", "elsewhere"),
+            notice("t", "early"),
+        ];
+        let added: HashMap<String, u64> =
+            [("late".to_string(), 200), ("early".to_string(), 100)].into();
+        let order: Vec<(String, u64)> = notices_in_order(&notices, "t", &added)
+            .into_iter()
+            .map(|(n, at)| (n.device_id, at))
+            .collect();
+        assert_eq!(
+            order,
+            [
+                ("early".to_string(), 100),
+                ("late".to_string(), 200),
+                ("gone".to_string(), u64::MAX),
+            ]
+        );
     }
 
     #[test]

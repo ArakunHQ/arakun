@@ -62,6 +62,7 @@ mod rail_pick;
 mod runs;
 mod servers;
 mod session_actions;
+mod session_tree;
 mod sessions;
 mod settle;
 mod sidebar_builder;
@@ -516,6 +517,9 @@ pub struct Shell {
     /// The gap in the tab bar a dragged tab would drop into: before the tab
     /// at this index, or after the last one.
     tab_drop: Option<usize>,
+    /// Projects the user folded (false) or opened (true) in the sidebar's
+    /// tree of sessions, over what `tab_layout::Quiet` does by itself.
+    tree_open: std::collections::HashMap<std::path::PathBuf, bool>,
     slide: Option<drag::SessionSlide>,
     drop_menu: Option<drag::DropMenu>,
     /// Other sessions' conversations waiting in each environment's composer.
@@ -1090,6 +1094,7 @@ impl Shell {
             lifted: None,
             lifted_tab: None,
             tab_drop: None,
+            tree_open: std::collections::HashMap::new(),
             slide: None,
             drop_menu: None,
             attached: std::collections::HashMap::new(),

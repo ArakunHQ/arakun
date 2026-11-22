@@ -983,6 +983,8 @@ pub fn restore(state: State) -> (Vec<Project>, usize, Layout, TabStrip) {
     let last_agent = state.last_agent.clone();
     crate::island::set_enabled(!state.island_off);
     crate::background::set_enabled(state.background);
+    // A new install starts on the sidebar tree, which needs a wider sidebar.
+    let fresh = state.fresh && state.tabs.is_none();
     crate::tab_layout::set(
         state
             .tabs
@@ -1180,7 +1182,11 @@ pub fn restore(state: State) -> (Vec<Project>, usize, Layout, TabStrip) {
         dock_height: state.dock_height,
         rail_open: state.rail_open,
         panel_open: state.panel_open,
-        rail_w: state.rail_w,
+        rail_w: if fresh {
+            state.rail_w.max(crate::tab_layout::SIDEBAR_W)
+        } else {
+            state.rail_w
+        },
         panel_w: state.panel_w,
         subagents_open: state.subagents_open,
         subagents_w: state.subagents_w,

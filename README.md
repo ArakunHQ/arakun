@@ -123,8 +123,11 @@ copy of it, rename it back, and start a version that can read it.
   In the Commit changes dialog, "Write with <agent>" writes the message from what
   the commit takes (the staged changes, or every change, new files too, when nothing
   is staged; up to 60,000 characters of diff and the first 300 files) in the style of
-  the last commit subjects. It picks the agent as the pull request dialog does, and you
-  edit the message before you commit. Closing the dialog while it writes stops the agent.
+  the last commit subjects. As in the pull request dialog, only the agent of the
+  environment's latest session (with no session yet, the agent its next one would use)
+  gets the diff: when it isn't set up, no other agent is asked and the dialog says why.
+  You edit the message before you commit. Closing the dialog while it writes stops the
+  agent.
 
   <img src="docs/screenshots/changes.png" alt="A file's diff in a tab, next to the Changes list with lines added and removed per file" width="760">
 - **Add or clone a project.** "Add project" (`Ctrl+O`) searches the git repositories
@@ -279,14 +282,17 @@ sees the project's skills.
   pull request template, else the commit messages). It opens as a draft unless you turn
   that off, pushes the branch first when it has commits GitHub doesn't, and then shows
   the new pull request in the GitHub tab. "Open GitHub's form" opens the page in your
-  browser instead, to write the description there. "Write with <agent>" has the
-  environment's agent write the title and the description from the branch's commits, its
-  diff (up to 60,000 characters) and the template, or the one picked for naming branches
-  when the environment's agent isn't installed; the button names the agent, so you see
-  where the diff goes before you click. It answers once, in an empty folder, with as
-  little reach as its CLI allows: Claude Code, OpenCode and Workers AI with no tools,
-  Codex in a read-only sandbox without its shell or your Codex config, Droid with `droid
-  exec` (read-only), Cursor in ask mode and Devin in its default mode, which only reads.
+  browser instead, to write the description there. "Write with <agent>" has the agent
+  of the environment's latest session (after "Continue with", the one it went on with;
+  with no session yet, the agent its next one would use) write the title and the description from the branch's commits, its diff (up to 60,000
+  characters) and the template. Only that agent gets the diff, since you already chose
+  that provider for this code: when it isn't set up here, no other agent is asked, not
+  even the one picked for naming branches, the description stays the template or the
+  commit messages, and the dialog says why. The button names the agent, so you see where
+  the diff goes before you click. It answers once, in an empty folder, with as little reach as its CLI allows: Claude Code, OpenCode and
+  Workers AI with no tools, Codex in a read-only sandbox without its shell or your Codex
+  config, Droid with `droid exec` (read-only), Cursor in ask mode and Devin in its
+  default mode, which only reads.
   Nothing goes to GitHub until you create the pull request.
 - **Queue.** The GitHub tab opens on one line that says how many things need you,
   then a quiet list grouped by where each pull request stands (Needs you, Stuck,

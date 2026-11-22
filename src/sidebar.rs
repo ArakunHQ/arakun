@@ -894,6 +894,18 @@ impl Default for Sidebar {
 }
 
 impl Sidebar {
+    /// The preset the sidebar is laid out as, if it is one.
+    pub fn preset(&self) -> Option<Preset> {
+        Preset::ALL.into_iter().find(|p| {
+            let mut sections = p.layout().sections;
+            for (expected, current) in sections.iter_mut().zip(&self.sections) {
+                // Folding a section in the rail doesn't rearrange it.
+                expected.collapsed = current.collapsed;
+            }
+            sections == self.sections
+        })
+    }
+
     pub fn load() -> Self {
         Self::load_from(&file())
     }
@@ -1577,6 +1589,32 @@ mod tests {
                 p.label()
             );
         }
+    }
+
+    #[test]
+    fn folding_or_unfolding_sections_keeps_the_preset() {
+        for preset in Preset::ALL {
+            let mut sidebar = preset.layout();
+            for section in sidebar.sections.iter_mut().filter(|s| s.collapsible) {
+                section.collapsed = !section.collapsed;
+            }
+            assert_eq!(sidebar.preset(), Some(preset), "{}", preset.label());
+        }
+    }
+
+    #[test]
+    fn rearranging_or_editing_sections_and_items_loses_the_preset() {
+        fn after(edit: impl FnOnce(&mut Vec<Section>)) -> Option<Preset> {
+            let mut sidebar = Preset::Notion.layout();
+            edit(&mut sidebar.sections);
+            sidebar.preset()
+        }
+        assert_eq!(after(|_| {}), Some(Preset::Notion));
+        assert_eq!(after(|s| s.swap(0, 1)), None);
+        assert_eq!(after(|s| s.truncate(s.len() - 1)), None);
+        assert_eq!(after(|s| s[1].collapsible = false), None);
+        assert_eq!(after(|s| s[0].items.swap(0, 1)), None);
+        assert_eq!(after(|s| s[0].items[0].label = Some("Mine".into())), None);
     }
 
     #[test]

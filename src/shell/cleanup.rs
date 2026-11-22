@@ -81,7 +81,8 @@ impl Shell {
                 }
                 // That took a while too: it may be on screen by now, have an
                 // agent at work or an automation set to it, or the setting
-                // was turned off. Git itself refuses when a file changed.
+                // was turned off. Git itself refuses when a file changed, and
+                // the removal looks for new ignored files again.
                 let found = (repo.clone(), path.clone());
                 if !this
                     .update(cx, |this, _| {
@@ -97,7 +98,7 @@ impl Shell {
                 }
                 let dir = path.clone();
                 let gone = cx
-                    .background_spawn(async move { crate::git::remove_clean_worktree(&repo, &dir) })
+                    .background_spawn(async move { cleanup::remove_clean_worktree(&repo, &dir) })
                     .await;
                 if let Err(e) = &gone {
                     eprintln!(

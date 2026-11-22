@@ -53,9 +53,10 @@ pub struct Input {
     pub template: Option<String>,
 }
 
-/// The agent that writes for an environment whose sessions use `session`:
-/// that agent when it can answer, so the diff goes to no service the user
-/// didn't pick; else the one picked for naming branches. None when neither can.
+/// The agent that writes for an environment whose session uses `session`
+/// ([`session_agent`]): that agent, when it can answer here. None when it can't, and then no agent
+/// writes: the user chose that provider for this code, and choosing one to
+/// name branches (Settings › Branches) is not consent to send it a diff.
 ///
 /// Every agent may write. The diff is text other people may have written, and
 /// the answer goes out in public, so each runs with as little reach as its CLI
@@ -63,18 +64,30 @@ pub struct Input {
 /// only reading, in an empty folder. The user reads what it wrote before it goes
 /// anywhere.
 pub fn writer(session: AgentKind, installed: impl Fn(AgentKind) -> bool) -> Option<AgentKind> {
-    pick(session, env_name::namer().choice.agent(), installed)
+    installed(session).then_some(session)
 }
 
-fn pick(
-    session: AgentKind,
-    named: Option<AgentKind>,
-    installed: impl Fn(AgentKind) -> bool,
-) -> Option<AgentKind> {
-    [Some(session), named]
+/// The agent whose session the branch is from: that of the environment's
+/// session with the latest activity, given as (agent, last activity), since
+/// "Continue with" moves a session to another agent without changing `next`.
+/// `next`, the agent for the environment's next session, when it has none.
+pub fn session_agent(
+    sessions: impl IntoIterator<Item = (AgentKind, u64)>,
+    next: AgentKind,
+) -> AgentKind {
+    sessions
         .into_iter()
-        .flatten()
-        .find(|a| installed(*a))
+        .max_by_key(|(_, updated)| *updated)
+        .map_or(next, |(agent, _)| agent)
+}
+
+/// What a dialog says when [`writer`] found none, so nobody wonders why
+/// another agent isn't asked instead.
+pub fn no_writer(session: AgentKind) -> String {
+    format!(
+        "{}, the agent of this environment's session, isn't set up here, and the diff goes to no other agent.",
+        session.label()
+    )
 }
 
 /// A model that writes well and still answers in seconds. Other CLIs' model ids
@@ -362,34 +375,53 @@ mod tests {
         assert_eq!(parse(""), None);
     }
 
+    const AGENTS: [AgentKind; 7] = [
+        AgentKind::Claude,
+        AgentKind::Droid,
+        AgentKind::OpenCode,
+        AgentKind::Codex,
+        AgentKind::Devin,
+        AgentKind::Cursor,
+        AgentKind::WorkersAi,
+    ];
+
     #[test]
-    fn the_sessions_agent_writes_first() {
-        let all = |_: AgentKind| true;
-        for agent in [
-            AgentKind::Claude,
-            AgentKind::Droid,
-            AgentKind::OpenCode,
-            AgentKind::Codex,
-            AgentKind::Devin,
-            AgentKind::Cursor,
-            AgentKind::WorkersAi,
-        ] {
-            assert_eq!(pick(agent, Some(AgentKind::Claude), all), Some(agent));
+    fn only_the_sessions_agent_gets_the_diff() {
+        for agent in AGENTS {
+            assert_eq!(writer(agent, |_| true), Some(agent));
+            // Only that agent is asked whether it can answer.
+            assert_eq!(writer(agent, |a| a == agent), Some(agent));
         }
-        // The session's agent missing: the one picked for naming branches.
-        let only_claude = |a: AgentKind| a == AgentKind::Claude;
-        assert_eq!(
-            pick(AgentKind::Codex, Some(AgentKind::Claude), only_claude),
-            Some(AgentKind::Claude)
-        );
-        assert_eq!(pick(AgentKind::Codex, None, only_claude), None);
-        // Not installed: nobody writes.
-        assert_eq!(
-            pick(AgentKind::Claude, Some(AgentKind::Claude), |_| false),
-            None
-        );
         assert_eq!(model(AgentKind::Claude), "sonnet");
         assert_eq!(model(AgentKind::Codex), "");
+    }
+
+    #[test]
+    fn the_latest_session_names_the_agent() {
+        // Handed over to Codex: its session is the latest, whatever the
+        // environment's next session would use.
+        let sessions = [(AgentKind::Claude, 10), (AgentKind::Codex, 20)];
+        assert_eq!(session_agent(sessions, AgentKind::Claude), AgentKind::Codex);
+        assert_eq!(
+            writer(session_agent(sessions, AgentKind::Claude), |a| a
+                == AgentKind::Claude),
+            None
+        );
+        // No session yet: the agent its next one would use.
+        assert_eq!(session_agent([], AgentKind::Droid), AgentKind::Droid);
+    }
+
+    #[test]
+    fn no_other_agent_writes_when_the_sessions_one_cant() {
+        for agent in AGENTS {
+            // Every other agent installed, whichever names branches: none of
+            // them gets the diff.
+            assert_eq!(writer(agent, |a| a != agent), None);
+            assert_eq!(writer(agent, |_| false), None);
+            let why = no_writer(agent);
+            assert!(why.starts_with(agent.label()), "{why}");
+            assert!(why.contains("no other agent"), "{why}");
+        }
     }
 
     #[test]

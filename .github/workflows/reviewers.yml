@@ -1,13 +1,15 @@
 name: Reviewers
 
-# Requests reviewers once cubic, the review bot, has finished reviewing a pull
-# request and has not approved it. A cubic approval is enough to merge a
-# routine change from the team, so nobody is asked then, unless a review
-# thread is still open: the main ruleset requires every thread resolved, and
-# authors resolve only the threads they fixed (CONTRIBUTING.md), so someone
-# has to be asked or the pull request sits blocked. cubic's approval is
-# dismissed then: nothing runs this again when a thread is resolved, so the
-# author could resolve the rest afterwards and merge on it.
+# Requests reviewers once a pull request is ready, cubic, the review bot, has
+# finished reviewing it and the author has dealt with every cubic finding:
+# resolved its thread or replied to it. Until then nobody is asked, so people
+# don't review what the author is still fixing. A cubic approval is enough to
+# merge a routine change from the team, so nobody is asked then, unless a
+# review thread is still open: the main ruleset requires every thread
+# resolved, and authors resolve only the threads they fixed and answer the
+# ones they decline (CONTRIBUTING.md), so someone has to be asked or the pull
+# request sits blocked. cubic's approval is dismissed then, so the author
+# can't resolve the declined threads afterwards and merge on it.
 # An author who resolves cubic's threads before it approves keeps the
 # approval: cubic checks again once its last blocking thread is resolved.
 # It replaces CODEOWNERS, so
@@ -43,19 +45,25 @@ name: Reviewers
 #   completes it also when it reviewed nothing: a merge commit, or a review
 #   it cancelled.
 # - workflow_run: the "Review submitted" workflow ran, so a review was
-#   submitted or dismissed. This catches an approval cubic gives after its
-#   check run, such as once the author resolves or disputes its last blocking
-#   thread, and the approval of an outside pull request. Reviews this workflow
-#   dismisses don't start it again: GitHub starts no workflow for events of
-#   its own token.
+#   submitted or dismissed, or a comment was left on the diff. This catches
+#   the author answering cubic's last finding, an approval cubic gives after
+#   its check run, such as once the author resolves or disputes its last
+#   blocking thread, and the approval of an outside pull request. Reviews this
+#   workflow dismisses don't start it again: GitHub starts no workflow for
+#   events of its own token.
 # - pull_request_target ready_for_review: a draft went ready. cubic reviews
 #   drafts (check_drafts in cubic.yaml), so its verdict often predates this
 #   event; without it the review would finish while the pull request was a
 #   draft, this workflow would skip it, and nobody would ever be asked. If
 #   cubic has not finished by now, its own check run starts this workflow
 #   when it does.
+# - schedule: every open pull request that is ready. Resolving a review
+#   thread starts no workflow on GitHub, so this is what finds an author who
+#   resolved cubic's last finding by hand after its review. Resolving it
+#   before cubic finishes, or cubic resolving it on a push, needs no wait:
+#   cubic's check run comes after.
 # - workflow_dispatch: by hand, for a pull request cubic never reviewed.
-#   It doesn't wait for cubic.
+#   It doesn't wait for cubic or for its findings to be dealt with.
 # Drafts get no reviewers, but cubic does review them.
 #
 # These events run this file from the default branch with a write token, even
@@ -73,6 +81,8 @@ on:
   workflow_run: # zizmor: ignore[dangerous-triggers]
     workflows: [Review submitted]
     types: [completed]
+  schedule:
+    - cron: "*/30 * * * *"
   workflow_dispatch:
     inputs:
       pr:
@@ -109,12 +119,13 @@ jobs:
         github.event.workflow_run.pull_requests[0].number ||
         github.event.pull_request.number ||
         github.event.check_run.head_sha || github.event.workflow_run.head_sha ||
-        github.event.pull_request.head.sha }}
+        github.event.pull_request.head.sha || github.event_name }}
       cancel-in-progress: true
     if: >-
       ${{ github.event_name == 'workflow_dispatch' ||
       github.event_name == 'workflow_run' ||
       github.event_name == 'pull_request_target' ||
+      github.event_name == 'schedule' ||
       (github.event_name == 'check_run' &&
       github.event.check_run.app.slug == 'cubic-dev-ai' &&
       github.event.check_run.name == 'cubic · AI code reviewer') }}
@@ -222,6 +233,29 @@ jobs:
               awk '{ open += $1 } END { print open + 0 }'
           }
 
+          # How many of cubic's review threads the author hasn't dealt with:
+          # not resolved, and no person has replied. A reply counts because
+          # authors leave the findings they decline open, with their reason,
+          # for the reviewer (CONTRIBUTING.md). cubic's own replies don't.
+          unanswered_findings() {
+            # The $ names are GraphQL variables, not the shell's.
+            # shellcheck disable=SC2016
+            gh api graphql --paginate \
+              -F owner="${GH_REPO%/*}" -F name="${GH_REPO#*/}" -F pr="$1" \
+              -f query='query($owner: String!, $name: String!, $pr: Int!, $endCursor: String) {
+                repository(owner: $owner, name: $name) { pullRequest(number: $pr) {
+                  reviewThreads(first: 50, after: $endCursor) {
+                    nodes { isResolved
+                      comments(first: 50) { nodes { author { __typename login } } } }
+                    pageInfo { hasNextPage endCursor } } } } }' \
+              --jq '[.data.repository.pullRequest.reviewThreads.nodes[]
+                | select((.isResolved | not)
+                  and .comments.nodes[0].author.login == env.REVIEW_BOT_APP
+                  and ([.comments.nodes[] | select(.author.__typename == "User")] | length) == 0)]
+                | length' |
+              awk '{ open += $1 } END { print open + 0 }'
+          }
+
           # Every cubic approval, older commits' too: one of those can still
           # count toward the ruleset.
           bot_approvals() {
@@ -295,6 +329,22 @@ jobs:
               dismiss_approvals "$pr" \
                 "A pull request from outside the team needs a person's approval. cubic's comments still apply."
             fi
+
+            # People are asked only once the author has dealt with cubic's
+            # findings, so nobody reviews what the author is still fixing.
+            # Answering one starts this again (review-submitted.yml) and the
+            # schedule finds resolved ones. Any approval is judged then; until
+            # every thread is resolved the ruleset blocks the merge anyway.
+            if [ "$EVENT" != workflow_dispatch ]; then
+              local unanswered
+              # A failed lookup fails the step (see dismiss_approvals).
+              unanswered=$(unanswered_findings "$pr")
+              if [ "$unanswered" -gt 0 ]; then
+                echo "$unanswered of cubic's findings are not resolved or answered; nobody is asked yet."
+                echo "::endgroup::"
+                return
+              fi
+            fi
             # Any approval, not only the head's: a newer head may get no
             # verdict at all (cubic won't approve it, skipped it as a merge
             # commit or cancelled its review), and an older approval can
@@ -311,9 +361,9 @@ jobs:
               local open
               # A failed lookup fails the step (see dismiss_approvals).
               open=$(open_threads "$pr")
-              # Nothing runs this again when a thread is resolved, so the
-              # author could resolve them afterwards and merge on cubic's
-              # approval.
+              # These are threads the author answered and left open for a
+              # person; resolving them afterwards must not let the author
+              # merge on cubic's approval.
               if [ "$open" -gt 0 ]; then
                 echo "$open review threads are open."
                 dismiss_approvals "$pr" \
@@ -429,7 +479,10 @@ jobs:
             fi
           fi
           prs=$PR
-          if [ "$EVENT" != workflow_dispatch ]; then
+          if [ "$EVENT" = schedule ]; then
+            prs=$(gh api "repos/$GH_REPO/pulls?state=open&per_page=100" --paginate \
+              --jq '.[] | select(.draft | not) | .number')
+          elif [ "$EVENT" != workflow_dispatch ]; then
             # The event lists only one pull request, and none when the branch
             # is on a fork, so find them by their head commit too.
             found=$(gh api "repos/$GH_REPO/pulls?state=open&per_page=100" --paginate \

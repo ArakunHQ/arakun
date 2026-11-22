@@ -24,6 +24,9 @@ pub struct Conditions {
     pub wait_days: Option<u32>,
     /// Names of the events that trigger the survey.
     pub events: Vec<String>,
+    /// PostHog sets a rule this app cannot check (a selector, device types,
+    /// a feature flag, actions). A popover must not show then.
+    pub unsupported: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -114,6 +117,16 @@ impl Kind {
     }
 }
 
+/// A field that PostHog may send as an explicit `null`: that is the default,
+/// the same as a missing one.
+fn or_default<'de, D, T>(d: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de> + Default,
+{
+    Ok(Option::<T>::deserialize(d)?.unwrap_or_default())
+}
+
 #[derive(Deserialize)]
 struct Reply {
     #[serde(default)]
@@ -123,15 +136,15 @@ struct Reply {
 #[derive(Deserialize)]
 struct RawSurvey {
     id: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "or_default")]
     name: String,
-    #[serde(default, rename = "type")]
+    #[serde(default, rename = "type", deserialize_with = "or_default")]
     kind: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "or_default")]
     questions: Vec<RawQuestion>,
     start_date: Option<String>,
     end_date: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "or_default")]
     archived: bool,
     conditions: Option<RawConditions>,
 }
@@ -148,32 +161,34 @@ struct RawConditions {
 #[derive(Deserialize, Default)]
 #[serde(default)]
 struct RawEvents {
+    #[serde(deserialize_with = "or_default")]
     values: Vec<RawEvent>,
 }
 
 #[derive(Deserialize, Default)]
 #[serde(default)]
 struct RawEvent {
+    #[serde(deserialize_with = "or_default")]
     name: String,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RawQuestion {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "or_default")]
     id: String,
-    #[serde(default, rename = "type")]
+    #[serde(default, rename = "type", deserialize_with = "or_default")]
     kind: String,
-    #[serde(default, rename = "question")]
+    #[serde(default, rename = "question", deserialize_with = "or_default")]
     text: String,
     #[serde(default)]
     description: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "or_default")]
     optional: bool,
     button_text: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "or_default")]
     choices: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "or_default")]
     has_open_choice: bool,
     display: Option<String>,
     scale: Option<u8>,
@@ -188,12 +203,12 @@ struct RawQuestion {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RawBranching {
-    #[serde(default, rename = "type")]
+    #[serde(default, rename = "type", deserialize_with = "or_default")]
     kind: String,
     index: Option<usize>,
     // A map would lose PostHog's order, but rules are matched by key, so
     // order never matters.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "or_default")]
     response_values: serde_json::Map<String, Value>,
 }
 
@@ -205,12 +220,45 @@ pub fn parse(json: &str) -> Vec<Survey> {
     reply
         .surveys
         .into_iter()
-        .filter_map(|v| serde_json::from_value::<RawSurvey>(v).ok())
-        .map(survey_from)
+        .filter_map(|v| {
+            let unsupported = has_unsupported_rule(&v);
+            let raw = serde_json::from_value::<RawSurvey>(v).ok()?;
+            Some(survey_from(raw, unsupported))
+        })
         .collect()
 }
 
-fn survey_from(raw: RawSurvey) -> Survey {
+/// Whether the survey sets a targeting rule this app cannot check.
+fn has_unsupported_rule(v: &Value) -> bool {
+    let set = |v: Option<&Value>| match v {
+        None | Some(Value::Null) | Some(Value::Bool(false)) => false,
+        Some(Value::String(s)) => !s.is_empty(),
+        Some(Value::Array(a)) => !a.is_empty(),
+        Some(Value::Object(o)) => !o.is_empty(),
+        Some(_) => true,
+    };
+    let top = [
+        "linked_flag_key",
+        "linkedFlagKey",
+        "linked_flag",
+        "targeting_flag_key",
+        "targeting_flag",
+        "internal_targeting_flag_key",
+    ];
+    let cond = [
+        "url",
+        "selector",
+        "deviceTypes",
+        "linkedFlagKey",
+        "linked_flag_key",
+        "actions",
+    ];
+    top.iter().any(|k| set(v.get(k)))
+        || v.get("conditions")
+            .is_some_and(|c| cond.iter().any(|k| set(c.get(k))))
+}
+
+fn survey_from(raw: RawSurvey, unsupported: bool) -> Survey {
     let c = raw.conditions.unwrap_or_default();
     Survey {
         id: raw.id,
@@ -232,6 +280,7 @@ fn survey_from(raw: RawSurvey) -> Survey {
                 .events
                 .map(|e| e.values.into_iter().map(|v| v.name).collect())
                 .unwrap_or_default(),
+            unsupported,
         },
     }
 }
@@ -353,15 +402,28 @@ pub fn next(s: &Survey, at: usize, answer: &Answer) -> Option<usize> {
     None
 }
 
+/// The position of a choice. Text typed into the open choice is not in
+/// `choices`, and counts as the last one, which is the open choice itself.
+fn choice_index(choices: &[String], open_choice: bool, answer: &str) -> Option<usize> {
+    choices
+        .iter()
+        .position(|x| x == answer)
+        .or_else(|| (open_choice && !choices.is_empty()).then(|| choices.len() - 1))
+}
+
 /// The key a response-based rule uses for this answer.
 fn answer_key(q: &Question, answer: &Answer) -> Option<String> {
     match (&q.body, answer) {
         (Body::Rating { scale, .. }, Answer::Rating(v)) => {
             rating_bucket(*scale, *v).map(Into::into)
         }
-        (Body::Single { choices, .. }, Answer::Choice(c)) => {
-            choices.iter().position(|x| x == c).map(|i| i.to_string())
-        }
+        (
+            Body::Single {
+                choices,
+                open_choice,
+            },
+            Answer::Choice(c),
+        ) => choice_index(choices, *open_choice, c).map(|i| i.to_string()),
         _ => None,
     }
 }
@@ -369,10 +431,17 @@ fn answer_key(q: &Question, answer: &Answer) -> Option<String> {
 /// The kind a person picked, by the position of the chosen choice. Position
 /// rather than text, so rewording a choice in PostHog changes nothing.
 pub fn kind_of(q: &Question, answer: &Answer) -> Option<Kind> {
-    let (Body::Single { choices, .. }, Answer::Choice(c)) = (&q.body, answer) else {
+    let (
+        Body::Single {
+            choices,
+            open_choice,
+        },
+        Answer::Choice(c),
+    ) = (&q.body, answer)
+    else {
         return None;
     };
-    let i = choices.iter().position(|x| x == c)?;
+    let i = choice_index(choices, *open_choice, c)?;
     Kind::ALL.get(i).copied()
 }
 
@@ -589,6 +658,54 @@ mod tests {
         for (kind, name) in kinds.iter().zip(super::super::ids::KINDS) {
             assert_eq!(kind.as_str(), name);
         }
+    }
+
+    #[test]
+    fn null_fields_parse_as_defaults() {
+        let json = r#"{"surveys":[{"id":"a","name":null,"type":null,"archived":null,
+            "start_date":null,"end_date":null,"conditions":null,"questions":[
+            {"id":"q","type":"single_choice","question":"?","description":null,
+             "optional":null,"choices":null,"hasOpenChoice":null,"buttonText":null,
+             "branching":{"type":null,"responseValues":null}},
+            {"id":"r","type":"rating","question":"?","scale":null,
+             "lowerBoundLabel":null,"upperBoundLabel":null}]},
+            {"id":"b","type":"popover","questions":[],
+             "conditions":{"url":null,"events":{"values":null},"seenSurveyWaitPeriodInDays":null}},
+            {"id":"c","type":"popover","questions":[],
+             "conditions":{"events":{"values":[{"name":null}]}}}]}"#;
+        let all = parse(json);
+        assert_eq!(all.len(), 3);
+        assert_eq!(all[0].questions.len(), 2);
+        assert!(!all[0].questions[0].optional);
+        assert!(all[1].conditions.events.is_empty());
+        assert!(!all[1].conditions.unsupported);
+    }
+
+    #[test]
+    fn open_choice_text_counts_as_last_choice() {
+        let choices: Vec<String> = ["Bug", "Idea", "Looks", "Other"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let branching = Branching::ResponseBased(vec![("3".into(), Target::End)]);
+        let kind_q = q(
+            Body::Single {
+                choices,
+                open_choice: true,
+            },
+            false,
+            branching,
+        );
+        let s = survey(vec![kind_q.clone(), q(Body::Open, false, Branching::Next)]);
+        let typed = Answer::Choice("something I typed".into());
+        assert_eq!(kind_of(&kind_q, &typed), Some(Kind::Other));
+        assert_eq!(next(&s, 0, &typed), None);
+        // Without an open choice, unknown text matches nothing.
+        let closed = Body::Single {
+            choices: vec!["a".into()],
+            open_choice: false,
+        };
+        assert_eq!(kind_of(&q(closed, false, Branching::Next), &typed), None);
     }
 
     #[test]

@@ -277,6 +277,9 @@ pub struct ThreadView {
     folds: HashSet<usize>,
     /// Turns whose changes are shown under their "Worked for" line, by first entry.
     changes_open: HashSet<usize>,
+    /// Whether each file in an open changes list is on disk, so frames don't
+    /// ask the disk. Cleared when the entries change or a list opens.
+    file_exists: RefCell<HashMap<PathBuf, bool>>,
     focus: FocusHandle,
     restore_focus: Option<FocusHandle>,
     following: bool,
@@ -339,6 +342,7 @@ impl ThreadView {
             open: HashSet::new(),
             folds: HashSet::new(),
             changes_open: HashSet::new(),
+            file_exists: RefCell::new(HashMap::new()),
             focus: cx.focus_handle(),
             restore_focus: None,
             following: true,
@@ -428,6 +432,9 @@ impl ThreadView {
             && matches!(ev, ThreadEvent::EntriesChanged { .. } | ThreadEvent::Reset)
         {
             s.stale = true;
+        }
+        if matches!(ev, ThreadEvent::EntriesChanged { .. } | ThreadEvent::Reset) {
+            self.file_exists.borrow_mut().clear();
         }
         match ev {
             ThreadEvent::EntriesChanged { from } => {

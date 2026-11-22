@@ -7,6 +7,8 @@ impl ThreadView {
         let open = !self.changes_open.remove(&turn_start);
         if open {
             self.changes_open.insert(turn_start);
+            // Opening is when someone looks, so a file made or removed since shows right.
+            self.file_exists.borrow_mut().clear();
         }
         self.opened(Fold::Changes, turn_start, open);
         self.remeasure_entry(turn_start);
@@ -36,7 +38,7 @@ impl ThreadView {
             } else {
                 path.to_path_buf()
             };
-            let exists = full.exists();
+            let exists = file_exists(&self.file_exists, &full);
             for (k, diff) in diffs.iter().enumerate() {
                 let full = full.clone();
                 let at = diff.at;
@@ -84,6 +86,16 @@ impl ThreadView {
         }
         col.into_any_element()
     }
+}
+
+/// Whether `path` is on disk, asking the disk only the first time.
+fn file_exists(cache: &RefCell<HashMap<PathBuf, bool>>, path: &Path) -> bool {
+    if let Some(&known) = cache.borrow().get(path) {
+        return known;
+    }
+    let exists = path.exists();
+    cache.borrow_mut().insert(path.to_path_buf(), exists);
+    exists
 }
 
 /// What a turn's finished edits changed: each file in first-touched order with
@@ -464,4 +476,24 @@ pub(super) fn diff_card(path: &Path, old: Option<&str>, new: &str, cwd: &Path) -
                 })
         })
         .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn file_exists_asks_the_disk_once_until_cleared() {
+        let dir = std::env::temp_dir().join(format!("arakun-diffs-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("a.txt");
+        std::fs::write(&file, "a").unwrap();
+        let cache = RefCell::new(HashMap::new());
+        assert!(file_exists(&cache, &file));
+        std::fs::remove_file(&file).unwrap();
+        assert!(file_exists(&cache, &file));
+        cache.borrow_mut().clear();
+        assert!(!file_exists(&cache, &file));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

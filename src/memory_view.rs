@@ -29,6 +29,8 @@ struct Source {
     /// What `project` is written as in the file (empty for the global one).
     owner: String,
     stamp: Option<SystemTime>,
+    /// Whether the file was there at the last poll, so render needn't ask the disk.
+    exists: bool,
     loaded: bool,
     items: Vec<Memory>,
 }
@@ -39,6 +41,7 @@ impl Source {
             file,
             owner,
             stamp: None,
+            exists: false,
             loaded: false,
             items: Vec::new(),
         };
@@ -48,15 +51,18 @@ impl Source {
 
     /// Re-reads the file if it changed since the last read; says whether it did.
     fn reload(&mut self) -> bool {
-        let stamp = std::fs::metadata(&self.file)
-            .and_then(|m| m.modified())
-            .ok();
+        let meta = std::fs::metadata(&self.file);
+        let exists = meta.is_ok();
+        let stamp = meta.and_then(|m| m.modified()).ok();
         if self.loaded && stamp == self.stamp {
+            self.exists = exists;
             return false;
         }
         self.stamp = stamp;
         self.loaded = true;
         self.items = memory::load(&self.file).items;
+        // The load sets an unreadable file aside, so ask again after it.
+        self.exists = exists && self.file.exists();
         true
     }
 }
@@ -297,7 +303,7 @@ impl MemoryView {
         }
         let count = items.len();
         let file = source.file.clone();
-        let editable = file.exists();
+        let editable = source.exists;
         let mut list = div().flex().flex_col().gap(crate::ui::sp(6.));
         if items.is_empty() {
             list = list.child(
@@ -432,5 +438,31 @@ impl Render for MemoryView {
                     })
                     .when(!blank, |d| d.children(project).children(global)),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reload_notices_the_file_appear_and_go() {
+        let dir = std::env::temp_dir().join(format!("arakun-memview-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("memory.jsonl");
+        let _ = std::fs::remove_file(&file);
+        let mut s = Source::new(file.clone(), String::new());
+        assert!(!s.exists);
+        std::fs::write(&file, "{}").unwrap();
+        s.reload();
+        assert!(s.exists);
+        std::fs::remove_file(&file).unwrap();
+        s.reload();
+        assert!(!s.exists);
+        // An unreadable store is moved aside by the load.
+        std::fs::write(&file, "not json").unwrap();
+        s.reload();
+        assert_eq!(s.exists, file.exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

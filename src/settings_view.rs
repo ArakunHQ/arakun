@@ -644,7 +644,10 @@ impl SettingsDialog {
         })
         .detach();
 
-        teams.update(cx, |t, cx| t.refresh_if_unknown(cx));
+        teams.update(cx, |t, cx| {
+            t.refresh_if_unknown(cx);
+            t.refresh_if_stale(cx);
+        });
         let teams_sub = cx.observe(&teams, |_, _, cx| cx.notify());
 
         Self {

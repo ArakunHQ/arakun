@@ -44,6 +44,8 @@ pub struct Teams {
     _task: Option<Task<()>>,
     /// A `/me` request is on its way, so a second one would only double it.
     asking: bool,
+    /// When `/me` was last asked, to ask again once the answer is old.
+    asked: Option<Instant>,
     /// Asks `/me` again after it failed for a reason other than a 401, such as
     /// starting offline, so the Teams tab can still show in this run.
     retry: Option<Task<()>>,
@@ -65,6 +67,13 @@ fn already_asking(asking: bool, retry: bool) -> bool {
     asking || retry
 }
 
+/// How old the server's answer may get before opening Settings asks again.
+const STALE: Duration = Duration::from_secs(5 * 60);
+
+fn stale(asked: Option<Instant>, now: Instant) -> bool {
+    asked.is_none_or(|at| now.duration_since(at) >= STALE)
+}
+
 impl Teams {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let base = api::base_url();
@@ -77,6 +86,7 @@ impl Teams {
             error: base.err().map(Into::into),
             _task: None,
             asking: false,
+            asked: None,
             retry: None,
             retry_after: FIRST_RETRY,
         };
@@ -135,6 +145,18 @@ impl Teams {
         self.ask_me(cx);
     }
 
+    /// Asks the server again once its answer is old, so a flag it turned on
+    /// or off since shows without a restart.
+    pub fn refresh_if_stale(&mut self, cx: &mut Context<Self>) {
+        if self.me.is_none() || self.phase != Phase::Idle || fixture().is_some() {
+            return;
+        }
+        if self.asking || !stale(self.asked, Instant::now()) {
+            return;
+        }
+        self.ask_me(cx);
+    }
+
     /// Asks the server who the session belongs to. Does nothing signed out, or
     /// when the server's address is wrong.
     fn ask_me(&mut self, cx: &mut Context<Self>) {
@@ -142,6 +164,7 @@ impl Teams {
             return;
         };
         self.asking = true;
+        self.asked = Some(Instant::now());
         self._task = Some(cx.spawn(async move |this, cx| {
             let me = cx
                 .background_spawn(async move {
@@ -176,6 +199,8 @@ impl Teams {
                 cx.background_spawn(async move { keyring::clear(KEYRING_ACCOUNT) })
                     .detach();
             }
+            // Asking again failed: what the server said before still stands.
+            Err(_) if self.me.is_some() => {}
             Err(e) => {
                 self.error = Some(format!("Teams: {e}").into());
                 self.retry_later(cx);
@@ -223,6 +248,7 @@ impl Teams {
                     Ok((signed, saved)) => {
                         this.session = Some(signed.session);
                         this.me = Some(signed.me);
+                        this.asked = Some(Instant::now());
                         this.error = saved.err().map(|e| {
                             format!(
                                 "Signed in for now, but the keyring could not keep the session: {e}"
@@ -450,6 +476,15 @@ mod tests {
         assert!(already_asking(true, false));
         // A retry waits, or its request is on its way.
         assert!(already_asking(false, true));
+    }
+
+    #[test]
+    fn me_is_asked_again_once_the_answer_is_old() {
+        let now = Instant::now();
+        assert!(stale(None, now));
+        assert!(!stale(Some(now), now));
+        assert!(!stale(Some(now), now + STALE - Duration::from_secs(1)));
+        assert!(stale(Some(now), now + STALE));
     }
 
     #[test]

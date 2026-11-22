@@ -381,6 +381,7 @@ impl Shell {
         cx: &mut Context<Self>,
     ) {
         let view = cx.new(|cx| ThreadView::new(thread.clone(), window, cx));
+        view.update(cx, |v, _| v.set_can_tell_us(!crate::telemetry::blocked()));
         let (path, sid): (PathBuf, SharedString) = (env_path.to_path_buf(), id.to_string().into());
         let events = cx.subscribe_in(&thread, window, move |this, thread, ev, window, cx| {
             this.thread_event(&path, &sid, thread, ev, window, cx)

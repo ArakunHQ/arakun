@@ -130,31 +130,34 @@ impl ThreadView {
                                                 })),
                                         )
                                     })
-                                    .child(
-                                        div()
-                                            .id("tell-us")
-                                            .flex()
-                                            .items_center()
-                                            .h(px(24.))
-                                            .px(crate::ui::sp(10.))
-                                            .rounded(crate::ui::rad(8.))
-                                            .bg(theme::fill_selected())
-                                            .text_color(theme::text_muted())
-                                            .text_size(px(crate::ui::TEXT_SM))
-                                            .cursor_pointer()
-                                            .hover(|s| s.bg(theme::mix(0.18)))
-                                            .child("Tell us what happened")
-                                            .on_click(cx.listener(|this, _, _, cx| {
-                                                let t = this.thread.read(cx);
-                                                let ev = ThreadViewEvent::TellUs {
-                                                    error_event: t
-                                                        .error_event()
-                                                        .map(str::to_string),
-                                                    agent: t.kind().id().to_string(),
-                                                };
-                                                cx.emit(ev);
-                                            })),
-                                    )
+                                    // The shell hides it when nothing can be sent.
+                                    .when(self.can_tell_us, |row| {
+                                        row.child(
+                                            div()
+                                                .id("tell-us")
+                                                .flex()
+                                                .items_center()
+                                                .h(px(24.))
+                                                .px(crate::ui::sp(10.))
+                                                .rounded(crate::ui::rad(8.))
+                                                .bg(theme::fill_selected())
+                                                .text_color(theme::text_muted())
+                                                .text_size(px(crate::ui::TEXT_SM))
+                                                .cursor_pointer()
+                                                .hover(|s| s.bg(theme::mix(0.18)))
+                                                .child("Tell us what happened")
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    let t = this.thread.read(cx);
+                                                    let ev = ThreadViewEvent::TellUs {
+                                                        error_event: t
+                                                            .error_event()
+                                                            .map(str::to_string),
+                                                        agent: t.kind().id().to_string(),
+                                                    };
+                                                    cx.emit(ev);
+                                                })),
+                                        )
+                                    })
                                     .child(
                                         div()
                                             .min_w_0()

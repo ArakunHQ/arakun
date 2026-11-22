@@ -609,6 +609,13 @@ const DOCK_MIN_H: f32 = 120.;
 /// What the dock leaves above it for the work, however tall it was dragged.
 const DOCK_ROOM_ABOVE: f32 = 160.;
 
+/// Whether to ask after a crash. Not on first launch, before the answer to the
+/// consent question, and not when nothing can be sent: the notice would lead
+/// to a dead end.
+fn crash_notice_wanted(should_ask: bool, blocked: bool) -> bool {
+    !should_ask && !blocked
+}
+
 /// The tallest the dock can be in a window `viewport_h` tall: its bottom edge
 /// is one gap above the window's.
 fn dock_max_h(viewport_h: f32) -> f32 {
@@ -2620,7 +2627,7 @@ impl Shell {
         let Some(event) = crate::crash::last_run_ended_badly() else {
             return;
         };
-        if crate::telemetry::should_ask() {
+        if !crash_notice_wanted(crate::telemetry::should_ask(), crate::telemetry::blocked()) {
             return;
         }
         let open = island::Open::Feedback {
@@ -4831,6 +4838,13 @@ fn drop_envs(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn no_crash_notice_when_nothing_can_be_sent() {
+        assert!(crash_notice_wanted(false, false));
+        assert!(!crash_notice_wanted(true, false));
+        assert!(!crash_notice_wanted(false, true));
+    }
 
     /// The dock's sizes before corners and spacing became settings. At the
     /// default scales it must look exactly as it did.

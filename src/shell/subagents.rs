@@ -257,6 +257,7 @@ impl Shell {
         }
         let child_thread = child.clone();
         let view = cx.new(|cx| ThreadView::new(child, window, cx));
+        view.update(cx, |v, _| v.set_can_tell_us(!crate::telemetry::blocked()));
         let (env, sid) = (self.env().path.clone(), session.clone());
         let events = cx.subscribe_in(
             &view,

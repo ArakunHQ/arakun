@@ -65,13 +65,22 @@ fn marker_path(dir: &Path) -> PathBuf {
 }
 
 /// Tests and `arakun dev` never write it: they are killed all the time. A
-/// debug build can turn it on to try the notice by hand.
+/// debug build writes it only when `ARAKUN_CRASH_MARKER` is set, so a plain
+/// `cargo run` has no crash to ask about and the notice can be tried by hand.
 fn enabled() -> bool {
-    if cfg!(test) {
+    enabled_for(
+        cfg!(test),
+        cfg!(debug_assertions),
+        crate::dev::size().is_some(),
+        std::env::var_os("ARAKUN_CRASH_MARKER").is_some(),
+    )
+}
+
+fn enabled_for(test: bool, debug: bool, dev: bool, marker_var: bool) -> bool {
+    if test {
         return false;
     }
-    crate::dev::size().is_none()
-        || (cfg!(debug_assertions) && std::env::var_os("ARAKUN_CRASH_MARKER").is_some())
+    if debug { marker_var } else { !dev }
 }
 
 /// `{"event": uuid}` when a fatal panic's report was sent, else empty.
@@ -265,6 +274,18 @@ mod tests {
     #[test]
     fn tests_never_write_the_real_marker() {
         assert!(!enabled());
+    }
+
+    #[test]
+    fn enabled_logic() {
+        // Tests never write it, whatever else is set.
+        assert!(!enabled_for(true, false, false, true));
+        // A release build writes it, except under `arakun dev`.
+        assert!(enabled_for(false, false, false, false));
+        assert!(!enabled_for(false, false, true, false));
+        // A plain debug run does not; the variable turns it on.
+        assert!(!enabled_for(false, true, false, false));
+        assert!(enabled_for(false, true, false, true));
     }
 
     #[test]

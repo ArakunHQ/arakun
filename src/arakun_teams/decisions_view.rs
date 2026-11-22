@@ -154,8 +154,7 @@ impl TeamsView {
 
         let list: AnyElement = if shown.is_empty() {
             if reading && log.is_empty() {
-                ui::loading("teams-decisions-reading", "Reading the team's channels…")
-                    .into_any_element()
+                ui::loading("Reading the team's channels…").into_any_element()
             } else if log.is_empty() {
                 ui::empty_state(
                     "tick-double02",

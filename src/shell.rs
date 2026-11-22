@@ -721,6 +721,7 @@ impl Shell {
                 .update(cx, |ci, cx| ci.set_window_active(active, cx));
             this.github
                 .update(cx, |g, cx| g.set_window_active(active, cx));
+            this.sync_teams_shown(window, cx);
         });
         let focus = cx.focus_handle();
         let composer_focus = cx.focus_handle();
@@ -2355,6 +2356,31 @@ impl Shell {
         self.sync_usage_view(cx);
         self.usage_view.update(cx, |v, cx| v.focus(window, cx));
         cx.notify();
+    }
+
+    /// Whether the Teams tab is on screen, in either pane of a split, in a
+    /// window in front.
+    fn teams_shown(&self, window: &Window) -> bool {
+        let is_teams = |i: usize| {
+            matches!(
+                self.strip.tabs.get(i).map(|t| &t.kind),
+                Some(TabKind::Teams)
+            )
+        };
+        // With no project the tab shows in the welcome's place.
+        let on_screen = if self.has_projects() {
+            is_teams(self.strip.active_tab) || self.split_other().is_some_and(is_teams)
+        } else {
+            self.alone == Some(home::Alone::Teams)
+        };
+        window.is_window_active() && on_screen
+    }
+
+    /// Tells the Teams tab whether it is on screen: only then does a message
+    /// that arrives in its open channel count as read.
+    fn sync_teams_shown(&mut self, window: &Window, cx: &mut Context<Self>) {
+        let shown = self.teams_shown(window);
+        self.teams_view.update(cx, |v, cx| v.set_shown(shown, cx));
     }
 
     /// Opens (or focuses) the Teams tab. Teams belongs to the account, not to
@@ -4119,6 +4145,10 @@ impl Render for Shell {
             }
         } else if !self.shown_browsers.is_empty() {
             cx.defer_in(window, |this, _, cx| this.sync_browsers(cx));
+        }
+        // Many paths change the tab in front; this follows all of them.
+        if self.teams_view.read(cx).is_shown() != self.teams_shown(window) {
+            cx.defer_in(window, |this, window, cx| this.sync_teams_shown(window, cx));
         }
         // With pinned tabs, a session tab that shows nowhere closes, and a
         // lone session pins itself; whatever changed the tabs, this follows.

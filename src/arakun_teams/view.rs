@@ -245,6 +245,9 @@ pub struct TeamsView {
     /// The login typed to invite, as GitHub knows it.
     lookup: Option<(String, Lookup)>,
     _lookup: Option<Task<()>>,
+    /// Whether the shell has this tab on screen, in a window in front. The
+    /// view lives on behind another tab, and what arrives then is not read.
+    shown: bool,
     focus: FocusHandle,
     _subs: Vec<Subscription>,
 }
@@ -394,6 +397,7 @@ impl TeamsView {
             decision_query,
             lookup: None,
             _lookup: None,
+            shown: false,
             focus: cx.focus_handle(),
             _subs: subs,
         }
@@ -404,12 +408,21 @@ impl TeamsView {
         self.hub.update(cx, |h, cx| h.refresh_unread(true, cx));
     }
 
+    pub fn is_shown(&self) -> bool {
+        self.shown
+    }
+
+    /// The shell says whether this tab is on screen in a window in front.
+    pub fn set_shown(&mut self, shown: bool, cx: &mut Context<Self>) {
+        if self.shown != shown {
+            self.shown = shown;
+            self.sync_viewing(cx);
+        }
+    }
+
     /// Tells the hub which channel shows, so what arrives there is read.
     fn sync_viewing(&self, cx: &mut Context<Self>) {
-        let key = match &self.pane {
-            Pane::Channel(t, c) => Some(hub::channel_key(t, c)),
-            _ => None,
-        };
+        let key = viewed(&self.pane, self.shown);
         self.hub.update(cx, |h, cx| h.set_viewing(key, cx));
     }
 
@@ -4436,6 +4449,14 @@ fn ago_from(at: u64, now: u64) -> String {
     }
 }
 
+/// The channel the user reads now: the pane's, while the tab is on screen.
+fn viewed(pane: &Pane, shown: bool) -> Option<String> {
+    match pane {
+        Pane::Channel(t, c) if shown => Some(hub::channel_key(t, c)),
+        _ => None,
+    }
+}
+
 /// How long the server takes no second reminder from the same person
 /// (`REMIND_EVERY` in teams/src/teams.ts).
 const REMIND_EVERY: u64 = 60 * 60;
@@ -4678,6 +4699,16 @@ mod tests {
         assert_eq!(until_from(100 + 250, 100), "in 5 minutes");
         assert_eq!(until_from(100 + 3 * 3600, 100), "in 3 hours");
         assert_eq!(until_from(50, 100), "in a moment");
+    }
+
+    #[test]
+    fn a_channel_is_viewed_only_while_the_tab_is_on_screen() {
+        let channel = Pane::Channel("t1".into(), "c1".into());
+        assert_eq!(viewed(&channel, true), Some(hub::channel_key("t1", "c1")));
+        // Behind another tab, what arrives stays unread.
+        assert_eq!(viewed(&channel, false), None);
+        assert_eq!(viewed(&Pane::Team("t1".into()), true), None);
+        assert_eq!(viewed(&Pane::None, true), None);
     }
 
     #[test]

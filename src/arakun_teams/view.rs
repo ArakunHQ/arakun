@@ -75,6 +75,16 @@ impl Drafts {
         self.owner = owner;
         true
     }
+
+    /// Keeps what is typed in the channel `pane` shows, if it shows one.
+    fn keep(&mut self, pane: &Pane, typed: &str) {
+        if let Pane::Channel(t, c) = pane
+            && !typed.trim().is_empty()
+        {
+            self.channels
+                .insert(hub::channel_key(t, c), typed.to_string());
+        }
+    }
 }
 
 pub struct TeamsView {
@@ -236,6 +246,7 @@ impl TeamsView {
             _ => false,
         };
         if gone && !loading {
+            self.keep_draft(cx);
             self.pane = Pane::None;
         }
         if self.pane == Pane::None {
@@ -258,11 +269,8 @@ impl TeamsView {
             if was == key {
                 return;
             }
-            let typed = self.composer.read(cx).text().to_string();
-            if !typed.trim().is_empty() {
-                self.drafts.channels.insert(was, typed);
-            }
         }
+        self.keep_draft(cx);
         let draft = self.drafts.channels.remove(&key).unwrap_or_default();
         self.composer.update(cx, |i, cx| i.set_text(draft, cx));
         self.reply_to = None;
@@ -273,6 +281,13 @@ impl TeamsView {
         self.pane = Pane::Channel(team, channel);
         self.scroll.scroll_to_bottom();
         cx.notify();
+    }
+
+    /// Keeps what is typed for the channel in view. Opening a channel puts
+    /// its draft in the composer, so call this wherever the pane leaves one.
+    fn keep_draft(&mut self, cx: &gpui::App) {
+        let typed = self.composer.read(cx).text().to_string();
+        self.drafts.keep(&self.pane, &typed);
     }
 
     /// Shows a pane, with the cursor in its field when it has one.
@@ -286,6 +301,7 @@ impl TeamsView {
         if let Pane::Channel(t, c) = pane {
             self.open_channel(t, c, cx);
         } else {
+            self.keep_draft(cx);
             self.pane = pane;
         }
         if let Some(field) = field {
@@ -2151,6 +2167,21 @@ mod tests {
         assert!(drafts.switch(None));
         assert!(drafts.switch(Some(7)));
         assert!(drafts.channels.is_empty());
+    }
+
+    #[test]
+    fn a_draft_is_kept_for_the_channel_the_view_leaves() {
+        let mut drafts = Drafts::default();
+        let channel = Pane::Channel("team".into(), "channel".into());
+        let key = hub::channel_key("team", "channel");
+        drafts.keep(&channel, "half a thought");
+        assert_eq!(drafts.channels[&key], "half a thought");
+        // Nothing typed does not wipe what was kept before.
+        drafts.keep(&channel, "  ");
+        assert_eq!(drafts.channels[&key], "half a thought");
+        // Other panes have no composer.
+        drafts.keep(&Pane::Team("team".into()), "not a draft");
+        assert_eq!(drafts.channels.len(), 1);
     }
 
     #[test]

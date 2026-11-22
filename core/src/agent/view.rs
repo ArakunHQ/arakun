@@ -45,6 +45,8 @@ mod diffs;
 mod find_bar;
 mod footer;
 mod note_box;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod ssh;
 mod tool_rows;
 
 // Free helpers the split-out parts of the transcript share.
@@ -243,6 +245,8 @@ impl EventEmitter<ThreadViewEvent> for ThreadView {}
 
 pub struct ThreadView {
     thread: Entity<Thread>,
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    ssh: ssh::State,
     ask: Option<AskState>,
     /// The parsed spec-mode plan on screen, keyed by its text.
     plan_md: RefCell<Option<(String, Rc<Vec<Block>>)>>,
@@ -309,7 +313,12 @@ impl ThreadView {
             });
         });
         let subs = vec![
-            cx.subscribe_in(&thread, window, Self::thread_event),
+            cx.subscribe_in(&thread, window, |this, source, ev, window, cx| {
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                this.ssh
+                    .sync(source.read(cx), matches!(ev, ThreadEvent::Reset));
+                this.thread_event(source, ev, window, cx);
+            }),
             cx.observe_window_activation(window, |this, window, cx| {
                 this.active = window.is_window_active();
                 this.sync_tick(window, cx);
@@ -318,6 +327,8 @@ impl ThreadView {
         ];
         let mut this = ThreadView {
             thread,
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            ssh: ssh::State::default(),
             ask: None,
             plan_md: RefCell::new(None),
             list,
@@ -2282,11 +2293,22 @@ impl Render for ThreadView {
         let queue = self.render_queue(cx);
         let menu = self.render_selection_menu(cx);
         let note = self.render_note_box(cx);
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        let (ssh_bar, ssh_body) = self.render_ssh(cx);
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        let (ssh_bar, ssh_body): (Option<AnyElement>, Option<AnyElement>) = (None, None);
         div()
             .id("thread-view")
             .key_context("ThreadView")
             .track_focus(&self.focus)
-            .on_key_down(cx.listener(Self::on_key))
+            .on_key_down(cx.listener(|this, ev, window, cx| {
+                // Keys in SSH fields must never answer a transcript permission.
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                if this.ssh.shown() {
+                    return;
+                }
+                this.on_key(ev, window, cx);
+            }))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _, window, cx| {
@@ -2310,7 +2332,8 @@ impl Render for ThreadView {
             .min_h_0()
             .font_family(theme::FONT_SANS)
             .text_color(theme::content())
-            .child(
+            .children(ssh_bar)
+            .child(ssh_body.unwrap_or_else(|| {
                 div()
                     .relative()
                     .flex_1()
@@ -2348,8 +2371,9 @@ impl Render for ThreadView {
                                         ),
                                 ),
                         )
-                    }),
-            )
+                    })
+                    .into_any_element()
+            }))
             .when_some(queue, |d, q| d.child(q))
             .when_some(menu, |d, m| d.child(m))
             .when_some(note, |d, n| d.child(n))

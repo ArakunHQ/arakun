@@ -4,6 +4,9 @@ Arakun builds for Windows 10/11 (x86_64, MSVC toolchain). Linux is still the mai
 platform and the only one used daily; this guide says what has been verified and what has
 not.
 
+The **Connect SSH** panel for local agent sessions is available on Linux and
+macOS only. The Servers tab for paired Arakun servers is separate.
+
 **What was verified (from Linux):** `cargo check` and `cargo clippy --all-targets` for
 `x86_64-pc-windows-gnu` with no errors, and the unit tests running as Windows `.exe` files
 under Wine: 170 of 176 pass, two are ignored just as on Linux, and the other four need

@@ -34,8 +34,12 @@ pub mod saved;
 mod search;
 pub mod seats;
 mod selection;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod session_ssh;
 mod shell_diff;
 pub mod skills_sh;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod ssh_request;
 mod thread;
 mod view;
 mod web;

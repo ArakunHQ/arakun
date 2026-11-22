@@ -262,6 +262,25 @@ sees the project's skills.
   be sandboxed yet. A sandboxed
   agent can still change what you later run outside it: the project's files, and its
   own settings such as `~/.claude.json`.
+- **SSH in a session (Linux and macOS).** To use a build machine from a local
+  agent session without installing Arakun there, open **Connect SSH** in that
+  session. Sandboxed sessions can't use it: it would lend them your local SSH
+  agent. Enter the literal `user@host` and port. Compare the ED25519
+  fingerprint with one you got from the machine's administrator or console
+  before trusting it. The account needs a key already loaded in your local
+  `ssh-agent`; Arakun uses system OpenSSH, without SSH config aliases, password
+  prompts or agent forwarding. The remote account's permissions apply.
+
+  Tell the agent about the connection to let it suggest a command. Review
+  the exact command and run it once, or enter one yourself. Each run starts a
+  fresh non-interactive shell: a `cd` doesn't carry over. A run is limited
+  to 10 minutes and 64 KiB of combined output. Output stays in
+  the panel unless you share it with that session. Disconnect cancels the
+  local SSH client and forgets the connection; it cannot undo a command or
+  guarantee that a process on the remote machine stops. Connections are not
+  saved across restarts. The panel is not a boundary: an agent that isn't
+  sandboxed runs as you and can reach your `ssh-agent` without it. Sandbox the
+  project to keep your SSH keys from the agent.
 - **Server.** `arakun server serve` is Arakun without a window, for a machine nobody
   sits at: a build box, the workstation at the office, a VPS. It runs sessions of any
   agent signed in on that machine and keeps them going while nothing is connected.

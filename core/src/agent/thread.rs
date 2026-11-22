@@ -2221,6 +2221,12 @@ impl Thread {
         self.remote
     }
 
+    /// Host-side SSH must not lend local credentials to a confined session.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    pub(super) fn is_confined(&self) -> bool {
+        self.sandbox.is_some() || std::env::var_os("ARAKUN_SANDBOX").is_some()
+    }
+
     /// The server's queue for its session, as its `state` says it: shown as
     /// this session's own, while the server keeps and sends it.
     pub fn set_remote_queue(

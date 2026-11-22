@@ -467,9 +467,45 @@ impl TeamsView {
                     && super::super::decisions::reverses(m) == Some(d.bot_id.as_str())
             })
         });
+        // A reversal that was not sent stays here with why and a way to send
+        // it again: this panel is where it was asked for.
+        let refused = self.selected_team().and_then(|team| {
+            let c = self
+                .hub
+                .read(cx)
+                .channels
+                .get(&hub::channel_key(team, &d.channel_id))?;
+            let (id, why) = super::super::decisions::refused_reversal(&c.messages, &d.bot_id)?;
+            Some((team.to_string(), id.to_string(), why.to_string()))
+        });
         let (reverse_button, reverse_form): (Option<AnyElement>, Option<AnyElement>) =
             if reversed.is_some() || sending {
                 (None, None)
+            } else if let Some((team, id, why)) = refused {
+                let channel = d.channel_id.clone();
+                (
+                    Some(
+                        ui::button(
+                            "teams-reverse-resend",
+                            "Send again",
+                            ButtonKind::Ghost,
+                            true,
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.hub
+                                .update(cx, |h, cx| h.resend(&team, &channel, &id, cx))
+                        }))
+                        .into_any_element(),
+                    ),
+                    Some(
+                        ui::text(
+                            Type::Caption,
+                            theme::error().into(),
+                            format!("The reversal was not sent: {why}"),
+                        )
+                        .into_any_element(),
+                    ),
+                )
             } else if asking {
                 (None, Some(div()
                 .flex()

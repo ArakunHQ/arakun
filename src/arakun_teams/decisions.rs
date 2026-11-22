@@ -94,10 +94,11 @@ pub fn reverses(m: &Msg) -> Option<&str> {
 }
 
 /// The oldest reversal of the bot message `bot_id`, in the channel's order.
+/// Like an acceptance, it counts once the server stored it.
 pub fn reversal(messages: &[Msg], bot_id: &str) -> Option<Reversal> {
     messages
         .iter()
-        .find(|m| reverses(m) == Some(bot_id))
+        .find(|m| m.delivery == Delivery::Sent && reverses(m) == Some(bot_id))
         .map(|m| Reversal {
             github_id: m.github_id,
             login: m.login.clone(),
@@ -105,6 +106,17 @@ pub fn reversal(messages: &[Msg], bot_id: &str) -> Option<Reversal> {
             reason: m.body.text.trim().to_string(),
             message_id: m.id.clone(),
         })
+}
+
+/// A reversal of `bot_id` that was not sent: its message ID and why.
+pub fn refused_reversal<'a>(messages: &'a [Msg], bot_id: &str) -> Option<(&'a str, &'a str)> {
+    messages.iter().find_map(|m| {
+        let Delivery::Failed(why) = &m.delivery else {
+            return None;
+        };
+        let of = m.body.decision.as_ref()?.get("of")?.as_str()?;
+        (m.body.kind == "decision_reverse" && of == bot_id).then_some((m.id.as_str(), why.as_str()))
+    })
 }
 
 /// Who accepted each message, by the accepted message's ID, oldest first,
@@ -313,6 +325,30 @@ mod tests {
         assert_eq!(
             (r.login.as_str(), r.reason.as_str(), r.message_id.as_str()),
             ("rik", "Too slow.", "r1")
+        );
+    }
+
+    #[test]
+    fn a_reversal_counts_once_it_is_sent() {
+        use crate::arakun_teams::bot::reverse_body;
+        let mut ms = channel();
+        ms.push(msg("r1", 20, 3, "rik", reverse_body("b1", "No.".into())));
+        ms[6].delivery = Delivery::Sending;
+        // The panel still knows one is on its way.
+        assert_eq!(reverses(&ms[6]), Some("b1"));
+        assert_eq!(reversal(&ms, "b1"), None);
+        assert_eq!(channel_log("c1", &ms)[0].reversed, None);
+        assert_eq!(refused_reversal(&ms, "b1"), None);
+        ms[6].delivery = Delivery::Failed("refused".into());
+        assert_eq!(channel_log("c1", &ms)[0].reversed, None);
+        // A refused one is still there to send again.
+        assert_eq!(refused_reversal(&ms, "b1"), Some(("r1", "refused")));
+        assert_eq!(refused_reversal(&ms, "b2"), None);
+        ms[6].delivery = Delivery::Sent;
+        assert_eq!(refused_reversal(&ms, "b1"), None);
+        assert_eq!(
+            channel_log("c1", &ms)[0].reversed.as_ref().unwrap().login,
+            "rik"
         );
     }
 

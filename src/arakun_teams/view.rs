@@ -2666,6 +2666,7 @@ impl TeamsView {
             "bot" => Some("bot"),
             "decision" => Some("decision"),
             "decision_accept" => Some("accepted"),
+            "decision_reverse" => Some("reversed"),
             other => Some(other),
         }
         .map(|k| ui::badge(k.to_string(), Tone::Info));
@@ -3172,10 +3173,9 @@ impl TeamsView {
         let mut runs_placed = vec![false; bot.runs.len()];
         for (i, m) in messages.iter().enumerate() {
             // Acceptances, reversals and edits show as the line under what
-            // they change.
-            if accept_shown_under(m, &messages, &bot.decided)
-                || matches!(m.body.kind.as_str(), "decision_reverse" | "edit")
-            {
+            // they change. A refused acceptance or reversal stays a row, so
+            // its error and Send again show.
+            if accept_shown_under(m, &messages, &bot.decided) || hidden_row(m) {
                 continue;
             }
             for (n, (notice, at)) in notices.iter().enumerate() {
@@ -4425,6 +4425,17 @@ fn ago_from(at: u64, now: u64) -> String {
     }
 }
 
+/// Whether a reversal or an edit has no row of its own: an edit never has,
+/// a reversal unless it was refused. [`accept_shown_under`] decides for an
+/// acceptance.
+fn hidden_row(m: &Msg) -> bool {
+    match m.body.kind.as_str() {
+        "decision_reverse" => !matches!(m.delivery, Delivery::Failed(_)),
+        "edit" => true,
+        _ => false,
+    }
+}
+
 /// The newest edit of a message, in the order the channel holds them.
 fn last_edit<'a>(messages: &'a [Msg], id: &str) -> Option<&'a Msg> {
     messages
@@ -4826,5 +4837,23 @@ mod tests {
         assert_eq!(e.id, "e2");
         assert!(matches!(e.delivery, Delivery::Failed(_)));
         assert!(last_edit(&ms, "b").is_none());
+        // A refused reversal keeps its row; an edit never has one.
+        // Acceptances are left to `accept_shown_under`.
+        let failed = || Delivery::Failed("refused".into());
+        for (kind, delivery, hidden) in [
+            ("text", Delivery::Sent, false),
+            ("edit", Delivery::Sent, true),
+            ("edit", failed(), true),
+            ("decision_accept", Delivery::Sending, false),
+            ("decision_reverse", Delivery::Sent, true),
+            ("decision_reverse", Delivery::Sending, true),
+            ("decision_reverse", failed(), false),
+        ] {
+            assert_eq!(
+                hidden_row(&msg("x", kind, None, delivery)),
+                hidden,
+                "{kind}"
+            );
+        }
     }
 }

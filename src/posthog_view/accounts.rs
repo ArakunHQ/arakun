@@ -5,6 +5,8 @@ use super::*;
 
 /// What a personal API key needs to show the tab.
 const KEY_SCOPES: &str = "user:read, organization:read, project:read, query:read, feature_flag:read, experiment:read, error_tracking:read, person:read, event_definition:read, property_definition:read, insight:read";
+/// What it also needs to change flags and experiments from the tab.
+const WRITE_SCOPES: &str = "feature_flag:write and experiment:write";
 
 impl PostHogView {
     /// After a sign-in was saved: the new session's projects, and back to the project.
@@ -147,7 +149,7 @@ impl PostHogView {
                 .child(ui::text(
                     Type::Caption,
                     theme::text_faint(),
-                    format!("PostHog › Settings › Personal API keys. Read scopes: {KEY_SCOPES}. Saved on this computer only."),
+                    format!("PostHog › Settings › Personal API keys. Read scopes: {KEY_SCOPES}. Changing flags and experiments also needs {WRITE_SCOPES}. Saved on this computer only."),
                 )),
         )
         .when_some(self.connect_note.clone(), |d, (note, error)| {

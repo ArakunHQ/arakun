@@ -21,6 +21,9 @@ impl PostHogView {
         self.detail = None;
         self.inspection = None;
         self._inspect = None;
+        self.exp_change = None;
+        self.edit = None;
+        self.write_note = None;
     }
 
     /// Opens `detail`; an error or experiment reads its details first.
@@ -86,6 +89,9 @@ impl PostHogView {
                     cx.notify();
                 })),
             );
+        if let Some(note) = &self.write_note {
+            body = body.child(notice("checkmark-circle02", Tone::Success, note.clone()));
+        }
         let path = match detail {
             Detail::Flag(id) => {
                 let Some(flag) = overview.flags.iter().find(|f| f.id == *id) else {
@@ -107,7 +113,8 @@ impl PostHogView {
                         "Rollout",
                         flag.rollout.clone(),
                         "Current release conditions",
-                    ));
+                    ))
+                    .child(self.flag_controls(flag, cx));
                 format!("/feature_flags/{id}")
             }
             Detail::Issue(id) => {
@@ -179,6 +186,9 @@ impl PostHogView {
                     body = body.child(notice("alert-circle", Tone::Warning, e.message()))
                 }
                 Some(Ok(v)) => {
+                    if let Some(e) = &v.experiment {
+                        body = body.child(self.experiment_actions(e, &v.winners, cx));
+                    }
                     for (heading, lines) in &v.sections {
                         body = body.child(ui::heading(heading.clone()));
                         for line in lines {

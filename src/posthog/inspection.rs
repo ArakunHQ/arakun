@@ -1,6 +1,7 @@
 //! What an error or an experiment shows once opened: read then, not on every
 //! overview refresh. An error gets its latest stack trace and replay; an
-//! experiment, each metric's result per variant (at most four per kind).
+//! experiment, each metric's result per variant (at most four per kind), and
+//! what may be done to it.
 
 use super::{
     ApiError, Session,
@@ -12,6 +13,8 @@ use serde_json::{Value, json};
 pub struct Inspection {
     pub sections: Vec<(String, Vec<String>)>,
     pub replay: Option<String>,
+    pub experiment: Option<super::lifecycle::ReviewedExperiment>,
+    pub winners: Vec<String>,
 }
 
 pub fn issue(s: &Session, p: u64, id: &str) -> Result<Inspection, ApiError> {
@@ -114,6 +117,34 @@ fn variants(v: &Value) -> Vec<String> {
     lines
 }
 
+/// Ship is only offered when one primary metric decides: never on a
+/// secondary metric, nor while another primary one is left to weigh.
+fn sole_primary(e: &Value) -> bool {
+    e["metrics"].as_array().is_some_and(|m| m.len() == 1)
+        && e["saved_metrics"].as_array().is_none_or(Vec::is_empty)
+}
+
+/// The variants a metric's result calls significant winners, each with
+/// enough valid data on both sides.
+fn winners(result: &Value) -> Vec<String> {
+    if !valid(&result["baseline"]) {
+        return vec![];
+    }
+    result["variant_results"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|v| {
+            valid(v)
+                && v["significant"] == true
+                && v["chance_to_win"]
+                    .as_f64()
+                    .is_some_and(|p| p > 0.5 && p <= 1.)
+        })
+        .filter_map(|v| v["key"].as_str().map(str::to_owned))
+        .collect()
+}
+
 pub fn experiment(s: &Session, p: u64, id: u64) -> Result<Inspection, ApiError> {
     let e = super::call(
         s,
@@ -121,7 +152,10 @@ pub fn experiment(s: &Session, p: u64, id: u64) -> Result<Inspection, ApiError> 
         &format!("/api/projects/{p}/experiments/{id}/"),
         None,
     )?;
-    let mut out = Inspection::default();
+    let mut out = Inspection {
+        experiment: super::lifecycle::ReviewedExperiment::read(&e),
+        ..Default::default()
+    };
     if !e["start_date"].is_string() {
         out.sections.push((
             "Results".into(),
@@ -161,7 +195,12 @@ pub fn experiment(s: &Session, p: u64, id: u64) -> Result<Inspection, ApiError> 
                 &format!("/api/environments/{p}/query/"),
                 Some(&body),
             )
-            .map(|v| variants(&v))
+            .map(|v| {
+                if slot == "Primary" && sole_primary(&e) {
+                    out.winners = winners(&v);
+                }
+                variants(&v)
+            })
             .unwrap_or_else(|e| vec![e.message()]);
             out.sections.push((format!("{slot} · {label}"), lines));
         }
@@ -180,5 +219,30 @@ mod tests {
         assert!(!variants(&result)[1].contains("Winning"));
         result["baseline"]["validation_failures"] = json!(["small_sample_size"]);
         assert!(variants(&result)[1].contains("Not enough data"));
+    }
+
+    #[test]
+    fn ship_is_offered_only_for_a_significant_winner_of_the_sole_primary_metric() {
+        let mut result = json!({
+            "baseline": { "key": "control", "number_of_samples": 100 },
+            "variant_results": [
+                { "key": "a", "number_of_samples": 90, "chance_to_win": 0.97, "significant": true },
+                { "key": "b", "number_of_samples": 90, "chance_to_win": 0.40, "significant": true },
+                { "key": "c", "number_of_samples": 90, "chance_to_win": 0.99, "significant": false }
+            ]
+        });
+        assert_eq!(winners(&result), ["a"]);
+        result["variant_results"][0]["validation_failures"] = json!(["not_enough_exposures"]);
+        assert!(winners(&result).is_empty());
+        result["variant_results"][0]["validation_failures"] = json!([]);
+        result["baseline"]["number_of_samples"] = json!(0);
+        assert!(winners(&result).is_empty());
+
+        let one = json!({ "metrics": [{}], "saved_metrics": [] });
+        assert!(sole_primary(&one));
+        assert!(!sole_primary(&json!({ "metrics": [{}, {}] })));
+        assert!(!sole_primary(
+            &json!({ "metrics": [{}], "saved_metrics": [{ "metadata": { "type": "primary" } }] })
+        ));
     }
 }

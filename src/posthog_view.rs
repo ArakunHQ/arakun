@@ -7,7 +7,8 @@
 //! hours of events and visitors, flags, experiments, errors), Events and
 //! People (their own views, reading pages through `posthog::query`), Flags,
 //! Experiments and Errors (lists whose rows open in `detail`), and Ask
-//! (PostHog AI).
+//! (PostHog AI). A change to a flag or an experiment goes through
+//! `confirm`, which asks for the flag key before anything is sent.
 //!
 //! PostHog's hourly query budget: an answer is kept on disk and shown at
 //! once, read again only when the tab opens and it is older than `STALE`
@@ -17,11 +18,14 @@
 mod accounts;
 mod ask;
 mod bars;
+mod confirm;
 mod detail;
 mod errors;
 mod events;
 mod experiments;
+mod flag_edit;
 mod flags;
+mod lifecycle;
 mod overview;
 mod people;
 mod scope;
@@ -131,6 +135,15 @@ pub struct PostHogView {
     detail: Option<Detail>,
     inspection: Option<Result<posthog::inspection::Inspection, ApiError>>,
     _inspect: Option<Task<()>>,
+    /// A flag change staged or under review.
+    edit: Option<flag_edit::Edit>,
+    /// An experiment change under review.
+    exp_change: Option<lifecycle::Pending>,
+    /// What the last change sent did, shown on its details.
+    write_note: Option<String>,
+    /// Where the flag key is typed to confirm a change.
+    confirm: Entity<TextInput>,
+    _confirm: Subscription,
     ask: Entity<ask::Ask>,
     events: Entity<EventsTab>,
     people: Entity<PeopleTab>,
@@ -167,6 +180,18 @@ impl PostHogView {
                 _ => {}
             },
         );
+        let confirm = cx.new(|cx| TextInput::new("Type the exact flag key", cx).mono());
+        let confirm_sub = cx.subscribe(&confirm, |this: &mut Self, _, ev: &InputEvent, cx| {
+            // Only one dialog is open at a time; each call checks its own.
+            let flag = this.edit.as_ref().is_some_and(|e| e.reviewing());
+            match ev {
+                InputEvent::Submit if flag => this.apply_flag(cx),
+                InputEvent::Submit => this.apply_experiment(cx),
+                InputEvent::Cancel if flag => this.cancel_flag_review(cx),
+                InputEvent::Cancel => this.cancel_experiment(cx),
+                _ => cx.notify(),
+            }
+        });
         let events = cx.new(EventsTab::new);
         let people = cx.new(PeopleTab::new);
         let tabs = [
@@ -204,6 +229,11 @@ impl PostHogView {
             detail: None,
             inspection: None,
             _inspect: None,
+            edit: None,
+            exp_change: None,
+            write_note: None,
+            confirm,
+            _confirm: confirm_sub,
             ask: cx.new(ask::Ask::new),
             events,
             people,
@@ -1032,6 +1062,9 @@ impl Render for PostHogView {
             && self.page == Page::Main
             && self.current.is_some()
             && matches!(self.tab, Tab::Events | Tab::People);
+        let confirmation = self
+            .confirmation(cx)
+            .or_else(|| self.experiment_confirmation(cx));
         let menu = self.menu.filter(|_| self.current.is_some());
         div()
             .track_focus(&self.focus)
@@ -1081,6 +1114,7 @@ impl Render for PostHogView {
                         .child(self.render_menu(cx)),
                 ))
             })
+            .children(confirmation)
     }
 }
 

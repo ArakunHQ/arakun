@@ -2063,7 +2063,24 @@ impl Shell {
             InteractiveElement as _, IntoElement, ParentElement as _,
             StatefulInteractiveElement as _, Styled as _, div, px,
         };
-        if self.pins.items.is_empty() || self.rail_narrow() {
+        if self.rail_narrow() {
+            return None;
+        }
+        // A pin keeps its shortcut index, but can't expose a gated view.
+        let pins: Vec<_> = self
+            .pins
+            .items
+            .iter()
+            .enumerate()
+            .filter(|(_, pin)| {
+                pin.kind != "view"
+                    || View::ALL.iter().any(|v| {
+                        v.label().eq_ignore_ascii_case(&pin.id)
+                            && self.rail_shows(&crate::sidebar::Piece::view(*v), cx)
+                    })
+            })
+            .collect();
+        if pins.is_empty() {
             return None;
         }
         Some(
@@ -2083,7 +2100,7 @@ impl Shell {
                         .text_color(theme::text_faint())
                         .child("Pinned"),
                 )
-                .children(self.pins.items.iter().enumerate().map(|(n, p)| {
+                .children(pins.into_iter().map(|(n, p)| {
                     let view = View::ALL
                         .iter()
                         .find(|v| v.label().eq_ignore_ascii_case(&p.id));

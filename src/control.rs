@@ -82,8 +82,21 @@ pub fn sandbox_socket_path() -> PathBuf {
 
 /// Where the `arakun` shim is, when there is one.
 pub fn shim_dir() -> Option<PathBuf> {
-    let bin = runtime_dir().join("bin");
+    let bin = shim_path();
     bin.is_dir().then_some(bin)
+}
+
+fn shim_path() -> PathBuf {
+    shim_path_for(std::env::var_os("ARAKUN_STATE"), runtime_dir)
+}
+
+/// A second instance with its own state (`arakun dev`) links its own shim,
+/// beside its socket, so it doesn't replace the daily app's.
+fn shim_path_for(state: Option<std::ffi::OsString>, runtime: impl FnOnce() -> PathBuf) -> PathBuf {
+    state
+        .map(|state| PathBuf::from(state).with_extension("runtime"))
+        .unwrap_or_else(runtime)
+        .join("bin")
 }
 
 /// Whether a sandboxed agent may send `req`: only commands that show it things
@@ -132,7 +145,7 @@ pub(crate) fn runtime_dir() -> PathBuf {
 /// this binary first on `PATH`. Call before any thread starts.
 pub fn export_env() {
     let socket = socket_path();
-    let bin = runtime_dir().join("bin");
+    let bin = shim_path();
     let linked = std::env::current_exe().ok().is_some_and(|exe| {
         let _ = std::fs::create_dir_all(&bin);
         link_shim(&exe, &bin)
@@ -1572,6 +1585,19 @@ fn resolve_dir(cwd: &Path, dir: &str) -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_isolated_instance_keeps_its_own_shim() {
+        let daily = || PathBuf::from("/run/user/1000/arakun");
+        assert_eq!(
+            shim_path_for(None, daily),
+            PathBuf::from("/run/user/1000/arakun/bin")
+        );
+        assert_eq!(
+            shim_path_for(Some("/tmp/arakun-dev/state.json".into()), daily),
+            PathBuf::from("/tmp/arakun-dev/state.runtime/bin")
+        );
+    }
 
     #[test]
     fn file_with_line_suffix_resolves() {

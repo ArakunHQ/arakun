@@ -1079,7 +1079,9 @@ One Arakun runs per state. `arakun` started again brings the running window up a
 exits (`arakun <dir>` adds the project there), since two windows on one state would
 save over each other and run the same automations twice. The running one holds
 `state.json.lock` next to `state.json`; an Arakun with its own `ARAKUN_STATE`, such as
-`arakun dev`, has its own lock and runs beside it.
+`arakun dev`, has its own lock and runs beside it. It also has its own socket and
+`arakun` command next to that state file (`dev.sock` and `dev.runtime/bin/arakun` for a
+`dev.json`), so the command line of the daily Arakun keeps reaching the daily Arakun.
 
 ```sh
 arakun .                          # add this project (or switch to it); starts Arakun if needed

@@ -26,10 +26,10 @@ use std::rc::Rc;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    AnyElement, AnyView, App, AppContext as _, Bounds, Context, Entity, EventEmitter, FocusHandle,
-    Focusable, InteractiveElement as _, IntoElement, KeyDownEvent, ListAlignment, ListState,
-    MouseButton, ParentElement as _, Pixels, Point, Render, ScrollHandle, StyleRefinement,
-    Styled as _, Subscription, WeakEntity, Window, canvas, div, px,
+    AnyElement, AnyView, App, AppContext as _, Bounds, Context, Corners, Entity, EventEmitter,
+    FocusHandle, Focusable, InteractiveElement as _, IntoElement, KeyDownEvent, ListAlignment,
+    ListState, MouseButton, ParentElement as _, Pixels, Point, Render, ScrollHandle,
+    StyleRefinement, Styled as _, Subscription, WeakEntity, Window, canvas, div, px,
 };
 
 use crate::agent::markdown::{self, Block, MdStyle};
@@ -289,6 +289,9 @@ pub struct GitHubView {
     /// The sheet shows over another window (opened from the island): the
     /// tab's list isn't drawn, and closing it hands the window back.
     floating: bool,
+    /// The corners of the main card this view fills, which the card clips
+    /// to a square: none with no project added, two in a split.
+    card_corners: Corners<bool>,
     tab: Tab,
     /// The sheet's details unfolded (Some(true)) or folded by the user;
     /// None folds them on a short window.
@@ -536,6 +539,12 @@ impl GitHubView {
             picked: None,
             sheet_open: false,
             floating: false,
+            card_corners: Corners {
+                top_left: true,
+                top_right: true,
+                bottom_right: true,
+                bottom_left: true,
+            },
             tab: Tab::Timeline,
             details_open: None,
             done_open: false,
@@ -2755,6 +2764,14 @@ impl Render for GitHubView {
             ))
         });
         let shows_sheet = (self.sheet_open || self.floating) && self.picked.is_some();
+        // The main card clips to a square: the dim takes the card's corners,
+        // or it darkens the window past them. Over another window there is
+        // no card.
+        let corners = if self.floating {
+            Corners::default()
+        } else {
+            self.card_corners
+        };
         let root = root.when(shows_sheet, |d| {
             d.child(
                 // The rest dims: a click on it closes the sheet.
@@ -2764,6 +2781,18 @@ impl Render for GitHubView {
                     .top_0()
                     .left_0()
                     .size_full()
+                    .when(corners.top_left, |d| {
+                        d.rounded_tl(crate::ui::rad(ui::RADIUS_XL))
+                    })
+                    .when(corners.top_right, |d| {
+                        d.rounded_tr(crate::ui::rad(ui::RADIUS_XL))
+                    })
+                    .when(corners.bottom_right, |d| {
+                        d.rounded_br(crate::ui::rad(ui::RADIUS_XL))
+                    })
+                    .when(corners.bottom_left, |d| {
+                        d.rounded_bl(crate::ui::rad(ui::RADIUS_XL))
+                    })
                     .bg(gpui::black().opacity(0.45))
                     .occlude()
                     .on_mouse_down(

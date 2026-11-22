@@ -3716,7 +3716,12 @@ impl Shell {
                 self.sync_branches_view(cx);
                 self.branches_view.clone().into_any_element()
             }
-            Some(TabKind::GitHub) => self.github_view.clone().into_any_element(),
+            Some(TabKind::GitHub) => {
+                let corners = self.pane_card_corners(index);
+                self.github_view
+                    .update(cx, |v, cx| v.set_card_corners(corners, cx));
+                self.github_view.clone().into_any_element()
+            }
             Some(TabKind::Extensions) => {
                 // Follows the visible environment, also when it changes under an open tab.
                 let dir = env.path.clone();

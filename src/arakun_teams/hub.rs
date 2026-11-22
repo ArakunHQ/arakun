@@ -155,6 +155,8 @@ pub struct ChannelState {
     /// What was sent and not acknowledged yet, by message ID.
     outbox: BTreeMap<String, String>,
     link: Option<Link>,
+    /// When the channel was last asked for, to pick the sockets to close.
+    shown: Instant,
     seen_ids: HashSet<String>,
 }
 
@@ -255,6 +257,28 @@ pub struct Hub {
     save_task: Option<Shared<Task<Result<(), String>>>>,
     _poll: Option<Task<()>>,
     _tick: Option<Task<()>>,
+}
+
+/// How many channels keep their socket besides the one in view. Each socket
+/// is a thread and a TLS connection, and a team can have hundreds of channels.
+pub const SPARE_LINKS: usize = 8;
+
+/// The channels to hang up, of those with a socket (key, when it was last
+/// asked for, busy): all but the one in view and the `spare` asked for last.
+/// A busy one, still reading history or with messages not yet acknowledged,
+/// keeps its socket however old it is.
+fn spare_links<T: Ord>(
+    mut open: Vec<(String, T, bool)>,
+    in_view: &str,
+    spare: usize,
+) -> Vec<String> {
+    open.retain(|(key, ..)| key != in_view);
+    open.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    open.into_iter()
+        .skip(spare)
+        .filter(|(_, _, busy)| !busy)
+        .map(|(key, ..)| key)
+        .collect()
 }
 
 pub fn channel_key(team_id: &str, channel_id: &str) -> String {
@@ -1461,7 +1485,10 @@ impl Hub {
     /// Opens a channel's socket, once; its history comes when it connects.
     pub fn open_channel(&mut self, team_id: &str, channel_id: &str, cx: &mut Context<Self>) {
         let key = channel_key(team_id, channel_id);
-        if self.channels.get(&key).is_some_and(|c| c.link.is_some()) {
+        if let Some(c) = self.channels.get_mut(&key)
+            && c.link.is_some()
+        {
+            c.shown = Instant::now();
             return;
         }
         let Some(net) = self.net.clone() else {
@@ -1481,6 +1508,7 @@ impl Hub {
             },
             self.events.clone(),
         );
+        let in_view = key.clone();
         let state = self.channels.entry(key).or_insert_with(|| ChannelState {
             team_id: team_id.to_string(),
             channel_id: channel_id.to_string(),
@@ -1497,11 +1525,37 @@ impl Hub {
             unknown: Vec::new(),
             outbox: BTreeMap::new(),
             link: None,
+            shown: Instant::now(),
             seen_ids: HashSet::new(),
         });
         state.link_id = link_id;
         state.link = Some(link);
+        state.shown = Instant::now();
+        self.close_spare_links(&in_view);
         cx.notify();
+    }
+
+    /// Hangs up the channels asked for longest ago, beyond [`SPARE_LINKS`].
+    /// What was read stays, and `open_channel` dials again and reads what
+    /// the channel missed.
+    pub fn close_spare_links(&mut self, in_view: &str) {
+        let open = self
+            .channels
+            .iter()
+            .filter(|(_, c)| c.link.is_some())
+            .map(|(key, c)| {
+                let busy = c.loading || c.reading || !c.outbox.is_empty();
+                (key.clone(), c.shown, busy)
+            })
+            .collect();
+        for key in spare_links(open, in_view, SPARE_LINKS) {
+            if let Some(c) = self.channels.get_mut(&key) {
+                // Dropping the link stops its thread, so nothing dials again,
+                // and `on_socket` ignores what it still sends.
+                c.link = None;
+                c.status = socket::Status::Connecting;
+            }
+        }
     }
 
     fn on_socket(&mut self, source: String, ev: socket::Event, cx: &mut Context<Self>) {
@@ -2864,5 +2918,34 @@ mod tests {
             b.call().history(&team, &channel, 0),
             Err(ApiError::Status(404, _))
         ));
+    }
+
+    #[test]
+    fn only_the_sockets_asked_for_longest_ago_are_closed() {
+        let open = |n: u64| -> Vec<(String, u64, bool)> {
+            (1..=n).map(|i| (format!("t/c{i}"), i, false)).collect()
+        };
+        // Up to the cap besides the one in view, nothing closes.
+        assert!(spare_links(open(3), "t/c3", 2).is_empty());
+        assert!(spare_links(open(9), "t/c9", SPARE_LINKS).is_empty());
+        // Beyond it the oldest go, oldest last.
+        assert_eq!(spare_links(open(5), "t/c5", 2), ["t/c2", "t/c1"]);
+        // The one in view stays however long ago it was asked for, and
+        // takes none of the spare places.
+        assert_eq!(spare_links(open(5), "t/c1", 2), ["t/c3", "t/c2"]);
+        // With none in view the same number of spare ones stay.
+        assert_eq!(spare_links(open(3), "", 2), ["t/c1"]);
+    }
+
+    #[test]
+    fn a_busy_channel_keeps_its_socket() {
+        let mut open: Vec<(String, u64, bool)> =
+            (1..=5).map(|i| (format!("t/c{i}"), i, false)).collect();
+        // Still reading history, or holding a message not acknowledged yet.
+        open[0].2 = true;
+        assert_eq!(spare_links(open.clone(), "t/c5", 2), ["t/c2"]);
+        // A busy one among the newest still takes its place.
+        open[3].2 = true;
+        assert_eq!(spare_links(open, "t/c5", 2), ["t/c2"]);
     }
 }

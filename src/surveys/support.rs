@@ -90,10 +90,12 @@ fn email_answer(s: &Survey, props: &Map<String, Value>) -> Option<String> {
         .map(str::to_string)
 }
 
+/// The ticket's text. The Support inbox shows it as plain text, so it is
+/// laid out with line breaks and labels, never with Markdown.
 fn message(s: &Survey, props: &Map<String, Value>) -> String {
     let mut head = Vec::new();
     if let Some(kind) = str_prop(props, "kind") {
-        head.push(format!("**{kind}**"));
+        head.push(capitalized(kind));
     }
     head.push(match str_prop(props, "source") {
         Some("popover") => format!("survey \"{}\"", s.name),
@@ -115,10 +117,10 @@ fn message(s: &Survey, props: &Map<String, Value>) -> String {
         else {
             continue;
         };
-        out.push_str(&format!("\n\n**{}**\n{answer}", q.text));
+        out.push_str(&format!("\n\n{}\n{answer}", label(&q.text)));
     }
     if let Some(e) = str_prop(props, "error_event") {
-        out.push_str(&format!("\n\nError event: `{e}`"));
+        out.push_str(&format!("\n\nError event:\n{e}"));
     }
     if out.len() > MAX_MESSAGE {
         let mut end = MAX_MESSAGE;
@@ -129,6 +131,25 @@ fn message(s: &Survey, props: &Map<String, Value>) -> String {
         out.push('…');
     }
     out
+}
+
+/// A question as a label line: it keeps its own `?` or `:`, else ends in a
+/// `:`, in place of a `.` or `!`, so the answer below reads as its answer.
+fn label(question: &str) -> String {
+    let q = question.trim();
+    if q.ends_with(['?', ':']) {
+        q.to_string()
+    } else {
+        format!("{}:", q.trim_end_matches(['.', '!']))
+    }
+}
+
+fn capitalized(word: &str) -> String {
+    let mut chars = word.chars();
+    match chars.next() {
+        Some(c) => c.to_uppercase().chain(chars).collect(),
+        None => String::new(),
+    }
 }
 
 fn answer_text(v: &Value) -> Option<String> {
@@ -171,8 +192,8 @@ mod tests {
         let (s, p) = user_props("ann@example.com");
         let v = payload(&s, &p, "install", "session");
         let msg = v["message"].as_str().unwrap();
-        assert!(msg.starts_with("**bug** · user feedback · Arakun "));
-        assert!(msg.contains("**What's on your mind?**\nThe tab name resets."));
+        assert!(msg.starts_with("Bug · user feedback · Arakun "));
+        assert!(msg.contains("\n\nWhat's on your mind?\nThe tab name resets."));
         assert!(!msg.contains("ann@example.com"));
         assert_eq!(v["traits"]["email"], "ann@example.com");
         assert_eq!(v["traits"]["name"], "Arakun user");
@@ -222,9 +243,26 @@ mod tests {
             .as_str()
             .unwrap()
             .to_string();
-        assert!(msg.starts_with("**bug** · error feedback"));
-        assert!(msg.contains("**How bad was it?**\n4"));
-        assert!(msg.ends_with("Error event: `abc`"));
+        assert!(msg.starts_with("Bug · error feedback"));
+        assert!(msg.contains("\n\nHow bad was it?\n4"));
+        assert!(msg.ends_with("\n\nError event:\nabc"));
+    }
+
+    #[test]
+    fn message_has_no_markdown() {
+        let (s, p) = user_props("");
+        let msg = message(&s, &p);
+        for mark in ["**", "`", "#", "> "] {
+            assert!(!msg.contains(mark), "{mark} in {msg}");
+        }
+    }
+
+    #[test]
+    fn question_without_mark_gets_a_colon() {
+        assert_eq!(label("Steps to reproduce"), "Steps to reproduce:");
+        assert_eq!(label("How bad was it? "), "How bad was it?");
+        assert_eq!(label("Tell us more."), "Tell us more:");
+        assert_eq!(label("Anything else!"), "Anything else:");
     }
 
     #[test]

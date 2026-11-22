@@ -25,7 +25,13 @@ const DEVICE_ACCOUNT: &str = "teams-device";
 /// (`ARAKUN_STATE`, as `arakun dev` sets) keeps its own Teams session and
 /// device, so it never signs the person's own Arakun out or takes its keys.
 pub fn account(name: &str) -> String {
-    let state = std::env::var("ARAKUN_STATE").ok();
+    account_in(name, std::env::var_os("ARAKUN_STATE").as_deref())
+}
+
+fn account_in(name: &str, state: Option<&std::ffi::OsStr>) -> String {
+    // A path that is not UTF-8 still names a test Arakun. Read as unset, it
+    // would give that one the person's own session to use and to clear.
+    let state = state.map(|s| s.to_string_lossy());
     account_for(name, state.as_deref().map(profile).as_deref())
 }
 
@@ -1040,6 +1046,19 @@ mod tests {
             account_for("teams-device", Some("/tmp/dev/state.json")),
             "teams-device@/tmp/dev/state.json"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_state_path_that_is_not_utf8_still_keeps_its_own_entries() {
+        use std::os::unix::ffi::OsStrExt as _;
+        let state = std::ffi::OsStr::from_bytes(b"/tmp/dev\xff/state.json");
+        assert!(state.to_str().is_none());
+        assert_eq!(
+            account_in("teams-session", Some(state)),
+            "teams-session@/tmp/dev\u{fffd}/state.json"
+        );
+        assert_eq!(account_in("teams-session", None), "teams-session");
     }
 
     #[test]

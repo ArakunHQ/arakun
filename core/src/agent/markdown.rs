@@ -237,10 +237,15 @@ pub enum Block {
     Heading(u8, Inline),
     Code {
         lang: Option<String>,
-        /// As the agent wrote it, for the copy button.
-        text: String,
+        /// As the agent wrote it, for the copy button. Shared so a render
+        /// hands the button a pointer, not a copy of the code.
+        text: SharedString,
         /// Tabs expanded, as shown.
         shown: SharedString,
+        /// The line-number gutter, built with the block rather than each render.
+        numbers: SharedString,
+        /// Lines in `shown`, at least one.
+        lines: usize,
         spans: Option<Rc<Vec<LineSpans>>>,
         /// What a finished ```chart or ```mermaid block draws.
         diagram: Option<Rc<Diagram>>,
@@ -269,6 +274,11 @@ fn code_block(lang: Option<String>, mut text: String, closed: bool) -> Block {
     }
     let shown = text.replace('\t', "    ");
     let lines: Vec<String> = shown.lines().map(str::to_string).collect();
+    let count = lines.len().max(1);
+    let numbers = (1..=count)
+        .map(|n| n.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
     let spans = (closed || lines.len() <= LIVE_HIGHLIGHT_LINES)
         .then(|| highlight::highlight_lang(lang.as_deref().unwrap_or(""), &lines))
         .flatten()
@@ -279,8 +289,10 @@ fn code_block(lang: Option<String>, mut text: String, closed: bool) -> Block {
         .map(Rc::new);
     Block::Code {
         lang,
-        text,
+        text: text.into(),
         shown: shown.into(),
+        numbers: numbers.into(),
+        lines: count,
         spans,
         diagram,
     }
@@ -677,8 +689,10 @@ pub struct Doc {
     pub blocks: Vec<Block>,
     /// `(offset, blocks before)` for every top-level block start.
     marks: Vec<(usize, usize)>,
-    len: usize,
-    hash: u64,
+    /// The text parsed. Comparing against it is a memcmp, far cheaper than
+    /// hashing the whole message on every render, and exact where a hash
+    /// is not.
+    src: String,
 }
 
 impl Doc {
@@ -688,13 +702,12 @@ impl Doc {
         Doc {
             blocks,
             marks,
-            len: src.len(),
-            hash: hash_of(src),
+            src: src.to_string(),
         }
     }
 
     pub fn is_current(&self, src: &str) -> bool {
-        src.len() == self.len && hash_of(src) == self.hash
+        src == self.src
     }
 
     /// Brings the doc up to `src`. When `src` extends the text parsed before,
@@ -705,9 +718,7 @@ impl Doc {
         if self.is_current(src) {
             return;
         }
-        let extends = src.len() > self.len
-            && src.is_char_boundary(self.len)
-            && hash_of(&src[..self.len]) == self.hash;
+        let extends = src.len() > self.src.len() && src.starts_with(self.src.as_str());
         let keep = if extends && self.marks.len() >= 2 {
             Some(self.marks[self.marks.len() - 2])
         } else {
@@ -724,8 +735,9 @@ impl Doc {
         self.marks.retain(|&(o, _)| o < offset);
         self.marks
             .extend(marks.into_iter().map(|(o, n)| (o + offset, n + before)));
-        self.len = src.len();
-        self.hash = hash_of(src);
+        // Only an extension gets here, so the old text is a prefix of the new.
+        let added = &src[self.src.len()..];
+        self.src.push_str(added);
     }
 }
 
@@ -955,17 +967,15 @@ thread_local! {
 
 const COPIED_FOR: Duration = Duration::from_millis(1500);
 
-fn copied_recently(key: u64) -> bool {
+/// Whether `text` went to the clipboard through [`copy_with_feedback`] just now.
+pub fn was_copied(text: &str) -> bool {
     COPIED.with(|c| {
         let mut c = c.borrow_mut();
         c.retain(|_, at| at.elapsed() < COPIED_FOR);
-        c.contains_key(&key)
+        // Every copy button asks on every render, and almost always nothing
+        // was copied: skip hashing the text then.
+        !c.is_empty() && c.contains_key(&hash_of(text))
     })
-}
-
-/// Whether `text` went to the clipboard through [`copy_with_feedback`] just now.
-pub fn was_copied(text: &str) -> bool {
-    copied_recently(hash_of(text))
 }
 
 /// Copies `text` and redraws now and once the "copied" moment is over.
@@ -982,18 +992,18 @@ pub fn copy_with_feedback(text: &str, window: &mut Window, cx: &mut App) {
 }
 
 /// A copy button that shows a check for a moment after it is pressed.
-pub fn copy_button(id: impl Into<ElementId>, text: String) -> AnyElement {
+pub fn copy_button(id: impl Into<ElementId>, text: impl Into<SharedString>) -> AnyElement {
     copy_button_sized(id, text, 24., 14.)
 }
 
 pub fn copy_button_sized(
     id: impl Into<ElementId>,
-    text: String,
+    text: impl Into<SharedString>,
     box_size: f32,
     icon_size: f32,
 ) -> AnyElement {
-    let key = hash_of(&text);
-    let copied = copied_recently(key);
+    let text = text.into();
+    let copied = was_copied(&text);
     div()
         .id(id)
         .group("md-copy")
@@ -1305,14 +1315,23 @@ impl Ctx<'_> {
                 diagram: Some(d),
                 text,
                 ..
-            } => chart::render(ix, d, text),
+            } => chart::render(ix, d, text.clone()),
             Block::Code {
                 lang,
                 text,
                 shown,
+                numbers,
+                lines,
                 spans,
                 ..
-            } => self.code(ix, lang.as_deref(), text, shown, spans.as_deref()),
+            } => self.code(
+                ix,
+                lang.as_deref(),
+                text,
+                shown,
+                (numbers, *lines),
+                spans.as_deref(),
+            ),
             Block::List { start, items } => div()
                 .id(("list", ix))
                 .flex()
@@ -1544,8 +1563,9 @@ impl Ctx<'_> {
         &self,
         ix: usize,
         lang: Option<&str>,
-        text: &str,
+        text: &SharedString,
         shown: &SharedString,
+        (numbers, count): (&SharedString, usize),
         spans: Option<&Vec<LineSpans>>,
     ) -> AnyElement {
         let label = lang.unwrap_or("text").to_string();
@@ -1553,11 +1573,6 @@ impl Ctx<'_> {
             label.as_str(),
             "sh" | "bash" | "zsh" | "fish" | "shell" | "console" | "terminal" | "shellsession"
         );
-        let count = shown.lines().count().max(1);
-        let numbers = (1..=count)
-            .map(|n| n.to_string())
-            .collect::<Vec<_>>()
-            .join("\n");
         // The digits and a little room, plus the right padding, which
         // follows the Spacing setting: a fixed width would squeeze the
         // numbers at a roomier spacing.
@@ -1604,7 +1619,7 @@ impl Ctx<'_> {
                             .text_color(theme::text_muted())
                             .child(label),
                     )
-                    .child(copy_button(("copy", ix), text.to_string())),
+                    .child(copy_button(("copy", ix), text.clone())),
             )
             .child(
                 div()
@@ -1622,7 +1637,7 @@ impl Ctx<'_> {
                                 .text_right()
                                 .text_size(px(crate::ui::TEXT_XS))
                                 .text_color(theme::text_faint())
-                                .child(numbers),
+                                .child(numbers.clone()),
                         )
                     })
                     .child(
@@ -2119,6 +2134,45 @@ mod tests {
         let mut doc = Doc::parse("one\n\ntwo\n\nthree");
         doc.update("uno\n\ndos\n\ntres\n\ncuatro");
         assert_eq!(shape(&doc.blocks), "p(uno) p(dos) p(tres) p(cuatro)");
+    }
+
+    #[test]
+    fn same_length_different_text_is_not_current() {
+        let mut doc = Doc::parse("one\n\ntwo");
+        assert!(doc.is_current("one\n\ntwo"));
+        assert!(!doc.is_current("one\n\ntwx"));
+        assert!(!doc.is_current("one\n\ntw"));
+        doc.update("one\n\ntwx");
+        assert!(doc.is_current("one\n\ntwx"));
+        assert_eq!(shape(&doc.blocks), "p(one) p(twx)");
+    }
+
+    #[test]
+    fn a_code_block_carries_its_gutter() {
+        let Some(Block::Code {
+            text,
+            numbers,
+            lines,
+            ..
+        }) = parse("```\na\n\tb\nc\n```").pop()
+        else {
+            panic!("not a code block");
+        };
+        assert_eq!(text.as_ref(), "a\n\tb\nc");
+        assert_eq!(numbers.as_ref(), "1\n2\n3");
+        assert_eq!(lines, 3);
+        let Some(Block::Code { numbers, lines, .. }) = parse("```\n```").pop() else {
+            panic!("not a code block");
+        };
+        assert_eq!((numbers.as_ref(), lines), ("1", 1));
+    }
+
+    #[test]
+    fn an_extension_keeps_the_doc_current() {
+        let mut doc = Doc::parse("one\n\ntwo\n\nthr");
+        doc.update("one\n\ntwo\n\nthree\n\nfour");
+        assert!(doc.is_current("one\n\ntwo\n\nthree\n\nfour"));
+        assert_eq!(shape(&doc.blocks), "p(one) p(two) p(three) p(four)");
     }
 
     #[test]

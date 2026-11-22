@@ -348,31 +348,37 @@ impl Shell {
         live.unwrap_or_else(|| saved_entries(id))
     }
 
-    /// Calls `f` with a session's entries: a live thread's right away, a
-    /// saved one's once its transcript is read and parsed on the background
-    /// executor, so a long transcript does not hold up the window.
-    fn with_dragged_entries(
+    /// Runs `work` on a session's entries on the background executor, then
+    /// `apply` on the window, so a long transcript is read, parsed and written
+    /// out without holding up the window. Until `apply` runs, sending from the
+    /// composer of `env` waits, so the prompt does not go without the session.
+    fn with_dragged_entries<R: Send + 'static>(
         &mut self,
         d: &DraggedSession,
+        env: PathBuf,
         cx: &mut Context<Self>,
-        f: impl FnOnce(&mut Self, &DraggedSession, Vec<Entry>, &mut Context<Self>) + 'static,
+        work: impl FnOnce(Vec<Entry>) -> R + Send + 'static,
+        apply: impl FnOnce(&mut Self, &Path, R, &mut Context<Self>) + 'static,
     ) {
         let live = self
             .find_env(&d.env)
             .and_then(|e| e.sessions.iter().find(|s| s.id == d.id))
             .and_then(|s| s.live.as_ref())
             .map(|l| l.thread.read(cx).entries().to_vec());
-        if let Some(entries) = live {
-            f(self, d, entries, cx);
-            return;
-        }
         let id = d.id.clone();
-        let read = cx.background_spawn(async move { saved_entries(&id) });
-        let d = d.clone();
+        let done =
+            cx.background_spawn(async move { work(live.unwrap_or_else(|| saved_entries(&id))) });
+        *self.dropping.entry(env.clone()).or_default() += 1;
         cx.spawn(async move |this, cx| {
-            let entries = read.await;
+            let out = done.await;
             let _ = this.update(cx, |this, cx| {
-                f(this, &d, entries, cx);
+                if let Some(n) = this.dropping.get_mut(&env) {
+                    *n -= 1;
+                    if *n == 0 {
+                        this.dropping.remove(&env);
+                    }
+                }
+                apply(this, &env, out, cx);
                 cx.notify();
             });
         })
@@ -382,23 +388,23 @@ impl Shell {
     fn add_session_context(&mut self, d: &DraggedSession, cx: &mut Context<Self>) {
         // The composer it was dropped on, even if another is shown by the time the read lands.
         let env = self.env().path.clone();
-        self.with_dragged_entries(d, cx, move |this, d, entries, _| {
-            if entries.is_empty() {
+        let (title, agent) = (d.title.clone(), d.agent.label());
+        let work = {
+            let title = title.clone();
+            move |entries: Vec<Entry>| {
+                (!entries.is_empty()).then(|| {
+                    crate::agent::notes::context_block(&title, agent, &entries, CONTEXT_BUDGET)
+                })
+            }
+        };
+        self.with_dragged_entries(d, env, cx, work, move |this, env, block, _| {
+            let Some(block) = block else {
                 this.composer_flash = Some("That session has no messages yet.".into());
                 return;
-            }
-            let block = crate::agent::notes::context_block(
-                &d.title,
-                d.agent.label(),
-                &entries,
-                CONTEXT_BUDGET,
-            );
-            let list = this.attached.entry(env).or_default();
-            list.retain(|c| c.title != d.title);
-            list.push(AttachedContext {
-                title: d.title.clone(),
-                block,
-            });
+            };
+            let list = this.attached.entry(env.to_path_buf()).or_default();
+            list.retain(|c| c.title != title);
+            list.push(AttachedContext { title, block });
         });
     }
 
@@ -406,42 +412,39 @@ impl Shell {
     /// so the agent can read as much of it as it needs.
     fn link_session(&mut self, d: &DraggedSession, cx: &mut Context<Self>) {
         let env = self.env().path.clone();
-        self.with_dragged_entries(d, cx, move |this, d, entries, cx| {
-            this.link_session_entries(&env, d, &entries, cx);
-        });
-    }
-
-    fn link_session_entries(
-        &mut self,
-        env: &Path,
-        d: &DraggedSession,
-        entries: &[Entry],
-        cx: &mut Context<Self>,
-    ) {
+        let (title, agent) = (d.title.clone(), d.agent.label());
         let path = state::linked_path(&d.id);
-        let dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
-        let text = crate::agent::notes::transcript_markdown(&d.title, d.agent.label(), entries);
-        if let Err(e) = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, text)) {
-            self.composer_flash = Some(format!("Could not link the session: {e}").into());
-            return;
-        }
-        let title = if d.title.is_empty() {
-            "Untitled session"
-        } else {
-            d.title.as_ref()
+        let work = {
+            let (title, path) = (title.clone(), path.clone());
+            move |entries: Vec<Entry>| {
+                let text = crate::agent::notes::transcript_markdown(&title, agent, &entries);
+                let dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
+                std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, text))
+            }
         };
-        let line = format!(
-            "Linked session \"{title}\" ({}), its full transcript: {} ",
-            d.agent.label(),
-            crate::agent::attach::mention(&path.to_string_lossy())
-        );
-        // The draft it was dropped on, even if another is shown by now.
-        if self.env().path == env {
-            self.env_mut().draft.insert_word(&line);
-            self.composer_changed(cx);
-        } else if let Some(e) = self.find_env_mut(env) {
-            e.draft.insert_word(&line);
-        }
+        self.with_dragged_entries(d, env, cx, work, move |this, env, written, cx| {
+            if let Err(e) = written {
+                this.composer_flash = Some(format!("Could not link the session: {e}").into());
+                return;
+            }
+            let title = if title.is_empty() {
+                "Untitled session"
+            } else {
+                title.as_ref()
+            };
+            let line = format!(
+                "Linked session \"{title}\" ({agent}), its full transcript: {} ",
+                crate::agent::attach::mention(&path.to_string_lossy())
+            );
+            // The draft it was dropped on, even if another is shown by now.
+            if this.env().path == env {
+                this.env_mut().draft.insert_word(&line);
+                this.composer_changed(cx);
+            } else if let Some(e) = this.find_env_mut(env) {
+                e.draft.insert_word(&line);
+                this.save(cx);
+            }
+        });
     }
 
     pub(super) fn render_session_drop_menu(&self, cx: &mut Context<Self>) -> Option<AnyElement> {

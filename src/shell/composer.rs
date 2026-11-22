@@ -732,6 +732,13 @@ impl Shell {
     /// the draft waiting in the queue.
     fn submit_with(&mut self, now: bool, window: &mut Window, cx: &mut Context<Self>) {
         let env_path = self.env().path.clone();
+        // A dropped session still being read would miss this prompt.
+        if self.dropping.contains_key(&env_path) {
+            self.composer_flash =
+                Some("Still reading the dropped session. Send again in a moment.".into());
+            cx.notify();
+            return;
+        }
         // A server that cannot be reached would lose the prompt: it stays here.
         if let Some(remote) = self.env().remote.clone()
             && self.server_reach(&remote.server) != Some(crate::servers_view::Reach::Connected)

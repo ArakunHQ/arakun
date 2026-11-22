@@ -517,6 +517,8 @@ pub struct Shell {
     drop_menu: Option<drag::DropMenu>,
     /// Other sessions' conversations waiting in each environment's composer.
     attached: std::collections::HashMap<std::path::PathBuf, Vec<drag::AttachedContext>>,
+    /// Dropped sessions still being read for each environment's composer.
+    dropping: std::collections::HashMap<std::path::PathBuf, usize>,
     saved_prompts: Vec<crate::prompts::SavedPrompt>,
     /// A one-line note under the composer (a prompt was saved, ...), until the next key.
     composer_flash: Option<SharedString>,
@@ -1089,6 +1091,7 @@ impl Shell {
             slide: None,
             drop_menu: None,
             attached: std::collections::HashMap::new(),
+            dropping: std::collections::HashMap::new(),
             saved_prompts: crate::prompts::load(),
             composer_flash: None,
             menu_agent: None,

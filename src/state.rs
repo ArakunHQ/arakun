@@ -30,11 +30,6 @@ pub struct State {
     pub rail_w: f32,
     #[serde(default = "panel_w")]
     pub panel_w: f32,
-    /// The Session panel (pull request and subagents), beside the chat.
-    #[serde(default)]
-    pub subagents_open: bool,
-    #[serde(default = "subagents_w")]
-    pub subagents_w: f32,
     #[serde(default = "yes")]
     pub arcade: bool,
     /// `theme::DiffPalette` id.
@@ -257,15 +252,10 @@ fn panel_w() -> f32 {
     PANEL_W
 }
 
-fn subagents_w() -> f32 {
-    SUBAGENTS_W
-}
-
 pub const DOCK_HEIGHT: f32 = 260.;
 /// Default widths of the side cards; the state file carries the dragged ones.
 pub const RAIL_W: f32 = 200.;
 pub const PANEL_W: f32 = 260.;
-pub const SUBAGENTS_W: f32 = 360.;
 
 /// Window layout that is not tied to a project.
 #[derive(Clone)]
@@ -276,8 +266,6 @@ pub struct Layout {
     pub panel_open: bool,
     pub rail_w: f32,
     pub panel_w: f32,
-    pub subagents_open: bool,
-    pub subagents_w: f32,
     pub arcade: bool,
     pub diff_palette: crate::theme::DiffPalette,
     pub glass: bool,
@@ -727,7 +715,6 @@ fn load_from(path: &Path) -> State {
         panel_open: true,
         rail_w: RAIL_W,
         panel_w: PANEL_W,
-        subagents_w: SUBAGENTS_W,
         arcade: true,
         ..Default::default()
     })
@@ -963,8 +950,6 @@ pub fn snapshot_with(
         panel_open: layout.panel_open,
         rail_w: layout.rail_w,
         panel_w: layout.panel_w,
-        subagents_open: layout.subagents_open,
-        subagents_w: layout.subagents_w,
         arcade: layout.arcade,
         diff_palette: layout.diff_palette.id().to_string(),
         glass: layout.glass,
@@ -1214,8 +1199,6 @@ pub fn restore(state: State) -> (Vec<Project>, usize, Layout, TabStrip) {
             state.rail_w
         },
         panel_w: state.panel_w,
-        subagents_open: state.subagents_open,
-        subagents_w: state.subagents_w,
         arcade: state.arcade,
         diff_palette: crate::theme::DiffPalette::from_id(&state.diff_palette),
         glass: state.glass,
@@ -1471,8 +1454,6 @@ mod tests {
             panel_open: false,
             rail_w: RAIL_W,
             panel_w: PANEL_W,
-            subagents_open: false,
-            subagents_w: SUBAGENTS_W,
             arcade: false,
             diff_palette: crate::theme::DiffPalette::Default,
             glass: false,
@@ -1506,8 +1487,6 @@ mod tests {
             panel_open: true,
             rail_w: RAIL_W,
             panel_w: PANEL_W,
-            subagents_open: false,
-            subagents_w: SUBAGENTS_W,
             arcade: false,
             diff_palette: crate::theme::DiffPalette::Default,
             glass: false,
@@ -1540,8 +1519,6 @@ mod tests {
             panel_open: true,
             rail_w: RAIL_W,
             panel_w: PANEL_W,
-            subagents_open: false,
-            subagents_w: SUBAGENTS_W,
             arcade: false,
             diff_palette: crate::theme::DiffPalette::Default,
             glass: false,
@@ -1577,8 +1554,6 @@ mod tests {
             panel_open: true,
             rail_w: RAIL_W,
             panel_w: PANEL_W,
-            subagents_open: false,
-            subagents_w: SUBAGENTS_W,
             arcade: false,
             diff_palette: crate::theme::DiffPalette::Default,
             glass: false,
@@ -1611,8 +1586,6 @@ mod tests {
             panel_open: true,
             rail_w: RAIL_W,
             panel_w: PANEL_W,
-            subagents_open: false,
-            subagents_w: SUBAGENTS_W,
             arcade: false,
             diff_palette: crate::theme::DiffPalette::Default,
             glass: false,
@@ -1649,8 +1622,6 @@ mod tests {
             panel_open: true,
             rail_w: RAIL_W,
             panel_w: PANEL_W,
-            subagents_open: false,
-            subagents_w: SUBAGENTS_W,
             arcade: false,
             diff_palette: crate::theme::DiffPalette::Default,
             glass: false,
@@ -1797,8 +1768,6 @@ mod tests {
             panel_open: true,
             rail_w: RAIL_W,
             panel_w: PANEL_W,
-            subagents_open: false,
-            subagents_w: SUBAGENTS_W,
             arcade: false,
             diff_palette: crate::theme::DiffPalette::Default,
             glass: false,

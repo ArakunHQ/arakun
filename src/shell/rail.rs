@@ -670,7 +670,7 @@ impl Shell {
         )
     }
 
-    /// What the rail, the workspace panel and the subagents column sit in,
+    /// What the rail and the workspace panel sit in,
     /// as the rail's style says: on the window itself (Flush, the default),
     /// in a card, or in a card lifted off the window.
     pub(super) fn side_card(&self) -> gpui::Div {

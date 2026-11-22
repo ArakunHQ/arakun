@@ -183,6 +183,8 @@ enum PanelTab {
     Sessions,
     Explorer,
     Changes,
+    /// The session's pull request and subagents, or the transcript of one.
+    Session,
 }
 
 enum Modal {
@@ -427,24 +429,19 @@ pub struct Shell {
     /// Dragged widths of the side cards; state::RAIL_W / PANEL_W until dragged.
     rail_w: f32,
     panel_w: f32,
-    /// The widths the rail, workspace panel and subagents column are drawn at
-    /// this frame: the dragged ones, narrowed when the window is too small to
-    /// leave the work in the middle `MAIN_MIN_W` (see `fit_sides`).
-    side_fit: Cell<[f32; 3]>,
-    /// The workspace panel and the subagents column, open but left out this
-    /// frame because the window is too narrow for them (see `crowd_out`).
-    side_crowded: Cell<[bool; 2]>,
-    /// Which of the two the user asked for last: on a narrow window it stays
-    /// and the other gives way.
-    side_prefer: SideCard,
-    /// The Session panel, between the chat and the Workspace panel.
-    subagents_open: bool,
-    subagents_w: f32,
-    /// The user closed it, so a new subagent doesn't open it again until restart.
+    /// The widths the rail and workspace panel are drawn at this frame: the
+    /// dragged ones, narrowed when the window is too small to leave the work
+    /// in the middle `MAIN_MIN_W` (see `fit_sides`).
+    side_fit: Cell<[f32; 2]>,
+    /// The workspace panel, open but left out this frame because the window
+    /// is too narrow for it (see `crowd_out`).
+    side_crowded: Cell<bool>,
+    /// The user left the Session tab, so a new subagent or pull request
+    /// doesn't bring it back until restart.
     subagents_dismissed: bool,
-    /// The subagent whose transcript the Session panel shows.
+    /// The subagent whose transcript the Session tab shows.
     subagent_view: Option<subagents::SubagentView>,
-    /// Redraws the Session panel each second while a subagent in it runs.
+    /// Redraws the Session tab each second while a subagent in it runs.
     subagent_tick: Option<Task<()>>,
     arcade: bool,
     /// What the person pinned from the palette (`pins.json`).
@@ -626,69 +623,24 @@ fn dock_max_h(viewport_h: f32) -> f32 {
 /// How narrow and wide the side cards can be dragged.
 const RAIL_W_RANGE: std::ops::Range<f32> = 160. ..320.;
 const PANEL_W_RANGE: std::ops::Range<f32> = 200. ..480.;
-const SUBAGENTS_W_RANGE: std::ops::Range<f32> = 260. ..640.;
+/// How wide the panel gets while it shows a subagent's transcript, which
+/// reads badly at the panel's usual width.
+const SUBAGENT_TRANSCRIPT_W: f32 = 360.;
 /// How narrow the work between the side cards may get before they give way.
 const MAIN_MIN_W: f32 = 420.;
 /// Below this, even at their narrowest the side cards leave too little for
-/// the work, and the workspace panel or subagents column is left out. A
-/// 1366x768 laptop at 125% scale, or a window snapped to half a screen, is
-/// that narrow.
+/// the work, and the workspace panel is left out. A 1366x768 laptop at 125%
+/// scale, or a window snapped to half a screen, is that narrow.
 const MAIN_FLOOR_W: f32 = 320.;
 
-/// The workspace panel or the subagents column.
-#[derive(Clone, Copy, PartialEq, Debug)]
-enum SideCard {
-    Panel,
-    Subagents,
-}
-
-/// Which of the open panel and subagents column to leave out so the cards'
-/// narrowest widths fit in `room`. The one not preferred goes first. The rail
-/// always stays: it holds the projects and the way back to everything else.
-/// Each card is its minimum width plus its handle; a closed one is `None`.
-fn crowd_out(
-    room: f32,
-    rail: f32,
-    panel: Option<f32>,
-    subagents: Option<f32>,
-    prefer: SideCard,
-) -> [bool; 2] {
-    let mut out = [false; 2];
-    let mut need = rail + panel.unwrap_or(0.) + subagents.unwrap_or(0.);
-    let order = match prefer {
-        SideCard::Panel => [(1, subagents), (0, panel)],
-        SideCard::Subagents => [(0, panel), (1, subagents)],
-    };
-    for (i, w) in order {
-        if need <= room {
-            break;
-        }
-        if let Some(w) = w {
-            out[i] = true;
-            need -= w;
-        }
-    }
-    out
-}
-
-/// `crowd_out`, except that with `keep_panel` the panel is never the one
-/// left out: Customize sits there, and a change made in it (a wider gap, a
-/// bigger text size) must not take away the controls that undo it. The
-/// subagents give way first, then the middle shrinks.
-fn crowd_out_keeping(
-    room: f32,
-    rail: f32,
-    panel: Option<f32>,
-    subagents: Option<f32>,
-    prefer: SideCard,
-    keep_panel: bool,
-) -> [bool; 2] {
-    if !keep_panel {
-        return crowd_out(room, rail, panel, subagents, prefer);
-    }
-    let mut out = crowd_out(room, rail, panel, subagents, SideCard::Panel);
-    out[0] = false;
-    out
+/// Whether the open workspace panel is left out so the cards' narrowest
+/// widths fit in `room`. The rail always stays: it holds the projects and the
+/// way back to everything else. With `keep_panel` the panel stays too:
+/// Customize sits there, and a change made in it (a wider gap, a bigger text
+/// size) must not take away the controls that undo it. Each card is its
+/// minimum width plus its handle; a closed panel is `None`.
+fn crowd_out(room: f32, rail: f32, panel: Option<f32>, keep_panel: bool) -> bool {
+    !keep_panel && panel.is_some_and(|p| rail + p > room)
 }
 
 /// Side card widths that leave `room` for the cards together. Each one gives
@@ -731,7 +683,6 @@ const DOCK_TAB_CLOSE_TOP: f32 = (ui::DOCK_TAB_H - 20.) / 2.;
 enum SideDrag {
     Rail,
     Panel,
-    Subagents,
 }
 const POLL: Duration = Duration::from_secs(3);
 /// A `git fetch` of the visible environment at most this often while the window is
@@ -1066,13 +1017,8 @@ impl Shell {
             builder: Default::default(),
             rail_w: layout.rail_w,
             panel_w: layout.panel_w,
-            side_fit: Cell::new([layout.rail_w, layout.panel_w, layout.subagents_w]),
-            side_crowded: Cell::new([false; 2]),
-            side_prefer: SideCard::Panel,
-            subagents_open: layout.subagents_open,
-            subagents_w: layout
-                .subagents_w
-                .clamp(SUBAGENTS_W_RANGE.start, SUBAGENTS_W_RANGE.end),
+            side_fit: Cell::new([layout.rail_w, layout.panel_w]),
+            side_crowded: Cell::new(false),
             subagents_dismissed: false,
             subagent_view: None,
             subagent_tick: None,
@@ -1489,8 +1435,6 @@ impl Shell {
             panel_open: self.panel_open,
             rail_w: self.rail_w,
             panel_w: self.panel_w,
-            subagents_open: self.subagents_open,
-            subagents_w: self.subagents_w,
             arcade: self.arcade,
             diff_palette: theme::diff_palette(),
             glass: theme::glass_chosen(),
@@ -2991,20 +2935,10 @@ impl Shell {
                 self.panel_open = true;
                 self.save(cx);
             }
-            self.side_prefer = SideCard::Panel;
-            cx.notify();
-            return;
-        }
-        // Left out for room, a click brings it back in the subagents' place.
-        if self.panel_open && self.side_crowded.get()[0] {
-            self.side_prefer = SideCard::Panel;
             cx.notify();
             return;
         }
         self.panel_open = !self.panel_open;
-        if self.panel_open {
-            self.side_prefer = SideCard::Panel;
-        }
         self.save(cx);
         cx.notify();
     }
@@ -3130,8 +3064,6 @@ impl Shell {
             self.customize_tab = tab;
             self.customize = Some((view, sub));
         }
-        // It takes the workspace panel's place, so that place must be shown.
-        self.side_prefer = SideCard::Panel;
         cx.notify();
     }
 
@@ -3205,15 +3137,10 @@ impl Shell {
         self.side_fit.get()[1]
     }
 
-    fn subagents_width(&self) -> f32 {
-        self.side_fit.get()[2]
-    }
-
     /// Narrows the side cards for this frame when the window can't hold them
     /// at their dragged widths and still leave `MAIN_MIN_W` for the work.
     /// The dragged widths stay, so widening the window brings them back.
     fn fit_side_cards(&self, window: &Window) {
-        let has_projects = self.has_projects();
         let rail = self.rail_shown();
         let viewport_w = window.viewport_size().width.as_f32();
         let rail_card = match (rail, self.rail_narrow()) {
@@ -3222,21 +3149,18 @@ impl Shell {
             (true, false) => (self.rail_w, RAIL_W_RANGE.start),
         };
         // Each card's narrowest, with the handle beside it.
-        let crowded = crowd_out_keeping(
+        let crowded = crowd_out(
             viewport_w - 2. * gap() - MAIN_FLOOR_W,
             if rail { rail_card.1 + gap() } else { 0. },
             self.panel_wanted().then(|| PANEL_W_RANGE.start + gap()),
-            (has_projects && self.subagents_open).then(|| SUBAGENTS_W_RANGE.start + gap()),
-            self.side_prefer,
             self.customize.is_some(),
         );
         self.side_crowded.set(crowded);
         let panel = self.panel_shown();
-        let subagents = self.subagents_shown();
-        let shown = [rail, panel, subagents].iter().filter(|s| **s).count() as f32;
+        let shown = [rail, panel].iter().filter(|s| **s).count() as f32;
         // The window's padding at both sides, and one handle beside each card.
         let room = viewport_w - (2. + shown) * gap() - MAIN_MIN_W;
-        let [r, p, s] = fit_sides(
+        let [r, p] = fit_sides(
             room,
             [
                 rail_card,
@@ -3245,23 +3169,17 @@ impl Shell {
                 } else {
                     (0., 0.)
                 },
-                if subagents {
-                    (self.subagents_w, SUBAGENTS_W_RANGE.start)
-                } else {
-                    (0., 0.)
-                },
             ],
         );
         self.side_fit.set([
             if rail { r } else { self.rail_w },
             if panel { p } else { self.panel_w },
-            if subagents { s } else { self.subagents_w },
         ]);
     }
 
     /// The workspace panel is open and the window has room for it this frame.
     fn panel_shown(&self) -> bool {
-        self.panel_wanted() && !self.side_crowded.get()[0]
+        self.panel_wanted() && !self.side_crowded.get()
     }
 
     /// Something should sit in the workspace panel's place: the panel of a
@@ -3270,19 +3188,16 @@ impl Shell {
         self.customize.is_some() || (self.has_projects() && self.panel_open)
     }
 
-    /// The panel's dragged width, or wider while Customize is in it: its
-    /// palettes sit three to a row.
+    /// The panel's dragged width, or wider while Customize is in it (its
+    /// palettes sit three to a row) or while it shows a subagent's transcript.
     fn panel_preferred_w(&self) -> f32 {
         if self.customize.is_some() {
             self.panel_w.max(crate::customize_view::CUSTOMIZE_W)
+        } else if self.panel_tab == PanelTab::Session && self.subagent_view.is_some() {
+            self.panel_w.max(SUBAGENT_TRANSCRIPT_W)
         } else {
             self.panel_w
         }
-    }
-
-    /// The subagents column is open and the window has room for it this frame.
-    pub(super) fn subagents_shown(&self) -> bool {
-        self.has_projects() && self.subagents_open && !self.side_crowded.get()[1]
     }
 
     /// The gap between two cards doubles as the resize handle for the side card.
@@ -3314,8 +3229,7 @@ impl Shell {
     }
 
     fn show_changes(&mut self, cx: &mut Context<Self>) {
-        self.panel_tab = PanelTab::Changes;
-        self.side_prefer = SideCard::Panel;
+        self.set_panel_tab(PanelTab::Changes, cx);
         if !self.panel_open {
             self.panel_open = true;
             self.save(cx);
@@ -4237,21 +4151,6 @@ impl Render for Shell {
                                 this.panel_w = ((window_w - gap()) - ev.position.x.as_f32())
                                     .clamp(PANEL_W_RANGE.start, PANEL_W_RANGE.end)
                             }
-                            Some(SideDrag::Subagents) => {
-                                // Its right edge is where the Workspace panel starts.
-                                let rail = this.rail_shown()
-                                    && this.sidebar.style.side == crate::sidebar::Side::Right;
-                                let right = window_w
-                                    - gap()
-                                    - if this.panel_shown() {
-                                        this.panel_width() + gap()
-                                    } else {
-                                        0.
-                                    }
-                                    - if rail { this.rail_width() + gap() } else { 0. };
-                                this.subagents_w = (right - ev.position.x.as_f32())
-                                    .clamp(SUBAGENTS_W_RANGE.start, SUBAGENTS_W_RANGE.end)
-                            }
                             None => {}
                         }
                         cx.notify();
@@ -4430,10 +4329,6 @@ impl Render for Shell {
                             .child(self.side_handle(SideDrag::Rail, cx))
                     })
                     .child(body)
-                    .when(chrome && self.subagents_shown(), |d| {
-                        d.child(self.side_handle(SideDrag::Subagents, cx))
-                            .child(self.render_subagents(cx))
-                    })
                     .when(chrome && self.panel_shown(), |d| {
                         d.child(self.side_handle(SideDrag::Panel, cx))
                             .child(self.render_panel(cx))
@@ -4906,48 +4801,17 @@ mod tests {
     }
 
     #[test]
-    fn a_narrow_window_leaves_out_a_side_card() {
-        let (rail, panel, sub) = (168., Some(208.), Some(268.));
-        // 1366x768 at 125%: all three fit at their narrowest.
+    fn a_narrow_window_leaves_out_the_panel() {
+        let (rail, panel) = (168., Some(208.));
+        // 1366x768 at 125%: both fit at their narrowest.
         let room = 1093. - 16. - MAIN_FLOOR_W;
-        assert_eq!(
-            crowd_out(room, rail, panel, sub, SideCard::Panel),
-            [false; 2]
-        );
-        // The smallest window: the one not asked for last goes.
-        let room = 800. - 16. - MAIN_FLOOR_W;
-        assert_eq!(
-            crowd_out(room, rail, panel, sub, SideCard::Panel),
-            [false, true]
-        );
-        assert_eq!(
-            crowd_out(room, rail, panel, sub, SideCard::Subagents),
-            [true, false]
-        );
-        // Too narrow for either: both go, and the rail stays.
-        assert_eq!(
-            crowd_out(100., rail, panel, sub, SideCard::Panel),
-            [true, true]
-        );
-        // A closed card is never counted or left out.
-        assert_eq!(
-            crowd_out(room, rail, None, sub, SideCard::Panel),
-            [false, false]
-        );
-        // Customize in the panel's place stays, even asked for after the
-        // subagents or with no room at all; without it, nothing changes.
-        assert_eq!(
-            crowd_out_keeping(room, rail, panel, sub, SideCard::Subagents, true),
-            [false, true]
-        );
-        assert_eq!(
-            crowd_out_keeping(100., rail, panel, sub, SideCard::Panel, true),
-            [false, true]
-        );
-        assert_eq!(
-            crowd_out_keeping(room, rail, panel, sub, SideCard::Subagents, false),
-            [true, false]
-        );
+        assert!(!crowd_out(room, rail, panel, false));
+        // Too narrow: the panel goes, and the rail stays.
+        assert!(crowd_out(300., rail, panel, false));
+        // A closed panel is never left out.
+        assert!(!crowd_out(300., rail, None, false));
+        // Customize in the panel's place stays, even with no room at all.
+        assert!(!crowd_out(100., rail, panel, true));
     }
 
     #[test]

@@ -156,6 +156,103 @@ fn keep_docs_of<T>(docs: &mut HashMap<usize, T>, entries: &[Entry], from: usize)
     }
 }
 
+/// Expanded turns with more than this many phases split into one `gpui::list`
+/// row per phase so long threads virtualize instead of laying out thousands of
+/// items in a single list item.
+const VIRTUALIZE_PHASES: usize = 16;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TurnSlice {
+    Whole,
+    Head,
+    Tail,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ListRow {
+    Turn(usize),
+    TurnHead(usize),
+    TurnPhase { turn: usize, phase: usize },
+    TurnTail(usize),
+}
+
+impl ListRow {
+    fn turn(self) -> usize {
+        match self {
+            Self::Turn(t)
+            | Self::TurnHead(t)
+            | Self::TurnPhase { turn: t, .. }
+            | Self::TurnTail(t) => t,
+        }
+    }
+}
+
+struct LongTurn {
+    range: Range<usize>,
+    live: bool,
+    body_start: usize,
+    content_len: usize,
+    phases: Vec<Phase>,
+}
+
+fn is_live_turn(turn: usize, turns: &[Range<usize>], t: &Thread) -> bool {
+    let start = turns.get(turn).map(|r| r.start);
+    (start.is_some() && t.turn_entry() == start)
+        || (t.is_busy() && turn + 1 == turns.len() && t.turn_entry().is_none())
+}
+
+fn build_rows(
+    turns: &[Range<usize>],
+    t: &Thread,
+    folds: &HashSet<usize>,
+) -> (Vec<ListRow>, HashMap<usize, LongTurn>) {
+    build_rows_from(turns, t.entries(), |ti| is_live_turn(ti, turns, t), folds)
+}
+
+fn build_rows_from(
+    turns: &[Range<usize>],
+    all_entries: &[Entry],
+    is_live: impl Fn(usize) -> bool,
+    folds: &HashSet<usize>,
+) -> (Vec<ListRow>, HashMap<usize, LongTurn>) {
+    let mut rows = Vec::with_capacity(turns.len());
+    let mut long_turns = HashMap::new();
+    for (ti, range) in turns.iter().enumerate() {
+        let live = is_live(ti);
+        let show_work = live || folds.contains(&range.start);
+        if show_work {
+            let entries = &all_entries[range.clone()];
+            let parts = turn_parts(entries, live);
+            let body = &entries[parts.body_start..];
+            let content = &body[..body.len() - parts.trailing_notices];
+            if !parts.work.is_empty() {
+                let phases = phases_of(content, &parts.work);
+                if phases.len() > VIRTUALIZE_PHASES {
+                    let count = phases.len();
+                    rows.push(ListRow::TurnHead(ti));
+                    for phase in 0..count {
+                        rows.push(ListRow::TurnPhase { turn: ti, phase });
+                    }
+                    rows.push(ListRow::TurnTail(ti));
+                    long_turns.insert(
+                        ti,
+                        LongTurn {
+                            range: range.clone(),
+                            live,
+                            body_start: parts.body_start,
+                            content_len: content.len(),
+                            phases,
+                        },
+                    );
+                    continue;
+                }
+            }
+        }
+        rows.push(ListRow::Turn(ti));
+    }
+    (rows, long_turns)
+}
+
 fn turns_of(entries: &[Entry]) -> Vec<Range<usize>> {
     let mut turns = Vec::new();
     let mut start = 0;
@@ -270,6 +367,8 @@ pub struct ThreadView {
     plan_md: RefCell<Option<(String, Rc<Vec<Block>>)>>,
     list: ListState,
     turns: Vec<Range<usize>>,
+    rows: Vec<ListRow>,
+    long_turns: HashMap<usize, LongTurn>,
     markdown: HashMap<usize, Rc<Doc>>,
     /// Text pieces of every markdown surface rendered, for selection.
     maps: RefCell<HashMap<usize, Rc<TextMap>>>,
@@ -331,7 +430,9 @@ impl ThreadView {
     pub fn new(thread: Entity<Thread>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let turns = turns_of(thread.read(cx).entries());
         let seen = thread.read(cx).entries().len();
-        let list = ListState::new(turns.len() + 1, ListAlignment::Top, px(800.));
+        let folds = HashSet::new();
+        let (rows, long_turns) = build_rows(&turns, thread.read(cx), &folds);
+        let list = ListState::new(rows.len() + 1, ListAlignment::Top, px(800.));
         list.set_follow_mode(FollowMode::Tail);
         let weak = cx.weak_entity();
         list.set_scroll_handler(move |ev, _, cx| {
@@ -365,6 +466,8 @@ impl ThreadView {
             plan_md: RefCell::new(None),
             list,
             turns,
+            rows,
+            long_turns,
             markdown: HashMap::new(),
             maps: RefCell::new(HashMap::new()),
             arrivals: HashMap::new(),
@@ -380,7 +483,7 @@ impl ThreadView {
             phase_open: HashMap::new(),
             live_scroll: None,
             open: HashSet::new(),
-            folds: HashSet::new(),
+            folds,
             changes_open: HashSet::new(),
             focus: cx.focus_handle(),
             restore_focus: None,
@@ -551,17 +654,21 @@ impl ThreadView {
         self.open.clear();
         self.folds.clear();
         self.changes_open.clear();
-        self.entrances.reset(self.thread.read(cx).entries().len());
-        self.turns = turns_of(self.thread.read(cx).entries());
-        self.list.reset(self.turns.len() + 1);
+        let t = self.thread.read(cx);
+        self.entrances.reset(t.entries().len());
+        self.turns = turns_of(t.entries());
+        let (rows, long_turns) = build_rows(&self.turns, t, &self.folds);
+        self.rows = rows;
+        self.long_turns = long_turns;
+        self.list.reset(self.rows.len() + 1);
         self.list.set_follow_mode(FollowMode::Tail);
     }
 
     fn apply_status_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.list
-            .remeasure_items(self.turns.len()..self.turns.len() + 1);
+        self.sync_rows(None, cx);
+        self.remeasure_footer();
         if let Some(last) = self.turns.len().checked_sub(1) {
-            self.list.remeasure_items(last..last + 1);
+            self.remeasure_turn_ends(last);
         }
         self.sync_tick(window, cx);
         self.sync_ask(window, cx);
@@ -620,24 +727,82 @@ impl ThreadView {
     }
 
     fn sync_turns(&mut self, from: usize, cx: &mut Context<Self>) {
-        let turns = turns_of(self.thread.read(cx).entries());
-        let first = turns
+        self.turns = turns_of(self.thread.read(cx).entries());
+        self.sync_rows(Some(from), cx);
+    }
+
+    pub(super) fn sync_rows(&mut self, remeasure_from: Option<usize>, cx: &App) {
+        let (new_rows, new_long) = build_rows(&self.turns, self.thread.read(cx), &self.folds);
+        let old_len = self.rows.len();
+        let new_len = new_rows.len();
+        let prefix = self
+            .rows
             .iter()
-            .position(|t| t.end > from)
-            .unwrap_or(turns.len().saturating_sub(1));
-        let old = self.turns.len();
-        if turns.len() != old {
-            let first = first.min(old);
-            self.list.splice(first..old, turns.len() - first);
-        } else if first < turns.len() {
-            self.list.remeasure_items(first..first + 1);
+            .zip(new_rows.iter())
+            .take_while(|(a, b)| a == b)
+            .count();
+        let max_suffix = old_len.min(new_len) - prefix;
+        let suffix = self.rows[prefix..]
+            .iter()
+            .rev()
+            .zip(new_rows[prefix..].iter().rev())
+            .take(max_suffix)
+            .take_while(|(a, b)| a == b)
+            .count();
+        let spliced = prefix + suffix < old_len || prefix + suffix < new_len;
+        let splice_end = new_len - suffix;
+        if spliced {
+            self.list
+                .splice(prefix..old_len - suffix, splice_end - prefix);
         }
-        self.turns = turns;
+        self.rows = new_rows;
+        self.long_turns = new_long;
+        if let Some(entry) = remeasure_from
+            && let Some(row_ix) = self.row_for_entry(entry)
+            && !(spliced && (prefix..splice_end).contains(&row_ix))
+        {
+            self.list.remeasure_items(row_ix..row_ix + 1);
+        }
+    }
+
+    pub(super) fn row_for_entry(&self, entry: usize) -> Option<usize> {
+        let turn = self.turns.iter().position(|t| t.contains(&entry))?;
+        if let Some(lt) = self.long_turns.get(&turn) {
+            let base = lt.range.start + lt.body_start;
+            if entry < base {
+                return self.rows.iter().position(|r| *r == ListRow::TurnHead(turn));
+            }
+            let rel = entry - base;
+            if rel < lt.content_len
+                && let Some(pi) = lt
+                    .phases
+                    .iter()
+                    .position(|p| p.head == Some(rel) || p.steps.contains(&rel))
+            {
+                return self
+                    .rows
+                    .iter()
+                    .position(|r| *r == ListRow::TurnPhase { turn, phase: pi });
+            }
+            return self.rows.iter().position(|r| *r == ListRow::TurnTail(turn));
+        }
+        self.rows.iter().position(|r| *r == ListRow::Turn(turn))
+    }
+
+    fn remeasure_turn_ends(&mut self, turn: usize) {
+        for (i, row) in self.rows.iter().enumerate() {
+            if matches!(
+                row,
+                ListRow::Turn(t) | ListRow::TurnHead(t) | ListRow::TurnTail(t) if *t == turn
+            ) {
+                self.list.remeasure_items(i..i + 1);
+            }
+        }
     }
 
     fn remeasure_entry(&mut self, entry: usize) {
-        if let Some(t) = self.turns.iter().position(|t| t.contains(&entry)) {
-            self.list.remeasure_items(t..t + 1);
+        if let Some(row_ix) = self.row_for_entry(entry) {
+            self.list.remeasure_items(row_ix..row_ix + 1);
         }
     }
 
@@ -960,20 +1125,20 @@ impl ThreadView {
             self.folds.insert(turn_start);
         }
         self.opened(Fold::Work, turn_start, open);
-        self.remeasure_entry(turn_start);
+        self.sync_rows(Some(turn_start), cx);
         cx.notify();
     }
 
     fn remeasure_last(&mut self) {
         if let Some(last) = self.turns.len().checked_sub(1) {
-            self.list.remeasure_items(last..last + 1);
+            self.remeasure_turn_ends(last);
         }
         self.remeasure_footer();
     }
 
     /// The footer shows what the agent waits on when no turn does.
     fn remeasure_footer(&mut self) {
-        let n = self.turns.len();
+        let n = self.rows.len();
         self.list.remeasure_items(n..n + 1);
     }
 
@@ -1141,8 +1306,15 @@ impl ThreadView {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let cx: &Context<Self> = cx;
-        let body = if ix < self.turns.len() {
-            self.render_turn(ix, window, cx)
+        let body = if let Some(&row) = self.rows.get(ix) {
+            match row {
+                ListRow::Turn(ti) => self.render_turn(ti, window, cx),
+                ListRow::TurnHead(ti) => self.render_turn_head(ti, window, cx),
+                ListRow::TurnPhase { turn, phase } => {
+                    self.render_turn_phase(turn, phase, window, cx)
+                }
+                ListRow::TurnTail(ti) => self.render_turn_tail(ti, window, cx),
+            }
         } else {
             let footer = self.render_footer(cx);
             match self.unshown_asks(window, cx) {
@@ -1205,7 +1377,75 @@ impl ThreadView {
         )
     }
 
+    fn render_turn_head(&mut self, ix: usize, window: &Window, cx: &Context<Self>) -> AnyElement {
+        self.render_turn_slice(ix, TurnSlice::Head, window, cx)
+    }
+
+    fn render_turn_tail(&mut self, ix: usize, window: &Window, cx: &Context<Self>) -> AnyElement {
+        self.render_turn_slice(ix, TurnSlice::Tail, window, cx)
+    }
+
+    fn render_turn_phase(
+        &mut self,
+        turn: usize,
+        phase_ix: usize,
+        window: &Window,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let Some((range, live, body_start, content_len, phase, is_last)) =
+            self.long_turns.get(&turn).and_then(|lt| {
+                lt.phases.get(phase_ix).cloned().map(|p| {
+                    (
+                        lt.range.clone(),
+                        lt.live,
+                        lt.body_start,
+                        lt.content_len,
+                        p,
+                        phase_ix + 1 == lt.phases.len(),
+                    )
+                })
+            })
+        else {
+            return div().into_any_element();
+        };
+        let thread = self.thread.clone();
+        let t = thread.read(cx);
+        let cwd = t.cwd().to_path_buf();
+        let permission = t.pending_permission().cloned();
+        let base = range.start + body_start;
+        let Some(content) = t.entries().get(base..base + content_len) else {
+            return div().into_any_element();
+        };
+        div()
+            .flex()
+            .flex_col()
+            .min_w_0()
+            .px(crate::ui::sp(16.))
+            .child(self.render_phase(
+                &phase,
+                content,
+                base,
+                &cwd,
+                live,
+                live && is_last,
+                permission.as_ref(),
+                window,
+                cx,
+            ))
+            .into_any_element()
+    }
+
     fn render_turn(&mut self, ix: usize, window: &Window, cx: &Context<Self>) -> AnyElement {
+        self.render_turn_slice(ix, TurnSlice::Whole, window, cx)
+    }
+
+    fn render_turn_slice(
+        &mut self,
+        ix: usize,
+        slice: TurnSlice,
+        window: &Window,
+        cx: &Context<Self>,
+    ) -> AnyElement {
         let range = self.turns[ix].clone();
         let thread = self.thread.clone();
         let t = thread.read(cx);
@@ -1223,7 +1463,7 @@ impl ThreadView {
             .group(SharedString::from(format!("turn-{ix}")))
             .flex()
             .flex_col()
-            .pb(crate::ui::sp(8.));
+            .when(slice != TurnSlice::Head, |d| d.pb(crate::ui::sp(8.)));
 
         let TurnParts {
             body_start,
@@ -1241,11 +1481,13 @@ impl ThreadView {
         }) = entries.first()
         {
             elapsed_ms = *e;
-            let rewind = t.can_rewind(range.start) && t.rewind_plan().is_none();
-            let bubble = self.user_bubble(range.start, text, *at, rewind, cx);
-            col = col.child(self.arrive(range.start, bubble, cx));
-            if let Some(plan) = t.rewind_plan().filter(|p| p.entry == range.start) {
-                col = col.child(self.rewind_card(plan, &cwd, cx));
+            if slice != TurnSlice::Tail {
+                let rewind = t.can_rewind(range.start) && t.rewind_plan().is_none();
+                let bubble = self.user_bubble(range.start, text, *at, rewind, cx);
+                col = col.child(self.arrive(range.start, bubble, cx));
+                if let Some(plan) = t.rewind_plan().filter(|p| p.entry == range.start) {
+                    col = col.child(self.rewind_card(plan, &cwd, cx));
+                }
             }
         }
 
@@ -1253,179 +1495,190 @@ impl ThreadView {
         let content = &body[..body.len() - trailing_notices];
         let base = range.start + body_start;
 
-        if live {
-            let waiting_on = waiting_on(content, &cwd);
-            col = col.child(self.live_header(
-                kind,
-                &status,
-                cancelling,
-                question.is_some(),
-                elapsed_live,
-                waiting_on,
-                window,
-            ));
-        }
+        if slice != TurnSlice::Tail {
+            if live {
+                let waiting_on = waiting_on(content, &cwd);
+                col = col.child(self.live_header(
+                    kind,
+                    &status,
+                    cancelling,
+                    question.is_some(),
+                    elapsed_live,
+                    waiting_on,
+                    window,
+                ));
+            }
 
-        let show_work = live || self.folds.contains(&range.start);
-        if !live && !work.is_empty() {
-            let label = match elapsed_ms {
-                Some(ms) => format!("Worked for {}", fmt_elapsed(ms)),
-                None => "Worked".to_string(),
-            };
-            let turn_start = range.start;
-            let group: SharedString = format!("fold-{turn_start}").into();
-            let shell = match entries.first() {
-                Some(Entry::User { shell_changes, .. }) => shell_changes.as_slice(),
-                _ => &[],
-            };
-            let edits = turn_edits(shell, content);
-            let changes_shown = !edits.files.is_empty() && self.changes_open.contains(&turn_start);
-            let changes_chip = (!edits.files.is_empty()).then(|| {
-                let n = edits.files.len();
-                div()
-                    .id(("changes", turn_start))
-                    .flex()
-                    .flex_none()
-                    .items_center()
-                    .gap(crate::ui::sp(6.))
-                    .h(px(24.))
-                    .px(crate::ui::sp(6.))
-                    .rounded(crate::ui::rad(8.))
-                    .cursor_pointer()
-                    .when(changes_shown, |d| d.bg(theme::fill_selected()))
-                    .hover(|s| s.bg(theme::fill_selected()))
-                    .child(icon("file-diff", 13.).text_color(theme::text_subtle()))
-                    .child(
-                        div()
-                            .text_size(px(crate::ui::TEXT_SM))
-                            .text_color(theme::text_subtle())
-                            .child(if n == 1 {
-                                "1 file".to_string()
-                            } else {
-                                format!("{n} files")
-                            }),
-                    )
-                    .child(diff_counts(edits.added, edits.removed))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        cx.stop_propagation();
-                        this.toggle_changes(turn_start, cx);
-                    }))
-            });
-            col = col.child(
-                div()
-                    .id(("fold", turn_start))
-                    .group(group.clone())
-                    .flex()
-                    .items_center()
-                    .gap(crate::ui::sp(6.))
-                    .px(crate::ui::sp(16.))
-                    .py(crate::ui::sp(4.))
-                    .cursor_pointer()
-                    .child(
-                        div()
-                            .relative()
-                            .size(px(14.))
-                            .flex_none()
-                            .when(!show_work, |d| {
-                                d.child(
+            let show_work = live || self.folds.contains(&range.start);
+            if !live && !work.is_empty() {
+                let label = match elapsed_ms {
+                    Some(ms) => format!("Worked for {}", fmt_elapsed(ms)),
+                    None => "Worked".to_string(),
+                };
+                let turn_start = range.start;
+                let group: SharedString = format!("fold-{turn_start}").into();
+                let shell = match entries.first() {
+                    Some(Entry::User { shell_changes, .. }) => shell_changes.as_slice(),
+                    _ => &[],
+                };
+                let edits = turn_edits(shell, content);
+                let changes_shown =
+                    !edits.files.is_empty() && self.changes_open.contains(&turn_start);
+                let changes_chip = (!edits.files.is_empty()).then(|| {
+                    let n = edits.files.len();
+                    div()
+                        .id(("changes", turn_start))
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .gap(crate::ui::sp(6.))
+                        .h(px(24.))
+                        .px(crate::ui::sp(6.))
+                        .rounded(crate::ui::rad(8.))
+                        .cursor_pointer()
+                        .when(changes_shown, |d| d.bg(theme::fill_selected()))
+                        .hover(|s| s.bg(theme::fill_selected()))
+                        .child(icon("file-diff", 13.).text_color(theme::text_subtle()))
+                        .child(
+                            div()
+                                .text_size(px(crate::ui::TEXT_SM))
+                                .text_color(theme::text_subtle())
+                                .child(if n == 1 {
+                                    "1 file".to_string()
+                                } else {
+                                    format!("{n} files")
+                                }),
+                        )
+                        .child(diff_counts(edits.added, edits.removed))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.toggle_changes(turn_start, cx);
+                        }))
+                });
+                col = col.child(
+                    div()
+                        .id(("fold", turn_start))
+                        .group(group.clone())
+                        .flex()
+                        .items_center()
+                        .gap(crate::ui::sp(6.))
+                        .px(crate::ui::sp(16.))
+                        .py(crate::ui::sp(4.))
+                        .cursor_pointer()
+                        .child(
+                            div()
+                                .relative()
+                                .size(px(14.))
+                                .flex_none()
+                                .when(!show_work, |d| {
+                                    d.child(
+                                        div()
+                                            .absolute()
+                                            .size_full()
+                                            .group_hover(group.clone(), |s| s.opacity(0.))
+                                            .child(kind.icon(14.)),
+                                    )
+                                })
+                                .child(
                                     div()
                                         .absolute()
                                         .size_full()
-                                        .group_hover(group.clone(), |s| s.opacity(0.))
-                                        .child(kind.icon(14.)),
-                                )
-                            })
-                            .child(
-                                div()
-                                    .absolute()
-                                    .size_full()
-                                    .when(!show_work, |d| {
-                                        d.opacity(0.).group_hover(group.clone(), |s| s.opacity(1.))
-                                    })
-                                    .child(chevron(
-                                        ("fold-chevron", turn_start),
-                                        show_work,
-                                        icon("arrow-right01", 14.).text_color(theme::text_subtle()),
-                                    )),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .text_size(px(crate::ui::TEXT_LG))
-                            .text_color(theme::text_subtle())
-                            .group_hover(group, |s| s.text_color(theme::text_muted()))
-                            .child(label),
-                    )
-                    .when_some(changes_chip, |d, chip| d.child(chip))
-                    .on_click(cx.listener(move |this, _, _, cx| this.toggle_fold(turn_start, cx))),
-            );
-            if changes_shown {
-                let changes = self.turn_changes(&edits, turn_start, base, &cwd, cx);
-                col = col.child(self.unfold(Fold::Changes, turn_start, changes, cx));
+                                        .when(!show_work, |d| {
+                                            d.opacity(0.)
+                                                .group_hover(group.clone(), |s| s.opacity(1.))
+                                        })
+                                        .child(chevron(
+                                            ("fold-chevron", turn_start),
+                                            show_work,
+                                            icon("arrow-right01", 14.)
+                                                .text_color(theme::text_subtle()),
+                                        )),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .text_size(px(crate::ui::TEXT_LG))
+                                .text_color(theme::text_subtle())
+                                .group_hover(group, |s| s.text_color(theme::text_muted()))
+                                .child(label),
+                        )
+                        .when_some(changes_chip, |d, chip| d.child(chip))
+                        .on_click(
+                            cx.listener(move |this, _, _, cx| this.toggle_fold(turn_start, cx)),
+                        ),
+                );
+                if changes_shown {
+                    let changes = self.turn_changes(&edits, turn_start, base, &cwd, cx);
+                    col = col.child(self.unfold(Fold::Changes, turn_start, changes, cx));
+                }
             }
-        }
 
-        if live && content.is_empty() && status == ThreadStatus::Working && !cancelling {
-            col = col.child(
-                div()
-                    .px(crate::ui::sp(16.))
-                    .py(crate::ui::sp(4.))
-                    .text_size(px(crate::ui::TEXT_LG))
-                    .child(shimmer(
-                        self.active,
-                        "Thinking…",
-                        theme::text_faint(),
-                        theme::text_muted(),
-                    )),
-            );
-        }
+            if live && content.is_empty() && status == ThreadStatus::Working && !cancelling {
+                col = col.child(
+                    div()
+                        .px(crate::ui::sp(16.))
+                        .py(crate::ui::sp(4.))
+                        .text_size(px(crate::ui::TEXT_LG))
+                        .child(shimmer(
+                            self.active,
+                            "Thinking…",
+                            theme::text_faint(),
+                            theme::text_muted(),
+                        )),
+                );
+            }
 
-        if live && let Some(retry) = t.retry_status() {
-            col = col.child(
-                div()
+            if live && let Some(retry) = t.retry_status() {
+                col = col.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(crate::ui::sp(8.))
+                        .mx(px(16.))
+                        .my(px(4.))
+                        .px(crate::ui::sp(10.))
+                        .py(crate::ui::sp(6.))
+                        .rounded(crate::ui::rad(12.))
+                        .bg(theme::fill_raised())
+                        .text_size(px(crate::ui::TEXT_MD))
+                        .text_color(theme::text_muted())
+                        .child(spinner(self.active, 12., theme::text_subtle()))
+                        .child(div().min_w_0().truncate().child(retry.to_string())),
+                );
+            }
+
+            if slice == TurnSlice::Head {
+                return col.into_any_element();
+            }
+
+            if show_work && !work.is_empty() {
+                let phases = phases_of(content, &work);
+                let last = phases.len() - 1;
+                let mut trail = div()
                     .flex()
-                    .items_center()
-                    .gap(crate::ui::sp(8.))
-                    .mx(px(16.))
-                    .my(px(4.))
-                    .px(crate::ui::sp(10.))
-                    .py(crate::ui::sp(6.))
-                    .rounded(crate::ui::rad(12.))
-                    .bg(theme::fill_raised())
-                    .text_size(px(crate::ui::TEXT_MD))
-                    .text_color(theme::text_muted())
-                    .child(spinner(self.active, 12., theme::text_subtle()))
-                    .child(div().min_w_0().truncate().child(retry.to_string())),
-            );
-        }
-
-        if show_work && !work.is_empty() {
-            let phases = phases_of(content, &work);
-            let last = phases.len() - 1;
-            let mut trail = div()
-                .flex()
-                .flex_col()
-                .min_w_0()
-                .px(crate::ui::sp(16.))
-                .py(crate::ui::sp(2.));
-            for (pi, phase) in phases.iter().enumerate() {
-                trail = trail.child(self.render_phase(
-                    phase,
-                    content,
-                    base,
-                    &cwd,
-                    live,
-                    live && pi == last,
-                    permission.as_ref(),
-                    window,
-                    cx,
-                ));
+                    .flex_col()
+                    .min_w_0()
+                    .px(crate::ui::sp(16.))
+                    .py(crate::ui::sp(2.));
+                for (pi, phase) in phases.iter().enumerate() {
+                    trail = trail.child(self.render_phase(
+                        phase,
+                        content,
+                        base,
+                        &cwd,
+                        live,
+                        live && pi == last,
+                        permission.as_ref(),
+                        window,
+                        cx,
+                    ));
+                }
+                let trail = self.unfold(Fold::Work, range.start, trail.into_any_element(), cx);
+                col = col.child(trail);
             }
-            let trail = self.unfold(Fold::Work, range.start, trail.into_any_element(), cx);
-            col = col.child(trail);
         }
 
         if let Some(p) = plan
@@ -2054,6 +2307,7 @@ impl ThreadView {
 }
 
 /// Steps in the trail between two stretches of prose.
+#[derive(Clone)]
 struct Phase {
     /// The prose that opened the phase.
     head: Option<usize>,
@@ -2563,6 +2817,46 @@ mod tests {
         let content = &content[..4];
         assert_eq!(reply_span(content, true), 1..3);
         assert_eq!(reply_span(content, false), 4..4);
+    }
+
+    #[test]
+    fn long_expanded_turn_splits_into_per_phase_list_rows() {
+        let mut entries = vec![Entry::User {
+            text: "do 1000 steps".into(),
+            at: 0,
+            elapsed_ms: None,
+            tokens: None,
+            message_id: None,
+            shell_changes: Vec::new(),
+        }];
+        for i in 0..1000 {
+            entries.push(agent(&format!("step {i}")));
+            entries.push(tool("Read"));
+        }
+        entries.push(agent("LONGTHREAD-END"));
+        let turns = turns_of(&entries);
+        assert_eq!(turns.len(), 1);
+
+        // Folded finished turn stays a single list row.
+        let empty = HashSet::new();
+        let (rows, long) = build_rows_from(&turns, &entries, |_| false, &empty);
+        assert_eq!(rows, vec![ListRow::Turn(0)]);
+        assert!(long.is_empty());
+
+        // Live or unfolded 1000-phase turn splits into Head + 1000 Phases + Tail.
+        let (rows, long) = build_rows_from(&turns, &entries, |_| true, &empty);
+        assert_eq!(rows.len(), 1002);
+        assert_eq!(rows[0], ListRow::TurnHead(0));
+        assert_eq!(rows[1], ListRow::TurnPhase { turn: 0, phase: 0 });
+        assert_eq!(
+            rows[1000],
+            ListRow::TurnPhase {
+                turn: 0,
+                phase: 999
+            }
+        );
+        assert_eq!(rows[1001], ListRow::TurnTail(0));
+        assert_eq!(long[&0].phases.len(), 1000);
     }
 
     #[test]

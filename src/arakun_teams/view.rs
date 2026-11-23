@@ -421,10 +421,15 @@ impl TeamsView {
         }
     }
 
-    /// Tells the hub which channel shows, so what arrives there is read.
+    /// Tells the hub which channel shows, so what arrives there is read, and
+    /// which is picked, so only its socket counts toward presence.
     fn sync_viewing(&self, cx: &mut Context<Self>) {
         let key = viewed(&self.pane, self.shown);
-        self.hub.update(cx, |h, cx| h.set_viewing(key, cx));
+        let picked = viewed(&self.pane, true);
+        self.hub.update(cx, |h, cx| {
+            h.set_present(picked, cx);
+            h.set_viewing(key, cx);
+        });
     }
 
     /// The project @bot reads: the environment the window shows.

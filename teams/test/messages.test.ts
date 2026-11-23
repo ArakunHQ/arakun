@@ -575,6 +575,63 @@ describe("presence", () => {
     for (const s of [a, a2, b]) s.ws.close();
   });
 
+  it("leaves a quiet socket out until it asks to count, and again once it stops", async () => {
+    const t = await team();
+    const m = await join(t);
+    const ids = [t.owner.user.id, m.user.id].sort((x, y) => x - y);
+    const a = await openChannel(t.owner.user, t.owner.device, t.teamId, t.channelId);
+    await a.inbox.here.until([t.owner.user.id]);
+    const seen = a.inbox.here.count;
+    const b = await openChannel(m.user, m.device, t.teamId, t.channelId, {}, "?presence=0");
+    // A quiet socket still gets messages.
+    a.send(await message(t.teamId, t.channelId, t.owner.device, 1, t.keys.get(1)!, "to both"));
+    await stored(a);
+    expect((await b.inbox.next()).type).toBe("message");
+    // A refused frame is a barrier: anything sent before it has arrived.
+    a.ws.send(JSON.stringify({ type: "barrier" }));
+    await refused(a);
+    expect(a.inbox.here.count).toBe(seen);
+    expect(b.inbox.here.count).toBe(0);
+
+    b.ws.send(JSON.stringify({ type: "presence", on: true }));
+    await a.inbox.here.until(ids);
+    await b.inbox.here.until(ids);
+    // Asking for what it has already changes nothing.
+    b.ws.send(JSON.stringify({ type: "presence", on: true }));
+    b.ws.send(JSON.stringify({ type: "presence", on: false }));
+    await a.inbox.here.until([t.owner.user.id]);
+    // Closing a quiet socket starts no presence list.
+    const stub = env.CHANNEL.get(env.CHANNEL.idFromName(`${t.teamId}/${t.channelId}`)) as DurableObjectStub;
+    await runInDurableObject<Channel, void>(stub, (instance) => {
+      const ch = instance as any;
+      const [presence, close] = [ch.presence.bind(ch), ch.webSocketClose.bind(ch)];
+      ch.lists = 0;
+      ch.presence = (...args: unknown[]) => (ch.lists++, presence(...args));
+      ch.webSocketClose = async (ws: WebSocket) => {
+        await close(ws);
+        ch.closed = true;
+      };
+    });
+    b.ws.close();
+    while (!(await runInDurableObject<Channel, boolean>(stub, (ch) => (ch as any).closed))) await new Promise((r) => setTimeout(r, 1));
+    expect(await runInDurableObject<Channel, number>(stub, (ch) => (ch as any).lists)).toBe(0);
+    a.ws.close();
+  });
+
+  it("refuses a bad presence frame and a bad presence parameter", async () => {
+    const t = await team();
+    const a = await openChannel(t.owner.user, t.owner.device, t.teamId, t.channelId, {}, "?presence=1");
+    await a.inbox.here.until([t.owner.user.id]);
+    a.ws.send(JSON.stringify({ type: "presence", on: "yes" }));
+    expect((await refused(a)).id).toBeNull();
+    const res = await api(t.owner.user, "GET", `/teams/${t.teamId}/channels/${t.channelId}/ws?presence=off`, {
+      device: t.owner.device,
+      headers: { Upgrade: "websocket" },
+    });
+    expect(res.status).toBe(400);
+    a.ws.close();
+  });
+
   it("drops a removed member", async () => {
     const t = await team();
     const m = await join(t);

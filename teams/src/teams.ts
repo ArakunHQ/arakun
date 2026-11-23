@@ -1006,6 +1006,10 @@ async function openSocket(c: Ctx, teamId: string, channelId: string): Promise<Re
   const access = await channelAccess(c, teamId, channelId);
   if (access instanceof Response) return access;
   if (c.request.headers.get("Upgrade")?.toLowerCase() !== "websocket") return error(426, "expected a WebSocket upgrade");
+  // `presence=0` opens a socket that does not count toward presence, for a
+  // channel the client reads but does not show.
+  const presence = c.url.searchParams.get("presence") ?? "1";
+  if (presence !== "0" && presence !== "1") return error(400, "presence is 0 or 1");
   // A request made here, not the client's: only these headers reach the
   // object, so a client cannot send its own copies of the trusted ones.
   const headers = new Headers({
@@ -1017,6 +1021,7 @@ async function openSocket(c: Ctx, teamId: string, channelId: string): Promise<Re
     [TRUSTED.channelId]: channelId,
     // The session's hash, so the object can end the socket with the session.
     [TRUSTED.session]: c.me.hash,
+    [TRUSTED.presence]: presence,
   });
   return channelStub(c.env, teamId, channelId).fetch("https://channel/ws", { headers });
 }

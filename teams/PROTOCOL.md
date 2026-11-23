@@ -358,9 +358,22 @@ A message on the wire:
 ### Realtime
 
 `GET /teams/<team_id>/channels/<channel_id>/ws` upgrades to a WebSocket (session
-in `Authorization`, device in `X-Arakun-Device`). Frames are JSON text:
+in `Authorization`, device in `X-Arakun-Device`). With `?presence=0` the socket
+opens **quiet**: it does not count toward presence (below). `?presence=1`, the
+default, counts; any other value answers `400`. A client opens a channel it reads
+but does not show quiet (for the decision log, or kept open after the user moved
+on), so other members do not see it there. A server older than this ignores the
+parameter, and every socket counts. Frames are JSON text:
 
-- client → server: `{ "type": "send", "message": <wire message> }`.
+- client → server:
+  - `{ "type": "send", "message": <wire message> }`;
+  - `{ "type": "presence", "on": true | false }` makes the socket count toward
+    presence (`true`, when the user opens the channel) or go quiet (`false`, when
+    they leave it), without a new socket. Nothing answers it; when the list
+    changes, the presence frame that follows reaches every counted socket, this
+    one included when it counts now. Asking for what the socket has already does
+    nothing. An `on` that is not a boolean is refused with an `error` frame whose
+    `id` is null, and so is the whole frame by a server older than this.
 - server → client:
   - `{ "type": "message", "seq": 42, "at": 1795000000, "message": <wire message> }`
     for every stored message, the sender's own included (that is its ack);
@@ -381,9 +394,11 @@ in `Authorization`, device in `X-Arakun-Device`). Frames are JSON text:
     of the client but to show it. Every epoch refusal says "epoch" in
     `error`, none says "exists", and a `retry` one ends in "send it again", for
     clients from before `code`;
-  - `{ "type": "presence", "here": [<github-id>, ...] }` to every socket on the
-    channel when one opens or closes: the GitHub IDs with a socket open on this
-    channel, sorted, each once. A new socket gets one right away. A socket whose
+  - `{ "type": "presence", "here": [<github-id>, ...] }` to every counted socket
+    on the channel when a counted one opens, closes, or starts or stops counting:
+    the GitHub IDs with a counted socket open on this channel, sorted, each once.
+    A new counted socket gets one right away. A quiet socket is not listed, gets
+    no presence frames, and its opening and closing send none. A socket whose
     session ended, or whose user is no longer a member or lost the `teams` flag,
     gets none and is not listed. Clients ignore a `type` they don't know.
 - A frame is at most 96 KiB. Each device may send about 60 messages every 10

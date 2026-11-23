@@ -3,9 +3,14 @@
 //! the app, and dials again when the connection drops, waiting longer each
 //! time. It gives up only when the server says the user is not a member.
 //!
-//! Frames are what PROTOCOL.md says: `send` out, `message` and `error` in.
-//! Nothing is replayed after a drop; the app reads the history it missed
-//! when the socket is back (`Event::Status(Status::Connected)`).
+//! Frames are what PROTOCOL.md says: `send` and `presence` out, `message`,
+//! `presence` and `error` in. Nothing is replayed after a drop; the app reads
+//! the history it missed when the socket is back
+//! (`Event::Status(Status::Connected)`).
+//!
+//! A link counts toward presence only while the app shows its channel
+//! ([`Link::set_counted`]). Each dial asks for what holds then, and a change
+//! on an open socket goes out as a `presence` frame, so a drop never loses it.
 
 use std::net::{TcpStream, ToSocketAddrs as _};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -63,30 +68,56 @@ pub type Events = mpsc::UnboundedSender<(String, Event)>;
 pub struct Link {
     out: std_mpsc::Sender<String>,
     stop: Arc<AtomicBool>,
+    counted: Arc<AtomicBool>,
 }
 
 pub struct Dial {
     pub url: String,
     pub session: String,
     pub device: String,
+    /// Whether the socket counts toward presence from the start.
+    pub counted: bool,
+}
+
+/// The address to dial: a quiet socket asks for `presence=0`.
+fn dial_url(url: &str, counted: bool) -> String {
+    if counted {
+        url.to_string()
+    } else {
+        let join = if url.contains('?') { '&' } else { '?' };
+        format!("{url}{join}presence=0")
+    }
+}
+
+/// The frame that makes an open socket count toward presence, or not.
+fn presence_frame(counted: bool) -> String {
+    serde_json::json!({ "type": "presence", "on": counted }).to_string()
 }
 
 impl Link {
     pub fn open(key: String, dial: Dial, events: Events) -> Link {
         let (out, queued) = std_mpsc::channel();
         let stop = Arc::new(AtomicBool::new(false));
+        let counted = Arc::new(AtomicBool::new(dial.counted));
         let runner = Runner {
             key,
             dial,
             queued,
             events,
             stop: stop.clone(),
+            counted: counted.clone(),
             status: None,
         };
         let _ = std::thread::Builder::new()
             .name("arakun-teams-channel".into())
             .spawn(move || runner.run());
-        Link { out, stop }
+        Link { out, stop, counted }
+    }
+
+    /// Makes the socket count toward presence, or not: now if it is open, at
+    /// the next dial if not.
+    pub fn set_counted(&self, counted: bool) {
+        self.counted.store(counted, Ordering::Relaxed);
     }
 
     /// A frame to the server. Dropped while there is no connection: the app
@@ -127,6 +158,7 @@ struct Runner {
     queued: std_mpsc::Receiver<String>,
     events: Events,
     stop: Arc<AtomicBool>,
+    counted: Arc<AtomicBool>,
     status: Option<Status>,
 }
 
@@ -138,12 +170,13 @@ impl Runner {
                 return;
             }
             self.set_status(Status::Connecting);
-            let ended = match connect(&self.dial) {
+            let counted = self.counted.load(Ordering::Relaxed);
+            let ended = match connect(&self.dial, counted) {
                 Ok(mut ws) => {
                     let since = Instant::now();
                     while self.queued.try_recv().is_ok() {}
                     self.set_status(Status::Connected);
-                    let ended = self.talk(&mut ws);
+                    let ended = self.talk(&mut ws, counted);
                     wait = wait_after(wait, since.elapsed());
                     let _ = ws.close(None);
                     let _ = ws.flush();
@@ -184,7 +217,8 @@ impl Runner {
         }
     }
 
-    fn talk(&mut self, ws: &mut Socket) -> Ended {
+    /// `counted` is what the socket was dialed with.
+    fn talk(&mut self, ws: &mut Socket, mut counted: bool) -> Ended {
         let mut last_heard = Instant::now();
         let mut last_ping = Instant::now();
         loop {
@@ -211,7 +245,10 @@ impl Runner {
                 Err(e) if would_block(&e) => {}
                 Err(e) => return Ended::Retry(format!("The connection dropped: {e}")),
             }
-            while let Ok(frame) = self.queued.try_recv() {
+            let want = self.counted.load(Ordering::Relaxed);
+            let presence = (want != counted).then(|| presence_frame(want));
+            counted = want;
+            for frame in presence.into_iter().chain(self.queued.try_iter()) {
                 if let Err(e) = ws.send(Message::text(frame)) {
                     return Ended::Retry(format!("Could not write to the server: {e}"));
                 }
@@ -238,11 +275,10 @@ fn would_block(e: &tungstenite::Error) -> bool {
 
 /// TCP, TLS for `wss://`, and the WebSocket handshake with the session and
 /// the device in its headers.
-fn connect(dial: &Dial) -> Result<Socket, Ended> {
+fn connect(dial: &Dial, counted: bool) -> Result<Socket, Ended> {
     let (host, port) =
         host_port(&dial.url).ok_or_else(|| Ended::Refused(format!("Bad address: {}", dial.url)))?;
-    let mut request = dial
-        .url
+    let mut request = dial_url(&dial.url, counted)
         .as_str()
         .into_client_request()
         .map_err(|e| Ended::Refused(format!("Bad address: {e}")))?;
@@ -417,6 +453,75 @@ mod tests {
         );
         assert_eq!(host_port("ws://[::1]:8787/x"), Some(("::1".into(), 8787)));
         assert_eq!(host_port("https://teams.arakun.dev"), None);
+    }
+
+    #[test]
+    fn a_quiet_socket_asks_not_to_count() {
+        let url = "wss://teams.arakun.dev/teams/A/channels/B/ws";
+        assert_eq!(dial_url(url, true), url);
+        assert_eq!(dial_url(url, false), format!("{url}?presence=0"));
+        assert_eq!(dial_url("ws://h/x?a=1", false), "ws://h/x?a=1&presence=0");
+        let frame: serde_json::Value = serde_json::from_str(&presence_frame(true)).unwrap();
+        assert_eq!(frame, serde_json::json!({ "type": "presence", "on": true }));
+        let frame: serde_json::Value = serde_json::from_str(&presence_frame(false)).unwrap();
+        assert_eq!(frame["on"], false);
+    }
+
+    #[test]
+    // tungstenite's handshake callback returns its large error type.
+    #[allow(clippy::result_large_err)]
+    fn a_change_of_presence_reaches_an_open_socket() {
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (conn, _) = listener.accept().unwrap();
+            let mut path = String::new();
+            let mut ws = tungstenite::accept_hdr(
+                conn,
+                |req: &tungstenite::handshake::server::Request, res| {
+                    path = req.uri().to_string();
+                    Ok(res)
+                },
+            )
+            .unwrap();
+            let mut got = Vec::new();
+            while got.len() < 2 {
+                if let Message::Text(t) = ws.read().unwrap() {
+                    got.push(serde_json::from_str::<serde_json::Value>(t.as_str()).unwrap());
+                }
+            }
+            (path, got)
+        });
+        let (tx, mut rx) = mpsc::unbounded();
+        let link = Link::open(
+            "k".into(),
+            Dial {
+                url: format!("ws://127.0.0.1:{port}/teams/A/channels/B/ws"),
+                session: "s".into(),
+                device: "d".into(),
+                counted: false,
+            },
+            tx,
+        );
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            assert!(Instant::now() < deadline, "the link did not connect");
+            if let Ok((_, Event::Status(Status::Connected))) = rx.try_recv() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        link.set_counted(true);
+        // A frame sent after the change goes out after it.
+        link.send(r#"{"type":"send"}"#.into());
+        let (path, got) = server.join().unwrap();
+        assert_eq!(path, "/teams/A/channels/B/ws?presence=0");
+        assert_eq!(
+            got[0],
+            serde_json::json!({ "type": "presence", "on": true })
+        );
+        assert_eq!(got[1]["type"], "send");
     }
 
     #[test]

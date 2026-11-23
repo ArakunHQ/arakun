@@ -554,11 +554,15 @@ jobs:
           path: dist/*.tar.gz
           if-no-files-found: error
 
+  # 4 CPUs, not 8: 8 were 39% busy and the memory peak, 9.0 GiB, fits in the
+  # 15.7 GiB of the 4-CPU runner. It takes about 14% longer but still ends long
+  # before the macOS build and notarizing that publishing waits for (runner
+  # sizing, #755).
   windows:
     name: Build (Windows x86_64)
     needs: version
     if: needs.version.outputs.skip != 'true'
-    runs-on: depot-windows-2025-8
+    runs-on: depot-windows-2025-4
     env:
       # What the binaries say for a nightly; build.rs falls back to Cargo.toml.
       ARAKUN_VERSION: ${{ needs.version.outputs.nightly }}

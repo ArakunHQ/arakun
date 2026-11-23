@@ -173,9 +173,19 @@ impl Grant {
         if !self.live() || sender != self.peer || !valid_text(text) {
             return None;
         }
+        // Both members asked at about the same time: each side lets the
+        // request with the smaller job run, so exactly one review goes on
+        // and neither waits for notes that never come.
+        let serves = |job: &str, from: &str| match &self.state {
+            State::Available => true,
+            State::Waiting {
+                job: mine, other, ..
+            } => other == from && job < mine.as_str(),
+            State::Spent => false,
+        };
         let (task, input, response) = match (&self.state, event) {
-            (State::Available, Event::Request { to, from, job })
-                if to == self.ticket && id(&from) && id(&job) =>
+            (State::Available | State::Waiting { .. }, Event::Request { to, from, job })
+                if to == self.ticket && id(&from) && id(&job) && serves(&job, &from) =>
             {
                 (
                     "Review this goal. Point out risks and suggest how to verify it.",
@@ -261,6 +271,33 @@ mod tests {
         assert_eq!(summary.response, Event::Done);
         assert!(a.receive(2, notes, "duplicate").is_none());
         assert!(b.receive(1, Event::Done, "@bot again").is_none());
+    }
+
+    #[test]
+    fn crossed_requests_run_one_review() {
+        let mut a = Grant::new("T/C".into(), 1, 2);
+        let mut b = Grant::new("T/C".into(), 1, 1);
+        let from_a = a.request(b.ticket.clone(), "goal a").unwrap();
+        let from_b = b.request(a.ticket.clone(), "goal b").unwrap();
+        let job = |e: &Event| match e {
+            Event::Request { job, .. } => job.clone(),
+            _ => unreachable!(),
+        };
+        let a_wins = job(&from_a) < job(&from_b);
+        let at_b = b.receive(1, from_a, "goal a");
+        let at_a = a.receive(2, from_b, "goal b");
+        // Exactly one side serves the other's request with notes.
+        assert_eq!(at_b.is_some(), a_wins);
+        assert_eq!(at_a.is_some(), !a_wins);
+        let (winner, loser, notes) = if a_wins {
+            (&mut a, &b, at_b.unwrap().response)
+        } else {
+            (&mut b, &a, at_a.unwrap().response)
+        };
+        assert!(!loser.unspent() && !loser.waiting_on(&winner.ticket));
+        let peer = if a_wins { 2 } else { 1 };
+        let done = winner.receive(peer, notes, "notes").unwrap();
+        assert_eq!(done.response, Event::Done);
     }
 
     #[test]

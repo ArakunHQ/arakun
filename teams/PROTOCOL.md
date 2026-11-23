@@ -457,7 +457,9 @@ epoch and peer GitHub ID for 15 minutes. The `ready` event advertises the peer
 and ticket. A `request` names both tickets (`from`, `to`) and a fresh `job`;
 `notes` returns the same job with the tickets reversed. Check the sender from
 the verified wire signature, not from text or metadata. Only a matching live
-enrollment can run a turn, once. `done`, `blocked` and `withdrawn` never
+enrollment can run a turn, once. If both devices send a `request` before
+either sees the other's, only the one with the smaller `job` runs; the other
+device answers it and drops its own. `done`, `blocked` and `withdrawn` never
 trigger work. Cancel on disconnect, account or project change, or key rotation.
 A device that cancels an unused ticket while the channel can still carry a
 message posts `withdrawn` with that ticket; do not send a `request` to a

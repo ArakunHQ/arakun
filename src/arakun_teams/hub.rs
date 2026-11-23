@@ -2420,6 +2420,12 @@ impl Hub {
                         };
                         let answer = if matches!(PeerEvent::read(&body), Some(PeerEvent::Done)) {
                             crate::control::Reply::ok(body.text.clone())
+                        } else if matches!(turn.response, PeerEvent::Notes { .. }) {
+                            // A caller here asked at the same time as the peer, and the
+                            // peer's request ran (`Grant::receive`).
+                            crate::control::Reply::err(
+                                "The other member asked at the same time; their review ran instead.",
+                            )
                         } else {
                             crate::control::Reply::err("No recommendation was available.")
                         };

@@ -867,9 +867,9 @@ impl Shell {
             cx.subscribe_in(&cloudflare_view, window, |this, _, ev, window, cx| {
                 this.on_cloudflare_event(ev, window, cx)
             }),
-            // Open, its pages are in the rail: their counts follow the view.
+            // Open, its pages are tabs the shell draws: their counts follow the view.
             cx.observe(&cloudflare_view, |this, _, cx| {
-                if this.subnav_view() == Some(crate::sidebar::View::Cloudflare) {
+                if this.shows_subnav_view(crate::sidebar::View::Cloudflare) {
                     cx.notify();
                 }
             }),
@@ -908,7 +908,7 @@ impl Shell {
                 this.on_extensions_event(ev, window, cx)
             }),
             cx.observe(&extensions_view, |this, _, cx| {
-                if this.subnav_view() == Some(crate::sidebar::View::Extensions) {
+                if this.shows_subnav_view(crate::sidebar::View::Extensions) {
                     cx.notify();
                 }
             }),

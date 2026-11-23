@@ -604,20 +604,6 @@ impl Shell {
                 t.into_any_element()
             }
         });
-        // A row of icons holding the open view: its pages go under the row.
-        let pages = if in_row && !folded {
-            self.subnav_view()
-                .filter(|v| {
-                    section
-                        .items
-                        .iter()
-                        .any(|i| i.piece.same(&Piece::View { view: *v }))
-                })
-                .and_then(|v| self.rail_subnav(v, 0., cx))
-                .map(|p| div().px(crate::ui::sp(8.)).pt(crate::ui::sp(4.)).child(p))
-        } else {
-            None
-        };
         let end = (arranging && !folded).then(|| self.arrange_end(si, section.items.len(), cx));
         let selected = arranging && self.builder.sel == Some(BuilderSel::Section(si));
         div()
@@ -638,7 +624,6 @@ impl Shell {
             })
             .children(title)
             .child(body)
-            .children(pages)
             .children(end)
             .when(arranging, |d| {
                 d.child(super::arrange::dashed_outline(
@@ -695,13 +680,13 @@ impl Shell {
             Piece::View { view } if style.badges => self.view_badge(*view, cx),
             _ => None,
         };
-        // The view of the focused tab, whose pages go under its row.
+        // The view of the focused tab, which its row shows as selected.
         let open = match item.piece {
             Piece::View { view } => self.subnav_view() == Some(view),
             _ => false,
         };
         // Arranging, a quiet piece still shows, so it can be selected and
-        // moved; open, it shows too, with its pages.
+        // moved; open, it shows too.
         if item.only_when_busy
             && badge.is_none()
             && matches!(item.piece, Piece::View { .. })
@@ -807,19 +792,7 @@ impl Shell {
                     .on_click(cx.listener(move |this, ev: &gpui::ClickEvent, window, cx| {
                         this.open_view(view, ev.position(), window, cx)
                     }));
-                match self
-                    .rail_subnav(view, super::subnav::RAIL_INSET, cx)
-                    .filter(|_| open && !in_row)
-                {
-                    Some(pages) => div()
-                        .flex()
-                        .flex_col()
-                        .gap(crate::ui::sp(1.))
-                        .child(row)
-                        .child(pages)
-                        .into_any_element(),
-                    None => row.into_any_element(),
-                }
+                row.into_any_element()
             }
             Piece::Pin { pin } => {
                 let open = pin.clone();

@@ -632,7 +632,8 @@ after a week).
   Manager on Windows, and the Secret Service through `secret-tool` on Linux (without
   it, the session lasts until Arakun quits). An account the server has turned Teams on
   for gets a Teams tab in the sidebar; any other account sees "Signed in as @you" in
-  Settings and nothing else. Sign out removes the session from the keyring, then asks
+  Settings and cannot use Teams. A Teams tab left open from before says Teams is
+  not on for the account. Sign out removes the session from the keyring, then asks
   the server to end it; if the server can't be reached, the session there stays valid
   until it expires (90 days without renewal, 180 days after sign-in at most).
   `ARAKUN_TEAMS_URL` points Arakun at another Teams server, such as one run with

@@ -1081,6 +1081,8 @@ impl Daemon {
         let (base, session, asked) = (s.base.clone(), s.session.clone(), s.clone());
         self.relay_pruned_at = Some(Instant::now());
         self.relay_pruning = true;
+        // A device that signs in after this is not in the answer, and stays.
+        let asked_at = crate::model::unix_now();
         cx.spawn(async move |this, cx| {
             let listed = cx
                 .background_executor()
@@ -1095,7 +1097,10 @@ impl Daemon {
                 match listed {
                     Ok(rows) => {
                         let ids: Vec<String> = rows.into_iter().map(|r| r.id).collect();
-                        this.drop_relay_devices(Some(&ids));
+                        this.drop_relay_devices(Some(phone::SignedInDevices {
+                            ids: &ids,
+                            asked_at,
+                        }));
                     }
                     // A dead session is the relay client's to say; the rest
                     // waits for the next start or sign-in.
@@ -1108,7 +1113,7 @@ impl Daemon {
 
     /// Drops the relay's devices the account does not list (`None`: every
     /// one), closes their connections, and saves.
-    fn drop_relay_devices(&mut self, listed: Option<&[String]>) {
+    fn drop_relay_devices(&mut self, listed: Option<phone::SignedInDevices<'_>>) {
         let dropped = phone::prune_relay_devices(&mut self.access.lock().unwrap().devices, listed);
         for id in &dropped {
             self.transport.disconnect_device(id);

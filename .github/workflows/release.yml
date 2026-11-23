@@ -311,8 +311,9 @@ jobs:
   # A tag or a nightly is on a commit that main's CI already checked. If
   # that run passed with every Rust job run (none skipped because the commit
   # changed no Rust), the ci job skips its jobs instead of running them
-  # again. The relay and teams jobs may have skipped: the archives hold no
-  # relay or teams code, and changes there pass those jobs before they merge.
+  # again. The relay, teams, iOS and Android jobs may have skipped: the
+  # archives hold none of their code, and changes there pass those jobs
+  # before they merge.
   # A run still going is waited
   # for: starting another would queue a second macOS job behind it. A
   # cancelled or failed run, or none (a tag pushed by hand on another
@@ -364,12 +365,14 @@ jobs:
                  "Tests (Linux, no browser)", "Server (Linux, no display libraries)",
                  "Clippy (Windows)", "Clippy and tests (macOS, no browser)",
                  "Relay (types and tests)", "Teams (types and tests)",
-                 "iOS (Swift tests and simulator build)"] as $expected
+                 "iOS (Swift tests and simulator build)",
+                 "Android (Kotlin tests, lint and build)"] as $expected
               | ($jobs | length) == .[0].total_count
                 and (($expected - [$jobs[].name]) | length == 0)
                 and all($jobs[]; .conclusion == "success" or (.conclusion == "skipped"
                   and (.name == "Relay (types and tests)" or .name == "Teams (types and tests)"
-                    or .name == "iOS (Swift tests and simulator build)")))
+                    or .name == "iOS (Swift tests and simulator build)"
+                    or .name == "Android (Kotlin tests, lint and build)")))
             ' > /dev/null <<< "$jobs"; then
               echo "::notice::main's CI passed on $SHA ($GITHUB_SERVER_URL/$GH_REPO/actions/runs/$id); not running it again"
               echo passed=true >> "$GITHUB_OUTPUT"

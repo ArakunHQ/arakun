@@ -33,10 +33,18 @@ fun markdown(s: String, c: Palette): AnnotatedString = buildAnnotatedString {
         while (at - n - 1 >= 0 && s[at - n - 1] == '\\') n++
         return n % 2 == 1
     }
+    // Whether a one-character marker at `at` belongs to a doubled run, as
+    // each `*` of a `**` does.
+    fun doubled(at: Int): Boolean {
+        val m = s[at]
+        return (at > 0 && s[at - 1] == m) || (at + 1 < s.length && s[at + 1] == m)
+    }
     // A backslash in code is itself, so only other spans skip escaped markers.
-    fun closes(marker: String, from: Int, escapes: Boolean = true): Int {
+    // A single `*` or `_` closer skips the `**` and `__` of a span inside it,
+    // so `*a **b** c*` is one emphasis around a strong.
+    fun closes(marker: String, from: Int, escapes: Boolean = true, single: Boolean = false): Int {
         var end = s.indexOf(marker, from)
-        while (escapes && end >= 0 && escaped(end)) end = s.indexOf(marker, end + 1)
+        while (end >= 0 && ((escapes && escaped(end)) || (single && doubled(end)))) end = s.indexOf(marker, end + 1)
         // An empty span or one across a blank line is not one.
         return if (end > from && !s.substring(from, end).contains("\n\n")) end else -1
     }
@@ -67,7 +75,7 @@ fun markdown(s: String, c: Palette): AnnotatedString = buildAnnotatedString {
             (ch == '*' || ch == '_') && i + 1 < s.length && !s[i + 1].isWhitespace() &&
                 // Snake_case words keep their underscores.
                 !(ch == '_' && i > 0 && s[i - 1].isLetterOrDigit()) -> {
-                val end = closes(ch.toString(), i + 1)
+                val end = closes(ch.toString(), i + 1, single = true)
                 if (end < 0 || s[end - 1].isWhitespace() || (ch == '_' && end + 1 < s.length && s[end + 1].isLetterOrDigit())) {
                     plain.append(ch)
                     i++

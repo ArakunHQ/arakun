@@ -163,6 +163,10 @@ request that also fixes the new lints.
   wire. Pairing credentials stay in the Keychain, never in `UserDefaults` or logs. Views
   take colors, fonts and corners from `ios/Arakun/Theme.swift`. The `-demo` mode stays
   behind `#if DEBUG`.
+- The Android app (`android/`): `android/kit` must match `core/src/phone` and `phone/`
+  on the wire. Check a peer's point is on the curve before ECDH and never reuse a
+  handshake. Pairing credentials stay sealed by the Android Keystore
+  (`CredentialStore.kt`); never log keys, tokens or message contents.
 - Do not add or change code behind the private `team` or `coderlabs` features.
 - Comments say why, not what. Docs and comments use plain, short sentences.
 - If you change a command, flag, shortcut or storage path, update the README (and

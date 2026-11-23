@@ -95,6 +95,10 @@ reviews:
       - "android/kit/**"
       - "android/app/src/main/java/com/arakun/android/AppModel.kt"
       - "android/app/src/main/java/com/arakun/android/CredentialStore.kt"
+      # A pairing link from another app or a web page: MainActivity takes it
+      # in, and Root.kt asks before it replaces the computer this phone trusts.
+      - "android/app/src/main/java/com/arakun/android/MainActivity.kt"
+      - "android/app/src/main/java/com/arakun/android/ui/Root.kt"
       - "android/app/src/*/res/xml/network_security_config.xml"
       - "android/app/src/main/AndroidManifest.xml"
       - "android/app/build.gradle.kts"

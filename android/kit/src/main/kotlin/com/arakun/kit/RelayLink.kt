@@ -145,7 +145,12 @@ class RelayLink(
         // The socket's client never times out a read; this asks once and gives up.
         val probe = client.newBuilder().callTimeout(PROBE_WITHIN, TimeUnit.MILLISECONDS).build()
         probe.newCall(Request.Builder().url(b.build()).build()).execute().use { res ->
-            parseJson(res.body.bytes())?.get("label")?.str?.takeIf(::isLabel)
+            // Any host can be in a pairing link: read a few kilobytes at most,
+            // so a huge answer cannot run the app out of memory.
+            val source = res.body.source()
+            val small = source.request(PROBE_MAX + 1L).not()
+            val bytes = if (small) source.readByteArray() else ByteArray(0)
+            parseJson(bytes)?.get("label")?.str?.takeIf(::isLabel)
                 ?.let { Result.success(it) }
                 ?: Result.failure(IllegalStateException("the relay did not say its label"))
         }
@@ -410,6 +415,9 @@ class RelayLink(
 
         /** How long a relay run by hand may take to say its label. */
         const val PROBE_WITHIN = 10_000L
+
+        /** The most a relay's label answer may hold; it is a few dozen bytes. */
+        const val PROBE_MAX = 4096
 
         /**
          * This app's own name to the relay. It stays the same across reconnects,

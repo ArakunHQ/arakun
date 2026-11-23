@@ -448,6 +448,9 @@ impl Link {
             }
             self.set_status(Status::Connecting);
             let ended = match self.connect() {
+                // Dropped while it dialed: the client that replaced this one
+                // may hold the place by now, and a claim would take it away.
+                Ok(_) if self.stop.load(Ordering::Relaxed) => return,
                 Ok(mut ws) => match self.claim(&mut ws) {
                     Ok(()) => {
                         wait = RETRY_MIN;

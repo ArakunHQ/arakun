@@ -294,9 +294,6 @@ fn walk_files(root: &Path, stop: &AtomicBool) -> (Vec<PathBuf>, usize) {
 
 // ---- the answer ------------------------------------------------------------------
 
-/// A name that says its value is a secret.
-const KEY_NAME: &str = r"[A-Za-z0-9_.-]*(?:passw(?:or)?d|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|auth[_-]?key|credentials?|client[_-]?secret)[A-Za-z0-9_.-]*";
-
 /// Secrets recognized by their shape alone, replaced whole.
 static SHAPES: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     [
@@ -331,14 +328,102 @@ static URL_PASSWORD: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)\b([a-z][a-z0-9+.-]*://[^\s:/@]+:)([^\s@/]+)@").expect("url pattern")
 });
 
-/// `name = value` and `"name": "value"` where the name says secret. The value
-/// is quoted (group 2) or bare (group 3).
+/// The token after `Bearer`, as in an `Authorization` header.
+static BEARER: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\b([Bb]earer[ \t]+)([A-Za-z0-9._~+/=-]+)").expect("bearer pattern")
+});
+
+/// `name = value`, `name: value` and `"name": "value"`. Group 1 is the name,
+/// 2 what stands between, and the value is double, single or back quoted
+/// (3, 4, 5) or bare (6). [`names_secret`] decides on the name.
 static ASSIGNED: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(&format!(
-        r#"(?i)(\b{KEY_NAME}["']?\s*(?::=|=>|:|=)\s*)(?:["'`]([^"'`\n]{{4,200}})["'`]|([^\s"'`,;(){{}}\[\]<>$]{{6,}}))"#
-    ))
+    Regex::new(
+        r#"\b([A-Za-z0-9_.-]+)(["']?[ \t]*(?::=|=>|:|=)[ \t]*)(?:"([^"\n]*)"|'([^'\n]*)'|`([^`\n]*)`|(\S+))"#,
+    )
     .expect("assignment pattern")
 });
+
+/// A call or a path through fields: `get_token()`, `self.token`,
+/// `os.environ["KEY"]`. Code, not a value.
+static CODE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"^[A-Za-z_][A-Za-z0-9_]*(?:(?:\.|::|->)[A-Za-z_][A-Za-z0-9_]*)*(?:!?\(|(?:(?:\.|::|->)[A-Za-z_][A-Za-z0-9_]*|\[.*)$)",
+    )
+    .expect("code pattern")
+});
+
+/// A type after `name:`, as in a struct field or a parameter.
+static TYPE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^[A-Z][A-Za-z0-9_]*(?:::[A-Za-z0-9_]+)*(?:<.*)?$").expect("type pattern")
+});
+
+/// Words that, as the last word of a name before `key`, say the key is not
+/// a secret.
+const PLAIN_KEYS: &[&str] = &[
+    "public",
+    "primary",
+    "foreign",
+    "sort",
+    "cache",
+    "partition",
+    "map",
+    "lookup",
+    "row",
+    "group",
+    "idempotency",
+    "hot",
+    "short",
+    "shortcut",
+    "unique",
+    "composite",
+    "dedup",
+    "routing",
+    "react",
+    "list",
+    "dict",
+    "hash",
+    "object",
+    "storage",
+    "registry",
+    "translation",
+    "i18n",
+    "query",
+    "index",
+];
+
+/// Values that are code or a placeholder, never a secret.
+const PLAIN_VALUES: &[&str] = &[
+    "null",
+    "none",
+    "nil",
+    "undefined",
+    "true",
+    "false",
+    "await",
+    "new",
+    "yield",
+    "async",
+    "function",
+    "lambda",
+    "this",
+    "self",
+    "typeof",
+    "str",
+    "string",
+    "number",
+    "bool",
+    "boolean",
+    "bytes",
+    "int",
+    "float",
+    "any",
+    "usize",
+    "u8",
+    "u32",
+    "u64",
+    "i32",
+    "i64",
+];
 
 /// Replaces keys, tokens, passwords and credentials in `text` with
 /// [`REDACTED`]. Code and prose around them stay as they are.
@@ -351,54 +436,172 @@ pub fn redact(text: &str) -> String {
     }
     out = URL_PASSWORD
         .replace_all(&out, |c: &Captures| {
-            if c[2].starts_with('$') || c[2].starts_with('{') || c[2] == *REDACTED {
+            if is_placeholder(&c[2]) {
                 c[0].to_string()
             } else {
                 format!("{}{REDACTED}@", &c[1])
             }
         })
         .into_owned();
-    ASSIGNED
+    out = BEARER
         .replace_all(&out, |c: &Captures| {
-            let secret = match (c.get(2), c.get(3)) {
-                (Some(quoted), _) => !is_placeholder(quoted.as_str()),
-                (None, Some(bare)) => looks_secret(bare.as_str()),
-                _ => false,
-            };
-            if secret {
+            let v = &c[2];
+            // "Bearer authentication" is prose; a token has digits or is
+            // long and random-looking.
+            if v.chars().any(|c| c.is_ascii_digit()) || (v.len() >= 20 && entropy(v) >= 3.5) {
                 format!("{}{REDACTED}", &c[1])
             } else {
                 c[0].to_string()
             }
         })
-        .into_owned()
+        .into_owned();
+    redact_assigned(&out)
 }
 
-/// A quoted value that only names where the secret comes from.
+/// Replaces the value of every assignment whose name says secret, whatever
+/// the value looks like, unless it is code or a placeholder.
+fn redact_assigned(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut done = 0;
+    let mut at = 0;
+    while let Some(c) = ASSIGNED.captures_at(text, at) {
+        let (whole, name) = (c.get(0).expect("match"), c.get(1).expect("name"));
+        if !names_secret(name.as_str()) {
+            // The value may hold the next name, as in `a=password=x`.
+            at = name.end();
+            continue;
+        }
+        let value = (3..=6).find_map(|i| c.get(i)).expect("value");
+        let bare = c.get(6).is_some();
+        // A bare value ends at a space; what closes it is kept.
+        let end = if bare {
+            let v = value.as_str();
+            value.start()
+                + v.trim_end_matches([',', ';', ')', ']', '}', '>', '.', '"', '\'', '`'])
+                    .len()
+        } else {
+            value.end()
+        };
+        let v = &text[value.start()..end];
+        let sep = c[2].trim().trim_start_matches(['"', '\'']);
+        let keep = v.is_empty()
+            || is_placeholder(v)
+            || (bare && is_code(v, name.as_str(), sep, &text[end..]));
+        if !keep {
+            // A quoted value loses its quotes with it.
+            let from = if bare {
+                value.start()
+            } else {
+                value.start() - 1
+            };
+            let to = if bare { end } else { whole.end() };
+            out.push_str(&text[done..from]);
+            out.push_str(REDACTED);
+            done = to;
+        }
+        at = whole.end().max(name.end());
+    }
+    out.push_str(&text[done..]);
+    out
+}
+
+/// Whether `name` says its value is a secret: its last word is a password,
+/// secret, token or credential, or a key other than a plain one
+/// (`ENCRYPTION_KEY`, `apiKey`, but not `primary_key`). `PWD` is the shell's
+/// working folder.
+fn names_secret(name: &str) -> bool {
+    let words = words(name);
+    let Some(last) = words.last() else {
+        return false;
+    };
+    const ENDS: &[&str] = &[
+        "password",
+        "passwd",
+        "passphrase",
+        "secret",
+        "token",
+        "credential",
+        "credentials",
+        "apikey",
+        "secretkey",
+        "privatekey",
+        "accesskey",
+    ];
+    if ENDS.iter().any(|e| last.ends_with(e)) {
+        return true;
+    }
+    match last.as_str() {
+        "pass" => true,
+        "pwd" => words.len() > 1,
+        "key" => words.len() > 1 && !PLAIN_KEYS.contains(&words[words.len() - 2].as_str()),
+        _ => false,
+    }
+}
+
+/// The words of a name, in lower case: `DB_PASSWORD`, `db.password` and
+/// `dbPassword` all end in `password`.
+fn words(name: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    for part in name.split(|c: char| !c.is_ascii_alphanumeric()) {
+        let chars: Vec<char> = part.chars().collect();
+        let mut word = String::new();
+        for (i, &c) in chars.iter().enumerate() {
+            let prev = i.checked_sub(1).map(|j| chars[j]);
+            let next = chars.get(i + 1);
+            let starts = c.is_ascii_uppercase()
+                && prev.is_some_and(|p| {
+                    p.is_ascii_lowercase()
+                        || p.is_ascii_digit()
+                        || (p.is_ascii_uppercase() && next.is_some_and(char::is_ascii_lowercase))
+                });
+            if starts && !word.is_empty() {
+                words.push(std::mem::take(&mut word));
+            }
+            word.push(c.to_ascii_lowercase());
+        }
+        if !word.is_empty() {
+            words.push(word);
+        }
+    }
+    words
+}
+
+/// A value that only names where the secret comes from.
 fn is_placeholder(v: &str) -> bool {
-    v == REDACTED || v.starts_with("${") || v.starts_with('<') || v.chars().all(|c| c == '*')
+    v.contains(REDACTED)
+        || v.starts_with("${")
+        || v.starts_with("{{")
+        || v.starts_with("%(")
+        || v.starts_with("$(")
+        || (v.starts_with('<') && v.ends_with('>'))
+        || v.chars().all(|c| c == '*')
+        // `$DB_PASSWORD`, but not a password like `$uperS3cret`.
+        || v.strip_prefix('$').is_some_and(|n| {
+            !n.is_empty() && n.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+        })
 }
 
-/// A bare value that is a secret rather than code: a mix of letters and
-/// digits, or long and random-looking. `self.token`, `String` and
-/// `read_password` stay.
-fn looks_secret(v: &str) -> bool {
-    if v == REDACTED || v.contains("::") {
-        return false;
+/// Whether a bare value is code rather than a secret: a call, a path
+/// through fields, a reference, a keyword, the same or another secret's
+/// name (`password=password`, `token = access_token`), or a type after
+/// `name:` (`private_key: Ed25519KeyPair,`).
+fn is_code(v: &str, name: &str, sep: &str, after: &str) -> bool {
+    let ident = v.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        && v.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_');
+    if v.starts_with('&')
+        || CODE.is_match(v)
+        || PLAIN_VALUES.contains(&v.to_ascii_lowercase().as_str())
+        || (ident && (v.eq_ignore_ascii_case(name) || names_secret(v)))
+    {
+        return true;
     }
-    let letters = v.chars().any(|c| c.is_ascii_alphabetic());
-    let digits = v.chars().any(|c| c.is_ascii_digit());
-    let word = v
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-');
-    // An identifier or a path through fields reads like code.
-    let code = word
-        && v.split(['.', '_', '-'])
-            .all(|p| p.chars().all(|c| c.is_ascii_alphabetic()));
-    if code {
-        return false;
-    }
-    (letters && digits) || (v.len() >= 20 && entropy(v) >= 3.5)
+    // A type is followed by what ends a field or a parameter, or by the
+    // default value.
+    let closed = after.starts_with([',', ';', ')', '>', '{'])
+        || after
+            .trim_start_matches([' ', '\t'])
+            .starts_with(['=', '{']);
+    sep == ":" && closed && TYPE.is_match(v)
 }
 
 /// Shannon entropy of `s`, in bits per character.
@@ -667,6 +870,62 @@ mod tests {
     }
 
     #[test]
+    fn redacts_any_value_after_a_secret_name() {
+        let cases = [
+            (
+                "POSTGRES_PASSWORD: example",
+                "POSTGRES_PASSWORD: [redacted]",
+            ),
+            ("password=Summer@Time!", "password=[redacted]"),
+            (
+                "DB_PASSWORD=correct-horse-battery-staple",
+                "DB_PASSWORD=[redacted]",
+            ),
+            ("secret=ABCDEFGHIJKLMNOPQRSTUVWX", "secret=[redacted]"),
+            ("password=abc123$xyz789", "password=[redacted]"),
+            ("password=$uperS3cret99", "password=[redacted]"),
+            ("DB_PASSWORD=P@ss,word1x", "DB_PASSWORD=[redacted]"),
+            ("password: \"it's-a-secret1\"", "password: [redacted]"),
+            ("API_TOKEN='ab1'", "API_TOKEN=[redacted]"),
+            ("a=password=hunter22", "a=password=[redacted]"),
+            (
+                "The .env sets API_TOKEN=ab12cd34.",
+                "The .env sets API_TOKEN=[redacted].",
+            ),
+            ("dbPassword = hunter22", "dbPassword = [redacted]"),
+            (
+                "spring.datasource.password=foo",
+                "spring.datasource.password=[redacted]",
+            ),
+        ];
+        for (input, want) in cases {
+            assert_eq!(redact(input), want, "{input}");
+        }
+        let long = format!("client_secret: \"{}\"", "x".repeat(300));
+        assert_eq!(redact(&long), "client_secret: [redacted]");
+    }
+
+    #[test]
+    fn redacts_names_that_slipped_through() {
+        let cases = [
+            ("DB_PASS=hunter22", "DB_PASS=[redacted]"),
+            ("SMTP_PASS=mailpass", "SMTP_PASS=[redacted]"),
+            (
+                "ENCRYPTION_KEY=9f86d081884c7d659a2feaa0c55ad015",
+                "ENCRYPTION_KEY=[redacted]",
+            ),
+            ("apiKey: abcdef", "apiKey: [redacted]"),
+            (
+                "Authorization: Bearer abc123opaque456tokenvalue",
+                "Authorization: Bearer [redacted]",
+            ),
+        ];
+        for (input, want) in cases {
+            assert_eq!(redact(input), want, "{input}");
+        }
+    }
+
+    #[test]
     fn redacts_a_whole_private_key() {
         let text = "Here it is:\n-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAA\nAAAABG5vbmUAAAAEbm9uZQ==\n-----END OPENSSH PRIVATE KEY-----\nDone.";
         assert_eq!(redact(text), "Here it is:\n[redacted]\nDone.");
@@ -694,6 +953,23 @@ mod tests {
             "password: \"<your password>\"",
             "Use skeleton-loading for the list",
             "sha256: 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+            "private_key: Ed25519KeyPair,",
+            "token = base64url(bytes)",
+            "token_type: \"Bearer\"",
+            "tokenizer = \"cl100k_base\"",
+            "PWD=/home/ann/project1",
+            "src/password.rs:L120-L140",
+            "password: Option<String>,",
+            "fn connect(password: &str, token: Token) -> Result<()>",
+            "api_key = os.environ[\"API_KEY\"]",
+            "password = password",
+            "token = access_token",
+            "password = None",
+            "const token = await fetchToken();",
+            "export PGPASSWORD=$DB_PASSWORD",
+            "primary_key = id",
+            "Use Bearer authentication for the API.",
+            "https://user@example.com/repo",
         ] {
             assert_eq!(redact(text), text, "{text}");
         }

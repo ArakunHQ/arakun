@@ -26,6 +26,8 @@ const MAX_BYTES: u64 = 25 << 20;
 const MAX_PROBES: usize = 25;
 /// Skills one package installs at most.
 const MAX_PACKAGE: usize = 100;
+/// A SKILL.md bigger than this is not read for its name and description.
+const MAX_SKILL_MD: u64 = 1 << 20;
 /// Files read from GitHub at once: one after another is slow for a big skill or package.
 const READERS: usize = 8;
 
@@ -292,18 +294,34 @@ pub fn package(source: &str) -> Result<Package> {
     }
     let ids: Vec<String> = dirs.iter().map(|(id, _)| id.clone()).collect();
     let paths: Vec<String> = dirs.iter().map(|(_, d)| join(d, "SKILL.md")).collect();
-    let mut texts = Vec::with_capacity(paths.len());
+    // Only the front matter is kept: each chunk is parsed as it comes, and a
+    // SKILL.md too big to be one is not read here (it still installs).
+    let mut heads = Vec::with_capacity(paths.len());
     for chunk in paths.chunks(READERS) {
-        texts.extend(raw_many(source, &rev, chunk));
+        let small: Vec<String> = chunk
+            .iter()
+            .filter(|p| blob_size(&blobs, p) <= MAX_SKILL_MD)
+            .cloned()
+            .collect();
+        let mut got = raw_many(source, &rev, &small).into_iter();
+        for p in chunk {
+            let text = if blob_size(&blobs, p) <= MAX_SKILL_MD {
+                got.next().and_then(|r| r.ok())
+            } else {
+                None
+            };
+            heads.push(
+                text.map(|b| {
+                    super::claude_ext::parse_skill_frontmatter(&String::from_utf8_lossy(&b))
+                })
+                .unwrap_or_default(),
+            );
+        }
     }
     let skills = dirs
         .into_iter()
-        .zip(texts)
-        .map(|((id, dir), text)| {
-            let (name, description) = text
-                .ok()
-                .map(|b| super::claude_ext::parse_skill_frontmatter(&String::from_utf8_lossy(&b)))
-                .unwrap_or_default();
+        .zip(heads)
+        .map(|((id, dir), (name, description))| {
             let entry = SkillEntry {
                 id: format!("{source}/{id}"),
                 source: source.to_string(),
@@ -320,6 +338,11 @@ pub fn package(source: &str) -> Result<Package> {
         source: source.to_string(),
         skills,
     })
+}
+
+/// The size the tree gives a file, 0 for one it does not list.
+fn blob_size(blobs: &[Blob], path: &str) -> u64 {
+    blobs.iter().find(|b| b.path == path).map_or(0, |b| b.size)
 }
 
 fn repo_name(source: &str) -> String {
@@ -443,13 +466,23 @@ pub fn install(entry: &SkillEntry, found: &SkillSource, root: &Path) -> Result<P
     let result = (|| -> Result<()> {
         let mut received = 0u64;
         for chunk in found.files.chunks(READERS) {
-            for p in chunk {
-                safe_relative(&p.0)?;
-            }
+            // Every path is checked before anything of the chunk is read.
+            let rels = chunk
+                .iter()
+                .map(|(p, _)| safe_relative(p))
+                .collect::<Result<Vec<_>>>()?;
             let paths: Vec<String> = chunk.iter().map(|(p, _)| join(&found.dir, p)).collect();
             let got = raw_many(&found.source, &found.rev, &paths);
-            for ((path, _), bytes) in chunk.iter().zip(got) {
-                write_file(found, &staging, path, bytes?, &mut received)?;
+            for (((path, _), rel), bytes) in chunk.iter().zip(rels).zip(got) {
+                let to = staging.join(rel);
+                write_file(&to, bytes?, &mut received)?;
+                #[cfg(unix)]
+                if found.executable.iter().any(|e| e == path) {
+                    use std::os::unix::fs::PermissionsExt as _;
+                    let _ = std::fs::set_permissions(&to, std::fs::Permissions::from_mode(0o755));
+                }
+                #[cfg(not(unix))]
+                let _ = path;
             }
         }
         if !staging.join("SKILL.md").is_file() {
@@ -463,15 +496,8 @@ pub fn install(entry: &SkillEntry, found: &SkillSource, root: &Path) -> Result<P
     result.map(|_| dest)
 }
 
-/// Writes one file of the skill into `staging`, counting what came so far.
-fn write_file(
-    found: &SkillSource,
-    staging: &Path,
-    path: &str,
-    bytes: Vec<u8>,
-    received: &mut u64,
-) -> Result<()> {
-    let rel = safe_relative(path)?;
+/// Writes one file of the skill to `to`, counting what came so far.
+fn write_file(to: &Path, bytes: Vec<u8>, received: &mut u64) -> Result<()> {
     // The sizes were read before; a file may have grown since.
     *received += bytes.len() as u64;
     if *received > MAX_BYTES {
@@ -480,17 +506,10 @@ fn write_file(
             MAX_BYTES >> 20
         );
     }
-    let to = staging.join(rel);
     if let Some(dir) = to.parent() {
         std::fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
     }
-    write_new(&to, &bytes)?;
-    #[cfg(unix)]
-    if found.executable.iter().any(|e| e == path) {
-        use std::os::unix::fs::PermissionsExt as _;
-        let _ = std::fs::set_permissions(&to, std::fs::Permissions::from_mode(0o755));
-    }
-    Ok(())
+    write_new(to, &bytes)
 }
 
 /// Writes a file that must not be there yet: two paths that name one file (`A.md`

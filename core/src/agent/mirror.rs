@@ -480,8 +480,13 @@ pub fn install_skill(
         remember_skill(entry);
         return Ok(());
     }
-    if at == Where::Mine {
-        keep_out_of_git(dir, &dest)?;
+    // Left in place, it would go into git, and a second Install would take
+    // the folder for done: it goes, and Install can run again.
+    if at == Where::Mine
+        && let Err(e) = keep_out_of_git(dir, &dest)
+    {
+        let _ = std::fs::remove_dir_all(&dest);
+        return Err(e);
     }
     remember_repo_install(
         dir,

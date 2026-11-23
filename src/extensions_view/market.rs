@@ -73,6 +73,8 @@ pub(super) struct MarketState {
     pub(super) skills: Option<Vec<SkillEntry>>,
     /// The query the shown skills answer.
     pub(super) skills_for: String,
+    /// The repository the shown skills are all of, when the search named one.
+    pub(super) skills_repo: Option<String>,
     pub(super) skills_loading: bool,
     /// The query skills.sh is being asked, so asking again for it does not
     /// drop the answer on its way.
@@ -131,6 +133,7 @@ impl ExtensionsView {
         self.ms.skills_error = None;
         if query.chars().count() < 2 {
             self.ms.skills = None;
+            self.ms.skills_repo = None;
             self.ms.skills_for = query;
             self.ms.skills_loading = false;
             self.ms.skills_asking = None;
@@ -172,6 +175,11 @@ impl ExtensionsView {
                 this.ms.skills_asking = None;
                 match found {
                     Ok(list) => {
+                        // Only a package read from GitHub comes with its folders.
+                        this.ms.skills_repo = list
+                            .iter()
+                            .find(|(_, f)| f.is_some())
+                            .map(|(e, _)| e.source.clone());
                         let mut entries = Vec::with_capacity(list.len());
                         for (entry, found) in list {
                             if let Some(f) = found {
@@ -183,6 +191,7 @@ impl ExtensionsView {
                     }
                     Err(e) => {
                         this.ms.skills = None;
+                        this.ms.skills_repo = None;
                         this.ms.skills_error = Some(format!("{e:#}").into());
                     }
                 }
@@ -277,16 +286,42 @@ impl ExtensionsView {
             return;
         };
         let repo = source.to_string();
+        let listed = self.listed_package(source);
         self.run_op(
             package_op(source),
             format!("are installed {}", at.done()),
             move || {
-                let pkg = skills_sh::package(&repo)?;
+                let pkg = match listed {
+                    Some(p) => p,
+                    None => skills_sh::package(&repo)?,
+                };
                 mirror::install_package(&pkg, at, &dir).map(|_| ())
             },
             None,
             cx,
         );
+    }
+
+    /// The package a repository search listed, so Install all copies what it
+    /// showed without reading it from GitHub again.
+    fn listed_package(&self, source: &str) -> Option<skills_sh::Package> {
+        if self.ms.skills_repo.as_deref() != Some(source) {
+            return None;
+        }
+        let skills = self
+            .ms
+            .skills
+            .iter()
+            .flatten()
+            .map(|e| match self.ms.located.get(&e.id) {
+                Some(Located::Found(f)) => Some((e.clone(), f.clone())),
+                _ => None,
+            })
+            .collect::<Option<Vec<_>>>()?;
+        Some(skills_sh::Package {
+            source: source.to_string(),
+            skills,
+        })
     }
 
     /// The official servers: the last list at once, a new one when a day old.
@@ -1302,9 +1337,11 @@ impl ExtensionsView {
             (Market::Plugins, None) => "Official plugins".to_string(),
             (Market::Registry, None) if self.ms.everything => "MCP Registry".to_string(),
             (Market::Registry, None) => "Official MCP servers".to_string(),
-            (Market::Skills, None) => {
-                skills_sh::repo_of(&self.ms.skills_for).unwrap_or_else(|| "skills.sh".to_string())
-            }
+            (Market::Skills, None) => self
+                .ms
+                .skills_repo
+                .clone()
+                .unwrap_or_else(|| "skills.sh".to_string()),
         };
         let mut scope = ui::segmented();
         for (i, (everything, label)) in [(false, "Official"), (true, "All")].into_iter().enumerate()
@@ -1751,13 +1788,7 @@ impl ExtensionsView {
                             })
                             .into_any_element()
                     } else if busy {
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(crate::ui::sp(8.))
-                            .child(ui::spinner(14., theme::text_faint()))
-                            .child("Installing…")
-                            .into_any_element()
+                        busy_row("Installing…").into_any_element()
                     } else {
                         ui::button_with(
                             "ext-detail-install",
@@ -1807,16 +1838,20 @@ impl ExtensionsView {
             _ => None,
         };
         let page = k.page();
-        let mut links = div().flex().flex_wrap().gap(crate::ui::sp(8.)).child(
-            ui::button_with(
-                "ext-skill-page",
-                Some("link-square02"),
-                "skills.sh",
-                ButtonKind::Ghost,
-                true,
-            )
-            .on_click(move |_, _, cx| cx.open_url(&page)),
-        );
+        let mut links = div().flex().flex_wrap().gap(crate::ui::sp(8.));
+        // A skill listed from its repository may not be on skills.sh at all.
+        if self.ms.skills_repo.as_ref() != Some(&k.source) {
+            links = links.child(
+                ui::button_with(
+                    "ext-skill-page",
+                    Some("link-square02"),
+                    "skills.sh",
+                    ButtonKind::Ghost,
+                    true,
+                )
+                .on_click(move |_, _, cx| cx.open_url(&page)),
+            );
+        }
         if let Some(url) = found.as_ref().map(SkillSource::url) {
             links = links.child(
                 ui::button_with(
@@ -1873,13 +1908,7 @@ impl ExtensionsView {
                 .child("Installed for your user. It shows under Skills.")
                 .into_any_element()
         } else if busy {
-            div()
-                .flex()
-                .items_center()
-                .gap(crate::ui::sp(8.))
-                .child(ui::spinner(14., theme::text_faint()))
-                .child("Installing…")
-                .into_any_element()
+            busy_row("Installing…").into_any_element()
         } else {
             ui::button_with(
                 "ext-detail-install",
@@ -1922,17 +1951,7 @@ impl ExtensionsView {
         };
         let busy = self.op.as_deref() == Some(package_op(source).as_str());
         let action: Option<AnyElement> = if busy {
-            Some(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(crate::ui::sp(8.))
-                    .ty(Type::Body)
-                    .text_color(theme::text_subtle())
-                    .child(ui::spinner(14., theme::text_faint()))
-                    .child(format!("Installing {missing} skills…"))
-                    .into_any_element(),
-            )
+            Some(busy_row(format!("Installing {missing} skills…")).into_any_element())
         } else if missing > 0 {
             let label = if missing == total {
                 format!("Install all {total}")
@@ -2247,6 +2266,18 @@ impl ExtensionsView {
             ),
         )
     }
+}
+
+/// A spinner and what is happening, where a button was.
+fn busy_row(text: impl Into<SharedString>) -> Div {
+    div()
+        .flex()
+        .items_center()
+        .gap(crate::ui::sp(8.))
+        .ty(Type::Body)
+        .text_color(theme::text_subtle())
+        .child(ui::spinner(14., theme::text_faint()))
+        .child(text.into())
 }
 
 /// The name a package's install runs under, so its button knows it is busy.

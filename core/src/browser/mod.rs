@@ -15,6 +15,7 @@
     allow(dead_code)
 )]
 mod chrome;
+pub mod favicons;
 #[cfg_attr(
     not(all(
         feature = "browser",

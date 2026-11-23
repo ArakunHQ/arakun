@@ -638,12 +638,14 @@ impl Shell {
         match &tab.kind {
             TabKind::Session { agent, .. } => agent_icon(*agent, 14.).into_any_element(),
             TabKind::NewSession => agent_icon(self.tab_env(tab).agent, 14.).into_any_element(),
-            TabKind::Browser { .. } => {
+            TabKind::Browser { url } => {
                 let page = tab.browser.as_ref().map(|b| b.view.read(cx));
-                match (
-                    page.is_some_and(|p| p.is_loading()),
-                    page.and_then(|p| p.favicon()),
-                ) {
+                // A tab whose page is not running, or has no icon yet, shows the icon its
+                // site had last time.
+                let favicon = page
+                    .and_then(|p| p.favicon())
+                    .or_else(|| crate::browser::favicons::cached(url, cx));
+                match (page.is_some_and(|p| p.is_loading()), favicon) {
                     (true, _) => icon("loading03", 14.)
                         .text_color(theme::text_subtle())
                         .into_any_element(),

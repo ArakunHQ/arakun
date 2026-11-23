@@ -216,7 +216,9 @@ copy of it, rename it back, and start a version that can read it.
   Windows). A link to a pull request or issue on the host `gh` is signed in to opens in
   the GitHub tab instead, from a chat, a terminal (⌘-click, Ctrl-click elsewhere), the
   palette, the pull request button or a session card's pull request chip; its "Open on
-  GitHub" opens the page.
+  GitHub" opens the page. A tab shows its site's icon even before its page loads again:
+  the icons that loaded are kept, by site, in `~/.local/share/arakun/cache/favicons/`
+  (`%LOCALAPPDATA%\arakun\cache\favicons\` on Windows), never in redacted mode.
 
 ### Agents
 

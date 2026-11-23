@@ -77,6 +77,16 @@ pub struct ChannelInfo {
     pub name: Option<String>,
 }
 
+/// The account, membership and key state a row was drawn for. An action
+/// started from that row runs, and its answer lands, only while it holds.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct Roster {
+    account: u64,
+    membership: u64,
+    epoch: u64,
+    keyed_epoch: Option<u64>,
+}
+
 pub struct TeamState {
     pub detail: TeamDetail,
     pub role: Role,
@@ -510,6 +520,34 @@ impl Hub {
 
     pub fn me(&self) -> Option<&Me> {
         self.me.as_ref()
+    }
+
+    /// The team as this device has it now, while its list row and its detail
+    /// agree on the epoch and this user's role.
+    pub(super) fn roster(&self, team: &str) -> Option<Roster> {
+        let state = self.team.get(team)?;
+        let row = self.teams.iter().find(|r| r.team_id == team)?;
+        if row.epoch != state.detail.epoch || row.role != state.role {
+            return None;
+        }
+        Some(Roster {
+            account: self.generation,
+            membership: *self.membership.get(team)?,
+            epoch: row.epoch,
+            keyed_epoch: state.detail.keyed_epoch,
+        })
+    }
+
+    /// Whether the session the calls go out with is still the signed-in one.
+    fn current_account(&self, cx: &Context<Self>) -> bool {
+        self.net.as_ref().is_some_and(|net| {
+            self.teams_entity
+                .read(cx)
+                .signed()
+                .is_some_and(|(base, session, me)| {
+                    base == net.base && session == net.session && me.github_id == self.github_id()
+                })
+        })
     }
 
     pub fn device_id(&self) -> Option<&str> {
@@ -1541,6 +1579,15 @@ impl Hub {
     }
 
     pub fn invite(&mut self, team_id: &str, login: String, cx: &mut Context<Self>) {
+        // The field is cleared already, so say why nothing went out.
+        let Some(scope) = self.roster(team_id) else {
+            self.error = Some(format!("The team is still loading. Invite @{login} again."));
+            cx.notify();
+            return;
+        };
+        if !self.team[team_id].role.is_admin() {
+            return;
+        }
         let busy = format!("invite:{team_id}");
         if !self.busy.insert(busy.clone()) {
             return;
@@ -1556,6 +1603,9 @@ impl Hub {
             },
             move |hub, result, cx| {
                 hub.busy.remove(&busy);
+                if hub.roster(&team_id) != Some(scope) {
+                    return;
+                }
                 match result {
                     // Listed at once: a team read already under way does not
                     // know of it, and an older server lists no invites.
@@ -1595,7 +1645,23 @@ impl Hub {
     }
 
     /// Takes back an invite nobody answered yet.
-    pub fn withdraw(&mut self, team_id: &str, invite_id: &str, cx: &mut Context<Self>) {
+    pub(super) fn withdraw(
+        &mut self,
+        team_id: &str,
+        scope: Roster,
+        invite_id: &str,
+        cx: &mut Context<Self>,
+    ) {
+        if self.roster(team_id) != Some(scope)
+            || !self.team[team_id].role.is_admin()
+            || !self.team[team_id]
+                .invites
+                .iter()
+                .flatten()
+                .any(|i| i.invite_id == invite_id)
+        {
+            return;
+        }
         let busy = format!("withdraw:{invite_id}");
         if !self.busy.insert(busy.clone()) {
             return;
@@ -1611,6 +1677,9 @@ impl Hub {
             },
             move |hub, result, cx| {
                 hub.busy.remove(&busy);
+                if hub.roster(&team_id) != Some(scope) {
+                    return;
+                }
                 match result {
                     Ok(()) => {
                         // Gone at once, so Withdraw is not offered again.
@@ -1690,13 +1759,16 @@ impl Hub {
 
     /// Lets a pending member in: their devices must all check out, and get
     /// every key this device holds from the oldest it can give without a gap.
-    pub fn approve(
+    pub(super) fn approve(
         &mut self,
         team_id: &str,
-        github_id: u64,
-        request_id: &str,
+        scope: Roster,
+        reviewed: &PendingRow,
         cx: &mut Context<Self>,
     ) {
+        if self.roster(team_id) != Some(scope) || !self.current_account(cx) {
+            return;
+        }
         let Some(t) = self.team.get(team_id) else {
             return;
         };
@@ -1706,14 +1778,12 @@ impl Hub {
         let team_epoch = t.detail.epoch;
         let reviewed_epoch = t.detail.keyed_epoch;
         let keyed_epoch = reviewed_epoch.unwrap_or(team_epoch);
-        let Some(p) = t
-            .pending
-            .iter()
-            .find(|p| p.github_id == github_id && p.request_id == request_id)
-            .cloned()
-        else {
+        // Only the request as it was shown: the same ID, login and devices.
+        if !t.role.is_admin() || !t.pending.contains(reviewed) {
             return;
-        };
+        }
+        let p = reviewed.clone();
+        let github_id = p.github_id;
         let trusted = trusted_devices(github_id, &p.devices);
         if trusted.len() != p.devices.len()
             || trusted.iter().any(|d| self.kept.mismatched(&d.device_id))
@@ -1783,7 +1853,8 @@ impl Hub {
             },
             move |hub, result, cx| {
                 hub.busy.remove(&busy);
-                if hub.membership.get(&team_id) != Some(&version)
+                if hub.roster(&team_id) != Some(scope)
+                    || hub.membership.get(&team_id) != Some(&version)
                     || !hub
                         .team
                         .get(&team_id)
@@ -1812,13 +1883,20 @@ impl Hub {
         );
     }
 
-    pub fn reject(
+    pub(super) fn reject(
         &mut self,
         team_id: &str,
-        github_id: u64,
-        request_id: String,
+        scope: Roster,
+        reviewed: &PendingRow,
         cx: &mut Context<Self>,
     ) {
+        if self.roster(team_id) != Some(scope)
+            || !self.team[team_id].role.is_admin()
+            || !self.team[team_id].pending.contains(reviewed)
+        {
+            return;
+        }
+        let (github_id, request_id) = (reviewed.github_id, reviewed.request_id.clone());
         let team_id = team_id.to_string();
         self.run(
             cx,
@@ -1827,6 +1905,7 @@ impl Hub {
                 move |net| net.call().reject(&team_id, github_id, &request_id)
             },
             move |hub, result, cx| match result {
+                _ if hub.roster(&team_id) != Some(scope) => {}
                 Ok(()) => hub.load_team(&team_id, cx),
                 Err(e) => hub.error = Some(format!("Could not turn the request down: {e}")),
             },
@@ -1834,7 +1913,25 @@ impl Hub {
     }
 
     /// Removes a member (an admin), or leaves (anyone, with their own ID).
-    pub fn remove(&mut self, team_id: &str, github_id: u64, cx: &mut Context<Self>) {
+    pub(super) fn remove(
+        &mut self,
+        team_id: &str,
+        scope: Roster,
+        member: &MemberRow,
+        cx: &mut Context<Self>,
+    ) {
+        if self.roster(team_id) != Some(scope)
+            || !self.team[team_id].detail.members.contains(member)
+        {
+            return;
+        }
+        let github_id = member.github_id;
+        let team = &self.team[team_id];
+        if github_id != self.github_id()
+            && (!team.role.is_admin() || (member.role == Role::Owner && team.role != Role::Owner))
+        {
+            return;
+        }
         let team_id = team_id.to_string();
         self.run(
             cx,
@@ -1843,6 +1940,7 @@ impl Hub {
                 move |net| net.call().remove_member(&team_id, github_id)
             },
             move |hub, result, cx| match result {
+                _ if hub.roster(&team_id) != Some(scope) => {}
                 Ok(()) => hub.refresh(cx),
                 Err(ApiError::Status(409, _)) => {
                     hub.error = Some("The last owner can't leave the team.".into())
@@ -1854,6 +1952,7 @@ impl Hub {
 
     /// Do not encrypt a new message with a key still held by a removed member.
     fn sending_key(&self, team_id: &str) -> Option<(u64, TeamKey)> {
+        self.roster(team_id)?;
         let t = self.team.get(team_id)?;
         let (epoch, key) = self.kept.newest(team_id)?;
         (epoch == t.detail.epoch && !t.detail.rotation_pending).then_some((epoch, key))
@@ -2483,6 +2582,7 @@ impl Hub {
     /// The key epoch a review in this channel runs under: only while the
     /// channel is connected, its history has no gap and no rotation is pending.
     fn review_epoch(&self, team: &str, channel: &str) -> Option<u64> {
+        self.roster(team)?;
         let t = self.team.get(team)?;
         let c = self.channels.get(&channel_key(team, channel))?;
         (!t.detail.rotation_pending
@@ -2767,6 +2867,9 @@ impl Hub {
         let me = self.github_id();
         let mut asks = Vec::new();
         for (team_id, t) in &self.team {
+            let Some(scope) = self.roster(team_id) else {
+                continue;
+            };
             let mut channels = Vec::new();
             for ch in &t.channels {
                 let key = channel_key(team_id, &ch.id);
@@ -2791,7 +2894,7 @@ impl Hub {
                 .filter_map(|d| Some((d.device_id.clone(), crypto::unb64(&d.sig_pub)?)))
                 .collect();
             let keys: HashMap<u64, TeamKey> = self.kept.keys(team_id).into_iter().collect();
-            asks.push((team_id.clone(), senders, keys, channels));
+            asks.push((team_id.clone(), scope, senders, keys, channels));
         }
         if asks.is_empty() {
             return;
@@ -2800,7 +2903,7 @@ impl Hub {
             cx,
             move |net| {
                 let mut out = Vec::new();
-                for (team_id, senders, keys, channels) in asks {
+                for (team_id, scope, senders, keys, channels) in asks {
                     let counts = |channel_id: &str, s: &Stored| {
                         let Some(sig_pub) = senders.get(&s.message.device_id) else {
                             return false;
@@ -2833,7 +2936,7 @@ impl Hub {
                             }
                             Next::Keep => continue,
                         };
-                        out.push((key, polled));
+                        out.push((key, team_id.clone(), scope, polled));
                     }
                 }
                 Ok(out)
@@ -2843,13 +2946,21 @@ impl Hub {
                     return;
                 };
                 let mut moved = false;
-                for (key, polled) in polls {
+                for (key, team, scope, polled) in polls {
+                    // A poll for a membership that has since changed is not
+                    // this one's.
+                    if hub.roster(&team) != Some(scope) {
+                        continue;
+                    }
                     match polled {
                         Polled::Start(newest) => {
                             moved |= hub.kept.mark_read(&key, newest);
                             hub.unread_read.insert(key.clone(), 0);
                             hub.unread_newest.insert(key, newest);
                         }
+                        // A channel that opened meanwhile counts what it holds.
+                        Polled::Count(_, _)
+                            if hub.channels.get(&key).is_some_and(|c| c.link.is_some()) => {}
                         Polled::Count(n, newest) => {
                             hub.unread_read.insert(key.clone(), n);
                             hub.unread_newest.insert(key, newest);

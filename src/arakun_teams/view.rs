@@ -17,7 +17,7 @@ use gpui::{
     Styled as _, Subscription, Task, Window, div, px,
 };
 
-use super::api::{DeviceRow, InviteRow, Role};
+use super::api::{DeviceRow, InviteRow, MemberRow, Role};
 use super::hub::{self, ChannelState, Delivery, DeviceState, Hub, Load, Msg, Notice, TeamState};
 use super::socket;
 use super::{Access, Teams};
@@ -218,8 +218,9 @@ pub struct TeamsView {
     /// A message just jumped to, lit for a moment.
     flash: Option<String>,
     _flash: Option<Task<()>>,
-    /// "Remove" or "Leave" was pressed once on this member.
-    confirm_remove: Option<(String, u64)>,
+    /// "Remove" or "Leave" was pressed once on this member, with the team as
+    /// it was then: a change since drops the removal.
+    confirm_remove: Option<(String, hub::Roster, MemberRow)>,
     /// "They don't" was pressed for this device in the compare panel.
     mismatch: Option<String>,
     /// The device being compared on Your devices, which has no side panel.
@@ -1881,6 +1882,7 @@ impl TeamsView {
         let Some(t) = hub.team.get(team_id) else {
             return ui::loading("Reading the team…").into_any_element();
         };
+        let scope = hub.roster(team_id);
         let me = hub.me().map_or(0, |m| m.github_id);
         let my_login = hub.me().map(|m| m.login.clone());
         let admin = t.role.is_admin();
@@ -1921,12 +1923,13 @@ impl TeamsView {
             };
             let role_word = m.role.word();
             let self_row = m.github_id == me;
-            let confirming = self.confirm_remove.as_ref() == Some(&(tid.clone(), m.github_id));
+            let confirmation = scope.map(|scope| (tid.clone(), scope, m.clone()));
+            let confirming =
+                confirmation.is_some() && self.confirm_remove.as_ref() == confirmation.as_ref();
             let last_owner = m.role == Role::Owner && owners < 2;
-            let can_remove = !last_owner
+            let can_remove = confirmation.is_some()
+                && !last_owner
                 && (self_row || (admin && m.role != Role::Owner) || role == Role::Owner);
-            let gid = m.github_id;
-            let (t1, t2) = (tid.clone(), tid.clone());
             rows = rows.child(
                 Self::person_row(
                     faces.avatar(&m.login, AVATAR),
@@ -1943,10 +1946,13 @@ impl TeamsView {
                             ButtonKind::Ghost,
                             true,
                         )
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.confirm_remove = Some((t1.clone(), gid));
-                            cx.notify();
-                        })),
+                        .on_click({
+                            let confirmation = confirmation.clone();
+                            cx.listener(move |this, _, _, cx| {
+                                this.confirm_remove = confirmation.clone();
+                                cx.notify();
+                            })
+                        }),
                     )
                 })
                 .when(confirming, |d| {
@@ -1966,7 +1972,10 @@ impl TeamsView {
                         )
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.confirm_remove = None;
-                            this.hub.update(cx, |h, cx| h.remove(&t2, gid, cx));
+                            if let Some((team, scope, member)) = &confirmation {
+                                this.hub
+                                    .update(cx, |h, cx| h.remove(team, *scope, member, cx));
+                            }
                         })),
                     )
                 }),
@@ -2082,6 +2091,7 @@ impl TeamsView {
     /// Invite people by GitHub login, and the invites sent from here.
     fn render_invite(&self, team_id: &str, faces: &Faces, cx: &mut Context<Self>) -> AnyElement {
         let hub = self.hub.read(cx);
+        let scope = hub.roster(team_id);
         let inviting = hub.busy.contains(&format!("invite:{team_id}"));
         let t = hub.team.get(team_id);
         let pending: HashSet<String> = t
@@ -2196,10 +2206,13 @@ impl TeamsView {
                             ("teams-withdraw", i),
                             if busy { "Withdrawing…" } else { "Withdraw" },
                             ButtonKind::Ghost,
-                            !busy,
+                            !busy && scope.is_some(),
                         )
                         .on_click(cx.listener(move |this, _, _, cx| {
-                            this.hub.update(cx, |h, cx| h.withdraw(&t, &invite_id, cx))
+                            if let Some(scope) = scope {
+                                this.hub
+                                    .update(cx, |h, cx| h.withdraw(&t, scope, &invite_id, cx))
+                            }
                         })),
                     ),
                 );
@@ -2227,6 +2240,7 @@ impl TeamsView {
         let Some(t) = hub.team.get(team_id) else {
             return ui::loading("Reading the team…").into_any_element();
         };
+        let scope = hub.roster(team_id);
         let keyless = t.keyless;
         let pending = t.pending.clone();
         let approving: Vec<bool> = pending
@@ -2239,9 +2253,9 @@ impl TeamsView {
         let tid = team_id.to_string();
         let mut rows = Self::rows();
         for (i, p) in pending.iter().enumerate() {
-            let (t1, t2, gid) = (tid.clone(), tid.clone(), p.github_id);
-            let request = p.request_id.clone();
-            let reject_request = request.clone();
+            let (t1, t2) = (tid.clone(), tid.clone());
+            // What this row shows is what gets approved or turned down.
+            let (reject, approve) = (p.clone(), p.clone());
             let busy = approving[i];
             rows = rows
                 .child(
@@ -2264,23 +2278,31 @@ impl TeamsView {
                         false,
                     )
                     .child(
-                        ui::button(("teams-reject", i), "Reject", ButtonKind::Ghost, !busy)
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.hub.update(cx, |h, cx| {
-                                    h.reject(&t1, gid, reject_request.clone(), cx)
-                                })
-                            })),
+                        ui::button(
+                            ("teams-reject", i),
+                            "Reject",
+                            ButtonKind::Ghost,
+                            !busy && scope.is_some(),
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if let Some(scope) = scope {
+                                this.hub
+                                    .update(cx, |h, cx| h.reject(&t1, scope, &reject, cx))
+                            }
+                        })),
                     )
                     .child(
                         ui::button(
                             ("teams-approve", i),
                             if busy { "Approving…" } else { "Approve" },
                             ButtonKind::Primary,
-                            !busy && !keyless,
+                            !busy && !keyless && scope.is_some(),
                         )
                         .on_click(cx.listener(move |this, _, _, cx| {
-                            this.hub
-                                .update(cx, |h, cx| h.approve(&t2, gid, &request, cx))
+                            if let Some(scope) = scope {
+                                this.hub
+                                    .update(cx, |h, cx| h.approve(&t2, scope, &approve, cx))
+                            }
                         })),
                     ),
                 )

@@ -124,10 +124,10 @@ fn git_files(root: &Path) -> Option<Vec<PathBuf>> {
     let list = |extra: &[&str]| -> Option<Vec<PathBuf>> {
         let mut args = vec!["ls-files", "-z", "--exclude-standard"];
         args.extend_from_slice(extra);
+        // `git::git` drops a GIT_DIR inherited from whatever started Arakun,
+        // which would list another repository's files and ignore rules.
         let out = crate::platform::output_within(
-            crate::platform::command("git")
-                .args(&args)
-                .current_dir(root),
+            crate::git::git(root).args(&args),
             None,
             crate::platform::GIT_LOCAL,
         )
@@ -358,9 +358,8 @@ mod tests {
     }
 
     fn git(dir: &Path, args: &[&str]) {
-        let ok = crate::platform::command("git")
+        let ok = crate::git::git(dir)
             .args(args)
-            .current_dir(dir)
             .output()
             .is_ok_and(|o| o.status.success());
         assert!(ok, "git {args:?}");

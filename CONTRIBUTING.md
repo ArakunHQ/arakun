@@ -433,14 +433,66 @@ and you can keep working without waiting for the first one to merge.
   rewrite everything above it.
 - More than about four deep. Get the bottom ones merged first.
 
-**How:**
+**How:** use [`gh stack`](https://docs.github.com/en/pull-requests/how-tos/stacked-pull-requests),
+GitHub's stacked pull requests extension (`gh extension install github/gh-stack`). It
+tracks the stack, rebases every branch in one command, and links the pull requests
+into a stack on GitHub. There, reviewers see the stack in order, and when the bottom one
+merges, GitHub moves the next one to `main` and rebases the rest for you.
 
-1. Name each branch `pr/<topic>` and branch it from the one below:
-   `git switch -c pr/feature pr/refactor`.
-2. Open it as a draft against the branch below: `gh pr create --draft --base pr/refactor`.
-   Write `Stacked on #<number>.` at the end of Changes, so reviewers read the stack in
-   order.
-3. To change a lower pull request, commit on its branch. Then rebase the top branch on
+1. Start the stack from `main` and name each branch `pr/<topic>`. Commit with a
+   Conventional Commits message as usual:
+
+   ```sh
+   gh stack init pr/refactor        # a new branch on main
+   # ...commit, run the checks...
+   gh stack add pr/feature          # a new branch on top of pr/refactor
+   # ...commit, run the checks...
+   ```
+
+   `gh stack init pr/refactor pr/feature` adopts branches you already have, bottom first.
+2. Push and open each pull request as a draft against the branch below, with a full
+   title and the filled-in template. End Changes with `Stacked on #<number>.`, for
+   readers outside the stack view. Then link them into a stack on GitHub:
+
+   ```sh
+   gh stack push
+   gh pr create --draft --base main --head pr/refactor --title "<title>" --body-file -
+   gh pr create --draft --base pr/refactor --head pr/feature --title "<title>" --body-file -
+   gh stack submit --auto           # sets the bases and links the stack
+   ```
+
+   Don't let `gh stack submit` open the pull requests: its editor creates them ready
+   for review, and `--auto` gives them generated titles that fail the title check.
+   Don't pass `--open` either; mark each one ready on its own once its checks pass.
+3. To change a lower pull request, commit on its branch (`gh stack down`, or
+   `git switch pr/refactor`), then rebase every branch above it and push them all:
+
+   ```sh
+   gh stack rebase --upstack
+   gh stack push
+   ```
+
+   If the rebase stops on a conflict, fix it, `git add` the files and run
+   `gh stack rebase --continue`, or `gh stack rebase --abort` to restore every branch.
+4. Merge from the bottom, always into `main`. Merging a pull request in a stack on
+   GitHub (or with `gh stack merge`) merges every one below it too, each squashed into
+   its own commit on `main`. Don't merge a pull request into the branch below it: its
+   title then never becomes a commit on `main`, and the release notes lose it.
+5. When the bottom one merges, GitHub moves the next pull request to `main` and rebases
+   the branches above. Bring your local branches up to date and delete the merged one:
+
+   ```sh
+   gh stack sync --prune
+   ```
+
+   `gh stack view` shows each branch with the state of its pull request.
+
+**Without `gh stack`** (it is not installed, or the stack holds a branch from a fork,
+which stacks don't support), do the same with Git and `gh pr`:
+
+1. Branch each from the one below: `git switch -c pr/feature pr/refactor`, and open it
+   with `gh pr create --draft --base pr/refactor`.
+2. To change a lower pull request, commit on its branch. Then rebase the top branch on
    the branch you changed. `--update-refs` (git 2.38 or newer) moves every branch in
    between with it, except a branch checked out in another worktree; switch that
    worktree to another branch first. Push every branch above the one you changed:
@@ -451,10 +503,7 @@ and you can keep working without waiting for the first one to merge.
    git push --force-with-lease origin pr/feature pr/top
    ```
 
-4. Merge from the bottom, always into `main`. Don't merge a pull request into the branch
-   below it: its title then never becomes a commit on `main`, and the release notes
-   lose it.
-5. When the bottom one merges, GitHub deletes its branch and moves the next pull request
+3. When the bottom one merges, GitHub deletes its branch and moves the next pull request
    to `main`. Pull requests are squashed, so the branches above still hold the merged
    pull request's commits. Drop them by rebasing the top branch onto `main`, from the
    merged pull request's last commit. Take that commit from GitHub, not from your local

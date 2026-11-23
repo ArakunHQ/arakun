@@ -86,25 +86,27 @@ it, and the bottom one targets `main`.
   step needs an earlier one that is not merged yet (a refactor, then the feature on top).
 - **Don't stack** independent changes; branch each from `main`. Don't stack on a pull
   request whose approach is still under discussion, or more than about four deep.
-- Name branches `pr/<topic>` and branch each from the one below:
-  `git switch -c pr/feature pr/refactor`, then
-  `gh pr create --draft --base pr/refactor`. Write `Stacked on #<number>.` at the end of
-  Changes.
-- To fix a lower pull request, commit on its branch, then rebase the top branch on it:
-  `git switch pr/top && git rebase --update-refs pr/refactor`. `--update-refs` moves the
-  branches in between, but not one checked out in another worktree; switch that worktree
-  away first. Push every branch above the changed one:
-  `git push --force-with-lease origin pr/feature pr/top`.
+- Use `gh stack` (`gh extension install github/gh-stack`); the `stack-pr` skill has
+  the commands. Name branches `pr/<topic>`: `gh stack init pr/refactor`, commit, then
+  `gh stack add pr/feature`, commit. Push with `gh stack push`, open each pull request
+  yourself with `gh pr create --draft --base <branch below>` and the filled-in template,
+  then link them with `gh stack submit --auto`. Write `Stacked on #<number>.` at the
+  end of Changes.
+- Never let `gh stack submit` create a pull request: its editor opens them ready for
+  review and `--auto` gives them generated titles. Never pass `--open`; mark each pull
+  request ready with `gh pr ready` once its checks pass. Skip the interactive commands
+  (`modify`, `switch`, `submit` without `--auto`, `checkout` without an argument); they
+  need a terminal.
+- To fix a lower pull request, commit on its branch, then `gh stack rebase --upstack`
+  and `gh stack push`. On a conflict, fix it and `gh stack rebase --continue`.
 - Merge from the bottom, always into `main`; never merge a pull request into the branch
-  below it. Merging is a person's job, not yours.
-- After the bottom one merges, GitHub moves the next to `main`, but the branches above
-  still hold the squashed commits. Take the merged pull request's last commit from GitHub
-  (`gh pr view <number> --json headRefOid --jq .headRefOid`, then
-  `git fetch origin main "pull/<number>/head"`), not from your local branch. Run
-  `git rebase --update-refs --onto origin/main <that commit>` on the top branch, push
-  every remaining branch with `--force-with-lease`, and check the next pull request's
-  base is `main` (`gh pr edit <next number> --base main`; without the number it edits the
-  top one).
+  below it. Merging is a person's job, not yours: never run `gh stack merge`.
+- After the bottom one merges, GitHub moves the next to `main` and rebases the rest.
+  Run `gh stack sync --prune` to update your branches and drop the merged one.
+- Without `gh stack` (not installed, or a branch from a fork), use the Git steps under
+  "Without `gh stack`" in CONTRIBUTING.md: `git switch -c pr/feature pr/refactor`,
+  `git rebase --update-refs`, and after a squash merge
+  `git rebase --update-refs --onto origin/main <merged pull request's last commit>`.
 
 ## Before you commit
 

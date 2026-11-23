@@ -1269,6 +1269,15 @@ fn bye(msg: &Value) -> Ended {
     )
 }
 
+/// What `Status::Rejected` says when the account's plan has no room for this
+/// computer. The words are the app's: a server, which has no relay switch,
+/// knows the case by this text and says its own.
+pub const MACHINES_FULL: &str = "Your account has as many computers on the relay as its plan allows. Remove one you no longer use from your account, then turn the relay off and on again.";
+
+/// What `Status::Rejected` says when the computer was removed from its
+/// account while connected. Known by its text, as `MACHINES_FULL` is.
+pub const REMOVED: &str = "This computer was removed from your account. Turn the relay off and on again, or sign in again, to add it back.";
+
 /// What the relay's reason for sending this computer away means for the next
 /// attempt, with the operator's text when it came with one.
 fn refused(reason: &str, message: Option<&str>) -> Ended {
@@ -1290,12 +1299,8 @@ fn refused(reason: &str, message: Option<&str>) -> Ended {
         "label_taken" => Ended::Rejected(
             "Another account has this computer's address on the relay. Replace this computer's key to get a new address.".into(),
         ),
-        "machines_full" => Ended::Rejected(
-            "Your account has as many computers on the relay as its plan allows. Remove one you no longer use from your account, then turn the relay off and on again.".into(),
-        ),
-        "no_machine" => Ended::Rejected(
-            "This computer was removed from your account. Turn the relay off and on again, or sign in again, to add it back.".into(),
-        ),
+        "machines_full" => Ended::Rejected(MACHINES_FULL.into()),
+        "no_machine" => Ended::Rejected(REMOVED.into()),
         "update" => Ended::Rejected("This relay needs a newer Arakun. Update Arakun.".into()),
         // The operator may lift a block, and the other computer may go away:
         // keep asking, slowly, so a server comes back without a restart.

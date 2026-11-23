@@ -94,6 +94,7 @@ const ROUTES: [string, RegExp, Handler][] = [
   ["PUT", /^\/teams\/([^/]+)\/channels\/([^/]+)$/, renameChannel],
   ["GET", /^\/teams\/([^/]+)\/channels\/([^/]+)\/ws$/, openSocket],
   ["GET", /^\/teams\/([^/]+)\/channels\/([^/]+)\/messages$/, history],
+  ["GET", /^\/teams\/([^/]+)\/channels\/([^/]+)\/senders\/([^/]+)$/, sender],
 ];
 
 /// Answers a teams request, or null when the path is not one of ours.
@@ -1044,4 +1045,29 @@ async function history(c: Ctx, teamId: string, channelId: string): Promise<Respo
   ).bind(c.me.hash, teamId, access.device.device_id, FLAG).first<{ expires_at: number }>();
   if (!grant || grant.expires_at <= now()) return notFound();
   return Response.json(rows);
+}
+
+/// The user behind a device that wrote in this channel, with all their
+/// devices, so a member can check messages of someone who has left the team:
+/// `GET /users/<id>/devices` only lists people who share a team now. Only a
+/// device with a message the channel still keeps, so a member cannot look up
+/// the devices of anyone who never wrote here.
+async function sender(c: Ctx, teamId: string, channelId: string, deviceId: string): Promise<Response> {
+  const access = await channelAccess(c, teamId, channelId);
+  if (access instanceof Response) return access;
+  if (!DEVICE_ID.test(deviceId)) return notFound();
+  if (!(await channelStub(c.env, teamId, channelId).sent(deviceId))) return notFound();
+  const db = c.env.DB;
+  const [user, devices] = await db.batch([
+    db.prepare("SELECT u.github_id, u.login FROM devices d JOIN users u ON u.github_id = d.github_id WHERE d.device_id = ?").bind(deviceId),
+    db
+      .prepare(
+        `SELECT device_id, sig_pub, enc_pub, name, created_at, endorsed_by, endorsement_sig FROM devices
+         WHERE github_id = (SELECT github_id FROM devices WHERE device_id = ?) ORDER BY created_at, device_id`,
+      )
+      .bind(deviceId),
+  ]);
+  const row = user!.results[0] as { github_id: number; login: string } | undefined;
+  if (!row) return notFound();
+  return Response.json({ github_id: row.github_id, login: row.login, devices: devices!.results });
 }

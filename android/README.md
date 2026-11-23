@@ -33,7 +33,7 @@ cd android
 Without an account or a computer, start a debug build with `demo`: it is signed in to a
 sample account with two computers, and sample sessions fill the inbox. `demoOpen s1`
 opens a session, `demoNew true` the New session sheet, `demoMachines true` the list of
-computers, `demoUnpaired true` the sign-in screen and `demoMoods true` every mood of the
+computers, `demoSignIn true` the sign-in screen and `demoMoods true` every mood of the
 raccoon side by side:
 
 ```sh
@@ -112,7 +112,8 @@ Tap "Sign in with GitHub". The app shows a code: copy it, open GitHub, and enter
 there (GitHub's device flow, as `arakun-server login` does). Sign in with the account
 you use in Arakun on your computer. The app then lists the account's computers; with
 only one it opens it straight away, and it opens the one you picked last on the next
-launch. "All computers" in the inbox's menu goes back to the list.
+launch. "All computers" in the inbox's menu goes back to the list, which is also where
+a computer signed in since shows up.
 
 The sign-in is a session on `app.arakun.dev`, named after this phone's model. The
 inbox's menu has Account: the GitHub login, the operator's notices, the account's
@@ -124,9 +125,19 @@ keeps on this device (`CredentialStore.kt`), never in plain preferences or logs;
 app's data is left out of backups and device transfers. The socket to the relay sends
 the session in its `Authorization` header, and the app checks the computer's handshake
 against the key the account has for it, after checking that key matches the computer's
-label. A plain `http://` account host is only accepted on this machine
-(`wrangler dev`), and only a debug build may speak plain http at all
-(`src/debug/res/xml/network_security_config.xml`).
+label. Every build speaks TLS only (`res/xml/network_security_config.xml`), and no
+request that carries the session or GitHub's token follows a redirect.
+
+Only the account host ends a session. When the relay turns the session down at its
+socket (`signed_out`, or a 401 to the upgrade), the app asks `GET /me`: a 401 there
+signs out; if the account still accepts the session, the app keeps it, goes back to
+the list and says the computer could not be reached with this sign-in, without
+trying again by itself. A failed upgrade of any other kind (a 500 from the relay) is
+tried again with the usual backoff.
+
+When the relay says a limit is reached, the banner says so once and the app waits:
+until midnight UTC for the day's limit, otherwise two minutes, doubling to half an
+hour. **Try again** asks at once.
 
 This app reaches your computers only by signing in. On Same Wi-Fi or over Tailscale, with
 no account, the computer's own page does the pairing in the browser: scan the code in

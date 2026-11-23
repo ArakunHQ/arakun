@@ -14,15 +14,15 @@ import com.arakun.kit.SignedInDevice
  *
  * It is signed in to a sample account with two computers and opens the
  * first. `demoOpen <id>` opens a session, `demoNew true` the New session
- * sheet, `demoMachines true` the list of computers, `demoUnpaired true` the
+ * sheet, `demoMachines true` the list of computers, `demoSignIn true` the
  * sign-in screen and `demoMoods true` every mood of the raccoon side by side.
  */
-data class Demo(val unpaired: Boolean, val machines: Boolean, val open: String?, val new: Boolean, val moods: Boolean) {
+data class Demo(val signIn: Boolean, val machines: Boolean, val open: String?, val new: Boolean, val moods: Boolean) {
     companion object {
         fun from(intent: Intent?): Demo? {
             if (!BuildConfig.DEBUG || intent?.getBooleanExtra("demo", false) != true) return null
             return Demo(
-                unpaired = intent.getBooleanExtra("demoUnpaired", false),
+                signIn = intent.getBooleanExtra("demoSignIn", false),
                 machines = intent.getBooleanExtra("demoMachines", false),
                 open = intent.getStringExtra("demoOpen"),
                 new = intent.getBooleanExtra("demoNew", false),

@@ -183,17 +183,16 @@ private fun TopBar(model: AppModel, onNew: () -> Unit, onAccount: () -> Unit) {
                     )
                     HorizontalDivider(color = c.line)
                 }
-                // One computer needs no list to go back to.
-                if (model.machines.size > 1) {
-                    DropdownMenuItem(
-                        text = { Text("All computers", style = Type.callout) },
-                        leadingIcon = { BrandIcon(R.drawable.ic_computer, 18.dp, c.text) },
-                        onClick = {
-                            menu = false
-                            model.leaveMachine()
-                        },
-                    )
-                }
+                // Also with one computer: the list is only read again there,
+                // so it is the way to a computer signed in since.
+                DropdownMenuItem(
+                    text = { Text("All computers", style = Type.callout) },
+                    leadingIcon = { BrandIcon(R.drawable.ic_computer, 18.dp, c.text) },
+                    onClick = {
+                        menu = false
+                        model.leaveMachine()
+                    },
+                )
                 DropdownMenuItem(
                     text = { Text("Account", style = Type.callout) },
                     leadingIcon = { BrandIcon(R.drawable.ic_user, 18.dp, c.text) },
@@ -476,11 +475,27 @@ fun ConnectionBanner(model: AppModel) {
             conn.since?.let { "Last seen ${shortAgo(it, now)} ago. The app reconnects when it is back." },
             c.textMuted,
         )
+        // Said here once, for as long as it holds: a dialog at every try would come back for hours.
+        is AppModel.Connection.Limited -> BannerLine(R.drawable.ic_alert_circle, limitText(conn.which), limitDetail(conn.which), c.textMuted) {
+            OutlineButton("Try again", { model.reconnectNow() }, Modifier.padding(top = 8.dp))
+        }
     }
 }
 
+private fun limitText(which: String): String = when (which) {
+    "daily" -> "Today's relay limit for your account is used up."
+    "phones" -> "Too many devices are connected to this computer."
+    else -> "The relay is busy."
+}
+
+private fun limitDetail(which: String): String = when (which) {
+    "daily" -> "It starts over at midnight UTC, and the app reconnects then."
+    "phones" -> "Close Arakun on one of them. The app tries again in a few minutes."
+    else -> "The app tries again in a few minutes."
+}
+
 @Composable
-private fun BannerLine(icon: Int, text: String, detail: String?, tone: Color) {
+private fun BannerLine(icon: Int, text: String, detail: String?, tone: Color, action: (@Composable () -> Unit)? = null) {
     val c = Palette.current
     Row(
         Modifier.fillMaxWidth().card().padding(12.dp),
@@ -490,6 +505,7 @@ private fun BannerLine(icon: Int, text: String, detail: String?, tone: Color) {
         Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text(text, style = Type.callout, color = tone)
             detail?.let { Text(it, style = Type.small, color = c.textFaint) }
+            action?.invoke()
         }
     }
 }

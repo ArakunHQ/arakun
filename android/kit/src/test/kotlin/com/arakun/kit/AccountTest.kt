@@ -120,6 +120,51 @@ class AccountTest {
     }
 
     @Test
+    fun aRedirectIsNotFollowedWithATokenInTheRequest() {
+        server.enqueue(MockResponse.Builder().code(307).addHeader("Location", "$base/elsewhere").build())
+        assertFailsWith<AccountError.Refused> { api.signIn("gho_x", "Pixel 9") }
+        server.enqueue(MockResponse.Builder().code(302).addHeader("Location", "$base/elsewhere").build())
+        assertFailsWith<AccountError.Refused> { api.me("tok") }
+        // Only the two asks: neither went on to where the answer pointed.
+        assertEquals(2, server.requestCount)
+        assertEquals("/auth/github", server.takeRequest().target)
+        assertEquals("/me", server.takeRequest().target)
+    }
+
+    /** The relay turning the session down at its socket proves nothing: only the account's own 401 ends it. */
+    @Test
+    fun aSessionTheRelayTurnedDownEndsOnlyWhenTheAccountSaysSo() {
+        answer(200, """{"github_id": 42, "login": "rik"}""")
+        assertEquals(SessionCheck.STANDS, api.stillStands("tok"))
+        assertEquals("/me", server.takeRequest().target)
+        answer(401, """{"error": "signed out"}""")
+        assertEquals(SessionCheck.OVER, api.stillStands("tok"))
+        answer(500, "")
+        assertEquals(SessionCheck.UNKNOWN, api.stillStands("tok"))
+        answer(403, """{"error": "blocked", "reason": ""}""")
+        assertEquals(SessionCheck.UNKNOWN, api.stillStands("tok"))
+        // No answer at all.
+        assertEquals(SessionCheck.UNKNOWN, AccountClient("http://localhost:1").stillStands("tok"))
+    }
+
+    @Test
+    fun aLimitIsWaitedOutNotDialedAgainAtOnce() {
+        assertEquals("daily", LimitWait.which("daily"))
+        assertEquals("phones", LimitWait.which("limit:phones"))
+        // Minutes, doubling to half an hour.
+        assertEquals(120_000, LimitWait.millis("phones", 0))
+        assertEquals(240_000, LimitWait.millis("phones", 1))
+        assertEquals(960_000, LimitWait.millis("burst", 3))
+        assertEquals(1_800_000, LimitWait.millis("phones", 4))
+        assertEquals(1_800_000, LimitWait.millis("phones", 1000))
+        // The day's count: nothing before the day turns in UTC, however often it was tried.
+        val midnight = 1_763_856_000_000
+        assertEquals(86_400_000L - 600_000 + 60_000, LimitWait.millis("daily", 0, midnight + 600_000))
+        assertEquals(86_400_000L - 600_000 + 60_000, LimitWait.millis("daily", 9, midnight + 600_000))
+        assertEquals(61_000, LimitWait.millis("daily", 0, midnight + 86_399_000))
+    }
+
+    @Test
     fun slowDownWithoutAnIntervalAddsFiveSeconds() {
         assertEquals(Poll.Wait(10_000), Poll.next(parseJson("""{"error": "slow_down"}""")!!, 5_000))
         assertEquals(Poll.Expired, Poll.next(parseJson("""{"error": "expired_token"}""")!!, 5_000))

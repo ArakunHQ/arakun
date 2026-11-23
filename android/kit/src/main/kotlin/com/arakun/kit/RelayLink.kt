@@ -155,8 +155,9 @@ class RelayLink(
         }
 
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-            // The relay answers the upgrade itself only to refuse it; a 401 there
-            // means the session is gone, and trying again would never work.
+            // An upgrade answered with plain HTTP. A 401 is about the session,
+            // which the app then asks the account about. Anything else (a 500
+            // while the relay's database is down) is tried again.
             val code = response?.code
             scope.launch {
                 if (socket !== webSocket) return@launch
@@ -357,6 +358,9 @@ class RelayLink(
             OkHttpClient.Builder()
                 // The link pings and watches for silence itself.
                 .readTimeout(0, TimeUnit.MILLISECONDS)
+                // The request carries the session: it goes nowhere but where it was sent.
+                .followRedirects(false)
+                .followSslRedirects(false)
                 .build()
         }
     }

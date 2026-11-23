@@ -1,6 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<!-- A debug build pairs with a relay run by hand (`wrangler dev`), which speaks
-     plain http on the computer's address; release builds keep TLS only. -->
-<network-security-config xmlns:tools="http://schemas.android.com/tools">
-    <base-config cleartextTrafficPermitted="true" tools:ignore="InsecureBaseConfiguration" />
-</network-security-config>

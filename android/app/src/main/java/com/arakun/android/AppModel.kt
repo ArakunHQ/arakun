@@ -16,6 +16,7 @@ import com.arakun.kit.DeviceCode
 import com.arakun.kit.EndKind
 import com.arakun.kit.Inbox
 import com.arakun.kit.InboxSession
+import com.arakun.kit.LimitWait
 import com.arakun.kit.LinkKind
 import com.arakun.kit.LiveSession
 import com.arakun.kit.Machine
@@ -25,6 +26,7 @@ import com.arakun.kit.PermissionAsk
 import com.arakun.kit.Place
 import com.arakun.kit.Poll
 import com.arakun.kit.RelayLink
+import com.arakun.kit.SessionCheck
 import com.arakun.kit.SignedIn
 import com.arakun.kit.SignedInDevice
 import com.arakun.kit.bool
@@ -36,6 +38,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -60,6 +63,12 @@ class AppModel(app: Application) : AndroidViewModel(app) {
 
         /** The relay is there, the computer is not (last seen `since`, ms). */
         data class ComputerAway(val since: Long?) : Connection
+
+        /**
+         * The relay said a limit was reached (`which`: `daily`, `phones`, …).
+         * Nothing is tried before `until` (ms), unless the person asks.
+         */
+        data class Limited(val which: String, val until: Long) : Connection
     }
 
     /** How far signing in with GitHub has come. */
@@ -155,6 +164,9 @@ class AppModel(app: Application) : AndroidViewModel(app) {
     private var link: RelayLink? = null
     private var retry = 500L
     private var retryJob: Job? = null
+
+    /** Limits the relay answered with in a row, for the wait before the next try. */
+    private var limitTries = 0
     private var signInJob: Job? = null
     private var listJob: Job? = null
 
@@ -174,7 +186,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         begun = true
         if (demo != null) {
             this.demo = demo
-            if (!demo.unpaired) fillDemo(openFirst = !demo.machines)
+            if (!demo.signIn) fillDemo(openFirst = !demo.machines)
             demo.open?.let(::open)
             demoNew = demo.new
             return
@@ -301,10 +313,13 @@ class AppModel(app: Application) : AndroidViewModel(app) {
             val api = AccountClient(s.host)
             try {
                 val who = io { api.me(s.token) }
-                val list = io { api.machines(s.token) }
                 // Signed out meanwhile: this answer is for nobody.
                 if (account != s) return@launch
+                // Before the list: a blocked account has no list, and still
+                // sees who is signed in and the operator's notices.
                 me = who
+                val list = io { api.machines(s.token) }
+                if (account != s) return@launch
                 machines = list
                 machinesLoaded = true
                 blocked = null
@@ -357,6 +372,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         }
         keeper.machine = m.label
         retry = 500
+        limitTries = 0
         connect()
     }
 
@@ -397,7 +413,10 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         cancelSignIn()
         account = null
         // The demo's account is not the one kept on this phone.
-        if (demo == null) keeper.save(null)
+        if (demo == null && !keeper.save(null)) {
+            // Left on disk, the next launch would be signed in again.
+            notice = "Could not remove the sign-in from this phone. Restart the app and sign out again."
+        }
         me = null
         machines = emptyList()
         machinesLoaded = false
@@ -416,11 +435,15 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         forgetSession(s.host, s.token)
     }
 
-    /** Ends a session on the account host, best effort. */
+    /**
+     * Ends a session on the account host, best effort. Not on the view
+     * model's scope: that one is over when the activity finishes, which is
+     * when a sign-in cut off half way needs this most.
+     */
     private fun forgetSession(host: String, token: String) {
-        viewModelScope.launch {
+        background.launch {
             try {
-                io { AccountClient(host).logout(token) }
+                AccountClient(host).logout(token)
             } catch (_: AccountError) {
                 // Offline: forgotten here all the same, and it runs out on the host.
             }
@@ -529,7 +552,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         l.start()
     }
 
-    /** Back on screen or Reconnect: go now instead of waiting out the backoff. */
+    /** The person asks (Reconnect, Try again): go now instead of waiting out the backoff, or a limit. */
     fun reconnectNow() {
         if (machine == null || demo != null) return
         if (connection == Connection.Connected) return
@@ -571,12 +594,61 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * The relay said a limit was reached. It says so again at every try until
+     * the limit lifts, so the banner says it once and the next try waits
+     * minutes, or for the day to turn.
+     */
+    private fun limited(which: String) {
+        val wait = LimitWait.millis(which, limitTries)
+        limitTries++
+        connection = Connection.Limited(which, System.currentTimeMillis() + wait)
+        retryJob?.cancel()
+        retryJob = viewModelScope.launch {
+            delay(wait)
+            connect()
+        }
+    }
+
+    /**
+     * The relay turned the session down at its socket. That alone is no proof
+     * the session is over: a header lost on the way to the relay reads the
+     * same. So the account is asked, as the desktop app does, and only its 401
+     * signs out.
+     */
+    private fun relayRefusedSession() {
+        val s = account ?: return
+        val m = machine ?: return
+        connection = Connection.Connecting
+        retryJob?.cancel()
+        // The retry's job: picking another computer or asking again drops the question.
+        retryJob = viewModelScope.launch {
+            val check = io { AccountClient(s.host).stillStands(s.token) }
+            if (account != s) return@launch
+            if (check == SessionCheck.OVER) return@launch signedOut(SIGNED_OUT)
+            if (machine?.label != m.label || link != null) return@launch
+            if (check == SessionCheck.STANDS) {
+                // Dialing again would get the same answer, now and at the
+                // next launch, so it is said once and not reopened.
+                forgetPicked()
+                leaveMachine(
+                    "${m.name} could not be reached with this sign-in: the relay turned it down, though your account accepts it. " +
+                        "Try again later, or sign out and sign in again.",
+                )
+            } else {
+                // The account did not answer either: nothing is known yet.
+                lost()
+            }
+        }
+    }
+
     private fun handle(event: RelayLink.Event) {
         when (event) {
             RelayLink.Event.Open -> {
                 interrupted()
                 connection = Connection.Connected
                 retry = 500
+                limitTries = 0
                 // One open per session: a session opened while the link was
                 // down is the one waiting, so it is not asked for twice.
                 val waiting = openWhenLinked
@@ -596,7 +668,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
                 link = null
                 interrupted()
                 when (event.kind) {
-                    EndKind.SIGNED_OUT -> signedOut(SIGNED_OUT)
+                    EndKind.SIGNED_OUT -> relayRefusedSession()
                     EndKind.REFUSED -> {
                         // Gone from the account: the next launch shows the list instead.
                         if (event.reason == "no_machine") forgetPicked()
@@ -610,10 +682,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
                                 "Sign in again in Arakun on that computer.",
                         )
                     }
-                    EndKind.LIMIT -> {
-                        notice = "The relay is busy (${event.detail}). Trying again in a moment."
-                        lost()
-                    }
+                    EndKind.LIMIT -> limited(LimitWait.which(event.detail))
                     EndKind.GONE -> lost()
                 }
             }
@@ -741,7 +810,9 @@ class AppModel(app: Application) : AndroidViewModel(app) {
     fun visible(yes: Boolean) {
         send("type" to "visible", "visible" to yes)
         if (!yes) return
-        reconnectNow()
+        // Coming back on screen is not the person asking: a limit is waited out.
+        val limit = connection as? Connection.Limited
+        if (limit == null || System.currentTimeMillis() >= limit.until) reconnectNow()
         // The list's online states, fresh.
         if (machine == null) loadAccount()
     }
@@ -784,6 +855,9 @@ class AppModel(app: Application) : AndroidViewModel(app) {
     private companion object {
         /** Said when the account host or the relay ended the session, not the person here. */
         const val SIGNED_OUT = "This phone was signed out. Sign in again to reach your computers."
+
+        /** For what must still happen when the view model is gone; it lives as long as the process. */
+        val background = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
         fun message(vararg fields: Pair<String, Any?>): JsonObject = buildJsonObject {
             for ((k, v) in fields) {

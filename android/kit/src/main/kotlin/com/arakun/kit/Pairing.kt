@@ -83,6 +83,32 @@ class Joiner(private val most: Int = 64 * 1024 * 1024) {
     }
 }
 
+/**
+ * How long to stay away after the relay said a limit was reached. It answers
+ * the same until the limit lifts, so dialing again at once only repeats it.
+ */
+object LimitWait {
+    const val FIRST = 120_000L
+    const val LONGEST = 1_800_000L
+    private const val DAY = 86_400_000L
+
+    /** Which limit, from what the link said: `daily` from the relay's own message, `limit:daily` from the reason it closed with. */
+    fun which(detail: String): String = detail.removePrefix("limit:")
+
+    /**
+     * Milliseconds until the next try, after `tries` refusals in a row before
+     * this one. The day's count starts over at midnight UTC, so nothing is
+     * tried before then, and a minute more for a clock that runs ahead. Any
+     * other limit: two minutes, doubling to half an hour.
+     */
+    fun millis(which: String, tries: Int, now: Long = System.currentTimeMillis()): Long {
+        if (which == "daily") return DAY - now % DAY + 60_000
+        var wait = FIRST
+        repeat(tries.coerceIn(0, 8)) { wait = minOf(wait * 2, LONGEST) }
+        return wait
+    }
+}
+
 /** Why a channel ended, from what the relay or the computer said (phone/relay.js's kindOf). */
 enum class EndKind {
     /** The account's session is gone: sign in again. */

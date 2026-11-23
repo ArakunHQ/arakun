@@ -224,6 +224,35 @@ class RelayLinkTest {
         assertEquals(EndKind.SIGNED_OUT, assertIs<RelayLink.Event.Closed>(next()).kind)
     }
 
+    /** The relay's database is down: a failure to try again, never a refusal or a sign-out. */
+    @Test
+    fun aRelayThatFailsAtTheUpgradeIsTriedAgain() = runBlocking {
+        for (status in listOf(500, 503)) {
+            server.enqueue(MockResponse.Builder().code(status).build())
+            withContext(thread) { link() }
+            assertEquals(EndKind.GONE, assertIs<RelayLink.Event.Closed>(next()).kind, "$status")
+        }
+    }
+
+    /** The relay refuses a device as its socket opens, before any channel. */
+    @Test
+    fun aRefusalAtAdmissionIsHeardAsTheSocketOpens() = runBlocking {
+        val admitted = mapOf("signed_out" to EndKind.SIGNED_OUT, "blocked" to EndKind.REFUSED, "no_machine" to EndKind.REFUSED, "not_yours" to EndKind.REFUSED)
+        for ((reason, kind) in admitted) {
+            server.enqueue(MockResponse.Builder().webSocketUpgrade(object : WebSocketListener() {
+                override fun onOpen(webSocket: WebSocket, response: Response) {
+                    val bye = buildJsonObject { put("type", "bye"); put("reason", reason) }
+                    webSocket.send(Frame(Frame.Kind.CONTROL, bye.toString().encodeToByteArray()).encoded.toByteString())
+                    webSocket.close(4403, reason)
+                }
+            }).build())
+            withContext(thread) { link() }
+            val closed = assertIs<RelayLink.Event.Closed>(next())
+            assertEquals(kind, closed.kind, reason)
+            assertEquals(reason, closed.reason)
+        }
+    }
+
     @Test
     fun aRefusalIsSaidInPlainWords() = runBlocking {
         val computer = Computer(channel = 5)

@@ -92,6 +92,18 @@ sealed class AccountError(message: String) : Exception(message) {
         AccountError(if (said.isEmpty()) "The server refused the request." else "The server answered: ${said.trimEnd('.')}.")
 }
 
+/** What the account answered about a session the relay turned down. */
+enum class SessionCheck {
+    /** The account takes it: only the relay did not. */
+    STANDS,
+
+    /** The account says 401 too: the session is over. */
+    OVER,
+
+    /** No answer either way (no network, the host in trouble): ask again later. */
+    UNKNOWN,
+}
+
 /** What `POST /auth/github` answers. */
 class SignedIn(
     val session: String,
@@ -274,6 +286,20 @@ class AccountClient(
 
     fun me(session: String): Me = readMe(json(session, "/me", SMALL))
 
+    /**
+     * Whether `session` still stands, asked when the relay turned it down at
+     * its socket. The relay's word alone never ends a session: a header lost
+     * on the way to it would read the same. Only the account's own 401 does.
+     */
+    fun stillStands(session: String): SessionCheck = try {
+        me(session)
+        SessionCheck.STANDS
+    } catch (_: AccountError.SignedOut) {
+        SessionCheck.OVER
+    } catch (_: AccountError) {
+        SessionCheck.UNKNOWN
+    }
+
     fun machines(session: String): List<Machine> = readMachines(json(session, "/machines", LIST))
 
     fun sessions(session: String): List<SignedInDevice> = readDevices(json(session, "/sessions", LIST))
@@ -335,7 +361,13 @@ class AccountClient(
         private val JSON = "application/json".toMediaType()
 
         private val defaultClient: OkHttpClient by lazy {
-            OkHttpClient.Builder().callTimeout(30, TimeUnit.SECONDS).build()
+            OkHttpClient.Builder()
+                .callTimeout(30, TimeUnit.SECONDS)
+                // No route asked here redirects. A redirect followed would send
+                // the body again, GitHub's token in it, to wherever it pointed.
+                .followRedirects(false)
+                .followSslRedirects(false)
+                .build()
         }
 
         private fun unreadable() = AccountError.Refused("an answer that could not be read")

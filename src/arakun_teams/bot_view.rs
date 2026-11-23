@@ -136,11 +136,15 @@ impl TeamsView {
         let hub = self.hub.read(cx);
         let runs: Vec<Run> = hub.bot.in_channel(team_id, channel_id).cloned().collect();
         let numbers = run_numbers(runs.iter().map(|r| r.ids.as_slice()));
+        // Only an accepted message needs its meta read, and only once.
+        let mut accepted = decisions::acceptances(messages);
         let decided: HashMap<String, Vec<Acceptance>> = messages
             .iter()
-            .filter(|m| m.delivery == Delivery::Sent && bot::meta(m).is_some())
-            .map(|m| (m.id.clone(), decisions::acceptances(messages, &m.id)))
-            .filter(|(_, a)| !a.is_empty())
+            .filter(|m| m.delivery == Delivery::Sent)
+            .filter_map(|m| {
+                let a = accepted.remove(m.id.as_str())?;
+                bot::meta(m).map(|_| (m.id.clone(), a))
+            })
             .collect();
         let me = hub.me();
         let accepting = messages

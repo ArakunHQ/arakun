@@ -71,20 +71,24 @@ pub fn accepting(m: &Msg) -> Option<&str> {
     m.body.decision.as_ref()?.get("of")?.as_str()
 }
 
-/// Who accepted the bot message `bot_id`, oldest first, once per member.
-pub fn acceptances(messages: &[Msg], bot_id: &str) -> Vec<Acceptance> {
-    let mut seen = HashSet::new();
-    messages
-        .iter()
-        .filter(|m| accepts(m) == Some(bot_id))
-        .filter(|m| seen.insert(m.github_id))
-        .map(|m| Acceptance {
-            github_id: m.github_id,
-            login: m.login.clone(),
-            at: m.at,
-            message_id: m.id.clone(),
-        })
-        .collect()
+/// Who accepted each message, by the accepted message's ID, oldest first,
+/// once per member. One pass over the channel: it runs on every render.
+pub fn acceptances(messages: &[Msg]) -> HashMap<&str, Vec<Acceptance>> {
+    let mut accepted: HashMap<&str, Vec<Acceptance>> = HashMap::new();
+    let mut seen: HashSet<(&str, u64)> = HashSet::new();
+    for m in messages {
+        if let Some(of) = accepts(m)
+            && seen.insert((of, m.github_id))
+        {
+            accepted.entry(of).or_default().push(Acceptance {
+                github_id: m.github_id,
+                login: m.login.clone(),
+                at: m.at,
+                message_id: m.id.clone(),
+            });
+        }
+    }
+    accepted
 }
 
 /// `text` up to the end of its first sentence. A line break ends it. A dot,
@@ -126,20 +130,7 @@ pub fn title_of(decision: &str) -> String {
 /// The accepted decisions of one channel, in the order they were proposed.
 /// Messages are in the channel's order, as the hub keeps them.
 pub fn channel_log(channel_id: &str, messages: &[Msg]) -> Vec<Decision> {
-    let mut accepted: HashMap<&str, Vec<Acceptance>> = HashMap::new();
-    let mut seen: HashSet<(&str, u64)> = HashSet::new();
-    for m in messages {
-        if let Some(of) = accepts(m)
-            && seen.insert((of, m.github_id))
-        {
-            accepted.entry(of).or_default().push(Acceptance {
-                github_id: m.github_id,
-                login: m.login.clone(),
-                at: m.at,
-                message_id: m.id.clone(),
-            });
-        }
-    }
+    let mut accepted = acceptances(messages);
     messages
         .iter()
         .filter(|m| m.delivery == Delivery::Sent)
@@ -291,7 +282,7 @@ mod tests {
         assert_eq!(who, [("dani", 11), ("karlo", 12)]);
         assert_eq!(d.decided_at(), 11);
         assert!(d.accepted_by(1) && !d.accepted_by(3));
-        assert_eq!(acceptances(&channel(), "b1").len(), 2);
+        assert_eq!(acceptances(&channel())["b1"].len(), 2);
     }
 
     #[test]
@@ -311,7 +302,7 @@ mod tests {
         // One still on its way.
         failed[3].delivery = Delivery::Sending;
         assert!(channel_log("c1", &failed).is_empty());
-        assert!(acceptances(&failed, "b1").is_empty());
+        assert!(acceptances(&failed).is_empty());
         assert_eq!(accepting(&failed[3]), Some("b1"));
         // An accept of a message that isn't a bot's.
         let mut text = channel();

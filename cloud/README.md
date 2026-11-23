@@ -130,6 +130,37 @@ ADMIN_SECRET=dev-secret
 GITHUB_CLIENT_SECRET=<the app secret>
 ```
 
+## First production deploy
+
+Production moved from the Workers `arakun-relay` and `arakun-teams` to one Worker,
+`arakun-cloud`. Do these once, in this order, before the release that deploys it:
+
+1. Create the database and put the `database_id` it prints in `wrangler.toml` under
+   `[[env.production.d1_databases]]`. The deploy workflow fails until you do:
+
+   ```sh
+   npx wrangler d1 create arakun-cloud
+   ```
+
+2. Give the `CLOUDFLARE_API_TOKEN` of the `production` environment permission to edit
+   D1, since the deploy applies the migrations.
+3. Set the secrets on the new Worker (see Deploying, step 3):
+
+   ```sh
+   npx wrangler secret put ADMIN_SECRET --env production
+   npx wrangler secret put GITHUB_CLIENT_SECRET --env production
+   ```
+
+4. Remove the `*.arakun.dev/*` route from the old `arakun-relay` Worker. Two Workers
+   cannot hold the same route, so the first deploy fails otherwise.
+5. Deploy (publish the release, or `npx wrangler deploy --env production`).
+6. The relay's objects start empty. Computers send their key and tickets again when
+   they reconnect, so nothing needs doing. The CONFIG KV is the same, so plans and
+   blocks carry over.
+7. Delete the old `arakun-relay` Worker once the relay answers from `arakun-cloud`.
+8. In the repository's branch protection, require "Cloud (types and tests)" in place
+   of "Relay (types and tests)" and "Teams (types and tests)".
+
 ## Deploying
 
 A published release deploys the production Worker by itself:

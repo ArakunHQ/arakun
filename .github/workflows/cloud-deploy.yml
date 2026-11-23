@@ -84,6 +84,17 @@ jobs:
           # The release's tag and main, to compare a hotfix branch with.
           fetch-depth: 0
 
+      # Production has no database until a person creates it (see "First
+      # production deploy" in cloud/README.md). Fail now, before an install or
+      # a deploy, instead of in the migrations step.
+      - name: Check production has a database
+        working-directory: .
+        run: |
+          if grep -q 'database_id = "00000000-0000-0000-0000-000000000000"' <(sed -n '/^\[\[env\.production\.d1_databases\]\]/,/^\[/p' cloud/wrangler.toml); then
+            echo "::error file=cloud/wrangler.toml::The production D1 database_id is still the placeholder 00000000-0000-0000-0000-000000000000. Create the database and set its id first: see \"First production deploy\" in cloud/README.md"
+            exit 1
+          fi
+
       # The `if` above compares without case and only by prefix. This compares
       # exactly, and finds the release the ref belongs to.
       - name: Check the ref is the latest release

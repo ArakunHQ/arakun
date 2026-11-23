@@ -667,17 +667,21 @@ impl Kept {
         self.asked.remove(team_id).is_some()
     }
 
-    /// Forgets a team this user is no longer in.
-    pub fn forget_team(&mut self, team_id: &str) {
-        self.keys.remove(team_id);
-        self.grants.remove(team_id);
-        self.skipped.remove(team_id);
+    /// Forgets a team this user is no longer in. True when it held anything.
+    pub fn forget_team(&mut self, team_id: &str) -> bool {
+        let keys = self.keys.remove(team_id).is_some();
+        let grants = self.grants.remove(team_id).is_some();
+        let skipped = self.skipped.remove(team_id).is_some();
+        keys || grants || skipped
     }
 
-    pub(super) fn retain_teams(&mut self, ids: &std::collections::HashSet<&str>) {
+    /// Keeps only these teams. True when that dropped anything.
+    pub(super) fn retain_teams(&mut self, ids: &std::collections::HashSet<&str>) -> bool {
+        let before = self.keys.len() + self.grants.len() + self.skipped.len();
         self.keys.retain(|id, _| ids.contains(id.as_str()));
         self.grants.retain(|id, _| ids.contains(id.as_str()));
         self.skipped.retain(|id, _| ids.contains(id.as_str()));
+        before != self.keys.len() + self.grants.len() + self.skipped.len()
     }
 }
 
@@ -1086,8 +1090,10 @@ mod tests {
         assert_eq!(k.key("U", 2), None);
         assert_eq!(k.keys("T"), vec![(1, [1; 32]), (2, [2; 32])]);
         assert_eq!(k.newest("T"), Some((2, [2; 32])));
-        k.forget_team("T");
+        assert!(k.forget_team("T"));
         assert_eq!(k.newest("T"), None);
+        // Nothing left to forget: the caller need not write the file.
+        assert!(!k.forget_team("T"));
     }
 
     #[test]
@@ -1134,9 +1140,10 @@ mod tests {
         team.team_id = "U".into();
         k.observe_grants(&team);
         assert!(k.needs_delivery("U", 7, 10, "a", 3));
-        k.retain_teams(&["T"].into_iter().collect());
+        assert!(k.retain_teams(&["T"].into_iter().collect()));
         assert!(!k.grants.contains_key("U"));
-        k.forget_team("T");
+        assert!(!k.retain_teams(&["T"].into_iter().collect()));
+        assert!(k.forget_team("T"));
         assert!(k.grants.is_empty());
     }
 

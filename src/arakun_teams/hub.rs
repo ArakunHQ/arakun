@@ -693,11 +693,14 @@ impl Hub {
                         .filter(|t| ids.contains(t.as_str()))
                         .cloned()
                         .collect();
+                    // The keys file is sealed and written durably: only
+                    // when this changed something, not on every refresh.
+                    let mut changed = false;
                     for t in &asked {
                         if let Some(name) = hub.kept.asked().get(t) {
                             hub.info = Some(format!("You're in {name} now."));
                         }
-                        hub.kept.forget_ask(t);
+                        changed |= hub.kept.forget_ask(t);
                     }
                     let gone: Vec<String> = hub
                         .membership
@@ -713,10 +716,12 @@ impl Hub {
                         hub.setup.remove(&t);
                         hub.notices.retain(|n| n.team_id != t);
                         hub.channels.retain(|_, c| c.team_id != t);
-                        hub.kept.forget_team(&t);
+                        changed |= hub.kept.forget_team(&t);
                     }
-                    hub.kept.retain_teams(&ids);
-                    hub.save(cx);
+                    changed |= hub.kept.retain_teams(&ids);
+                    if changed {
+                        hub.save(cx);
+                    }
                     update_memberships(&mut hub.membership, &hub.teams, &teams, version);
                     hub.teams = teams;
                     hub.invites = invites;

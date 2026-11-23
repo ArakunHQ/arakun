@@ -7,7 +7,7 @@ import com.arakun.kit.SessionStatus
  * A computer played here, for screenshots and design work without one. Debug
  * builds only, launched with extras:
  *
- *     adb shell am start -n com.arakun.android/.MainActivity --ez demo true --es demoOpen s1
+ *     adb shell am start -n com.arakun.app/com.arakun.android.MainActivity --ez demo true --es demoOpen s1
  *
  * `demoOpen <id>` opens a session, `demoNew true` the New session sheet,
  * `demoUnpaired true` the pairing screen and `demoMoods true` every mood of

@@ -1,6 +1,6 @@
 import { env, SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
-import { as, call, freshIp, github, signInRequest } from "./helpers";
+import { as, call, freshIp, github, roomInWindow, signInRequest } from "./helpers";
 
 const ORIGIN = "https://teams.test";
 const IPHONE = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Safari/604.1";
@@ -242,6 +242,7 @@ describe("GET /auth/github/callback", () => {
 
   it("over the sign-in limit, shared with POST /auth/github, sends the browser back and asks GitHub nothing", async () => {
     const ip = freshIp();
+    await roomInWindow(60);
     for (let i = 0; i < 10; i++) await signInRequest("gho_none", ip);
     const { state, cookie } = await start(ip);
     codeFor(1001, "octocat");

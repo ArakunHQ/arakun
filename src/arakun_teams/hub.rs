@@ -2407,7 +2407,16 @@ impl Hub {
                         }
                         let body = match result {
                             Ok(s) if coord::valid_text(s.trim()) => turn.response.body(s.trim().into(), Some(id)),
-                            _ => PeerEvent::Blocked.body("Could not finish this review within its limits. A member can take over.".into(), Some(id)),
+                            failed => {
+                                // The channel gets a fixed text; this device learns the
+                                // cause, or pairing again only repeats it.
+                                let why = failed.err().unwrap_or_else(|| {
+                                    "Claude Code's answer was empty or longer than 4000 bytes".into()
+                                });
+                                hub.error = Some(format!("The paired review could not finish: {why}"));
+                                cx.notify();
+                                PeerEvent::Blocked.body("Could not finish this review within its limits. A member can take over.".into(), Some(id))
+                            }
                         };
                         let answer = if matches!(PeerEvent::read(&body), Some(PeerEvent::Done)) {
                             crate::control::Reply::ok(body.text.clone())

@@ -3988,7 +3988,12 @@ impl Shell {
             }
             Some(TabKind::Phone) => self.phone_view.clone().into_any_element(),
             Some(TabKind::Servers) => self.servers_view.clone().into_any_element(),
-            Some(TabKind::Teams) => self.teams_view.clone().into_any_element(),
+            Some(TabKind::Teams) => {
+                // @bot reads the visible environment's code.
+                let dir = env.path.clone();
+                self.teams_view.update(cx, |v, cx| v.set_project(dir, cx));
+                self.teams_view.clone().into_any_element()
+            }
             Some(TabKind::Gallery) => self.gallery_view.clone().into_any_element(),
             Some(TabKind::Isometric) => {
                 // Follows the visible environment, also for a tab restored at

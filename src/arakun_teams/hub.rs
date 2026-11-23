@@ -145,6 +145,11 @@ impl ChannelState {
     pub fn locked(&self) -> usize {
         self.locked.len()
     }
+
+    /// Whether the channel has a socket, connected or still dialing.
+    pub fn linked(&self) -> bool {
+        self.link.is_some()
+    }
 }
 
 pub struct ChannelState {
@@ -156,6 +161,9 @@ pub struct ChannelState {
     history_round: u64,
     reading: bool,
     needs_history: bool,
+    /// This device's @bot questions that arrived past a gap. The range they
+    /// review is taken once history fills the gap, so it misses nothing.
+    bot_waiting: Vec<String>,
     /// Messages whose signature or sender device did not check out: dropped,
     /// as PROTOCOL.md says, and counted.
     pub hidden: usize,
@@ -268,6 +276,8 @@ pub struct Hub {
     pub inviters: HashMap<String, String>,
     /// Teams an admin let this user into during this run: their chat says so.
     pub joined: HashSet<String>,
+    /// @bot's runs and what this user did with its answers, on this device.
+    pub bot: super::bot::Bots,
     /// The team the last "Start a team" made, once the server named it, even
     /// when setting it up failed after: the Team tab opens that one.
     pub created: Option<String>,
@@ -277,6 +287,9 @@ pub struct Hub {
     events: socket::Events,
     /// Bumped when the account changes, so late answers for the last one are dropped.
     generation: u64,
+    /// Bumped whenever a channel's messages change, so what is built from
+    /// them (the decision log) is built again only then.
+    pub messages_rev: u64,
     roster_version: u64,
     applied_roster: u64,
     membership: HashMap<String, u64>,
@@ -360,8 +373,10 @@ impl Hub {
             my_devices: Vec::new(),
             error: None,
             busy: HashSet::new(),
+            bot: super::bot::Bots::default(),
             events: tx,
             generation: 0,
+            messages_rev: 0,
             roster_version: 0,
             applied_roster: 0,
             membership: HashMap::new(),
@@ -448,6 +463,7 @@ impl Hub {
         self.sent.clear();
         self.inviters.clear();
         self.joined.clear();
+        self.bot.clear();
         self.created = None;
         self._poll = None;
         self._tick = None;
@@ -1689,6 +1705,7 @@ impl Hub {
             history_round: 0,
             reading: false,
             needs_history: false,
+            bot_waiting: Vec::new(),
             hidden: 0,
             locked: Vec::new(),
             status: socket::Status::Connecting,
@@ -1715,7 +1732,8 @@ impl Hub {
             .iter()
             .filter(|(_, c)| c.link.is_some())
             .map(|(key, c)| {
-                let busy = c.loading || c.reading || !c.outbox.is_empty();
+                let busy =
+                    c.loading || c.reading || !c.outbox.is_empty() || !c.bot_waiting.is_empty();
                 (key.clone(), c.shown, busy)
             })
             .collect();
@@ -1727,6 +1745,24 @@ impl Hub {
                 c.status = socket::Status::Connecting;
             }
         }
+    }
+
+    /// Hangs up a channel's socket and keeps what was read: opening it again
+    /// reads on from there. A channel with something still to send, or an
+    /// @bot question waiting for its history, keeps its link.
+    pub fn close_channel(&mut self, team_id: &str, channel_id: &str, cx: &mut Context<Self>) {
+        let Some(c) = self.channels.get_mut(&channel_key(team_id, channel_id)) else {
+            return;
+        };
+        if c.link.is_none() || !c.outbox.is_empty() || !c.bot_waiting.is_empty() {
+            return;
+        }
+        c.link = None;
+        // A history page still on its way belongs to the closed link.
+        c.history_round += 1;
+        c.reading = false;
+        c.status = socket::Status::Connecting;
+        cx.notify();
     }
 
     fn on_socket(&mut self, source: String, ev: socket::Event, cx: &mut Context<Self>) {
@@ -1774,11 +1810,14 @@ impl Hub {
                     let c = self.channels.get_mut(key).expect("looked up above");
                     // The reply to a replay may arrive after catch-up finished.
                     if why.contains("exists") {
-                        c.outbox.remove(&id);
+                        stored_already(&mut c.outbox, &c.messages, &mut c.bot_waiting, &id);
                         c.needs_history = true;
                         self.catch_up(key, cx);
                     } else if refuse(&mut c.messages, &id, &why) {
                         c.outbox.remove(&id);
+                        // Send again asks with the project open then.
+                        self.bot.asked.remove(&id);
+                        self.messages_rev += 1;
                         if why.contains("epoch") {
                             let team = c.team_id.clone();
                             self.load_team(&team, cx);
@@ -1870,6 +1909,8 @@ impl Hub {
             return;
         };
         let mut unknown_seen = false;
+        // This device's @bot questions the server just stored: the bot runs now.
+        let mut asked = Vec::new();
         for s in stored {
             if c.seen_ids.contains(&s.message.id) {
                 continue;
@@ -1900,7 +1941,12 @@ impl Hub {
                 c.hidden += 1;
                 continue;
             };
-            c.outbox.remove(&s.message.id);
+            if c.outbox.remove(&s.message.id).is_some()
+                && body.kind == "text"
+                && body.mentions.iter().any(|m| m == "bot")
+            {
+                asked.push(s.message.id.clone());
+            }
             c.seen_ids.insert(s.message.id.clone());
             let msg = Msg {
                 id: s.message.id.clone(),
@@ -1919,7 +1965,23 @@ impl Hub {
         // Sent ones by seq; what is still on its way stays at the end.
         c.messages
             .sort_by_key(|m| (m.seq.is_none(), m.seq.unwrap_or(0), m.at));
+        self.messages_rev += 1;
         let team_id = c.team_id.clone();
+        let channel_id = c.channel_id.clone();
+        c.bot_waiting.extend(asked);
+        let asked = if c.needs_history {
+            Vec::new()
+        } else {
+            std::mem::take(&mut c.bot_waiting)
+        };
+        for id in asked {
+            let project = self
+                .bot
+                .asked
+                .remove(&id)
+                .unwrap_or_else(|| self.bot.project.clone());
+            self.start_bot(&team_id, &channel_id, &id, project, cx);
+        }
         if unknown_seen
             && self
                 .team
@@ -1933,13 +1995,29 @@ impl Hub {
         }
     }
 
-    /// Sends a text message, replying to `reply_to` when given.
+    /// Sends a text message, replying to `reply_to` when given. One that
+    /// mentions @bot runs it once the server has stored it.
     pub fn send(
         &mut self,
         team_id: &str,
         channel_id: &str,
         text: String,
         reply_to: Option<String>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let mut body = Body::text(text, reply_to);
+        if super::bot::mentions_bot(&body.text) {
+            body.mentions = vec!["bot".into()];
+        }
+        self.send_body(team_id, channel_id, body, cx)
+    }
+
+    /// Seals and sends any message body.
+    pub fn send_body(
+        &mut self,
+        team_id: &str,
+        channel_id: &str,
+        body: Body,
         cx: &mut Context<Self>,
     ) -> bool {
         let Some((epoch, key)) = self.sending_key(team_id) else {
@@ -1956,7 +2034,6 @@ impl Hub {
             return false;
         }
         let id = crypto::ulid();
-        let body = Body::text(text, reply_to);
         let wire: WireMessage = crypto::seal_message(
             team_id,
             channel_id,
@@ -1975,6 +2052,9 @@ impl Hub {
             cx.notify();
             return false;
         }
+        if body.kind == "text" && body.mentions.iter().any(|m| m == "bot") {
+            self.bot.asked.insert(id.clone(), self.bot.project.clone());
+        }
         let Some(c) = self.channels.get_mut(&ckey) else {
             return false;
         };
@@ -1988,6 +2068,7 @@ impl Hub {
             body,
             delivery: Delivery::Sending,
         });
+        self.messages_rev += 1;
         c.outbox.insert(id, frame.clone());
         if c.status == socket::Status::Connected
             && let Some(link) = &c.link
@@ -2004,15 +2085,45 @@ impl Hub {
         let Some(c) = self.channels.get_mut(&ckey) else {
             return;
         };
-        let Some(m) = c.messages.iter().find(|m| m.id == id).cloned() else {
+        let Some(body) = c
+            .messages
+            .iter()
+            .find(|m| m.id == id)
+            .map(|m| m.body.clone())
+        else {
             return;
         };
-        // The failed one stays when the new one can't go either.
-        if self.send(team_id, channel_id, m.body.text, m.body.reply_to, cx)
+        // Dropped only once the copy is queued: if it can't be (no key yet),
+        // the failed one stays with its Send again, a bot answer included.
+        if self.send_body(team_id, channel_id, body, cx)
             && let Some(c) = self.channels.get_mut(&ckey)
         {
             c.messages.retain(|m| m.id != id);
+            self.messages_rev += 1;
+            self.bot.asked.remove(id);
         }
+    }
+}
+
+/// The server says it already holds message `id`, so nothing is left to
+/// send. `ingest` starts a question's @bot run only while the question is in
+/// the outbox, and history may file it after this (the replay raced the
+/// page, or the message is parked). So a question waits in `waiting`, which
+/// `ingest` starts once history is read.
+fn stored_already(
+    outbox: &mut BTreeMap<String, String>,
+    messages: &[Msg],
+    waiting: &mut Vec<String>,
+    id: &str,
+) {
+    if outbox.remove(id).is_none() {
+        return;
+    }
+    let asks = messages
+        .iter()
+        .any(|m| m.id == id && m.body.kind == "text" && m.body.mentions.iter().any(|m| m == "bot"));
+    if asks && !waiting.iter().any(|w| w == id) {
+        waiting.push(id.to_string());
     }
 }
 
@@ -2552,6 +2663,40 @@ mod tests {
         c.live(44);
         assert_eq!(c.through, 44);
         assert!(!c.gap());
+    }
+
+    #[test]
+    fn a_bot_question_the_server_already_holds_still_runs() {
+        let msg = |id: &str, text: &str, bot: bool| {
+            let mut body = Body::text(text, None);
+            if bot {
+                body.mentions = vec!["bot".into()];
+            }
+            Msg {
+                id: id.into(),
+                seq: None,
+                at: 0,
+                github_id: 1,
+                login: "dani".into(),
+                body,
+                delivery: Delivery::Sending,
+            }
+        };
+        let messages = [msg("q", "@bot review", true), msg("plain", "hello", false)];
+        let mut outbox: BTreeMap<String, String> = ["q", "plain"]
+            .into_iter()
+            .map(|id| (id.to_string(), "frame".to_string()))
+            .collect();
+        let mut waiting = Vec::new();
+        stored_already(&mut outbox, &messages, &mut waiting, "q");
+        stored_already(&mut outbox, &messages, &mut waiting, "plain");
+        assert!(outbox.is_empty());
+        assert_eq!(waiting, ["q"]);
+        // History filed it first and started the run: the late reply to the
+        // replay must not start a second one.
+        let mut waiting = Vec::new();
+        stored_already(&mut outbox, &messages, &mut waiting, "q");
+        assert!(waiting.is_empty());
     }
 
     #[test]

@@ -238,6 +238,10 @@ impl Net {
 
 pub struct Hub {
     teams_entity: Entity<Teams>,
+    /// The account the state below belongs to. `Teams` also notifies when
+    /// only a picture arrived; comparing this, not `net`, keeps such a
+    /// notification from restarting a device setup still under way.
+    account: Option<Account>,
     me: Option<Me>,
     net: Option<Net>,
     sealer: Option<Sealer>,
@@ -313,6 +317,13 @@ fn spare_links<T: Ord>(
         .collect()
 }
 
+/// Who is signed in, and where: the server, the session and the GitHub ID.
+type Account = (String, String, u64);
+
+fn account_of((base, session, me): &(String, String, Me)) -> Account {
+    (base.clone(), session.clone(), me.github_id)
+}
+
 pub fn channel_key(team_id: &str, channel_id: &str) -> String {
     format!("{team_id}/{channel_id}")
 }
@@ -334,6 +345,7 @@ impl Hub {
             .detach();
         let mut hub = Self {
             teams_entity: teams,
+            account: None,
             me: None,
             net: None,
             sealer: None,
@@ -412,15 +424,8 @@ impl Hub {
     /// Who is signed in changed: start over for the new account, or stop.
     fn account_changed(&mut self, cx: &mut Context<Self>) {
         let signed = self.teams_entity.read(cx).signed();
-        let same = match (&signed, &self.net, &self.me) {
-            (Some((base, session, me)), Some(net), Some(was)) => {
-                *base == net.base && *session == net.session && me.github_id == was.github_id
-            }
-            // `net` is still None while the device is loading. Signing out
-            // then must invalidate the in-flight setup as well.
-            (None, None, None) => true,
-            _ => false,
-        };
+        let account = signed.as_ref().map(account_of);
+        let same = account == self.account;
         if same {
             return;
         }
@@ -450,6 +455,7 @@ impl Hub {
         self.device = DeviceState::Starting;
         self.load = Load::Loading;
         self.me = signed.as_ref().map(|(_, _, me)| me.clone());
+        self.account = account;
         cx.notify();
         let Some((base, session, me)) = signed else {
             return;
@@ -653,6 +659,7 @@ impl Hub {
             DeviceState::Failed(_) if self.net.is_none() => {
                 self.net = None;
                 self.me = None;
+                self.account = None;
                 self.account_changed(cx);
             }
             _ => self.register(cx),

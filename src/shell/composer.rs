@@ -448,7 +448,13 @@ impl Shell {
     /// The skills of the visible environment for `/` completion, read in the
     /// background on the first ask (or once stale). Claude Code and Workers AI
     /// read them, so they show before a session has said what it offers.
-    fn skill_index(&mut self, cx: &mut Context<Self>) -> Option<Arc<Vec<crate::agent::Choice>>> {
+    /// With `mirrored`, for a server's environment, only what this computer
+    /// mirrors to servers: the rest is not there.
+    fn skill_index(
+        &mut self,
+        mirrored: bool,
+        cx: &mut Context<Self>,
+    ) -> Option<Arc<Vec<crate::agent::Choice>>> {
         let env_path = self.env().path.clone();
         if let Some((path, at, skills)) = &self.skill_index
             && *path == env_path
@@ -463,7 +469,11 @@ impl Shell {
                 let p = for_path.clone();
                 let skills = cx
                     .background_spawn(crate::guard::task(async move {
-                        crate::agent::claude_ext::skill_choices(&p)
+                        if mirrored {
+                            crate::agent::mirror::mirrored_commands()
+                        } else {
+                            crate::agent::claude_ext::skill_choices(&p)
+                        }
                     }))
                     .await;
                 let _ = this.update(cx, |this, cx| {
@@ -562,13 +572,25 @@ impl Shell {
                 _ => None,
             };
             let sandboxed = thread.as_ref().map(|t| t.read(cx).sandbox().is_some());
-            let skills = (host_skills_reach(self.project(), self.env(), session, sandboxed)
-                && matches!(
-                    self.composer_agent(),
-                    AgentKind::Claude | AgentKind::WorkersAi
-                ))
-            .then(|| self.skill_index(cx))
-            .flatten();
+            let none_reported = thread
+                .as_ref()
+                .is_none_or(|t| t.read(cx).commands().is_empty());
+            let on_server = self.env().remote.is_some() || self.project().is_remote();
+            let claude_like = matches!(
+                self.composer_agent(),
+                AgentKind::Claude | AgentKind::WorkersAi
+            );
+            let skills = if on_server {
+                // Until the server says what its session has, what this
+                // computer mirrored there.
+                (claude_like && none_reported)
+                    .then(|| self.skill_index(true, cx))
+                    .flatten()
+            } else {
+                (claude_like && host_skills_reach(self.project(), self.env(), session, sandboxed))
+                    .then(|| self.skill_index(false, cx))
+                    .flatten()
+            };
             let reported: &[crate::agent::Choice] = match &thread {
                 Some(t) => t.read(cx).commands(),
                 None => &[],

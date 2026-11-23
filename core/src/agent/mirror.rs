@@ -182,6 +182,22 @@ pub fn snapshot(secrets: bool) -> Snapshot {
     }
 }
 
+/// Blocking: the `/` commands of what [`snapshot`] sends every server, the
+/// user's plugins and skills.sh skills. A server's session shows them before
+/// it says what it has.
+pub fn mirrored_commands() -> Vec<super::Choice> {
+    let home = launch::home();
+    let plugins = user_plugins(&read_json(
+        &home.join(".claude/plugins/installed_plugins.json"),
+    ));
+    let root = skills_sh::skills_root();
+    let dirs: Vec<PathBuf> = remembered_skills()
+        .iter()
+        .filter_map(|s| skill_dir(&root, s))
+        .collect();
+    super::claude_ext::mirrored_choices(&plugins, &dirs)
+}
+
 /// What the list of installs for you alone still holds, by repository. An
 /// MCP server goes only with `secrets`.
 fn repo_mirrors(kept: &[RepoInstall], state: &Value, secrets: bool) -> Vec<RepoMirror> {

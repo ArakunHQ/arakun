@@ -16,11 +16,15 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontWeight
 import com.arakun.android.AppModel
 import com.arakun.android.Telemetry
 
-/** Pairing until there are credentials, then the inbox, and a session over it. */
+/**
+ * Sign-in until there is a session, then the account's computers, then the
+ * inbox of the one picked, and a session over it.
+ */
 @Composable
 fun Root(model: AppModel) {
     val c = Palette.current
@@ -28,7 +32,8 @@ fun Root(model: AppModel) {
         val demo = model.demo
         when {
             demo?.moods == true -> MoodGallery()
-            model.credentials == null -> PairScreen(model)
+            model.account == null -> SignInScreen(model)
+            model.machine == null -> MachinesScreen(model)
             else -> {
                 AnimatedContent(
                     targetState = model.session?.id,
@@ -73,31 +78,28 @@ fun Root(model: AppModel) {
                 containerColor = c.raised,
             )
         }
-        model.opened?.let { link ->
-            val paired = model.credentials != null
+        model.directLink?.let { link ->
+            val uris = LocalUriHandler.current
             AlertDialog(
-                onDismissRequest = { model.answerOpened(false) },
-                title = {
-                    Text(if (paired) "Replace your paired computer?" else "Pair with this computer?", style = geist(18f, FontWeight.SemiBold))
-                },
+                onDismissRequest = model::answerDirectLink,
+                title = { Text("Open ${link.host} in the browser?", style = geist(18f, FontWeight.SemiBold)) },
                 text = {
                     Text(
-                        if (paired) {
-                            "A link asks to pair this phone with ${link.host} instead of the computer it is paired with now. Only go on if you opened it from Arakun on your own computer."
-                        } else {
-                            "A link asks to pair this phone with ${link.host}. Only go on if you opened it from Arakun on your own computer."
-                        },
+                        "This link is to a computer's own page on Same Wi-Fi or Tailscale. The page pairs this phone " +
+                            "in the browser. Only go on if Arakun on your own computer showed it.",
                         style = Type.callout,
                         color = c.textMuted,
                     )
                 },
                 confirmButton = {
-                    TextButton(onClick = { model.answerOpened(true) }) {
-                        Text(if (paired) "Replace" else "Pair", color = c.amberInk, style = geist(15f, FontWeight.Medium))
-                    }
+                    TextButton(onClick = {
+                        model.answerDirectLink()
+                        // A phone with no browser throws; there is nothing else to open it with.
+                        runCatching { uris.openUri(link.url) }
+                    }) { Text("Open", color = c.amberInk, style = geist(15f, FontWeight.Medium)) }
                 },
                 dismissButton = {
-                    TextButton(onClick = { model.answerOpened(false) }) {
+                    TextButton(onClick = model::answerDirectLink) {
                         Text("Cancel", color = c.textMuted, style = geist(15f, FontWeight.Medium))
                     }
                 },

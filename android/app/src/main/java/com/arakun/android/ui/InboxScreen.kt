@@ -32,13 +32,11 @@ import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.foundation.text.input.clearText
 import androidx.compose.foundation.text.input.rememberTextFieldState
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -75,7 +73,7 @@ fun InboxScreen(model: AppModel) {
     val c = Palette.current
     var starting by rememberSaveable { mutableStateOf(false) }
     val query = rememberTextFieldState()
-    var confirmUnpair by remember { mutableStateOf(false) }
+    var account by rememberSaveable { mutableStateOf(false) }
     var refreshing by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
@@ -104,7 +102,7 @@ fun InboxScreen(model: AppModel) {
         TopBar(
             model = model,
             onNew = { starting = true },
-            onUnpair = { confirmUnpair = true },
+            onAccount = { account = true },
         )
         PullToRefreshBox(
             isRefreshing = refreshing,
@@ -148,29 +146,12 @@ fun InboxScreen(model: AppModel) {
     if (starting) {
         NewSessionSheet(model, onDismiss = { starting = false })
     }
-    if (confirmUnpair) {
-        AlertDialog(
-            onDismissRequest = { confirmUnpair = false },
-            title = { Text("Unpair this phone from ${model.host.ifEmpty { "your computer" }}?", style = geist(18f, FontWeight.SemiBold)) },
-            text = { Text("To pair it again, you need a new code from Arakun.", style = Type.callout, color = c.textMuted) },
-            confirmButton = {
-                TextButton(onClick = {
-                    confirmUnpair = false
-                    model.unpair()
-                }) { Text("Unpair", color = c.failure, style = geist(15f, FontWeight.Medium)) }
-            },
-            dismissButton = {
-                TextButton(onClick = { confirmUnpair = false }) { Text("Cancel", color = c.textMuted, style = geist(15f, FontWeight.Medium)) }
-            },
-            containerColor = c.raised,
-        )
-    }
+    if (account) AccountSheet(model, onDismiss = { account = false })
 }
 
 /** The raccoon's mood for the whole computer: what most needs you wins. */
 private fun inboxMood(model: AppModel): Mood = when {
     model.connection is AppModel.Connection.ComputerAway -> Mood.SLEEPING
-    model.connection is AppModel.Connection.Failed -> Mood.ERROR
     model.connection == AppModel.Connection.Connecting -> Mood.THINKING
     model.inbox.any { it.status == SessionStatus.NEEDS_INPUT } -> Mood.WAITING
     model.inbox.any { it.status == SessionStatus.WORKING } -> Mood.WORKING
@@ -178,7 +159,7 @@ private fun inboxMood(model: AppModel): Mood = when {
 }
 
 @Composable
-private fun TopBar(model: AppModel, onNew: () -> Unit, onUnpair: () -> Unit) {
+private fun TopBar(model: AppModel, onNew: () -> Unit, onAccount: () -> Unit) {
     val c = Palette.current
     var menu by remember { mutableStateOf(false) }
     Row(
@@ -193,15 +174,34 @@ private fun TopBar(model: AppModel, onNew: () -> Unit, onUnpair: () -> Unit) {
                 containerColor = c.raised,
                 shape = RoundedCornerShape(Radius.card),
             ) {
-                model.credentials?.let {
+                model.account?.let {
                     Text(
-                        "Paired through ${it.host}",
+                        "Signed in as ${it.login}",
                         style = mono(11.5f),
                         color = c.textFaint,
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp).widthIn(max = 260.dp),
                     )
                     HorizontalDivider(color = c.line)
                 }
+                // One computer needs no list to go back to.
+                if (model.machines.size > 1) {
+                    DropdownMenuItem(
+                        text = { Text("All computers", style = Type.callout) },
+                        leadingIcon = { BrandIcon(R.drawable.ic_computer, 18.dp, c.text) },
+                        onClick = {
+                            menu = false
+                            model.leaveMachine()
+                        },
+                    )
+                }
+                DropdownMenuItem(
+                    text = { Text("Account", style = Type.callout) },
+                    leadingIcon = { BrandIcon(R.drawable.ic_user, 18.dp, c.text) },
+                    onClick = {
+                        menu = false
+                        onAccount()
+                    },
+                )
                 DropdownMenuItem(
                     text = { Text("Reconnect", style = Type.callout) },
                     leadingIcon = { BrandIcon(R.drawable.ic_refresh01, 18.dp, c.text) },
@@ -220,14 +220,6 @@ private fun TopBar(model: AppModel, onNew: () -> Unit, onUnpair: () -> Unit) {
                         onClick = { Telemetry.answer(!on) },
                     )
                 }
-                DropdownMenuItem(
-                    text = { Text("Unpair this phone", style = Type.callout, color = c.failure) },
-                    leadingIcon = { BrandIcon(R.drawable.ic_cancel_circle, 18.dp, c.failure) },
-                    onClick = {
-                        menu = false
-                        onUnpair()
-                    },
-                )
             }
         }
         Spacer(Modifier.weight(1f))
@@ -467,12 +459,9 @@ private fun Empty(mood: Mood) {
     }
 }
 
-/**
- * Whether the banner has something to say. Pairing counts: the inbox shows
- * only while paired, so it is a replacement pairing waiting for an answer.
- */
+/** Whether the banner has something to say. */
 val AppModel.Connection.hasBanner: Boolean
-    get() = this != AppModel.Connection.Connected && this != AppModel.Connection.Unpaired
+    get() = this != AppModel.Connection.Connected && this != AppModel.Connection.Idle
 
 /** How the link to the computer is doing, when it is not simply up. */
 @Composable
@@ -480,19 +469,13 @@ fun ConnectionBanner(model: AppModel) {
     val c = Palette.current
     val now = rememberNow(30_000)
     when (val conn = model.connection) {
-        AppModel.Connection.Connected, AppModel.Connection.Unpaired -> {}
-        // Only a link opened while paired pairs over the inbox.
-        AppModel.Connection.Pairing -> BannerLine(R.drawable.ic_loading03, "Pairing with the new computer…", null, c.textMuted)
+        AppModel.Connection.Connected, AppModel.Connection.Idle -> {}
         AppModel.Connection.Connecting -> BannerLine(R.drawable.ic_loading03, "Connecting to your computer…", null, c.textMuted)
         is AppModel.Connection.ComputerAway -> BannerLine(
             R.drawable.ic_computer, "Your computer is offline.",
             conn.since?.let { "Last seen ${shortAgo(it, now)} ago. The app reconnects when it is back." },
             c.textMuted,
         )
-        is AppModel.Connection.Failed -> Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            BannerLine(R.drawable.ic_alert_circle, conn.why, null, c.failure)
-            OutlineButton("Try again", model::connect)
-        }
     }
 }
 

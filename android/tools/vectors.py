@@ -22,10 +22,10 @@ OUT = os.path.join(HERE, "..", "app", "src", "main", "res", "drawable")
 # The icons the app draws; keep in step with Icon(...) calls under app/src.
 USED = """
 ai-idea alert-circle arrow-down01 arrow-left01 arrow-right01 arrow-up01
-cancel-circle cancel01 check-list checkmark-circle02 circle-dashed circle
+cancel01 check-list checkmark-circle02 circle-dashed circle
 computer computer-terminal01 delete02 file-diff file01 folder01
 git-branch globe hand help-circle link01 loading03 mark-cross more-horizontal
-pencil-edit01 pencil-edit02 refresh01 search01 square wrench01
+pencil-edit01 pencil-edit02 refresh01 search01 square user wrench01
 """.split()
 
 SVG = "{http://www.w3.org/2000/svg}"

@@ -266,6 +266,10 @@ pub struct Hub {
     /// channel ID to make it with. A retry reuses the ID, so a create that
     /// went through but lost its answer is not made twice.
     setup: HashMap<String, String>,
+    /// Teams asked to be read while a read of the same version was on its
+    /// way. That read may have started before the change that asked (an
+    /// approval, a rotation), so its answer is dropped and the team read again.
+    reread: HashSet<String>,
     next_link: u64,
     _events: Task<()>,
     save_task: Option<Shared<Task<Result<(), String>>>>,
@@ -336,6 +340,7 @@ impl Hub {
             applied_roster: 0,
             membership: HashMap::new(),
             setup: HashMap::new(),
+            reread: HashSet::new(),
             next_link: 0,
             _events: events,
             save_task: None,
@@ -377,6 +382,7 @@ impl Hub {
         self.teams.clear();
         self.membership.clear();
         self.setup.clear();
+        self.reread.clear();
         self.invites.clear();
         self.team.clear();
         self.channels.clear();
@@ -727,7 +733,7 @@ impl Hub {
                     hub.invites = invites;
                     let ids: Vec<String> = hub.teams.iter().map(|t| t.team_id.clone()).collect();
                     for id in ids {
-                        hub.load_team(&id, cx);
+                        hub.reload_team(&id, false, cx);
                     }
                 }
                 Err(e) => hub.load = Load::Unreachable(e.to_string()),
@@ -747,6 +753,13 @@ impl Hub {
     /// One team: its members and their devices, its channels, this device's
     /// keys, and the admin's duties (a pending rotation, new devices).
     pub fn load_team(&mut self, team_id: &str, cx: &mut Context<Self>) {
+        self.reload_team(team_id, true, cx);
+    }
+
+    /// `after_change`: asked for after something changed the team, so a read
+    /// on its way may be out of date. The 20 s refresh only reads again; were
+    /// it to drop a read on its way too, one slower than that would never land.
+    fn reload_team(&mut self, team_id: &str, after_change: bool, cx: &mut Context<Self>) {
         let Some(row) = self.teams.iter().find(|t| t.team_id == team_id).cloned() else {
             return;
         };
@@ -755,6 +768,9 @@ impl Hub {
         };
         let busy = format!("load:{team_id}:{version}");
         if !self.busy.insert(busy.clone()) {
+            if after_change {
+                self.reread.insert(team_id.to_string());
+            }
             return;
         }
         let held: HashSet<u64> = self.kept.keys(team_id).iter().map(|(e, _)| *e).collect();
@@ -769,6 +785,10 @@ impl Hub {
             move |hub, result, cx| {
                 hub.busy.remove(&busy);
                 if hub.membership.get(&team_id) != Some(&version) {
+                    return;
+                }
+                if hub.reread.remove(&team_id) {
+                    hub.load_team(&team_id, cx);
                     return;
                 }
                 match result {

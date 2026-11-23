@@ -42,7 +42,7 @@ Of particular interest:
   get around the policy.
 - **Phone remote, relay and pairing.** The phone server on the LAN or Tailscale, the
   pairing codes and device tokens, the end-to-end encryption between phone and computer,
-  and the relay in `relay/` (including the hosted relay at `arakun.dev`). Pairing without
+  and the relay in `cloud/src/relay/` (including the hosted relay at `arakun.dev`). Pairing without
   the code, reading or injecting traffic, impersonating a computer or phone, or one
   computer reaching another's sessions.
 - **Agent permissions.** Tool calls running without the permission the user chose,

@@ -1,0 +1,167 @@
+# Arakun's cloud, one Worker: the relay phones reach a computer through (one
+# Durable Object per computer, the phone page served as static assets), and
+# the teams API (sign-in with GitHub, per-user feature flags and the teams of
+# PROTOCOL.md, with a D1 database and one Durable Object per channel). A host
+# whose first level is a label is the relay; everything else is teams.
+# The top-level Worker is for tests; production is `--env production` below.
+# Their names differ so a test deploy cannot replace production's bindings.
+name = "arakun-cloud-dev"
+main = "src/index.ts"
+# On or after 2026-04-07, so the runtime answers a WebSocket client's close by
+# itself (src/channel.ts relies on it).
+compatibility_date = "2026-11-01"
+
+# The phone page, straight from the repo: the Worker runs first and hands the
+# rest to the assets.
+[assets]
+directory = "../phone"
+binding = "ASSETS"
+run_worker_first = true
+
+# Global switches and per-plan limits of the relay; `wrangler kv namespace
+# create CONFIG` gives the id to put here.
+[[kv_namespaces]]
+binding = "CONFIG"
+id = "00000000000000000000000000000000"
+
+# Users, sessions, flags, devices, teams, invites, envelopes and channels.
+# This Worker has a database of its own, so a test deploy and its admin secret
+# never reach production's data. `wrangler d1 create arakun-cloud-dev` gives the
+# id to put here; `wrangler d1 migrations apply` reads the tables from migrations/.
+[[d1_databases]]
+binding = "DB"
+database_name = "arakun-cloud-dev"
+database_id = "00000000-0000-0000-0000-000000000000"
+migrations_dir = "migrations"
+
+# The GitHub OAuth App "Arakun" (ArakunHQ). The desktop app runs the device
+# flow with this public ID and no secret; the Worker asks GitHub whether that
+# app issued a token with `wrangler secret put GITHUB_CLIENT_SECRET`.
+[vars]
+GITHUB_CLIENT_ID = "Ov23lipgmMeATCa5aTr3"
+# Hosts under this domain carry the relay's label as their first level.
+BASE_DOMAIN = "arakun.dev"
+
+# Sign-in calls GitHub and writes to D1, so each client IP gets a few a minute.
+# Rate limits with the same namespace_id in one account share their counters,
+# so every id here is used once: this Worker has 1003, 1004 and 1005,
+# production 1001, 1002 and 1006.
+[[ratelimits]]
+name = "SIGN_IN_LIMIT"
+namespace_id = "1003"
+
+  [ratelimits.simple]
+  limit = 10
+  period = 60
+
+# Messages each device may send on channel sockets: 60 every 10 seconds.
+[[ratelimits]]
+name = "SEND_LIMIT"
+namespace_id = "1004"
+
+  [ratelimits.simple]
+  limit = 60
+  period = 10
+
+# Each invite asks GitHub who has the login, which counts against the OAuth
+# App's hourly limit that sign-in needs too: 30 a minute per inviting user.
+[[ratelimits]]
+name = "INVITE_LIMIT"
+namespace_id = "1005"
+
+  [ratelimits.simple]
+  limit = 30
+  period = 60
+
+# One SQLite-backed object per channel: its messages, their seq and the live
+# sockets.
+[[durable_objects.bindings]]
+name = "CHANNEL"
+class_name = "Channel"
+
+# One SQLite-backed object per computer, named by its label: the relay.
+[[durable_objects.bindings]]
+name = "RELAY"
+class_name = "Relay"
+
+# The relay's history comes first: a Worker deployed from the old relay/ is at
+# `v1` with `Relay`, so deploying this one over it only adds `Channel`. Never
+# reorder or rename a tag; add a new one, here and under [env.production].
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Relay"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["Channel"]
+
+# The hosted Worker (`npx wrangler deploy --env production`), which
+# .github/workflows/cloud-deploy.yml deploys with each release. ADMIN_SECRET and
+# GITHUB_CLIENT_SECRET stay Worker secrets. An environment inherits no bindings,
+# so they are all here again. The one route covers both: a label host is the
+# relay, and every other host under arakun.dev that DNS sends here is the teams
+# API (the app calls teams.arakun.dev).
+[env.production]
+name = "arakun-cloud"
+workers_dev = false
+routes = [{ pattern = "*.arakun.dev/*", zone_name = "arakun.dev" }]
+
+[[env.production.d1_databases]]
+binding = "DB"
+database_name = "prod-arakun-cloud"
+database_id = "717b5615-5d00-4753-9e2c-b068f9a4724c"
+migrations_dir = "migrations"
+
+[[env.production.ratelimits]]
+name = "SIGN_IN_LIMIT"
+namespace_id = "1001"
+
+  [env.production.ratelimits.simple]
+  limit = 10
+  period = 60
+
+[[env.production.ratelimits]]
+name = "SEND_LIMIT"
+namespace_id = "1002"
+
+  [env.production.ratelimits.simple]
+  limit = 60
+  period = 10
+
+[[env.production.ratelimits]]
+name = "INVITE_LIMIT"
+namespace_id = "1006"
+
+  [env.production.ratelimits.simple]
+  limit = 30
+  period = 60
+
+[[env.production.durable_objects.bindings]]
+name = "CHANNEL"
+class_name = "Channel"
+
+[[env.production.durable_objects.bindings]]
+name = "RELAY"
+class_name = "Relay"
+
+# The same tags in the same order as the top-level list.
+[[env.production.migrations]]
+tag = "v1"
+new_sqlite_classes = ["Relay"]
+
+[[env.production.migrations]]
+tag = "v2"
+new_sqlite_classes = ["Channel"]
+
+[[env.production.kv_namespaces]]
+binding = "CONFIG"
+id = "c7fdab8833cd4c96b9e73d02297ac291"
+
+[env.production.assets]
+directory = "../phone"
+binding = "ASSETS"
+run_worker_first = true
+
+[env.production.vars]
+GITHUB_CLIENT_ID = "Ov23lipgmMeATCa5aTr3"
+BASE_DOMAIN = "arakun.dev"

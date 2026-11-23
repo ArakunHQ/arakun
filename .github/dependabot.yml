@@ -1,5 +1,5 @@
-# Weekly update pull requests, one per ecosystem, so the actions, the relay's
-# packages and the crates don't fall behind unnoticed.
+# Weekly update pull requests, one per ecosystem, so the actions, the cloud
+# Worker's packages and the crates don't fall behind unnoticed.
 #
 # Titles carry a Conventional Commits prefix because conventional-commits.yml
 # fails any pull request title without one, Dependabot's included.
@@ -19,12 +19,12 @@ updates:
       actions: { patterns: ["*"] }
 
   - package-ecosystem: npm
-    directory: /relay
+    directory: /cloud
     schedule: { interval: weekly }
     cooldown: { default-days: 7 }
-    commit-message: { prefix: build(relay) }
+    commit-message: { prefix: build(cloud) }
     groups:
-      relay: { patterns: ["*"] }
+      cloud: { patterns: ["*"] }
 
   # Major versions come as pull requests of their own, as they often need code
   # changes.

@@ -8,8 +8,8 @@ changelog:
       labels: ["dependencies"]
     - title: App
       labels: ["area: app", "area: browser", "area: iso"]
-    - title: Relay and phone
-      labels: ["area: relay", "area: phone"]
+    - title: Cloud and phone
+      labels: ["area: cloud", "area: phone"]
     - title: CI and releases
       labels: ["area: ci"]
     - title: Other changes

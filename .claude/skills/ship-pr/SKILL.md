@@ -30,11 +30,11 @@ one row (`Cargo.lock` needs the Rust checks and cargo-deny).
 
 | Changed | Run |
 | --- | --- |
-| any path outside `relay/` and `ios/` that the last row does not list (`src/`, `examples/`, `assets/`, `Cargo.*`, `tools/rustfmt.sh`, `lefthook.yml`, a `.md` inside a folder such as `examples/`...) | rustfmt, clippy, tests |
-| `phone/` | rustfmt, clippy, tests, relay, phone |
-| `relay/` | relay, phone |
+| any path outside `cloud/` and `ios/` that the last row does not list (`src/`, `examples/`, `assets/`, `Cargo.*`, `tools/rustfmt.sh`, `lefthook.yml`, a `.md` inside a folder such as `examples/`...) | rustfmt, clippy, tests |
+| `phone/` | rustfmt, clippy, tests, cloud, phone |
+| `cloud/` | cloud, phone |
 | `ios/` | on macOS with Xcode: `swift test` in `ios/ArakunKit`, then `xcodegen generate` and the `xcodebuild` simulator build in `ios/` (the commands under "Before you commit" in AGENTS.md). Only `ios/` changed: no Rust checks |
-| `.github/workflows/ci.yml`, `.github/actions/` | everything: rustfmt, clippy, tests, relay, phone |
+| `.github/workflows/ci.yml`, `.github/actions/` | everything: rustfmt, clippy, tests, cloud, phone |
 | `tools/install-cef.sh` | rustfmt, clippy, tests (CI also builds with the browser) |
 | `Cargo.toml`, `Cargo.lock`, `deny.toml` | also `cargo deny check` |
 | `docs/`, `iso/`, `tools/`, `.claude/`, `.github/`, `LICENSE`, `NOTICE`, `.gitignore`, `deny.toml`, `cubic.yaml`, and `*.md` at the top level, apart from the paths named above | nothing to build; proofread (only when no path matched a row above) |
@@ -48,10 +48,10 @@ Locally, run only the quick ones and leave the rest to CI on the draft:
 tools/rustfmt.sh --check        # fix with tools/rustfmt.sh, never plain cargo fmt
 cargo clippy --locked --all-targets --no-default-features -- -D warnings
 cargo test --locked --no-default-features <module>   # the modules you touched
-(cd relay && npx tsc --noEmit)  # relay/ changed
+(cd cloud && npx tsc --noEmit)  # cloud/ changed
 ```
 
-- Skip the full `cargo test`, `cargo deny check`, `zizmor`, the relay and phone
+- Skip the full `cargo test`, `cargo deny check`, `zizmor`, the cloud and phone
   tests and the other platforms. CI runs them; if one goes red, step 5 handles it.
 - For a UI change, also run `cargo test --locked --no-default-features design_lint`.
 - `cargo: command not found`: run `export PATH="$HOME/.cargo/bin:$PATH"` first.
@@ -66,7 +66,7 @@ cargo test --locked --no-default-features <module>   # the modules you touched
 
 Title and every commit: `<type>(<scope>): <description>`. Types: `feat`, `fix`,
 `docs`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `revert`. Scope is
-the module or folder (`terminal`, `agent`, `phone`, `relay`...), or none if it
+the module or folder (`terminal`, `agent`, `phone`, `cloud`...), or none if it
 spans many. Imperative, lower case, no period, under about 70 characters. Pick
 the type by the effect on the user: a fix that needs a refactor is `fix`.
 Breaking a flag, setting or stored format: `!` and a `BREAKING CHANGE:` line.

@@ -6,7 +6,7 @@ For contributors and for coding agents. Linux and macOS: tools/setup-dev.sh.
 
   -Yes      do not ask before installing (implied when input is redirected or CI is set)
   -Check    only report what is missing; exit 1 if anything is
-  -Relay    also Node 24+ and the npm packages of relay\
+  -Relay    also Node 24+ and the npm packages of cloud\
   -Browser  also CMake and Ninja, for the `browser` feature (CEF)
   -Hooks    turn on the Git hooks in lefthook.yml (lefthook install; installs lefthook
             with winget if it is missing); lefthook runs them through sh, so commits
@@ -240,7 +240,7 @@ if (Has 'cargo') {
 
 # --- relay ---
 if ($Relay) {
-    Say 'relay (Node 24+)'
+    Say 'cloud Worker (Node 24+)'
     $major = 0
     # No double quotes inside the argument: Windows PowerShell 5.1 drops them when it
     # starts a native program, and node would read split(.).
@@ -251,21 +251,21 @@ if ($Relay) {
         } elseif (Ask 'install Node.js LTS with winget?') {
             Install-Winget 'OpenJS.NodeJS.LTS'
             $major = [int](& node -p "process.versions.node.split('.')[0]")
-            if ($major -lt 24) { Fail "winget installed Node $major; the relay needs 24 or newer" }
+            if ($major -lt 24) { Fail "winget installed Node $major; the cloud Worker needs 24 or newer" }
         } else {
-            Fail 'skipped; the relay needs Node 24 or newer'
+            Fail 'skipped; the cloud Worker needs Node 24 or newer'
         }
     }
     if ($major -ge 24) {
         Ok "node $(& node --version)"
-        $modules = Join-Path $Root 'relay\node_modules'
+        $modules = Join-Path $Root 'cloud\node_modules'
         if ($Check) {
-            if (Test-Path $modules) { Ok 'relay\node_modules' } else { Lack 'relay\node_modules (npm ci)' }
+            if (Test-Path $modules) { Ok 'cloud\node_modules' } else { Lack 'cloud\node_modules (npm ci)' }
         } else {
-            Push-Location (Join-Path $Root 'relay')
+            Push-Location (Join-Path $Root 'cloud')
             try {
                 & npm ci --no-audit --no-fund
-                if ($LASTEXITCODE -ne 0) { Fail 'npm ci failed in relay' }
+                if ($LASTEXITCODE -ne 0) { Fail 'npm ci failed in cloud' }
             } finally { Pop-Location }
         }
     }

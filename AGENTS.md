@@ -38,7 +38,8 @@ Every commit message and pull request title follows
   (`revert: <the title of the change you undo>`). Pick the one that matches the
   effect for the user: a bug fix that needs a refactor is still `fix`.
 - **scope** (optional): the module or folder it touches, such as `terminal`, `agent`,
-  `browser`, `phone`, `relay`, `teams`, `iso` or `windows`. Leave it out if the change
+  `browser`, `phone`, `cloud`, `server`, `teams`, `ios`, `android`, `iso` or
+  `windows`. `cloud` is the Worker in `cloud/` and replaces `relay`. Leave it out if the change
   spans many parts.
 - **description:** imperative, lower case, no period at the end, under about 70
   characters. `fix(terminal): keep the tab name on resize`, not `Fixed terminal bug.`
@@ -118,10 +119,8 @@ and fix every warning:
 tools/rustfmt.sh --check
 cargo clippy --locked --all-targets --no-default-features -- -D warnings
 cargo test --locked --no-default-features <module>   # only the modules you touched
-# relay/ or phone/ changed
-(cd relay && npx tsc --noEmit)
-# teams/ changed
-(cd teams && npm ci && npm run check)
+# cloud/ or phone/ changed
+(cd cloud && npm ci && npm run check)
 # ios/ changed (macOS with Xcode; brew install xcodegen)
 (cd ios/ArakunKit && swift test)
 (cd ios && xcodegen generate && xcodebuild build -quiet -project Arakun.xcodeproj \
@@ -131,8 +130,8 @@ cargo test --locked --no-default-features <module>   # only the modules you touc
 ```
 
 Leave the rest to CI on the draft pull request: the full `cargo test`, the
-`arakun-server` clippy, `cargo deny check`, `zizmor .github`, the relay, phone and
-teams tests and the other platforms. If CI fails, fix it with the `triage-ci` skill.
+`arakun-server` clippy, `cargo deny check`, `zizmor .github`, the cloud and phone
+tests and the other platforms. If CI fails, fix it with the `triage-ci` skill.
 Don't rerun the whole suite locally just to be sure. With the Git hooks installed, push
 with `LEFTHOOK_EXCLUDE=cargo-test git push` so the push does not run the full suite
 either.

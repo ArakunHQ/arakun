@@ -1366,7 +1366,7 @@ mod tests {
         assert_eq!(parse_url("https://x"), None);
     }
 
-    /// The most the relay takes in one frame's payload (`relay/src/limits.ts`).
+    /// The most the relay takes in one frame's payload (`cloud/src/relay/limits.ts`).
     const RELAY_FRAME: usize = 256 * 1024;
     // Sealing adds a counter and a tag; the relay counts those too.
     const _: () = assert!(WHOLE + 64 <= RELAY_FRAME);

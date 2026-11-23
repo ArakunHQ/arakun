@@ -11,9 +11,9 @@
 "area: browser":
   - changed-files:
       - any-glob-to-any-file: ["core/src/browser/**", "src/bin/arakun-helper*", "tools/install-cef.sh"]
-"area: relay":
+"area: cloud":
   - changed-files:
-      - any-glob-to-any-file: ["relay/**"]
+      - any-glob-to-any-file: ["cloud/**"]
 "area: phone":
   - changed-files:
       - any-glob-to-any-file: ["phone/**", "core/src/phone/**"]
@@ -34,5 +34,5 @@ documentation:
 dependencies:
   - all:
       - changed-files:
-          - any-glob-to-any-file: ["Cargo.lock", "relay/package-lock.json"]
-          - any-glob-to-all-files: ["Cargo.lock", "Cargo.toml", "relay/package-lock.json", "relay/package.json"]
+          - any-glob-to-any-file: ["Cargo.lock", "cloud/package-lock.json"]
+          - any-glob-to-all-files: ["Cargo.lock", "Cargo.toml", "cloud/package-lock.json", "cloud/package.json"]

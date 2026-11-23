@@ -1,6 +1,6 @@
 ---
 name: triage-ci
-description: Find out why an Arakun pull request's GitHub checks failed and fix it - read the failing job's log with gh, map it to the local command, reproduce, fix, and tell real failures apart from ones the change did not cause. Use when CI, a check, clippy, the tests, cargo-deny, the relay job or the pull request title check is red, or the user asks why a pull request is failing.
+description: Find out why an Arakun pull request's GitHub checks failed and fix it - read the failing job's log with gh, map it to the local command, reproduce, fix, and tell real failures apart from ones the change did not cause. Use when CI, a check, clippy, the tests, cargo-deny, the cloud job or the pull request title check is red, or the user asks why a pull request is failing.
 ---
 
 # Fix a failing check
@@ -24,7 +24,7 @@ summary.
 | Tests (Linux, no browser) | `cargo test --locked --no-default-features` (one test: add its name) |
 | Clippy (Linux, browser) | needs CEF; read the log, the error is usually in `core/src/browser/` or `arakun-helper` |
 | Clippy and tests (macOS, no browser) | not reproducible on Linux; see below |
-| Relay (types and tests) | `(cd relay && npm ci && npx tsc --noEmit && npx vitest run)` and `(cd phone && node --test "test/*.test.mjs")` |
+| Cloud (types and tests) | `(cd cloud && npm ci && npx tsc --noEmit && npx vitest run)` and `(cd phone && node --test "test/*.test.mjs")` |
 | Dependencies (cargo-deny) | `cargo deny check` |
 | Conventional Commits | `tools/conventional-commits.sh title "<title>"` |
 | CLA | only the person can sign; tell the user |

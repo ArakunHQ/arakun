@@ -6,7 +6,7 @@
 #
 #   --yes      do not ask before installing (implied when stdin is not a terminal)
 #   --check    only report what is missing; exit 1 if anything is
-#   --relay    also Node 24+ and the npm packages of relay/
+#   --relay    also Node 24+ and the npm packages of cloud/
 #   --display  also what `arakun dev` needs: Xvfb and tesseract (macOS: tesseract,
 #              through Homebrew)
 #   --browser  also the CEF SDK a build with the browser needs, linked at .cef-sdk (macOS only)
@@ -220,17 +220,17 @@ fi
 
 # --- relay ---
 if [ $relay = 1 ]; then
-  say "relay (Node 24+)"
+  say "cloud Worker (Node 24+)"
   major=$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)
   if [ "$major" -lt 24 ]; then
     # Node comes in too many ways (nvm, fnm, distribution, nodejs.org) to pick one here.
     lack "Node 24 or newer (have $(node --version 2>/dev/null || echo none)); see https://nodejs.org"
   elif [ $check = 1 ]; then
     ok "node $(node --version)"
-    if [ -d "$here/relay/node_modules" ]; then ok "relay/node_modules"; else lack "relay/node_modules (npm ci)"; fi
+    if [ -d "$here/cloud/node_modules" ]; then ok "cloud/node_modules"; else lack "cloud/node_modules (npm ci)"; fi
   else
     ok "node $(node --version)"
-    (cd "$here/relay" && npm ci --no-audit --no-fund)
+    (cd "$here/cloud" && npm ci --no-audit --no-fund)
   fi
 fi
 

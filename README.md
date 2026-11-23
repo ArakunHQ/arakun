@@ -486,7 +486,7 @@ after a week).
   end-to-end encrypted relay. On the local network and over Tailscale the page comes
   from the computer itself, so it only opens while the computer is on and awake; the
   relay works from anywhere and says when the computer is offline (the Phone tab says so and offers Use Relay). The relay defaults
-  to the hosted one at `arakun.dev`; you can run your own from [`relay/`](relay)
+  to the hosted one at `arakun.dev`; you can run your own from [`cloud/`](cloud)
   (a Cloudflare Worker) and point `relay_base` in `phone.json` at it.
   The page keeps shortcuts, phrases you send often, as a row of buttons over the box.
   One that sends right away shows while the agent waits for you; the others show while
@@ -654,7 +654,7 @@ after a week).
   reached, the session there stays valid until it expires (90 days without renewal,
   180 days after sign-in at most). `ARAKUN_TEAMS_URL` points Arakun at another Teams
   server, such as one run with `wrangler dev` (see
-  [teams/README.md](teams/README.md)); the default is `https://teams.arakun.dev`, and
+  [cloud/README.md](cloud/README.md)); the default is `https://teams.arakun.dev`, and
   plain `http://` works only for `localhost`, `127.0.0.1` and `[::1]`. Each server
   keeps its own session in the keyring, so signing in to a local server leaves the one
   for `teams.arakun.dev` alone.
@@ -664,7 +664,7 @@ after a week).
   channel names are sealed on the device, and the server never sees them or the
   team keys. It does see team names, who is in which team and with which role,
   device names, invites, and who sent a message when and how large it was (see
-  [teams/PROTOCOL.md](teams/PROTOCOL.md)). With no team yet it offers **Start a team**,
+  [cloud/PROTOCOL.md](cloud/PROTOCOL.md)). With no team yet it offers **Start a team**,
   which makes one with a `general` channel. A channel shows the team's channels
   (**+** adds one) and people on the left, and the chat with a composer at the bottom.
   A channel's row counts the messages from others you have not read there, up to

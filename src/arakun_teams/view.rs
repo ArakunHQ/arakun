@@ -3895,7 +3895,7 @@ impl TeamsView {
                             plural(devices, "device", "devices")
                         ),
                     ))
-                    // As "What the server sees" in teams/PROTOCOL.md has it.
+                    // As "What the server sees" in cloud/PROTOCOL.md has it.
                     .child(Self::fact(
                         "The server sees",
                         "Team and device names, GitHub logins, who is in the team, and when",
@@ -4780,7 +4780,7 @@ fn viewed(pane: &Pane, shown: bool) -> Option<String> {
 }
 
 /// How long the server takes no second reminder from the same person
-/// (`REMIND_EVERY` in teams/src/teams.ts).
+/// (`REMIND_EVERY` in cloud/src/teams.ts).
 const REMIND_EVERY: u64 = 60 * 60;
 
 /// Until when Remind waits, if it still does: the time the server gave when

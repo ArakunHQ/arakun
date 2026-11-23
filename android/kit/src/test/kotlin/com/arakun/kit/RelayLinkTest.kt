@@ -36,7 +36,7 @@ import kotlin.test.assertIs
 
 /**
  * The relay and the computer played by a local WebSocket server, as
- * relay/src/relay.ts and core/src/phone/e2e.rs do it: the whole pairing, a
+ * cloud/src/relay/relay.ts and core/src/phone/e2e.rs do it: the whole pairing, a
  * message in parts, a request and a revoked phone, through a real socket.
  */
 class RelayLinkTest {

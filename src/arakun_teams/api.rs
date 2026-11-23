@@ -1,5 +1,5 @@
 //! The network side of Teams: GitHub's device flow, then the Teams server
-//! (`teams/README.md`). Every call blocks, so callers run them off the UI
+//! (`cloud/README.md`). Every call blocks, so callers run them off the UI
 //! thread. The types mirror the server's JSON.
 
 use std::sync::OnceLock;
@@ -281,7 +281,7 @@ fn read_github_user(body: &str) -> Result<Option<GithubUser>, ApiError> {
         .map_err(|_| ApiError::Unreadable)
 }
 
-// ---- teams (teams/PROTOCOL.md) ------------------------------------------------
+// ---- teams (cloud/PROTOCOL.md) ------------------------------------------------
 
 /// A device as `GET /users/<id>/devices` and the pending list show it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

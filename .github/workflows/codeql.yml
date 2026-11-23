@@ -47,7 +47,7 @@ jobs:
           # The app, its examples and build.rs.
           - language: rust
             runner: depot-ubuntu-24.04-8
-          # relay/ (Cloudflare Worker) and phone/ (the web app).
+          # cloud/ (Cloudflare Worker) and phone/ (the web app).
           - language: javascript-typescript
             runner: depot-ubuntu-24.04
           # The scripts in tools/.

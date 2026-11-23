@@ -77,9 +77,9 @@ You only need the `browser` feature (and CEF) if you work on `src/browser` or
 `arakun page`. Dependencies are optimized in dev builds as well, so the first build takes
 a while and later ones are quick.
 
-The phone relay in [`relay/`](relay) is a separate TypeScript project. It needs Node 24
-or newer; see [relay/README.md](relay/README.md). So is the teams Worker in
-[`teams/`](teams); see [teams/README.md](teams/README.md). The Android app in
+The Cloudflare Worker in [`cloud/`](cloud), with the phone relay and the teams API, is a
+separate TypeScript project. It needs Node 24 or newer; see
+[cloud/README.md](cloud/README.md). The Android app in
 [`android/`](android) is a Gradle project that needs JDK 17 and the Android SDK; see
 [android/README.md](android/README.md).
 
@@ -92,8 +92,7 @@ off, and do not add code behind them.
 
 CI runs the checks below that a pull request can affect. A change to docs, `iso/` or
 `tools/` (apart from `tools/rustfmt.sh` and the layout audit) alone skips the Rust
-jobs, the relay job runs only when `relay/`, `phone/` or CI itself changes, the teams
-job only when `teams/` or CI itself changes, the iOS job only when `ios/`, `phone/`,
+jobs, the cloud job runs only when `cloud/`, `phone/` or CI itself changes, the iOS job only when `ios/`, `phone/`,
 the mascot's drawing or the fonts in `assets/`, or CI itself changes (a change to `ios/`
 alone skips the Rust jobs), the Android job likewise for `android/`, cargo-deny runs only
 when `Cargo.toml`, `Cargo.lock` or `deny.toml` changes, and zizmor runs only when
@@ -118,12 +117,9 @@ cargo clippy --locked -p arakun-server -- -D warnings
 # Cargo.toml, Cargo.lock or deny.toml changed (cargo install --locked cargo-deny)
 cargo deny check
 
-# relay/ or phone/ changed
-(cd relay && npm ci && npx tsc --noEmit && npx vitest run)
+# cloud/ or phone/ changed
+(cd cloud && npm ci && npx tsc --noEmit && npx vitest run)
 (cd phone && node --test "test/*.test.mjs")
-
-# teams/ changed
-(cd teams && npm ci && npx tsc --noEmit && npx vitest run)
 
 # ios/ changed (macOS with Xcode; brew install xcodegen)
 (cd ios/ArakunKit && swift test)
@@ -193,10 +189,9 @@ then turn the hooks on in your checkout:
 lefthook install
 ```
 
-- **On commit:** clippy if Rust files changed, the relay's types if `relay/` changed,
-  the teams Worker's types if `teams/` changed, and the phone tests if `phone/` or
+- **On commit:** clippy if Rust files changed, the cloud Worker's types if `cloud/` changed, and the phone tests if `phone/` or
   `core/src/phone/` changed. They check the files on disk, not only what you staged.
-- **On push:** `cargo test`, the relay tests, the teams tests, on macOS the iOS
+- **On push:** `cargo test`, the cloud tests, on macOS the iOS
   protocol tests (`swift test` in `ios/ArakunKit`), and the Android app's tests, lint
   and build, if the commits you push change those parts.
 - **On the commit message:** the Conventional Commits check (see
@@ -359,7 +354,9 @@ that keeps one on purpose goes on its allow-list.
     in behavior), `perf`, `test`, `build` (Cargo, dependencies, tools), `ci`, `chore`
     or `revert` (`revert: <the title of the change you undo>`).
   - **scope** (optional): the part of Arakun it touches, usually the module or folder:
-    `terminal`, `agent`, `browser`, `phone`, `relay`, `teams`, `iso`, `windows`...
+    `terminal`, `agent`, `browser`, `phone`, `cloud`, `server`, `teams`, `ios`,
+    `android`, `iso`, `windows`... `cloud` is the Worker in `cloud/` and replaces
+    `relay`.
   - **description:** imperative and lower case, with no period at the end, for example
     `fix(terminal): keep the tab name on resize` or
     `feat(phone): answer permission prompts`.
@@ -418,7 +415,7 @@ that keeps one on purpose goes on its allow-list.
   (`CLAUDE.md` loads it for Claude Code). If you change a rule here, change it there too.
 
 You don't need to set labels. A workflow gives pull requests area labels
-(`area: relay`, `area: ci`, ...) from the paths they change, and issues from
+(`area: cloud`, `area: ci`, ...) from the paths they change, and issues from
 their title prefix (`CI:`, `Relay:`) or the issue form's Area field. The release
 notes are grouped by these labels. The labels themselves live in
 `.github/labels.yml`.

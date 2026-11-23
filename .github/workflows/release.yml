@@ -311,7 +311,7 @@ jobs:
   # A tag or a nightly is on a commit that main's CI already checked. If
   # that run passed with every Rust job run (none skipped because the commit
   # changed no Rust), the ci job skips its jobs instead of running them
-  # again. The relay, teams, iOS and Android jobs may have skipped: the
+  # again. The cloud, iOS and Android jobs may have skipped: the
   # archives hold none of their code, and changes there pass those jobs
   # before they merge.
   # A run still going is waited
@@ -364,13 +364,13 @@ jobs:
               | ["What changed", "Clippy (no warnings)", "Clippy (Linux, browser)",
                  "Tests (Linux, no browser)", "Server (Linux, no display libraries)",
                  "Clippy (Windows)", "Clippy and tests (macOS, no browser)",
-                 "Relay (types and tests)", "Teams (types and tests)",
+                 "Cloud (types and tests)",
                  "iOS (Swift tests and simulator build)",
                  "Android (Kotlin tests, lint and build)"] as $expected
               | ($jobs | length) == .[0].total_count
                 and (($expected - [$jobs[].name]) | length == 0)
                 and all($jobs[]; .conclusion == "success" or (.conclusion == "skipped"
-                  and (.name == "Relay (types and tests)" or .name == "Teams (types and tests)"
+                  and (.name == "Cloud (types and tests)"
                     or .name == "iOS (Swift tests and simulator build)"
                     or .name == "Android (Kotlin tests, lint and build)")))
             ' > /dev/null <<< "$jobs"; then
@@ -1150,13 +1150,14 @@ jobs:
             dist/SHA256SUMS
             dist/SHA256SUMS.minisig
 
-  # The hosted relay ships with the release: once the release is out, deploy
-  # the relay and phone page from its tag. A relay hotfix without a new
-  # version, and its rules, are in relay-deploy.yml. It skips pre-releases.
-  relay:
-    name: Relay
+  # The hosted cloud Worker (the relay and teams) ships with the release: once
+  # the release is out, deploy it and the phone page from its tag. A hotfix
+  # without a new version, and its rules, are in cloud-deploy.yml. It skips
+  # pre-releases.
+  cloud:
+    name: Cloud
     needs: release
-    uses: $/.github/workflows/relay-deploy.yml
+    uses: $/.github/workflows/cloud-deploy.yml
     # It lives in the `production` environment, which the called job uses.
     secrets:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

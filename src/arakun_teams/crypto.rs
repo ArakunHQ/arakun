@@ -1,4 +1,4 @@
-//! The cryptography of Arakun Teams, as `teams/PROTOCOL.md` says it: the
+//! The cryptography of Arakun Teams, as `cloud/PROTOCOL.md` says it: the
 //! device's two P-256 key pairs, the envelopes that carry a team key to one
 //! device, and what is sealed with a team key (channel names, messages).
 //!
@@ -812,7 +812,7 @@ mod tests {
         assert_eq!((e.v, e.epoch, e.from.as_str()), (1, 2, admin.id()));
         let admin_pub = unb64(admin.sig_pub()).unwrap();
         assert_eq!(open_envelope(&e, "T", &member, &admin_pub), Ok(key));
-        // The shapes the Worker checks (teams/src/wire.ts).
+        // The shapes the Worker checks (cloud/src/wire.ts).
         assert_eq!(unb64(&e.eph_pub).unwrap().len(), 65);
         assert_eq!(unb64(&e.nonce).unwrap().len(), 12);
         assert_eq!(unb64(&e.ct).unwrap().len(), 48);
@@ -1070,7 +1070,7 @@ mod tests {
     fn ulids_look_like_the_servers() {
         let id = ulid();
         assert_eq!(id.len(), 26);
-        // teams/src/util.ts: ^[0-7][0-9A-HJKMNP-TV-Z]{25}$
+        // cloud/src/util.ts: ^[0-7][0-9A-HJKMNP-TV-Z]{25}$
         assert!(matches!(id.as_bytes()[0], b'0'..=b'7'));
         assert!(id.bytes().all(|b| CROCKFORD.contains(&b)));
         // The ULID spec's example time, 1469918176385 ms, is 01ARYZ6S41.

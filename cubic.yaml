@@ -80,8 +80,7 @@ reviews:
       - "src/posthog/**"
       - "src/github/**"
       - "core/src/phone/**"
-      - "relay/**"
-      - "teams/**"
+      - "cloud/**"
       - "src/arakun_teams/**"
       - "phone/**"
       # The iOS app's protocol, pairing and the credentials it keeps.
@@ -134,8 +133,7 @@ reviews:
   ignore:
     files:
       - "Cargo.lock"
-      - "relay/package-lock.json"
-      - "teams/package-lock.json"
+      - "cloud/package-lock.json"
       # Images and fonts only: assets/*.pub are the release signing keys.
       - "assets/**/*.png"
       - "assets/**/*.svg"
@@ -155,7 +153,7 @@ reviews:
         - ".github/workflows/**"
         - ".github/actions/**"
       description: |
-        Check permissions are as narrow as the job needs, every action is pinned to a full commit SHA with its version as a comment (`uses: owner/action@<sha> # v1.2.3`), never a tag or branch, untrusted input (PR titles, branch names, issue bodies) never reaches a shell unquoted, and `pull_request_target` never checks out the PR's code. The main ruleset requires the checks "Clippy (no warnings)", "Tests (Linux, no browser)", "Relay (types and tests)", "cla-assistant" and the "Human approval" status (set by the Human approval workflow); renaming those jobs or that status blocks every merge. A change to the paths the "What changed" job in ci.yml sorts must match the globs in lefthook.yml. `reviewers.yml` and `human-approval.yml` run with a write token on pull requests from forks; they must never check out or run the pull request's code. `reviewers.yml` starts on cubic's "cubic · AI code reviewer" check run and reads cubic-dev-ai[bot]'s reviews; a change to that name or login there must match cubic.
+        Check permissions are as narrow as the job needs, every action is pinned to a full commit SHA with its version as a comment (`uses: owner/action@<sha> # v1.2.3`), never a tag or branch, untrusted input (PR titles, branch names, issue bodies) never reaches a shell unquoted, and `pull_request_target` never checks out the PR's code. The main ruleset requires the checks "Clippy (no warnings)", "Tests (Linux, no browser)", "Cloud (types and tests)", "cla-assistant" and the "Human approval" status (set by the Human approval workflow); renaming those jobs or that status blocks every merge. A change to the paths the "What changed" job in ci.yml sorts must match the globs in lefthook.yml. `reviewers.yml` and `human-approval.yml` run with a write token on pull requests from forks; they must never check out or run the pull request's code. `reviewers.yml` starts on cubic's "cubic · AI code reviewer" check run and reads cubic-dev-ai[bot]'s reviews; a change to that name or login there must match cubic.
         Composite actions in .github/actions run inside the CI jobs that use them, with those jobs' tokens. Pin every action they use to a full commit SHA with its version as a comment. Pass inputs to shell steps through `env:`, never by putting `${{ inputs.* }}` straight into a `run:` script.
     - name: Repository rules
       file_paths:
@@ -209,13 +207,12 @@ reviews:
       description: |
         account.rs, fetch.rs and voice.rs read and use API keys. Keys come from the desktop keyring or an environment variable and must never be logged, shown in full, or written to a file other than the keyring.
         src/cloudflare, src/posthog and src/github use the user's sign-ins (the `cf` profile, PostHog API keys in a 0600 file, the `gh` CLI). Check that tokens are never logged or shown, that files holding them are created 0600, and that network calls run off the UI thread with a timeout.
-    - name: Relay and teams Workers
+    - name: Cloud Worker (relay and teams)
       include:
-        - "relay/**"
-        - "teams/**"
+        - "cloud/**"
       description: |
-        The relay is a Cloudflare Worker that forwards encrypted frames between the desktop and the phone. It must never see plaintext or keys. Check limits and input validation on every frame, authentication on admin routes, and Durable Object state that can grow without a bound. A new route or limit needs a test in `relay/test`.
-        The teams Worker signs users in with GitHub and keeps per-user feature flags in D1. It must never store or log the GitHub token or a session token; the database holds only SHA-256 hashes of sessions. Users are keyed by numeric GitHub ID, never by login. Every endpoint that needs a user goes through `session()`, and every team feature checks its flag on the server. Admin routes compare `ADMIN_SECRET` in constant time. No GitHub IDs of real users belong in the repository. A schema change is a new file in `teams/migrations`, never an edit to an applied one. A new route or check needs a test in `teams/test`.
+        The relay (`cloud/src/relay`) is part of the one Cloudflare Worker in `cloud/`. It forwards encrypted frames between the desktop and the phone. It must never see plaintext or keys. Check limits and input validation on every frame, authentication on admin routes, and Durable Object state that can grow without a bound. A new route or limit needs a test in `cloud/test/relay`.
+        The teams API (the rest of `cloud/src`) signs users in with GitHub and keeps per-user feature flags in D1. It must never store or log the GitHub token or a session token; the database holds only SHA-256 hashes of sessions. Users are keyed by numeric GitHub ID, never by login. Every endpoint that needs a user goes through `session()`, and every team feature checks its flag on the server. Admin routes compare `ADMIN_SECRET` in constant time. No GitHub IDs of real users belong in the repository. A schema change is a new file in `cloud/migrations`, never an edit to an applied one. A new route or check needs a test in `cloud/test`.
     - name: Control socket and formats stored on disk
       include:
         - "src/control.rs"

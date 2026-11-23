@@ -1212,6 +1212,7 @@ impl Hub {
             )
         });
         let rotation = read.detail.rotation_pending;
+        let epoch = read.detail.epoch;
         if self.peer_review.as_ref().is_some_and(|g| {
             self.channels
                 .get(&g.channel)
@@ -1241,6 +1242,9 @@ impl Hub {
         );
         if let Some(row) = self.teams.iter_mut().find(|t| t.team_id == team_id) {
             row.rotation_pending = rotation;
+            // A rotation made on another device reaches the detail first, and
+            // `roster` needs the two to agree; epochs only grow.
+            row.epoch = row.epoch.max(epoch);
         }
         // Messages that waited on a device list, and any sealed with a key
         // that just arrived, get another look.

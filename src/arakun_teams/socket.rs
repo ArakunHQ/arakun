@@ -245,16 +245,14 @@ fn connect(dial: &Dial) -> Result<Socket, Ended> {
             .map_err(|_| Ended::Refused("The session can't go in a header.".into()))?;
         headers.insert(name, value);
     }
-    let addrs = (host.as_str(), port)
-        .to_socket_addrs()
-        .map_err(|e| Ended::Retry(format!("Could not resolve {host}: {e}")))?;
-    let stream = addrs
-        .into_iter()
-        .find_map(|addr| TcpStream::connect_timeout(&addr, CONNECT_TIMEOUT).ok())
-        .ok_or_else(|| Ended::Retry(format!("Could not reach {host}:{port}.")))?;
-    let _ = stream.set_nodelay(true);
-    let _ = stream.set_read_timeout(Some(CONNECT_TIMEOUT));
-    let _ = stream.set_write_timeout(Some(CONNECT_TIMEOUT));
+    let stream = match proxy_for(&dial.url) {
+        Some(proxy) => {
+            let stream = dial_tcp(proxy.host(), proxy.port())?;
+            tunnel(&stream, &proxy, &host, port)?;
+            stream
+        }
+        None => dial_tcp(&host, port)?,
+    };
     let (ws, _) = tungstenite::client_tls(request, stream).map_err(|e| match e {
         tungstenite::HandshakeError::Failure(tungstenite::Error::Http(res)) => {
             match res.status().as_u16() {
@@ -280,6 +278,87 @@ fn connect(dial: &Dial) -> Result<Socket, Ended> {
         _ => {}
     }
     Ok(ws)
+}
+
+fn dial_tcp(host: &str, port: u16) -> Result<TcpStream, Ended> {
+    let addrs = (host, port)
+        .to_socket_addrs()
+        .map_err(|e| Ended::Retry(format!("Could not resolve {host}: {e}")))?;
+    let stream = addrs
+        .into_iter()
+        .find_map(|addr| TcpStream::connect_timeout(&addr, CONNECT_TIMEOUT).ok())
+        .ok_or_else(|| Ended::Retry(format!("Could not reach {host}:{port}.")))?;
+    let _ = stream.set_nodelay(true);
+    let _ = stream.set_read_timeout(Some(CONNECT_TIMEOUT));
+    let _ = stream.set_write_timeout(Some(CONNECT_TIMEOUT));
+    Ok(stream)
+}
+
+/// The proxy from the environment that the Teams API calls go through, so a
+/// network that only lets a proxy out reaches the socket too. Plain `ws://`
+/// to this machine skips it, as the API does, to keep the session off the
+/// network. Only an `http://` proxy can tunnel here; with another kind the
+/// socket dials straight out, as before.
+fn proxy_for(url: &str) -> Option<ureq::Proxy> {
+    let local = url
+        .strip_prefix("ws://")
+        .is_some_and(|rest| crate::github::pilot::local_http(&format!("http://{rest}")));
+    if local {
+        return None;
+    }
+    let proxy = ureq::Proxy::try_from_env()?;
+    let uri = ureq::http::Uri::try_from(url).ok()?;
+    (proxy.protocol() == ureq::ProxyProtocol::Http && !proxy.is_no_proxy(&uri)).then_some(proxy)
+}
+
+/// Asks an HTTP proxy for a tunnel to `host:port` (`CONNECT`); the TLS and
+/// WebSocket handshakes then run through it as over a direct connection.
+fn tunnel(stream: &TcpStream, proxy: &ureq::Proxy, host: &str, port: u16) -> Result<(), Ended> {
+    use base64::Engine as _;
+    use std::io::{Read as _, Write as _};
+    let target = if host.contains(':') {
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
+    };
+    let mut ask = format!("CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n");
+    if let Some(user) = proxy.username() {
+        let pair = format!("{user}:{}", proxy.password().unwrap_or_default());
+        let pair = base64::engine::general_purpose::STANDARD.encode(pair);
+        ask.push_str(&format!("Proxy-Authorization: Basic {pair}\r\n"));
+    }
+    ask.push_str("\r\n");
+    let mut stream = stream;
+    stream
+        .write_all(ask.as_bytes())
+        .map_err(|e| Ended::Retry(format!("Could not reach the proxy: {e}")))?;
+    // Byte by byte, so nothing after the proxy's answer is taken from TLS.
+    let mut head = Vec::new();
+    let mut byte = [0u8; 1];
+    while !head.ends_with(b"\r\n\r\n") {
+        if head.len() > 16 * 1024 {
+            return Err(Ended::Retry("The proxy's answer is too long.".into()));
+        }
+        match stream.read(&mut byte) {
+            Ok(1) => head.push(byte[0]),
+            Ok(_) => return Err(Ended::Retry("The proxy closed the connection.".into())),
+            Err(e) => return Err(Ended::Retry(format!("The proxy did not answer: {e}"))),
+        }
+    }
+    match tunnel_status(&head) {
+        Some(200..=299) => Ok(()),
+        Some(status) => Err(Ended::Retry(format!("The proxy answered {status}."))),
+        None => Err(Ended::Retry("The proxy's answer is not HTTP.".into())),
+    }
+}
+
+/// The status code of a proxy's answer to `CONNECT`.
+fn tunnel_status(head: &[u8]) -> Option<u16> {
+    let line = head.split(|b| *b == b'\n').next()?;
+    let line = std::str::from_utf8(line).ok()?;
+    let mut parts = line.split_whitespace();
+    parts.next()?.starts_with("HTTP/").then_some(())?;
+    parts.next()?.parse().ok()
 }
 
 /// Host and port out of a `ws://` or `wss://` address.
@@ -321,6 +400,56 @@ mod tests {
         );
         assert_eq!(host_port("ws://[::1]:8787/x"), Some(("::1".into(), 8787)));
         assert_eq!(host_port("https://teams.arakun.dev"), None);
+    }
+
+    #[test]
+    fn reads_the_status_of_a_proxy_answer() {
+        assert_eq!(
+            tunnel_status(b"HTTP/1.1 200 Connection established\r\n\r\n"),
+            Some(200)
+        );
+        assert_eq!(
+            tunnel_status(b"HTTP/1.0 407 Proxy Authentication Required\r\n\r\n"),
+            Some(407)
+        );
+        assert_eq!(tunnel_status(b"SSH-2.0-OpenSSH\r\n\r\n"), None);
+    }
+
+    #[test]
+    fn tunnels_through_an_http_proxy() {
+        use std::io::{Read as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let proxy = std::thread::spawn(move || {
+            let (mut conn, _) = listener.accept().unwrap();
+            let mut asked = Vec::new();
+            let mut byte = [0u8; 1];
+            while !asked.ends_with(b"\r\n\r\n") {
+                conn.read_exact(&mut byte).unwrap();
+                asked.push(byte[0]);
+            }
+            // What follows the answer belongs to the tunnel, not the answer.
+            conn.write_all(b"HTTP/1.1 200 Connection established\r\n\r\nTLS")
+                .unwrap();
+            String::from_utf8(asked).unwrap()
+        });
+        let p = ureq::Proxy::new(&format!("http://me:pw@127.0.0.1:{port}")).unwrap();
+        let Ok(stream) = dial_tcp("127.0.0.1", port) else {
+            panic!("could not reach the test proxy");
+        };
+        assert!(tunnel(&stream, &p, "teams.arakun.dev", 443).is_ok());
+        let mut rest = [0u8; 3];
+        (&stream).read_exact(&mut rest).unwrap();
+        assert_eq!(&rest, b"TLS");
+        let asked = proxy.join().unwrap();
+        assert!(asked.starts_with("CONNECT teams.arakun.dev:443 HTTP/1.1\r\n"));
+        assert!(asked.contains("Proxy-Authorization: Basic bWU6cHc=\r\n"));
+    }
+
+    #[test]
+    fn a_local_plain_socket_skips_the_proxy() {
+        assert!(proxy_for("ws://localhost:8787/teams/A/channels/B/ws").is_none());
+        assert!(proxy_for("ws://127.0.0.1:8787/x").is_none());
     }
 
     #[test]

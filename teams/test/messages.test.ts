@@ -12,7 +12,7 @@ async function stored(s: Socket): Promise<{ seq: number; at: number; message: { 
   return got;
 }
 
-async function refused(s: Socket): Promise<{ id: string | null; error: string }> {
+async function refused(s: Socket): Promise<{ id: string | null; code?: string; error: string }> {
   const got = await s.inbox.next();
   if (got.type !== "error") throw new Error(`expected an error, got ${JSON.stringify(got)}`);
   return got;
@@ -275,7 +275,7 @@ describe("channel sockets", () => {
     });
     const msg = await message(t.teamId, t.channelId, t.owner.device, 1, t.keys.get(1)!, "not now");
     a.send(msg);
-    expect(await refused(a)).toEqual({ type: "error", id: msg.id, error: "the server could not check the message: send it again" });
+    expect(await refused(a)).toEqual({ type: "error", id: msg.id, code: "retry", error: "the server could not check the message: send it again" });
     expect(await storedCount(t)).toBe(0);
     a.ws.close();
   });
@@ -603,7 +603,7 @@ describe("history", () => {
     expect((await stored(a)).seq).toBe(10001);
     expect(await storedCount(t)).toBe(1);
     a.send(first);
-    expect((await refused(a)).error).toContain("exists");
+    expect(await refused(a)).toMatchObject({ code: "exists" });
     expect(await storedCount(t)).toBe(1);
     a.ws.close();
   });

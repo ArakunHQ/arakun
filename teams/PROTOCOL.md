@@ -353,11 +353,13 @@ in `Authorization`, device in `X-Arakun-Device`). Frames are JSON text:
       the team again and send once the new key has reached the device;
     - `stale_epoch`: a newer epoch has envelopes. Read the team again, fetch the
       new key, seal the message again with it and send it;
-    - `unknown_epoch`: the epoch is newer than the team's.
-    Every epoch refusal says "epoch" in `error`, and none says "exists", for
-    clients from before `code`. When the server could not run its checks (D1 or
-    the rate limiter failed), `error` ends in "send it again", and the client may
-    send the same message again, with the same `id`;
+    - `unknown_epoch`: the epoch is newer than the team's. Read the team again;
+    - `retry`: the server could not run its checks (D1 or the rate limiter
+      failed). The client may send the same message again, with the same `id`.
+    A refusal without a code (a bad signature, too many messages) asks nothing
+    of the client but to show it. Every epoch refusal says "epoch" in
+    `error`, none says "exists", and a `retry` one ends in "send it again", for
+    clients from before `code`;
   - `{ "type": "presence", "here": [<github-id>, ...] }` to every socket on the
     channel when one opens or closes: the GitHub IDs with a socket open on this
     channel, sorted, each once. A new socket gets one right away. A socket whose

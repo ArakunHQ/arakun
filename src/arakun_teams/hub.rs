@@ -2313,7 +2313,7 @@ impl Hub {
                         // Send again asks with the project open then.
                         self.bot.asked.remove(&id);
                         self.messages_rev += 1;
-                        if kind == Refusal::OldKey || why.contains("epoch") {
+                        if matches!(kind, Refusal::OldKey | Refusal::Epoch) {
                             let team = c.team_id.clone();
                             self.load_team(&team, cx);
                         }
@@ -3299,6 +3299,8 @@ enum Refusal {
     Stored,
     /// Sealed with a key a removal retired: read the team, seal it again.
     OldKey,
+    /// Another epoch problem (one newer than the team's): read the team.
+    Epoch,
     Other,
 }
 
@@ -3308,6 +3310,9 @@ fn refusal(frame: &serde_json::Value) -> Refusal {
     match frame["code"].as_str() {
         Some("exists") => return Refusal::Stored,
         Some("rotation_pending" | "stale_epoch") => return Refusal::OldKey,
+        Some("unknown_epoch") => return Refusal::Epoch,
+        // Nothing to do but show it; its wording must not decide.
+        Some("retry") => return Refusal::Other,
         _ => {}
     }
     let why = frame["error"].as_str().unwrap_or_default();
@@ -3315,6 +3320,8 @@ fn refusal(frame: &serde_json::Value) -> Refusal {
         Refusal::Stored
     } else if why.starts_with("stale epoch") || why.contains("has no envelopes yet") {
         Refusal::OldKey
+    } else if why.contains("epoch") {
+        Refusal::Epoch
     } else {
         Refusal::Other
     }
@@ -3882,7 +3889,23 @@ mod tests {
         );
         assert_eq!(
             refusal(&frame(Some("unknown_epoch"), "unknown epoch")),
+            Refusal::Epoch
+        );
+        // A known code decides, whatever the text says.
+        assert_eq!(
+            refusal(&frame(Some("unknown_epoch"), "too far ahead")),
+            Refusal::Epoch
+        );
+        assert_eq!(
+            refusal(&frame(
+                Some("retry"),
+                "the epoch check failed: send it again"
+            )),
             Refusal::Other
+        );
+        assert_eq!(
+            refusal(&frame(Some("exists"), "already stored")),
+            Refusal::Stored
         );
         // Servers from before `code`.
         assert_eq!(
@@ -3900,6 +3923,7 @@ mod tests {
             refusal(&frame(None, "a message with this id exists")),
             Refusal::Stored
         );
+        assert_eq!(refusal(&frame(None, "unknown epoch")), Refusal::Epoch);
         assert_eq!(
             refusal(&frame(None, "too many messages, slow down")),
             Refusal::Other

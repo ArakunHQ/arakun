@@ -638,7 +638,8 @@ after a week).
   `ARAKUN_TEAMS_URL` points Arakun at another Teams server, such as one run with
   `wrangler dev` (see [teams/README.md](teams/README.md)); the default is
   `https://teams.arakun.dev`, and plain `http://` works only for `localhost`,
-  `127.0.0.1` and `[::1]`.
+  `127.0.0.1` and `[::1]`. Each server keeps its own session in the keyring, so
+  signing in to a local server leaves the one for `teams.arakun.dev` alone.
 
 ### Make it yours
 

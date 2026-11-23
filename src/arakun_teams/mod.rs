@@ -15,7 +15,23 @@ use gpui::{AppContext as _, AsyncApp, Context, SharedString, Task, WeakEntity};
 use crate::platform::keyring;
 use api::{ApiError, Me, Poll};
 
-const KEYRING_ACCOUNT: &str = "teams-session";
+/// The keyring entry of the session. A server other than the default keeps
+/// its own: a `wrangler dev` server answers 401 to the real session, and that
+/// 401 would clear it while the real server still holds it.
+fn keyring_account() -> String {
+    keyring_account_for(std::env::var(api::URL_ENV).ok().as_deref())
+}
+
+/// Keyed by the address as given, not as checked, so a session stored for a
+/// server whose address is now wrong can still be found and cleared.
+fn keyring_account_for(url: Option<&str>) -> String {
+    let url = url.map_or("", |u| u.trim().trim_end_matches('/'));
+    if url.is_empty() || url == api::DEFAULT_URL {
+        "teams-session".into()
+    } else {
+        format!("teams-session@{url}")
+    }
+}
 
 /// Where the sign-in stands.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -204,7 +220,7 @@ impl Teams {
                 self.me = None;
                 self.error = Some("The Teams session ended. Sign in again.".into());
                 self.stop_retrying();
-                cx.background_spawn(async move { keyring::clear(KEYRING_ACCOUNT) })
+                cx.background_spawn(async move { keyring::clear(&keyring_account()) })
                     .detach();
             }
             // Asking again failed: what the server said before still stands.
@@ -302,7 +318,7 @@ impl Teams {
             end_session(
                 &session,
                 base.as_deref(),
-                || keyring::clear(KEYRING_ACCOUNT),
+                || keyring::clear(&keyring_account()),
                 api::logout,
             );
         })
@@ -425,7 +441,7 @@ async fn device_flow(
         let signed = api::sign_in(&base, &token).map_err(|e| format!("Teams: {e}"));
         drop(token);
         let signed = signed?;
-        let saved = keyring::store(KEYRING_ACCOUNT, "arakun: Teams session", &signed.session);
+        let saved = keyring::store(&keyring_account(), "arakun: Teams session", &signed.session);
         Ok((signed, saved))
     })
     .await
@@ -459,7 +475,7 @@ fn load_session() -> Option<String> {
     if fixture().is_some() {
         return Some("fixture-session-0000000000".into());
     }
-    keyring::lookup(KEYRING_ACCOUNT).filter(|s| session_ok(s))
+    keyring::lookup(&keyring_account()).filter(|s| session_ok(s))
 }
 
 /// `ARAKUN_TEAMS_FIXTURE=<me.json>` stands in for the session and `GET /me`,
@@ -495,6 +511,20 @@ mod tests {
         assert!(!poll_again(&offline, POLL_DROPS));
         assert!(!poll_again(&ApiError::Unreadable, 0));
         assert!(!poll_again(&ApiError::Status(400, "bad".into()), 0));
+    }
+
+    #[test]
+    fn another_server_keeps_its_own_session() {
+        assert_eq!(keyring_account_for(None), "teams-session");
+        assert_eq!(keyring_account_for(Some(" ")), "teams-session");
+        assert_eq!(
+            keyring_account_for(Some("https://teams.arakun.dev/")),
+            "teams-session"
+        );
+        assert_eq!(
+            keyring_account_for(Some("http://localhost:8787/")),
+            "teams-session@http://localhost:8787"
+        );
     }
 
     #[test]

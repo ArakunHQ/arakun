@@ -21,6 +21,17 @@ use super::api::DEVICE_HEADER;
 const RETRY_MIN: Duration = Duration::from_secs(1);
 const RETRY_MAX: Duration = Duration::from_secs(60);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+/// How long one address may take to answer before the next is tried.
+const ATTEMPT_TIMEOUT: Duration = Duration::from_secs(4);
+/// The last address has no fallback, so it gets the whole connect timeout:
+/// a slow link with one address must still connect.
+fn attempt_timeout(last: bool) -> Duration {
+    if last {
+        CONNECT_TIMEOUT
+    } else {
+        ATTEMPT_TIMEOUT
+    }
+}
 /// How long a read waits before the loop looks at what there is to send.
 const READ_TICK: Duration = Duration::from_millis(20);
 const WAIT_TICK: Duration = Duration::from_millis(100);
@@ -281,12 +292,18 @@ fn connect(dial: &Dial) -> Result<Socket, Ended> {
 }
 
 fn dial_tcp(host: &str, port: u16) -> Result<TcpStream, Ended> {
-    let addrs = (host, port)
+    let mut addrs: Vec<_> = (host, port)
         .to_socket_addrs()
-        .map_err(|e| Ended::Retry(format!("Could not resolve {host}: {e}")))?;
+        .map_err(|e| Ended::Retry(format!("Could not resolve {host}: {e}")))?
+        .collect();
+    // IPv4 first, and a short wait per address: on a network whose IPv6 is
+    // broken, each IPv6 attempt would otherwise hang for the whole timeout.
+    super::api::ipv4_first(&mut addrs);
+    let last = addrs.len().saturating_sub(1);
     let stream = addrs
         .into_iter()
-        .find_map(|addr| TcpStream::connect_timeout(&addr, CONNECT_TIMEOUT).ok())
+        .enumerate()
+        .find_map(|(i, addr)| TcpStream::connect_timeout(&addr, attempt_timeout(i == last)).ok())
         .ok_or_else(|| Ended::Retry(format!("Could not reach {host}:{port}.")))?;
     let _ = stream.set_nodelay(true);
     let _ = stream.set_read_timeout(Some(CONNECT_TIMEOUT));
@@ -463,5 +480,11 @@ mod tests {
         assert_eq!(wait_after(RETRY_MAX, Duration::from_secs(1)), RETRY_MAX);
         assert_eq!(wait_after(waited, STEADY), RETRY_MIN);
         assert_eq!(wait_after(RETRY_MAX, Duration::from_secs(3600)), RETRY_MIN);
+    }
+
+    #[test]
+    fn only_the_last_address_waits_the_whole_timeout() {
+        assert_eq!(attempt_timeout(false), ATTEMPT_TIMEOUT);
+        assert_eq!(attempt_timeout(true), CONNECT_TIMEOUT);
     }
 }

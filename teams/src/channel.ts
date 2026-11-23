@@ -232,7 +232,7 @@ export class Channel extends DurableObject<Env> {
       limited = !(await this.env.SEND_LIMIT.limit({ key: who.deviceId })).success;
     } catch (e) {
       console.error("send limit failed:", e);
-      return this.refuse(ws, msg.id, CHECK_FAILED);
+      return this.refuse(ws, msg.id, CHECK_FAILED, "retry");
     }
     if (limited) return this.refuse(ws, msg.id, "too many messages, slow down");
 
@@ -259,7 +259,7 @@ export class Channel extends DurableObject<Env> {
       // D1 can refuse a read, for one when its queue is full. Nothing is
       // stored without the checks, and the sender hears it can try again.
       console.error("send check failed:", e);
-      return this.refuse(ws, msg.id, CHECK_FAILED);
+      return this.refuse(ws, msg.id, CHECK_FAILED, "retry");
     }
     if (!team || !live(allowed, who.session)) return this.forbidSend(ws, msg.id);
     if (!epochAllowed(msg.epoch, team.epoch, team.keyed_epoch)) return this.refuseEpoch(ws, msg.id, epochRefused(msg.epoch, team.epoch, team.keyed_epoch));
@@ -282,7 +282,7 @@ export class Channel extends DurableObject<Env> {
       }
     } catch (e) {
       console.error("send recheck failed:", e);
-      return this.refuse(ws, msg.id, CHECK_FAILED);
+      return this.refuse(ws, msg.id, CHECK_FAILED, "retry");
     }
 
     // The epochs were read before the awaits above: a removal in between
@@ -295,7 +295,7 @@ export class Channel extends DurableObject<Env> {
       teamNow = await this.env.DB.prepare("SELECT epoch, keyed_epoch FROM teams WHERE team_id = ?").bind(who.teamId).first<{ epoch: number; keyed_epoch: number }>();
     } catch (e) {
       console.error("send epoch check failed:", e);
-      return this.refuse(ws, msg.id, CHECK_FAILED);
+      return this.refuse(ws, msg.id, CHECK_FAILED, "retry");
     }
     // A full recheck can withdraw the sender's access, and the session may
     // have expired during the last read. Nothing awaits after this check.

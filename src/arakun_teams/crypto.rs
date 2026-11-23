@@ -94,6 +94,15 @@ pub fn device_id_of(sig_pub: &[u8]) -> String {
     b64(&sha2::Sha256::digest(sig_pub)[..16])
 }
 
+/// Whether `id` has the shape of a device ID: 16 bytes in base64url, 22
+/// characters with no padding.
+pub fn is_device_id(id: &str) -> bool {
+    id.len() == 22
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
 /// The numbers two people read to each other to check that a device is who
 /// it says, Signal style: six groups of five digits from both devices'
 /// public keys (base64url), each given as `(sig_pub, enc_pub)`. Both keys
@@ -738,6 +747,10 @@ mod tests {
         );
         let d = Device::generate();
         assert_eq!(d.id(), device_id_of(&unb64(d.sig_pub()).unwrap()));
+        assert!(is_device_id(&id) && is_device_id(d.id()));
+        for bad in ["", "short", "a/b+c=d0123456789012345", &format!("{id}A")] {
+            assert!(!is_device_id(bad), "{bad}");
+        }
     }
 
     #[test]

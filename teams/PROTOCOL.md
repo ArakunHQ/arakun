@@ -83,6 +83,18 @@ user with no devices is listed with none. The answer is
 teams reads this once instead of each member's list once per team. A server from
 before this call answers `404`; the client then asks for each user.
 
+`GET /teams/<team_id>/channels/<channel_id>/senders/<device_id>` (member, with
+`X-Arakun-Device`) finds who wrote a message the client cannot place: someone who
+has left the team, whose devices neither `GET /users/<github_id>/devices` nor
+`GET /devices` lists any more.
+It answers `{ github_id, login, devices: [...] }`, `devices` being that user's
+devices in the same shape as above, so the client checks the endorsement chain
+and the pinned first device the same way. `404` unless the channel still keeps a
+message from that device, so a member cannot list the devices of someone who
+never wrote there. A client shows such a message as from a former member when
+its sender is not a member now. An older server answers `404` for the path too;
+the client then hides those messages as ones it could not check.
+
 Every request a device makes about its own keys carries `X-Arakun-Device: <device_id>`:
 accept, approve, both envelope requests, the channel socket and history. `400`
 without it, `403` if it is not one of the caller's devices.
@@ -294,7 +306,8 @@ A message on the wire:
 - `sig` = ECDSA by the sender device over UTF-8
   `arakun-teams/v1/message|<team_id>|<channel_id>|<id>|<epoch>|<nonce>|<ct>`, so
   the server cannot forge or alter messages. Clients drop messages whose signature
-  or sender device does not check out.
+  or sender device does not check out. A sender who has left the team is looked
+  up with `.../senders/<device_id>` (see Devices).
 - The plaintext inside `ct` is JSON:
 
 ```json

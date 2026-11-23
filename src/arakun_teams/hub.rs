@@ -20,7 +20,7 @@ use gpui::{AppContext as _, Context, Entity, Task};
 use super::Teams;
 use super::api::{
     ApiError, Call, DeviceRow, Endorsement, InviteRow, Me, MemberRow, PendingRow, Remind, Role,
-    Stored, TeamDetail, TeamInvite, TeamRow, WaitingRow,
+    SenderRow, Stored, TeamDetail, TeamInvite, TeamRow, WaitingRow,
 };
 use super::coord::{self, Event as PeerEvent, Grant};
 use super::crypto::{self, Body, Envelope, TeamKey, WireMessage};
@@ -95,6 +95,9 @@ pub struct TeamState {
     pub devices: HashMap<u64, Vec<DeviceRow>>,
     /// Members with a device whose chain does not check out.
     pub untrusted: Vec<String>,
+    /// People who wrote in the team's channels and are not members now, with
+    /// their devices whose chain checks out, so their messages still show.
+    pub former: HashMap<u64, Former>,
     pub channels: Vec<ChannelInfo>,
     pub pending: Vec<PendingRow>,
     /// The team's open invites, for its admins; `None` when the server
@@ -111,10 +114,21 @@ pub struct TeamState {
     devices_read: Instant,
 }
 
+/// Someone who wrote in a team's channels and has left it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Former {
+    pub login: String,
+    /// Their devices whose endorsement chain checks out.
+    pub devices: Vec<DeviceRow>,
+}
+
 impl TeamState {
-    /// The member a device belongs to, with that device.
+    /// Who a device belongs to, with that device: a member, or else someone
+    /// who has left.
     fn sender(&self, device_id: &str) -> Option<(u64, &DeviceRow)> {
-        self.devices.iter().find_map(|(gid, ds)| {
+        let members = self.devices.iter();
+        let former = self.former.iter().map(|(gid, f)| (gid, &f.devices));
+        members.chain(former).find_map(|(gid, ds)| {
             ds.iter()
                 .find(|d| d.device_id == device_id)
                 .map(|d| (*gid, d))
@@ -127,7 +141,14 @@ impl TeamState {
             .iter()
             .find(|m| m.github_id == github_id)
             .map(|m| m.login.clone())
+            .or_else(|| self.former.get(&github_id).map(|f| f.login.clone()))
             .unwrap_or_else(|| "someone".into())
+    }
+
+    /// Whether this person is not a member of the team now: their messages
+    /// show as from a former member.
+    pub fn is_former(&self, github_id: u64) -> bool {
+        !self.detail.members.iter().any(|m| m.github_id == github_id)
     }
 }
 
@@ -1139,6 +1160,7 @@ impl Hub {
             return;
         }
         let held: HashSet<u64> = self.kept.keys(team_id).iter().map(|(e, _)| *e).collect();
+        let unknown = self.unknown_senders(team_id);
         let team_id = team_id.to_string();
         let admin = row.role.is_admin();
         let asked = Instant::now();
@@ -1149,7 +1171,7 @@ impl Hub {
             cx,
             {
                 let team_id = team_id.clone();
-                move |net| read_team(net, &team_id, admin, &held, &directory)
+                move |net| read_team(net, &team_id, admin, &held, &directory, &unknown)
             },
             move |hub, result, cx| {
                 hub.busy.remove(&busy);
@@ -1183,6 +1205,27 @@ impl Hub {
         );
     }
 
+    /// The devices of messages in this team's channels that wait for their
+    /// sender, each with a channel that holds one, for read_team to look up.
+    fn unknown_senders(&self, team_id: &str) -> Vec<(String, String)> {
+        let mut out: Vec<(String, String)> = Vec::new();
+        let former = self.team.get(team_id).map(|t| &t.former);
+        for c in self.channels.values().filter(|c| c.team_id == team_id) {
+            for s in &c.unknown {
+                let device = &s.message.device_id;
+                let known = former.is_some_and(|f| {
+                    f.values()
+                        .flat_map(|f| &f.devices)
+                        .any(|d| &d.device_id == device)
+                });
+                if !known && !out.iter().any(|(_, d)| d == device) {
+                    out.push((c.channel_id.clone(), device.clone()));
+                }
+            }
+        }
+        out
+    }
+
     fn team_read(&mut self, team_id: &str, role: Role, read: TeamRead, cx: &mut Context<Self>) {
         let mut changed = false;
         for (&gid, devices) in &read.devices {
@@ -1197,6 +1240,12 @@ impl Hub {
             }
             changed |= !known && !devices.is_empty();
         }
+        let mut former = self
+            .team
+            .get(team_id)
+            .map(|t| t.former.clone())
+            .unwrap_or_default();
+        changed |= adopt_former(&mut self.kept, &mut former, read.former);
         for (epoch, key) in &read.keys {
             changed |= self.kept.put_key(team_id, *epoch, key);
         }
@@ -1274,6 +1323,7 @@ impl Hub {
                 role,
                 devices: read.devices,
                 untrusted: read.untrusted,
+                former,
                 channels,
                 pending: read.pending,
                 invites: read.invites,
@@ -1291,7 +1341,8 @@ impl Hub {
             row.epoch = row.epoch.max(epoch);
         }
         // Messages that waited on a device list, and any sealed with a key
-        // that just arrived, get another look.
+        // that just arrived, get another look. Only the senders this read
+        // looked for are given up on; one that came in meanwhile waits.
         let keys: Vec<String> = self
             .channels
             .iter()
@@ -1302,7 +1353,7 @@ impl Hub {
             if let Some(c) = self.channels.get_mut(&key) {
                 let mut waiting = std::mem::take(&mut c.unknown);
                 waiting.append(&mut c.locked);
-                self.ingest(&key, waiting, true, cx);
+                self.ingest(&key, waiting, Some(&read.looked_up), cx);
             }
         }
         self.resend_rekeyed(team_id, cx);
@@ -2301,7 +2352,7 @@ impl Hub {
                         c.history.live(stored.seq);
                         let first_gap = c.history.gap() && !c.needs_history;
                         c.needs_history |= first_gap;
-                        self.ingest(key, vec![stored], false, cx);
+                        self.ingest(key, vec![stored], None, cx);
                         if first_gap {
                             self.catch_up(key, cx);
                         }
@@ -2397,7 +2448,7 @@ impl Hub {
                             c.history.page(last.seq);
                         }
                         c.needs_history = c.history.gap();
-                        hub.ingest(&key, stored, false, cx);
+                        hub.ingest(&key, stored, None, cx);
                         let c = hub.channels.get_mut(&key).expect("looked up above");
                         if !c.needs_history
                             && let Some(link) = &c.link
@@ -2423,8 +2474,15 @@ impl Hub {
 
     /// Checks and opens stored messages, and files them by `seq`. Ones from
     /// a device not known yet wait for the team's device lists to be read
-    /// again; once they were just read (`fresh`), those are dropped.
-    fn ingest(&mut self, key: &str, stored: Vec<Stored>, fresh: bool, cx: &mut Context<Self>) {
+    /// again; once a read just looked for that device (`looked_up`) and did
+    /// not find it, those are dropped.
+    fn ingest(
+        &mut self,
+        key: &str,
+        stored: Vec<Stored>,
+        looked_up: Option<&HashSet<String>>,
+        cx: &mut Context<Self>,
+    ) {
         let Some(c) = self.channels.get_mut(key) else {
             return;
         };
@@ -2441,7 +2499,7 @@ impl Hub {
                 continue;
             }
             let Some((gid, device)) = t.sender(&s.message.device_id) else {
-                if fresh {
+                if looked_up.is_some_and(|l| l.contains(&s.message.device_id)) {
                     c.hidden += 1;
                 } else {
                     unknown_seen = true;
@@ -3490,6 +3548,82 @@ pub fn trusted_devices(gid: u64, rows: &[DeviceRow]) -> Vec<DeviceRow> {
         .collect()
 }
 
+/// What [`find_former`] found: the people, and the devices it looked for
+/// and got an answer about.
+type FoundFormer = (Vec<(u64, Former)>, HashSet<String>);
+
+/// Looks up the senders in `unknown` that no member's trusted device
+/// matches: people who have left the team. Each answer is checked like a
+/// member's devices, and kept only if the device it is for checks out.
+/// Returns them, and the devices that got an answer: a member's device, or
+/// one the server answered about, `404` included (an older server has no
+/// such lookup and answers that). A device whose lookup failed otherwise is
+/// left out, so its messages wait for the next read.
+fn find_former(
+    members: &HashMap<u64, Vec<DeviceRow>>,
+    unknown: &[(String, String)],
+    mut lookup: impl FnMut(&str, &str) -> Result<Option<SenderRow>, ApiError>,
+) -> Result<FoundFormer, ApiError> {
+    let mut former: Vec<(u64, Former)> = Vec::new();
+    let mut looked_up = HashSet::new();
+    for (channel, device) in unknown {
+        let placed = members.values().flatten().any(|d| &d.device_id == device)
+            || former
+                .iter()
+                .any(|(_, f)| f.devices.iter().any(|d| &d.device_id == device));
+        // The ID came from the server inside a message and goes into a path.
+        if placed || !crypto::is_device_id(device) {
+            looked_up.insert(device.clone());
+            continue;
+        }
+        match lookup(channel, device) {
+            Ok(row) => {
+                looked_up.insert(device.clone());
+                if let Some(f) = row.and_then(|row| former_sender(device, row)) {
+                    former.push(f);
+                }
+            }
+            Err(ApiError::Unauthorized) => return Err(ApiError::Unauthorized),
+            Err(_) => {}
+        }
+    }
+    Ok((former, looked_up))
+}
+
+/// The person a sender lookup names, with their trusted devices, if
+/// `device` is one of them.
+fn former_sender(device: &str, row: SenderRow) -> Option<(u64, Former)> {
+    let trusted = trusted_devices(row.github_id, &row.devices);
+    if !trusted.iter().any(|d| d.device_id == device) {
+        return None;
+    }
+    let former = Former {
+        login: row.login,
+        devices: trusted,
+    };
+    Some((row.github_id, former))
+}
+
+/// Adds the former members a read found to `former`, each pinned like a
+/// member. One whose first device differs from the pinned one is left out,
+/// so their messages stay hidden; nothing else changes, since no key goes
+/// to them. Answers whether a new pin needs saving.
+fn adopt_former(
+    kept: &mut Kept,
+    former: &mut HashMap<u64, Former>,
+    found: Vec<(u64, Former)>,
+) -> bool {
+    let mut changed = false;
+    for (gid, f) in found {
+        let known = kept.roots.contains_key(&gid);
+        if pin_directory(kept, gid, &f.devices) {
+            changed |= !known;
+            former.insert(gid, f);
+        }
+    }
+    changed
+}
+
 fn unopened(seqs: impl Iterator<Item = u64>, first: u64, last: u64) -> usize {
     seqs.filter(|seq| (first..=last).contains(seq)).count()
 }
@@ -3757,6 +3891,11 @@ struct TeamRead {
     detail: TeamDetail,
     devices: HashMap<u64, Vec<DeviceRow>>,
     untrusted: Vec<String>,
+    /// Senders who are not members now, found by their devices.
+    former: Vec<(u64, Former)>,
+    /// The unknown sender devices this read looked for and got an answer
+    /// about, found or not.
+    looked_up: HashSet<String>,
     /// Keys from envelopes this device did not hold yet, checked.
     keys: Vec<(u64, TeamKey)>,
     bad_envelopes: usize,
@@ -3816,12 +3955,15 @@ fn member_devices(
     Ok(found)
 }
 
+/// `unknown`: devices of messages waiting for their sender, each with a
+/// channel that holds one of its messages.
 fn read_team(
     net: &Net,
     team_id: &str,
     admin: bool,
     held: &HashSet<u64>,
     directory: &Directory,
+    unknown: &[(String, String)],
 ) -> Result<TeamRead, ApiError> {
     let call = net.call();
     let detail = call.team(team_id)?;
@@ -3842,6 +3984,9 @@ fn read_team(
         }
         devices.insert(m.github_id, trusted);
     }
+    let (former, looked_up) = find_former(&devices, unknown, |channel, device| {
+        call.sender(team_id, channel, device)
+    })?;
     // Only an admin's device may hand out a team key.
     let admins: HashMap<&str, &DeviceRow> = detail
         .members
@@ -3895,6 +4040,8 @@ fn read_team(
         detail,
         devices,
         untrusted,
+        former,
+        looked_up,
         keys,
         bad_envelopes: bad,
         pending,
@@ -3919,6 +4066,124 @@ mod tests {
             endorsed_by: endorsed_by.map(|e| e.id().to_string()),
             endorsement_sig: endorsed_by.map(|e| e.endorse(21, d.sig_pub(), d.enc_pub())),
         }
+    }
+
+    #[test]
+    fn finds_a_former_member_by_the_device_they_wrote_with() {
+        let [member, root, laptop, forged, stranger, flaky] =
+            std::array::from_fn(|_| Device::generate());
+        let members = HashMap::from([(22, vec![row(&member, 1, None)])]);
+        let theirs = vec![row(&root, 1, None), row(&laptop, 2, Some(&root))];
+        // Claims the first device endorsed it, but signed that itself.
+        let mut bad = row(&forged, 3, Some(&root));
+        bad.endorsement_sig = Some(forged.endorse(21, forged.sig_pub(), forged.enc_pub()));
+        let answer = |devices: Vec<DeviceRow>| SenderRow {
+            github_id: 21,
+            login: "gone".into(),
+            devices,
+        };
+        let unknown: Vec<(String, String)> = [
+            ("C1", member.id()),
+            ("C1", laptop.id()),
+            // The same person, placed by the answer above.
+            ("C2", root.id()),
+            ("C1", forged.id()),
+            ("C1", stranger.id()),
+            ("C1", "not/a/device-id-at-all"),
+            ("C1", flaky.id()),
+        ]
+        .map(|(c, d)| (c.to_string(), d.to_string()))
+        .into();
+        let mut asked = Vec::new();
+        let (found, looked_up) = find_former(&members, &unknown, |channel, device| {
+            asked.push((channel.to_string(), device.to_string()));
+            if device == laptop.id() {
+                Ok(Some(answer(theirs.clone())))
+            } else if device == forged.id() {
+                Ok(Some(answer([theirs.clone(), vec![bad.clone()]].concat())))
+            } else if device == flaky.id() {
+                Err(ApiError::Network("offline".into()))
+            } else {
+                // A device the channel has no message from, or an older
+                // server without the lookup.
+                Ok(None)
+            }
+        })
+        .unwrap();
+        assert_eq!(found.len(), 1);
+        let (gid, f) = &found[0];
+        assert_eq!((*gid, f.login.as_str()), (21, "gone"));
+        assert_eq!(f.devices, theirs);
+        let ids = |ds: &[&Device]| ds.iter().map(|d| d.id().to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            asked.iter().map(|(_, d)| d.clone()).collect::<Vec<_>>(),
+            ids(&[&laptop, &forged, &stranger, &flaky])
+        );
+        assert!(asked.iter().all(|(c, _)| c == "C1"));
+        // Every device but the one whose lookup failed is given up on if
+        // still unplaced; that one waits for the next read.
+        let mut expect: HashSet<String> = ids(&[&member, &laptop, &root, &forged, &stranger])
+            .into_iter()
+            .collect();
+        expect.insert("not/a/device-id-at-all".into());
+        assert_eq!(looked_up, expect);
+
+        // A session that ended stops the read, as any call does.
+        let ended = find_former(&HashMap::new(), &unknown[1..2], |_, _| {
+            Err(ApiError::Unauthorized)
+        });
+        assert!(matches!(ended, Err(ApiError::Unauthorized)));
+    }
+
+    #[test]
+    fn a_former_member_is_pinned_like_a_member() {
+        let [root, other] = std::array::from_fn(|_| Device::generate());
+        let former_of = |d: &Device| Former {
+            login: "gone".into(),
+            devices: vec![row(d, 1, None)],
+        };
+        let mut kept = Kept::default();
+        let mut former = HashMap::new();
+        assert!(adopt_former(
+            &mut kept,
+            &mut former,
+            vec![(21, former_of(&root))]
+        ));
+        assert!(former.contains_key(&21));
+        // Seen again: nothing new to save.
+        assert!(!adopt_former(
+            &mut kept,
+            &mut former,
+            vec![(21, former_of(&root))]
+        ));
+        // A different first device for a pinned account is not taken.
+        let mut fresh = HashMap::new();
+        assert!(!adopt_former(
+            &mut kept,
+            &mut fresh,
+            vec![(21, former_of(&other))]
+        ));
+        assert!(fresh.is_empty());
+    }
+
+    #[test]
+    fn a_former_members_messages_have_a_sender_and_a_name() {
+        let [member, gone] = std::array::from_fn(|_| Device::generate());
+        let mut t = delivery_team(vec![row(&member, 1, None)], 1);
+        assert!(t.sender(gone.id()).is_none());
+        assert_eq!(t.login(30), "someone");
+        t.former.insert(
+            30,
+            Former {
+                login: "gone".into(),
+                devices: vec![row(&gone, 1, None)],
+            },
+        );
+        assert_eq!(t.sender(gone.id()).map(|(gid, _)| gid), Some(30));
+        assert_eq!(t.sender(member.id()).map(|(gid, _)| gid), Some(21));
+        assert_eq!(t.login(30), "gone");
+        assert!(t.is_former(30));
+        assert!(!t.is_former(21));
     }
 
     #[test]
@@ -4495,6 +4760,7 @@ mod tests {
             role: Role::Owner,
             devices: HashMap::from([(21, devices)]),
             untrusted: vec![],
+            former: HashMap::new(),
             channels: vec![],
             pending: vec![],
             invites: None,
@@ -4812,7 +5078,7 @@ mod tests {
             .unwrap();
 
         // B reads the team as load_team does: the key, checked, and the channel.
-        let read = read_team(&b, &team, false, &HashSet::new(), &Directory::Ask).unwrap();
+        let read = read_team(&b, &team, false, &HashSet::new(), &Directory::Ask, &[]).unwrap();
         assert_eq!(read.keys, vec![(1, key)]);
         assert_eq!(read.bad_envelopes, 0);
         assert!(read.untrusted.is_empty());
@@ -5017,7 +5283,7 @@ mod tests {
                 &seal_all(&a, &team, &[(1, key)], &fresh).unwrap(),
             )
             .unwrap();
-        let read2 = read_team(&second, &team, true, &HashSet::new(), &Directory::Ask).unwrap();
+        let read2 = read_team(&second, &team, true, &HashSet::new(), &Directory::Ask, &[]).unwrap();
         assert_eq!(read2.keys, vec![(1, key)]);
 
         // A removes B: a new key for A's devices only, and B is out. Until
@@ -5046,7 +5312,21 @@ mod tests {
                 _ => {}
             }
         }
-        let read = read_team(&a, &team, true, &HashSet::from([1]), &Directory::Ask).unwrap();
+        // B wrote in the channel, so A still finds B's devices to check what
+        // B wrote, though they share no team any more.
+        let wrote = [(channel.clone(), b.local.device.id().to_string())];
+        let read = read_team(
+            &a,
+            &team,
+            true,
+            &HashSet::from([1]),
+            &Directory::Ask,
+            &wrote,
+        )
+        .unwrap();
+        assert_eq!(read.former.len(), 1);
+        assert_eq!(read.former[0].0, mb.github_id);
+        assert!(read.looked_up.contains(b.local.device.id()));
         assert!(read.detail.rotation_pending);
         assert_eq!(read.detail.epoch, 2);
         let devices: Vec<DeviceRow> = read.devices.values().flatten().cloned().collect();

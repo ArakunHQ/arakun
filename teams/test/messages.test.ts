@@ -1,9 +1,9 @@
 import { env, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import type { Channel } from "../src/channel";
-import { b64url } from "../src/util";
+import { b64url, ulid } from "../src/util";
 import { ADMIN, call } from "./helpers";
-import { api, envelope, expectJson, join, message, newKey, openChannel, team, type Socket, type TeamSetup } from "./clients";
+import { api, envelope, expectJson, join, makeDevice, message, newKey, openChannel, register, seal, team, user, type Socket, type TeamSetup } from "./clients";
 
 /// The next frame, which must be a stored message.
 async function stored(s: Socket): Promise<{ seq: number; at: number; message: { id: string } }> {
@@ -689,5 +689,70 @@ describe("history", () => {
     expect(await expectJson(api(m.user, "GET", `${path}?after=5`, { device: m.device }), 200)).toEqual([]);
     for (const q of ["?limit=0", "?limit=201", "?after=-1", "?after=x"]) await expectJson(api(m.user, "GET", `${path}${q}`, { device: m.device }), 400);
     await expectJson(api(m.user, "GET", path), 400);
+  });
+});
+
+describe("senders", () => {
+  it("give the devices of someone who wrote in the channel and left, and of nobody else", async () => {
+    const t = await team();
+    const leaver = await join(t);
+    const desk = await makeDevice();
+    await expectJson(register(leaver.user, desk, leaver.device, "desk"), 201);
+    const newcomer = await join(t);
+    const silent = await join(t);
+    const c = await openChannel(leaver.user, leaver.device, t.teamId, t.channelId);
+    c.send(await message(t.teamId, t.channelId, leaver.device, 1, t.keys.get(1)!, "bye"));
+    await stored(c);
+    c.ws.close();
+    await expectJson(api(leaver.user, "DELETE", `/teams/${t.teamId}/members/${leaver.user.id}`), 200);
+
+    // The directory no longer lists them: they share no team with anyone.
+    await expectJson(api(newcomer.user, "GET", `/users/${leaver.user.id}/devices`), 404);
+    const path = (d: string) => `/teams/${t.teamId}/channels/${t.channelId}/senders/${d}`;
+    const got = await expectJson<{ github_id: number; login: string; devices: { device_id: string }[] }>(
+      api(newcomer.user, "GET", path(leaver.device.id), { device: newcomer.device }),
+      200,
+    );
+    expect(got.github_id).toBe(leaver.user.id);
+    expect(got.login).toBe(leaver.user.login);
+    const byId = new Map(got.devices.map((d) => [d.device_id, d]));
+    expect(byId.size).toBe(2);
+    expect(byId.get(leaver.device.id)).toEqual({
+      device_id: leaver.device.id,
+      sig_pub: leaver.device.sigPub,
+      enc_pub: leaver.device.encPub,
+      name: "laptop",
+      created_at: expect.any(Number),
+      endorsed_by: null,
+      endorsement_sig: null,
+    });
+    // The endorsement comes along, so the chain can be checked.
+    expect(byId.get(desk.id)).toMatchObject({ endorsed_by: leaver.device.id, endorsement_sig: expect.any(String) });
+
+    // A device that never wrote here, a member's or a stranger's, is not found.
+    await expectJson(api(newcomer.user, "GET", path(silent.device.id), { device: newcomer.device }), 404);
+    const stranger = { user: await user(9_100_001, "stranger"), device: await makeDevice() };
+    await expectJson(register(stranger.user, stranger.device), 201);
+    await expectJson(api(newcomer.user, "GET", path(stranger.device.id), { device: newcomer.device }), 404);
+    await expectJson(api(newcomer.user, "GET", path("not-a-device"), { device: newcomer.device }), 404);
+    // Only members ask, from one of their devices.
+    await expectJson(api(leaver.user, "GET", path(leaver.device.id), { device: leaver.device }), 404);
+    await expectJson(api(stranger.user, "GET", path(leaver.device.id), { device: stranger.device }), 404);
+    await expectJson(api(newcomer.user, "GET", path(leaver.device.id)), 400);
+  });
+
+  it("are looked up per channel: a message in another channel does not count", async () => {
+    const t = await team();
+    const m = await join(t);
+    const c = await openChannel(m.user, m.device, t.teamId, t.channelId);
+    c.send(await message(t.teamId, t.channelId, m.device, 1, t.keys.get(1)!, "only here"));
+    await stored(c);
+    c.ws.close();
+    const other = ulid();
+    const name_ct = await seal(t.keys.get(1)!, 1, `arakun-teams/v1/channel|${t.teamId}|${other}|${other}`, "random");
+    await expectJson(api(t.owner.user, "POST", `/teams/${t.teamId}/channels`, { body: { channel_id: other, name_ct } }), 201);
+    const ask = (ch: string) => api(t.owner.user, "GET", `/teams/${t.teamId}/channels/${ch}/senders/${m.device.id}`, { device: t.owner.device });
+    expect((await expectJson<{ github_id: number }>(ask(t.channelId), 200)).github_id).toBe(m.user.id);
+    await expectJson(ask(other), 404);
   });
 });

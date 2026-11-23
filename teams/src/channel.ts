@@ -131,6 +131,8 @@ export class Channel extends DurableObject<Env> {
       device_id TEXT NOT NULL,
       message TEXT NOT NULL
     )`);
+    // For sent(): a channel keeps up to 10,000 messages.
+    this.sql.exec("CREATE INDEX IF NOT EXISTS messages_by_device ON messages (device_id)");
     // Retention drops ciphertext, not the channel's record of accepted IDs.
     // A trigger makes the ID and the delete part of the same transaction. The
     // epoch lets a trim forget IDs that no send can reuse any more.
@@ -192,6 +194,11 @@ export class Channel extends DurableObject<Env> {
     const rows = this.sql.exec<{ seq: number; at: number; message: string }>(query, before ?? after, limit).toArray();
     if (before !== undefined) rows.reverse();
     return rows.map((row) => ({ seq: row.seq, at: row.at, message: JSON.parse(row.message) as WireMessage }));
+  }
+
+  /// Whether the channel still keeps a message from this device.
+  sent(deviceId: string): boolean {
+    return this.sql.exec("SELECT 1 FROM messages WHERE device_id = ? LIMIT 1", deviceId).toArray().length > 0;
   }
 
   /// Closes a removed member's sockets; answers how many there were.

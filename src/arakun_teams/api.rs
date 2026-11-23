@@ -296,6 +296,15 @@ pub struct DeviceRow {
     pub endorsement_sig: Option<String>,
 }
 
+/// Who wrote with a device, as `GET .../senders/<device_id>` answers: the
+/// user and all their devices, to check like a member's.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct SenderRow {
+    pub github_id: u64,
+    pub login: String,
+    pub devices: Vec<DeviceRow>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Endorsement {
     pub by: String,
@@ -575,6 +584,20 @@ impl Call<'_> {
             .collect())
     }
 
+    /// Who wrote in a channel with `device_id`, for a sender who is no
+    /// longer a member. `None` when the server has no message of that
+    /// device there, and from an older server, which has no such lookup.
+    pub fn sender(
+        &self,
+        team_id: &str,
+        channel_id: &str,
+        device_id: &str,
+    ) -> Result<Option<SenderRow>, ApiError> {
+        let path = format!("/teams/{team_id}/channels/{channel_id}/senders/{device_id}");
+        let (status, body) = self.send("GET", &path, None, SMALL_LIMIT)?;
+        sender_answer(status, &body)
+    }
+
     pub fn create_team(&self, name: &str) -> Result<String, ApiError> {
         #[derive(Deserialize)]
         struct Created {
@@ -776,6 +799,13 @@ fn remind_answer(status: u16, body: &str) -> Result<Remind, ApiError> {
         }
     }
     nothing(status, body).map(|()| Remind::Sent)
+}
+
+fn sender_answer(status: u16, body: &str) -> Result<Option<SenderRow>, ApiError> {
+    if status == 404 {
+        return Ok(None);
+    }
+    json(status, body).map(Some)
 }
 
 /// An answer that carries nothing but its status.
@@ -1133,6 +1163,30 @@ mod tests {
         assert!(matches!(
             remind_answer(404, "{}"),
             Err(ApiError::Status(404, _))
+        ));
+    }
+
+    #[test]
+    fn a_sender_the_server_does_not_know_is_none() {
+        let found = r#"{"github_id": 7, "login": "gone", "devices": []}"#;
+        assert_eq!(
+            sender_answer(200, found)
+                .unwrap()
+                .map(|r| (r.github_id, r.login)),
+            Some((7, "gone".into()))
+        );
+        // A device with no message in the channel, or an older server.
+        assert_eq!(
+            sender_answer(404, r#"{"error":"not found"}"#).unwrap(),
+            None
+        );
+        assert!(matches!(
+            sender_answer(401, ""),
+            Err(ApiError::Unauthorized)
+        ));
+        assert!(matches!(
+            sender_answer(500, ""),
+            Err(ApiError::Status(500, _))
         ));
     }
 

@@ -49,7 +49,30 @@ test("the account host is told apart from an old relay host and from the compute
   assert.equal(await RELAY.detect(), null);
 });
 
-test("a page served by the computer still asks for the pairing code", async (t) => {
+test("a failing account host is not taken for the computer's own server", async (t) => {
+  // The computer answers 404 there; a 5xx or a 429 is the account host, or what stands before it.
+  for (const status of [500, 502, 503, 429]) {
+    const asked = stubFetch(t, { "/auth/config": [status, { error: "internal error" }] });
+    assert.equal(await RELAY.detect(), "unreachable", String(status));
+    // It does not go on to ask whether this is an old relay host.
+    assert.deepEqual(asked, ["GET /auth/config"]);
+    t.mock.restoreAll();
+  }
+  // A page that is not JSON (an error page in front of the Worker) too.
+  t.mock.method(globalThis, "fetch", async () => new Response("<html>bad gateway</html>", { status: 502 }));
+  assert.equal(await RELAY.detect(), "unreachable");
+  t.mock.restoreAll();
+  // Other refusals stay the computer's: its server answers 404, and 403 without a token.
+  for (const status of [400, 403, 404]) {
+    stubFetch(t, { "/auth/config": [status, { error: "no" }] });
+    assert.equal(await RELAY.detect(), null, String(status));
+    t.mock.restoreAll();
+  }
+  globalThis.location = { protocol: "https:", host: "app.arakun.dev", hostname: "app.arakun.dev" };
+  assert.equal(RELAY.unreachable(), "Could not reach app.arakun.dev. Check the connection and try again.");
+});
+
+test("detect says a host that answers its own /me but not /auth/config is the computer", async (t) => {
   // The computer answers its own /me, so only /auth/config tells the hosts apart.
   stubFetch(t, { "/me": [403, { error: "not paired" }] });
   assert.equal(await RELAY.detect(), null);
@@ -69,7 +92,7 @@ test("signed in with no computers, the page says so", async (t) => {
   assert.deepEqual(got.machines, []);
 });
 
-test("signed in with one computer, the page connects to it", async (t) => {
+test("boot names the only computer as the one to connect to", async (t) => {
   stubFetch(t, { "/me": [200, me], "/machines": [200, [machine("aaaaaaaaaaaaaaaa", false)]] });
   const got = await RELAY.boot();
   assert.equal(got.screen, "connect");
@@ -115,6 +138,9 @@ test("each reason the relay gives becomes what the page does", () => {
   assert.equal(RELAY.kindOf("limit:daily", 0), "limit");
   assert.equal(RELAY.kindOf("gone", 4410), "gone");
   assert.equal(RELAY.kindOf("silent", 4410), "gone");
+  // A relay whose database is down answers 500 to the upgrade: the socket
+  // closes with no word, which is a drop to try again, never a refusal.
+  assert.equal(RELAY.kindOf("", 1006), "gone");
 });
 
 test("each refusal reads as a sentence", () => {
@@ -181,6 +207,61 @@ test("an old relay host points at the account host", () => {
   assert.equal(RELAY.sentence("update"), "Update Arakun on the computer and sign in at app.arakun.dev");
   globalThis.location = { protocol: "https:", host: "relay.example.com", hostname: "relay.example.com" };
   assert.equal(RELAY.accountHost(), "relay.example.com");
+});
+
+test("an old relay host names the account host the Worker gave, when it is a host name", async (t) => {
+  globalThis.location = { protocol: "https:", host: "5pmbdp76s6bol6ax.example.com", hostname: "5pmbdp76s6bol6ax.example.com" };
+  stubFetch(t, { "/_relay": [410, { update: true, account_host: "phones.example.net" }] });
+  assert.equal(await RELAY.detect(), "update");
+  assert.equal(RELAY.accountHost(), "phones.example.net");
+  assert.equal(RELAY.sentence("update"), "Update Arakun on the computer and sign in at phones.example.net");
+  t.mock.restoreAll();
+  // Anything that could leave the link's host is not taken: the guess stands.
+  for (const bad of ["evil.example/x", "a b", "user@evil.example", '"><script>', "https://evil.example", "", 7, null]) {
+    stubFetch(t, { "/_relay": [410, { update: true, account_host: bad }] });
+    assert.equal(await RELAY.detect(), "update");
+    assert.equal(RELAY.accountHost(), "app.example.com", String(bad));
+    t.mock.restoreAll();
+  }
+  // A Worker from before it named one.
+  stubFetch(t, { "/_relay": [410, { update: true }] });
+  assert.equal(await RELAY.detect(), "update");
+  assert.equal(RELAY.accountHost(), "app.example.com");
+});
+
+test("only the account host's word ends the session on the page", () => {
+  assert.equal(RELAY.loggedOut(204), true);
+  // Gone already: signed out from another device, or expired.
+  assert.equal(RELAY.loggedOut(401), true);
+  // No answer (0), an error, a limit, or a page that is not the Worker's (a captive portal's 200).
+  for (const status of [0, 200, 302, 403, 404, 429, 500, 502, 503]) assert.equal(RELAY.loggedOut(status), false, String(status));
+  globalThis.location = { protocol: "https:", host: "app.arakun.dev", hostname: "app.arakun.dev" };
+  assert.equal(RELAY.signOutFailed(), "Signing out did not reach app.arakun.dev, so this phone is still signed in. Check the connection and try again.");
+});
+
+test("a notification tap leads somewhere sound wherever the page is", () => {
+  const a = machine("aaaaaaaaaaaaaaaa");
+  const b = machine("bbbbbbbbbbbbbbbb", false);
+  const signedIn = { me, machines: [a, b], blocked: false };
+  // Served by the computer itself: the session, as before.
+  for (const screen of ["inbox", "session", "pair", "phone"]) assert.deepEqual(RELAY.tapRoute(screen, null, false, null), { go: "open" }, screen);
+  // A computer is picked: the session on it.
+  assert.deepEqual(RELAY.tapRoute("inbox", signedIn, true, a.label), { go: "open" });
+  // None picked, and the one opened last is on the account: it, then the session.
+  assert.deepEqual(RELAY.tapRoute("machines", signedIn, false, b.label), { go: "pick", machine: b });
+  // None picked and no computer to go by: the list.
+  assert.deepEqual(RELAY.tapRoute("machines", signedIn, false, null), { go: "list" });
+  assert.deepEqual(RELAY.tapRoute("machines", signedIn, false, "cccccccccccccccc"), { go: "list" });
+  // Signed out, a start that failed, blocked, the old host: the page stays where it is.
+  assert.deepEqual(RELAY.tapRoute("signin", { me: null, machines: [], blocked: false }, false, a.label), { go: "stay" });
+  assert.deepEqual(RELAY.tapRoute("machines", { me: null, machines: [], blocked: false }, false, a.label), { go: "stay" });
+  assert.deepEqual(RELAY.tapRoute("machines", { me, machines: [a], blocked: true }, false, a.label), { go: "stay" });
+  // No computers yet: the list says so already.
+  assert.deepEqual(RELAY.tapRoute("machines", { me, machines: [], blocked: false }, false, a.label), { go: "stay" });
+  assert.deepEqual(RELAY.tapRoute("update", null, false, null), { go: "stay" });
+  // A host that did not answer shows why, and only that.
+  assert.deepEqual(RELAY.tapRoute("fatal", null, false, null), { go: "stay" });
+  assert.equal(RELAY.tapSentence(), "Pick the computer that notification came from to open its session.");
 });
 
 test("what the old pairing kept is dropped", () => {
@@ -335,7 +416,7 @@ test("what the page keeps is kept per computer on the account host", () => {
   assert.equal(store.get(RELAY.scoped("arakun.draft:", "aaaaaaaaaaaaaaaa") + "s1"), "half a prompt");
 });
 
-test("signing out drops the computer opened last and what is kept per computer", () => {
+test("forgetAccountState drops the computer opened last and what is kept per computer", () => {
   const store = new Map([
     ["arakun.machine", "aaaaaaaaaaaaaaaa"],
     ["arakun.draft@aaaaaaaaaaaaaaaa:s1", "x"],

@@ -62,7 +62,7 @@ const state = {
   ask: null, // what is picked and typed for the pending question: { id, picked: [[i…]…], typed: [""…] }
   sheet: null, // over the session: { kind: "changes", turns } or { kind: "diff", entry, index, name, diff }
   pcOffline: null, // through the relay: since when (unix) the computer has been away, while it is
-  fatal: "", // why this address cannot be used at all; nothing is tried again
+  fatal: "", // why this address cannot be used right now; only the start tries again (an account host that failed)
 };
 
 // How this page reaches the computer: a socket of the computer's own, or a
@@ -343,14 +343,19 @@ const LAST_MACHINE = "arakun.machine";
 // What the account host says first: sign in, no computers yet, the one there
 // is, or the list. A host that does not answer leaves the list with Retry.
 async function startAccount() {
+  // One at a time: the list asks again by itself while a start has failed.
+  if (starting) return;
+  starting = true;
   account = { me: null, machines: [], said: SIGN_IN_FAILED ? "Sign-in with GitHub did not work. Try again." : "", loaded: false, blocked: false };
   let first;
   try {
     first = await RELAY.boot();
   } catch (e) {
-    account.said = `Could not reach ${location.host}. Check the connection and try again.`;
+    account.said = RELAY.unreachable();
     state.screen = "machines";
     return render();
+  } finally {
+    starting = false;
   }
   if (first.screen === "signin") return signedOut(account.said);
   account.loaded = true;
@@ -367,8 +372,22 @@ async function startAccount() {
   // A tap on a notification names a session of the computer opened last.
   const last = openAtStart && account.machines.find((m) => m.label === localStorage.getItem(LAST_MACHINE));
   if (last) return pick(last);
+  if (openAtStart && account.machines.length) {
+    // No computer to take the tap to: the person picks, and the session opens there.
+    account.said = RELAY.tapSentence();
+    // The address must not keep naming a session that is not on screen (sw.js).
+    history.replaceState(null, "", location.pathname);
+  }
   state.screen = "machines";
   render();
+}
+let starting = false;
+
+// The list again: its online states, or the whole start when that failed
+// (nobody is known yet, so there is no "Signed in as" and no Sign out).
+function refreshAccount() {
+  if (account.me) refreshMachines();
+  else startAccount();
 }
 
 function blockedSentence(reason) {
@@ -406,7 +425,14 @@ function dropMachine() {
   relay = null;
   state.connected = false;
   state.pcOffline = null;
+  // The address and the history step named the session (openSession); left
+  // there, sw.js would take this window for one looking at it and drop its
+  // notifications, and a reload would open the computer again.
+  if (state.session || location.hash.startsWith("#s=")) history.replaceState(null, "", location.pathname);
   state.session = null;
+  // Pictures are kept by the computer's own paths: another computer's are not these.
+  for (const url of pics.values()) URL.revokeObjectURL(url);
+  pics.clear();
   state.pending = [];
   state.inbox = [];
   state.places = [];
@@ -424,9 +450,15 @@ function dropMachine() {
   noticeOpen = "";
 }
 
-// The session is gone (signed out here or elsewhere): only sign-in is left.
+// The account host said the session is gone (signed out here or elsewhere, or
+// expired): only sign-in is left, and nothing of the account stays on this
+// phone, however the sign-out came. The computer drops this phone from its
+// push list itself when it hears of the sign-out.
 function signedOut(said = "") {
   dropMachine();
+  dropPush();
+  RELAY.forgetAccountState(localStorage);
+  openAtStart = "";
   account.me = null;
   account.machines = [];
   account.said = said;
@@ -447,9 +479,14 @@ async function refreshMachines() {
     return;
   }
   if (got.signedOut) return signedOut();
+  const wasBlocked = account.blocked;
   account.blocked = !!got.blocked;
   if (got.blocked) account.said = blockedSentence(got.reason);
-  else account.machines = got.list;
+  else {
+    account.machines = got.list;
+    // Unblocked: the sentence that said so is over.
+    if (wasBlocked) account.said = "";
+  }
   account.loaded = true;
   if (state.screen === "machines") render();
 }
@@ -466,7 +503,7 @@ async function removeMachine(m) {
   }
   if (done.signedOut) return signedOut();
   if (!done.ok) toast(`Could not remove ${m.name}`);
-  if (localStorage.getItem(LAST_MACHINE) === m.label) localStorage.removeItem(LAST_MACHINE);
+  else if (localStorage.getItem(LAST_MACHINE) === m.label) localStorage.removeItem(LAST_MACHINE);
   refreshMachines();
 }
 
@@ -504,41 +541,42 @@ async function signOutDevice(id, name) {
 
 // The list keeps its online states fresh while it is on screen.
 setInterval(() => {
-  if (account && state.screen === "machines" && document.visibilityState === "visible") refreshMachines();
+  if (account && state.screen === "machines" && document.visibilityState === "visible") refreshAccount();
 }, 15_000);
 
-// Signs this phone out of the account: no more notifications from the
-// computer, and the session ends on the account host.
+// Signs this phone out of the account. The session cookie is HttpOnly, so only
+// the account host can end it: the page shows sign-in once the host said the
+// session is gone, and not before. Otherwise a reload would be signed in
+// again behind a screen that said it was not.
 async function signOut() {
+  if (signingOut) return;
   if (!confirm(`Sign out of ${account.me ? account.me.login : "GitHub"} on this phone?`)) return;
-  await stopPush();
+  signingOut = true;
+  let status = 0;
   try {
-    await fetch("/auth/logout", { method: "POST", credentials: "same-origin" });
+    status = (await fetch("/auth/logout", { method: "POST", cache: "no-store", credentials: "same-origin" })).status;
   } catch (e) {
-    // Offline: the page forgets the session here all the same.
+    // No answer: nothing ended.
+  } finally {
+    signingOut = false;
   }
-  RELAY.forgetAccountState(localStorage);
-  signedOut();
+  // Still signed in: the computer, the drafts and the notifications stay as they are.
+  if (!RELAY.loggedOut(status)) return alert(RELAY.signOutFailed());
+  // The relay may have closed the link for the sign-out already (relayHandlers).
+  if (state.screen !== "signin") signedOut();
 }
+let signingOut = false;
 
-// Takes this phone off the computer's push list and drops the browser's subscription.
-async function stopPush() {
-  if (link && link.ready) {
-    try {
-      await api("/push", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ subscription: null }) });
-    } catch (e) {
-      // The computer may be away.
-    }
-  }
-  if ("serviceWorker" in navigator && isSecureContext) {
-    try {
-      const reg = await navigator.serviceWorker.ready;
-      const sub = await reg.pushManager.getSubscription();
-      if (sub) await sub.unsubscribe();
-    } catch (e) {
-      // Nothing to undo.
-    }
-  }
+// Drops the browser's push subscription, made with a key of one of the
+// account's computers. `getRegistration` and not `ready`: where the service
+// worker could not be registered, `ready` never settles.
+function dropPush() {
+  if (!("serviceWorker" in navigator) || !isSecureContext) return;
+  navigator.serviceWorker
+    .getRegistration()
+    .then((reg) => reg && reg.pushManager && reg.pushManager.getSubscription())
+    .then((sub) => sub && sub.unsubscribe())
+    .catch(() => {});
 }
 
 // The operator's notices for this account, until dismissed.
@@ -642,7 +680,7 @@ document.addEventListener("visibilitychange", () => {
   send({ type: "visible", visible: document.visibilityState === "visible" });
   if (document.visibilityState !== "visible") return;
   reconnectNow();
-  if (account && state.screen === "machines") refreshMachines();
+  if (account && state.screen === "machines") refreshAccount();
 });
 
 // iOS keeps the page its full height under the keyboard and slides it up, so the
@@ -701,6 +739,8 @@ function handle(msg) {
       // This computer does not have the session: the notification came from another.
       state.session = null;
       state.screen = "inbox";
+      // The address stops naming it too, as in closeSession.
+      history.replaceState(null, "", location.pathname);
       render();
       toast(RELAY.noticeElsewhere());
       return;
@@ -1790,8 +1830,27 @@ function sameBytes(a, b) {
 // when the page is open, through the address when it had to be opened.
 if ("serviceWorker" in navigator) {
   navigator.serviceWorker.addEventListener("message", (ev) => {
-    if (ev.data && ev.data.open) openFromNotice(ev.data.open);
+    if (ev.data && ev.data.open) tappedNotice(ev.data.open);
   });
+}
+
+// A tap while the page is open. On the account host the page can rest with no
+// computer picked (the list, sign-in) and there is no session to show there.
+function tappedNotice(id) {
+  // Not known yet which way in this is: the start takes the tap, as from the address.
+  if (!started) {
+    openAtStart = id;
+    return;
+  }
+  const to = RELAY.tapRoute(state.fatal ? "fatal" : state.screen, account, !!relay, localStorage.getItem(LAST_MACHINE));
+  if (to.go === "open") return openFromNotice(id);
+  if (to.go === "stay") return;
+  // Once a computer is picked and answers, `linked` opens the session.
+  openAtStart = id;
+  if (to.go === "pick") return pick(to.machine);
+  account.said = RELAY.tapSentence();
+  state.screen = "machines";
+  render();
 }
 let openAtStart = (() => {
   const m = location.hash.match(/^#s=(.+)$/);
@@ -3853,18 +3912,36 @@ setInterval(() => {
 render();
 // Which way in this is: the account host, an old relay host, or the computer itself.
 RELAY.forgetOldPairing();
-RELAY.detect().then((found) => {
-  if (found === "account") return startAccount();
-  if (found === "update") {
-    state.screen = "update";
-    return render();
-  }
-  if (PAIR_CODE) {
-    pair(PAIR_CODE).then((ok) => {
-      if (!ok) state.screen = "pair";
+let started = false;
+let startWait = 2000;
+function start() {
+  RELAY.detect().then((found) => {
+    if (found === "unreachable") {
+      // The account host, failing: never the pairing screen, which has
+      // nothing to pair with here. Asked again by itself, a little later each time.
+      state.fatal = RELAY.unreachable();
+      render();
+      setTimeout(start, startWait);
+      startWait = Math.min(startWait * 2, 30_000);
+      return;
+    }
+    state.fatal = "";
+    started = true;
+    if (found === "account") return startAccount();
+    if (found === "update") {
+      // A subscription made on this address would only bring taps here.
+      dropPush();
+      state.screen = "update";
+      return render();
+    }
+    if (PAIR_CODE) {
+      pair(PAIR_CODE).then((ok) => {
+        if (!ok) state.screen = "pair";
+        connect();
+      });
+    } else {
       connect();
-    });
-  } else {
-    connect();
-  }
-});
+    }
+  });
+}
+start();

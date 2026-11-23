@@ -34,9 +34,22 @@ const RELAY = (() => {
     if (location.protocol === "https:") document.cookie = "arakun.relay=; Path=/; Max-Age=0; Secure; SameSite=Strict";
   }
 
+  /// The account host an old relay host named in its `/_relay` answer.
+  let namedHost = "";
+
+  /// A host name as the account host's setting has it, and nothing that could
+  /// leave the link the page builds from it.
+  function hostName(value) {
+    return typeof value === "string" && /^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?(:\d{1,5})?$/.test(value) ? value : "";
+  }
+
   /// Which way in this host is: `account` for the account host (it answers
   /// `/auth/config`), `update` for an old relay host (its `/_relay` says 410),
   /// null for a server of the computer's own, which answers neither.
+  /// `unreachable` when `/auth/config` failed the way only the account host or
+  /// what stands before it does (429 or 5xx): the computer's own server
+  /// answers 404 there, so a failure is never taken for it, and the page does
+  /// not ask for a pairing code where there is nothing to pair with.
   async function detect() {
     const answers = async (path) => {
       try {
@@ -54,15 +67,65 @@ const RELAY = (() => {
         // Not the account host's JSON.
       }
     }
+    if (config && (config.status === 429 || config.status >= 500)) return "unreachable";
     const old = await answers("/_relay");
-    if (old && old.status === 410) return "update";
+    if (old && old.status === 410) {
+      try {
+        namedHost = hostName((await old.json()).account_host);
+      } catch {
+        // An older Worker names none.
+        namedHost = "";
+      }
+      return "update";
+    }
     return null;
   }
 
-  /// Where the account host is: on an old relay host, `app.` and its base.
+  /// What the page says when the host failed before saying which way in it is.
+  function unreachable() {
+    return `Could not reach ${location.host}. Check the connection and try again.`;
+  }
+
+  /// Where the account host is: on an old relay host, the one its `/_relay`
+  /// named, else `app.` and its base (a Worker from before it named one).
   function accountHost() {
     const m = OLD_HOST.exec(location.hostname);
-    return m ? `app.${m[1]}` : location.host;
+    return m ? namedHost || `app.${m[1]}` : location.host;
+  }
+
+  /// Whether `/auth/logout` ended the session, from its status: 204 says it
+  /// did, 401 that it was gone already. Anything else (no answer at all is 0,
+  /// a captive portal's 200, a 5xx) leaves the cookie standing: the page
+  /// cannot drop it itself, so it must not show itself as signed out.
+  function loggedOut(status) {
+    return status === 204 || status === 401;
+  }
+
+  /// What the page says when signing out did not reach the account host.
+  function signOutFailed() {
+    return `Signing out did not reach ${location.host}, so this phone is still signed in. Check the connection and try again.`;
+  }
+
+  /// Where a tap on a notification leads, from where the page is. `screen` is
+  /// the page's, `account` what it knows on the account host (null on the
+  /// computer's own server), `picked` whether a computer is picked, `last` the
+  /// label of the computer opened last. `open`: the session, on the computer
+  /// there is. `pick`: connect to `machine` first, then the session. `list`:
+  /// the computers, with `tapSentence`. `stay`: nothing to open from here
+  /// (signed out, blocked, the old host, a host that did not answer, or the
+  /// `fatal` screen of an address that cannot be used).
+  function tapRoute(screen, account, picked, last) {
+    if (screen === "update" || screen === "signin" || screen === "fatal") return { go: "stay" };
+    if (!account || picked) return { go: "open" };
+    // With no computers the list already says how to get one.
+    if (!account.me || account.blocked || !account.machines.length) return { go: "stay" };
+    const machine = last ? account.machines.find((m) => m.label === last) : null;
+    return machine ? { go: "pick", machine } : { go: "list" };
+  }
+
+  /// What the list says after a tap it could not follow to a computer.
+  function tapSentence() {
+    return "Pick the computer that notification came from to open its session.";
   }
 
   /// A JSON answer from the account host. The session cookie rides along.
@@ -522,6 +585,11 @@ const RELAY = (() => {
     signOutSession,
     signedInRows,
     accountHost,
+    unreachable,
+    loggedOut,
+    signOutFailed,
+    tapRoute,
+    tapSentence,
     socketUrl,
     kindOf,
     sentence,

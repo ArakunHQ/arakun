@@ -432,6 +432,11 @@ impl TeamsView {
             .update(cx, |h, cx| h.set_bot_project(Self::local_project(dir), cx));
     }
 
+    /// No project is open any more.
+    pub fn clear_project(&mut self, cx: &mut Context<Self>) {
+        self.hub.update(cx, |h, cx| h.set_bot_project(None, cx));
+    }
+
     /// A remote environment's path is an `arakun-server://` address, not a
     /// folder here: Claude Code could not start in it. @bot then runs as it
     /// does with no project open.

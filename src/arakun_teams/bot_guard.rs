@@ -8,7 +8,10 @@
 //! - The run never sees the project itself, only a private copy of it
 //!   ([`mirror`]) without secret-looking files ([`is_secret_path`]) and
 //!   without what git ignores. Claude Code reads only inside its working
-//!   folder, so those files are not there to read.
+//!   folder, so those files are not there to read. The keys and passwords
+//!   in the files it does copy are replaced with `[redacted]` too, so the
+//!   chat cannot have one posted spelled out, reversed or encoded, past the
+//!   check on the answer.
 //! - The answer goes through [`redact`] before it is posted, which replaces
 //!   keys, tokens and passwords with `[redacted]`.
 
@@ -146,8 +149,10 @@ impl Mirror {
 
 /// Copies `project` into the empty folder `into`, without secret-looking
 /// files and, in a git checkout, without what git ignores. Symbolic links
-/// are left out, so nothing in the copy leads outside it. Fails with
-/// "stopped" once `stop` is set.
+/// are left out, so nothing in the copy leads outside it. Text files go
+/// through [`redact`] on the way: the chat can ask for a key in a form the
+/// answer's check does not know, spelled out or reversed, so the run must
+/// not see it at all. Fails with "stopped" once `stop` is set.
 pub fn mirror(project: &Path, into: &Path, stop: &AtomicBool) -> Result<Mirror, String> {
     let root = crate::platform::canonicalize(project)
         .map_err(|e| format!("could not open the project: {e}"))?;
@@ -185,7 +190,7 @@ pub fn mirror(project: &Path, into: &Path, stop: &AtomicBool) -> Result<Mirror, 
             out.too_big += 1;
             continue;
         }
-        if copy(&from, &into.join(&rel)).is_ok() {
+        if copy_redacted(&from, &into.join(&rel)).is_ok() {
             total += meta.len();
             out.files += 1;
         } else {
@@ -195,11 +200,16 @@ pub fn mirror(project: &Path, into: &Path, stop: &AtomicBool) -> Result<Mirror, 
     Ok(out)
 }
 
-fn copy(from: &Path, to: &Path) -> std::io::Result<()> {
+/// Copies one file, with the secrets in a text file replaced.
+fn copy_redacted(from: &Path, to: &Path) -> std::io::Result<()> {
     if let Some(dir) = to.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    std::fs::copy(from, to).map(|_| ())
+    let bytes = std::fs::read(from)?;
+    match std::str::from_utf8(&bytes) {
+        Ok(text) => std::fs::write(to, redact(text)),
+        Err(_) => std::fs::write(to, &bytes),
+    }
 }
 
 /// Removes copies a run left behind when Arakun quit in the middle of it.
@@ -579,6 +589,11 @@ mod tests {
         );
         assert_eq!(m.files, 4);
         assert_eq!(m.nested, [PathBuf::from("vendor/lib")]);
+        assert_eq!(
+            std::fs::read_to_string(copy.join("settings.py")).unwrap(),
+            "SECRET_KEY = [redacted]\n"
+        );
+
         let stopped = base.join("stopped");
         std::fs::create_dir_all(&stopped).unwrap();
         assert_eq!(

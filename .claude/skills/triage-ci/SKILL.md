@@ -1,6 +1,6 @@
 ---
 name: triage-ci
-description: Find out why an Arakun pull request's GitHub checks failed and fix it - read the failing job's log with gh, map it to the local command, reproduce, fix, and tell real failures apart from ones the change did not cause. Use when CI, a check, clippy, the tests, cargo-deny, the relay job or the pull request title check is red, or the user asks why a pull request is failing.
+description: Find out why an Arakun pull request's GitHub checks failed and fix it - read the failing job's log with gh, map it to the local command, reproduce, fix, and tell real failures apart from ones the change did not cause. Use when CI, a check, clippy, the tests, cargo-deny, the cloud job or the pull request title check is red, or the user asks why a pull request is failing.
 ---
 
 # Fix a failing check

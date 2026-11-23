@@ -66,7 +66,7 @@ cargo test --locked --no-default-features <module>   # the modules you touched
 
 Title and every commit: `<type>(<scope>): <description>`. Types: `feat`, `fix`,
 `docs`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `revert`. Scope is
-the module or folder (`terminal`, `agent`, `phone`, `relay`...), or none if it
+the module or folder (`terminal`, `agent`, `phone`, `cloud`...), or none if it
 spans many. Imperative, lower case, no period, under about 70 characters. Pick
 the type by the effect on the user: a fix that needs a refactor is `fix`.
 Breaking a flag, setting or stored format: `!` and a `BREAKING CHANGE:` line.

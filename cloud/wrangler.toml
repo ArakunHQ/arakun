@@ -84,19 +84,23 @@ class_name = "Channel"
 name = "RELAY"
 class_name = "Relay"
 
+# The relay's history comes first: a Worker deployed from the old relay/ is at
+# `v1` with `Relay`, so deploying this one over it only adds `Channel`. Never
+# reorder or rename a tag; add a new one, here and under [env.production].
 [[migrations]]
 tag = "v1"
-new_sqlite_classes = ["Channel"]
+new_sqlite_classes = ["Relay"]
 
 [[migrations]]
 tag = "v2"
-new_sqlite_classes = ["Relay"]
+new_sqlite_classes = ["Channel"]
 
 # The hosted Worker (`npx wrangler deploy --env production`), which
 # .github/workflows/cloud-deploy.yml deploys with each release. ADMIN_SECRET and
 # GITHUB_CLIENT_SECRET stay Worker secrets. An environment inherits no bindings,
-# so they are all here again. The relay answers *.arakun.dev; the teams API has
-# no route yet: its hostname is picked when it is first deployed.
+# so they are all here again. The one route covers both: a label host is the
+# relay, and every other host under arakun.dev that DNS sends here is the teams
+# API (the app calls teams.arakun.dev).
 [env.production]
 name = "arakun-cloud"
 workers_dev = false
@@ -140,13 +144,14 @@ class_name = "Channel"
 name = "RELAY"
 class_name = "Relay"
 
+# The same tags in the same order as the top-level list.
 [[env.production.migrations]]
 tag = "v1"
-new_sqlite_classes = ["Channel"]
+new_sqlite_classes = ["Relay"]
 
 [[env.production.migrations]]
 tag = "v2"
-new_sqlite_classes = ["Relay"]
+new_sqlite_classes = ["Channel"]
 
 [[env.production.kv_namespaces]]
 binding = "CONFIG"

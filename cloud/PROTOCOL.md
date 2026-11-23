@@ -1,6 +1,6 @@
 # Arakun teams: protocol
 
-The contract between the `teams/` Worker and the clients (the desktop app now, the
+The contract between the Worker in `cloud/` and the clients (the desktop app now, the
 phone later). The server stores and forwards; it never holds a key that opens team
 content. Everything below "the server sees" is metadata we accept showing. v1 keeps
 team content from a server that follows this protocol and reads everything it

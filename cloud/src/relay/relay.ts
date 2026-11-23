@@ -497,8 +497,9 @@ export class Relay extends DurableObject<Env> {
   }
 
   override async webSocketClose(ws: WebSocket, code: number, reason: string, _wasClean: boolean): Promise<void> {
-    // Before compatibility date 2026-04-07 the runtime doesn't answer a close
-    // itself; without this the other side sees an abnormal close (1006).
+    // Without this the other side sees an abnormal close (1006). The runtime
+    // answers a close itself from compatibility date 2026-04-07, but not for
+    // these sockets: test/relay/forward.test.ts fails without this line.
     replyClose(ws, code, reason);
     const tag = ws.deserializeAttachment() as Tag | null;
     if (!tag) return;

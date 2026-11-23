@@ -354,7 +354,9 @@ that keeps one on purpose goes on its allow-list.
     in behavior), `perf`, `test`, `build` (Cargo, dependencies, tools), `ci`, `chore`
     or `revert` (`revert: <the title of the change you undo>`).
   - **scope** (optional): the part of Arakun it touches, usually the module or folder:
-    `terminal`, `agent`, `browser`, `phone`, `relay`, `teams`, `iso`, `windows`...
+    `terminal`, `agent`, `browser`, `phone`, `cloud`, `server`, `teams`, `ios`,
+    `android`, `iso`, `windows`... `cloud` is the Worker in `cloud/` and replaces
+    `relay`.
   - **description:** imperative and lower case, with no period at the end, for example
     `fix(terminal): keep the tab name on resize` or
     `feat(phone): answer permission prompts`.

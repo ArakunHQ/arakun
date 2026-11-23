@@ -17,7 +17,10 @@ Arakun's Cloudflare Worker, one package for two jobs:
 `src/index.ts` tells them apart by the host. A host whose first level is a label (16
 base32 characters) under `BASE_DOMAIN` is the relay, and so is every host while
 `LABEL_OVERRIDE` is set. `/_admin/*` is the relay's operator door under any host.
-Everything else is the teams API.
+Everything else is the teams API. Production's route is `*.arakun.dev/*`, so there the
+teams API answers on `teams.arakun.dev`, which the app calls, and on every other host
+under `arakun.dev` that is not a label and that DNS sends to the Worker. The old relay
+Worker answered `404` on those hosts.
 
 ```
 cloud/
@@ -133,33 +136,53 @@ GITHUB_CLIENT_SECRET=<the app secret>
 ## First production deploy
 
 Production moved from the Workers `arakun-relay` and `arakun-teams` to one Worker,
-`arakun-cloud`. Do these once, in this order, before the release that deploys it:
+`arakun-cloud`. This is also the first time the teams API is live in production (see
+the hosts above). Do these once, in this order:
 
-1. Create the database and put the `database_id` it prints in `wrangler.toml` under
+1. Before the pull request that adds `cloud/` can merge: in the `main` ruleset, require
+   "Cloud (types and tests)" in place of "Relay (types and tests)". That pull request
+   has no job with the old name, so the old required check never finishes.
+2. Create the database and put the `database_id` it prints in `wrangler.toml` under
    `[[env.production.d1_databases]]`. The deploy workflow fails until you do:
 
    ```sh
    npx wrangler d1 create arakun-cloud
    ```
 
-2. The `CLOUDFLARE_API_TOKEN` of the `production` environment needs D1 edit permission:
-   grant it if it lacks it, since the deploy applies the migrations.
-3. Set the secrets on the new Worker (see Deploying, step 3):
+3. The `CLOUDFLARE_API_TOKEN` of the `production` environment needs D1 edit permission:
+   grant it if it lacks it, since the deploy applies the migrations. The environment's
+   deployment rules must let `cloud-hotfix/*` branches through, where they named
+   `relay-hotfix/*` before.
+4. Set the secrets on the new Worker (see Deploying, step 3):
 
    ```sh
    npx wrangler secret put ADMIN_SECRET --env production
    npx wrangler secret put GITHUB_CLIENT_SECRET --env production
    ```
 
-4. Remove the `*.arakun.dev/*` route from the old `arakun-relay` Worker. Two Workers
-   cannot hold the same route, so the first deploy fails otherwise.
-5. Deploy (publish the release, or `npx wrangler deploy --env production`).
+5. Move the route by hand, from a checkout of the commit you are about to release.
+   Remove the `*.arakun.dev/*` route from the old `arakun-relay` Worker (two Workers
+   cannot hold the same route, so the deploy fails otherwise), then run these right
+   away. No phone reaches its computer between the two:
+
+   ```sh
+   npx wrangler d1 migrations apply arakun-cloud --env production --remote
+   npx wrangler deploy --env production
+   ```
+
+   Do not leave this to the release: its Cloud job runs after everything else is built
+   and published, and the relay would be down for all that time. When you publish the
+   release, that job deploys the same commit again.
 6. The relay's objects start empty. Computers send their key and tickets again when
    they reconnect, so nothing needs doing. The CONFIG KV is the same, so plans and
    blocks carry over.
 7. Delete the old `arakun-relay` Worker once the relay answers from `arakun-cloud`.
-8. In the repository's branch protection, require "Cloud (types and tests)" in place
-   of "Relay (types and tests)" and "Teams (types and tests)".
+
+From the merge until the first release that has `cloud/`, CI cannot redeploy or hotfix
+the hosted relay: `relay-deploy.yml` is gone from `main`, and the latest release's tag
+has no `cloud-deploy.yml`. Until then, deploy by hand with
+`npx wrangler deploy --env production`, from `relay/` in a checkout of that tag while
+`arakun-relay` still holds the route.
 
 ## Deploying
 
@@ -216,10 +239,11 @@ admin secret cannot grant flags or make sessions in production.
    npx wrangler deploy --env production
    ```
 
-   The first deploy creates the `Channel` and `Relay` Durable Object classes from the
-   `v1` and `v2` migrations in `wrangler.toml` (`new_sqlite_classes`). A later change to a class
-   that renames or deletes it needs a new `[[migrations]]` tag, in both the
-   top-level and the `[env.production]` lists.
+   The first deploy creates the `Relay` and `Channel` Durable Object classes from the
+   `v1` and `v2` migrations in `wrangler.toml` (`new_sqlite_classes`). Wrangler sends only
+   the tags after the one the deployed Worker is at, so never reorder or rename a tag.
+   A later change to a class that renames or deletes it needs a new `[[migrations]]`
+   tag, in both the top-level and the `[env.production]` lists.
 
 To host the test Worker too, give it its own database and put that `database_id` in
 the top-level `[[d1_databases]]`. Never put production's id there. Then follow the
@@ -255,6 +279,14 @@ Host either way. The top level of `wrangler.toml` also binds a D1 database, so c
 one (`npx wrangler d1 create arakun-cloud-dev`) and put its id under `[[d1_databases]]`
 before you deploy.
 Then set `relay_base` in Arakun's `phone.json` to your Worker's base URL.
+
+To upgrade a Worker you deployed from the old `relay/` folder, create the database as
+above (the old Worker had none), then deploy over it from `cloud/` with the command of
+step 4 and the same name. That Worker is at migration `v1` with the class `Relay`,
+which is `v1` here too, so wrangler only adds `v2` (`Channel`) and the computer's
+object keeps what it stored. A Worker deployed from the old `teams/` folder is at `v1`
+with `Channel` and cannot be deployed over: deploy under a new name and delete the
+old one.
 
 1. A Cloudflare account (the free plan caps spending) and a session:
 

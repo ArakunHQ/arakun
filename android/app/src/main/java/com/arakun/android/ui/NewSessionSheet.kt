@@ -53,7 +53,6 @@ fun NewSessionSheet(model: AppModel, onDismiss: () -> Unit) {
     val c = Palette.current
     var placePath by rememberSaveable { mutableStateOf(model.places.firstOrNull()?.path ?: "") }
     val text = rememberTextFieldState()
-    var sent by remember { mutableStateOf(false) }
     var writing by remember { mutableStateOf(false) }
     val sheet = rememberBottomSheetState(SheetValue.Hidden, setOf(SheetValue.Hidden, SheetValue.Expanded))
 
@@ -62,21 +61,21 @@ fun NewSessionSheet(model: AppModel, onDismiss: () -> Unit) {
         if (model.places.none { it.path == placePath }) placePath = model.places.firstOrNull()?.path ?: ""
     }
     LaunchedEffect(model.session?.id) {
-        // Started: the session opens over the inbox.
-        if (sent && model.session != null) onDismiss()
-    }
-    LaunchedEffect(model.notice) {
-        // The computer refused it: let the form be sent again, prompt and all.
-        // A dropped link is no answer, so the form stays locked then.
-        if (model.notice != null && !model.startUnsure) sent = false
+        // Started, even from an earlier showing of the sheet: the session
+        // opens over the inbox.
+        if (model.session != null) onDismiss()
     }
 
     val prompt = text.text.trim().toString()
     val sendable = model.places.any { it.path == placePath } && prompt.isNotEmpty() && model.isLinked
+    // The pending start and its doubt live in the model, so closing and
+    // opening the sheet again neither unlocks it nor hides the warning. A
+    // refusal ends the start, which lets the form be sent again.
+    val pending = model.starting
     // The link dropped before the computer answered: the session may exist
     // already, so starting again is a separate, explicit choice.
-    val unsure = sent && model.startUnsure
-    val ready = (!sent || unsure) && sendable
+    val unsure = model.startUnsure
+    val ready = !pending && sendable
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -139,16 +138,16 @@ fun NewSessionSheet(model: AppModel, onDismiss: () -> Unit) {
             PrimaryButton(
                 onClick = {
                     val p = model.places.firstOrNull { it.path == placePath } ?: return@PrimaryButton
-                    sent = model.startSession(p, prompt)
+                    model.startSession(p, prompt)
                 },
                 enabled = ready,
                 modifier = Modifier.fillMaxWidth().padding(16.dp),
             ) {
-                if (sent && !unsure) CircularProgressIndicator(Modifier.size(16.dp), color = Brand.onAmber, strokeWidth = 2.dp)
+                if (pending) CircularProgressIndicator(Modifier.size(16.dp), color = Brand.onAmber, strokeWidth = 2.dp)
                 Text(
                     when {
                         unsure -> "Start it again anyway"
-                        sent -> "Starting…"
+                        pending -> "Starting…"
                         else -> "Start session"
                     },
                 )

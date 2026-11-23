@@ -467,9 +467,12 @@ private fun Empty(mood: Mood) {
     }
 }
 
-/** Whether the banner has something to say. */
+/**
+ * Whether the banner has something to say. Pairing counts: the inbox shows
+ * only while paired, so it is a replacement pairing waiting for an answer.
+ */
 val AppModel.Connection.hasBanner: Boolean
-    get() = this != AppModel.Connection.Connected && this != AppModel.Connection.Unpaired && this != AppModel.Connection.Pairing
+    get() = this != AppModel.Connection.Connected && this != AppModel.Connection.Unpaired
 
 /** How the link to the computer is doing, when it is not simply up. */
 @Composable

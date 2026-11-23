@@ -167,10 +167,16 @@ private fun HoldButton(title: String, enabled: Boolean, action: () -> Unit) {
                         view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
                         action()
                     }
-                    tryAwaitRelease()
-                    if (held.isActive) held.cancel()
-                    filling.cancel()
-                    scope.launch { fill.animateTo(0f, tween(150)) }
+                    // A link drop disables the button and cancels this press
+                    // mid-wait; the timer lives in the composition's scope, so
+                    // stop it here or a quick reconnect would still answer.
+                    try {
+                        tryAwaitRelease()
+                    } finally {
+                        held.cancel()
+                        filling.cancel()
+                        scope.launch { fill.animateTo(0f, tween(150)) }
+                    }
                 })
             },
         contentAlignment = Alignment.CenterStart,

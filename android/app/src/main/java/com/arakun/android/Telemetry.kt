@@ -118,33 +118,62 @@ private const val MAX_MESSAGE = 300
  * (`password=`, `api_key:`) goes whatever its shape.
  */
 fun scrub(text: String): String {
+    val s = text.split('\n').joinToString("\n", transform = ::scrubLine)
+    return if (s.length > MAX_MESSAGE) s.substring(0, MAX_MESSAGE) + "…" else s
+}
+
+/**
+ * One line of [scrub]. A credential's value can be a passphrase of several
+ * words, so it is secret up to the end of its clause: a `,`, `;` or `.`, a
+ * closing quote or bracket, or the end of the line.
+ */
+private fun scrubLine(line: String): String {
     val out = StringBuilder()
-    // The next word is a secret: after `Bearer`, or after a credential's name
-    // and its `:` or `=` (`password: hunter2`, `api_key = abc`).
+    // In a credential's value, or waiting for it after its name and its `:`
+    // or `=` (`password: my horse`, `api_key = abc`, `password=my horse`).
+    var value = false
+    // The next word is a secret, and only that one: after `Bearer`.
     var secretNext = false
     // The last word was a credential's name, its `:` or `=` still to come.
     var named = false
-    text.split(' ').forEachIndexed { i, word ->
+    line.split(' ').forEachIndexed { i, word ->
         if (i > 0) out.append(' ')
         val body = word.trimStart { it in "([{<\"'`" }
         val lead = word.substring(0, word.length - body.length)
         val core = body.trimEnd { it in ")]}>\"'`,.;:!?" }
         val tail = body.substring(core.length)
         val separator = core == "=" || (core.isEmpty() && tail.startsWith(':'))
-        val replaced = if (secretNext && core.isNotEmpty() && !separator) "<secret>" else redact(core)
         val sepAfter = tail.startsWith(':') || (core.length > 1 && core.endsWith('='))
-        secretNext = when {
-            secretNext && (core.isEmpty() || separator) -> true
-            core.lowercase() in setOf("bearer", "basic") -> true
+        // The clause, and with it the value, ends after this word.
+        val ends = tail.any { it in ",;.!?)]}>\"'`" }
+        val isWord = core.isNotEmpty() && !separator
+        val inValue = value && isWord
+        val replaced = if (inValue || (secretNext && isWord)) "<secret>" else redact(core)
+        value = when {
+            inValue -> !ends
+            value -> true
             '=' !in core.dropLast(1) && credentialName(core) && sepAfter -> true
             named && separator -> true
+            // `password=my`: the value goes on into the next words.
+            else -> attachedCredential(core) && !ends
+        }
+        secretNext = when {
+            secretNext && !isWord -> true
+            core.lowercase() in setOf("bearer", "basic") -> true
             else -> false
         }
         named = !sepAfter && '=' !in core && credentialName(core)
         out.append(lead).append(replaced ?: core).append(tail)
     }
-    val s = out.toString()
-    return if (s.length > MAX_MESSAGE) s.substring(0, MAX_MESSAGE) + "…" else s
+    return out.toString()
+}
+
+/** Whether `word` is a credential's name with its value, as `password=x`. */
+private fun attachedCredential(word: String): Boolean {
+    val sep = word.indexOfFirst { it == '=' || it == ':' }
+    if (sep <= 0 || sep >= word.length - 1) return false
+    val name = word.substring(0, sep)
+    return "://" !in word && '/' !in name && '\\' !in name && credentialName(name)
 }
 
 /** What replaces `word`, if it needs replacing. */

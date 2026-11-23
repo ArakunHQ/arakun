@@ -227,6 +227,23 @@ class RelayLinkTest {
     }
 
     @Test
+    fun aHugeLabelAnswerIsRefused() = runBlocking {
+        // Padding first, so the label is there but past the limit.
+        val body = """{"pad":"${"x".repeat(RelayLink.PROBE_MAX)}","label":"$label"}"""
+        server.enqueue(MockResponse.Builder().body(body).build())
+        server.enqueue(MockResponse.Builder().webSocketUpgrade(Computer(channel = 4)).build())
+        val link = PairingLink.parse("http://127.0.0.1:${server.port}/#p=c&s=s")!!
+        withContext(thread) {
+            RelayLink(RelayLink.Mode.Pairing(link, "Pixel"), scope, client) { events.trySend(it) }.start()
+        }
+        val closed = assertIs<RelayLink.Event.Closed>(next())
+        assertEquals(EndKind.GONE, closed.kind)
+        assertEquals("/_relay", server.takeRequest().target)
+        // It never got as far as the socket.
+        assertEquals(1, server.requestCount)
+    }
+
+    @Test
     fun theComputerGoingAwayAndBackIsAnEvent() = runBlocking {
         val computer = Computer(channel = 2)
         server.enqueue(MockResponse.Builder().webSocketUpgrade(computer).build())

@@ -25,15 +25,24 @@ class ScrubTest {
         assertEquals("cannot open <path>: denied", scrub("cannot open /data/user/0/com.arakun.android/x: denied"))
         assertEquals("no such file: '<path>'", scrub("no such file: '/srv/acme/repo/main.rs'"))
         assertEquals("from <email> failed", scrub("from ann@example.com failed"))
-        assertEquals("token=<secret> rejected", scrub("token=ghp_abcdefghijklmnop rejected"))
-        assertEquals("login password=<secret> failed", scrub("login password=hunter2 failed"))
+        assertEquals("token=<secret>, rejected", scrub("token=ghp_abcdefghijklmnop, rejected"))
+        assertEquals("login password=<secret>; failed", scrub("login password=hunter2; failed"))
         assertEquals("\"api_key\":\"<secret>\"", scrub("\"api_key\":\"abc\""))
         assertEquals("status=404", scrub("status=404"))
         // A credential's value after a space, as logs and exceptions write it.
-        assertEquals("login password: <secret> failed", scrub("login password: hunter2 failed"))
-        assertEquals("api_key = <secret> rejected", scrub("api_key = abc rejected"))
+        assertEquals("login password: <secret>. failed", scrub("login password: hunter2. failed"))
+        assertEquals("api_key = <secret>, rejected", scrub("api_key = abc, rejected"))
         assertEquals("password : <secret>", scrub("password : x"))
         assertEquals("auth failed: Bearer <secret>", scrub("auth failed: Bearer abc.def"))
+    }
+
+    @Test
+    fun removesAWholePassphrase() {
+        assertEquals("password: <secret> <secret>", scrub("password: my horse"))
+        assertEquals("password=<secret> <secret>", scrub("password=my horse"))
+        assertEquals("password: <secret> <secret>, then failed", scrub("password: correct horse, then failed"))
+        // The value ends with its line.
+        assertEquals("password: <secret>\nretrying", scrub("password: x\nretrying"))
     }
 
     @Test

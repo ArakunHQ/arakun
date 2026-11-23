@@ -89,7 +89,14 @@ class AppModel(app: Application) : AndroidViewModel(app) {
     private var openWhenLinked: String? = null
 
     /** A start sent and not yet answered with `started` or `error`. */
-    private var starting = false
+    var starting by mutableStateOf(false)
+        private set
+
+    /**
+     * The session on screen when the start went out. The started one opens
+     * only if the user is still there, not over a session they picked since.
+     */
+    private var startedFrom: String? = null
 
     /**
      * The link dropped while a start waited for its answer: the computer may
@@ -142,7 +149,10 @@ class AppModel(app: Application) : AndroidViewModel(app) {
     /** A pairing link opened from elsewhere, waiting for the user's yes. */
     var opened by mutableStateOf<PairingLink?>(null)
         private set
-    private var openedText: String? = null
+
+    /** The link behind [opened], kept by the activity across process death. */
+    var openedText: String? = null
+        private set
 
     /**
      * A link from outside the app pairs only after the user says yes, as on
@@ -213,13 +223,15 @@ class AppModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun unpair() {
+        val paired = credentials
         viewModelScope.launch {
             try {
                 link?.fetch("/unpair", method = "POST")
             } catch (_: Exception) {
                 // Forgotten here all the same; the computer drops it on its next look.
             }
-            forget()
+            // A new pairing made during the wait is not the one to forget.
+            if (credentials == paired && connection != Connection.Pairing) forget()
         }
     }
 
@@ -364,7 +376,12 @@ class AppModel(app: Application) : AndroidViewModel(app) {
             "state" -> if (session?.id == id) session = session?.applyState(msg)
             "started" -> {
                 starting = false
-                open(id)
+                startUnsure = false
+                if (session?.id == startedFrom) {
+                    open(id)
+                } else {
+                    notice = "The new session started. It is in the inbox."
+                }
             }
             "error" -> {
                 starting = false
@@ -381,7 +398,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** Whether a message sent now reaches the computer; the link drops it otherwise. */
-    private val canSend: Boolean get() = demo != null || link?.isReady == true
+    val canSend: Boolean get() = demo != null || link?.isReady == true
 
     fun open(id: String) {
         val line = inbox.firstOrNull { it.id == id }
@@ -445,7 +462,8 @@ class AppModel(app: Application) : AndroidViewModel(app) {
 
     /** Whether the start went out; the form keeps its prompt when it did not. */
     fun startSession(place: Place, text: String): Boolean {
-        if (!canSend) return false
+        // One start at a time: the sheet can close and open again while one waits.
+        if (!canSend || starting) return false
         if (demo != null) {
             // No computer answers a demo: open one as if it had started.
             session = demoSession("s2").copy(id = "demo-new", title = text.lineSequence().first().take(80))
@@ -453,6 +471,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         }
         starting = true
         startUnsure = false
+        startedFrom = session?.id
         send("type" to "start", "env" to place.path, "agent" to place.agent, "text" to text)
         return true
     }

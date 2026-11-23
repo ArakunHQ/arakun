@@ -75,8 +75,9 @@ fun SessionScreen(model: AppModel, id: String) {
     val lastIndex = (s?.let { 1 + (if (it.from > 0) 1 else 0) + it.entries.size + it.queue.size + 1 }) ?: 1
 
     val working = s?.status == SessionStatus.WORKING && s.turnStarted != null
-    // The working line counts too: a turn can start without a new entry.
-    LaunchedEffect(s?.count, s?.queue?.size, working) {
+    // The working line counts too: a turn can start without a new entry. So
+    // does the last entry, which streaming text grows without adding one.
+    LaunchedEffect(s?.count, s?.entries?.lastOrNull(), s?.queue?.size, working) {
         if (s == null) return@LaunchedEffect
         if (!followed) {
             // Opened at the end, as a chat is.
@@ -113,7 +114,8 @@ fun SessionScreen(model: AppModel, id: String) {
                                 OutlineButton(
                                     if (model.loadingOlder) "Loading…" else "Show ${s.from} earlier entries",
                                     model::loadOlder,
-                                    enabled = !model.loadingOlder,
+                                    // Offline the request would go nowhere.
+                                    enabled = !model.loadingOlder && model.canSend,
                                 )
                             }
                         }

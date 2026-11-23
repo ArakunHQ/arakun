@@ -26,6 +26,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -121,13 +122,22 @@ private fun elapsed(ms: Int): String {
 private fun PasteView(text: String) {
     val c = Palette.current
     var open by rememberSaveable { mutableStateOf(false) }
-    val long = text.split('\n').size > 4
+    // Measured, not counted: one long line can wrap past four. Open, nothing
+    // is cut, so the closed layout's answer stands.
+    var long by remember(text) { mutableStateOf(text.split('\n').size > 4) }
     Column(
         Modifier.fillMaxWidth().background(c.deep, RoundedCornerShape(Radius.control)).padding(10.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         SelectionContainer {
-            Text(text, style = Type.code, color = c.textMuted, maxLines = if (open) Int.MAX_VALUE else 4, overflow = TextOverflow.Ellipsis)
+            Text(
+                text,
+                style = Type.code,
+                color = c.textMuted,
+                maxLines = if (open) Int.MAX_VALUE else 4,
+                overflow = TextOverflow.Ellipsis,
+                onTextLayout = { if (!open) long = it.hasVisualOverflow },
+            )
         }
         if (long) {
             Text(

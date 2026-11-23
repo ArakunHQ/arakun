@@ -1892,15 +1892,23 @@ impl ThreadView {
                                         .children(images.into_iter().enumerate().map(
                                             |(n, path)| {
                                                 let open = path.clone();
+                                                let (max_w, max_h) = if single_image {
+                                                    (400., 220.)
+                                                } else {
+                                                    (200., 120.)
+                                                };
                                                 div()
                                                     .id(("user-image", ix * 64 + n))
-                                                    .h(px(if single_image { 220. } else { 120. }))
-                                                    .max_w(px(if single_image {
-                                                        400.
-                                                    } else {
-                                                        200.
-                                                    }))
-                                                    .min_w(px(48.))
+                                                    .map(|d| {
+                                                        match thumb_size(&path, max_w, max_h) {
+                                                            Some((w, h)) => d.w(px(w)).h(px(h)),
+                                                            // Unknown size: the old box, the image fit inside.
+                                                            None => d
+                                                                .h(px(max_h))
+                                                                .max_w(px(max_w))
+                                                                .min_w(px(48.)),
+                                                        }
+                                                    })
                                                     .rounded(crate::ui::rad(12.))
                                                     .overflow_hidden()
                                                     .border_1()
@@ -1910,8 +1918,7 @@ impl ThreadView {
                                                     .child(
                                                         gpui::img(path)
                                                             .object_fit(gpui::ObjectFit::Contain)
-                                                            .h_full()
-                                                            .max_w_full()
+                                                            .size_full()
                                                             .with_fallback(|| {
                                                                 div()
                                                                 .p(crate::ui::sp(8.))
@@ -2782,9 +2789,46 @@ impl Render for ThreadView {
     }
 }
 
+/// The box an image sent in a message shows in: its own size, scaled down to
+/// fit `max_w` by `max_h` and never up, so a small image is not stretched
+/// across a tall box. None when the file's size can't be read.
+fn thumb_size(path: &Path, max_w: f32, max_h: f32) -> Option<(f32, f32)> {
+    thread_local! {
+        static SIZES: RefCell<HashMap<PathBuf, Option<(f32, f32)>>> = RefCell::new(HashMap::new());
+    }
+    let natural = SIZES.with(|m| {
+        *m.borrow_mut().entry(path.to_path_buf()).or_insert_with(|| {
+            imagesize::size(path)
+                .ok()
+                .map(|s| (s.width as f32, s.height as f32))
+        })
+    })?;
+    Some(fit(natural, max_w, max_h))
+}
+
+/// `natural` scaled down to fit `max_w` by `max_h`, keeping its shape.
+fn fit((w, h): (f32, f32), max_w: f32, max_h: f32) -> (f32, f32) {
+    if w <= 0. || h <= 0. {
+        return (max_w.min(48.), max_h.min(48.));
+    }
+    let scale = (max_w / w).min(max_h / h).min(1.);
+    ((w * scale).round().max(1.), (h * scale).round().max(1.))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_sent_image_keeps_its_shape_and_is_never_enlarged() {
+        // A small strip stays its own size instead of filling a tall box.
+        assert_eq!(fit((73., 18.), 400., 220.), (73., 18.));
+        // A big screenshot shrinks to the box, keeping its shape.
+        assert_eq!(fit((1254., 1254.), 400., 220.), (220., 220.));
+        assert_eq!(fit((1600., 400.), 400., 220.), (400., 100.));
+        // A broken header doesn't give a zero-sized box.
+        assert_eq!(fit((0., 0.), 400., 220.), (48., 48.));
+    }
 
     fn agent(text: &str) -> Entry {
         Entry::Agent { text: text.into() }

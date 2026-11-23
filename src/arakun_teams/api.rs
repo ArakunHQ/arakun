@@ -408,6 +408,10 @@ pub struct PendingRow {
     pub request_id: String,
     pub github_id: u64,
     pub login: String,
+    /// The login the invite was sent to. GitHub logins can be renamed and
+    /// taken by someone else, so a different `login` is worth a second look.
+    #[serde(default)]
+    pub invited_login: Option<String>,
     pub requested_at: u64,
     pub devices: Vec<DeviceRow>,
     /// When they last reminded the admins.
@@ -1028,6 +1032,24 @@ mod tests {
         assert_eq!(s.session, "abc");
         assert_eq!(s.me.login, "b");
         assert!(s.me.has(TEAMS_FLAG));
+    }
+
+    #[test]
+    fn keeps_the_login_a_pending_member_was_invited_as() {
+        let row = |extra: serde_json::Value| -> PendingRow {
+            let mut v = serde_json::json!({
+                "request_id": "r", "github_id": 7, "login": "new-login",
+                "requested_at": 1, "devices": []
+            });
+            v.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            serde_json::from_value(v).unwrap()
+        };
+        let renamed = row(serde_json::json!({ "invited_login": "old-login" }));
+        assert_eq!(renamed.invited_login.as_deref(), Some("old-login"));
+        // Older servers leave it out.
+        assert_eq!(row(serde_json::json!({})).invited_login, None);
     }
 
     #[test]

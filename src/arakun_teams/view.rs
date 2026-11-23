@@ -2325,6 +2325,23 @@ impl TeamsView {
                         .pl(ui::sp(50.))
                         .pr(ui::sp(10.))
                         .pb(ui::sp(8.))
+                        .children(
+                            p.invited_login
+                                .as_ref()
+                                .filter(|login| {
+                                    !login.is_empty() && !login.eq_ignore_ascii_case(&p.login)
+                                })
+                                .map(|login| {
+                                    ui::text(
+                                        Type::Label,
+                                        theme::attention().into(),
+                                        format!(
+                                            "Invited as @{}. A GitHub login can change hands: check this is the person you invited.",
+                                            crate::redact::value(login)
+                                        ),
+                                    )
+                                }),
+                        )
                         .children(p.devices.iter().map(device_line)),
                 );
         }

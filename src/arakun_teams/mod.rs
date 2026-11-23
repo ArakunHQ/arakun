@@ -337,6 +337,16 @@ impl Teams {
         self.ask_me(cx);
     }
 
+    /// Asks the server again who is signed in, because something else said
+    /// the session ended (the relay turned it down). A 401 forgets it; any
+    /// other answer leaves things as they are.
+    pub fn recheck(&mut self, cx: &mut Context<Self>) {
+        if self.session.is_none() || !self.phase.at_rest() || fixture().is_some() || self.asking {
+            return;
+        }
+        self.ask_me(cx);
+    }
+
     /// Asks the server again once its answer is old, so a flag it turned on
     /// or off since shows without a restart.
     pub fn refresh_if_stale(&mut self, cx: &mut Context<Self>) {

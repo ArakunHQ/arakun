@@ -888,7 +888,7 @@ pub enum Door {
 
 impl Door {
     /// Whether `d` came in through this door: the relay's devices have no token.
-    fn admits(self, d: &Device) -> bool {
+    pub fn admits(self, d: &Device) -> bool {
         d.token_hash.is_empty() == (self == Door::Relay)
     }
 }
@@ -938,15 +938,35 @@ pub fn relay_prune_due(
         && last.is_none_or(|at| now.saturating_duration_since(at) >= RELAY_PRUNE_EVERY)
 }
 
+/// The account's signed-in devices as it listed them, and when it was asked
+/// (unix seconds).
+#[derive(Clone, Copy)]
+pub struct SignedInDevices<'a> {
+    pub ids: &'a [String],
+    pub asked_at: u64,
+}
+
+impl SignedInDevices<'_> {
+    /// Whether the account still has `d`, as far as the list can say. A
+    /// device that came in after the list was asked is not in it, and
+    /// signed in all the same: the relay let it in.
+    fn has(&self, d: &Device) -> bool {
+        self.ids.contains(&d.id) || d.paired_at >= self.asked_at
+    }
+}
+
 /// Drops the devices the relay brought in that their account no longer
-/// has: with `listed`, the ids of the account's signed-in devices, each one
-/// not among them; with `None`, every one. A device signed out elsewhere
-/// keeps no record here, so its push subscription goes with it. Devices
-/// paired on the network are never touched. The ids dropped come back.
-pub fn prune_relay_devices(devices: &mut Vec<Device>, listed: Option<&[String]>) -> Vec<String> {
+/// has: with `listed`, each one the account's list does not have; with
+/// `None`, every one. A device signed out elsewhere keeps no record here,
+/// so its push subscription goes with it. Devices paired on the network
+/// are never touched. The ids dropped come back.
+pub fn prune_relay_devices(
+    devices: &mut Vec<Device>,
+    listed: Option<SignedInDevices<'_>>,
+) -> Vec<String> {
     let mut dropped = Vec::new();
     devices.retain(|d| {
-        let keep = !Door::Relay.admits(d) || listed.is_some_and(|l| l.contains(&d.id));
+        let keep = !Door::Relay.admits(d) || listed.is_some_and(|l| l.has(d));
         if !keep {
             dropped.push(d.id.clone());
         }
@@ -1888,19 +1908,58 @@ pub fn link(address: &str, code: &str) -> String {
     format!("{address}?p={code}")
 }
 
-/// The machine's name, as the phone's inbox shows it.
+/// The longest machine name the account takes; it answers 400 to more.
+const HOST_NAME_MAX: usize = 100;
+
+/// The machine's name, as the phone's inbox and the account's list of
+/// machines show it. Read once: the system is asked on some platforms.
 pub fn host_name() -> String {
-    std::env::var("COMPUTERNAME")
-        .or_else(|_| std::env::var("HOSTNAME"))
-        .ok()
-        .filter(|h| !h.is_empty())
-        .or_else(|| {
-            std::fs::read_to_string("/etc/hostname")
-                .ok()
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-        })
-        .unwrap_or_else(|| "this computer".into())
+    static NAME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    NAME.get_or_init(|| {
+        let found = [
+            std::env::var("COMPUTERNAME").ok(),
+            std::env::var("HOSTNAME").ok(),
+            std::fs::read_to_string("/etc/hostname").ok(),
+            // A Mac has none of these in an app started from the Finder.
+            system_host_name(),
+        ];
+        found
+            .iter()
+            .flatten()
+            .find_map(|name| clean_host_name(name))
+            .unwrap_or_else(|| "this computer".into())
+    })
+    .clone()
+}
+
+/// `name` as it can be sent and shown: no control characters, trimmed, at
+/// most `HOST_NAME_MAX` letters. `None` when nothing is left.
+fn clean_host_name(name: &str) -> Option<String> {
+    let name: String = name.chars().filter(|c| !c.is_control()).collect();
+    let name: String = name.trim().chars().take(HOST_NAME_MAX).collect();
+    let name = name.trim_end();
+    // What a Mac off any network calls itself says nothing.
+    (!name.is_empty() && name != "localhost").then(|| name.to_string())
+}
+
+/// The name the system itself gives, without the domain.
+#[cfg(unix)]
+fn system_host_name() -> Option<String> {
+    let mut buf = [0u8; 256];
+    // SAFETY: the buffer is valid for its whole length, which is what we pass.
+    let r = unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) };
+    if r != 0 {
+        return None;
+    }
+    let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+    let name = String::from_utf8_lossy(&buf[..end]).into_owned();
+    // "anns-mac.local" on a Mac: the first part is the name.
+    Some(name.split('.').next().unwrap_or_default().to_string())
+}
+
+#[cfg(not(unix))]
+fn system_host_name() -> Option<String> {
+    None
 }
 
 #[cfg(test)]
@@ -2404,6 +2463,23 @@ mod tests {
     }
 
     #[test]
+    fn a_machine_name_is_fit_to_send_and_show() {
+        assert_eq!(
+            clean_host_name(" build-box\n").as_deref(),
+            Some("build-box")
+        );
+        assert_eq!(clean_host_name("a\u{7}b\tc").as_deref(), Some("abc"));
+        assert_eq!(clean_host_name("  \n"), None);
+        assert_eq!(clean_host_name("localhost"), None);
+        let long = "é".repeat(150);
+        assert_eq!(clean_host_name(&long).unwrap().chars().count(), 100);
+        // Whatever this machine is called, the account takes it.
+        let name = host_name();
+        assert!(!name.is_empty() && name.chars().count() <= 100);
+        assert!(!name.chars().any(char::is_control));
+    }
+
+    #[test]
     fn devices_the_account_signed_out_are_dropped_and_local_ones_stay() {
         let mut lan = relay_device("lan1");
         lan.token_hash = hash("token");
@@ -2414,15 +2490,23 @@ mod tests {
             auth: "a".into(),
         });
         let mut devices = vec![lan.clone(), relay_device("here"), gone];
-        let listed = vec!["here".to_string(), "lan1".to_string()];
-        let dropped = prune_relay_devices(&mut devices, Some(&listed));
+        let ids = vec!["here".to_string(), "lan1".to_string()];
+        // The devices here came in at 0, before any list was asked.
+        let listed = |ids| Some(SignedInDevices { ids, asked_at: 100 });
+        let dropped = prune_relay_devices(&mut devices, listed(&ids));
         assert_eq!(dropped, ["gone"]);
         let left: Vec<&str> = devices.iter().map(|d| d.id.as_str()).collect();
         assert_eq!(left, ["lan1", "here"]);
         // A local device is kept even when the account does not list it.
-        let dropped = prune_relay_devices(&mut devices, Some(&[]));
+        let dropped = prune_relay_devices(&mut devices, listed(&[]));
         assert_eq!(dropped, ["here"]);
         assert_eq!(devices, [lan.clone()]);
+        // One that signed in after the list was asked is not in it: it stays.
+        let mut late = relay_device("late");
+        late.paired_at = 100;
+        let mut devices = vec![relay_device("old"), late.clone()];
+        assert_eq!(prune_relay_devices(&mut devices, listed(&[])), ["old"]);
+        assert_eq!(devices, [late]);
         // Under another account or none: every relay one goes, local ones stay.
         let mut devices = vec![relay_device("a"), lan.clone(), relay_device("b")];
         assert_eq!(prune_relay_devices(&mut devices, None), ["a", "b"]);

@@ -492,9 +492,16 @@ after a week).
   same sign-in as the User row; no Teams needed). Signed in, it shows your login, the
   address to open on the phone with its QR code, and **Signed-in devices**: every
   device signed in to the account, with its kind and when it was last used, and
-  **Sign out** for each but this computer. There is no code to pair through the relay.
+  **Sign out** for each but this computer. Under it, **Your computers** lists the
+  computers of the account that run the app, each online or when it was last seen, with
+  **Remove** for each but this one; a removed computer is listed again when it next
+  connects signed in. There is no code to pair through the relay.
   The first time a device connects, a notice says "<name> connected for the first
-  time"; `phone.json` keeps it by its signed-in device's id and name, with no token.
+  time"; `phone.json` keeps it by its signed-in device's id and name, with no token,
+  and the account that let those devices in (`relay_account`, its GitHub id): signed
+  out, or under another account, they are dropped. **Paired phones** lists only the
+  phones paired here with a code. A new key for this computer makes it a new computer
+  in your account and removes the old entry from it.
   On the phone, open `https://app.arakun.dev`,
   sign in with GitHub and pick the computer (with one, the page opens it straight away).
   Anyone who signs in to your GitHub account, or holds one of its sessions, can reach

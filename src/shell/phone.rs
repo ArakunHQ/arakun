@@ -95,7 +95,19 @@ pub(super) struct SignedIn {
     error: Option<String>,
     machines: Option<Vec<cloud::Machine>>,
     machines_error: Option<String>,
+    /// This computer's label on the relay, read when the lists are asked:
+    /// reading it on every view update would parse `phone.json` and the
+    /// key each time.
+    own_label: Option<String>,
     _task: Option<Task<()>>,
+}
+
+/// Whether the relay turned down the sign-in it was given, which the rest
+/// of the app still takes for good: the account is to be asked again.
+/// Started without a sign-in, the relay client says the same and means
+/// only that it waits for one.
+fn relay_ended_sign_in(status: &relay::Status, given: bool) -> bool {
+    given && *status == relay::Status::SignedOut
 }
 
 /// The account's computers that run the app, for the Phone tab: servers
@@ -273,6 +285,8 @@ impl Shell {
         };
         let session = account.session.clone();
         self.signed_in.asked = Some(session.clone());
+        self.signed_in.own_label = phone::Settings::load().relay_label();
+        let asked_at = crate::model::unix_now();
         self.signed_in._task = Some(cx.spawn_in(window, async move |this, cx| {
             let base = account.base;
             let token = account.session;
@@ -305,7 +319,10 @@ impl Shell {
                 match listed {
                     Ok(list) => {
                         let ids: Vec<String> = list.iter().map(|s| s.id.clone()).collect();
-                        this.forget_relay_devices(Some(&ids));
+                        this.forget_relay_devices(Some(phone::SignedInDevices {
+                            ids: &ids,
+                            asked_at,
+                        }));
                         this.signed_in.list = Some(list);
                         this.signed_in.error = None;
                     }
@@ -410,6 +427,7 @@ impl Shell {
     fn renew_identity(&mut self, was_on: bool, window: &mut Window, cx: &mut Context<Self>) {
         let mut settings = phone::Settings::load();
         settings.renew_identity();
+        self.signed_in.own_label = settings.relay_label();
         self.servers_own_label_changed();
         if was_on {
             self.start_phone(&settings, window, cx);
@@ -431,6 +449,12 @@ impl Shell {
             None if teams.ready() && teams.session().is_none() => phone::AccountNow::SignedOut,
             None => phone::AccountNow::Unknown,
         };
+        // Told on every change of Teams, pictures included: the same
+        // account as last time changes nothing, so the file is not read.
+        if self.relay_owner_seen == Some(now) {
+            return;
+        }
+        self.relay_owner_seen = Some(now);
         let mut settings = phone::Settings::load();
         let (drop_all, kept) = phone::relay_owner(settings.relay_account, now);
         if kept != settings.relay_account {
@@ -466,6 +490,7 @@ impl Shell {
         };
         link.pruned_at = Some(now);
         let asked = account.session.clone();
+        let asked_at = crate::model::unix_now();
         link.pruning = Some(cx.spawn(async move |this, cx| {
             let (base, token) = (account.base, account.session);
             let listed = cx
@@ -482,7 +507,10 @@ impl Shell {
                 match listed {
                     Ok(rows) => {
                         let ids: Vec<String> = rows.into_iter().map(|r| r.id).collect();
-                        this.forget_relay_devices(Some(&ids));
+                        this.forget_relay_devices(Some(phone::SignedInDevices {
+                            ids: &ids,
+                            asked_at,
+                        }));
                         this.sync_phone_view(cx);
                     }
                     Err(cloud::Error::SignedOut) => {
@@ -497,7 +525,7 @@ impl Shell {
     /// Drops the devices the relay let in that the account no longer has
     /// (`phone::prune_relay_devices`), here and in what is saved: a device
     /// signed out elsewhere must not keep getting this computer's pushes.
-    fn forget_relay_devices(&mut self, listed: Option<&[String]>) {
+    fn forget_relay_devices(&mut self, listed: Option<phone::SignedInDevices<'_>>) {
         // The made-up account lists made-up ids: real devices would all go.
         if crate::arakun_teams::fixture().is_some() {
             return;
@@ -571,10 +599,9 @@ impl Shell {
             };
             let computers = match (&self.signed_in.machines_error, &self.signed_in.machines) {
                 (Some(e), _) => ComputerList::Failed(e.clone()),
-                (None, Some(list)) => ComputerList::Listed(your_computers(
-                    list,
-                    phone::Settings::load().relay_label().as_deref(),
-                )),
+                (None, Some(list)) => {
+                    ComputerList::Listed(your_computers(list, self.signed_in.own_label.as_deref()))
+                }
                 (None, None) => ComputerList::Loading,
             };
             return RelayAccount::SignedIn {
@@ -885,9 +912,12 @@ impl Shell {
                     code,
                     seconds_left: left.as_secs(),
                 });
+                // Paired here with a code: the ones the relay let in are
+                // the account's, listed under "Signed-in devices".
                 let devices = access
                     .devices
                     .iter()
+                    .filter(|d| phone::Door::Local.admits(d))
                     .map(|d| DeviceInfo {
                         id: d.id.clone(),
                         name: d.name.clone(),
@@ -948,10 +978,19 @@ impl Shell {
                 self.sync_phone_view(cx);
             }
             Incoming::Relay(status) => {
+                let mut ended = false;
                 if let Some(link) = &mut self.phone
                     && let Transport::Relay(client) = &link.server
                 {
+                    let given = link.account.is_some() && link.relay_problem.is_none();
+                    ended = relay_ended_sign_in(&status, given);
                     link.remote = relay_address(status, client.page_url());
+                }
+                // The relay ended the sign-in (signed out from another
+                // device, or run out) and nothing told Teams: without this
+                // the tab says "Signed in" over "Waiting for your sign-in".
+                if ended {
+                    self.teams.update(cx, |t, cx| t.recheck(cx));
                 }
                 self.sync_phone_view(cx);
             }
@@ -1954,6 +1993,18 @@ fn tailscale_address(port: u16) -> Address {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_sign_in_the_relay_turned_down_is_asked_about_again() {
+        assert!(relay_ended_sign_in(&relay::Status::SignedOut, true));
+        // Started without one, it only waits for a sign-in.
+        assert!(!relay_ended_sign_in(&relay::Status::SignedOut, false));
+        assert!(!relay_ended_sign_in(&relay::Status::Connected, true));
+        assert!(!relay_ended_sign_in(
+            &relay::Status::Rejected("no".into()),
+            true
+        ));
+    }
 
     fn machine(label: &str, kind: &str) -> cloud::Machine {
         cloud::Machine {

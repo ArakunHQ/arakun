@@ -77,6 +77,17 @@ pub struct ChannelInfo {
     pub name: Option<String>,
 }
 
+/// The account, membership and key state a row was drawn for. An action
+/// started from that row runs, and its answer lands, only while it holds.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct Roster {
+    account: u64,
+    membership: u64,
+    epoch: u64,
+    keyed_epoch: Option<u64>,
+    rotation_pending: bool,
+}
+
 pub struct TeamState {
     pub detail: TeamDetail,
     pub role: Role,
@@ -510,6 +521,40 @@ impl Hub {
 
     pub fn me(&self) -> Option<&Me> {
         self.me.as_ref()
+    }
+
+    /// The team as this device has it now, while its list row and its detail
+    /// agree on the epoch and this user's role.
+    pub(super) fn roster(&self, team: &str) -> Option<Roster> {
+        let state = self.team.get(team)?;
+        let row = self.teams.iter().find(|r| r.team_id == team)?;
+        // A rotation can finish within one epoch, and it changes which keys
+        // are live, so it counts too.
+        if row.epoch != state.detail.epoch
+            || row.role != state.role
+            || row.rotation_pending != state.detail.rotation_pending
+        {
+            return None;
+        }
+        Some(Roster {
+            account: self.generation,
+            membership: *self.membership.get(team)?,
+            epoch: row.epoch,
+            keyed_epoch: state.detail.keyed_epoch,
+            rotation_pending: row.rotation_pending,
+        })
+    }
+
+    /// Whether the session the calls go out with is still the signed-in one.
+    fn current_account(&self, cx: &Context<Self>) -> bool {
+        self.net.as_ref().is_some_and(|net| {
+            self.teams_entity
+                .read(cx)
+                .signed()
+                .is_some_and(|(base, session, me)| {
+                    base == net.base && session == net.session && me.github_id == self.github_id()
+                })
+        })
     }
 
     pub fn device_id(&self) -> Option<&str> {
@@ -1167,6 +1212,7 @@ impl Hub {
             )
         });
         let rotation = read.detail.rotation_pending;
+        let epoch = read.detail.epoch;
         if self.peer_review.as_ref().is_some_and(|g| {
             self.channels
                 .get(&g.channel)
@@ -1196,6 +1242,9 @@ impl Hub {
         );
         if let Some(row) = self.teams.iter_mut().find(|t| t.team_id == team_id) {
             row.rotation_pending = rotation;
+            // A rotation made on another device reaches the detail first, and
+            // `roster` needs the two to agree; epochs only grow.
+            row.epoch = row.epoch.max(epoch);
         }
         // Messages that waited on a device list, and any sealed with a key
         // that just arrived, get another look.
@@ -1541,6 +1590,17 @@ impl Hub {
     }
 
     pub fn invite(&mut self, team_id: &str, login: String, cx: &mut Context<Self>) {
+        // Say why nothing went out; the view keeps the login typed.
+        if self.roster(team_id).is_none() {
+            self.error = Some(format!(
+                "The team is still loading. Invite @{login} again in a moment."
+            ));
+            cx.notify();
+            return;
+        }
+        if !self.team[team_id].role.is_admin() {
+            return;
+        }
         let busy = format!("invite:{team_id}");
         if !self.busy.insert(busy.clone()) {
             return;
@@ -1556,6 +1616,8 @@ impl Hub {
             },
             move |hub, result, cx| {
                 hub.busy.remove(&busy);
+                // The server has acted or refused by now, whatever the roster
+                // did meanwhile: the error and the reload hold for any roster.
                 match result {
                     // Listed at once: a team read already under way does not
                     // know of it, and an older server lists no invites.
@@ -1595,7 +1657,23 @@ impl Hub {
     }
 
     /// Takes back an invite nobody answered yet.
-    pub fn withdraw(&mut self, team_id: &str, invite_id: &str, cx: &mut Context<Self>) {
+    pub(super) fn withdraw(
+        &mut self,
+        team_id: &str,
+        scope: Roster,
+        invite_id: &str,
+        cx: &mut Context<Self>,
+    ) {
+        if self.roster(team_id) != Some(scope)
+            || !self.team[team_id].role.is_admin()
+            || !self.team[team_id]
+                .invites
+                .iter()
+                .flatten()
+                .any(|i| i.invite_id == invite_id)
+        {
+            return;
+        }
         let busy = format!("withdraw:{invite_id}");
         if !self.busy.insert(busy.clone()) {
             return;
@@ -1690,13 +1768,16 @@ impl Hub {
 
     /// Lets a pending member in: their devices must all check out, and get
     /// every key this device holds from the oldest it can give without a gap.
-    pub fn approve(
+    pub(super) fn approve(
         &mut self,
         team_id: &str,
-        github_id: u64,
-        request_id: &str,
+        scope: Roster,
+        reviewed: &PendingRow,
         cx: &mut Context<Self>,
     ) {
+        if self.roster(team_id) != Some(scope) || !self.current_account(cx) {
+            return;
+        }
         let Some(t) = self.team.get(team_id) else {
             return;
         };
@@ -1706,14 +1787,12 @@ impl Hub {
         let team_epoch = t.detail.epoch;
         let reviewed_epoch = t.detail.keyed_epoch;
         let keyed_epoch = reviewed_epoch.unwrap_or(team_epoch);
-        let Some(p) = t
-            .pending
-            .iter()
-            .find(|p| p.github_id == github_id && p.request_id == request_id)
-            .cloned()
-        else {
+        // Only the request as it was shown: the same ID, login and devices.
+        if !t.role.is_admin() || !t.pending.contains(reviewed) {
             return;
-        };
+        }
+        let p = reviewed.clone();
+        let github_id = p.github_id;
         let trusted = trusted_devices(github_id, &p.devices);
         if trusted.len() != p.devices.len()
             || trusted.iter().any(|d| self.kept.mismatched(&d.device_id))
@@ -1783,18 +1862,20 @@ impl Hub {
             },
             move |hub, result, cx| {
                 hub.busy.remove(&busy);
-                if hub.membership.get(&team_id) != Some(&version)
-                    || !hub
+                // The server has acted or refused by now. Only the record of
+                // what was given belongs to the membership and epoch it was
+                // sealed for; the error and the reload hold for any roster.
+                let current = hub.membership.get(&team_id) == Some(&version)
+                    && hub
                         .team
                         .get(&team_id)
-                        .is_some_and(|t| t.detail.epoch == team_epoch)
-                {
-                    return;
-                }
+                        .is_some_and(|t| t.detail.epoch == team_epoch);
                 match result {
                     Ok((batch, older)) => {
-                        hub.kept.admitted(&team_id, github_id, team_epoch, &batch);
-                        hub.save(cx);
+                        if current {
+                            hub.kept.admitted(&team_id, github_id, team_epoch, &batch);
+                            hub.save(cx);
+                        }
                         hub.load_team(&team_id, cx);
                         if let Some(e) = older {
                             hub.error = Some(format!(
@@ -1812,13 +1893,20 @@ impl Hub {
         );
     }
 
-    pub fn reject(
+    pub(super) fn reject(
         &mut self,
         team_id: &str,
-        github_id: u64,
-        request_id: String,
+        scope: Roster,
+        reviewed: &PendingRow,
         cx: &mut Context<Self>,
     ) {
+        if self.roster(team_id) != Some(scope)
+            || !self.team[team_id].role.is_admin()
+            || !self.team[team_id].pending.contains(reviewed)
+        {
+            return;
+        }
+        let (github_id, request_id) = (reviewed.github_id, reviewed.request_id.clone());
         let team_id = team_id.to_string();
         self.run(
             cx,
@@ -1834,7 +1922,25 @@ impl Hub {
     }
 
     /// Removes a member (an admin), or leaves (anyone, with their own ID).
-    pub fn remove(&mut self, team_id: &str, github_id: u64, cx: &mut Context<Self>) {
+    pub(super) fn remove(
+        &mut self,
+        team_id: &str,
+        scope: Roster,
+        member: &MemberRow,
+        cx: &mut Context<Self>,
+    ) {
+        if self.roster(team_id) != Some(scope)
+            || !self.team[team_id].detail.members.contains(member)
+        {
+            return;
+        }
+        let github_id = member.github_id;
+        let team = &self.team[team_id];
+        if github_id != self.github_id()
+            && (!team.role.is_admin() || (member.role == Role::Owner && team.role != Role::Owner))
+        {
+            return;
+        }
         let team_id = team_id.to_string();
         self.run(
             cx,
@@ -1854,6 +1960,7 @@ impl Hub {
 
     /// Do not encrypt a new message with a key still held by a removed member.
     fn sending_key(&self, team_id: &str) -> Option<(u64, TeamKey)> {
+        self.roster(team_id)?;
         let t = self.team.get(team_id)?;
         let (epoch, key) = self.kept.newest(team_id)?;
         (epoch == t.detail.epoch && !t.detail.rotation_pending).then_some((epoch, key))
@@ -2483,6 +2590,7 @@ impl Hub {
     /// The key epoch a review in this channel runs under: only while the
     /// channel is connected, its history has no gap and no rotation is pending.
     fn review_epoch(&self, team: &str, channel: &str) -> Option<u64> {
+        self.roster(team)?;
         let t = self.team.get(team)?;
         let c = self.channels.get(&channel_key(team, channel))?;
         (!t.detail.rotation_pending
@@ -2766,7 +2874,12 @@ impl Hub {
         self.unread_at = Some(Instant::now());
         let me = self.github_id();
         let mut asks = Vec::new();
+        let mut skipped = false;
         for (team_id, t) in &self.team {
+            let Some(scope) = self.roster(team_id) else {
+                skipped = true;
+                continue;
+            };
             let mut channels = Vec::new();
             for ch in &t.channels {
                 let key = channel_key(team_id, &ch.id);
@@ -2791,7 +2904,10 @@ impl Hub {
                 .filter_map(|d| Some((d.device_id.clone(), crypto::unb64(&d.sig_pub)?)))
                 .collect();
             let keys: HashMap<u64, TeamKey> = self.kept.keys(team_id).into_iter().collect();
-            asks.push((team_id.clone(), senders, keys, channels));
+            asks.push((team_id.clone(), scope, senders, keys, channels));
+        }
+        if skipped {
+            self.unread_soon();
         }
         if asks.is_empty() {
             return;
@@ -2800,7 +2916,7 @@ impl Hub {
             cx,
             move |net| {
                 let mut out = Vec::new();
-                for (team_id, senders, keys, channels) in asks {
+                for (team_id, scope, senders, keys, channels) in asks {
                     let counts = |channel_id: &str, s: &Stored| {
                         let Some(sig_pub) = senders.get(&s.message.device_id) else {
                             return false;
@@ -2824,16 +2940,18 @@ impl Hub {
                         let polled = match unread_poll(after, newest, known) {
                             Next::Done(p) => p,
                             Next::Read(after) => {
-                                let Ok(page) = net.call().history(&team_id, &channel_id, after)
-                                else {
+                                let Ok(n) = unread_since(
+                                    after,
+                                    |seq| net.call().history(&team_id, &channel_id, seq),
+                                    |s| counts(&channel_id, s),
+                                ) else {
                                     continue;
                                 };
-                                let n = page.iter().filter(|s| counts(&channel_id, s)).count();
                                 Polled::Count(n, newest)
                             }
                             Next::Keep => continue,
                         };
-                        out.push((key, polled));
+                        out.push((key, team_id.clone(), scope, polled));
                     }
                 }
                 Ok(out)
@@ -2843,13 +2961,25 @@ impl Hub {
                     return;
                 };
                 let mut moved = false;
-                for (key, polled) in polls {
+                for (key, team, scope, polled) in polls {
+                    // A poll for a membership that has since changed is not
+                    // this one's, and the old count is the old membership's
+                    // too: drop it and read again for the one there is now.
+                    if hub.roster(&team) != Some(scope) {
+                        hub.unread_read.remove(&key);
+                        hub.unread_newest.remove(&key);
+                        hub.unread_soon();
+                        continue;
+                    }
                     match polled {
                         Polled::Start(newest) => {
                             moved |= hub.kept.mark_read(&key, newest);
                             hub.unread_read.insert(key.clone(), 0);
                             hub.unread_newest.insert(key, newest);
                         }
+                        // A channel that opened meanwhile counts what it holds.
+                        Polled::Count(_, _)
+                            if hub.channels.get(&key).is_some_and(|c| c.link.is_some()) => {}
                         Polled::Count(n, newest) => {
                             hub.unread_read.insert(key.clone(), n);
                             hub.unread_newest.insert(key, newest);
@@ -2862,6 +2992,12 @@ impl Hub {
                 cx.notify();
             },
         );
+    }
+
+    /// Lets the next [`Hub::refresh_unread`] read after [`UNREAD_FOCUS`]
+    /// rather than [`UNREAD_AGAIN`], for a team whose roster was not settled.
+    fn unread_soon(&mut self) {
+        self.unread_at = Instant::now().checked_sub(UNREAD_AGAIN - UNREAD_FOCUS);
     }
 
     /// Sends a text message, replying to `reply_to` when given. One that
@@ -3216,6 +3352,33 @@ pub fn trusted_devices(gid: u64, rows: &[DeviceRow]) -> Vec<DeviceRow> {
         .filter(|d| trusted.contains(d.device_id.as_str()))
         .cloned()
         .collect()
+}
+
+/// How many history pages an unread count reads at most. The label stops
+/// at "99+", so more only matters when a page holds little that counts.
+const UNREAD_PAGES: usize = 5;
+
+/// Counts the stored messages after `after` that `counts` says are unread.
+/// The first page can be full of what does not count (this user's own
+/// messages, edits, acceptances), so it reads on until the count passes what
+/// the label shows, history ends or [`UNREAD_PAGES`] were read.
+fn unread_since(
+    mut after: u64,
+    mut read: impl FnMut(u64) -> Result<Vec<Stored>, ApiError>,
+    counts: impl Fn(&Stored) -> bool,
+) -> Result<usize, ApiError> {
+    let mut n = 0;
+    for _ in 0..UNREAD_PAGES {
+        let page = read(after)?;
+        n += page.iter().filter(|s| counts(s)).count();
+        let last = page.last().map(|s| s.seq);
+        match last {
+            // A page that does not advance would be read again forever.
+            Some(seq) if page.len() >= 200 && n < 100 && seq > after => after = seq,
+            _ => break,
+        }
+    }
+    Ok(n)
 }
 
 fn history_since(
@@ -4107,6 +4270,62 @@ mod tests {
             (missing[0].epoch, &missing[0].device.device_id),
             (6, &latest.device_id)
         );
+    }
+
+    #[test]
+    fn an_unread_count_reads_past_a_page_of_what_does_not_count() {
+        let stored = |seq: u64, device: &str| Stored {
+            seq,
+            at: seq,
+            message: WireMessage {
+                id: seq.to_string(),
+                device_id: device.into(),
+                epoch: 1,
+                nonce: String::new(),
+                ct: String::new(),
+                sig: String::new(),
+            },
+        };
+        // 200 of this user's own messages, then three from someone else.
+        let history: Vec<Stored> = (1..=203)
+            .map(|seq| stored(seq, if seq <= 200 { "mine" } else { "theirs" }))
+            .collect();
+        let mut asked = Vec::new();
+        let read = |after: u64| {
+            asked.push(after);
+            Ok(history
+                .iter()
+                .filter(|s| s.seq > after)
+                .take(200)
+                .cloned()
+                .collect())
+        };
+        let n = unread_since(0, read, |s| s.message.device_id != "mine").unwrap();
+        assert_eq!(n, 3);
+        assert_eq!(asked, [0, 200]);
+
+        // Enough for the label after one page: no second read.
+        let mut asked = 0;
+        let full = |after: u64| {
+            asked += 1;
+            Ok((after + 1..=after + 200)
+                .map(|seq| stored(seq, "theirs"))
+                .collect())
+        };
+        assert_eq!(unread_since(0, full, |_| true).unwrap(), 200);
+        assert_eq!(asked, 1);
+
+        // History with nothing that counts stops at the cap.
+        let mut asked = 0;
+        let endless = |after: u64| {
+            asked += 1;
+            Ok((after + 1..=after + 200)
+                .map(|seq| stored(seq, "mine"))
+                .collect())
+        };
+        assert_eq!(unread_since(0, endless, |_| false).unwrap(), 0);
+        assert_eq!(asked, UNREAD_PAGES);
+        assert!(unread_since(0, |_| Err(ApiError::Unreadable), |_| true).is_err());
     }
 
     #[test]

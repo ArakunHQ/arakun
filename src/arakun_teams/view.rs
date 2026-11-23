@@ -838,6 +838,9 @@ impl TeamsView {
             .unwrap_or_default();
         let admin = row.is_some_and(|r| r.role.is_admin());
         let waiting = t.map_or(0, |t| t.pending.len());
+        // An invite to another team expires unseen if only the team menu
+        // lists it, so the bar shows it too.
+        let invites = hub.invites.len();
         let members: Vec<String> = t
             .map(|t| t.detail.members.iter().map(|m| m.login.clone()).collect())
             .unwrap_or_default();
@@ -923,6 +926,27 @@ impl TeamsView {
                     .child("Encrypted"),
             )
             .child(div().flex_1())
+            .when(invites > 0, |d| {
+                d.child(
+                    ui::button_lead(
+                        "teams-invites",
+                        Some(
+                            div()
+                                .size(px(6.))
+                                .rounded_full()
+                                .bg(theme::needs_you())
+                                .into_any_element(),
+                        ),
+                        plural(invites, "invite", "invites"),
+                        ButtonKind::Ghost,
+                        true,
+                    )
+                    .tooltip(ui::tip("Invites to other teams"))
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.show(Pane::Invites, window, cx)),
+                    ),
+                )
+            })
             .when(admin && waiting > 0, |d| {
                 d.child(
                     ui::button_lead(

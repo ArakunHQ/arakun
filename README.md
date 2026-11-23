@@ -655,7 +655,7 @@ after a week).
   which makes one with a `general` channel. A channel shows the team's channels
   (**+** adds one) and people on the left, and the chat with a composer at the bottom.
   Click the team's name for your other teams, **Start a team** and **Your devices**;
-  click the people at the top right for the team's page, which invites people by
+  "N invites" at the top opens invites to other teams; click the people at the top right for the team's page, which invites people by
   GitHub login and removes members. "N waiting" at the top opens the people who
   accepted an invite, each device with its code: approving hands the team key to their
   devices whose endorsement chain checks out, from yours. It doesn't wait for

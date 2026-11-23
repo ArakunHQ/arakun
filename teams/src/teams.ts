@@ -32,6 +32,8 @@ const MAX_CHANNELS = 500;
 /// Teams a user may be in when they create one, so one account cannot fill
 /// the database with teams.
 const MAX_TEAMS = 50;
+/// Everyone a user can share a team with: the most `GET /devices?users=` takes.
+const MAX_USERS = MAX_TEAMS * MAX_MEMBERS;
 const MAX_NAME = 100;
 const INVITE_DAYS = 7;
 /// A pending user may remind a team's admins once per this many seconds.
@@ -69,6 +71,7 @@ type Handler = (c: Ctx, ...params: string[]) => Promise<Response>;
 
 const ROUTES: [string, RegExp, Handler][] = [
   ["POST", /^\/devices$/, registerDevice],
+  ["GET", /^\/devices$/, listPeopleDevices],
   ["GET", /^\/users\/([^/]+)\/devices$/, listDevices],
   ["POST", /^\/teams$/, createTeam],
   ["GET", /^\/teams$/, listTeams],
@@ -224,6 +227,39 @@ async function listDevices(c: Ctx, id: string): Promise<Response> {
     .bind(githubId)
     .all();
   return Response.json(results);
+}
+
+/// The devices of the caller and everyone they share a team with, or of those
+/// in `?users=`, in one answer: a client refreshing its teams would otherwise
+/// ask for each member, once per team. A user out of reach is left out, as
+/// `GET /users/<id>/devices` answers 404 for them.
+async function listPeopleDevices(c: Ctx): Promise<Response> {
+  const raw = c.url.searchParams.get("users");
+  let wanted: string | null = null;
+  if (raw !== null) {
+    const ids = raw === "" ? [] : raw.split(",");
+    if (ids.length > MAX_USERS || !ids.every((id) => GITHUB_ID.test(id)))
+      return error(400, `users is a comma-separated list of at most ${MAX_USERS} GitHub IDs`);
+    wanted = JSON.stringify(ids.map(Number));
+  }
+  const { results } = await c.env.DB.prepare(
+    `WITH people(github_id) AS (
+       SELECT ?1 UNION SELECT b.github_id FROM members a JOIN members b ON b.team_id = a.team_id WHERE a.github_id = ?1)
+     SELECT p.github_id, d.device_id, d.sig_pub, d.enc_pub, d.name, d.created_at, d.endorsed_by, d.endorsement_sig
+     FROM people p LEFT JOIN devices d ON d.github_id = p.github_id
+     WHERE ?2 IS NULL OR p.github_id IN (SELECT value FROM json_each(?2))
+     ORDER BY p.github_id, d.created_at, d.device_id`,
+  )
+    .bind(c.me.githubId, wanted)
+    .all<{ github_id: number; device_id: string | null } & Record<string, unknown>>();
+  // Each user once, one with no device too, so a client can tell "no
+  // devices" from "left out".
+  const people: { github_id: number; devices: unknown[] }[] = [];
+  for (const { github_id, device_id, sig_pub, enc_pub, name, created_at, endorsed_by, endorsement_sig } of results) {
+    if (people.at(-1)?.github_id !== github_id) people.push({ github_id, devices: [] });
+    if (device_id !== null) people.at(-1)!.devices.push({ device_id, sig_pub, enc_pub, name, created_at, endorsed_by, endorsement_sig });
+  }
+  return Response.json(people);
 }
 
 // ---- teams -----------------------------------------------------------------

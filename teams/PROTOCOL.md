@@ -75,6 +75,14 @@ back to the first device and show "new device" notices for devices they have not
 seen. A device registered before the server kept `endorsement_sig` has it null
 while `endorsed_by` is set; its chain cannot be checked.
 
+`GET /devices` lists the same rows for many users in one answer: the caller and
+everyone who shares a team with them, or with `?users=<github_id>,...` (at most
+1,250) only those of them. A user out of reach is left out, without an error; a
+user with no devices is listed with none. The answer is
+`[{ github_id, devices: [<as above>] }]`, by `github_id`. A client refreshing its
+teams reads this once instead of each member's list once per team. A server from
+before this call answers `404`; the client then asks for each user.
+
 Every request a device makes about its own keys carries `X-Arakun-Device: <device_id>`:
 accept, approve, both envelope requests, the channel socket and history. `400`
 without it, `403` if it is not one of the caller's devices.

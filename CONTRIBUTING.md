@@ -456,8 +456,9 @@ merges, GitHub moves the next one to `main` and rebases the rest for you.
 
    ```sh
    gh stack push
-   gh pr create --draft --base main --head pr/refactor --title "<title>" --body-file -
-   gh pr create --draft --base pr/refactor --head pr/feature --title "<title>" --body-file -
+   # refactor.md and feature.md: the filled-in pull request template
+   gh pr create --draft --base main --head pr/refactor --title "<title>" --body-file refactor.md
+   gh pr create --draft --base pr/refactor --head pr/feature --title "<title>" --body-file feature.md
    gh stack submit --auto           # sets the bases and links the stack
    ```
 

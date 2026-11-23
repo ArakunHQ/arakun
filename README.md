@@ -599,7 +599,11 @@ after a week).
   skills and permission rules the agents load now. Discover › Skills searches
   [skills.sh](https://skills.sh); Install copies the skill's folder from its GitHub
   repository into `~/.claude/skills`, where Claude Code and Workers AI find it, or into
-  the repo's `.claude/skills` when "Install in" (below) picks this repo. It uses
+  the repo's `.claude/skills` when "Install in" (below) picks this repo. A repository
+  with several skills is a package: a skill's details offer "Install all" for every skill
+  in its repository, and typing `owner/repo` or a GitHub link in the search box lists the
+  skills of that repository, also one skills.sh does not know. Skills you have already
+  stay as they are. It uses
   your `gh` sign-in (or `GH_TOKEN`) when there is one, since GitHub answers few
   requests without one. "Install in" picks where Install puts a plugin, skill or MCP
   server on this computer: every repo (your user), this repo shared (its committed

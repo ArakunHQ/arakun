@@ -531,7 +531,14 @@ impl ExtensionsView {
                         this.load_repo_has(cx);
                         cx.emit(ExtensionsEvent::Mirror);
                     }
-                    Err(e) => this.error = Some(format!("{}: {e:#}", display_name(&name)).into()),
+                    Err(e) => {
+                        this.error = Some(format!("{}: {e:#}", display_name(&name)).into());
+                        // A job that did part of its work (a package with one
+                        // skill that failed) still changed what is installed.
+                        this.load_claude(cx);
+                        this.load_repo_has(cx);
+                        cx.emit(ExtensionsEvent::Mirror);
+                    }
                 }
                 cx.notify();
             });

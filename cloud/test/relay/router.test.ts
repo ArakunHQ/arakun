@@ -1,5 +1,6 @@
-import { SELF } from "cloudflare:test";
+import { env, SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
+import worker from "../../src/index";
 import { parsePcFrame, parsePhoneFrame } from "../../src/relay/frames";
 import { labelFrom } from "../../src/relay/router";
 import { Inbox, computer, stored } from "./helpers";
@@ -66,6 +67,12 @@ describe("an old host under a label", () => {
     const res = await SELF.fetch(`https://${LABEL}.arakun.dev/_relay`);
     expect(res.status).toBe(410);
     expect(await res.json()).toEqual({ update: true });
+  });
+
+  it("names the account host in that answer when one is set", async () => {
+    const res = await worker.fetch(new Request(`https://${LABEL}.arakun.dev/_relay`), { ...env, ACCOUNT_HOST: "Account.Example.com" });
+    expect(res.status).toBe(410);
+    expect(await res.json()).toEqual({ update: true, account_host: "account.example.com" });
   });
 
   it("closes the computer's and the phone's sockets with update", async () => {

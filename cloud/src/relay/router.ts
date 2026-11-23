@@ -12,7 +12,9 @@ import { isLabel } from "./label";
 export async function oldHost(request: Request, env: Env, pathname: string): Promise<Response> {
   switch (pathname) {
     case "/_relay":
-      return Response.json({ update: true }, { status: 410 });
+      // The page names the account host in its "update" sentence. It is a
+      // setting of its own, so the page cannot always guess it from this host.
+      return Response.json(env.ACCOUNT_HOST ? { update: true, account_host: env.ACCOUNT_HOST.toLowerCase() } : { update: true }, { status: 410 });
     case "/pc":
     case "/ws":
       if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") return new Response("expected a websocket", { status: 426 });

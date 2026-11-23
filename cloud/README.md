@@ -18,7 +18,8 @@ Arakun's Cloudflare Worker, one package for two jobs:
 One host serves both: the account host (`app.arakun.dev` in production). The old
 relay hosts, `<label>.<BASE_DOMAIN>` (a label is 16 base32 characters), only tell an
 old app or page to update: `/pc` and `/ws` close with the reason `update`, `/_relay`
-answers `410 { "update": true }`, and the page itself still loads.
+answers `410 { "update": true, "account_host": "<ACCOUNT_HOST>" }` (no `account_host`
+while that is unset), and the page itself still loads.
 On the account host, a `GET` or `HEAD` outside the API's paths serves the page, so
 `https://app.arakun.dev/` opens it; an unknown path under an API route stays a JSON 404.
 

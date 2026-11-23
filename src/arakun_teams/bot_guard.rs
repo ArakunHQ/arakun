@@ -323,9 +323,11 @@ static SHAPES: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     .collect()
 });
 
-/// `user:password@` in a URL: the password is replaced.
+/// `user:password@` in a URL: the password is replaced. The user can be
+/// empty (`redis://:pass@host`), and the password runs to the last `@`
+/// before the host, since a password can hold one.
 static URL_PASSWORD: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)\b([a-z][a-z0-9+.-]*://[^\s:/@]+:)([^\s@/]+)@").expect("url pattern")
+    Regex::new(r"(?i)\b([a-z][a-z0-9+.-]*://[^\s:/@]*:)([^\s/?#]*)@").expect("url pattern")
 });
 
 /// The token after `Bearer`, as in an `Authorization` header.
@@ -436,7 +438,7 @@ pub fn redact(text: &str) -> String {
     }
     out = URL_PASSWORD
         .replace_all(&out, |c: &Captures| {
-            if is_placeholder(&c[2]) {
+            if c[2].is_empty() || is_placeholder(&c[2]) {
                 c[0].to_string()
             } else {
                 format!("{}{REDACTED}@", &c[1])
@@ -918,6 +920,23 @@ mod tests {
             (
                 "Authorization: Bearer abc123opaque456tokenvalue",
                 "Authorization: Bearer [redacted]",
+            ),
+        ];
+        for (input, want) in cases {
+            assert_eq!(redact(input), want, "{input}");
+        }
+    }
+
+    #[test]
+    fn redacts_a_password_with_no_user_or_with_an_at() {
+        let cases = [
+            (
+                "REDIS_URL=redis://:s3cretpass@cache:6379/0",
+                "REDIS_URL=redis://:[redacted]@cache:6379/0",
+            ),
+            (
+                "postgres://app:p@ss@host/db",
+                "postgres://app:[redacted]@host/db",
             ),
         ];
         for (input, want) in cases {

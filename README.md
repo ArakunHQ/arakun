@@ -655,12 +655,12 @@ after a week).
   which makes one with a `general` channel. A channel shows the team's channels
   (**+** adds one) and people on the left, and the chat with a composer at the bottom.
   Click the team's name for your other teams, **Start a team** and **Your devices**;
-  "N invites" at the top opens invites to other teams; click the people at the top right for the team's page, which invites people by
-  GitHub login and removes members. "N waiting" at the top opens the people who
-  accepted an invite, each device with its code: approving hands the team key to all
-  their devices, from yours, only if every device's endorsement chain checks out; one
-  that doesn't blocks the approval. It doesn't wait for
-  **Compare**, but a device marked as not matching is refused. The server still
+  "N invites" at the top opens invites to other teams; click the people at the top
+  right for the team's page, which invites people by GitHub login and removes members.
+  "N waiting" at the top opens the people who accepted an invite, each device with its
+  code: approving hands the team key to all their devices, from yours, only if every
+  device's endorsement chain checks out; one that doesn't blocks the approval. It
+  doesn't wait for **Compare**, but a device marked as not matching is refused. The server still
   supplies the membership and roles; it is not an independent proof of who belongs to
   the team. Removing someone rotates the key for the remaining members, not messages
   already seen. Hover a message and press the reply arrow to answer it: the quote

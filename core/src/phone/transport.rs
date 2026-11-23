@@ -2,7 +2,7 @@
 //! hold one, and neither minds which kind it is.
 
 use super::relay::RelayClient;
-use super::{ClientId, Server, Shared};
+use super::{ClientId, Server};
 
 /// How phones' bytes get here: a server of our own on the network, or the
 /// connection to the relay. Phones look the same to the shell either way.
@@ -59,23 +59,6 @@ impl Transport {
         match self {
             Transport::Local(s) => s.disconnect_device(device),
             Transport::Relay(r) => r.disconnect_device(device),
-        }
-    }
-
-    /// The relay admits phones by ticket: it hears the list whenever the devices change.
-    pub fn sync_tickets(&self, access: &Shared) {
-        if let Transport::Relay(r) = self {
-            r.set_tickets(access.lock().unwrap().ticket_hashes());
-        }
-    }
-
-    /// The relay lets one phone in with the pairing code while it is open.
-    pub fn sync_pairing(&self, access: &Shared) {
-        if let Transport::Relay(r) = self {
-            match access.lock().unwrap().pairing_hash() {
-                Some((hash, left)) => r.open_pairing(hash, left),
-                None => r.close_pairing(),
-            }
         }
     }
 }

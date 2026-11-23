@@ -23,6 +23,9 @@ pub enum SignInEvent {
 
 pub struct SignInDialog {
     teams: Entity<Teams>,
+    /// Opened for the account itself, not Teams: once signed in there is
+    /// nothing more to say here.
+    close_when_in: bool,
     focus: FocusHandle,
     copied: bool,
     /// Ticks the countdown while a code waits.
@@ -39,8 +42,14 @@ impl Focusable for SignInDialog {
 }
 
 impl SignInDialog {
-    /// Opens the dialog and starts a sign-in when none is under way.
-    pub fn new(teams: Entity<Teams>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    /// Opens the dialog and starts a sign-in when none is under way. With
+    /// `close_when_in` it closes itself once signed in.
+    pub fn new(
+        teams: Entity<Teams>,
+        close_when_in: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
         teams.update(cx, |t, cx| {
@@ -48,7 +57,12 @@ impl SignInDialog {
                 t.sign_in(cx);
             }
         });
-        let sub = cx.observe(&teams, |_, _, cx| cx.notify());
+        let sub = cx.observe(&teams, |this, teams, cx| {
+            if this.close_when_in && teams.read(cx).signed_in() {
+                cx.emit(SignInEvent::Dismissed);
+            }
+            cx.notify();
+        });
         let tick = cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(Duration::from_secs(1)).await;
@@ -64,6 +78,7 @@ impl SignInDialog {
         });
         Self {
             teams,
+            close_when_in,
             focus,
             copied: false,
             _tick: tick,

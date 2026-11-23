@@ -36,6 +36,8 @@ use crate::servers::client::{Client, Event, Events, Status as LinkStatus};
 use crate::servers::{self, Saved};
 use crate::servers_view::{PlaceRow, Reach, ServerRow, ServersEvent, ServersState, SessionRow};
 
+mod account;
+pub(super) use account::fixture_machines;
 mod files;
 mod mirror;
 mod terms;
@@ -238,6 +240,8 @@ pub(super) struct ServersLink {
     balance: Balance,
     /// Git asked of servers for their environments' Changes panels.
     git_asks: servers::git::Asks,
+    /// The account's machines, for its servers.
+    machines: account::Machines,
     _listen: Task<()>,
 }
 
@@ -909,6 +913,8 @@ impl Shell {
             self.show_alone(Some(super::home::Alone::Servers), cx);
         }
         self.servers_connect(window, cx);
+        // A server signed in since shows up.
+        self.servers_list_machines(window, cx);
         self.sync_servers_view(cx);
         self.servers_view.update(cx, |v, cx| v.focus(window, cx));
         cx.notify();
@@ -1006,8 +1012,10 @@ impl Shell {
             terms: terms::Terms::new(window, cx),
             balance: balance::load(),
             git_asks: Default::default(),
+            machines: Default::default(),
             _listen: listen,
         });
+        self.servers_list_machines(window, cx);
         for (id, inbox) in &seeded {
             self.servers_inbox(id, inbox);
         }
@@ -1049,8 +1057,13 @@ impl Shell {
                 })
             })
             .collect();
+        let yours = self.servers_yours();
+        let Some(link) = &self.servers else {
+            return;
+        };
         let state = ServersState {
             servers,
+            yours,
             pairing: link.pairing.is_some(),
             adding: link.adding.clone(),
             error: link.error.clone(),
@@ -1113,6 +1126,15 @@ impl Shell {
         cx: &mut Context<Self>,
     ) {
         self.servers_connect(window, cx);
+        if let ServersEvent::Connect(label) = ev {
+            self.servers_add_machine(label, window, cx);
+            self.sync_servers_view(cx);
+            return;
+        }
+        if let ServersEvent::Remove(label) = ev {
+            self.servers_remove_machine(label.clone(), window, cx);
+            return;
+        }
         let Some(link) = &mut self.servers else {
             return;
         };
@@ -1194,6 +1216,7 @@ impl Shell {
                     link.adding.insert(server.clone());
                 }
             }
+            ServersEvent::Connect(_) | ServersEvent::Remove(_) => {}
             ServersEvent::Open { server, session } => {
                 let (server, session) = (server.clone(), session.clone());
                 self.servers_open_session(&server, &session, window, cx);

@@ -101,29 +101,7 @@ pub fn parse_config(bytes: &[u8]) -> Option<Config> {
 
 /// Plain `http://` only to this machine: the tokens must never cross a
 /// network unencrypted, and `admin_token` can hand the agent work.
-pub(crate) fn local_http(url: &str) -> bool {
-    let Some(rest) = url.strip_prefix("http://") else {
-        return false;
-    };
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
-    if authority.contains('@') {
-        return false;
-    }
-    let host = match authority.find(']') {
-        Some(end) if authority.starts_with('[') => {
-            let port = &authority[end + 1..];
-            if !port.is_empty() && !port.starts_with(':') {
-                return false;
-            }
-            &authority[..=end]
-        }
-        _ => authority.split(':').next().unwrap_or_default(),
-    };
-    matches!(
-        host.to_ascii_lowercase().as_str(),
-        "localhost" | "127.0.0.1" | "[::1]"
-    )
-}
+pub(crate) use crate::cloud::local_http;
 
 pub fn load_config() -> Option<Config> {
     read_config().ok().flatten()

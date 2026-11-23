@@ -1,24 +1,24 @@
-//! The computer's side of the relay. One WebSocket to `wss://<label>.<relay>/pc`
-//! carries every phone: the relay challenges the computer to sign a nonce with
-//! its identity, then opens a numbered channel for each phone that brings a
-//! ticket or the pairing code, and passes their frames along unread. The
-//! connection is kept up from a thread of its own, which dials again when it
-//! drops, waiting longer each time; the shell hears how it goes as `Incoming`.
+//! The computer's side of the relay. One WebSocket to
+//! `wss://<relay>/machines/<label>/pc` carries every device: the computer
+//! brings its account's session, the relay challenges it to sign a nonce with
+//! its identity, then opens a numbered channel for each device signed in to
+//! the same account, and passes their frames along unread. The connection is
+//! kept up from a thread of its own, which dials again when it drops, waiting
+//! longer each time; the shell hears how it goes as `Incoming`.
 //!
 //! Frames to and from the relay are binary: a type byte, the channel as four
 //! big-endian bytes, then the payload. Channel 0 is the relay itself, speaking
-//! JSON control messages; the other channels carry a phone's `hello` and `data`
-//! frames, which only the phone and this computer can read (`e2e`).
+//! JSON control messages; the other channels carry a device's `hello` and
+//! `data` frames, which only the device and this computer can read (`e2e`).
 //!
-//! Inside a channel, once the keys are agreed, the phone speaks JSON: first
-//! `{pair: {secret, name}}` or `{auth: {token}}` to say who it is, then the
-//! same messages it would send on a socket of its own (`ClientMsg`), plus
+//! A channel counts as a client to the shell, numbered as the relay numbered
+//! it, once two things hold: the relay's `open` named this computer's own
+//! account, and the keys are agreed. Then the device speaks JSON: the same
+//! messages it would send on a socket of its own (`ClientMsg`), plus
 //! `{req: {id, method, path, body}}` for what it would otherwise ask over HTTP
 //! (`route`), answered with `{res: {id, status, type, body, more}}` in pieces
 //! small enough for the relay. Any other message too big for one frame goes
-//! as `{part: {body, more}}` pieces, which the phone joins back (`say`). A
-//! channel that said who it is counts as a client to the shell, numbered as
-//! the relay numbered the channel.
+//! as `{part: {body, more}}` pieces, which the device joins back (`say`).
 
 use std::collections::HashMap;
 use std::net::{TcpStream, ToSocketAddrs as _};
@@ -31,12 +31,14 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
 use futures::channel::mpsc;
 use polling::{Event as PollEvent, Events, Poller};
 use serde_json::{Value, json};
+use tungstenite::client::IntoClientRequest as _;
+use tungstenite::http::{HeaderValue, header::AUTHORIZATION};
 use tungstenite::{Message, WebSocket, stream::MaybeTlsStream};
 
 use super::e2e::{Handshake, PhoneHello, Session};
 use super::identity::Identity;
 use super::quiet::Quiet;
-use super::{ClientId, ClientMsg, Effect, Head, Incoming, Shared, wire};
+use super::{ClientId, ClientMsg, Effect, Head, Incoming, Seen, Shared, wire};
 
 pub const HELLO: u8 = 0x01;
 pub const DATA: u8 = 0x02;
@@ -50,6 +52,8 @@ const CHUNK: usize = 160 * 1024;
 const WHOLE: usize = 250 * 1024;
 /// The most a `req` body may carry, like `MAX_BODY` over TCP.
 const MAX_REQ_BODY: usize = 4096;
+/// The most of the operator's text a status carries.
+const MAX_MESSAGE: usize = 300;
 
 /// The first wait after a drop; each failure doubles it up to `RETRY_MAX`.
 const RETRY_MIN: Duration = Duration::from_secs(1);
@@ -86,45 +90,72 @@ pub enum Status {
         why: String,
         retry_in: Duration,
     },
-    /// The relay turned this computer away: the operator blocked it, or
-    /// another computer with this very key took the place. That can change,
-    /// so it asks again, but only after a long wait.
+    /// The relay turned this computer away: the operator blocked the account,
+    /// or another computer with this very key took the place. That can
+    /// change, so it asks again, but only after a long wait.
     Refused {
         why: String,
         retry_in: Duration,
     },
     /// The relay will not have this computer, and asking again would not
-    /// change that: the label belongs to another key, or the relay does not
-    /// accept its signature.
+    /// change that: the label belongs to another key or account, the relay
+    /// does not accept its signature, or the computer was removed from the
+    /// account. It asks again only when given a session (`set_session`).
     Rejected(String),
+    /// There is no session, or the relay says it is no longer good. Nothing
+    /// is dialed until `set_session` gives one.
+    SignedOut,
+}
+
+/// What a computer is in its account's list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MachineKind {
+    App,
+    Server,
+}
+
+impl MachineKind {
+    /// As the relay's door takes it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MachineKind::App => "app",
+            MachineKind::Server => "server",
+        }
+    }
+}
+
+/// How this computer is named in its account's list of machines.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Machine {
+    pub name: String,
+    pub kind: MachineKind,
+}
+
+/// The account this computer reaches the relay as. No `Debug`: the session
+/// opens the account, so it must never end up in a log.
+#[derive(Clone)]
+pub struct Account {
+    /// The account's GitHub ID. A channel the relay opens for any other
+    /// account is closed. A different account means a new client.
+    pub github_id: u64,
+    /// The session token, sent as the bearer. `None` when signed out.
+    pub session: Option<String>,
 }
 
 /// What the shell asks the connection thread to do.
 enum Command {
-    /// The whole list of ticket hashes the relay should admit.
-    Tickets(Vec<String>),
-    /// Let one phone in with the code whose hash this is, for so long.
-    PairOpen {
-        hash: String,
-        ttl: Duration,
-    },
-    PairClose,
-    /// A message to the phone on a channel, sealed there.
-    Send {
-        channel: u32,
-        text: String,
-    },
-    /// A message to every phone that said who it is.
+    /// A new session, or none: signed in again, or signed out.
+    Session(Option<String>),
+    /// A message to the device on a channel, sealed there.
+    Send { channel: u32, text: String },
+    /// A message to every client.
     Broadcast(String),
-    /// Close a phone's channel; the relay tells the phone why.
-    CloseChannel {
-        channel: u32,
-        reason: String,
-    },
+    /// Close a device's channel; the relay tells the device why.
+    CloseChannel { channel: u32, reason: String },
 }
 
-/// A channel the relay opened, as the shell sees it: the phone's device once
-/// it said who it is (`ready`), or what the relay knew of it before.
+/// A channel the relay opened, as the shell sees it: the device the relay
+/// named, and whether it is a client yet (`ready`, once the keys are agreed).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Channel {
     pub device: Option<String>,
@@ -134,8 +165,7 @@ pub struct Channel {
 type Channels = Arc<Mutex<HashMap<u32, Channel>>>;
 
 /// The connection to the relay. Dropping it hangs up and ends the thread.
-/// Phones that said who they are look like the server's clients, numbered by
-/// channel.
+/// Devices look like the server's clients, numbered by channel.
 pub struct RelayClient {
     page: String,
     channels: Channels,
@@ -146,13 +176,16 @@ pub struct RelayClient {
 }
 
 impl RelayClient {
-    /// Dials `base` as this identity and keeps the connection up. Status changes
-    /// (`Incoming::Relay`, starting from `Connecting`) and what phones say come
-    /// out of the receiver; who may come in is read from `access`.
+    /// Dials `base` as this identity, named `machine`, with the account's
+    /// session, and keeps the connection up. Status changes (`Incoming::Relay`,
+    /// starting from `Connecting`, or `SignedOut` without a session) and what
+    /// devices say come out of the receiver; the devices are kept in `access`.
     pub fn start(
         base: &str,
         identity: Identity,
         access: Shared,
+        machine: Machine,
+        account: Account,
     ) -> (RelayClient, mpsc::UnboundedReceiver<Incoming>) {
         let label = identity.label();
         let (tx, rx) = mpsc::unbounded();
@@ -160,14 +193,22 @@ impl RelayClient {
         let channels: Channels = Arc::default();
         let stop = Arc::new(AtomicBool::new(false));
         let poller = Arc::new(Poller::new().expect("a poller can be made"));
-        let tickets = access.lock().unwrap().ticket_hashes();
+        let url = format!(
+            "{}?name={}&kind={}",
+            endpoint(base, &label),
+            super::percent_encode(&machine.name),
+            machine.kind.as_str()
+        );
         let link = Link {
-            url: endpoint(base, &label),
-            page: page_url(base, &label),
+            // The session is a bearer: in the clear only to this computer.
+            plain_ok: crate::cloud::local_http(base.trim()),
+            url,
             identity,
             access,
-            tickets,
-            pairing: None,
+            github_id: account.github_id,
+            // Without an account no channel could ever be ours: dialing
+            // would only hold a place on the relay for nothing.
+            session: account.session.filter(|_| account.github_id != 0),
             commands,
             tx,
             status: None,
@@ -182,7 +223,7 @@ impl RelayClient {
             .expect("a thread can start");
         (
             RelayClient {
-                page: page_url(base, &label),
+                page: page_url(base),
                 channels,
                 cmd,
                 poller,
@@ -198,7 +239,7 @@ impl RelayClient {
         let _ = self.poller.notify();
     }
 
-    /// Where phones find this computer through the relay.
+    /// Where devices find this computer through the relay.
     pub fn page_url(&self) -> &str {
         &self.page
     }
@@ -208,18 +249,12 @@ impl RelayClient {
         self.channels.lock().unwrap().clone()
     }
 
-    /// The relay admits phones with these ticket hashes from now on, and only these.
-    pub fn set_tickets(&self, hashes: Vec<String>) {
-        self.tell(Command::Tickets(hashes));
-    }
-
-    /// One phone may come in with the code whose SHA-256 is `hash` (hex), for `ttl`.
-    pub fn open_pairing(&self, hash: String, ttl: Duration) {
-        self.tell(Command::PairOpen { hash, ttl });
-    }
-
-    pub fn close_pairing(&self) {
-        self.tell(Command::PairClose);
+    /// A new session for the same account, or `None` once signed out. A
+    /// different one dials again at once, even after a `Rejected`; the same
+    /// one again changes nothing; none hangs up. A client started without an
+    /// account (`github_id` 0) takes none.
+    pub fn set_session(&self, session: Option<String>) {
+        self.tell(Command::Session(session));
     }
 
     pub fn close_channel(&self, channel: u32, reason: &str) {
@@ -229,7 +264,7 @@ impl RelayClient {
         });
     }
 
-    /// The device behind a client, once it said who it is.
+    /// The device behind a client, once it is one.
     pub fn device_of(&self, id: ClientId) -> Option<String> {
         let channels = self.channels.lock().unwrap();
         let c = channels.get(&u32::try_from(id).ok()?)?;
@@ -255,7 +290,7 @@ impl RelayClient {
             .count()
     }
 
-    /// The devices with a channel that said who it is right now.
+    /// The devices with a channel that is a client right now.
     pub fn connected_devices(&self) -> Vec<String> {
         let mut ids: Vec<String> = self
             .channels
@@ -270,7 +305,9 @@ impl RelayClient {
         ids
     }
 
-    /// Closes every channel of a device, as unpairing it must.
+    /// Closes every channel of a device, as forgetting it must. It is still
+    /// signed in to the account and may come back; signing it out is the
+    /// account's job.
     pub fn disconnect_device(&self, device: &str) {
         for (channel, c) in self.channels() {
             if c.device.as_deref() == Some(device) {
@@ -298,23 +335,34 @@ pub fn wait_text(wait: Duration) -> String {
     }
 }
 
-/// The WebSocket address of this computer's place on the relay. A base at a
+/// The WebSocket address of this computer's door on the relay. A base at a
 /// bare address or `localhost` is a relay run by hand (`wrangler dev`), which
-/// takes the label from its configuration: no label in front, no TLS.
+/// may go without TLS.
 pub fn endpoint(base: &str, label: &str) -> String {
-    let (secure, host) = origin(base, label);
-    format!("{}://{host}/pc", if secure { "wss" } else { "ws" })
+    let (secure, host) = origin(base);
+    format!(
+        "{}://{host}/machines/{label}/pc",
+        if secure { "wss" } else { "ws" }
+    )
 }
 
-/// The page phones open to reach this computer through the relay.
-pub fn page_url(base: &str, label: &str) -> String {
-    let (secure, host) = origin(base, label);
+/// The page devices open to reach this computer through the relay: the
+/// relay's own, which lists the account's computers.
+pub fn page_url(base: &str) -> String {
+    let (secure, host) = origin(base);
     format!("{}://{host}/", if secure { "https" } else { "http" })
 }
 
-/// Whether the relay is reached over TLS, and the host (with port) phones and
-/// this computer use for it.
-fn origin(base: &str, label: &str) -> (bool, String) {
+/// Whether a session from the service at `account_base` may go to the relay
+/// at `relay_base`. The relay's address is read as the client dials it, so
+/// `app.arakun.dev` with no scheme is the same server as
+/// `https://app.arakun.dev`. The app and `arakun-server` both ask this.
+pub fn takes_session_from(relay_base: &str, account_base: &str) -> bool {
+    crate::cloud::same_origin(&page_url(relay_base), account_base)
+}
+
+/// Whether the relay is reached over TLS, and its host (with port).
+fn origin(base: &str) -> (bool, String) {
     let rest = base.trim().trim_end_matches('/');
     let (scheme, host) = rest.split_once("://").unwrap_or(("https", rest));
     let name = host.rsplit_once(':').map_or(host, |(name, port)| {
@@ -325,43 +373,42 @@ fn origin(base: &str, label: &str) -> (bool, String) {
         }
     });
     let local = name == "localhost" || name.parse::<std::net::IpAddr>().is_ok();
-    if local {
-        (scheme == "https", host.to_string())
-    } else {
-        (true, format!("{label}.{host}"))
-    }
+    (!local || scheme == "https", host.to_string())
 }
 
 struct Link {
+    /// The door, with the machine's name and kind in the query.
     url: String,
-    /// The page phones open, whose `_relay` says whether the label is blocked.
-    page: String,
+    /// Whether the door may be plain `ws://`: only on this computer.
+    plain_ok: bool,
     identity: Identity,
     access: Shared,
-    tickets: Vec<String>,
-    /// The pairing the relay should know about, until when.
-    pairing: Option<(String, Instant)>,
+    /// The account whose devices may become clients.
+    github_id: u64,
+    session: Option<String>,
     commands: std_mpsc::Receiver<Command>,
     tx: mpsc::UnboundedSender<Incoming>,
     /// The last status told, so the same one is not told twice.
     status: Option<Status>,
     channels: Channels,
-    /// The phones on the open channels, as far as each has got.
+    /// The devices on the open channels, as far as each has got.
     peers: HashMap<u32, Peer>,
     poller: Arc<Poller>,
     stop: Arc<AtomicBool>,
 }
 
-/// A phone on a channel, step by step.
+/// A device on a channel, step by step.
 enum Peer {
-    /// The relay opened the channel; no hello yet.
-    Opened,
-    /// Keys agreed; the phone has yet to say who it is.
-    Greeted(Session),
-    /// A paired device: the shell knows it as a client.
+    /// The relay opened the channel for a device of this account; no hello yet.
+    Opened {
+        device: String,
+        name: String,
+        kind: String,
+    },
+    /// Keys agreed: the shell knows it as a client. Boxed, as the session
+    /// is far bigger than the rest.
     Ready {
-        session: Session,
-        token: String,
+        session: Box<Session>,
         device: String,
     },
 }
@@ -374,6 +421,10 @@ enum Ended {
     Refused(String),
     /// Do not come back until the user changes something.
     Rejected(String),
+    /// The session is no good: forget it and wait for another.
+    SignedOut,
+    /// The shell gave a new session: dial again with it now.
+    Resume,
     /// The client was dropped.
     Stopped,
 }
@@ -386,6 +437,14 @@ impl Link {
         loop {
             if self.stop.load(Ordering::Relaxed) {
                 return;
+            }
+            if self.session.is_none() {
+                self.set_status(Status::SignedOut);
+                if !self.pause(None) {
+                    return;
+                }
+                wait = RETRY_MIN;
+                continue;
             }
             self.set_status(Status::Connecting);
             let ended = match self.connect() {
@@ -405,16 +464,23 @@ impl Link {
             self.forget_channels();
             match ended {
                 Ended::Stopped => return,
+                Ended::Resume => wait = RETRY_MIN,
+                Ended::SignedOut => self.session = None,
                 Ended::Rejected(why) => {
                     self.set_status(Status::Rejected(why));
-                    return;
+                    // Only a person can change this: by signing in again,
+                    // which gives a session, or by starting a new client.
+                    if !self.pause(None) {
+                        return;
+                    }
+                    wait = RETRY_MIN;
                 }
                 Ended::Refused(why) => {
                     self.set_status(Status::Refused {
                         why,
                         retry_in: REFUSED_WAIT,
                     });
-                    if !self.pause(REFUSED_WAIT) {
+                    if !self.pause(Some(REFUSED_WAIT)) {
                         return;
                     }
                 }
@@ -423,7 +489,7 @@ impl Link {
                         why,
                         retry_in: wait,
                     });
-                    if !self.pause(wait) {
+                    if !self.pause(Some(wait)) {
                         return;
                     }
                     wait = (wait * 2).min(RETRY_MAX);
@@ -432,18 +498,23 @@ impl Link {
         }
     }
 
-    /// Waits between dials, keeping what the shell asks for meanwhile. False
-    /// when the client was dropped during the wait.
-    fn pause(&mut self, wait: Duration) -> bool {
-        let until = Instant::now() + wait;
-        while Instant::now() < until {
+    /// Waits between dials for `wait`, or with none until the shell gives a
+    /// session; a session given during a wait ends it early too. False when
+    /// the client was dropped during the wait.
+    fn pause(&mut self, wait: Option<Duration>) -> bool {
+        let until = wait.map(|w| Instant::now() + w);
+        loop {
             if self.stop.load(Ordering::Relaxed) {
                 return false;
             }
-            self.drain_commands_offline();
+            if self.drain_commands_offline() {
+                return true;
+            }
+            if until.is_some_and(|u| Instant::now() >= u) {
+                return true;
+            }
             std::thread::sleep(WAIT_TICK);
         }
-        true
     }
 
     fn set_status(&mut self, status: Status) {
@@ -453,23 +524,26 @@ impl Link {
         }
     }
 
-    /// Commands that arrive while there is no connection: what the relay must
-    /// be told on the next claim is kept; frames have nowhere to go.
-    fn drain_commands_offline(&mut self) {
+    /// Commands that arrive while there is no connection: a session is kept;
+    /// frames have nowhere to go. Whether the session changed.
+    fn drain_commands_offline(&mut self) -> bool {
+        let mut changed = false;
         while let Ok(cmd) = self.commands.try_recv() {
-            self.remember(&cmd);
+            if let Command::Session(s) = cmd {
+                let s = self.usable(s);
+                if s != self.session {
+                    self.session = s;
+                    changed = true;
+                }
+            }
         }
+        changed
     }
 
-    fn remember(&mut self, cmd: &Command) {
-        match cmd {
-            Command::Tickets(hashes) => self.tickets = hashes.clone(),
-            Command::PairOpen { hash, ttl } => {
-                self.pairing = Some((hash.clone(), Instant::now() + *ttl))
-            }
-            Command::PairClose => self.pairing = None,
-            Command::Send { .. } | Command::Broadcast(_) | Command::CloseChannel { .. } => {}
-        }
+    /// A session the shell gave, as this client may use it: none without an
+    /// account.
+    fn usable(&self, session: Option<String>) -> Option<String> {
+        session.filter(|_| self.github_id != 0)
     }
 
     /// The connection is gone, and every channel with it: the shell hears each
@@ -485,10 +559,28 @@ impl Link {
         }
     }
 
-    /// TCP, TLS when the address asks for it, and the WebSocket handshake.
+    /// TCP, TLS when the address asks for it, and the WebSocket handshake
+    /// with the session as the bearer.
     fn connect(&self) -> Result<Socket, Ended> {
-        let (host, port, _) = parse_url(&self.url)
-            .ok_or_else(|| Ended::Rejected(format!("Bad relay address: {}", self.url)))?;
+        if self.url.starts_with("ws://") && !self.plain_ok {
+            return Err(Ended::Rejected(
+                "The relay address must start with https:// (http:// only for this computer)."
+                    .into(),
+            ));
+        }
+        let session = self.session.as_deref().ok_or(Ended::SignedOut)?;
+        let bad_address = || Ended::Rejected(format!("Bad relay address: {}", self.url));
+        let (host, port, _) = parse_url(&self.url).ok_or_else(bad_address)?;
+        let mut request = self
+            .url
+            .as_str()
+            .into_client_request()
+            .map_err(|_| bad_address())?;
+        // A session that is not a header's worth of text is not one at all.
+        let mut bearer =
+            HeaderValue::from_str(&format!("Bearer {session}")).map_err(|_| Ended::SignedOut)?;
+        bearer.set_sensitive(true);
+        request.headers_mut().insert(AUTHORIZATION, bearer);
         let addrs = (host.as_str(), port)
             .to_socket_addrs()
             .map_err(|e| Ended::Retry(format!("Could not resolve {host}: {e}")))?;
@@ -501,12 +593,12 @@ impl Link {
         }
         let stream =
             stream.ok_or_else(|| Ended::Retry(format!("Could not reach {host}:{port}")))?;
-        // Phones wait on small frames: send each at once, not with the next.
+        // Devices wait on small frames: send each at once, not with the next.
         let _ = stream.set_nodelay(true);
         let _ = stream.set_read_timeout(Some(CONNECT_TIMEOUT));
         let _ = stream.set_write_timeout(Some(CONNECT_TIMEOUT));
         // A `ws://` address comes back as a plain stream in the same wrapper.
-        let (ws, _) = tungstenite::client_tls(self.url.as_str(), stream).map_err(|e| match e {
+        let (ws, _) = tungstenite::client_tls(request, stream).map_err(|e| match e {
             tungstenite::HandshakeError::Failure(tungstenite::Error::Http(res)) => {
                 let body = res
                     .body()
@@ -518,14 +610,20 @@ impl Link {
                 } else {
                     body
                 };
-                // A 403 may come from a firewall in front of the relay, which
-                // can let the next attempt through. Only the relay's own word
-                // makes it a block: the body here is whatever arrived with the
-                // head, raw, so `_relay` is asked instead.
-                if res.status().as_u16() == 403 && self.blocked_at_door() {
-                    refused("blocked")
-                } else {
-                    Ended::Retry(text)
+                match res.status().as_u16() {
+                    // A relay from before accounts, or one of one's own
+                    // without them: no such door, or its page where the door
+                    // would be. Dialing again would not change that.
+                    200..=399 | 404 => {
+                        Ended::Rejected("This relay does not support account sign-in.".into())
+                    }
+                    // The door did not take this name or kind, and would
+                    // not take them next time either.
+                    400 => Ended::Rejected(text),
+                    // Refusals come as a `bye` on an accepted socket, so
+                    // anything else, a 403 included, is from something in
+                    // front of the relay that may let the next attempt through.
+                    _ => Ended::Retry(text),
                 }
             }
             tungstenite::HandshakeError::Failure(e) => {
@@ -542,26 +640,8 @@ impl Link {
         Ok(ws)
     }
 
-    /// Whether the relay itself says this label is blocked. Anything else,
-    /// including no answer, is not a block.
-    fn blocked_at_door(&self) -> bool {
-        let agent: ureq::Agent = ureq::Agent::config_builder()
-            .timeout_global(Some(CONNECT_TIMEOUT))
-            .http_status_as_error(false)
-            .build()
-            .into();
-        let Ok(mut res) = agent.get(format!("{}_relay", self.page)).call() else {
-            return false;
-        };
-        let Ok(body) = res.body_mut().with_config().limit(4096).read_to_string() else {
-            return false;
-        };
-        res.status().as_u16() == 403
-            && serde_json::from_str::<Value>(&body).is_ok_and(|v| v["blocked"] == true)
-    }
-
-    /// Answers the challenge with the signature of `nonce ‖ label`, then tells
-    /// the relay which tickets to admit and whether a pairing is open.
+    /// Answers the challenge with the signature of `nonce ‖ label`. A refusal
+    /// at the door comes instead of the challenge, as a `bye`.
     fn claim(&mut self, ws: &mut Socket) -> Result<(), Ended> {
         let deadline = Instant::now() + CONNECT_TIMEOUT;
         let nonce = loop {
@@ -577,6 +657,7 @@ impl Link {
                         Ended::Retry("The relay sent a challenge without a nonce".into())
                     })?;
                 }
+                Some(msg) if msg["type"] == "bye" => return Err(bye(&msg)),
                 Some(msg) => {
                     return Err(Ended::Retry(format!(
                         "The relay said {} before challenging us",
@@ -602,10 +683,8 @@ impl Link {
                 ));
             }
             match self.next_control(ws)? {
-                Some(msg) if msg["type"] == "claimed" => break,
-                Some(msg) if msg["type"] == "bye" => {
-                    return Err(refused(msg["reason"].as_str().unwrap_or("refused")));
-                }
+                Some(msg) if msg["type"] == "claimed" => return Ok(()),
+                Some(msg) if msg["type"] == "bye" => return Err(bye(&msg)),
                 Some(msg) => {
                     return Err(Ended::Retry(format!(
                         "The relay said {} to our claim",
@@ -615,19 +694,6 @@ impl Link {
                 None => {}
             }
         }
-        self.drain_commands_offline();
-        send_control(ws, 0, &json!({ "type": "tickets", "hashes": self.tickets }))?;
-        if let Some((hash, until)) = &self.pairing {
-            let left = until.saturating_duration_since(Instant::now());
-            if !left.is_zero() {
-                send_control(
-                    ws,
-                    0,
-                    &json!({ "type": "pair_open", "hash": hash, "ttl": left.as_secs().max(1) }),
-                )?;
-            }
-        }
-        Ok(())
     }
 
     /// The next control message on channel 0, if one arrives within a read tick.
@@ -703,7 +769,6 @@ impl Link {
             loop {
                 match self.commands.try_recv() {
                     Ok(cmd) => {
-                        self.remember(&cmd);
                         if let Err(ended) = self.obey(ws, cmd) {
                             return ended;
                         }
@@ -743,15 +808,21 @@ impl Link {
 
     fn obey(&mut self, ws: &mut Socket, cmd: Command) -> Result<(), Ended> {
         match cmd {
-            Command::Tickets(hashes) => {
-                send_control(ws, 0, &json!({ "type": "tickets", "hashes": hashes }))
+            // The relay checked the old session at the door: a new one needs
+            // a new socket, and none means hanging up.
+            Command::Session(session) => {
+                let session = self.usable(session);
+                if session == self.session {
+                    return Ok(());
+                }
+                let signed_out = session.is_none();
+                self.session = session;
+                Err(if signed_out {
+                    Ended::SignedOut
+                } else {
+                    Ended::Resume
+                })
             }
-            Command::PairOpen { hash, ttl } => send_control(
-                ws,
-                0,
-                &json!({ "type": "pair_open", "hash": hash, "ttl": ttl.as_secs().max(1) }),
-            ),
-            Command::PairClose => send_control(ws, 0, &json!({ "type": "pair_close" })),
             Command::Send { channel, text } => match self.peers.get_mut(&channel) {
                 Some(Peer::Ready { session, .. }) => say(ws, channel, session, &text),
                 _ => Ok(()),
@@ -769,7 +840,7 @@ impl Link {
     }
 
     /// A frame from the relay. Control on channel 0 is about channels and about
-    /// us; anything on another channel is a phone's.
+    /// us; anything on another channel is a device's.
     fn heard(
         &mut self,
         ws: &mut Socket,
@@ -789,32 +860,81 @@ impl Link {
         let channel = || msg["channel"].as_u64().and_then(|c| u32::try_from(c).ok());
         match msg["type"].as_str() {
             Some("open") => {
-                if let Some(channel) = channel() {
-                    let device = msg["device"].as_str().map(str::to_string);
-                    self.channels.lock().unwrap().insert(
-                        channel,
-                        Channel {
-                            device,
-                            ready: false,
-                        },
-                    );
-                    self.peers.insert(channel, Peer::Opened);
+                if let Some(channel) = channel().filter(|c| *c != 0) {
+                    self.opened(ws, channel, &msg)?;
                 }
             }
+            // It may be one we dropped already: nothing to do then.
             Some("close") => {
                 if let Some(channel) = channel() {
+                    let device = self
+                        .channels
+                        .lock()
+                        .unwrap()
+                        .get(&channel)
+                        .and_then(|c| c.device.clone());
                     self.forget_channel(channel);
+                    // Its session ended: that id never comes back, so its
+                    // record goes now, and its push subscription with it.
+                    if msg["reason"] == "signed_out"
+                        && let Some(device) = device
+                        && self
+                            .access
+                            .lock()
+                            .unwrap()
+                            .unpair_through(&device, super::Door::Relay)
+                    {
+                        let _ = self.tx.unbounded_send(Incoming::Unpaired);
+                    }
                 }
             }
-            Some("bye") => return Err(refused(msg["reason"].as_str().unwrap_or("refused"))),
+            Some("bye") => return Err(bye(&msg)),
             _ => {}
         }
         Ok(())
     }
 
-    /// A phone's frame on its channel: the hello first, then sealed messages.
-    /// A phone that does not keep to this is cut off; a bad frame on an
-    /// agreed channel means a replay or tampering and ends it too.
+    /// The relay opened a channel for a device. Only the relay's word that
+    /// the device is signed in to this computer's own account lets it go on
+    /// to the handshake; any other channel is closed at once.
+    fn opened(&mut self, ws: &mut Socket, channel: u32, msg: &Value) -> Result<(), Ended> {
+        // A relay that names no account for a device has no accounts: no
+        // device would ever get in, so staying connected only misleads.
+        if msg.get("account").is_none() {
+            return Err(Ended::Rejected(
+                "This relay does not support account sign-in.".into(),
+            ));
+        }
+        // A number used again: the channel before it is over.
+        self.forget_channel(channel);
+        let ours = self.github_id != 0 && msg["account"].as_u64() == Some(self.github_id);
+        let device = msg["device"].as_str().filter(|d| !d.is_empty());
+        let (true, Some(device)) = (ours, device) else {
+            let reason = if ours { "bad_open" } else { "not_yours" };
+            return send_control(ws, channel, &json!({ "type": "close", "reason": reason }));
+        };
+        self.channels.lock().unwrap().insert(
+            channel,
+            Channel {
+                device: Some(device.to_string()),
+                ready: false,
+            },
+        );
+        self.peers.insert(
+            channel,
+            Peer::Opened {
+                device: device.to_string(),
+                name: msg["name"].as_str().unwrap_or_default().to_string(),
+                kind: msg["kind"].as_str().unwrap_or_default().to_string(),
+            },
+        );
+        Ok(())
+    }
+
+    /// A device's frame on its channel: the hello first, then sealed messages.
+    /// A device that does not keep to this is cut off; a bad frame on an
+    /// agreed channel means a replay or tampering and ends it too. Frames on
+    /// a channel the relay did not open for this account go nowhere.
     fn phone_said(
         &mut self,
         ws: &mut Socket,
@@ -851,83 +971,29 @@ impl Link {
         };
         let was_ready = matches!(peer, Peer::Ready { .. });
         let now = crate::model::unix_now();
-        let host = super::host_name();
         // The peer as it stands after the frame, or why the channel ends.
         let outcome: Result<Peer, &str> = match (kind, peer) {
-            (HELLO, Peer::Opened) => {
+            (HELLO, Peer::Opened { device, name, kind }) => {
+                let host = super::host_name();
                 let answered = PhoneHello::parse(&payload).and_then(|hello| {
                     Handshake::begin().answer(&hello, &self.identity, channel, &host)
                 });
                 match answered {
                     Ok((reply, session)) => {
                         send_frame(ws, HELLO, channel, &reply)?;
-                        Ok(Peer::Greeted(session))
+                        self.ready(channel, &device, &name, &kind, now);
+                        Ok(Peer::Ready {
+                            session: Box::new(session),
+                            device,
+                        })
                     }
                     Err(_) => Err("bad_hello"),
-                }
-            }
-            (DATA, Peer::Greeted(mut session)) => {
-                let msg = session
-                    .open(&payload)
-                    .ok()
-                    .and_then(|p| serde_json::from_slice::<Value>(&p).ok());
-                match msg {
-                    None => Err("bad_frame"),
-                    Some(msg) if msg.get("pair").is_some() => {
-                        let ask = &msg["pair"];
-                        let secret = ask["secret"].as_str().unwrap_or_default();
-                        let name = ask["name"].as_str().unwrap_or_default();
-                        let paired = self.access.lock().unwrap().pair_relay(secret, name, now);
-                        match paired {
-                            Some((device, token, ticket)) => {
-                                let told = json!({ "paired": { "id": device.id, "name": device.name, "token": token, "ticket": ticket, "host": host, "acks": true } });
-                                say(ws, channel, &mut session, &told.to_string())?;
-                                // The relay admits the phone by ticket from its next socket on.
-                                self.tickets = self.access.lock().unwrap().ticket_hashes();
-                                send_control(
-                                    ws,
-                                    0,
-                                    &json!({ "type": "tickets", "hashes": self.tickets }),
-                                )?;
-                                let _ = self.tx.unbounded_send(Incoming::Paired);
-                                self.ready(channel, &device.id);
-                                Ok(Peer::Ready {
-                                    session,
-                                    token,
-                                    device: device.id,
-                                })
-                            }
-                            None => Err("wrong_secret"),
-                        }
-                    }
-                    Some(msg) if msg.get("auth").is_some() => {
-                        let token = msg["auth"]["token"]
-                            .as_str()
-                            .unwrap_or_default()
-                            .to_string();
-                        let device = self.access.lock().unwrap().device_for(&token, now);
-                        match device {
-                            Some(device) => {
-                                let told = json!({ "ok": { "id": device.id, "name": device.name, "host": host, "acks": true } });
-                                say(ws, channel, &mut session, &told.to_string())?;
-                                self.ready(channel, &device.id);
-                                Ok(Peer::Ready {
-                                    session,
-                                    token,
-                                    device: device.id,
-                                })
-                            }
-                            None => Err("unauthorized"),
-                        }
-                    }
-                    Some(_) => Err("unauthorized"),
                 }
             }
             (
                 DATA,
                 Peer::Ready {
                     mut session,
-                    token,
                     device,
                 },
             ) => match session.open(&payload) {
@@ -944,10 +1010,14 @@ impl Link {
                         )?,
                         Ok(msg) if msg.get("req").is_some() => {
                             let req = &msg["req"];
-                            let (reply, effect) = self.route(req, &token, now);
+                            let (reply, effect) = self.route(req, &device, now);
                             respond(ws, channel, &mut session, &req["id"], reply)?;
                             outcome = self.apply(ws, channel, effect)?;
                         }
+                        // An old page saying who it is the old way. The relay
+                        // already said, and only that counts: no answer, and
+                        // no error that would end the page's channel.
+                        Ok(msg) if msg.get("pair").is_some() || msg.get("auth").is_some() => {}
                         Ok(msg) => {
                             let seq = wire::seq(&msg);
                             match serde_json::from_value::<ClientMsg>(msg) {
@@ -970,11 +1040,7 @@ impl Link {
                             }
                         }
                     }
-                    outcome.map(|()| Peer::Ready {
-                        session,
-                        token,
-                        device,
-                    })
+                    outcome.map(|()| Peer::Ready { session, device })
                 }
             },
             _ => Err("bad_frame"),
@@ -996,8 +1062,8 @@ impl Link {
         Ok(())
     }
 
-    /// What a `req` on `asking` changed, acted on. An unpairing closes the
-    /// device's other channels here and ends the asking one with the reason
+    /// What a `req` on `asking` changed, acted on. Forgetting the device
+    /// closes its other channels here and ends the asking one with the reason
     /// given back.
     fn apply(
         &mut self,
@@ -1032,22 +1098,35 @@ impl Link {
         Ok(Ok(()))
     }
 
-    /// A `req` from a phone that said who it is, answered as the HTTP it stands for.
-    fn route(&self, req: &Value, token: &str, now: u64) -> (super::Reply, Effect) {
+    /// A `req` from a client, answered as the HTTP it stands for, as `device`.
+    fn route(&self, req: &Value, device: &str, now: u64) -> (super::Reply, Effect) {
         let method = req["method"].as_str().unwrap_or("GET");
         let path = req["path"].as_str().unwrap_or("/");
         let body = req["body"]
             .as_str()
             .map(|b| b.as_bytes().to_vec())
             .filter(|b| b.len() <= MAX_REQ_BODY);
-        match Head::relayed(method, path, token) {
+        match Head::relayed(method, path, device) {
             Some(head) => super::route(&head, body, &self.access, now),
             None => (super::Reply::error(400, "bad request"), Effect::None),
         }
     }
 
-    /// The channel's phone said who it is: the shell gets a client.
-    fn ready(&mut self, channel: u32, device: &str) {
+    /// The keys are agreed on a channel the relay opened for this account:
+    /// the shell gets a client, and hears of the device first if it is new.
+    fn ready(&mut self, channel: u32, device: &str, name: &str, kind: &str, now: u64) {
+        let (known, seen) = self.access.lock().unwrap().relay_device(device, name, now);
+        let news = match seen {
+            Seen::New => Some(Incoming::NewDevice {
+                name: known.name,
+                kind: kind.to_string(),
+            }),
+            Seen::Renamed => Some(Incoming::Renamed),
+            Seen::Known => None,
+        };
+        if let Some(news) = news {
+            let _ = self.tx.unbounded_send(news);
+        }
         self.channels.lock().unwrap().insert(
             channel,
             Channel {
@@ -1061,7 +1140,7 @@ impl Link {
         ));
     }
 
-    /// Ends a channel from this side: the relay passes the reason to the phone.
+    /// Ends a channel from this side: the relay passes the reason to the device.
     fn drop_channel(&mut self, ws: &mut Socket, channel: u32, reason: &str) -> Result<(), Ended> {
         if self.forget_channel(channel) {
             send_control(ws, channel, &json!({ "type": "close", "reason": reason }))?;
@@ -1070,7 +1149,7 @@ impl Link {
     }
 
     /// A channel is gone; whether it was one. The shell hears a client leave
-    /// when the phone had said who it is.
+    /// when it was one.
     fn forget_channel(&mut self, channel: u32) -> bool {
         let known = self.channels.lock().unwrap().remove(&channel).is_some();
         if let Some(Peer::Ready { .. }) = self.peers.remove(&channel) {
@@ -1183,20 +1262,49 @@ pub fn parts(text: &str, chunk: usize) -> Vec<String> {
 }
 
 /// What a `bye` from the relay means for the next attempt.
-fn refused(reason: &str) -> Ended {
+fn bye(msg: &Value) -> Ended {
+    refused(
+        msg["reason"].as_str().unwrap_or("refused"),
+        msg["message"].as_str(),
+    )
+}
+
+/// What the relay's reason for sending this computer away means for the next
+/// attempt, with the operator's text when it came with one.
+fn refused(reason: &str, message: Option<&str>) -> Ended {
+    let message = message
+        .map(|m| m.trim().chars().take(MAX_MESSAGE).collect::<String>())
+        .filter(|m| !m.is_empty());
+    let with = |text: &str| match &message {
+        Some(m) => format!("{text}: {m}"),
+        None => format!("{text}."),
+    };
     match reason {
+        "signed_out" => Ended::SignedOut,
         "wrong_label" | "key_mismatch" => {
             Ended::Rejected("This address belongs to another key.".into())
         }
         "bad_signature" => {
             Ended::Rejected("The relay did not accept this computer's signature.".into())
         }
+        "label_taken" => Ended::Rejected(
+            "Another account has this computer's address on the relay. Replace this computer's key to get a new address.".into(),
+        ),
+        "machines_full" => Ended::Rejected(
+            "Your account has as many computers on the relay as its plan allows. Remove one you no longer use from your account, then turn the relay off and on again.".into(),
+        ),
+        "no_machine" => Ended::Rejected(
+            "This computer was removed from your account. Turn the relay off and on again, or sign in again, to add it back.".into(),
+        ),
+        "update" => Ended::Rejected("This relay needs a newer Arakun. Update Arakun.".into()),
         // The operator may lift a block, and the other computer may go away:
         // keep asking, slowly, so a server comes back without a restart.
-        "blocked" => Ended::Refused("The relay operator blocked this address.".into()),
+        "blocked" => Ended::Refused(with("The relay operator blocked this account")),
         "replaced" => {
             Ended::Refused("Another computer with this key connected to the relay.".into())
         }
+        // Closed by the operator for now: as for a drop, with their word.
+        "disabled" => Ended::Retry(with("The relay is closed for now")),
         other => Ended::Retry(format!("The relay hung up: {other}")),
     }
 }
@@ -1214,7 +1322,7 @@ fn read(ws: &mut Socket) -> Result<Read, Ended> {
         Ok(Message::Binary(bytes)) => {
             Ok(parse_frame(&bytes).map_or(Read::Nothing, |(k, c, p)| Read::Frame(k, c, p)))
         }
-        // The pong to our ping is all the relay says while no phone is around:
+        // The pong to our ping is all the relay says while no device is around:
         // it must count as hearing from it, or every silence looks like a loss.
         Ok(Message::Pong(_) | Message::Ping(_)) => Ok(Read::Alive),
         Ok(Message::Close(frame)) => {
@@ -1225,7 +1333,9 @@ fn read(ws: &mut Socket) -> Result<Read, Ended> {
                 .unwrap_or_default();
             let code = frame.map(|f| u16::from(f.code));
             Err(match code {
-                Some(4401 | 4403 | 4409) => refused(&reason),
+                Some(4401 | 4403 | 4404 | 4409 | 4410 | 4429 | 4503) if !reason.is_empty() => {
+                    refused(&reason, None)
+                }
                 _ => Ended::Retry(if reason.is_empty() {
                     "The relay closed the connection".into()
                 } else {
@@ -1321,31 +1431,60 @@ mod tests {
     use tungstenite::protocol::frame::coding::CloseCode;
 
     #[test]
-    fn the_endpoint_puts_the_label_in_front_unless_the_relay_is_local() {
+    fn the_endpoint_is_the_machine_door_on_the_relay_host() {
         assert_eq!(
-            endpoint("https://arakun.dev", "abc"),
-            "wss://abc.arakun.dev/pc"
+            endpoint("https://app.arakun.dev", "abc"),
+            "wss://app.arakun.dev/machines/abc/pc"
         );
         assert_eq!(
             endpoint("https://example.workers.dev/", "abc"),
-            "wss://abc.example.workers.dev/pc"
+            "wss://example.workers.dev/machines/abc/pc"
         );
         assert_eq!(
             endpoint("relay.example", "abc"),
-            "wss://abc.relay.example/pc"
+            "wss://relay.example/machines/abc/pc"
         );
         assert_eq!(
             endpoint("http://127.0.0.1:8787", "abc"),
-            "ws://127.0.0.1:8787/pc"
+            "ws://127.0.0.1:8787/machines/abc/pc"
         );
         assert_eq!(
             endpoint("http://localhost:8787/", "abc"),
-            "ws://localhost:8787/pc"
+            "ws://localhost:8787/machines/abc/pc"
         );
         assert_eq!(
             endpoint("https://127.0.0.1:8443", "abc"),
-            "wss://127.0.0.1:8443/pc"
+            "wss://127.0.0.1:8443/machines/abc/pc"
         );
+        // A host by name always goes over TLS, whatever the base says.
+        assert_eq!(
+            endpoint("http://relay.example", "abc"),
+            "wss://relay.example/machines/abc/pc"
+        );
+        assert_eq!(
+            page_url("https://app.arakun.dev/"),
+            "https://app.arakun.dev/"
+        );
+        assert_eq!(page_url("http://127.0.0.1:8787"), "http://127.0.0.1:8787/");
+    }
+
+    #[test]
+    fn a_relay_address_without_a_scheme_takes_the_session_of_its_https_server() {
+        let account = "https://app.arakun.dev";
+        for relay in [
+            "app.arakun.dev",
+            "app.arakun.dev/",
+            "https://APP.arakun.dev/",
+            " https://app.arakun.dev ",
+        ] {
+            assert!(takes_session_from(relay, account), "{relay}");
+        }
+        assert!(!takes_session_from("relay.example", account));
+        assert!(!takes_session_from("app.arakun.dev:8443", account));
+        assert!(takes_session_from(
+            "http://localhost:8787",
+            "http://localhost:8787"
+        ));
     }
 
     #[test]
@@ -1360,7 +1499,7 @@ mod tests {
             Some(("abc.arakun.dev".into(), 443, true))
         );
         assert_eq!(
-            parse_url("ws://127.0.0.1:8787/pc"),
+            parse_url("ws://127.0.0.1:8787/machines/abc/pc?name=x&kind=app"),
             Some(("127.0.0.1".into(), 8787, false))
         );
         assert_eq!(parse_url("https://x"), None);
@@ -1370,6 +1509,43 @@ mod tests {
     const RELAY_FRAME: usize = 256 * 1024;
     // Sealing adds a counter and a tag; the relay counts those too.
     const _: () = assert!(WHOLE + 64 <= RELAY_FRAME);
+
+    /// The account this computer is signed in to in the tests.
+    const ACCOUNT: u64 = 42;
+
+    fn machine() -> Machine {
+        Machine {
+            name: "Rik's laptop".into(),
+            kind: MachineKind::App,
+        }
+    }
+
+    fn account(session: Option<&str>) -> Account {
+        Account {
+            github_id: ACCOUNT,
+            session: session.map(str::to_string),
+        }
+    }
+
+    fn empty_access() -> Shared {
+        super::super::Access::new(Vec::new(), "pk".into())
+    }
+
+    /// A client of `relay`, signed in with the session `tok`.
+    fn start(
+        relay: &FakeRelay,
+        me: Identity,
+        access: Shared,
+    ) -> (RelayClient, mpsc::UnboundedReceiver<Incoming>) {
+        RelayClient::start(&relay.base(), me, access, machine(), account(Some("tok")))
+    }
+
+    /// What the computer asked for when it opened its socket.
+    struct Door {
+        /// The path with its query.
+        target: String,
+        authorization: Option<String>,
+    }
 
     /// A relay of our own on the loopback: accepts one computer at a time.
     struct FakeRelay {
@@ -1393,26 +1569,45 @@ mod tests {
             )
         }
 
-        /// Takes the next computer, challenges it and checks the claim; gives the
-        /// socket back claimed, with the `tickets` message it then sent.
-        fn accept_and_claim(&self, public: &[u8]) -> (WebSocket<TcpStream>, Value) {
+        /// Takes the next socket, noting what it asked for. The callback's
+        /// error type is tungstenite's.
+        #[allow(clippy::result_large_err)]
+        fn accept(&self) -> (WebSocket<TcpStream>, Door) {
+            self.listener.set_nonblocking(false).unwrap();
             let (stream, _) = self.listener.accept().unwrap();
             stream
                 .set_read_timeout(Some(Duration::from_secs(5)))
                 .unwrap();
-            let mut ws = tungstenite::accept(stream).unwrap();
-            let nonce = [7u8; 16];
-            ws.send(Message::Binary(
-                frame(
-                    CONTROL,
-                    0,
-                    json!({"type": "challenge", "nonce": B64.encode(nonce)})
-                        .to_string()
-                        .as_bytes(),
-                )
-                .into(),
-            ))
+            let mut door = Door {
+                target: String::new(),
+                authorization: None,
+            };
+            let ws = tungstenite::accept_hdr(
+                stream,
+                |req: &tungstenite::handshake::server::Request,
+                 res: tungstenite::handshake::server::Response| {
+                    door.target = req.uri().to_string();
+                    door.authorization = req
+                        .headers()
+                        .get("authorization")
+                        .and_then(|v| v.to_str().ok())
+                        .map(str::to_string);
+                    Ok(res)
+                },
+            )
             .unwrap();
+            (ws, door)
+        }
+
+        /// Takes the next computer, challenges it and checks the claim; gives
+        /// the socket back claimed.
+        fn accept_and_claim(&self, public: &[u8]) -> (WebSocket<TcpStream>, Door) {
+            let (mut ws, door) = self.accept();
+            let nonce = [7u8; 16];
+            tell(
+                &mut ws,
+                json!({"type": "challenge", "nonce": B64.encode(nonce)}),
+            );
             let claim = control(&mut ws);
             assert_eq!(claim["type"], "claim");
             assert_eq!(B64.decode(claim["pub"].as_str().unwrap()).unwrap(), public);
@@ -1422,14 +1617,36 @@ mod tests {
             signature::UnparsedPublicKey::new(&signature::ECDSA_P256_SHA256_FIXED, public)
                 .verify(&signed, &sig)
                 .unwrap();
-            ws.send(Message::Binary(
-                frame(CONTROL, 0, br#"{"type":"claimed"}"#).into(),
-            ))
-            .unwrap();
-            let tickets = control(&mut ws);
-            assert_eq!(tickets["type"], "tickets");
-            (ws, tickets)
+            tell(&mut ws, json!({"type": "claimed"}));
+            (ws, door)
         }
+
+        /// Turns the next socket away as the Worker does at its door: accepted,
+        /// then a `bye` with the reason, then closed.
+        fn refuse(&self, bye: Value, code: u16) -> Door {
+            let (mut ws, door) = self.accept();
+            let reason = bye["reason"].as_str().unwrap().to_string();
+            tell(&mut ws, bye);
+            hang_up(&mut ws, code, &reason);
+            door
+        }
+
+        /// Nobody dials within `wait`.
+        fn no_dial_within(&self, wait: Duration) {
+            self.listener.set_nonblocking(true).unwrap();
+            std::thread::sleep(wait);
+            assert!(self.listener.accept().is_err(), "the computer dialed again");
+            self.listener.set_nonblocking(false).unwrap();
+        }
+    }
+
+    fn hang_up(ws: &mut WebSocket<TcpStream>, code: u16, reason: &str) {
+        ws.close(Some(tungstenite::protocol::CloseFrame {
+            code: CloseCode::from(code),
+            reason: reason.to_string().into(),
+        }))
+        .unwrap();
+        let _ = ws.flush();
     }
 
     /// The next control message on channel 0; pings are answered on the way.
@@ -1452,6 +1669,14 @@ mod tests {
             frame(CONTROL, 0, msg.to_string().as_bytes()).into(),
         ))
         .unwrap();
+    }
+
+    /// The relay opens `channel` for a device of `account`, as the Worker does.
+    fn open(ws: &mut WebSocket<TcpStream>, channel: u32, device: &str, account: Value) {
+        tell(
+            ws,
+            json!({"type": "open", "channel": channel, "device": device, "name": "Rik's iPhone", "kind": "ios", "account": account}),
+        );
     }
 
     fn next_status(rx: &mut mpsc::UnboundedReceiver<Incoming>) -> Status {
@@ -1491,121 +1716,6 @@ mod tests {
         }
     }
 
-    /// Access with devices paired through the relay, one per ticket hash.
-    fn access_with_tickets(hashes: &[&str]) -> Shared {
-        let devices = hashes
-            .iter()
-            .enumerate()
-            .map(|(i, h)| super::super::Device {
-                id: format!("dev{i}"),
-                name: "Phone".into(),
-                token_hash: format!("tok{i}"),
-                ticket_hash: h.to_string(),
-                paired_at: 0,
-                last_seen: 0,
-                push: None,
-                notices: Default::default(),
-            })
-            .collect();
-        super::super::Access::new(devices, "pk".into())
-    }
-
-    #[test]
-    fn the_computer_claims_its_label_sends_its_tickets_and_hears_channels() {
-        let me = Identity::generate();
-        let public = me.public_raw().to_vec();
-        let relay = FakeRelay::start(&me.label());
-        let (client, mut rx) =
-            RelayClient::start(&relay.base(), me, access_with_tickets(&["aa", "bb"]));
-        assert_eq!(next_status(&mut rx), Status::Connecting);
-        assert_eq!(client.page_url(), format!("{}/", relay.base()));
-
-        let (mut ws, tickets) = relay.accept_and_claim(&public);
-        assert_eq!(tickets["hashes"], json!(["aa", "bb"]));
-        assert_eq!(next_status(&mut rx), Status::Connected);
-
-        tell(
-            &mut ws,
-            json!({"type": "open", "channel": 3, "device": "dev1"}),
-        );
-        tell(
-            &mut ws,
-            json!({"type": "open", "channel": 4, "device": null}),
-        );
-        until(|| (client.channels().len() == 2).then_some(()));
-        assert_eq!(
-            client.channels()[&3],
-            Channel {
-                device: Some("dev1".into()),
-                ready: false
-            }
-        );
-        assert_eq!(
-            client.channels()[&4],
-            Channel {
-                device: None,
-                ready: false
-            }
-        );
-        // Not clients yet: nobody has said who they are.
-        assert_eq!(client.client_count(), 0);
-        assert_eq!(client.device_of(3), None);
-        tell(
-            &mut ws,
-            json!({"type": "close", "channel": 3, "reason": "closed"}),
-        );
-        until(|| (client.channels().len() == 1).then_some(()));
-
-        client.set_tickets(vec!["cc".into()]);
-        assert_eq!(control(&mut ws)["hashes"], json!(["cc"]));
-        client.open_pairing("ab".repeat(32), Duration::from_secs(120));
-        let open = control(&mut ws);
-        assert_eq!(open["type"], "pair_open");
-        assert_eq!(open["ttl"], 120);
-        client.close_channel(4, "done");
-        let (kind, channel, payload) = next_frame(&mut ws);
-        assert_eq!((kind, channel), (CONTROL, 4));
-        assert_eq!(
-            serde_json::from_slice::<Value>(&payload).unwrap()["reason"],
-            "done"
-        );
-
-        drop(client);
-        assert!(
-            matches!(ws.read(), Ok(Message::Close(_)) | Err(_)),
-            "the relay hears the computer hang up"
-        );
-    }
-
-    #[test]
-    fn a_dropped_connection_is_dialed_again_with_the_latest_tickets() {
-        let me = Identity::generate();
-        let public = me.public_raw().to_vec();
-        let relay = FakeRelay::start(&me.label());
-        let (client, mut rx) = RelayClient::start(&relay.base(), me, access_with_tickets(&[]));
-        let (mut ws, _) = relay.accept_and_claim(&public);
-        assert_eq!(next_status(&mut rx), Status::Connecting);
-        assert_eq!(next_status(&mut rx), Status::Connected);
-        tell(
-            &mut ws,
-            json!({"type": "open", "channel": 1, "device": "d"}),
-        );
-        until(|| (client.channels().len() == 1).then_some(()));
-
-        ws.close(None).unwrap();
-        let _ = ws.flush();
-        drop(ws);
-        let status = next_status(&mut rx);
-        assert!(matches!(status, Status::Reconnecting { .. }), "{status:?}");
-        assert!(client.channels().is_empty());
-        client.set_tickets(vec!["new".into()]);
-
-        let (_ws, tickets) = relay.accept_and_claim(&public);
-        assert_eq!(tickets["hashes"], json!(["new"]));
-        assert_eq!(next_status(&mut rx), Status::Connecting);
-        assert_eq!(next_status(&mut rx), Status::Connected);
-    }
-
     /// A phone in Rust, on one channel of the fake relay: it speaks `e2e` like
     /// the page does.
     struct FakePhone {
@@ -1614,18 +1724,15 @@ mod tests {
     }
 
     impl FakePhone {
-        /// Opens `channel` on the computer (as the relay would), shakes hands and
-        /// checks the computer's hello is from `label`.
+        /// Has the relay open `channel` for `device` of this account, shakes
+        /// hands and checks the computer's hello is from `label`.
         fn greet(
             ws: &mut WebSocket<TcpStream>,
             label: &str,
             channel: u32,
-            device: Option<&str>,
+            device: &str,
         ) -> FakePhone {
-            tell(
-                ws,
-                json!({"type": "open", "channel": channel, "device": device}),
-            );
+            open(ws, channel, device, json!(ACCOUNT));
             let hs = Handshake::begin();
             ws.send(Message::Binary(frame(HELLO, channel, &hs.hello()).into()))
                 .unwrap();
@@ -1737,48 +1844,110 @@ mod tests {
         }
     }
 
+    /// The shell hears a device it has not seen before, then a client.
+    fn new_device_connects(rx: &mut mpsc::UnboundedReceiver<Incoming>, channel: u32) {
+        match next_incoming(rx) {
+            Incoming::NewDevice { name, kind } => {
+                assert_eq!((name.as_str(), kind.as_str()), ("Rik's iPhone", "ios"))
+            }
+            _ => panic!("expected a new device"),
+        }
+        assert!(matches!(next_incoming(rx), Incoming::Connected(c, _) if c == u64::from(channel)));
+    }
+
     #[test]
-    fn a_phone_pairs_through_the_relay_and_then_talks_sealed() {
+    fn the_computer_brings_its_session_and_claims_its_label() {
         let me = Identity::generate();
         let label = me.label();
         let public = me.public_raw().to_vec();
         let relay = FakeRelay::start(&label);
-        let access = access_with_tickets(&[]);
-        let (client, mut rx) = RelayClient::start(&relay.base(), me, access.clone());
-        let (mut ws, _) = relay.accept_and_claim(&public);
-        let (code, secret) = access.lock().unwrap().begin_pairing_relay();
-        assert_ne!(code, secret);
+        let (client, mut rx) = start(&relay, me, empty_access());
+        assert_eq!(next_status(&mut rx), Status::Connecting);
+        // Devices find it on the relay's own page now, not under a host of its own.
+        assert_eq!(client.page_url(), format!("{}/", relay.base()));
 
-        // The phone the relay let in with the code shows the secret.
-        let mut phone = FakePhone::greet(&mut ws, &label, 5, None);
-        phone.say(
+        let (mut ws, door) = relay.accept_and_claim(&public);
+        assert_eq!(
+            door.target,
+            format!("/machines/{label}/pc?name=Rik%27s%20laptop&kind=app")
+        );
+        assert_eq!(door.authorization.as_deref(), Some("Bearer tok"));
+        assert_eq!(next_status(&mut rx), Status::Connected);
+
+        // No tickets and no pairing follow the claim: the computer is quiet
+        // until a device comes. A close for a channel it never had is no harm.
+        tell(
             &mut ws,
-            json!({"pair": {"secret": secret, "name": "Alice's iPhone"}}),
+            json!({"type": "close", "channel": 9, "reason": "gone"}),
         );
-        let paired = phone.hear(&mut ws);
-        let device = paired["paired"]["id"].as_str().unwrap().to_string();
-        let token = paired["paired"]["token"].as_str().unwrap().to_string();
-        let ticket = paired["paired"]["ticket"].as_str().unwrap().to_string();
-        assert_eq!(paired["paired"]["name"], "Alice's iPhone");
-        assert_eq!(paired["paired"]["host"], super::super::host_name());
-        // The relay is told the new ticket at once, and the shell hears both things.
-        let tickets = control(&mut ws);
-        assert_eq!(tickets["hashes"], json!([super::super::hash(&ticket)]));
-        assert!(matches!(next_incoming(&mut rx), Incoming::Paired));
-        assert!(matches!(next_incoming(&mut rx), Incoming::Connected(5, d) if d == device));
-        assert_eq!(client.device_of(5), Some(device.clone()));
-        assert_eq!(client.connected_devices(), vec![device.clone()]);
-        assert_eq!(client.client_count(), 1);
-        assert!(
-            access.lock().unwrap().pairing().is_none(),
-            "the pairing was spent"
+        open(&mut ws, 4, "sess1", json!(ACCOUNT));
+        until(|| (client.channels().len() == 1).then_some(()));
+        client.close_channel(4, "done");
+        let (kind, channel, payload) = next_frame(&mut ws);
+        assert_eq!((kind, channel), (CONTROL, 4));
+        assert_eq!(
+            serde_json::from_slice::<Value>(&payload).unwrap()["reason"],
+            "done"
         );
 
-        // What it would ask over HTTP goes inside: who am I.
+        drop(client);
+        assert!(
+            matches!(ws.read(), Ok(Message::Close(_)) | Err(_)),
+            "the relay hears the computer hang up"
+        );
+    }
+
+    #[test]
+    fn a_device_of_the_account_is_a_client_once_the_keys_are_agreed() {
+        let me = Identity::generate();
+        let label = me.label();
+        let public = me.public_raw().to_vec();
+        let relay = FakeRelay::start(&label);
+        let access = empty_access();
+        let (client, mut rx) = start(&relay, me, access.clone());
+        let (mut ws, _) = relay.accept_and_claim(&public);
+
+        // Opened by the relay, but no keys yet: not a client.
+        open(&mut ws, 5, "sess1", json!(ACCOUNT));
+        until(|| (client.channels().len() == 1).then_some(()));
+        assert_eq!(
+            client.channels()[&5],
+            Channel {
+                device: Some("sess1".into()),
+                ready: false
+            }
+        );
+        assert_eq!(client.client_count(), 0);
+        assert_eq!(client.device_of(5), None);
+        assert!(access.lock().unwrap().devices.is_empty());
+
+        // The handshake is all it takes: no pairing, no token.
+        let hs = Handshake::begin();
+        ws.send(Message::Binary(frame(HELLO, 5, &hs.hello()).into()))
+            .unwrap();
+        let (kind, ch, reply) = next_frame(&mut ws);
+        assert_eq!((kind, ch), (HELLO, 5));
+        let mut phone = FakePhone {
+            channel: 5,
+            session: hs.finish(&reply, &label, 5).unwrap(),
+        };
+        new_device_connects(&mut rx, 5);
+        assert_eq!(client.device_of(5), Some("sess1".into()));
+        assert_eq!(client.connected_devices(), vec!["sess1".to_string()]);
+        assert_eq!(client.client_count(), 1);
+        let device = access.lock().unwrap().devices[0].clone();
+        assert_eq!(device.id, "sess1");
+        assert_eq!(device.name, "Rik's iPhone");
+        assert_eq!(
+            (device.token_hash.as_str(), device.ticket_hash.as_str()),
+            ("", "")
+        );
+
+        // What it would ask over HTTP goes inside, as this device.
         let (status, body) = phone.req(&mut ws, "GET", "/me", None);
         assert_eq!(status, 200);
         let me: Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(me["id"], device);
+        assert_eq!(me["id"], "sess1");
         assert_eq!(me["push_key"], "pk");
 
         // What it would say on its socket goes inside too, both ways.
@@ -1795,29 +1964,351 @@ mod tests {
         phone.say(&mut ws, json!({"type": "nonsense"}));
         assert_eq!(phone.hear(&mut ws)["type"], "error");
 
-        // A second channel of the same phone comes in with its token.
-        let mut again = FakePhone::greet(&mut ws, &label, 6, Some(&device));
-        again.say(&mut ws, json!({"auth": {"token": token}}));
-        assert_eq!(again.hear(&mut ws)["ok"]["id"], device);
-        assert!(matches!(next_incoming(&mut rx), Incoming::Connected(6, _)));
+        // The same device on a second channel: a client again, not a new device.
+        let _again = FakePhone::greet(&mut ws, &label, 6, "sess1");
+        assert!(matches!(next_incoming(&mut rx), Incoming::Connected(6, d) if d == "sess1"));
         assert_eq!(client.client_count(), 2);
+        assert_eq!(access.lock().unwrap().devices.len(), 1);
 
-        // Unpairing from one channel closes both, and the shell hears each leave.
-        let (status, _) = again.req(&mut ws, "POST", "/unpair", None);
-        assert_eq!(status, 200);
-        let mut reasons = vec![closed(&mut ws, 5), closed(&mut ws, 6)];
-        reasons.sort();
-        assert_eq!(reasons, ["unpaired", "unpaired"]);
-        let mut gone: Vec<Incoming> = (0..3).map(|_| next_incoming(&mut rx)).collect();
-        gone.sort_by_key(|i| match i {
-            Incoming::Disconnected(id) => *id,
-            _ => 0,
-        });
-        assert!(matches!(gone[0], Incoming::Unpaired));
-        assert!(matches!(gone[1], Incoming::Disconnected(5)));
-        assert!(matches!(gone[2], Incoming::Disconnected(6)));
+        // The relay closes one; a second close for it is no harm.
+        tell(
+            &mut ws,
+            json!({"type": "close", "channel": 5, "reason": "closed"}),
+        );
+        assert!(matches!(next_incoming(&mut rx), Incoming::Disconnected(5)));
+        tell(
+            &mut ws,
+            json!({"type": "close", "channel": 5, "reason": "closed"}),
+        );
+
+        // Forgetting the device closes its channel and drops its record.
+        access.lock().unwrap().unpair("sess1");
+        client.disconnect_device("sess1");
+        assert_eq!(closed(&mut ws, 6), "unpaired");
+        assert!(matches!(next_incoming(&mut rx), Incoming::Disconnected(6)));
         assert_eq!(client.client_count(), 0);
-        assert!(access.lock().unwrap().devices.is_empty());
+
+        // It comes back when it connects again, and is new again.
+        let _back = FakePhone::greet(&mut ws, &label, 7, "sess1");
+        new_device_connects(&mut rx, 7);
+        assert_eq!(access.lock().unwrap().devices.len(), 1);
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn a_device_signed_out_elsewhere_is_forgotten_when_the_relay_says_so() {
+        let me = Identity::generate();
+        let label = me.label();
+        let public = me.public_raw().to_vec();
+        let relay = FakeRelay::start(&label);
+        let access = empty_access();
+        let (_client, mut rx) = start(&relay, me, access.clone());
+        let (mut ws, _) = relay.accept_and_claim(&public);
+        let _phone = FakePhone::greet(&mut ws, &label, 5, "sess1");
+        new_device_connects(&mut rx, 5);
+        let _other = FakePhone::greet(&mut ws, &label, 6, "sess2");
+        assert!(matches!(next_incoming(&mut rx), Incoming::NewDevice { .. }));
+        assert!(matches!(next_incoming(&mut rx), Incoming::Connected(6, _)));
+
+        // A plain close keeps the record.
+        tell(
+            &mut ws,
+            json!({"type": "close", "channel": 6, "reason": "closed"}),
+        );
+        assert!(matches!(next_incoming(&mut rx), Incoming::Disconnected(6)));
+        // A sign-out drops it: the device goes, the other stays.
+        tell(
+            &mut ws,
+            json!({"type": "close", "channel": 5, "reason": "signed_out"}),
+        );
+        assert!(matches!(next_incoming(&mut rx), Incoming::Disconnected(5)));
+        assert!(matches!(next_incoming(&mut rx), Incoming::Unpaired));
+        let left: Vec<String> = access
+            .lock()
+            .unwrap()
+            .devices
+            .iter()
+            .map(|d| d.id.clone())
+            .collect();
+        assert_eq!(left, ["sess2"]);
+    }
+
+    #[test]
+    fn a_device_of_another_account_is_turned_away() {
+        let me = Identity::generate();
+        let label = me.label();
+        let public = me.public_raw().to_vec();
+        let relay = FakeRelay::start(&label);
+        let access = empty_access();
+        let (client, mut rx) = start(&relay, me, access.clone());
+        let (mut ws, _) = relay.accept_and_claim(&public);
+
+        open(&mut ws, 3, "theirs", json!(43));
+        assert_eq!(closed(&mut ws, 3), "not_yours");
+        // An account not as a number, or none at all: not ours either.
+        open(&mut ws, 4, "x", json!(null));
+        assert_eq!(closed(&mut ws, 4), "not_yours");
+        open(&mut ws, 8, "y", json!("42"));
+        assert_eq!(closed(&mut ws, 8), "not_yours");
+        assert!(client.channels().is_empty());
+
+        // Its frames go nowhere: no hello comes back on that channel, and
+        // data on a channel the relay never opened is dropped too.
+        let hs = Handshake::begin();
+        ws.send(Message::Binary(frame(HELLO, 3, &hs.hello()).into()))
+            .unwrap();
+        ws.send(Message::Binary(frame(DATA, 3, b"{\"pair\":{}}").into()))
+            .unwrap();
+        ws.send(Message::Binary(frame(DATA, 11, b"{\"auth\":{}}").into()))
+            .unwrap();
+
+        // The next thing the computer says is to a device of its own account.
+        let _ours = FakePhone::greet(&mut ws, &label, 5, "mine");
+        new_device_connects(&mut rx, 5);
+        assert_eq!(client.client_count(), 1);
+        let ids: Vec<String> = access
+            .lock()
+            .unwrap()
+            .devices
+            .iter()
+            .map(|d| d.id.clone())
+            .collect();
+        assert_eq!(ids, ["mine"]);
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn pair_and_auth_on_a_relay_channel_say_nothing_about_who_it_is() {
+        let me = Identity::generate();
+        let label = me.label();
+        let public = me.public_raw().to_vec();
+        let relay = FakeRelay::start(&label);
+        let access = empty_access();
+        let (client, mut rx) = start(&relay, me, access.clone());
+        let (mut ws, _) = relay.accept_and_claim(&public);
+        // A pairing open on the network meanwhile.
+        let code = access.lock().unwrap().begin_pairing();
+
+        let mut phone = FakePhone::greet(&mut ws, &label, 5, "sess1");
+        new_device_connects(&mut rx, 5);
+        // An old page says who it is the old way: ignored, no answer, no error.
+        phone.say(
+            &mut ws,
+            json!({"pair": {"secret": code, "code": code, "name": "Mallory"}}),
+        );
+        phone.say(&mut ws, json!({"auth": {"token": "stolen"}}));
+        phone.say(&mut ws, json!({"type": "usage"}));
+        assert!(matches!(
+            next_incoming(&mut rx),
+            Incoming::Message(5, ClientMsg::Usage)
+        ));
+        // Nothing was sent on the channel before this.
+        client.send(5, r#"{"type":"inbox","sessions":[]}"#.into());
+        assert_eq!(phone.hear(&mut ws)["type"], "inbox");
+
+        // Pairing as HTTP is the network's, not the relay's.
+        let (status, _) = phone.req(
+            &mut ws,
+            "POST",
+            "/pair",
+            Some(&format!(r#"{{"code":"{code}","name":"Mallory"}}"#)),
+        );
+        assert_eq!(status, 404);
+        assert_eq!(access.lock().unwrap().devices.len(), 1);
+        assert!(
+            access.lock().unwrap().pairing().is_some(),
+            "the network's code was not spent"
+        );
+        assert_eq!(client.client_count(), 1);
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn a_dropped_connection_is_dialed_again() {
+        let me = Identity::generate();
+        let public = me.public_raw().to_vec();
+        let relay = FakeRelay::start(&me.label());
+        let (client, mut rx) = start(&relay, me, empty_access());
+        let (mut ws, _) = relay.accept_and_claim(&public);
+        assert_eq!(next_status(&mut rx), Status::Connecting);
+        assert_eq!(next_status(&mut rx), Status::Connected);
+        open(&mut ws, 1, "d", json!(ACCOUNT));
+        until(|| (client.channels().len() == 1).then_some(()));
+
+        ws.close(None).unwrap();
+        let _ = ws.flush();
+        drop(ws);
+        let status = next_status(&mut rx);
+        assert!(matches!(status, Status::Reconnecting { .. }), "{status:?}");
+        assert!(client.channels().is_empty());
+
+        let (_ws, door) = relay.accept_and_claim(&public);
+        assert_eq!(door.authorization.as_deref(), Some("Bearer tok"));
+        assert_eq!(next_status(&mut rx), Status::Connecting);
+        assert_eq!(next_status(&mut rx), Status::Connected);
+    }
+
+    #[test]
+    fn a_signed_out_computer_dials_only_once_it_has_a_session() {
+        let me = Identity::generate();
+        let public = me.public_raw().to_vec();
+        let relay = FakeRelay::start(&me.label());
+        let (client, mut rx) =
+            RelayClient::start(&relay.base(), me, empty_access(), machine(), account(None));
+        assert_eq!(next_status(&mut rx), Status::SignedOut);
+        relay.no_dial_within(Duration::from_millis(400));
+        client.set_session(None);
+        relay.no_dial_within(Duration::from_millis(200));
+
+        client.set_session(Some("fresh".into()));
+        let (mut ws, door) = relay.accept_and_claim(&public);
+        assert_eq!(door.authorization.as_deref(), Some("Bearer fresh"));
+        assert_eq!(next_status(&mut rx), Status::Connecting);
+        assert_eq!(next_status(&mut rx), Status::Connected);
+
+        // The relay's recheck finds the session signed out.
+        tell(&mut ws, json!({"type": "bye", "reason": "signed_out"}));
+        hang_up(&mut ws, 4401, "signed_out");
+        assert_eq!(next_status(&mut rx), Status::SignedOut);
+        relay.no_dial_within(Duration::from_millis(400));
+
+        client.set_session(Some("again".into()));
+        let (mut ws, door) = relay.accept_and_claim(&public);
+        assert_eq!(door.authorization.as_deref(), Some("Bearer again"));
+        assert_eq!(next_status(&mut rx), Status::Connecting);
+        assert_eq!(next_status(&mut rx), Status::Connected);
+
+        // Signing out here hangs up.
+        client.set_session(None);
+        assert_eq!(next_status(&mut rx), Status::SignedOut);
+        assert!(matches!(ws.read(), Ok(Message::Close(_)) | Err(_)));
+        relay.no_dial_within(Duration::from_millis(200));
+    }
+
+    /// What the computer makes of a refusal at the relay's door.
+    fn refused_at_the_door(bye: Value, code: u16) -> (Status, FakeRelay, RelayClient) {
+        let me = Identity::generate();
+        let relay = FakeRelay::start(&me.label());
+        let (client, mut rx) = start(&relay, me, empty_access());
+        relay.refuse(bye, code);
+        assert_eq!(next_status(&mut rx), Status::Connecting);
+        (next_status(&mut rx), relay, client)
+    }
+
+    #[test]
+    fn each_refusal_at_the_door_says_what_to_do() {
+        let (status, relay, _client) =
+            refused_at_the_door(json!({"type": "bye", "reason": "signed_out"}), 4401);
+        assert_eq!(status, Status::SignedOut);
+        relay.no_dial_within(Duration::from_millis(300));
+
+        let (status, _, _client) = refused_at_the_door(
+            json!({"type": "bye", "reason": "blocked", "message": "Too many frames."}),
+            4403,
+        );
+        assert_eq!(
+            status,
+            Status::Refused {
+                why: "The relay operator blocked this account: Too many frames.".into(),
+                retry_in: REFUSED_WAIT,
+            }
+        );
+        let (status, _, _client) =
+            refused_at_the_door(json!({"type": "bye", "reason": "blocked"}), 4403);
+        assert_eq!(
+            status,
+            Status::Refused {
+                why: "The relay operator blocked this account.".into(),
+                retry_in: REFUSED_WAIT,
+            }
+        );
+
+        let (status, relay, _client) =
+            refused_at_the_door(json!({"type": "bye", "reason": "label_taken"}), 4403);
+        assert_eq!(
+            status,
+            Status::Rejected(
+                "Another account has this computer's address on the relay. Replace this computer's key to get a new address.".into()
+            )
+        );
+        relay.no_dial_within(Duration::from_millis(300));
+
+        let (status, _, _client) =
+            refused_at_the_door(json!({"type": "bye", "reason": "machines_full"}), 4429);
+        assert_eq!(
+            status,
+            Status::Rejected(
+                "Your account has as many computers on the relay as its plan allows. Remove one you no longer use from your account, then turn the relay off and on again.".into()
+            )
+        );
+
+        let (status, _, _client) =
+            refused_at_the_door(json!({"type": "bye", "reason": "update"}), 4410);
+        assert_eq!(
+            status,
+            Status::Rejected("This relay needs a newer Arakun. Update Arakun.".into())
+        );
+
+        // The operator closed the relay for now: dial again as after a drop.
+        let (status, relay, _client) = refused_at_the_door(
+            json!({"type": "bye", "reason": "disabled", "message": "Back at noon."}),
+            4503,
+        );
+        assert_eq!(
+            status,
+            Status::Reconnecting {
+                why: "The relay is closed for now: Back at noon.".into(),
+                retry_in: RETRY_MIN,
+            }
+        );
+        relay.accept();
+    }
+
+    #[test]
+    fn a_computer_removed_from_the_account_stops_until_signed_in_again() {
+        let me = Identity::generate();
+        let public = me.public_raw().to_vec();
+        let relay = FakeRelay::start(&me.label());
+        let (client, mut rx) = start(&relay, me, empty_access());
+        let (mut ws, _) = relay.accept_and_claim(&public);
+        assert_eq!(next_status(&mut rx), Status::Connecting);
+        assert_eq!(next_status(&mut rx), Status::Connected);
+        tell(&mut ws, json!({"type": "bye", "reason": "no_machine"}));
+        hang_up(&mut ws, 4404, "no_machine");
+        assert_eq!(
+            next_status(&mut rx),
+            Status::Rejected(
+                "This computer was removed from your account. Turn the relay off and on again, or sign in again, to add it back.".into()
+            )
+        );
+        relay.no_dial_within(Duration::from_millis(400));
+
+        // Signing in again brings it back.
+        client.set_session(Some("new".into()));
+        let (_ws, door) = relay.accept_and_claim(&public);
+        assert_eq!(door.authorization.as_deref(), Some("Bearer new"));
+        assert_eq!(next_status(&mut rx), Status::Connecting);
+        assert_eq!(next_status(&mut rx), Status::Connected);
+    }
+
+    #[test]
+    fn a_session_never_goes_out_in_the_clear_over_a_network() {
+        let me = Identity::generate();
+        let (_client, mut rx) = RelayClient::start(
+            "http://10.255.255.1:8787",
+            me,
+            empty_access(),
+            machine(),
+            account(Some("tok")),
+        );
+        assert_eq!(next_status(&mut rx), Status::Connecting);
+        assert_eq!(
+            next_status(&mut rx),
+            Status::Rejected(
+                "The relay address must start with https:// (http:// only for this computer)."
+                    .into()
+            )
+        );
     }
 
     #[test]
@@ -1826,16 +2317,10 @@ mod tests {
         let label = me.label();
         let public = me.public_raw().to_vec();
         let relay = FakeRelay::start(&label);
-        let access = access_with_tickets(&[]);
-        let (client, mut rx) = RelayClient::start(&relay.base(), me, access.clone());
+        let (client, mut rx) = start(&relay, me, empty_access());
         let (mut ws, _) = relay.accept_and_claim(&public);
-        let (_, secret) = access.lock().unwrap().begin_pairing_relay();
-        let mut phone = FakePhone::greet(&mut ws, &label, 5, None);
-        phone.say(&mut ws, json!({"pair": {"secret": secret, "name": "x"}}));
-        assert!(phone.hear(&mut ws).get("paired").is_some());
-        let _tickets = control(&mut ws);
-        assert!(matches!(next_incoming(&mut rx), Incoming::Paired));
-        assert!(matches!(next_incoming(&mut rx), Incoming::Connected(5, _)));
+        let mut phone = FakePhone::greet(&mut ws, &label, 5, "sess1");
+        new_device_connects(&mut rx, 5);
 
         // 1 MB, with letters of more than one byte so a piece may end inside one.
         let text = "é".repeat(512 * 1024);
@@ -1928,60 +2413,35 @@ mod tests {
     }
 
     #[test]
-    fn a_phone_that_cannot_prove_itself_is_cut_off() {
+    fn a_device_that_breaks_the_handshake_is_cut_off() {
         let me = Identity::generate();
         let label = me.label();
         let public = me.public_raw().to_vec();
         let relay = FakeRelay::start(&label);
-        let access = access_with_tickets(&[]);
-        let (client, mut rx) = RelayClient::start(&relay.base(), me, access.clone());
+        let access = empty_access();
+        let (client, mut rx) = start(&relay, me, access.clone());
         let (mut ws, _) = relay.accept_and_claim(&public);
 
-        // The wrong secret: no device, the pairing counts a failure.
-        access.lock().unwrap().begin_pairing_relay();
-        let mut phone = FakePhone::greet(&mut ws, &label, 1, None);
-        phone.say(&mut ws, json!({"pair": {"secret": "nope", "name": "x"}}));
-        assert_eq!(closed(&mut ws, 1), "wrong_secret");
-        assert!(access.lock().unwrap().devices.is_empty());
-        assert!(
-            access.lock().unwrap().pairing().is_some(),
-            "one wrong try does not spend it"
-        );
-
-        // A token nobody has.
-        let mut phone = FakePhone::greet(&mut ws, &label, 2, Some("ghost"));
-        phone.say(&mut ws, json!({"auth": {"token": "stolen"}}));
-        assert_eq!(closed(&mut ws, 2), "unauthorized");
-
         // Data before the hello.
-        tell(
-            &mut ws,
-            json!({"type": "open", "channel": 3, "device": null}),
-        );
+        open(&mut ws, 3, "a", json!(ACCOUNT));
         ws.send(Message::Binary(frame(DATA, 3, b"early").into()))
             .unwrap();
         assert_eq!(closed(&mut ws, 3), "bad_frame");
 
         // A hello that is not one.
-        tell(
-            &mut ws,
-            json!({"type": "open", "channel": 4, "device": null}),
-        );
+        open(&mut ws, 4, "b", json!(ACCOUNT));
         ws.send(Message::Binary(
             frame(HELLO, 4, br#"{"v":1,"e":"short"}"#).into(),
         ))
         .unwrap();
         assert_eq!(closed(&mut ws, 4), "bad_hello");
+        assert!(access.lock().unwrap().devices.is_empty());
 
-        // A paired phone whose frame does not open (replayed): out, and the shell hears it leave.
-        let (_, secret) = access.lock().unwrap().begin_pairing_relay();
-        let mut phone = FakePhone::greet(&mut ws, &label, 5, None);
-        phone.say(&mut ws, json!({"pair": {"secret": secret, "name": "x"}}));
-        assert!(phone.hear(&mut ws).get("paired").is_some());
-        let _tickets = control(&mut ws);
-        assert!(matches!(next_incoming(&mut rx), Incoming::Paired));
-        assert!(matches!(next_incoming(&mut rx), Incoming::Connected(5, _)));
-        let replay = phone.session.seal(br#"{"type":"ping"}"#);
+        // A client whose frame does not open (replayed): out, and the shell hears it leave.
+        let phone = FakePhone::greet(&mut ws, &label, 5, "c");
+        new_device_connects(&mut rx, 5);
+        let mut session = phone.session;
+        let replay = session.seal(br#"{"type":"ping"}"#);
         ws.send(Message::Binary(frame(DATA, 5, &replay).into()))
             .unwrap();
         ws.send(Message::Binary(frame(DATA, 5, &replay).into()))
@@ -1998,30 +2458,21 @@ mod tests {
     fn a_label_that_is_not_ours_is_final() {
         let me = Identity::generate();
         let relay = FakeRelay::start("other");
-        let (_client, mut rx) = RelayClient::start(&relay.base(), me, access_with_tickets(&[]));
-        let (stream, _) = relay.listener.accept().unwrap();
-        let mut ws = tungstenite::accept(stream).unwrap();
+        let (_client, mut rx) = start(&relay, me, empty_access());
+        let (mut ws, _) = relay.accept();
         tell(
             &mut ws,
             json!({"type": "challenge", "nonce": B64.encode([1u8; 16])}),
         );
         let _claim = control(&mut ws);
         tell(&mut ws, json!({"type": "bye", "reason": "wrong_label"}));
-        ws.close(Some(tungstenite::protocol::CloseFrame {
-            code: CloseCode::from(4403),
-            reason: "wrong_label".into(),
-        }))
-        .unwrap();
-        let _ = ws.flush();
+        hang_up(&mut ws, 4403, "wrong_label");
         assert_eq!(next_status(&mut rx), Status::Connecting);
         assert_eq!(
             next_status(&mut rx),
             Status::Rejected("This address belongs to another key.".into())
         );
-        // No second dial.
-        relay.listener.set_nonblocking(true).unwrap();
-        std::thread::sleep(Duration::from_millis(300));
-        assert!(relay.listener.accept().is_err());
+        relay.no_dial_within(Duration::from_millis(300));
     }
 
     #[test]
@@ -2029,21 +2480,16 @@ mod tests {
         let me = Identity::generate();
         let public = me.public_raw().to_vec();
         let relay = FakeRelay::start(&me.label());
-        let (_client, mut rx) = RelayClient::start(&relay.base(), me, access_with_tickets(&[]));
+        let (_client, mut rx) = start(&relay, me, empty_access());
         let (mut ws, _) = relay.accept_and_claim(&public);
         assert_eq!(next_status(&mut rx), Status::Connecting);
         assert_eq!(next_status(&mut rx), Status::Connected);
         tell(&mut ws, json!({"type": "bye", "reason": "blocked"}));
-        ws.close(Some(tungstenite::protocol::CloseFrame {
-            code: CloseCode::from(4403),
-            reason: "blocked".into(),
-        }))
-        .unwrap();
-        let _ = ws.flush();
+        hang_up(&mut ws, 4403, "blocked");
         assert_eq!(
             next_status(&mut rx),
             Status::Refused {
-                why: "The relay operator blocked this address.".into(),
+                why: "The relay operator blocked this account.".into(),
                 retry_in: REFUSED_WAIT,
             }
         );
@@ -2080,12 +2526,13 @@ mod tests {
     #[test]
     fn a_403_from_a_firewall_is_dialed_again_soon() {
         let me = Identity::generate();
+        let label = me.label();
         let public = me.public_raw().to_vec();
-        let relay = FakeRelay::start(&me.label());
-        let (_client, mut rx) = RelayClient::start(&relay.base(), me, access_with_tickets(&[]));
-        assert_eq!(answer_http(&relay, "403 Forbidden", ""), "/pc");
-        // The relay itself does not know of a block.
-        assert_eq!(answer_http(&relay, "200 OK", r#"{"label":"x"}"#), "/_relay");
+        let relay = FakeRelay::start(&label);
+        let (_client, mut rx) = start(&relay, me, empty_access());
+        assert!(
+            answer_http(&relay, "403 Forbidden", "").starts_with(&format!("/machines/{label}/pc?"))
+        );
         assert_eq!(next_status(&mut rx), Status::Connecting);
         assert_eq!(
             next_status(&mut rx),
@@ -2100,23 +2547,117 @@ mod tests {
     }
 
     #[test]
-    fn a_blocked_label_at_the_door_waits_long() {
+    fn a_relay_without_accounts_is_final() {
+        // An older relay, or one of one's own without accounts: no such door,
+        // or its page where the door would be.
+        for (status, body) in [
+            ("404 Not Found", "not found"),
+            ("200 OK", "<!doctype html>"),
+        ] {
+            let me = Identity::generate();
+            let relay = FakeRelay::start(&me.label());
+            let (_client, mut rx) = start(&relay, me, empty_access());
+            answer_http(&relay, status, body);
+            assert_eq!(next_status(&mut rx), Status::Connecting);
+            assert_eq!(
+                next_status(&mut rx),
+                Status::Rejected("This relay does not support account sign-in.".into())
+            );
+            relay.no_dial_within(Duration::from_millis(300));
+        }
+    }
+
+    #[test]
+    fn an_open_without_any_account_means_a_relay_without_accounts() {
         let me = Identity::generate();
+        let public = me.public_raw().to_vec();
         let relay = FakeRelay::start(&me.label());
-        let (_client, mut rx) = RelayClient::start(&relay.base(), me, access_with_tickets(&[]));
-        assert_eq!(answer_http(&relay, "403 Forbidden", "blocked"), "/pc");
-        assert_eq!(
-            answer_http(&relay, "403 Forbidden", r#"{"label":"x","blocked":true}"#),
-            "/_relay"
-        );
+        let (_client, mut rx) = start(&relay, me, empty_access());
+        let (mut ws, _) = relay.accept_and_claim(&public);
         assert_eq!(next_status(&mut rx), Status::Connecting);
+        assert_eq!(next_status(&mut rx), Status::Connected);
+        // An old relay names no account at all: every device would be turned
+        // away, so staying connected helps nobody.
+        tell(
+            &mut ws,
+            json!({"type": "open", "channel": 4, "device": "x", "name": "n", "kind": "ios"}),
+        );
         assert_eq!(
             next_status(&mut rx),
-            Status::Refused {
-                why: "The relay operator blocked this address.".into(),
-                retry_in: REFUSED_WAIT,
+            Status::Rejected("This relay does not support account sign-in.".into())
+        );
+        relay.no_dial_within(Duration::from_millis(300));
+    }
+
+    #[test]
+    fn a_client_without_an_account_never_dials() {
+        let me = Identity::generate();
+        let relay = FakeRelay::start(&me.label());
+        let nobody = Account {
+            github_id: 0,
+            session: Some("tok".into()),
+        };
+        let (client, mut rx) =
+            RelayClient::start(&relay.base(), me, empty_access(), machine(), nobody);
+        assert_eq!(next_status(&mut rx), Status::SignedOut);
+        relay.no_dial_within(Duration::from_millis(300));
+        client.set_session(Some("fresh".into()));
+        relay.no_dial_within(Duration::from_millis(300));
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn only_a_new_session_cuts_a_wait_short() {
+        let me = Identity::generate();
+        let public = me.public_raw().to_vec();
+        let relay = FakeRelay::start(&me.label());
+        let (client, mut rx) = start(&relay, me, empty_access());
+        relay.refuse(json!({"type": "bye", "reason": "label_taken"}), 4409);
+        assert_eq!(next_status(&mut rx), Status::Connecting);
+        assert!(matches!(next_status(&mut rx), Status::Rejected(_)));
+
+        // The shell telling the same session again changes nothing.
+        client.set_session(Some("tok".into()));
+        relay.no_dial_within(Duration::from_millis(400));
+
+        client.set_session(Some("other".into()));
+        let (_ws, door) = relay.accept_and_claim(&public);
+        assert_eq!(door.authorization.as_deref(), Some("Bearer other"));
+    }
+
+    #[test]
+    fn a_relay_code_without_a_reason_reads_as_a_plain_close() {
+        let me = Identity::generate();
+        let public = me.public_raw().to_vec();
+        let relay = FakeRelay::start(&me.label());
+        let (_client, mut rx) = start(&relay, me, empty_access());
+        let (mut ws, _) = relay.accept_and_claim(&public);
+        assert_eq!(next_status(&mut rx), Status::Connecting);
+        assert_eq!(next_status(&mut rx), Status::Connected);
+        hang_up(&mut ws, 4403, "");
+        assert_eq!(
+            next_status(&mut rx),
+            Status::Reconnecting {
+                why: "The relay closed the connection".into(),
+                retry_in: RETRY_MIN,
             }
         );
+    }
+
+    #[test]
+    fn a_device_that_changed_its_name_is_told_to_the_shell() {
+        let me = Identity::generate();
+        let label = me.label();
+        let public = me.public_raw().to_vec();
+        let relay = FakeRelay::start(&label);
+        let access = empty_access();
+        access.lock().unwrap().relay_device("sess1", "Old name", 1);
+        let (_client, mut rx) = start(&relay, me, access.clone());
+        let (mut ws, _) = relay.accept_and_claim(&public);
+        let _phone = FakePhone::greet(&mut ws, &label, 5, "sess1");
+        assert!(matches!(next_incoming(&mut rx), Incoming::Renamed));
+        assert!(matches!(next_incoming(&mut rx), Incoming::Connected(5, _)));
+        assert_eq!(access.lock().unwrap().devices[0].name, "Rik's iPhone");
     }
 
     #[test]

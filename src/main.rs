@@ -1,6 +1,6 @@
 // The code shared with `arakun-server` and the examples (core/), named as if it were here.
 use arakun_core::{
-    accept, account, agent, assets, browser, caret, clone_source, durable, explorer, fetch,
+    accept, account, agent, assets, browser, caret, clone_source, cloud, durable, explorer, fetch,
     frame_timer, git, git_call, guard, highlight, input, island, mascot, phone, platform, poll,
     redact, schedule, server, signals, terminal, theme, ui, zoom,
 };

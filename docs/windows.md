@@ -138,11 +138,11 @@ start `arakun-server serve` from Task Scheduler, with the trigger "At log on".
 | Control socket | `%LOCALAPPDATA%\arakun\control.sock` |
 | Lock held by the running Arakun (a second `arakun` hands off to it and exits) | `%LOCALAPPDATA%\arakun\state.json.lock`; with `ARAKUN_STATE` set, `<that file>.lock` next to it |
 | `arakun server`: its settings, sessions and socket | `%LOCALAPPDATA%\arakun\server\` |
-| Servers the app is paired with (Servers tab) | `%LOCALAPPDATA%\arakun\servers.json` |
+| Servers the app is paired with or reaches through your account (Servers tab) | `%LOCALAPPDATA%\arakun\servers.json` |
 | What each paired server listed last | `%LOCALAPPDATA%\arakun\servers-inbox.json` |
 | `arakun.exe` for the command line | `%LOCALAPPDATA%\arakun\bin\arakun.exe`; with `ARAKUN_STATE` set, `bin\arakun.exe` in a folder next to that state file (`dev.runtime` for `dev.json`) |
 | Factory sessions | Credential Manager, as `arakun:<account>` |
-| Teams session (Settings › Account) | Credential Manager, as `arakun:teams-session` |
+| Account session (Settings › Account, the Phone tab's relay, the Servers tab) | Credential Manager, as `arakun:teams-session` |
 | Teams device keys (Teams tab) | Credential Manager, as `arakun:teams-device-<account>-<scope>`; scope identifies the server and profile |
 | Teams keys and trusted devices, sealed | `%LOCALAPPDATA%\arakun\teams-<account>-<scope>.keys`, or next to the `ARAKUN_STATE` file. The old `teams.keys` and credential are preserved when a verified device migrates. |
 | GitHub tab settings, review drafts | `%LOCALAPPDATA%\arakun\github.json`, `%LOCALAPPDATA%\arakun\github\drafts\` |

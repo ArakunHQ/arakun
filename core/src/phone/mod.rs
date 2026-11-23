@@ -405,6 +405,16 @@ pub enum Incoming {
     Disconnected(ClientId),
     /// A new device brought the right code and got its token; `Access` has it.
     Paired,
+    /// A device the relay brought in connected for the first time; `Access`
+    /// has it now. `name` and `kind` are its signed-in device's, as the
+    /// relay named them.
+    NewDevice {
+        name: String,
+        kind: String,
+    },
+    /// A device the relay brought in came back under a new name; `Access`
+    /// has it.
+    Renamed,
     /// A device turned its push notifications on or off, or chose which; `Access` has it.
     Subscribed,
     /// A device unpaired itself; `Access` no longer has it and its sockets are closing.
@@ -418,11 +428,12 @@ pub enum Incoming {
 pub struct Device {
     pub id: String,
     pub name: String,
+    /// Empty for a device the relay brought in: it has no token, and an
+    /// empty hash never matches one (`device_for`).
     pub token_hash: String,
-    /// What the relay checks before letting the phone through to this computer:
-    /// the hash of a ticket the phone got when it paired through the relay.
-    /// Empty for phones paired on the network; they must pair again to come in
-    /// that way.
+    /// What the relay used to check for a phone paired through it. The relay
+    /// admits devices by account now; this is only read from old files and
+    /// ignored.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub ticket_hash: String,
     pub paired_at: u64,
@@ -467,7 +478,8 @@ pub enum Reach {
     /// loopback and `tailscale serve` brings the connections.
     Tailscale,
     /// Through the relay on the internet, end to end encrypted: this computer
-    /// dials out to `<label>.<relay_base>` and phones meet it there.
+    /// dials out to `relay_base` with its account's session, and devices
+    /// signed in to the same account meet it there.
     Relay,
 }
 
@@ -482,11 +494,26 @@ impl Reach {
     }
 }
 
-/// Where the relay lives by default; each computer gets a host under it.
-pub const DEFAULT_RELAY_BASE: &str = "https://arakun.dev";
+/// Where the relay lives by default: the account service, which the session
+/// comes from too.
+pub const DEFAULT_RELAY_BASE: &str = crate::cloud::DEFAULT_URL;
+
+/// The default before relays went by account, when each computer had a host
+/// under it. It answers only "update" now, so a file that still names it means
+/// the default.
+const FORMER_RELAY_BASE: &str = "https://arakun.dev";
 
 fn default_relay_base() -> String {
     DEFAULT_RELAY_BASE.to_string()
+}
+
+fn relay_base_or_default<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    let base = String::deserialize(d)?;
+    Ok(if base.trim().trim_end_matches('/') == FORMER_RELAY_BASE {
+        default_relay_base()
+    } else {
+        base
+    })
 }
 
 /// What is kept across runs: whether the phone is on, how phones reach it, and
@@ -505,12 +532,19 @@ pub struct Settings {
     /// from this key, so a new one is a new address for every phone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub identity: Option<String>,
-    /// The relay's origin (scheme and host); the label goes in front of its host.
-    /// Changed by hand to point at a relay of one's own.
-    #[serde(default = "default_relay_base")]
+    /// The relay's origin (scheme and host). Changed by hand to point at a
+    /// relay of one's own, together with `ARAKUN_TEAMS_URL` for the session.
+    #[serde(
+        default = "default_relay_base",
+        deserialize_with = "relay_base_or_default"
+    )]
     pub relay_base: String,
     #[serde(default)]
     pub devices: Vec<Device>,
+    /// The GitHub id of the account the relay's devices were let in by:
+    /// under another account they are dropped (`relay_owner`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relay_account: Option<u64>,
 }
 
 impl Default for Settings {
@@ -523,14 +557,16 @@ impl Default for Settings {
             identity: None,
             relay_base: default_relay_base(),
             devices: Vec::new(),
+            relay_account: None,
         }
     }
 }
 
 impl Settings {
-    /// Where phones find this computer through the relay: `https://<label>.<relay host>/`.
-    pub fn relay_address(&self, label: &str) -> String {
-        relay::page_url(&self.relay_base, label)
+    /// Where devices find this computer through the relay: the relay's own
+    /// page, which lists the account's computers.
+    pub fn relay_address(&self) -> String {
+        relay::page_url(&self.relay_base)
     }
 
     /// Forgets the relay identity and every paired phone, and saves them on the
@@ -541,6 +577,16 @@ impl Settings {
         self.identity = None;
         self.devices.clear();
         self.identity_soon()
+    }
+
+    /// This computer's label on the relay, when it has a key yet. Unlike
+    /// `identity`, makes none.
+    pub fn relay_label(&self) -> Option<String> {
+        use base64::Engine as _;
+        let pkcs8 = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(self.identity.as_ref()?)
+            .ok()?;
+        Some(identity::Identity::from_pkcs8(&pkcs8)?.label())
     }
 
     /// The computer's relay identity, made and saved the first time.
@@ -597,13 +643,8 @@ impl Settings {
 }
 
 struct Pairing {
-    /// What the phone brings to the door: six digits on the network, where the
-    /// door is this computer's; a long code through the relay, which checks its
-    /// hash and lets one phone through.
+    /// The six digits a phone brings to this computer's door on the network.
     code: String,
-    /// Through the relay, what the phone must then show this computer inside
-    /// the encrypted channel, so the relay itself cannot pair with it.
-    secret: Option<String>,
     until: Instant,
     failures: u8,
 }
@@ -633,8 +674,9 @@ impl Access {
     }
 
     /// A phone turned notifications on (with where to send them) or off.
-    pub fn subscribe(&mut self, device: &str, sub: Option<push::Subscription>) -> bool {
-        match self.devices.iter_mut().find(|d| d.id == device) {
+    /// Only a device of the door it asked through.
+    pub fn subscribe(&mut self, device: &str, door: Door, sub: Option<push::Subscription>) -> bool {
+        match self.device_mut(device, door) {
             Some(d) => {
                 d.push = sub;
                 true
@@ -643,15 +685,25 @@ impl Access {
         }
     }
 
-    /// A phone chose what to be told about.
-    pub fn set_notices(&mut self, device: &str, notices: Notices) -> bool {
-        match self.devices.iter_mut().find(|d| d.id == device) {
+    /// A phone chose what to be told about. Only a device of the door it
+    /// asked through.
+    pub fn set_notices(&mut self, device: &str, door: Door, notices: Notices) -> bool {
+        match self.device_mut(device, door) {
             Some(d) => {
                 d.notices = notices;
                 true
             }
             None => false,
         }
+    }
+
+    /// The device with this id that came in through `door`. The relay names
+    /// ids itself, so one could equal the id of a device paired on the
+    /// network: a request through one door must never change the other's.
+    fn device_mut(&mut self, id: &str, door: Door) -> Option<&mut Device> {
+        self.devices
+            .iter_mut()
+            .find(|d| d.id == id && door.admits(d))
     }
 
     /// The push subscriptions that stopped working, dropped. Each comes as
@@ -686,26 +738,10 @@ impl Access {
         let code = new_code();
         self.pairing = Some(Pairing {
             code: code.clone(),
-            secret: None,
             until: Instant::now() + PAIR_FOR,
             failures: 0,
         });
         code
-    }
-
-    /// A fresh pairing through the relay: the code the relay admits one phone
-    /// with, and the secret the phone must then show this computer. Both travel
-    /// in the link the QR code carries.
-    pub fn begin_pairing_relay(&mut self) -> (String, String) {
-        let code = random_b64(16);
-        let secret = random_b64(16);
-        self.pairing = Some(Pairing {
-            code: code.clone(),
-            secret: Some(secret.clone()),
-            until: Instant::now() + PAIR_FOR,
-            failures: 0,
-        });
-        (code, secret)
     }
 
     pub fn cancel_pairing(&mut self) {
@@ -723,38 +759,14 @@ impl Access {
         Some((p.code.clone(), left))
     }
 
-    /// The secret of the open pairing, when it is one through the relay.
-    pub fn pairing_secret(&mut self) -> Option<String> {
-        self.pairing()?;
-        self.pairing.as_ref()?.secret.clone()
-    }
-
     /// A phone brought a code and its name: the device and its token when the code is
     /// right. The code is spent either way after enough wrong tries.
     pub fn pair(&mut self, code: &str, name: &str, now: u64) -> Option<(Device, String)> {
         let (current, _) = self.pairing()?;
-        if self.pairing.as_ref()?.secret.is_some() || !self.try_pairing(code, &current) {
+        if !self.try_pairing(code, &current) {
             return None;
         }
-        let (device, token, _) = self.admit(name, now, false);
-        Some((device, token))
-    }
-
-    /// A phone the relay let in with the code showed the secret and its name:
-    /// the device, its token and the ticket the relay will admit it with from
-    /// now on, when the secret is right. Wrong tries count as for `pair`.
-    pub fn pair_relay(
-        &mut self,
-        secret: &str,
-        name: &str,
-        now: u64,
-    ) -> Option<(Device, String, String)> {
-        self.pairing()?;
-        let expected = self.pairing.as_ref()?.secret.clone()?;
-        if !self.try_pairing(secret, &expected) {
-            return None;
-        }
-        Some(self.admit(name, now, true))
+        Some(self.admit(name, now))
     }
 
     /// Whether `brought` is `expected`; a wrong one counts, and enough of them
@@ -773,57 +785,194 @@ impl Access {
         true
     }
 
-    /// A new device with a fresh token, and a ticket when it came through the relay.
-    fn admit(&mut self, name: &str, now: u64, relay: bool) -> (Device, String, String) {
+    /// A new device with a fresh token.
+    fn admit(&mut self, name: &str, now: u64) -> (Device, String) {
         let token = random_hex(32);
-        let ticket = if relay { random_b64(16) } else { String::new() };
-        let name = name.trim().chars().take(60).collect::<String>();
         let device = Device {
             id: random_hex(8),
-            name: if name.is_empty() {
-                "Phone".into()
-            } else {
-                name
-            },
+            name: device_name(name),
             token_hash: hash(&token),
-            ticket_hash: if relay { hash(&ticket) } else { String::new() },
+            ticket_hash: String::new(),
             paired_at: now,
             last_seen: now,
             push: None,
             notices: Notices::default(),
         };
         self.devices.push(device.clone());
-        (device, token, ticket)
+        (device, token)
     }
 
-    /// The device a token belongs to, noting it was seen now.
+    /// The device a token belongs to, noting it was seen now. A device the
+    /// relay brought in has no token: its empty hash is never a match.
     pub fn device_for(&mut self, token: &str, now: u64) -> Option<Device> {
         let h = hash(token);
-        let d = self.devices.iter_mut().find(|d| d.token_hash == h)?;
+        let d = self
+            .devices
+            .iter_mut()
+            .find(|d| !d.token_hash.is_empty() && d.token_hash == h)?;
         d.last_seen = now;
         Some(d.clone())
     }
 
+    /// The device the relay brought in with this id, noting it was seen now.
+    /// Only devices without a token: one paired on the network is never
+    /// found through the relay's door, whatever id the relay names.
+    pub fn seen(&mut self, id: &str, now: u64) -> Option<Device> {
+        let d = self
+            .devices
+            .iter_mut()
+            .find(|d| d.token_hash.is_empty() && d.id == id)?;
+        d.last_seen = now;
+        Some(d.clone())
+    }
+
+    /// The device the relay brought in on a channel of this computer's
+    /// account, by the id the relay gave it, noting it was seen now. Made the
+    /// first time, with no token. Its name follows the one the relay gives,
+    /// which is its signed-in device's. What changed comes back too, so the
+    /// caller knows to save.
+    pub fn relay_device(&mut self, id: &str, name: &str, now: u64) -> (Device, Seen) {
+        let name = device_name(name);
+        if let Some(d) = self
+            .devices
+            .iter_mut()
+            .find(|d| d.token_hash.is_empty() && d.id == id)
+        {
+            d.last_seen = now;
+            let seen = if d.name == name {
+                Seen::Known
+            } else {
+                d.name = name;
+                Seen::Renamed
+            };
+            return (d.clone(), seen);
+        }
+        let device = Device {
+            id: id.to_string(),
+            name,
+            token_hash: String::new(),
+            ticket_hash: String::new(),
+            paired_at: now,
+            last_seen: now,
+            push: None,
+            notices: Notices::default(),
+        };
+        self.devices.push(device.clone());
+        (device, Seen::New)
+    }
+
+    /// Forgets a device by id, whichever door it came in through: for this
+    /// computer's own user, who sees them all.
     pub fn unpair(&mut self, id: &str) -> bool {
         let before = self.devices.len();
         self.devices.retain(|d| d.id != id);
         self.devices.len() != before
     }
 
-    /// What the relay is told about the open pairing: the SHA-256 of the code
-    /// (hex) and how long it has left. The relay admits one phone that brings
-    /// the code, without ever seeing it.
-    pub fn pairing_hash(&mut self) -> Option<(String, Duration)> {
-        self.pairing().map(|(code, left)| (hash(&code), left))
+    /// A device let go of this computer through `door`: only that door's
+    /// device with the id goes.
+    pub fn unpair_through(&mut self, id: &str, door: Door) -> bool {
+        let before = self.devices.len();
+        self.devices.retain(|d| !(d.id == id && door.admits(d)));
+        self.devices.len() != before
     }
+}
 
-    /// The ticket hashes the relay should admit: those of the phones paired through it.
-    pub fn ticket_hashes(&self) -> Vec<String> {
-        self.devices
+/// The way a device came in: through the relay, by its account, or on the
+/// network or Tailscale, with a token.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Door {
+    Relay,
+    Local,
+}
+
+impl Door {
+    /// Whether `d` came in through this door: the relay's devices have no token.
+    fn admits(self, d: &Device) -> bool {
+        d.token_hash.is_empty() == (self == Door::Relay)
+    }
+}
+
+/// The account as far as the computer knows it, for the devices the relay
+/// brought in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AccountNow {
+    /// Not known yet (the sign-in is still being read): nothing changes.
+    Unknown,
+    SignedOut,
+    /// Signed in as this GitHub id.
+    SignedIn(u64),
+}
+
+/// Whether every device the relay brought in must go, given the account
+/// they were let in by (`kept`) and the account now; and the account to keep
+/// after. They were let in by an account: under another one, or none, they
+/// are nobody's, and their push subscriptions would notify a stranger.
+pub fn relay_owner(kept: Option<u64>, now: AccountNow) -> (bool, Option<u64>) {
+    match now {
+        AccountNow::Unknown => (false, kept),
+        AccountNow::SignedOut => (true, None),
+        AccountNow::SignedIn(id) => (kept.is_some_and(|k| k != id), Some(id)),
+    }
+}
+
+/// How often a computer asks its account which devices are still signed
+/// in, while it holds a relay device that gets pushes: a device signed out
+/// while it is not connected is dropped within this long.
+pub const RELAY_PRUNE_EVERY: Duration = Duration::from_secs(15 * 60);
+
+/// Whether it is time to ask the account for its signed-in devices and drop
+/// the relay devices it no longer lists: only while signed in, only when a
+/// relay device has a push subscription (nobody else is notified), and not
+/// within `RELAY_PRUNE_EVERY` of the last time it was asked.
+pub fn relay_prune_due(
+    signed_in: bool,
+    devices: &[Device],
+    last: Option<Instant>,
+    now: Instant,
+) -> bool {
+    signed_in
+        && devices
             .iter()
-            .filter(|d| !d.ticket_hash.is_empty())
-            .map(|d| d.ticket_hash.clone())
-            .collect()
+            .any(|d| Door::Relay.admits(d) && d.push.is_some())
+        && last.is_none_or(|at| now.saturating_duration_since(at) >= RELAY_PRUNE_EVERY)
+}
+
+/// Drops the devices the relay brought in that their account no longer
+/// has: with `listed`, the ids of the account's signed-in devices, each one
+/// not among them; with `None`, every one. A device signed out elsewhere
+/// keeps no record here, so its push subscription goes with it. Devices
+/// paired on the network are never touched. The ids dropped come back.
+pub fn prune_relay_devices(devices: &mut Vec<Device>, listed: Option<&[String]>) -> Vec<String> {
+    let mut dropped = Vec::new();
+    devices.retain(|d| {
+        let keep = !Door::Relay.admits(d) || listed.is_some_and(|l| l.contains(&d.id));
+        if !keep {
+            dropped.push(d.id.clone());
+        }
+        keep
+    });
+    dropped
+}
+
+/// What `Access::relay_device` found.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Seen {
+    /// Not known before: made now.
+    New,
+    /// Known, under another name until now.
+    Renamed,
+    /// Known, as it is.
+    Known,
+}
+
+/// A device's name as kept: trimmed, at most 60 letters, never empty.
+fn device_name(name: &str) -> String {
+    let name = name.trim().chars().take(60).collect::<String>();
+    if name.is_empty() {
+        "Phone".into()
+    } else {
+        name
     }
 }
 
@@ -960,14 +1109,6 @@ fn random_hex(n: usize) -> String {
     let mut bytes = vec![0u8; n];
     getrandom::fill(&mut bytes).expect("the OS has random bytes");
     bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
-
-/// `n` bytes from the OS, base64url: shorter than hex for what goes in a link.
-fn random_b64(n: usize) -> String {
-    use base64::Engine as _;
-    let mut bytes = vec![0u8; n];
-    getrandom::fill(&mut bytes).expect("the OS has random bytes");
-    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
 }
 
 /// Six digits to read off the screen or type.
@@ -1237,10 +1378,11 @@ pub enum Effect {
 /// Answers one request about the phone's account with this computer: pairing,
 /// who it is, notifications, unpairing, the images prompts mention, and the
 /// page itself. The same whether the request came over TCP or inside an
-/// encrypted channel through the relay.
+/// encrypted channel through the relay, except that pairing is the network's:
+/// the relay brings in devices by account.
 pub fn route(req: &Head, body: Option<Vec<u8>>, access: &Shared, now: u64) -> (Reply, Effect) {
     match (req.method.as_str(), req.path.as_str()) {
-        ("POST", "/pair") => {
+        ("POST", "/pair") if req.relay_device.is_none() => {
             let Some(ask) = body.and_then(|b| serde_json::from_slice::<PairRequest>(&b).ok())
             else {
                 return (Reply::error(400, "bad request"), Effect::None);
@@ -1255,10 +1397,10 @@ pub fn route(req: &Head, body: Option<Vec<u8>>, access: &Shared, now: u64) -> (R
             }
         }
         ("GET", "/me") => {
-            let found = req.bearer().and_then(|t| {
+            let found = {
                 let mut a = access.lock().unwrap();
-                a.device_for(t, now).map(|d| (d, a.push_key.clone()))
-            });
+                req.device(&mut a, now).map(|d| (d, a.push_key.clone()))
+            };
             match found {
                 Some((d, push_key)) => {
                     let body = serde_json::json!({
@@ -1273,9 +1415,7 @@ pub fn route(req: &Head, body: Option<Vec<u8>>, access: &Shared, now: u64) -> (R
         // The phone's push subscription (null to stop being notified) and/or
         // which notices it wants; what the body leaves out stays as it was.
         ("POST", "/push") => {
-            let device = req
-                .bearer()
-                .and_then(|t| access.lock().unwrap().device_for(t, now));
+            let device = req.device(&mut access.lock().unwrap(), now);
             let Some(device) = device else {
                 return (Reply::error(403, "not paired"), Effect::None);
             };
@@ -1298,15 +1438,19 @@ pub fn route(req: &Head, body: Option<Vec<u8>>, access: &Shared, now: u64) -> (R
                     Err(_) => return (Reply::error(400, "bad notices"), Effect::None),
                 },
             };
+            let door = req.door();
             let (notifying, notices) = {
                 let mut a = access.lock().unwrap();
                 if let Some(sub) = sub {
-                    a.subscribe(&device.id, sub);
+                    a.subscribe(&device.id, door, sub);
                 }
                 if let Some(n) = notices {
-                    a.set_notices(&device.id, n);
+                    a.set_notices(&device.id, door, n);
                 }
-                let d = a.devices.iter().find(|d| d.id == device.id);
+                let d = a
+                    .devices
+                    .iter()
+                    .find(|d| d.id == device.id && door.admits(d));
                 (
                     d.is_some_and(|d| d.push.is_some()),
                     d.map(|d| d.notices).unwrap_or_default(),
@@ -1317,13 +1461,14 @@ pub fn route(req: &Head, body: Option<Vec<u8>>, access: &Shared, now: u64) -> (R
         }
         // The phone lets go of this computer: its token dies and its sockets close.
         ("POST", "/unpair") => {
-            let device = req
-                .bearer()
-                .and_then(|t| access.lock().unwrap().device_for(t, now));
+            let device = req.device(&mut access.lock().unwrap(), now);
             let Some(device) = device else {
                 return (Reply::error(403, "not paired"), Effect::None);
             };
-            access.lock().unwrap().unpair(&device.id);
+            access
+                .lock()
+                .unwrap()
+                .unpair_through(&device.id, req.door());
             (
                 Reply::json(200, &serde_json::json!({})),
                 Effect::Unpaired(device.id),
@@ -1560,12 +1705,15 @@ pub struct Head {
     origin: Option<String>,
     authorization: Option<String>,
     content_length: usize,
+    /// The device that asked, when the request came through the relay: the
+    /// relay vouched for it, so it brings no token.
+    relay_device: Option<String>,
 }
 
 impl Head {
-    /// A request that came through an encrypted channel, from the phone whose
-    /// token this is: `target` is the path with its query.
-    pub fn relayed(method: &str, target: &str, token: &str) -> Option<Head> {
+    /// A request that came through an encrypted channel, from the device the
+    /// relay brought in with this id: `target` is the path with its query.
+    pub fn relayed(method: &str, target: &str, device: &str) -> Option<Head> {
         if method != "GET" && method != "POST" {
             return None;
         }
@@ -1577,8 +1725,9 @@ impl Head {
             upgrade: false,
             host: None,
             origin: None,
-            authorization: Some(format!("Bearer {token}")),
+            authorization: None,
             content_length: 0,
+            relay_device: Some(device.to_string()),
         })
     }
 
@@ -1600,6 +1749,7 @@ impl Head {
             origin: None,
             authorization: None,
             content_length: 0,
+            relay_device: None,
         };
         for line in lines {
             let Some((name, value)) = line.split_once(':') else {
@@ -1624,6 +1774,25 @@ impl Head {
             .filter_map(|p| p.split_once('='))
             .find(|(k, _)| *k == name)
             .map(|(_, v)| v)
+    }
+
+    /// The door this request came through.
+    fn door(&self) -> Door {
+        if self.relay_device.is_some() {
+            Door::Relay
+        } else {
+            Door::Local
+        }
+    }
+
+    /// The device asking: the one the relay brought in, or the one whose
+    /// token comes as `Authorization: Bearer <token>`. Never both: a relayed
+    /// request carries no token.
+    fn device(&self, access: &mut Access, now: u64) -> Option<Device> {
+        match &self.relay_device {
+            Some(id) => access.seen(id, now),
+            None => access.device_for(self.bearer()?, now),
+        }
     }
 
     /// The token of `Authorization: Bearer <token>`.
@@ -1717,13 +1886,6 @@ pub fn lan_address(ip: Ipv4Addr, port: u16) -> String {
 /// The link the QR code carries while pairing: the page, with the code to bring.
 pub fn link(address: &str, code: &str) -> String {
     format!("{address}?p={code}")
-}
-
-/// The link while pairing through the relay: the code the relay admits the
-/// phone with and the secret it shows this computer, in the fragment so the
-/// relay never sees either in a request.
-pub fn relay_link(address: &str, code: &str, secret: &str) -> String {
-    format!("{address}#p={code}&s={secret}")
 }
 
 /// The machine's name, as the phone's inbox shows it.
@@ -1912,12 +2074,12 @@ mod tests {
         };
         let access = Access::new(Vec::new(), String::new());
         let mut access = access.lock().unwrap();
-        let (one, _, _) = access.admit("One", 1, false);
-        let (two, _, _) = access.admit("Two", 1, false);
-        access.subscribe(&one.id, Some(sub("https://push.example/old")));
-        access.subscribe(&two.id, Some(sub("https://push.example/two")));
+        let (one, _) = access.admit("One", 1);
+        let (two, _) = access.admit("Two", 1);
+        access.subscribe(&one.id, Door::Local, Some(sub("https://push.example/old")));
+        access.subscribe(&two.id, Door::Local, Some(sub("https://push.example/two")));
         // The first phone subscribed again while a push to its old address was out.
-        access.subscribe(&one.id, Some(sub("https://push.example/new")));
+        access.subscribe(&one.id, Door::Local, Some(sub("https://push.example/new")));
         access.drop_subscriptions(&[
             (one.id.clone(), sub("https://push.example/old")),
             (two.id.clone(), sub("https://push.example/two")),
@@ -2093,32 +2255,229 @@ mod tests {
     }
 
     #[test]
-    fn the_relay_address_puts_the_label_in_front_of_the_relay_host() {
+    fn the_relay_address_is_the_relay_itself() {
         let mut s = Settings::default();
-        assert_eq!(
-            s.relay_address("5pmbdp76s6bol6ax"),
-            "https://5pmbdp76s6bol6ax.arakun.dev/"
-        );
+        assert_eq!(s.relay_address(), "https://app.arakun.dev/");
         s.relay_base = "https://example.workers.dev/ ".into();
-        assert_eq!(
-            s.relay_address("5pmbdp76s6bol6ax"),
-            "https://5pmbdp76s6bol6ax.example.workers.dev/"
-        );
+        assert_eq!(s.relay_address(), "https://example.workers.dev/");
         s.relay_base = "relay.example".into();
-        assert_eq!(s.relay_address("x"), "https://x.relay.example/");
-        // A relay run by hand (`wrangler dev`) knows its label itself.
+        assert_eq!(s.relay_address(), "https://relay.example/");
         s.relay_base = "http://127.0.0.1:8787".into();
-        assert_eq!(s.relay_address("x"), "http://127.0.0.1:8787/");
+        assert_eq!(s.relay_address(), "http://127.0.0.1:8787/");
     }
 
     #[test]
     fn settings_without_a_relay_base_get_the_default_one() {
+        assert_eq!(DEFAULT_RELAY_BASE, crate::cloud::DEFAULT_URL);
         let s: Settings = serde_json::from_str(r#"{"enabled":false,"port":7474}"#).unwrap();
         assert_eq!(s.relay_base, DEFAULT_RELAY_BASE);
         assert_eq!(s.reach, Reach::Lan);
         let s: Settings =
             serde_json::from_str(r#"{"enabled":true,"port":7474,"reach":"relay"}"#).unwrap();
         assert_eq!(s.reach, Reach::Relay);
+    }
+
+    #[test]
+    fn the_old_default_relay_reads_as_the_new_one() {
+        for old in [
+            "https://arakun.dev",
+            "https://arakun.dev/",
+            " https://arakun.dev ",
+        ] {
+            let s: Settings = serde_json::from_value(
+                serde_json::json!({"enabled": true, "port": 7474, "relay_base": old}),
+            )
+            .unwrap();
+            assert_eq!(s.relay_base, "https://app.arakun.dev", "{old}");
+        }
+        // A relay of one's own stays.
+        let s: Settings = serde_json::from_value(
+            serde_json::json!({"enabled": true, "port": 7474, "relay_base": "https://relay.example"}),
+        )
+        .unwrap();
+        assert_eq!(s.relay_base, "https://relay.example");
+    }
+
+    /// A device the relay brought in, as the relay client records it.
+    fn relay_device(id: &str) -> Device {
+        Device {
+            id: id.into(),
+            name: "Rik's iPhone".into(),
+            token_hash: String::new(),
+            ticket_hash: String::new(),
+            paired_at: 0,
+            last_seen: 0,
+            push: None,
+            notices: Notices::default(),
+        }
+    }
+
+    #[test]
+    fn a_device_from_the_relay_never_opens_the_door_on_the_network() {
+        let access = Access::new(vec![relay_device("sess1")], "pk".into());
+        for token in ["", " ", "sess1"] {
+            assert!(
+                access.lock().unwrap().device_for(token, 1).is_none(),
+                "{token:?}"
+            );
+        }
+        let (server, _rx) = Server::start(Ipv4Addr::LOCALHOST, 0, access.clone()).unwrap();
+        for auth in [
+            "Authorization: Bearer \r\n",
+            "Authorization: Bearer sess1\r\n",
+            "",
+        ] {
+            let me = http(&server, "GET", "/me", auth, "");
+            assert!(me.starts_with("HTTP/1.1 403"), "{auth:?}: {me}");
+            let unpair = http(&server, "POST", "/unpair", auth, "");
+            assert!(unpair.starts_with("HTTP/1.1 403"), "{auth:?}: {unpair}");
+        }
+        for t in ["/ws?t=", "/ws?t=sess1", "/ws"] {
+            let refused = http(
+                &server,
+                "GET",
+                t,
+                "Upgrade: websocket\r\nConnection: Upgrade\r\n",
+                "",
+            );
+            assert!(refused.starts_with("HTTP/1.1 403"), "{t}: {refused}");
+        }
+        assert_eq!(access.lock().unwrap().devices.len(), 1);
+    }
+
+    #[test]
+    fn the_relay_door_only_finds_devices_the_relay_brought_in() {
+        // A device paired on the network whose id the relay happens to name.
+        let mut lan = relay_device("sess1");
+        lan.name = "Pixel".into();
+        lan.token_hash = hash("token");
+        let access = Access::new(vec![lan.clone()], "pk".into());
+        let mut a = access.lock().unwrap();
+        assert!(a.seen("sess1", 5).is_none());
+
+        let (made, seen) = a.relay_device("sess1", "Rik's iPhone", 5);
+        assert_eq!(seen, Seen::New);
+        assert!(made.token_hash.is_empty());
+        assert_eq!(a.devices[0], lan, "the network's device is left alone");
+        assert_eq!(a.seen("sess1", 6).unwrap().name, "Rik's iPhone");
+
+        let (_, seen) = a.relay_device("sess1", "Rik's iPhone", 7);
+        assert_eq!(seen, Seen::Known);
+        let (renamed, seen) = a.relay_device("sess1", " Rik's new iPhone ", 8);
+        assert_eq!(seen, Seen::Renamed);
+        assert_eq!(renamed.name, "Rik's new iPhone");
+        assert_eq!(a.devices.len(), 2);
+    }
+
+    #[test]
+    fn a_request_changes_only_a_device_of_its_own_door() {
+        // The relay named an id that a device paired on the network has too.
+        let mut lan = relay_device("same");
+        lan.token_hash = hash("token");
+        let access = Access::new(vec![lan, relay_device("same")], "pk".into());
+        let mut a = access.lock().unwrap();
+        let quiet = Notices {
+            done: false,
+            input: false,
+            error: false,
+        };
+        assert!(a.set_notices("same", Door::Relay, quiet));
+        assert_eq!(
+            a.devices[0].notices,
+            Notices::default(),
+            "the network's is untouched"
+        );
+        assert_eq!(a.devices[1].notices, quiet);
+        let sub = push::Subscription {
+            endpoint: "https://push.example/x".into(),
+            p256dh: "k".into(),
+            auth: "a".into(),
+        };
+        assert!(a.subscribe("same", Door::Local, Some(sub)));
+        assert!(a.devices[0].push.is_some());
+        assert!(a.devices[1].push.is_none(), "the relay's is untouched");
+        assert!(a.unpair_through("same", Door::Relay));
+        assert_eq!(a.devices.len(), 1);
+        assert!(!a.devices[0].token_hash.is_empty(), "the network's stays");
+        assert!(!a.unpair_through("same", Door::Relay), "none left there");
+        assert!(!a.set_notices("same", Door::Relay, quiet));
+    }
+
+    #[test]
+    fn devices_the_account_signed_out_are_dropped_and_local_ones_stay() {
+        let mut lan = relay_device("lan1");
+        lan.token_hash = hash("token");
+        let mut gone = relay_device("gone");
+        gone.push = Some(push::Subscription {
+            endpoint: "https://push.example/gone".into(),
+            p256dh: "k".into(),
+            auth: "a".into(),
+        });
+        let mut devices = vec![lan.clone(), relay_device("here"), gone];
+        let listed = vec!["here".to_string(), "lan1".to_string()];
+        let dropped = prune_relay_devices(&mut devices, Some(&listed));
+        assert_eq!(dropped, ["gone"]);
+        let left: Vec<&str> = devices.iter().map(|d| d.id.as_str()).collect();
+        assert_eq!(left, ["lan1", "here"]);
+        // A local device is kept even when the account does not list it.
+        let dropped = prune_relay_devices(&mut devices, Some(&[]));
+        assert_eq!(dropped, ["here"]);
+        assert_eq!(devices, [lan.clone()]);
+        // Under another account or none: every relay one goes, local ones stay.
+        let mut devices = vec![relay_device("a"), lan.clone(), relay_device("b")];
+        assert_eq!(prune_relay_devices(&mut devices, None), ["a", "b"]);
+        assert_eq!(devices, [lan]);
+    }
+
+    #[test]
+    fn the_signed_in_devices_are_asked_for_every_15_minutes_while_one_gets_pushes() {
+        // Later than now, so going back from it never passes the clock's start.
+        let now = Instant::now() + 2 * RELAY_PRUNE_EVERY;
+        let sub = push::Subscription {
+            endpoint: "https://push.example/x".into(),
+            p256dh: "k".into(),
+            auth: "a".into(),
+        };
+        let mut pushed = relay_device("r1");
+        pushed.push = Some(sub.clone());
+        let mut lan = relay_device("lan1");
+        lan.token_hash = hash("token");
+        lan.push = Some(sub);
+        let devices = [relay_device("r0"), pushed];
+        // Not signed in: no.
+        assert!(!relay_prune_due(false, &devices, None, now));
+        // No relay device with a push subscription: no (one on the network does not count).
+        assert!(!relay_prune_due(
+            true,
+            &[relay_device("r0"), lan],
+            None,
+            now
+        ));
+        // Asked under 15 minutes ago: no.
+        let recent = now - Duration::from_secs(14 * 60);
+        assert!(!relay_prune_due(true, &devices, Some(recent), now));
+        // Otherwise: yes.
+        assert!(relay_prune_due(true, &devices, None, now));
+        let old = now - RELAY_PRUNE_EVERY;
+        assert!(relay_prune_due(true, &devices, Some(old), now));
+    }
+
+    #[test]
+    fn the_relay_devices_go_when_the_account_changes_or_signs_out() {
+        // Not known yet: nothing changes.
+        assert_eq!(relay_owner(Some(1), AccountNow::Unknown), (false, Some(1)));
+        // The same account, or the first one known: they stay.
+        assert_eq!(
+            relay_owner(Some(1), AccountNow::SignedIn(1)),
+            (false, Some(1))
+        );
+        assert_eq!(relay_owner(None, AccountNow::SignedIn(1)), (false, Some(1)));
+        // Another account, or none: they go.
+        assert_eq!(
+            relay_owner(Some(1), AccountNow::SignedIn(2)),
+            (true, Some(2))
+        );
+        assert_eq!(relay_owner(Some(1), AccountNow::SignedOut), (true, None));
     }
 
     /// One HTTP request to the server, the whole answer back.

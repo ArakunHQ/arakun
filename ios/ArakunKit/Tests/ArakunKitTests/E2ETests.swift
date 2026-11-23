@@ -164,6 +164,8 @@ struct PairingTests {
         #expect(EndKind.of(reason: "bad_hello", code: 1000) == .untrusted)
         #expect(EndKind.of(reason: "limit:daily", code: 1000) == .limit)
         #expect(EndKind.of(reason: "", code: 1006) == .gone)
+        // An upgrade the relay answered 500 has no close code: tried again, never a sign-out.
+        #expect(EndKind.of(reason: "", code: 0) == .gone)
         // The relay's old pairing reasons mean nothing now: try again.
         #expect(EndKind.of(reason: "bad_ticket", code: 1000) == .gone)
     }

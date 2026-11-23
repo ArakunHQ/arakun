@@ -16,6 +16,9 @@ final class AppModel {
         case connected
         /// The relay is there, the computer is not (last seen `since`).
         case computerAway(since: Date?)
+        /// The relay said a limit was reached (`which`: `daily`, `phones`, …).
+        /// Nothing is tried before `until`, unless the person asks.
+        case limited(which: String, until: Date)
     }
 
     /// Where sign-in stands, while it is under way.
@@ -51,6 +54,13 @@ final class AppModel {
     var signInError: String?
     /// What "Pair on this network" made of the last code or link.
     var pairSaid: String?
+    /// Whether `pairSaid` tells of a page that opened, not of a problem.
+    private(set) var pairOpened = false
+    /// Whether `accountSaid` is about a load that failed, so the next list clears it.
+    private var loadFailed = false
+    /// The session `loadAccount` is asking for now, so two asks at once (the
+    /// launch and the app coming on screen) do not both open a computer.
+    private var loadingFor: SessionToken?
 
     private(set) var connection: Connection = .idle
     private(set) var host = ""
@@ -70,6 +80,8 @@ final class AppModel {
     private var link: RelayLink?
     private var retry: Duration = .milliseconds(500)
     private var retryTask: Task<Void, Never>?
+    /// Limits the relay answered with in a row, for the wait before the next try.
+    private var limitTries = 0
     private var signInTask: Task<Void, Never>?
     /// Counts sign-ins, so one cancelled or replaced never touches the next.
     private var signInAttempt = 0
@@ -77,6 +89,10 @@ final class AppModel {
     /// The computer opened last, by label, to open again at the next launch.
     /// Only the label: it is no secret, and the session stays in the Keychain.
     private static let lastMachineKey = "arakun.machine"
+    /// Set at the first launch. UserDefaults go with the app when it is
+    /// deleted and the Keychain does not, so a session found without this was
+    /// left by an install that is gone.
+    private static let hasRunKey = "arakun.hasRun"
 
     init(store: any SessionStore = Keychain.session) {
         #if DEBUG
@@ -88,6 +104,11 @@ final class AppModel {
         #endif
         Keychain.forgetOldPairing()
         keeper = AccountSession(store: store)
+        if !UserDefaults.standard.bool(forKey: Self.hasRunKey) {
+            UserDefaults.standard.set(true, forKey: Self.hasRunKey)
+            // Deleting the app must sign the phone out: installed again, it starts signed out.
+            keeper.signOut()
+        }
         signedIn = keeper.token
         if signedIn != nil { Task { await loadAccount(openOne: true) } }
     }
@@ -111,6 +132,7 @@ final class AppModel {
     func startSignIn() {
         guard signIn == nil else { return }
         signInError = nil
+        pairSaid = nil
         #if DEBUG
         if Self.isDemo {
             signIn = .code(DeviceCode(userCode: "WDJB-MJHT", verificationURI: "https://github.com/login/device",
@@ -132,18 +154,15 @@ final class AppModel {
                 let github = try await client.waitForToken(clientID: id, code: code)
                 guard self.isCurrent(attempt) else { return }
                 self.signIn = .finishing
-                let signed = try await self.keeper.signIn(githubToken: github, name: name, kind: "ios")
+                // In a task of its own, which Cancel does not reach: a request
+                // cancelled after the host made the session would lose the
+                // answer, and leave a session there that nobody holds.
+                let keeper = self.keeper
+                let signed = try await Task { try await keeper.signIn(githubToken: github, name: name, kind: "ios") }.value
                 guard self.isCurrent(attempt) else {
-                    // Cancelled while the session was made: nobody wants it.
-                    // It is forgotten here now; this task is cancelled, and a
-                    // request made in it would be too, so a task of its own
-                    // ends it on the server.
-                    if self.keeper.token == signed.session {
-                        self.keeper.forget()
-                        let client = self.keeper.client
-                        let session = signed.session
-                        Task { try? await client.logout(session: session) }
-                    }
+                    // Cancelled while the session was made: nobody wants it,
+                    // so it is forgotten here and ended on the server.
+                    if keeper.token == signed.session { keeper.signOut() }
                     return
                 }
                 self.tookSignIn(signed)
@@ -193,10 +212,18 @@ final class AppModel {
 
     /// Signs this phone out of the account, here and on the account host.
     func signOut() {
-        guard let token = signedIn else { return }
-        let client = keeper.client
+        guard signedIn != nil else { return }
+        // The demo's keeper holds no session, so it asks nothing.
+        let ending = keeper.signOut()
         signedOut()
-        if !Self.isDemoLaunch { Task { try? await client.logout(session: token) } }
+        let host = keeper.client.base.host ?? "the account host"
+        Task {
+            let told = await ending.value
+            // Signed out here either way. The session cannot be used without
+            // its token, but the account lists it until it runs out.
+            guard !told, signedIn == nil, signIn == nil else { return }
+            signInError = "This phone is signed out, but \(host) could not be told. Until that sign-in runs out, your account still lists it under signed-in devices."
+        }
     }
 
     /// The session is gone (signed out here or elsewhere): only sign-in is left.
@@ -216,17 +243,26 @@ final class AppModel {
         devices = []
         devicesError = nil
         accountSaid = nil
+        loadFailed = false
         signInError = nil
+        pairSaid = nil
     }
 
     // ---- the account ----------------------------------------------------------
 
     /// Who is signed in and their computers. `openOne` opens one at launch or
     /// after sign-in: the only one, or the one opened last.
-    func loadAccount(openOne: Bool = false) async {
-        guard let token = signedIn, !Self.isDemoLaunch else { return }
+    /// `quiet` is the list's own poll: it leaves the sentence on screen alone
+    /// until an answer replaces it.
+    func loadAccount(openOne: Bool = false, quiet: Bool = false) async {
+        guard let token = signedIn, !Self.isDemoLaunch, loadingFor != token else { return }
+        loadingFor = token
+        defer { if loadingFor == token { loadingFor = nil } }
         // Loading again after it could not reach the host: the sentence goes.
-        if !machinesLoaded { accountSaid = nil }
+        if !machinesLoaded && !quiet {
+            accountSaid = nil
+            loadFailed = false
+        }
         do {
             let me = try await keeper.call { c, t in try await c.me(session: t) }
             guard signedIn == token else { return }
@@ -239,7 +275,18 @@ final class AppModel {
             let last = UserDefaults.standard.string(forKey: Self.lastMachineKey)
             if let m = list.first(where: { $0.label == last }) { pick(m) }
         } catch {
-            accountFailed(error, token, quiet: false)
+            accountFailed(error, token, quiet: quiet)
+        }
+    }
+
+    /// The list's poll while it is on screen. After a start that did not
+    /// reach the account (no network at launch), it is the whole start again:
+    /// who is signed in, the list, and the computer to open.
+    func poll() async {
+        if me == nil || !machinesLoaded {
+            await loadAccount(openOne: true, quiet: true)
+        } else {
+            await refreshMachines()
         }
     }
 
@@ -259,6 +306,10 @@ final class AppModel {
         machines = list
         machinesLoaded = true
         blocked = false
+        if loadFailed {
+            loadFailed = false
+            accountSaid = nil
+        }
     }
 
     /// A 401 anywhere means signed out; a blocked account says why. Anything
@@ -274,11 +325,16 @@ final class AppModel {
             machines = []
             machinesLoaded = true
             accountSaid = Refusal.blocked(reason)
+            loadFailed = false
         case .refused(let why)?:
-            if !quiet && !machinesLoaded { accountSaid = AccountError.refused(why).message }
+            if !quiet && !machinesLoaded {
+                accountSaid = AccountError.refused(why).message
+                loadFailed = true
+            }
         default:
             if !quiet && !machinesLoaded {
                 accountSaid = "Could not reach \(keeper.client.base.host ?? "the account host"). Check the connection and try again."
+                loadFailed = true
             }
         }
     }
@@ -338,12 +394,15 @@ final class AppModel {
     func pair(_ text: String) -> URL? {
         switch PairingText(text) {
         case .relayLink:
+            pairOpened = false
             pairSaid = PairingText.relayLinkSentence
             return nil
         case .direct(let url):
+            pairOpened = true
             pairSaid = "The computer's page opened in the browser, which pairs there. This app reaches your computers when you sign in."
             return url
         case .unknown:
+            pairOpened = false
             pairSaid = "That is not a pairing link. Scan the code in Arakun's Phone tab."
             return nil
         }
@@ -362,7 +421,12 @@ final class AppModel {
         case .unknown:
             said = "That is not a pairing link. Scan the code in Arakun's Phone tab."
         }
-        if signedIn == nil { pairSaid = said } else { notice = said }
+        if signedIn == nil {
+            pairOpened = false
+            pairSaid = said
+        } else {
+            notice = said
+        }
         return nil
     }
 
@@ -374,9 +438,11 @@ final class AppModel {
         dropMachine()
         machine = m
         accountSaid = nil
+        loadFailed = false
         UserDefaults.standard.set(m.label, forKey: Self.lastMachineKey)
         host = m.name
         retry = .milliseconds(500)
+        limitTries = 0
         connect()
     }
 
@@ -385,6 +451,7 @@ final class AppModel {
         dropMachine()
         UserDefaults.standard.removeObject(forKey: Self.lastMachineKey)
         accountSaid = said
+        loadFailed = false
         Task { await refreshMachines() }
     }
 
@@ -423,7 +490,8 @@ final class AppModel {
         l.start()
     }
 
-    /// Back on screen or Retry: go now instead of waiting out the backoff.
+    /// The person asks (Reconnect, Try again): go now instead of waiting out
+    /// the backoff, or a limit.
     func reconnectNow() {
         guard machine != nil, connection != .connected else { return }
         retry = .milliseconds(500)
@@ -463,12 +531,55 @@ final class AppModel {
         }
     }
 
+    /// The relay said a limit was reached. It says so again at every try
+    /// until the limit lifts, so the banner says it once and the next try
+    /// waits minutes, or for the day to turn.
+    private func limited(_ which: String) {
+        guard machine != nil else { return }
+        let wait = LimitWait.seconds(which: which, tries: limitTries)
+        limitTries += 1
+        connection = .limited(which: which, until: Date().addingTimeInterval(wait))
+        retryTask?.cancel()
+        retryTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(wait))
+            guard !Task.isCancelled else { return }
+            self?.connect()
+        }
+    }
+
+    /// The relay turned the session down at its socket. That alone is no
+    /// proof the session is over: a header lost on the way to the relay reads
+    /// the same, and signing out on it would delete a good sign-in again and
+    /// again. So the account is asked, as the desktop app does, and only its
+    /// 401 signs out.
+    private func relayRefusedSession() {
+        guard let token = signedIn, let m = machine else { return }
+        connection = .connecting
+        retryTask?.cancel()
+        Task { [weak self] in
+            guard let self else { return }
+            let check = await self.keeper.stillStands()
+            guard self.signedIn == token else { return }
+            if check == .over { return self.signedOut() }
+            // The person picked another computer or asked again meanwhile.
+            guard self.machine?.label == m.label, self.link == nil else { return }
+            if check == .stands {
+                // Dialing again would get the same answer, so it is said once.
+                self.leaveMachine("\(m.name) could not be reached with this sign-in: the relay turned it down, though your account accepts it. Try again later, or sign out and sign in again.")
+            } else {
+                // The account did not answer either: nothing is known yet.
+                self.lost()
+            }
+        }
+    }
+
     private func handle(_ event: RelayLink.Event) {
         switch event {
         case .open:
             interrupted()
             connection = .connected
             retry = .milliseconds(500)
+            limitTries = 0
             if let s = session { link?.send(["type": "open", "session": s.id]) }
             if let id = openWhenLinked {
                 openWhenLinked = nil
@@ -484,7 +595,7 @@ final class AppModel {
             interrupted()
             switch kind {
             case .signedOut:
-                signedOut()
+                relayRefusedSession()
             case .refused(_, let sentence):
                 // A block's reason comes with the list, which leaving reloads.
                 leaveMachine(sentence)
@@ -492,8 +603,7 @@ final class AppModel {
                 let name = machine?.name ?? "The computer"
                 leaveMachine("\(name) did not answer with the key your account has for it. Sign in again in Arakun on that computer.")
             case .limit:
-                notice = "The relay is busy (\(detail)). Trying again in a moment."
-                lost()
+                limited(LimitWait.which(detail))
             case .gone:
                 lost()
             }
@@ -608,7 +718,15 @@ final class AppModel {
     /// The computer skips the push for the session on screen while the app shows it.
     func visible(_ yes: Bool) {
         send(["type": "visible", "visible": yes])
-        if yes { reconnectNow() }
+        guard yes else { return }
+        guard machine != nil else {
+            // A start that never reached the account is made again.
+            if signedIn != nil, me == nil || !machinesLoaded { Task { await poll() } }
+            return
+        }
+        // Coming back on screen is not the person asking: a limit is waited out.
+        if case .limited(_, let until) = connection, Date() < until { return }
+        reconnectNow()
     }
 
     var isLinked: Bool { connection == .connected }
@@ -616,7 +734,7 @@ final class AppModel {
 
 #if DEBUG
 // An account and a computer played here, for screenshots and design work
-// without them: launch with `-demo`. `-demoUnpaired YES` shows the sign-in
+// without them: launch with `-demo`. `-demoSignIn YES` shows the sign-in
 // screen, `-demoMachines YES` the list of computers.
 /// The demo keeps nothing: it must not touch a real sign-in in the Keychain.
 private struct DemoStore: SessionStore {
@@ -629,7 +747,7 @@ extension AppModel {
 
     func fillDemo() {
         let defaults = UserDefaults.standard
-        if defaults.bool(forKey: "demoUnpaired") { return }
+        if defaults.bool(forKey: "demoSignIn") { return }
         let now = Date().timeIntervalSince1970
         func j(_ s: String) -> JSON { JSON.parse(Data(s.utf8))! }
         signedIn = SessionToken("demo")

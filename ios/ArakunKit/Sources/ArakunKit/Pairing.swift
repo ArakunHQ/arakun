@@ -90,6 +90,34 @@ public enum EndKind: Equatable, Sendable {
     }
 }
 
+/// How long to stay away after the relay said a limit was reached. It answers
+/// the same until the limit lifts, so dialing again at once only repeats it.
+public enum LimitWait {
+    static let first: TimeInterval = 120
+    static let longest: TimeInterval = 1800
+    static let day: TimeInterval = 86_400
+
+    /// Which limit, from what the link said: `daily` from the relay's own
+    /// message, `limit:daily` from the reason it closed with.
+    public static func which(_ detail: String) -> String {
+        detail.hasPrefix("limit:") ? String(detail.dropFirst("limit:".count)) : detail
+    }
+
+    /// Seconds until the next try, after `tries` refusals in a row before
+    /// this one. The day's count starts over at midnight UTC, so nothing is
+    /// tried before then, and a minute more for a clock that runs ahead. Any
+    /// other limit: two minutes, doubling to half an hour.
+    public static func seconds(which: String, tries: Int, now: Date = Date()) -> TimeInterval {
+        if which == "daily" {
+            let t = now.timeIntervalSince1970
+            return (t / day).rounded(.down) * day + day - t + 60
+        }
+        var wait = first
+        for _ in 0..<max(0, min(tries, 8)) { wait = min(wait * 2, longest) }
+        return wait
+    }
+}
+
 /// What the relay's refusals say, in the phone page's words (phone/relay.js).
 public enum Refusal {
     /// `unpaired`: the computer's user removed this device there, so it is

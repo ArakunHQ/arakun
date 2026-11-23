@@ -152,6 +152,43 @@ struct AccountTests {
         #expect(host.requests.allSatisfy { $0.value(forHTTPHeaderField: "Authorization") == "Bearer \(token.value)" })
     }
 
+    @Test func aDeviceThatIsAlreadyGoneCountsAsSignedOut() async throws {
+        try await FakeHost(404, #"{"error": "not found"}"#).client.signOutSession(session: token, id: "a1")
+        await #expect(throws: AccountError.refused("HTTP 500")) {
+            try await FakeHost(500, "").client.signOutSession(session: token, id: "a1")
+        }
+        await #expect(throws: AccountError.signedOut) {
+            try await FakeHost(401, "").client.signOutSession(session: token, id: "a1")
+        }
+    }
+
+    /// The session is in the request's header, and `URLSession.shared` keeps
+    /// requests in a cache on disk: nothing that carries it may be stored.
+    @Test func theNetworkSessionKeepsNothing() {
+        let c = AccountNetwork.configuration
+        #expect(c.urlCache == nil)
+        #expect(c.requestCachePolicy == .reloadIgnoringLocalCacheData)
+        #expect(c.httpCookieStorage == nil)
+        #expect(c.urlCredentialStorage == nil)
+    }
+
+    @Test func aLimitIsWaitedOutNotDialedAgainAtOnce() {
+        #expect(LimitWait.which("daily") == "daily")
+        #expect(LimitWait.which("limit:phones") == "phones")
+        // Minutes, doubling to half an hour.
+        #expect(LimitWait.seconds(which: "phones", tries: 0) == 120)
+        #expect(LimitWait.seconds(which: "phones", tries: 1) == 240)
+        #expect(LimitWait.seconds(which: "burst", tries: 3) == 960)
+        #expect(LimitWait.seconds(which: "phones", tries: 4) == 1800)
+        #expect(LimitWait.seconds(which: "phones", tries: 1000) == 1800)
+        // The day's count: nothing before the day turns in UTC, however often it was tried.
+        let tenPast = Date(timeIntervalSince1970: 1_763_856_000 + 600)
+        #expect(LimitWait.seconds(which: "daily", tries: 0, now: tenPast) == 86_400 - 600 + 60)
+        #expect(LimitWait.seconds(which: "daily", tries: 9, now: tenPast) == 86_400 - 600 + 60)
+        let lastSecond = Date(timeIntervalSince1970: 1_763_856_000 + 86_399)
+        #expect(LimitWait.seconds(which: "daily", tries: 0, now: lastSecond) == 61)
+    }
+
     @Test func anIdThatCouldLeaveItsPathIsRefusedUnsent() async {
         let host = FakeHost(204, "")
         for id in ["../me", "a/b", "a%2Fb", "", String(repeating: "a", count: 129)] {
@@ -302,12 +339,45 @@ struct AccountSessionTests {
         #expect(store.writes == [token])
         #expect(keeper.token == token)
         #expect(store.load() == token)
-        await keeper.signOut()
+        let told = await keeper.signOut().value
+        #expect(told)
         #expect(store.writes == [token, nil])
         #expect(keeper.token == nil)
         #expect(store.load() == nil)
         #expect(host.requests.last?.url?.path == "/auth/logout")
         #expect(!inDefaults())
+    }
+
+    @Test func aSignOutTheHostDidNotHearSaysSo() async {
+        // Forgotten here either way; only the answer differs.
+        for (status, heard) in [(204, true), (401, true), (500, false), (429, false)] {
+            let store = RecordingStore(holding: token)
+            let keeper = AccountSession(client: FakeHost(status, "").client, store: store)
+            let told = await keeper.signOut().value
+            #expect(told == heard, "\(status)")
+            #expect(keeper.token == nil)
+            #expect(store.writes == [nil])
+        }
+    }
+
+    /// The relay turning the session down at its socket proves nothing: only
+    /// the account's own 401 may clear the Keychain.
+    @Test func aSessionTheRelayTurnedDownEndsOnlyWhenTheAccountSaysSo() async {
+        let me = #"{"github_id": 1, "login": "a"}"#
+        let cases: [(Int, String, SessionCheck, Bool)] = [
+            (200, me, .stands, true), (401, "", .over, false), (500, "", .unknown, true),
+            (503, "", .unknown, true), (403, #"{"error": "blocked"}"#, .unknown, true),
+        ]
+        for (status, body, expected, kept) in cases {
+            let store = RecordingStore(holding: token)
+            let host = FakeHost(status, body)
+            let keeper = AccountSession(client: host.client, store: store)
+            let check = await keeper.stillStands()
+            #expect(check == expected, "\(status)")
+            #expect((keeper.token == token) == kept, "\(status)")
+            #expect(store.writes == (kept ? [] : [nil]), "\(status)")
+            #expect(host.requests.map { $0.url?.path ?? "" } == ["/me"])
+        }
     }
 
     @Test func aStoredSessionIsReadBackAtStart() {

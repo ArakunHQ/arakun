@@ -158,7 +158,17 @@ struct SignInView: View {
                     .buttonStyle(.outline)
                     .disabled(pasted.isEmpty)
             }
-            if let said = model.pairSaid { Problem(text: said) }
+            if let said = model.pairSaid {
+                if model.pairOpened {
+                    // The page opened: that is news, not a problem.
+                    Text(said)
+                        .font(.small)
+                        .foregroundStyle(Color.textMuted)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                } else {
+                    Problem(text: said)
+                }
+            }
         }
         .padding(18)
         .frame(maxWidth: .infinity, alignment: .leading)

@@ -11,7 +11,7 @@ ios/
   ArakunKit/         the protocol, testable on a Mac
     Sources/ArakunKit/E2E.swift        P-256 handshake, HKDF keys, AES-GCM frames (phone/e2e.js)
     Sources/ArakunKit/Account.swift    sign-in with GitHub, /me, /machines, /sessions (core/src/cloud.rs)
-    Sources/ArakunKit/RelayLink.swift  the WebSocket to the relay, pings, {req}/{res}, {part} (phone/relay.js)
+    Sources/ArakunKit/RelayLink.swift  the WebSocket to the relay, pings, {part} (phone/relay.js)
     Sources/ArakunKit/Models.swift     inbox, session, entries, state (core/src/phone/wire.rs)
 ```
 
@@ -32,7 +32,7 @@ keychain.
 
 Without an account or a computer, launch with `-demo` (Debug builds only): a
 signed-in sample account and sample sessions fill the app. `-demoOpen s1` opens a
-session, `-demoNew YES` the New session sheet, `-demoUnpaired YES` the sign-in screen,
+session, `-demoNew YES` the New session sheet, `-demoSignIn YES` the sign-in screen,
 `-demoMachines YES` the list of computers and `-demoMoods YES` every mood of the
 raccoon side by side:
 
@@ -79,9 +79,42 @@ devices of the same account. The handshake is checked against the key the accoun
 lists for the computer, so the relay cannot pass you to another one.
 
 The session stays in the Keychain on this device only, never in UserDefaults or a
-log. Settings (the More menu) lists the account's signed-in devices, each with Sign
-out, and signs this phone out. A device signed out elsewhere, or a 401 from the
-account host, returns to the sign-in screen.
+log. Every request that carries it, the relay's socket too, goes through one
+`URLSession` that keeps no cache, cookies or credentials (`AccountNetwork` in
+`Account.swift`) and follows no redirect; nothing uses `URLSession.shared`.
+Settings (the More menu) lists the account's signed-in devices, each with Sign
+out, and signs this phone out. A 401 from the account host returns to the sign-in
+screen. iOS keeps the Keychain when an app is deleted, so the first launch of a new
+install signs out a session an older install left.
+
+Only the account host ends a session. When the relay turns the session down at its
+socket (`signed_out`, or a 401 to the upgrade), the app asks `GET /me`: a 401 there
+signs out; if the account still accepts the session, the app keeps it, goes back to
+the list and says the computer could not be reached with this sign-in, without
+trying again by itself. A failed upgrade of any other kind (a 500 from the relay) is
+tried again with the usual backoff.
+
+When the relay says a limit is reached, the banner says so once and the app waits:
+until midnight UTC for the day's limit, otherwise two minutes, doubling to half an
+hour. **Try again** asks at once.
+
+Every iPhone is listed as "iPhone" under signed-in devices: since iOS 16 an app
+reads the name a person gave the phone only with an entitlement from Apple.
+
+### Before a release: check the socket's header on a simulator
+
+The session reaches the relay in the `Authorization` header of the WebSocket
+upgrade. Apple calls that header reserved, and CI only compiles the app, so run it
+once against a real relay before every release that touches `RelayLink.swift` or
+`Account.swift`:
+
+```sh
+cd ios && xcodegen generate && open Arakun.xcodeproj   # then Run on an iPhone simulator
+```
+
+Sign in, pick a computer that is online, and see the inbox load. If the app goes
+back to the list with "could not be reached with this sign-in", the header did not
+reach the relay: do not release.
 
 A relay pairing link from before sign-in (`https://<label>.arakun.dev/#p=…`) no
 longer works; the app says "Relay links are no longer used. Sign in to reach your

@@ -53,7 +53,7 @@ struct MachinesView: View {
                 while !Task.isCancelled {
                     try? await Task.sleep(for: .seconds(15))
                     guard !Task.isCancelled else { return }
-                    await model.refreshMachines()
+                    await model.poll()
                 }
             }
         }

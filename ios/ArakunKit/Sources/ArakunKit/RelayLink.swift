@@ -4,9 +4,7 @@
 // so the relay only passes bytes along and checked against the key the
 // account lists, then the same JSON the phone page speaks. The relay admits
 // only the account's own devices, so nothing more is proven inside the
-// channel. Inside it `{req}` asks what the page would ask over HTTP, the
-// computer answers `{res}` in pieces, and any message too big for a relay
-// frame comes as `{part}`.
+// channel. A message too big for a relay frame comes as `{part}`.
 import Foundation
 import Security
 
@@ -52,17 +50,6 @@ public final class RelayLink {
     private var heard = Date()
     private var helloDeadline: Date?
     private var timer: Task<Void, Never>?
-    private var nextReq = 1
-    private var pending: [Int: Request] = [:]
-
-    private struct Request {
-        var status = 0
-        var type = ""
-        var body = Data()
-        let done: CheckedContinuation<(Int, Data), Error>
-    }
-
-    public struct Closed: Error {}
 
     /// A link to `machine`, one of the account's computers as `/machines`
     /// lists it, on the relay at `base`.
@@ -105,7 +92,8 @@ public final class RelayLink {
     public func start() {
         guard key != nil else { return end(.untrusted, "the account lists a key for this computer that is not its label's") }
         guard let request else { return end(.gone, "bad address") }
-        let task = URLSession.shared.webSocketTask(with: request)
+        // Not `URLSession.shared`: the request carries the session.
+        let task = AccountNetwork.session.webSocketTask(with: request)
         self.task = task
         task.resume()
         heard = Date()
@@ -140,6 +128,14 @@ public final class RelayLink {
                     msg = try await task.receive()
                 } catch {
                     guard let self, self.task === task else { return }
+                    // An upgrade answered with plain HTTP. A 401 is about the
+                    // session, which the app then asks the account about. Any
+                    // other status (a 500 while the relay's database is down)
+                    // has no close code, so it ends as `gone` and is tried again.
+                    if (task.response as? HTTPURLResponse)?.statusCode == 401 {
+                        self.end(.signedOut, "the relay answered 401")
+                        return
+                    }
                     let reason = task.closeReason.map { String(decoding: $0, as: UTF8.self) } ?? ""
                     let code = task.closeCode.rawValue
                     self.refused(reason: reason, code: code, message: nil)
@@ -198,7 +194,6 @@ public final class RelayLink {
             helloDeadline = nil
             session = nil
             ready = false
-            failPending()
             let since = (msg["since"] as? Double).map { Date(timeIntervalSince1970: $0 / 1000) }
             onEvent(.computer(online: false, since: since))
         case "pc_online":
@@ -221,27 +216,12 @@ public final class RelayLink {
         } catch {
             return end(.untrusted, "\(error)")
         }
-        guard var msg = try? JSONSerialization.jsonObject(with: plain) as? [String: Any] else { return }
+        guard let msg = try? JSONSerialization.jsonObject(with: plain) as? [String: Any] else { return }
         if let part = msg["part"] as? [String: Any] {
             guard let whole = joiner.add(part) else { return }
             plain = whole
-            guard let m = try? JSONSerialization.jsonObject(with: whole) as? [String: Any] else { return }
-            msg = m
         }
-        if let r = msg["res"] as? [String: Any] {
-            guard let id = r["id"] as? Int, var p = pending[id] else { return }
-            if let s = r["status"] as? Int { p.status = s }
-            if let t = r["type"] as? String { p.type = t }
-            p.body.append(Base64URL.decode(r["body"] as? String ?? "") ?? Data())
-            if r["more"] as? Bool == true {
-                pending[id] = p
-            } else {
-                pending[id] = nil
-                p.done.resume(returning: (p.status == 0 ? 500 : p.status, p.body))
-            }
-        } else {
-            onEvent(.message(plain))
-        }
+        onEvent(.message(plain))
     }
 
     private func say(_ obj: [String: Any]) {
@@ -258,22 +238,6 @@ public final class RelayLink {
     /// A message to the computer, as the phone page sends it.
     public func send(_ obj: [String: Any]) {
         if isReady { say(obj) }
-    }
-
-    /// What the phone page would ask over HTTP: the status and body come back.
-    public func fetch(_ path: String, method: String = "GET", body: String? = nil) async throws -> (Int, Data) {
-        guard isReady else { throw Closed() }
-        let id = nextReq
-        nextReq += 1
-        return try await withCheckedThrowingContinuation { done in
-            pending[id] = Request(done: done)
-            say(["req": ["id": id, "method": method, "path": path, "body": body as Any? ?? NSNull()]])
-        }
-    }
-
-    private func failPending() {
-        for p in pending.values { p.done.resume(throwing: Closed()) }
-        pending = [:]
     }
 
     /// Ends with what the relay said: a refusal as its sentence, else the reason.
@@ -299,7 +263,6 @@ public final class RelayLink {
         ended = true
         ready = false
         timer?.cancel()
-        failPending()
         task?.cancel(with: .normalClosure, reason: nil)
         task = nil
     }

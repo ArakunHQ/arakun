@@ -1,7 +1,9 @@
 // The account client, as core/src/cloud.rs is the desktop's: GitHub's device
 // flow, then the Arakun service (`cloud/`) that turns a GitHub token into a
 // session, and the account's routes (`/me`, `/machines`, `/sessions`). The
-// session goes in a header, never in a URL, and lives in the Keychain only.
+// session goes in a header, never in a URL, and lives in the Keychain only:
+// every request that carries it goes through `AccountNetwork.session`, which
+// keeps nothing on disk.
 import Foundation
 import Security
 
@@ -21,6 +23,35 @@ public enum AccountHost {
         case "http", "ws": return ["localhost", "127.0.0.1", "::1", "[::1]"].contains(host)
         default: return false
         }
+    }
+}
+
+/// The one `URLSession` for everything that carries the session or GitHub's
+/// token: the account's routes, the device flow and the relay's socket.
+/// `URLSession.shared` caches answers on disk together with their requests,
+/// `Authorization` header included, and the session must stay in the Keychain.
+public enum AccountNetwork {
+    public static let session = URLSession(configuration: configuration, delegate: NoRedirects(), delegateQueue: nil)
+
+    /// Ephemeral: no cache, cookie or credential store on disk. The cache is
+    /// then turned off in memory too, since no answer here may be reused.
+    static var configuration: URLSessionConfiguration {
+        let c = URLSessionConfiguration.ephemeral
+        c.requestCachePolicy = .reloadIgnoringLocalCacheData
+        c.urlCache = nil
+        c.httpCookieStorage = nil
+        c.httpShouldSetCookies = false
+        c.urlCredentialStorage = nil
+        return c
+    }
+}
+
+/// No route asked here redirects. A redirect followed would send the body
+/// again, GitHub's token in it, to wherever the answer pointed.
+private final class NoRedirects: NSObject, URLSessionTaskDelegate {
+    func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest) async -> URLRequest? {
+        nil
     }
 }
 
@@ -300,7 +331,7 @@ public struct AccountClient: Sendable {
     }
 
     public static let overNetwork: Send = { request in
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await AccountNetwork.session.data(for: request)
         return ((response as? HTTPURLResponse)?.statusCode ?? 0, data)
     }
 
@@ -422,7 +453,10 @@ public struct AccountClient: Sendable {
     /// Ends one of the account's sessions, this one or another.
     public func signOutSession(session: SessionToken, id: String) async throws {
         let part = try Self.pathPart(id)
-        try await act("DELETE", "/sessions/\(part)", session: session)
+        let (status, body) = try await call("DELETE", "/sessions/\(part)", session: session)
+        // 404: it ran out or was signed out elsewhere since the list loaded,
+        // which is what was asked for. The phone page counts it as done too.
+        guard (200...299).contains(status) || status == 404 else { throw Self.refusal(status, body) }
     }
 
     /// Marks a notice read, so `/me` stops listing it.
@@ -567,11 +601,39 @@ public final class AccountSession {
         }
     }
 
-    /// Signs this device out: forgotten here at once, then ended on the server.
-    public func signOut() async {
-        guard let token else { return }
+    /// Whether the session still stands, asked of the account when the relay
+    /// turned it down at its socket. The relay's word alone never ends a
+    /// session: a header lost on the way to it would read the same. Only the
+    /// account's own 401 does, and that forgets the session here.
+    public func stillStands() async -> SessionCheck {
+        do {
+            _ = try await call { c, t in try await c.me(session: t) }
+            return .stands
+        } catch AccountError.signedOut {
+            return .over
+        } catch {
+            return .unknown
+        }
+    }
+
+    /// Signs this device out: forgotten here at once, then ended on the
+    /// server. The task says whether the server heard it; a 401 counts, since
+    /// the session is over there too.
+    @discardableResult
+    public func signOut() -> Task<Bool, Never> {
+        guard let token else { return Task { true } }
         forget()
-        try? await client.logout(session: token)
+        let client = client
+        return Task {
+            do {
+                try await client.logout(session: token)
+                return true
+            } catch AccountError.signedOut {
+                return true
+            } catch {
+                return false
+            }
+        }
     }
 
     /// Forgets the session here only.
@@ -579,6 +641,16 @@ public final class AccountSession {
         store.save(nil)
         token = nil
     }
+}
+
+/// What the account answered about a session the relay turned down.
+public enum SessionCheck: Equatable, Sendable {
+    /// The account takes it: only the relay did not.
+    case stands
+    /// The account says 401 too: the session is over.
+    case over
+    /// No answer either way (no network, the host in trouble): ask again later.
+    case unknown
 }
 
 /// Where the session is kept. The app's is the Keychain; tests pass their own.

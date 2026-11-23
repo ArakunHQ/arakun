@@ -341,15 +341,40 @@ struct ConnectionBanner: View {
         case .computerAway(let since):
             line(icon: "computer", "Your computer is offline.",
                  detail: since.map { "Last seen \($0.shortAgo) ago. The app reconnects when it is back." }, tone: .textMuted)
+        case .limited(let which, _):
+            // Said here once, for as long as it holds: an alert at every try
+            // would come back for hours.
+            line(icon: "alert-circle", Self.limit(which), detail: Self.limitDetail(which), tone: .textMuted, retry: true)
         }
     }
 
-    private func line(icon: String, _ text: String, detail: String?, tone: Color) -> some View {
+    private static func limit(_ which: String) -> String {
+        switch which {
+        case "daily": "Today's relay limit for your account is used up."
+        case "phones": "Too many devices are connected to this computer."
+        default: "The relay is busy."
+        }
+    }
+
+    private static func limitDetail(_ which: String) -> String {
+        switch which {
+        case "daily": "It starts over at midnight UTC, and the app reconnects then."
+        case "phones": "Close Arakun on one of them. The app tries again in a few minutes."
+        default: "The app tries again in a few minutes."
+        }
+    }
+
+    private func line(icon: String, _ text: String, detail: String?, tone: Color, retry: Bool = false) -> some View {
         HStack(alignment: .top, spacing: 10) {
             Icon(icon, size: 16).padding(.top, 2)
             VStack(alignment: .leading, spacing: 2) {
                 Text(text).font(.callout)
                 if let detail { Text(detail).font(.small).foregroundStyle(Color.textFaint) }
+                if retry {
+                    Button("Try again") { model.reconnectNow() }
+                        .buttonStyle(.outline)
+                        .padding(.top, 8)
+                }
             }
             Spacer(minLength: 0)
         }

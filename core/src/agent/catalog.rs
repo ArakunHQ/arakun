@@ -554,6 +554,12 @@ impl RawOptions {
     /// Keeps what a fresh session reported, when it changed. Writes the file
     /// after letting go of the cache, so readers don't wait for the disk.
     fn remember(&self, raw: &Value) {
+        self.keep(raw, false)
+    }
+
+    /// `rewrite` writes the file even when nothing changed, so its time says
+    /// the list was asked for after the agent's last update.
+    fn keep(&self, raw: &Value, rewrite: bool) {
         let options = parse_config(raw);
         if options.is_empty() {
             return;
@@ -565,13 +571,33 @@ impl RawOptions {
             *c = (raw.clone(), Arc::new(options));
             true
         });
-        if changed {
+        if changed || rewrite {
             crate::durable::cache_json(
                 &self.path(),
                 &json!({"fetched": unix_now(), "options": raw}),
             );
         }
     }
+
+    /// Whether to ask the agent again: nothing is cached, or `bin` was
+    /// installed after the cache was written, since an update brings new models.
+    fn stale(&self, bin: &Path) -> bool {
+        self.options().is_empty() || newer(bin, &self.path())
+    }
+}
+
+/// Whether `a` was written or installed after `b` was written. An installer
+/// may keep the archive's modified time, so the birth time counts too.
+fn newer(a: &Path, b: &Path) -> bool {
+    let Ok(b) = std::fs::metadata(b).and_then(|m| m.modified()) else {
+        return true;
+    };
+    std::fs::metadata(a).is_ok_and(|m| {
+        [m.modified(), m.created()]
+            .into_iter()
+            .flatten()
+            .any(|t| t > b)
+    })
 }
 
 /// Codex's config options (mode, model, reasoning effort, fast mode) as a fresh
@@ -656,16 +682,19 @@ pub fn remember_cursor_options(raw: &Value) {
     CURSOR.remember(raw)
 }
 
-/// Asks Cursor for its options when none are cached and it is signed in. A
-/// session that never gets a prompt, so it costs no tokens. Blocking; run it
-/// off the main thread.
+/// Asks Cursor for its options when none are cached, or Cursor was updated
+/// since, and it is signed in. A session that never gets a prompt, so it costs
+/// no tokens. Blocking; run it off the main thread.
 pub fn refresh_cursor() {
     let signed_in = launch::cursor_signed_in() || launch::cursor_env_key().is_some();
-    if !cursor_options().is_empty() || !signed_in || launch::cursor_bin().is_err() {
+    let Ok(bin) = launch::cursor_bin() else {
+        return;
+    };
+    if !signed_in || !CURSOR.stale(&bin) {
         return;
     }
     match fetch_options(AgentKind::Cursor) {
-        Ok((_, raw)) => remember_cursor_options(&raw),
+        Ok((_, raw)) => CURSOR.keep(&raw, true),
         Err(e) => eprintln!("arakun: cursor options: {e:#}"),
     }
 }
@@ -685,16 +714,19 @@ pub fn remember_antigravity_options(raw: &Value) {
     ANTIGRAVITY.remember(raw)
 }
 
-/// Asks Antigravity for its options when none are cached and `agy` is
-/// installed: a session that never gets a prompt, so it costs no tokens.
+/// Asks Antigravity for its options when none are cached, or `agy` was
+/// updated since: a session that never gets a prompt, so it costs no tokens.
 /// Signed out, `agy acp` refuses the session, so nothing is kept and the next
 /// refresh asks again. Blocking; run it off the main thread.
 pub fn refresh_antigravity() {
-    if !antigravity_options().is_empty() || launch::agy_bin().is_err() {
+    let Ok(bin) = launch::agy_bin() else {
+        return;
+    };
+    if !ANTIGRAVITY.stale(&bin) {
         return;
     }
     match fetch_options(AgentKind::Antigravity) {
-        Ok((_, raw)) => remember_antigravity_options(&raw),
+        Ok((_, raw)) => ANTIGRAVITY.keep(&raw, true),
         Err(e) => eprintln!("arakun: antigravity options: {e:#}"),
     }
 }
@@ -938,6 +970,26 @@ fn read_session(path: &Path) -> Option<AgentSession> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_agent_installed_after_the_cache_makes_it_stale() {
+        let dir = std::env::temp_dir().join(format!("arakun-newer-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (bin, cache) = (dir.join("agy"), dir.join("options.json"));
+        // No cache yet: ask.
+        std::fs::write(&bin, "").unwrap();
+        assert!(newer(&bin, &cache));
+        // Fetched after the install: keep it.
+        std::thread::sleep(Duration::from_millis(20));
+        std::fs::write(&cache, "{}").unwrap();
+        assert!(!newer(&bin, &cache));
+        // Updated after the fetch: ask again.
+        std::thread::sleep(Duration::from_millis(20));
+        std::fs::remove_file(&bin).unwrap();
+        std::fs::write(&bin, "").unwrap();
+        assert!(newer(&bin, &cache));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn a_single_model_is_not_a_catalog() {

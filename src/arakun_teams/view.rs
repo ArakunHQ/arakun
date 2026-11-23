@@ -2383,6 +2383,7 @@ impl TeamsView {
     /// "Rik added a new device, rik-thinkpad", where it happened in the chat.
     fn render_notice(&self, i: usize, n: &Notice, cx: &mut Context<Self>) -> AnyElement {
         let id = n.device_id.clone();
+        let dismiss_id = n.device_id.clone();
         let hub = self.hub.read(cx);
         let verified = hub.verified(&n.device_id);
         let login = shown_login(&n.login, hub.me().map(|m| m.login.as_str()));
@@ -2430,6 +2431,16 @@ impl TeamsView {
                     this.mismatch = None;
                     cx.notify();
                 })),
+            )
+            // Comparing may have to wait, or end in "They don't": the notice
+            // must not stay in every channel of the team for the whole run.
+            .child(
+                ui::icon_button(("teams-notice-dismiss", i), "cancel01", 12., "Dismiss").on_click(
+                    cx.listener(move |this, _, _, cx| {
+                        this.hub
+                            .update(cx, |h, cx| h.dismiss_notice(&dismiss_id, cx))
+                    }),
+                ),
             )
             .into_any_element()
     }
@@ -3233,10 +3244,8 @@ impl TeamsView {
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.mismatch = None;
                             let id = id1.clone();
-                            this.hub.update(cx, |h, cx| {
-                                h.set_verified(&id, true, cx);
-                                h.dismiss_notice(&id, cx);
-                            });
+                            // The notice stays to show Checked; it has its own Dismiss.
+                            this.hub.update(cx, |h, cx| h.set_verified(&id, true, cx));
                         })),
                     )
                     .child(

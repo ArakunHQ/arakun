@@ -216,14 +216,8 @@ impl Shell {
         if !self.has_projects() {
             return;
         }
-        // A tab of another environment: that environment comes on screen first,
-        // and the tab is paired with one of its own.
-        let foreign = target
-            .and_then(|t| self.strip.tabs.get(t))
-            .is_some_and(|t| t.env.as_deref().is_some_and(|e| e != self.env().path));
-        if let (true, Some(t)) = (foreign, target) {
-            self.select_tab(t, window, cx);
-        }
+        // A tab of another environment goes beside the active tab too; the
+        // split then belongs to its environment (`claim_split`).
         let here = self.env().path.clone();
         let strip = &mut self.strip;
         let Some(active_id) = strip.active().map(|t| t.id) else {
@@ -259,6 +253,7 @@ impl Shell {
                 strip.active_tab = strip.position(next_id).unwrap_or(strip.active_tab);
             }
         }
+        strip.claim_split();
         self.note_active_tab(cx);
         self.ensure_active_live(window, cx);
         self.ensure_active_browser(false, window, cx);
@@ -292,19 +287,13 @@ impl Shell {
         if !self.has_projects() {
             return;
         }
-        // A tab of another environment: that environment comes on screen first.
-        if let Some(index) = self.strip.position(id)
-            && self.strip.tabs[index]
-                .env
-                .as_deref()
-                .is_some_and(|e| e != self.env().path)
-        {
-            self.select_tab(index, window, cx);
-        }
+        // Any tab goes beside the one on screen, whatever its environment.
+        // The companion is only asked for when the dropped tab is the active
+        // one, so it pairs with a tab of the environment on screen.
         let here = self.env().path.clone();
         if !self
             .strip
-            .place_tab(&here, id, first, |strip| companion(strip, &here))
+            .place_tab(id, first, |strip| companion(strip, &here))
         {
             cx.notify();
             return;

@@ -861,8 +861,14 @@ impl Shell {
             strip.tabs.get(active).map(|t| &t.kind),
             Some(TabKind::NewSession)
         );
+        // The composer writes to the environment on screen, so a session of
+        // another environment in the other pane does not take it.
+        let here = |i: usize| {
+            self.try_env()
+                .is_some_and(|e| strip.tabs.get(i).is_some_and(|t| t.is_in(&e.path)))
+        };
         match self.split_other() {
-            Some(other) if !session(active) && !fresh && session(other) => other,
+            Some(other) if !session(active) && !fresh && session(other) && here(other) => other,
             _ => active,
         }
     }

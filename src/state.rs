@@ -403,6 +403,11 @@ fn is_false(b: &bool) -> bool {
 pub struct SplitState {
     /// The other pane's tab, by position among the reopened tabs (sessions, then browsers).
     pub tab: usize,
+    /// The other pane's environment, when it is not this one: a split can show
+    /// the tabs of two environments, and is kept with its focused pane's.
+    /// `tab` then counts among that environment's tabs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env: Option<PathBuf>,
     #[serde(default)]
     pub down: bool,
     pub ratio: f32,
@@ -454,7 +459,11 @@ fn is_saved_browser(t: &Tab) -> bool {
 /// The tabs of one environment, in the order the strip shows them. The file
 /// keeps them per environment, as it did when every environment had its own tabs.
 fn tabs_of<'a>(strip: &'a TabStrip, e: &Environment) -> Vec<&'a Tab> {
-    strip.tabs.iter().filter(|t| t.is_in(&e.path)).collect()
+    tabs_in(strip, &e.path)
+}
+
+fn tabs_in<'a>(strip: &'a TabStrip, env: &Path) -> Vec<&'a Tab> {
+    strip.tabs.iter().filter(|t| t.is_in(env)).collect()
 }
 
 /// Position of the environment's front tab among its session tabs (0 when it
@@ -478,8 +487,8 @@ fn active_session_tab(strip: &TabStrip, e: &Environment) -> usize {
 
 /// Position of a tab among its environment's tabs that reopen after a restart,
 /// in their reopened order.
-fn reopened_index(strip: &TabStrip, e: &Environment, id: u64) -> Option<usize> {
-    let tabs = tabs_of(strip, e);
+fn reopened_index(strip: &TabStrip, env: &Path, id: u64) -> Option<usize> {
+    let tabs = tabs_in(strip, env);
     let tab = tabs.iter().position(|t| t.id == id)?;
     let before = &tabs[..tab];
     if is_session(tabs[tab]) {
@@ -535,17 +544,19 @@ fn apply_tab_order(strip: &mut TabStrip, order: &[String]) {
     strip.tabs = tabs.into_iter().map(|(_, t)| t).collect();
 }
 
-/// The split, kept with the environment whose two tabs it shows.
+/// The split, kept with the environment of its focused pane.
 fn split_state(strip: &TabStrip, e: &Environment) -> Option<SplitState> {
     let split = if strip.split_env.as_deref() == Some(&e.path) {
-        strip.split_other(&e.path)?;
+        strip.split_other()?;
         strip.split?
     } else {
         // Not on screen: its split waits with the strip.
         strip.parked.get(&e.path)?.0
     };
+    let other_env = strip.tabs[strip.position(split.other)?].env.as_deref()?;
     Some(SplitState {
-        tab: reopened_index(strip, e, split.other)?,
+        tab: reopened_index(strip, other_env, split.other)?,
+        env: (other_env != e.path).then(|| other_env.to_path_buf()),
         down: split.dir == SplitDir::Down,
         ratio: split.ratio,
         focus_first: split.focus_first,
@@ -982,8 +993,9 @@ pub fn snapshot_with(
 pub fn restore(state: State) -> (Vec<Project>, usize, Layout, TabStrip) {
     let mut strip = TabStrip::default();
     // The split each environment was saved with, and the tab of its focused
-    // pane; the one on screen gets its own back, the others wait.
-    let mut splits: Vec<(PathBuf, Split, u64)> = Vec::new();
+    // pane; the one on screen gets its own back, the others wait. The other
+    // pane's tab is found once every environment's tabs are in.
+    let mut saved_splits: Vec<(PathBuf, SplitState, u64)> = Vec::new();
     let last_agent = state.last_agent.clone();
     crate::island::set_enabled(!state.island_off);
     crate::background::set_enabled(state.background);
@@ -1119,23 +1131,9 @@ pub fn restore(state: State) -> (Vec<Project>, usize, Layout, TabStrip) {
                         strip.front.insert(env.path.clone(), tab.id);
                     }
                     if let Some(s) = e.split
-                        && let Some(other) = tabs.get(s.tab).filter(|_| s.tab != front)
                         && let Some(focus) = tabs.get(front)
                     {
-                        splits.push((
-                            env.path.clone(),
-                            Split {
-                                other: other.id,
-                                dir: if s.down {
-                                    SplitDir::Down
-                                } else {
-                                    SplitDir::Right
-                                },
-                                ratio: s.ratio.clamp(Split::MIN_RATIO, Split::MAX_RATIO),
-                                focus_first: s.focus_first,
-                            },
-                            focus.id,
-                        ));
+                        saved_splits.push((env.path.clone(), s, focus.id));
                     }
                     strip.tabs.extend(tabs);
                     env
@@ -1166,6 +1164,28 @@ pub fn restore(state: State) -> (Vec<Project>, usize, Layout, TabStrip) {
                 #[cfg(feature = "coderlabs")]
                 coderspace: p.coderspace,
             }
+        })
+        .collect();
+    // Before `apply_tab_order`: each environment's tabs are still in their
+    // reopened order, which `SplitState::tab` counts in.
+    let splits: Vec<(PathBuf, Split, u64)> = saved_splits
+        .into_iter()
+        .filter_map(|(path, s, focus)| {
+            let other_env = s.env.as_deref().unwrap_or(&path);
+            let other = tabs_in(&strip, other_env).get(s.tab)?.id;
+            (other != focus).then(|| {
+                let split = Split {
+                    other,
+                    dir: if s.down {
+                        SplitDir::Down
+                    } else {
+                        SplitDir::Right
+                    },
+                    ratio: s.ratio.clamp(Split::MIN_RATIO, Split::MAX_RATIO),
+                    focus_first: s.focus_first,
+                };
+                (path, split, focus)
+            })
         })
         .collect();
     apply_tab_order(&mut strip, &state.tab_order);
@@ -1781,7 +1801,7 @@ mod tests {
         // The blank browser tab is not reopened, so the docs tab lands at index 1.
         assert_eq!(strip.tabs.len(), 2);
         let split = strip.split.expect("split restored");
-        assert_eq!(strip.split_other(&here), Some(1));
+        assert_eq!(strip.split_other(), Some(1));
         assert_eq!(split.dir, SplitDir::Down);
         assert!(split.focus_first);
         assert!((split.ratio - 0.35).abs() < 1e-6);
@@ -1803,7 +1823,86 @@ mod tests {
         assert!(strip.split.is_none(), "it is not the one on screen");
         strip.active_tab = strip.front_of(&here).unwrap();
         strip.bring_split(&here, None);
-        assert_eq!((strip.active_tab, strip.split_other(&here)), (0, Some(1)));
+        assert_eq!((strip.active_tab, strip.split_other()), (0, Some(1)));
+    }
+
+    #[test]
+    fn a_split_of_two_environments_survives_a_restart() {
+        let mut project = new_project(Path::new("/tmp/arakun-split-two-test"));
+        let a = project.environments[0].path.clone();
+        let b = PathBuf::from("/tmp/arakun-split-two-test-2");
+        project.environments[0].sessions = vec![
+            Session::new("s1".into(), "One".into(), AgentKind::Droid),
+            Session::new("s2".into(), "Two".into(), AgentKind::Droid),
+        ];
+        let mut other = Environment::new(b.clone(), None, false);
+        other.sessions = vec![Session::new("s3".into(), "Three".into(), AgentKind::Droid)];
+        project.environments.push(other);
+        let session = |env: &Path, id: &str| {
+            Tab::of(
+                env,
+                id.to_string(),
+                TabKind::Session {
+                    agent: AgentKind::Droid,
+                    id: id.to_string().into(),
+                },
+            )
+        };
+        let mut strip = TabStrip {
+            tabs: vec![session(&a, "s1"), session(&a, "s2"), session(&b, "s3")],
+            ..Default::default()
+        };
+        let ids: Vec<u64> = strip.tabs.iter().map(|t| t.id).collect();
+        strip.bring_split(&a, None);
+        // B's tab dropped on the second pane, beside A's: B comes on screen.
+        assert!(strip.place_tab(ids[2], false, |_| unreachable!()));
+        strip.front.insert(a.clone(), ids[0]);
+        strip.front.insert(b.clone(), ids[2]);
+        project.active_env = 1;
+        let layout = Layout {
+            dock_open: false,
+            dock_height: DOCK_HEIGHT,
+            rail_open: true,
+            panel_open: true,
+            rail_w: RAIL_W,
+            panel_w: PANEL_W,
+            arcade: false,
+            diff_palette: crate::theme::DiffPalette::Default,
+            glass: false,
+            contrast: crate::theme::Contrast::System,
+            grays: crate::theme::Grays::Crisp,
+            type_scale: crate::ui::TypeScale::Compact,
+            rail_usage: [true, true, true, true],
+            ui_zoom: 100,
+            window: None,
+        };
+        let title = |strip: &TabStrip, i: usize| strip.tabs[i].title.to_string();
+        let bytes = snapshot_with(std::slice::from_ref(&project), &strip, 0, layout.clone());
+        let (_, _, _, mut strip) = restore(serde_json::from_slice(&bytes).unwrap());
+        let split = strip.split.expect("split restored");
+        let other = strip.split_other().expect("both panes show");
+        assert_eq!(
+            (title(&strip, strip.active_tab), title(&strip, other)),
+            ("Three".into(), "One".into())
+        );
+        assert!(!split.focus_first, "B's tab is still on the right");
+        assert_eq!(strip.split_env.as_deref(), Some(b.as_path()));
+
+        // The focus goes to A's pane: the split stays, now A's.
+        let prev = strip.active().map(|t| t.id);
+        strip.active_tab = other;
+        strip.bring_split(&a, prev);
+        strip.settle_split(prev);
+        project.active_env = 0;
+        let bytes = snapshot_with(std::slice::from_ref(&project), &strip, 0, layout);
+        let (_, _, _, strip) = restore(serde_json::from_slice(&bytes).unwrap());
+        let split = strip.split.expect("split restored");
+        let other = strip.split_other().expect("both panes show");
+        assert_eq!(
+            (title(&strip, strip.active_tab), title(&strip, other)),
+            ("One".into(), "Three".into())
+        );
+        assert!(split.focus_first, "A's tab is still on the left");
     }
 
     #[test]

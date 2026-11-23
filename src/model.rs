@@ -690,18 +690,24 @@ impl TabStrip {
         }
         self.split_env = Some(env.to_path_buf());
         // A split across two environments is put aside under the one of its
-        // focused pane, so the split holding the tab that came on screen goes
-        // first; else the one `env` put aside.
+        // focused pane. The one `env` put aside goes first when it holds the
+        // tab that came on screen; then one whose other pane holds it (a tab
+        // can be in two); else the one `env` put aside, whatever it holds.
         let arrived = active.filter(|_| {
             self.active()
                 .is_some_and(|t| t.env.as_deref().is_none_or(|e| e == env))
         });
-        let key = self
-            .parked
-            .iter()
-            .find(|(_, (split, focus))| arrived.is_some_and(|a| a == split.other || a == *focus))
-            .map(|(k, _)| k.clone())
-            .or_else(|| self.parked.contains_key(env).then(|| env.to_path_buf()));
+        let holds = |(split, focus): &(Split, u64), a: u64| a == split.other || a == *focus;
+        let own = self.parked.get(env);
+        let key = if own.zip(arrived).is_some_and(|(p, a)| holds(p, a)) {
+            Some(env.to_path_buf())
+        } else {
+            self.parked
+                .iter()
+                .find(|(_, (split, _))| arrived == Some(split.other))
+                .map(|(k, _)| k.clone())
+                .or_else(|| own.map(|_| env.to_path_buf()))
+        };
         let Some((mut split, focus)) = key.and_then(|k| self.parked.remove(&k)) else {
             return;
         };
@@ -1817,6 +1823,28 @@ mod tests {
         strip.bring_split(b, Some(ids[2]));
         assert_eq!(panes(&strip), (ids[0], ids[1]));
         assert_eq!(strip.tabs[strip.active_tab].id, ids[1]);
+    }
+
+    #[test]
+    fn a_tab_in_two_splits_put_aside_brings_back_its_own_environments() {
+        let mut strip = strip_of(&["a", "b", "b", "c"]);
+        let ids: Vec<u64> = strip.tabs.iter().map(|t| t.id).collect();
+        let split = |other| Split {
+            other,
+            dir: SplitDir::Right,
+            ratio: 0.5,
+            focus_first: true,
+        };
+        // a|b1 put aside with `a`, b1|b2 with `b`; `c` on screen.
+        strip.parked.insert("a".into(), (split(ids[1]), ids[0]));
+        strip.parked.insert("b".into(), (split(ids[2]), ids[1]));
+        strip.active_tab = 3;
+        strip.bring_split(Path::new("c"), None);
+        // Back on b1: the split `b` put aside, which it is the focus of.
+        strip.active_tab = 1;
+        strip.bring_split(Path::new("b"), Some(ids[3]));
+        assert_eq!(strip.split.unwrap().other, ids[2]);
+        assert!(strip.parked.contains_key(Path::new("a")));
     }
 
     #[test]

@@ -901,7 +901,11 @@ fn run_claude(
 fn private_dir() -> std::io::Result<PathBuf> {
     let mut bytes = [0u8; 8];
     getrandom::fill(&mut bytes).map_err(|e| std::io::Error::other(e.to_string()))?;
-    let dir = std::env::temp_dir().join(format!("arakun-bot-{}", super::crypto::b64(bytes)));
+    let dir = std::env::temp_dir().join(format!(
+        "{}{}",
+        super::bot_guard::COPY_PREFIX,
+        super::crypto::b64(bytes)
+    ));
     #[cfg(unix)]
     std::os::unix::fs::DirBuilderExt::mode(&mut std::fs::DirBuilder::new(), 0o700).create(&dir)?;
     #[cfg(not(unix))]
@@ -1152,11 +1156,12 @@ impl Hub {
                 async move {
                     // The run reads a copy of the project without its secrets,
                     // never the project itself.
+                    super::bot_guard::sweep_copies();
                     let dir = private_dir().map_err(|e| format!("no folder to run in: {e}"))?;
                     let cwd = crate::platform::canonicalize(&dir).unwrap_or(dir);
                     let copied = project
                         .as_deref()
-                        .map(|p| super::bot_guard::mirror(p, &cwd))
+                        .map(|p| super::bot_guard::mirror(p, &cwd, &stop))
                         .transpose();
                     let out = copied.and_then(|copied| {
                         let progress = move |s: Step| {
@@ -1166,11 +1171,8 @@ impl Hub {
                         if unopened > 0 {
                             out.answer.unchecked.push(unopened_note(unopened));
                         }
-                        if let Some(m) = copied.filter(|m| m.too_big > 0) {
-                            out.answer.unchecked.push(format!(
-                                "{} files of the project were too large to read.",
-                                m.too_big
-                            ));
+                        if let Some(m) = copied {
+                            out.answer.unchecked.extend(m.notes());
                         }
                         Ok(out)
                     });

@@ -15,6 +15,7 @@
 use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
 use std::sync::LazyLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use regex::{Captures, Regex};
 
@@ -22,6 +23,9 @@ use super::bot::Answer;
 
 /// What a secret is replaced with in the answer.
 pub const REDACTED: &str = "[redacted]";
+
+/// How the folders of the run's copies start, in the temp folder.
+pub const COPY_PREFIX: &str = "arakun-bot-";
 
 /// A file larger than this is left out of the copy: it is rarely code, and a
 /// few would fill the copy.
@@ -95,21 +99,72 @@ pub struct Mirror {
     /// Files left out for their size or past the copy's limits. Secret and
     /// ignored files are not counted: the run is not meant to know of them.
     pub too_big: usize,
+    /// Files that could not be read or written, as when the temp folder is
+    /// full.
+    pub failed: usize,
+    /// Submodules and nested repositories, which git lists as one folder
+    /// and the copy leaves out.
+    pub nested: Vec<PathBuf>,
+}
+
+impl Mirror {
+    /// What the answer says under "not checked" about what the copy left
+    /// out, so the run is not taken to have read the whole project.
+    pub fn notes(&self) -> Vec<String> {
+        let files = |n: usize| {
+            if n == 1 {
+                "1 file of the project".to_string()
+            } else {
+                format!("{n} files of the project")
+            }
+        };
+        let mut notes = Vec::new();
+        if self.too_big > 0 {
+            let verb = if self.too_big == 1 { "was" } else { "were" };
+            notes.push(format!("{} {verb} too large to read.", files(self.too_big)));
+        }
+        if self.failed > 0 {
+            notes.push(format!(
+                "{} could not be copied to read.",
+                files(self.failed)
+            ));
+        }
+        if !self.nested.is_empty() {
+            let names: Vec<String> = self
+                .nested
+                .iter()
+                .map(|p| p.to_string_lossy().replace('\\', "/"))
+                .collect();
+            notes.push(format!(
+                "Submodules and nested repositories were not read: {}.",
+                names.join(", ")
+            ));
+        }
+        notes
+    }
 }
 
 /// Copies `project` into the empty folder `into`, without secret-looking
 /// files and, in a git checkout, without what git ignores. Symbolic links
-/// are left out, so nothing in the copy leads outside it.
-pub fn mirror(project: &Path, into: &Path) -> Result<Mirror, String> {
+/// are left out, so nothing in the copy leads outside it. Fails with
+/// "stopped" once `stop` is set.
+pub fn mirror(project: &Path, into: &Path, stop: &AtomicBool) -> Result<Mirror, String> {
     let root = crate::platform::canonicalize(project)
         .map_err(|e| format!("could not open the project: {e}"))?;
+    let mut out = Mirror::default();
     let files = match git_files(&root) {
         Some(files) => files,
-        None => walk_files(&root),
+        None => {
+            let (files, past) = walk_files(&root, stop);
+            out.too_big += past;
+            files
+        }
     };
-    let mut out = Mirror::default();
     let mut total = 0u64;
     for rel in files {
+        if stop.load(Ordering::Relaxed) {
+            return Err("stopped".into());
+        }
         if is_secret_path(&rel) {
             continue;
         }
@@ -118,6 +173,11 @@ pub fn mirror(project: &Path, into: &Path) -> Result<Mirror, String> {
         let Ok(meta) = std::fs::symlink_metadata(&from) else {
             continue;
         };
+        if meta.is_dir() {
+            // Git lists a submodule or a nested repository as its folder.
+            out.nested.push(rel);
+            continue;
+        }
         if !meta.file_type().is_file() {
             continue;
         }
@@ -125,16 +185,42 @@ pub fn mirror(project: &Path, into: &Path) -> Result<Mirror, String> {
             out.too_big += 1;
             continue;
         }
-        let to = into.join(&rel);
-        if let Some(dir) = to.parent() {
-            std::fs::create_dir_all(dir).map_err(|e| format!("could not copy the project: {e}"))?;
-        }
-        if std::fs::copy(&from, &to).is_ok() {
+        if copy(&from, &into.join(&rel)).is_ok() {
             total += meta.len();
             out.files += 1;
+        } else {
+            out.failed += 1;
         }
     }
     Ok(out)
+}
+
+fn copy(from: &Path, to: &Path) -> std::io::Result<()> {
+    if let Some(dir) = to.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::copy(from, to).map(|_| ())
+}
+
+/// Removes copies a run left behind when Arakun quit in the middle of it.
+/// Only those a day old: another Arakun may be running one now.
+pub fn sweep_copies() {
+    let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) else {
+        return;
+    };
+    let day = std::time::Duration::from_secs(24 * 60 * 60);
+    for e in entries.flatten() {
+        let old = e
+            .metadata()
+            .ok()
+            .filter(|m| m.is_dir())
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|age| age > day);
+        if old && e.file_name().to_string_lossy().starts_with(COPY_PREFIX) {
+            let _ = std::fs::remove_dir_all(e.path());
+        }
+    }
 }
 
 /// The files of a git checkout, relative to `root`: tracked and untracked,
@@ -169,18 +255,31 @@ fn split_z(bytes: &[u8]) -> Vec<PathBuf> {
         .collect()
 }
 
-/// The files of a folder outside git, relative to it. Hidden files are left
-/// out, and `.gitignore` files are still followed.
-fn walk_files(root: &Path) -> Vec<PathBuf> {
-    ignore::WalkBuilder::new(root)
+/// The files of a folder outside git, relative to it, up to [`FILES`], and
+/// how many more there are. Hidden files are left out, and `.gitignore`
+/// files are still followed.
+fn walk_files(root: &Path, stop: &AtomicBool) -> (Vec<PathBuf>, usize) {
+    let mut files = Vec::new();
+    let mut past = 0;
+    let walk = ignore::WalkBuilder::new(root)
         .require_git(false)
         .follow_links(false)
         .build()
         .filter_map(Result::ok)
         .filter(|e| e.file_type().is_some_and(|t| t.is_file()))
         .filter_map(|e| e.path().strip_prefix(root).ok().map(Path::to_path_buf))
-        .take(FILES + 1)
-        .collect()
+        .filter(|p| !is_secret_path(p));
+    for rel in walk {
+        if stop.load(Ordering::Relaxed) {
+            break;
+        }
+        if files.len() < FILES {
+            files.push(rel);
+        } else {
+            past += 1;
+        }
+    }
+    (files, past)
 }
 
 // ---- the answer ------------------------------------------------------------------
@@ -424,10 +523,34 @@ mod tests {
         write("build/out.txt", "ignored dir");
         #[cfg(unix)]
         std::os::unix::fs::symlink("/etc/hostname", project.join("link")).unwrap();
+        write("settings.py", "SECRET_KEY = 'django-insecure-abc123'\n");
+        std::fs::create_dir_all(project.join("vendor/lib")).unwrap();
+        std::fs::write(project.join("vendor/lib/lib.rs"), "").unwrap();
+        git(&project.join("vendor/lib"), &["init", "-q"]);
+        git(&project.join("vendor/lib"), &["add", "lib.rs"]);
+        git(
+            &project.join("vendor/lib"),
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "-qm",
+                "x",
+            ],
+        );
         git(&project, &["init", "-q"]);
         git(
             &project,
-            &["add", "-f", "src/main.rs", "tracked-ignored.txt", ".env"],
+            &[
+                "add",
+                "-f",
+                "src/main.rs",
+                "tracked-ignored.txt",
+                ".env",
+                "vendor/lib",
+            ],
         );
         std::fs::write(
             project.join(".gitignore"),
@@ -435,7 +558,7 @@ mod tests {
         )
         .unwrap();
 
-        let m = mirror(&project, &copy).unwrap();
+        let m = mirror(&project, &copy, &AtomicBool::new(false)).unwrap();
         let mut got: Vec<String> = ignore::WalkBuilder::new(&copy)
             .standard_filters(false)
             .build()
@@ -450,9 +573,38 @@ mod tests {
             })
             .collect();
         got.sort();
-        assert_eq!(got, [".gitignore", "notes.md", "src/main.rs"]);
-        assert_eq!(m.files, 3);
+        assert_eq!(
+            got,
+            [".gitignore", "notes.md", "settings.py", "src/main.rs"]
+        );
+        assert_eq!(m.files, 4);
+        assert_eq!(m.nested, [PathBuf::from("vendor/lib")]);
+        let stopped = base.join("stopped");
+        std::fs::create_dir_all(&stopped).unwrap();
+        assert_eq!(
+            mirror(&project, &stopped, &AtomicBool::new(true)),
+            Err("stopped".into())
+        );
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn the_answer_names_what_the_copy_left_out() {
+        let m = Mirror {
+            files: 10,
+            too_big: 1,
+            failed: 3,
+            nested: vec![PathBuf::from("vendor/lib")],
+        };
+        assert_eq!(
+            m.notes(),
+            [
+                "1 file of the project was too large to read.",
+                "3 files of the project could not be copied to read.",
+                "Submodules and nested repositories were not read: vendor/lib.",
+            ]
+        );
+        assert!(Mirror::default().notes().is_empty());
     }
 
     #[test]

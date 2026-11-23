@@ -539,7 +539,11 @@ impl TeamsView {
         self.hub
             .update(cx, |h, cx| h.open_channel(&team, &channel, cx));
         self.pane = Pane::Channel(team, channel);
-        self.scroll.scroll_to_bottom();
+        // A jump to a message (from Decisions) scrolls once the list is laid
+        // out; until then the list scrolls to the bottom itself.
+        if self.pending_jump.is_none() {
+            self.scroll.scroll_to_bottom();
+        }
         cx.notify();
     }
 
@@ -2796,18 +2800,6 @@ impl TeamsView {
 
         let mut bot = self.bot_state(&messages, team_id, channel_id, cx);
 
-        // Keep the newest in view when it arrives and the list was at its
-        // bottom. A run of @bot counts, and so does its answer replacing it.
-        let seen = messages.len() * 2 + bot.runs.len();
-        if seen != self.seen_count {
-            let max = self.scroll.max_offset().y;
-            let at_bottom = -self.scroll.offset().y >= max - px(48.);
-            if self.seen_count == 0 || at_bottom {
-                self.scroll.scroll_to_bottom();
-            }
-            self.seen_count = seen;
-        }
-
         // The list, laid out first so a quote knows its target's row.
         let mut lines: Vec<Line> = Vec::new();
         let mut day = None;
@@ -2867,9 +2859,25 @@ impl TeamsView {
                 _ => None,
             })
             .collect();
-        if let Some(id) = self.pending_jump.clone()
-            && let Some(&row) = index_of.get(id.as_str())
-        {
+        let jump = self
+            .pending_jump
+            .clone()
+            .and_then(|id| Some((*index_of.get(id.as_str())?, id)));
+
+        // Keep the newest in view when it arrives and the list was at its
+        // bottom. A run of @bot counts, and so does its answer replacing it.
+        // Not when this frame jumps to a message: the scroll to the bottom
+        // is applied after the one to the message, and would win.
+        let seen = messages.len() * 2 + bot.runs.len();
+        if seen != self.seen_count {
+            let max = self.scroll.max_offset().y;
+            let at_bottom = -self.scroll.offset().y >= max - px(48.);
+            if (self.seen_count == 0 || at_bottom) && jump.is_none() {
+                self.scroll.scroll_to_bottom();
+            }
+            self.seen_count = seen;
+        }
+        if let Some((row, id)) = jump {
             self.pending_jump = None;
             self.jump_to(row, id, cx);
         }

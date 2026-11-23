@@ -146,7 +146,7 @@ the hosts above). Do these once, in this order:
    `[[env.production.d1_databases]]`. The deploy workflow fails until you do:
 
    ```sh
-   npx wrangler d1 create arakun-cloud
+   npx wrangler d1 create prod-arakun-cloud
    ```
 
 3. The `CLOUDFLARE_API_TOKEN` of the `production` environment needs D1 edit permission:
@@ -166,7 +166,7 @@ the hosts above). Do these once, in this order:
    away. No phone reaches its computer between the two:
 
    ```sh
-   npx wrangler d1 migrations apply arakun-cloud --env production --remote
+   npx wrangler d1 migrations apply prod-arakun-cloud --env production --remote
    npx wrangler deploy --env production
    ```
 
@@ -202,13 +202,13 @@ admin secret cannot grant flags or make sessions in production.
    under `[[env.production.d1_databases]]`:
 
    ```sh
-   npx wrangler d1 create arakun-cloud
+   npx wrangler d1 create prod-arakun-cloud
    ```
 
 2. Apply the migrations, now and after every change in `migrations/`:
 
    ```sh
-   npx wrangler d1 migrations apply arakun-cloud --env production --remote
+   npx wrangler d1 migrations apply prod-arakun-cloud --env production --remote
    ```
 
 3. Set the admin secret. Without it, the `/admin/users/...` endpoints answer 401 to
@@ -408,7 +408,7 @@ done
 Or straight in the database:
 
 ```sh
-npx wrangler d1 execute arakun-cloud --env production --remote --command "
+npx wrangler d1 execute prod-arakun-cloud --env production --remote --command "
   INSERT INTO users (github_id, login, created_at, last_seen_at)
     VALUES (<id>, '', unixepoch(), 0) ON CONFLICT DO NOTHING;
   INSERT INTO user_flags (github_id, flag, granted_at)
@@ -427,7 +427,7 @@ printf 'Authorization: Bearer %s\n' "$ADMIN_SECRET" |
 To see who has which flag:
 
 ```sh
-npx wrangler d1 execute arakun-cloud --env production --remote --command "
+npx wrangler d1 execute prod-arakun-cloud --env production --remote --command "
   SELECT u.github_id, u.login, f.flag FROM user_flags f JOIN users u USING (github_id)"
 ```
 

@@ -108,7 +108,7 @@ routes = [{ pattern = "*.arakun.dev/*", zone_name = "arakun.dev" }]
 
 [[env.production.d1_databases]]
 binding = "DB"
-database_name = "arakun-cloud"
+database_name = "prod-arakun-cloud"
 database_id = "717b5615-5d00-4753-9e2c-b068f9a4724c"
 migrations_dir = "migrations"
 
@@ -155,7 +155,7 @@ new_sqlite_classes = ["Channel"]
 
 [[env.production.kv_namespaces]]
 binding = "CONFIG"
-id = "c6b6881faa8941e7aac00b98dbe0b45d"
+id = "c7fdab8833cd4c96b9e73d02297ac291"
 
 [env.production.assets]
 directory = "../phone"

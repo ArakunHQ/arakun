@@ -40,8 +40,8 @@ env:
   CI_CARGO_CONFIG: profile.dev.package."*".opt-level=0
 
 jobs:
-  # Decides which of the jobs below a change needs, so a docs-only, relay-only
-  # or teams-only change does not pay for the Rust builds. The jobs are still
+  # Decides which of the jobs below a change needs, so a docs-only or cloud-only
+  # change does not pay for the Rust builds. The jobs are still
   # required checks: a job skipped by its `if` counts as passed, while a
   # workflow-level `paths` filter would leave the checks pending forever.
   changes:
@@ -52,8 +52,7 @@ jobs:
       pull-requests: read
     outputs:
       rust: ${{ steps.diff.outputs.rust }}
-      relay: ${{ steps.diff.outputs.relay }}
-      teams: ${{ steps.diff.outputs.teams }}
+      cloud: ${{ steps.diff.outputs.cloud }}
       ios: ${{ steps.diff.outputs.ios }}
       android: ${{ steps.diff.outputs.android }}
     steps:
@@ -70,13 +69,13 @@ jobs:
         run: |
           if [ "$MAIN_PASSED" = true ]; then
             echo "::notice::CI already passed on main for $AFTER, so every job skips"
-            { echo rust=false; echo relay=false; echo teams=false; echo ios=false; echo android=false; } >> "$GITHUB_OUTPUT"
+            { echo rust=false; echo cloud=false; echo ios=false; echo android=false; } >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
           everything() {
             echo "::notice::$1, so every job runs"
-            { echo rust=true; echo relay=true; echo teams=true; echo ios=true; echo android=true; } >> "$GITHUB_OUTPUT"
+            { echo rust=true; echo cloud=true; echo ios=true; echo android=true; } >> "$GITHUB_OUTPUT"
             exit 0
           }
 
@@ -99,21 +98,19 @@ jobs:
           [ "$(grep -c . <<< "$files")" -lt "$limit" ] || everything "Too many changed files to list"
 
           rust=false
-          relay=false
-          teams=false
+          cloud=false
           ios=false
           android=false
           while IFS= read -r f; do
             [ -n "$f" ] || continue
             case "$f" in
               # How CI itself runs: test everything with it.
-              .github/workflows/ci.yml | .github/actions/*) rust=true relay=true teams=true ios=true android=true ;;
-              # The relay job also runs the phone tests.
-              relay/*) relay=true ;;
-              teams/*) teams=true ;;
+              .github/workflows/ci.yml | .github/actions/*) rust=true cloud=true ios=true android=true ;;
+              # The cloud job also runs the phone tests.
+              cloud/*) cloud=true ;;
               # The app embeds phone/ (rust_embed) and tests against its vectors,
               # as the iOS and Android apps' protocol tests do.
-              phone/*) rust=true relay=true ios=true android=true ;;
+              phone/*) rust=true cloud=true ios=true android=true ;;
               # The iOS app alone: nothing the Rust build reads.
               ios/*) ios=true ;;
               # The Android app alone: nothing the Rust build reads.
@@ -137,8 +134,8 @@ jobs:
             esac
           done <<< "$files"
 
-          echo "rust=$rust relay=$relay teams=$teams ios=$ios android=$android"
-          { echo "rust=$rust"; echo "relay=$relay"; echo "teams=$teams"; echo "ios=$ios"; echo "android=$android"; } >> "$GITHUB_OUTPUT"
+          echo "rust=$rust cloud=$cloud ios=$ios android=$android"
+          { echo "rust=$rust"; echo "cloud=$cloud"; echo "ios=$ios"; echo "android=$android"; } >> "$GITHUB_OUTPUT"
 
   # Clippy and the tests build different artifacts (metadata vs. code), so they
   # run side by side instead of one after the other.
@@ -426,16 +423,17 @@ jobs:
         if: ${{ !cancelled() }}
         run: cargo test --locked --no-default-features --config "$CI_CARGO_CONFIG"
 
-  # The phone relay (Cloudflare Worker) is TypeScript apart from the app; its
-  # tests run the real Worker inside workerd, no account needed.
-  relay:
-    name: Relay (types and tests)
+  # The cloud Worker (the phone relay, and sign-in, feature flags and teams) is
+  # TypeScript apart from the app; its tests run the real Worker, D1 and Durable
+  # Objects inside workerd, no account needed.
+  cloud:
+    name: Cloud (types and tests)
     needs: changes
-    if: ${{ !cancelled() && needs.changes.outputs.relay != 'false' }}
+    if: ${{ !cancelled() && needs.changes.outputs.cloud != 'false' }}
     runs-on: depot-ubuntu-24.04
     defaults:
       run:
-        working-directory: relay
+        working-directory: cloud
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -448,7 +446,7 @@ jobs:
         with:
           node-version: 24
           cache: npm
-          cache-dependency-path: relay/package-lock.json
+          cache-dependency-path: cloud/package-lock.json
 
       - run: npm ci
       - run: npx tsc --noEmit
@@ -458,34 +456,6 @@ jobs:
       - name: phone e2e vectors
         working-directory: phone
         run: node --test "test/*.test.mjs"
-
-  # The teams Worker (sign-in and feature flags) is TypeScript apart from the
-  # app, like the relay; its tests run the real Worker and D1 inside workerd.
-  teams:
-    name: Teams (types and tests)
-    needs: changes
-    if: ${{ !cancelled() && needs.changes.outputs.teams != 'false' }}
-    runs-on: depot-ubuntu-24.04
-    defaults:
-      run:
-        working-directory: teams
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      # CPU and memory use for the weekly runner-sizing report.
-      - uses: $/.github/actions/runner-usage
-
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: teams/package-lock.json
-
-      - run: npm ci
-      - run: npx tsc --noEmit
-      - run: npx vitest run
 
   # The iOS app (ios/): its protocol package's tests, which check the Swift
   # crypto against phone/test/vectors, and an unsigned build for the

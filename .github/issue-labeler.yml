@@ -13,7 +13,7 @@
 
 "area: app": '/### Area[ \t]*\r?\n\s*[^\r\n]*\bApp\b/i'
 "area: browser": '/### Area[ \t]*\r?\n\s*[^\r\n]*\bBrowser\b/i'
-"area: relay": '/^Relay(\([^)]*\))?\s*:|### Area[ \t]*\r?\n\s*[^\r\n]*\bRelay\b/i'
+"area: cloud": '/^(Relay|Cloud)(\([^)]*\))?\s*:|### Area[ \t]*\r?\n\s*[^\r\n]*\b(Relay|Cloud)\b/i'
 "area: phone": '/### Area[ \t]*\r?\n\s*[^\r\n]*\bPhone\b/i'
 "area: iso": '/### Area[ \t]*\r?\n\s*[^\r\n]*\bIsometric\b/i'
 "area: ci": '/^(CI|CI\/CD|Release)(\([^)]*\))?\s*:|### Area[ \t]*\r?\n\s*[^\r\n]*\bCI\/release\b/i'

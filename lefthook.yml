@@ -22,16 +22,11 @@ pre-commit:
       run: env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE cargo clippy --locked --all-targets --no-default-features -- -D warnings
 
     # npx would download an unrelated `tsc` package if node_modules is missing.
-    - name: relay-types
-      root: relay/
-      glob: "*"
-      run: (test -d node_modules || npm ci) && npx tsc --noEmit
-
     # npm ci again when the lockfile is newer than the install, as after
     # switching to a branch with other dependencies.
-    - name: teams-types
-      glob: &teams ["teams/*", "teams/**/*", ".github/workflows/ci.yml", ".github/actions/*", ".github/actions/**/*"]
-      run: cd teams && (test node_modules/.package-lock.json -nt package-lock.json || npm ci) && npm run check
+    - name: cloud-types
+      glob: &cloud ["cloud/*", "cloud/**/*", ".github/workflows/ci.yml", ".github/actions/*", ".github/actions/**/*"]
+      run: cd cloud && (test node_modules/.package-lock.json -nt package-lock.json || npm ci) && npm run check
 
     # The phone's encryption against the vectors the Rust side writes, so a
     # change on either side runs it. No `root:`, which would drop src/phone.
@@ -47,14 +42,9 @@ pre-push:
       glob: *rust
       run: env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE cargo test --locked --no-default-features
 
-    - name: relay-tests
-      root: relay/
-      glob: "*"
-      run: (test -d node_modules || npm ci) && npx vitest run
-
-    - name: teams-tests
-      glob: *teams
-      run: cd teams && (test node_modules/.package-lock.json -nt package-lock.json || npm ci) && npm test
+    - name: cloud-tests
+      glob: *cloud
+      run: cd cloud && (test node_modules/.package-lock.json -nt package-lock.json || npm ci) && npm test
 
     # The iOS app's protocol, against the vectors the Rust side writes; as
     # the "What changed" job in ci.yml, phone/ and CI itself count too. Swift

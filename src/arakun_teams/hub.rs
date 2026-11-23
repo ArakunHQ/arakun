@@ -5340,7 +5340,7 @@ mod tests {
     /// sockets with a reply, read the history, then remove and rotate.
     ///
     /// Needs a server and two fresh users with the `teams` flag and no
-    /// devices yet (see the Teams section of teams/README.md for running one
+    /// devices yet (see the Teams section of cloud/README.md for running one
     /// locally):
     ///
     /// ```sh

@@ -5,7 +5,7 @@ import kotlinx.serialization.json.JsonElement
 import java.io.ByteArrayOutputStream
 import java.net.URI
 
-/** Whether `s` is shaped like a computer's label (relay/src/label.ts). */
+/** Whether `s` is shaped like a computer's label (cloud/src/relay/label.ts). */
 fun isLabel(s: String): Boolean = LABEL_SHAPE.matches(s)
 
 private val LABEL_SHAPE = Regex("[a-z2-7]{16}")

@@ -111,7 +111,7 @@ it pairs, and before it replaces the computer the phone is paired with). The cre
 sealed with a key the Android Keystore keeps on this device; the app's data is left out
 of backups and device transfers.
 
-A relay run by hand (`npx wrangler dev`, see relay/README.md) speaks plain http and has
+A relay run by hand (`npx wrangler dev`, see cloud/README.md) speaks plain http and has
 no label in its address; the app asks it for its label at `/_relay`. Only a debug build
 may use plain http (`src/debug/res/xml/network_security_config.xml`); a release build
 talks to relays over TLS only.

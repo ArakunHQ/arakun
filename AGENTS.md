@@ -118,10 +118,8 @@ and fix every warning:
 tools/rustfmt.sh --check
 cargo clippy --locked --all-targets --no-default-features -- -D warnings
 cargo test --locked --no-default-features <module>   # only the modules you touched
-# relay/ or phone/ changed
-(cd relay && npx tsc --noEmit)
-# teams/ changed
-(cd teams && npm ci && npm run check)
+# cloud/ or phone/ changed
+(cd cloud && npm ci && npm run check)
 # ios/ changed (macOS with Xcode; brew install xcodegen)
 (cd ios/ArakunKit && swift test)
 (cd ios && xcodegen generate && xcodebuild build -quiet -project Arakun.xcodeproj \

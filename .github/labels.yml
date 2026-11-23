@@ -49,9 +49,9 @@
 - name: "area: browser"
   color: "#5319e7"
   description: CEF browser tabs
-- name: "area: relay"
+- name: "area: cloud"
   color: "#f9a03f"
-  description: The Cloudflare Worker (relay/)
+  description: The Cloudflare Worker, relay and teams (cloud/)
 - name: "area: phone"
   color: "#fbca04"
   description: The phone page and remote (phone/, core/src/phone/)

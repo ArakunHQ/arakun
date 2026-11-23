@@ -80,8 +80,7 @@ reviews:
       - "src/posthog/**"
       - "src/github/**"
       - "core/src/phone/**"
-      - "relay/**"
-      - "teams/**"
+      - "cloud/**"
       - "src/arakun_teams/**"
       - "phone/**"
       # The iOS app's protocol, pairing and the credentials it keeps.
@@ -134,8 +133,7 @@ reviews:
   ignore:
     files:
       - "Cargo.lock"
-      - "relay/package-lock.json"
-      - "teams/package-lock.json"
+      - "cloud/package-lock.json"
       # Images and fonts only: assets/*.pub are the release signing keys.
       - "assets/**/*.png"
       - "assets/**/*.svg"
@@ -209,13 +207,12 @@ reviews:
       description: |
         account.rs, fetch.rs and voice.rs read and use API keys. Keys come from the desktop keyring or an environment variable and must never be logged, shown in full, or written to a file other than the keyring.
         src/cloudflare, src/posthog and src/github use the user's sign-ins (the `cf` profile, PostHog API keys in a 0600 file, the `gh` CLI). Check that tokens are never logged or shown, that files holding them are created 0600, and that network calls run off the UI thread with a timeout.
-    - name: Relay and teams Workers
+    - name: Cloud Worker (relay and teams)
       include:
-        - "relay/**"
-        - "teams/**"
+        - "cloud/**"
       description: |
-        The relay is a Cloudflare Worker that forwards encrypted frames between the desktop and the phone. It must never see plaintext or keys. Check limits and input validation on every frame, authentication on admin routes, and Durable Object state that can grow without a bound. A new route or limit needs a test in `relay/test`.
-        The teams Worker signs users in with GitHub and keeps per-user feature flags in D1. It must never store or log the GitHub token or a session token; the database holds only SHA-256 hashes of sessions. Users are keyed by numeric GitHub ID, never by login. Every endpoint that needs a user goes through `session()`, and every team feature checks its flag on the server. Admin routes compare `ADMIN_SECRET` in constant time. No GitHub IDs of real users belong in the repository. A schema change is a new file in `teams/migrations`, never an edit to an applied one. A new route or check needs a test in `teams/test`.
+        The relay (`cloud/src/relay`) is part of the one Cloudflare Worker in `cloud/`. It that forwards encrypted frames between the desktop and the phone. It must never see plaintext or keys. Check limits and input validation on every frame, authentication on admin routes, and Durable Object state that can grow without a bound. A new route or limit needs a test in `cloud/test/relay`.
+        The teams Worker signs users in with GitHub and keeps per-user feature flags in D1. It must never store or log the GitHub token or a session token; the database holds only SHA-256 hashes of sessions. Users are keyed by numeric GitHub ID, never by login. Every endpoint that needs a user goes through `session()`, and every team feature checks its flag on the server. Admin routes compare `ADMIN_SECRET` in constant time. No GitHub IDs of real users belong in the repository. A schema change is a new file in `cloud/migrations`, never an edit to an applied one. A new route or check needs a test in `cloud/test`.
     - name: Control socket and formats stored on disk
       include:
         - "src/control.rs"

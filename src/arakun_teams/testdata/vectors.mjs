@@ -1,5 +1,5 @@
 // Fixed vectors for src/arakun_teams/crypto.rs, made with WebCrypto exactly as
-// the teams Worker and its tests (teams/test/clients.ts) make and check them.
+// the teams Worker and its tests (cloud/test/clients.ts) make and check them.
 //
 //   node src/arakun_teams/testdata/vectors.mjs > src/arakun_teams/testdata/vectors.json
 //       makes new WebCrypto vectors (keys, a signature, an envelope, a message

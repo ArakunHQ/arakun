@@ -1600,7 +1600,9 @@ pub mod keyring {
         // would ask the user to allow it.
         #[cfg(target_os = "macos")]
         let secret = if service == "arakun" {
-            mac::read(account)
+            // Before the Keychain, a Mac with `secret-tool` kept these there: a
+            // secret stored then is still found.
+            mac::read(account).or_else(|| secret_tool::lookup(service, account))
         } else {
             secret_tool::lookup(service, account)
         };
@@ -1638,7 +1640,9 @@ pub mod keyring {
         win::delete(&target_name("arakun", account));
         #[cfg(target_os = "macos")]
         mac::delete(account);
-        #[cfg(not(any(windows, target_os = "macos")))]
+        // On macOS too: a secret from before the Keychain would come back on
+        // the next lookup.
+        #[cfg(not(windows))]
         secret_tool::clear(account);
     }
 
@@ -1689,7 +1693,6 @@ pub mod keyring {
             }
         }
 
-        #[cfg(not(target_os = "macos"))]
         pub fn clear(account: &str) {
             let _ = Command::new("secret-tool")
                 .args(["clear", "service", "arakun", "account", account])

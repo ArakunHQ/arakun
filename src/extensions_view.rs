@@ -2911,6 +2911,7 @@ impl Render for ExtensionsView {
                     .min_w_0()
                     .child(
                         div()
+                            .truncate()
                             .ty(Type::Subtitle)
                             .text_color(theme::text())
                             .child("Marketplace"),

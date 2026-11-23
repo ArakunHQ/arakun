@@ -1860,19 +1860,20 @@ impl Hub {
             },
             move |hub, result, cx| {
                 hub.busy.remove(&busy);
-                if hub.roster(&team_id) != Some(scope)
-                    || hub.membership.get(&team_id) != Some(&version)
-                    || !hub
+                // The server has acted or refused by now. Only the record of
+                // what was given belongs to the membership and epoch it was
+                // sealed for; the error and the reload hold for any roster.
+                let current = hub.membership.get(&team_id) == Some(&version)
+                    && hub
                         .team
                         .get(&team_id)
-                        .is_some_and(|t| t.detail.epoch == team_epoch)
-                {
-                    return;
-                }
+                        .is_some_and(|t| t.detail.epoch == team_epoch);
                 match result {
                     Ok((batch, older)) => {
-                        hub.kept.admitted(&team_id, github_id, team_epoch, &batch);
-                        hub.save(cx);
+                        if current {
+                            hub.kept.admitted(&team_id, github_id, team_epoch, &batch);
+                            hub.save(cx);
+                        }
                         hub.load_team(&team_id, cx);
                         if let Some(e) = older {
                             hub.error = Some(format!(

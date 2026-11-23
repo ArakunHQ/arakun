@@ -3170,6 +3170,7 @@ mod tests {
             login: "a".into(),
             body: Body::text("hi".to_string(), None),
             delivery,
+            edited: None,
         };
         let mut messages = vec![msg("sent", Delivery::Sent), msg("new", Delivery::Sending)];
         // A replay of a stored message refused for another reason.

@@ -4643,6 +4643,7 @@ mod tests {
             login: "dani".into(),
             body,
             delivery,
+            edited: None,
         };
         let mut answer_body = super::super::crypto::Body::text("", None);
         answer_body.kind = "bot".into();

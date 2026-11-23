@@ -840,6 +840,18 @@ impl Shell {
                     )
                 })
                 .on_click(cx.listener(|this, _, window, cx| this.open_teams_sign_in(window, cx)))
+                // As on every rail row: hide it or edit it from Customize.
+                .on_mouse_down(
+                    MouseButton::Right,
+                    cx.listener(move |this, ev: &gpui::MouseDownEvent, _, cx| {
+                        cx.stop_propagation();
+                        this.menu = Some(ContextMenu {
+                            target: MenuTarget::RailBlock(path.0, Some(path.1)),
+                            at: ev.position,
+                        });
+                        cx.notify();
+                    }),
+                )
                 .into_any_element(),
             // Signed in: the GitHub account, with its picture.
             Piece::User if self.teams.read(cx).me().is_some() => {
@@ -850,7 +862,15 @@ impl Shell {
                     .picture(&login)
                     .filter(|_| !redacted)
                     .map(|p| p.to_path_buf());
-                let shown = if redacted { "You".to_string() } else { login };
+                // A name set in Customize wins over the login, as over the git name.
+                let shown = if redacted {
+                    "You".to_string()
+                } else {
+                    item.label
+                        .clone()
+                        .filter(|l| !l.is_empty())
+                        .unwrap_or(login)
+                };
                 div()
                     .id(gpui::ElementId::Name(row_id.clone()))
                     .flex()

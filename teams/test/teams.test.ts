@@ -1027,6 +1027,20 @@ describe("channels", () => {
     expect(got.channels).toEqual([{ channel_id: t.channelId, name_ct, created_at: expect.any(Number) }]);
   });
 
+  it("take no name sealed while a rotation is pending, with the old key or the unkeyed new one", async () => {
+    const t = await team();
+    const gone = await join(t);
+    await expectJson(api(t.owner.user, "DELETE", `/teams/${t.teamId}/members/${gone.user.id}`), 200);
+    const id = ulid();
+    const ad = `arakun-teams/v1/channel|${t.teamId}|${id}|${id}`;
+    const path = `/teams/${t.teamId}/channels`;
+    const old = await api(t.owner.user, "POST", path, { body: { channel_id: id, name_ct: await seal(t.keys.get(1)!, 1, ad, "random") } });
+    expect((await expectJson(old, 400)).error).toMatch(/rotation is pending/);
+    await expectJson(api(t.owner.user, "POST", path, { body: { channel_id: id, name_ct: await seal(newKey(), 2, ad, "random") } }), 400);
+    const general = `arakun-teams/v1/channel|${t.teamId}|${t.channelId}|${t.channelId}`;
+    await expectJson(api(t.owner.user, "PUT", `${path}/${t.channelId}`, { body: { name_ct: await seal(t.keys.get(1)!, 1, general, "general") } }), 400);
+  });
+
   it("are at most 500 per team", async () => {
     const t = await team();
     const name_ct = await seal(t.keys.get(1)!, 1, "x", "n");

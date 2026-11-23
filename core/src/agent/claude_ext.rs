@@ -1033,6 +1033,40 @@ pub fn skill_choices(cwd: &Path) -> Vec<super::Choice> {
     as_choices(agent_skills(cwd, true))
 }
 
+/// The `/` commands this computer mirrors to its servers: the skills of the
+/// enabled plugins in `plugins` (ids, `name@marketplace`) and the skill
+/// folders `dirs`. A server's session that has not said what it has shows
+/// these, as the server has them too once mirrored.
+pub fn mirrored_choices(plugins: &[String], dirs: &[PathBuf]) -> Vec<super::Choice> {
+    let home = launch::home();
+    let plugins: Vec<Plugin> = read_plugins(&installed_plugins(&home, &home))
+        .into_iter()
+        .filter(|p| plugins.contains(&p.id))
+        .collect();
+    let mut skills: Vec<Skill> = dirs
+        .iter()
+        .filter(|d| d.join("SKILL.md").is_file())
+        .map(|dir| {
+            let (name, description) = frontmatter(&dir.join("SKILL.md"));
+            Skill {
+                name: name.unwrap_or_else(|| {
+                    dir.file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_string()
+                }),
+                description,
+                source: "personal".into(),
+                path: dir.clone(),
+            }
+        })
+        .collect();
+    skills.extend(skills_in(plugin_roots(&plugins).collect()));
+    let mut seen = HashSet::new();
+    skills.retain(|s| seen.insert(s.name.clone()));
+    as_choices(skills)
+}
+
 fn as_choices(skills: Vec<Skill>) -> Vec<super::Choice> {
     skills
         .into_iter()
@@ -1559,6 +1593,40 @@ mod tests {
             .map(|s| (s.name.as_str(), s.description.as_str()))
             .collect();
         assert_eq!(names, [("deploy", "Ship it"), ("review", "")]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn mirrored_choices_read_the_skill_folders_given() {
+        let dir = std::env::temp_dir().join(format!("arakun-mirrored-{}", std::process::id()));
+        let skill = |folder: &str, text: Option<&str>| {
+            let d = dir.join(folder);
+            std::fs::create_dir_all(&d).unwrap();
+            if let Some(text) = text {
+                std::fs::write(d.join("SKILL.md"), text).unwrap();
+            }
+            d
+        };
+        let dirs = [
+            skill(
+                "ship",
+                Some("---\nname: deploy\ndescription: Ship it\n---\n"),
+            ),
+            skill("review", Some("no front matter")),
+            skill("gone", None),
+            skill("again", Some("---\nname: deploy\n---\n")),
+        ];
+        let got: Vec<_> = mirrored_choices(&[], &dirs)
+            .into_iter()
+            .map(|c| (c.name, c.description))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("deploy".to_string(), Some("Ship it".to_string())),
+                ("review".to_string(), None)
+            ]
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

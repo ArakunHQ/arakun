@@ -95,7 +95,22 @@ enum Picture {
     /// Downloading; the old file shows meanwhile, if any.
     Pending(Option<PathBuf>),
     Ready(PathBuf),
-    Failed,
+    /// The download failed at this time; asked for again after `PICTURE_RETRY`.
+    Failed(Instant),
+}
+
+/// How long a failed picture waits before a later request tries it again.
+/// Not at once: each failure notifies, and the views ask again on every
+/// notification, so going offline would download in a loop.
+const PICTURE_RETRY: Duration = Duration::from_secs(5 * 60);
+
+/// Whether a request for a picture in state `p` should download it.
+fn wants_download(p: Option<&Picture>, now: Instant) -> bool {
+    match p {
+        None => true,
+        Some(Picture::Failed(at)) => now.duration_since(*at) >= PICTURE_RETRY,
+        Some(Picture::Ready(_) | Picture::Pending(_)) => false,
+    }
 }
 
 pub struct Teams {
@@ -480,9 +495,13 @@ impl Teams {
         let dir = avatars::dir();
         let mut want: Vec<String> = Vec::new();
         let mut found = false;
+        let now = Instant::now();
         for login in logins {
             let key = login.to_ascii_lowercase();
-            if key.is_empty() || self.pictures.contains_key(&key) || want.contains(&key) {
+            if key.is_empty()
+                || !wants_download(self.pictures.get(&key), now)
+                || want.contains(&key)
+            {
                 continue;
             }
             match avatars::cached(&dir, &key) {
@@ -524,7 +543,7 @@ impl Teams {
                         (Some(p), _) => Picture::Ready(p),
                         // A failed refresh keeps the old picture.
                         (None, Some(Picture::Pending(Some(old)))) => Picture::Ready(old),
-                        (None, _) => Picture::Failed,
+                        (None, _) => Picture::Failed(Instant::now()),
                     };
                     this.pictures.insert(login, state);
                 }
@@ -806,6 +825,21 @@ mod tests {
         assert!(already_asking(true, false));
         // A retry waits, or its request is on its way.
         assert!(already_asking(false, true));
+    }
+
+    #[test]
+    fn a_failed_picture_is_tried_again_after_a_wait() {
+        let now = Instant::now();
+        assert!(wants_download(None, now));
+        assert!(!wants_download(Some(&Picture::Pending(None)), now));
+        assert!(!wants_download(Some(&Picture::Ready(PathBuf::new())), now));
+        let failed = Picture::Failed(now);
+        assert!(!wants_download(Some(&failed), now));
+        assert!(!wants_download(
+            Some(&failed),
+            now + PICTURE_RETRY - Duration::from_secs(1)
+        ));
+        assert!(wants_download(Some(&failed), now + PICTURE_RETRY));
     }
 
     #[test]

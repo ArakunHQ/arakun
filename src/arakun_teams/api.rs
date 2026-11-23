@@ -474,6 +474,9 @@ const SMALL_LIMIT: u64 = 1024 * 1024;
 /// (`MAX_DEVICES` in the Worker), so about 10 KiB a person: room for some
 /// 3,000 people waiting.
 const PENDING_LIMIT: u64 = 32 * 1024 * 1024;
+/// `GET /devices` answers for everyone in up to 50 teams of 25, with up to 20
+/// devices each: about 12 MiB at the most.
+const PEOPLE_LIMIT: u64 = 32 * 1024 * 1024;
 
 impl Call<'_> {
     fn send(
@@ -549,6 +552,27 @@ impl Call<'_> {
 
     pub fn devices(&self, github_id: u64) -> Result<Vec<DeviceRow>, ApiError> {
         self.get(&format!("/users/{github_id}/devices"))
+    }
+
+    /// `GET /devices`: the devices of the caller and everyone they share a
+    /// team with, or with `users` only of those of them. A user out of reach
+    /// is not in the map. A server from before this call answers 404.
+    pub fn people_devices(
+        &self,
+        users: Option<&[u64]>,
+    ) -> Result<std::collections::HashMap<u64, Vec<DeviceRow>>, ApiError> {
+        #[derive(Deserialize)]
+        struct Person {
+            github_id: u64,
+            devices: Vec<DeviceRow>,
+        }
+        let path = people_path(users);
+        let (status, body) = self.send("GET", &path, None, PEOPLE_LIMIT)?;
+        let people: Vec<Person> = json(status, &body)?;
+        Ok(people
+            .into_iter()
+            .map(|p| (p.github_id, p.devices))
+            .collect())
     }
 
     pub fn create_team(&self, name: &str) -> Result<String, ApiError> {
@@ -713,6 +737,17 @@ impl Call<'_> {
         let (status, body) = self.send("GET", &path, None, HISTORY_LIMIT)?;
         let page: Vec<Stored> = json(status, &body)?;
         Ok(page.last().map_or(0, |s| s.seq))
+    }
+}
+
+/// The path of `GET /devices`, for everyone or for the users named.
+fn people_path(users: Option<&[u64]>) -> String {
+    match users {
+        None => "/devices".to_string(),
+        Some(ids) => {
+            let ids: Vec<String> = ids.iter().map(u64::to_string).collect();
+            format!("/devices?users={}", ids.join(","))
+        }
     }
 }
 
@@ -885,6 +920,13 @@ pub(super) fn ipv4_first(addrs: &mut [std::net::SocketAddr]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn asks_for_everyone_or_the_users_named() {
+        assert_eq!(people_path(None), "/devices");
+        assert_eq!(people_path(Some(&[7, 21])), "/devices?users=7,21");
+        assert_eq!(people_path(Some(&[])), "/devices?users=");
+    }
 
     #[test]
     fn tries_ipv4_before_ipv6_keeping_each_order() {

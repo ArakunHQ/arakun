@@ -108,6 +108,33 @@ describe("devices", () => {
     await expectJson(api(outsider, "GET", `/users/${t.owner.user.id}/devices`), 404);
     await expectJson(api(outsider, "GET", "/users/abc/devices"), 404);
   });
+
+  it("lists everyone's devices in one answer, only of people who share a team", async () => {
+    const t = await team();
+    const m = await join(t);
+    const other = await team();
+    const outsider = await user(1003, "outsider");
+    type People = { github_id: number; devices: { device_id: string; endorsed_by: string | null }[] }[];
+
+    const all = await expectJson<People>(api(m.user, "GET", "/devices"), 200);
+    expect(all).toEqual(
+      [t.owner, m].map((p) => ({ github_id: p.user.id, devices: [expect.objectContaining({ device_id: p.device.id, endorsed_by: null })] })),
+    );
+    // The same rows as the per-user list.
+    const one = await expectJson<unknown[]>(api(m.user, "GET", `/users/${t.owner.user.id}/devices`), 200);
+    expect(all[0]!.devices).toEqual(one);
+
+    // Only those asked for, and never someone out of reach.
+    const asked = await expectJson<People>(api(m.user, "GET", `/devices?users=${t.owner.user.id},${other.owner.user.id},${outsider.id}`), 200);
+    expect(asked.map((p) => p.github_id)).toEqual([t.owner.user.id]);
+    expect(await expectJson(api(m.user, "GET", "/devices?users="), 200)).toEqual([]);
+    expect(await expectJson(api(outsider, "GET", `/devices?users=${t.owner.user.id}`), 200)).toEqual([]);
+    // A user with no devices is listed with none, so "none" is not "left out".
+    expect(await expectJson(api(outsider, "GET", "/devices"), 200)).toEqual([{ github_id: outsider.id, devices: [] }]);
+    expect((await expectJson<{ error: string }>(api(m.user, "GET", "/devices?users=abc"), 400)).error).toMatch(/users/);
+    const many = Array(1251).fill(t.owner.user.id).join(",");
+    expect((await expectJson<{ error: string }>(api(m.user, "GET", `/devices?users=${many}`), 400)).error).toMatch(/1250/);
+  });
 });
 
 describe("the gate", () => {
@@ -646,6 +673,7 @@ describe("teams", () => {
       expect(res.status, `${method} ${path}`).toBe(404);
     }
     await expectJson(api(u, "GET", "/users/" + t.owner.user.id + "/devices"), 404);
+    expect((await expectJson<{ github_id: number }[]>(api(u, "GET", "/devices"), 200)).map((p) => p.github_id)).toEqual([2001]);
     expect((await api(u, "POST", `${base}/remind`)).status).toBe(204);
   });
 

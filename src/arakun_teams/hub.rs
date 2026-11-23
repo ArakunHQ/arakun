@@ -430,6 +430,9 @@ pub struct Hub {
     /// way. That read may have started before the change that asked (an
     /// approval, a rotation), so its answer is dropped and the team read again.
     reread: HashSet<String>,
+    /// The server answered 404 to `GET /devices`: it is older than that call,
+    /// so team reads ask for each member's devices.
+    devices_per_user: bool,
     next_link: u64,
     _events: Task<()>,
     save_task: Option<Shared<Task<Result<(), String>>>>,
@@ -517,6 +520,7 @@ impl Hub {
             membership: HashMap::new(),
             setup: HashMap::new(),
             reread: HashSet::new(),
+            devices_per_user: false,
             next_link: 0,
             _events: events,
             save_task: None,
@@ -626,6 +630,7 @@ impl Hub {
         self.membership.clear();
         self.setup.clear();
         self.reread.clear();
+        self.devices_per_user = false;
         self.invites.clear();
         self.team.clear();
         self.channels.clear();
@@ -945,19 +950,34 @@ impl Hub {
         }
         self.roster_version += 1;
         let version = self.roster_version;
+        let per_user = self.devices_per_user;
         self.run(
             cx,
-            |net| {
+            move |net| {
                 let teams = net.call().teams()?;
                 let invites = net.call().invites()?;
                 // An older server has no list of requests; the teams file
                 // still remembers this device's.
                 let waiting = net.call().waiting().ok();
-                Ok((teams, invites, waiting))
+                // Every member's devices once, for all the team reads below.
+                let directory = if per_user || teams.is_empty() {
+                    Directory::Ask
+                } else {
+                    match net.call().people_devices(None) {
+                        Ok(people) => Directory::Read(Arc::new(people)),
+                        Err(ApiError::Status(404, _)) => Directory::PerUser,
+                        // Each team read asks again and shows its own error.
+                        Err(_) => Directory::Ask,
+                    }
+                };
+                Ok((teams, invites, waiting, directory))
             },
             move |hub, result, cx| match result {
                 _ if version < hub.applied_roster => {}
-                Ok((teams, invites, waiting)) => {
+                Ok((teams, invites, waiting, directory)) => {
+                    if matches!(directory, Directory::PerUser) {
+                        hub.devices_per_user = true;
+                    }
                     hub.applied_roster = version;
                     hub.load = Load::Ready;
                     let ids: HashSet<&str> = teams.iter().map(|t| t.team_id.as_str()).collect();
@@ -1027,7 +1047,7 @@ impl Hub {
                     hub.invites = invites;
                     let ids: Vec<String> = hub.teams.iter().map(|t| t.team_id.clone()).collect();
                     for id in ids {
-                        hub.reload_team(&id, false, cx);
+                        hub.reload_team(&id, false, directory.clone(), cx);
                     }
                 }
                 Err(e) => hub.load = Load::Unreachable(e.to_string()),
@@ -1092,13 +1112,19 @@ impl Hub {
     /// One team: its members and their devices, its channels, this device's
     /// keys, and the admin's duties (a pending rotation, new devices).
     pub fn load_team(&mut self, team_id: &str, cx: &mut Context<Self>) {
-        self.reload_team(team_id, true, cx);
+        self.reload_team(team_id, true, Directory::Ask, cx);
     }
 
     /// `after_change`: asked for after something changed the team, so a read
     /// on its way may be out of date. The 20 s refresh only reads again; were
     /// it to drop a read on its way too, one slower than that would never land.
-    fn reload_team(&mut self, team_id: &str, after_change: bool, cx: &mut Context<Self>) {
+    fn reload_team(
+        &mut self,
+        team_id: &str,
+        after_change: bool,
+        mut directory: Directory,
+        cx: &mut Context<Self>,
+    ) {
         let Some(row) = self.teams.iter().find(|t| t.team_id == team_id).cloned() else {
             return;
         };
@@ -1116,11 +1142,14 @@ impl Hub {
         let team_id = team_id.to_string();
         let admin = row.role.is_admin();
         let asked = Instant::now();
+        if self.devices_per_user {
+            directory = Directory::PerUser;
+        }
         self.run(
             cx,
             {
                 let team_id = team_id.clone();
-                move |net| read_team(net, &team_id, admin, &held)
+                move |net| read_team(net, &team_id, admin, &held, &directory)
             },
             move |hub, result, cx| {
                 hub.busy.remove(&busy);
@@ -3737,18 +3766,76 @@ struct TeamRead {
     approved_by: Option<String>,
 }
 
+/// Where a team read gets its members' devices.
+#[derive(Clone)]
+enum Directory {
+    /// Read by the refresh in one request, for all the teams it reads.
+    Read(Arc<HashMap<u64, Vec<DeviceRow>>>),
+    /// Not read yet: one request for the team's members.
+    Ask,
+    /// A server from before `GET /devices`: one request per member.
+    PerUser,
+}
+
+/// The devices of each user in `ids`. What `directory` lacks (a member who
+/// joined after it was read) comes in one request, or one per user from a
+/// server without the batched call.
+fn member_devices(
+    ids: &[u64],
+    directory: &Directory,
+    batch: impl FnOnce(&[u64]) -> Result<HashMap<u64, Vec<DeviceRow>>, ApiError>,
+    mut one: impl FnMut(u64) -> Result<Vec<DeviceRow>, ApiError>,
+) -> Result<HashMap<u64, Vec<DeviceRow>>, ApiError> {
+    let mut found = HashMap::new();
+    if let Directory::Read(people) = directory {
+        for id in ids {
+            if let Some(rows) = people.get(id) {
+                found.insert(*id, rows.clone());
+            }
+        }
+    }
+    let missing: Vec<u64> = ids
+        .iter()
+        .copied()
+        .filter(|id| !found.contains_key(id))
+        .collect();
+    if !missing.is_empty() && !matches!(directory, Directory::PerUser) {
+        match batch(&missing) {
+            Ok(people) => found.extend(people),
+            Err(ApiError::Status(404, _)) => {}
+            Err(e) => return Err(e),
+        }
+    }
+    // Left out of a batch (out of reach by now) or never batched: the
+    // per-user call answers, or says why not.
+    for id in ids {
+        if !found.contains_key(id) {
+            found.insert(*id, one(*id)?);
+        }
+    }
+    Ok(found)
+}
+
 fn read_team(
     net: &Net,
     team_id: &str,
     admin: bool,
     held: &HashSet<u64>,
+    directory: &Directory,
 ) -> Result<TeamRead, ApiError> {
     let call = net.call();
     let detail = call.team(team_id)?;
+    let ids: Vec<u64> = detail.members.iter().map(|m| m.github_id).collect();
+    let mut rows_of = member_devices(
+        &ids,
+        directory,
+        |missing| call.people_devices(Some(missing)),
+        |id| call.devices(id),
+    )?;
     let mut devices = HashMap::new();
     let mut untrusted = Vec::new();
     for m in &detail.members {
-        let rows = call.devices(m.github_id)?;
+        let rows = rows_of.remove(&m.github_id).unwrap_or_default();
         let trusted = trusted_devices(m.github_id, &rows);
         if trusted.len() != rows.len() {
             untrusted.push(m.login.clone());
@@ -3952,6 +4039,52 @@ mod tests {
         assert_eq!(rekey, vec![("b".to_string(), 4)]);
         assert_eq!(take_rekeyed(&mut rekey, 6), vec!["b".to_string()]);
         assert!(rekey.is_empty());
+    }
+
+    #[test]
+    fn reads_each_members_devices_once_and_asks_only_for_the_rest() {
+        let a = Device::generate();
+        let rows = |n: u64| vec![row(&a, n, None)];
+        let read = Directory::Read(Arc::new(HashMap::from([(1, rows(1)), (2, rows(2))])));
+        let asked = std::cell::RefCell::new(Vec::new());
+        let one = |id: u64| {
+            asked.borrow_mut().push(id);
+            Ok(rows(id))
+        };
+
+        // The refresh's read covers everyone: no request at all.
+        let got = member_devices(&[1, 2], &read, |_| panic!("no batch"), one).unwrap();
+        assert_eq!(got[&2], rows(2));
+        assert!(asked.borrow().is_empty());
+
+        // A member who joined since is asked for in one request; one the
+        // batch leaves out falls to the per-user call.
+        let got = member_devices(
+            &[1, 3, 4],
+            &read,
+            |missing| {
+                assert_eq!(missing, [3, 4]);
+                Ok(HashMap::from([(3, rows(3))]))
+            },
+            one,
+        )
+        .unwrap();
+        assert_eq!((got[&1].clone(), got[&3].clone()), (rows(1), rows(3)));
+        assert_eq!(*asked.borrow(), [4]);
+
+        // A server from before the batched call: one request per member.
+        asked.borrow_mut().clear();
+        let old = |_: &[u64]| Err(ApiError::Status(404, "not found".into()));
+        let got = member_devices(&[5, 6], &Directory::Ask, old, one).unwrap();
+        assert_eq!(got.len(), 2);
+        assert_eq!(*asked.borrow(), [5, 6]);
+        asked.borrow_mut().clear();
+        member_devices(&[7], &Directory::PerUser, |_| panic!("no batch"), one).unwrap();
+        assert_eq!(*asked.borrow(), [7]);
+
+        // Any other failure ends the read, as a per-user one did.
+        let down = |_: &[u64]| Err(ApiError::Network("down".into()));
+        assert!(member_devices(&[8], &Directory::Ask, down, |_| panic!("no fallback")).is_err());
     }
 
     #[test]
@@ -4679,7 +4812,7 @@ mod tests {
             .unwrap();
 
         // B reads the team as load_team does: the key, checked, and the channel.
-        let read = read_team(&b, &team, false, &HashSet::new()).unwrap();
+        let read = read_team(&b, &team, false, &HashSet::new(), &Directory::Ask).unwrap();
         assert_eq!(read.keys, vec![(1, key)]);
         assert_eq!(read.bad_envelopes, 0);
         assert!(read.untrusted.is_empty());
@@ -4884,7 +5017,7 @@ mod tests {
                 &seal_all(&a, &team, &[(1, key)], &fresh).unwrap(),
             )
             .unwrap();
-        let read2 = read_team(&second, &team, true, &HashSet::new()).unwrap();
+        let read2 = read_team(&second, &team, true, &HashSet::new(), &Directory::Ask).unwrap();
         assert_eq!(read2.keys, vec![(1, key)]);
 
         // A removes B: a new key for A's devices only, and B is out. Until
@@ -4913,7 +5046,7 @@ mod tests {
                 _ => {}
             }
         }
-        let read = read_team(&a, &team, true, &HashSet::from([1])).unwrap();
+        let read = read_team(&a, &team, true, &HashSet::from([1]), &Directory::Ask).unwrap();
         assert!(read.detail.rotation_pending);
         assert_eq!(read.detail.epoch, 2);
         let devices: Vec<DeviceRow> = read.devices.values().flatten().cloned().collect();

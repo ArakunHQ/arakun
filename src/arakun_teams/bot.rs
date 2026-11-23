@@ -13,12 +13,10 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
-use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use futures::StreamExt as _;
 use futures::channel::mpsc;
@@ -794,56 +792,26 @@ impl Agent for ClaudeCode {
         cmd.args(claude_args())
             .current_dir(cwd)
             .env("PATH", crate::agent::child_path_env())
-            .env("NO_COLOR", "1")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| format!("could not start Claude Code: {e}"))?;
-        // On stdin, not in argv: other local users can read a process's arguments.
-        if let Some(mut stdin) = child.stdin.take() {
-            let prompt = prompt.to_string();
-            std::thread::spawn(move || {
-                let _ = stdin.write_all(prompt.as_bytes());
-            });
-        }
-        let read = |pipe: Option<Box<dyn std::io::Read + Send>>| {
-            std::thread::spawn(move || {
-                let mut text = String::new();
-                if let Some(mut pipe) = pipe {
-                    let _ = pipe.read_to_string(&mut text);
-                }
-                text
-            })
-        };
-        let stdout = read(child.stdout.take().map(|p| Box::new(p) as _));
-        let stderr = read(child.stderr.take().map(|p| Box::new(p) as _));
-        let started = Instant::now();
-        let status = loop {
-            if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
-                break status;
-            }
-            if stop.load(Ordering::Relaxed) {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err("stopped".into());
-            }
-            if started.elapsed() > TIMEOUT {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(format!(
-                    "Claude Code did not answer within {} minutes",
-                    TIMEOUT.as_secs() / 60
-                ));
-            }
-            std::thread::sleep(Duration::from_millis(100));
-        };
-        let out = stdout.join().unwrap_or_default();
+            .env("NO_COLOR", "1");
+        // On stdin, not in argv: other local users can read a process's
+        // arguments. Stop and the time limit end the whole process tree: on
+        // Windows the child is `claude.cmd`'s cmd.exe, and node runs under it.
+        let output =
+            crate::platform::output_until(&mut cmd, Some(prompt.as_bytes()), TIMEOUT, stop)
+                .map_err(|e| match e.kind() {
+                    std::io::ErrorKind::Interrupted => "stopped".to_string(),
+                    std::io::ErrorKind::TimedOut => format!(
+                        "Claude Code did not answer within {} minutes",
+                        TIMEOUT.as_secs() / 60
+                    ),
+                    _ => format!("could not start Claude Code: {e}"),
+                })?;
+        let status = output.status;
+        let out = String::from_utf8_lossy(&output.stdout);
         // A failed run still prints its JSON result, with the reason.
         match claude_result(&out) {
             Err(e) if !status.success() && out.trim().is_empty() => {
-                let err = stderr.join().unwrap_or_default();
+                let err = String::from_utf8_lossy(&output.stderr);
                 let last = err.lines().rev().find(|l| !l.trim().is_empty());
                 Err(last.map_or(e, |l| format!("Claude Code failed: {}", l.trim())))
             }

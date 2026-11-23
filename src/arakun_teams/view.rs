@@ -2735,6 +2735,7 @@ impl TeamsView {
         compact: bool,
         quoted: Option<(usize, &Msg)>,
         mark: Mark,
+        former: bool,
         team_channel: (&str, &str),
         faces: &Faces,
         cx: &mut Context<Self>,
@@ -2841,6 +2842,9 @@ impl TeamsView {
                             ui::text(Type::Caption, theme::text_faint(), n.to_string())
                                 .font_family(theme::FONT_MONO)
                         }))
+                        .when(former, |d| {
+                            d.child(ui::badge("Former member", Tone::Neutral))
+                        })
                         .child(
                             ui::text(Type::Caption, theme::text_faint(), clock(m.at))
                                 .font_family(theme::FONT_MONO),
@@ -3289,6 +3293,12 @@ impl TeamsView {
             .unwrap_or_else(|| "locked channel".into());
         let status = c.map_or(socket::Status::Connecting, |c| c.status.clone());
         let messages: Vec<Msg> = c.map(|c| c.messages.clone()).unwrap_or_default();
+        // Senders who left the team: their rows say so.
+        let former: HashSet<u64> = messages
+            .iter()
+            .map(|m| m.github_id)
+            .filter(|gid| t.is_former(*gid))
+            .collect();
         let peer_hint = hub
             .peer_review
             .as_ref()
@@ -3509,6 +3519,7 @@ impl TeamsView {
                             compact,
                             quoted,
                             mark,
+                            former.contains(&m.github_id),
                             (team_id, channel_id),
                             faces,
                             cx,

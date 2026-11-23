@@ -3611,6 +3611,9 @@ impl Render for TeamsView {
                         .id("teams-menu-backdrop")
                         .absolute()
                         .inset_0()
+                        // The click that closes the menu must not also press
+                        // Remove, Approve or a channel row under it.
+                        .occlude()
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(|this, _, _, cx| {

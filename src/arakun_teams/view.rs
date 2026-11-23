@@ -1928,11 +1928,17 @@ impl TeamsView {
             let role_word = m.role.word();
             let self_row = m.github_id == me;
             let confirmation = scope.map(|scope| (tid.clone(), scope, m.clone()));
-            let confirming =
-                confirmation.is_some() && self.confirm_remove.as_ref() == confirmation.as_ref();
+            // While the list and the detail briefly disagree there is no
+            // roster: the buttons stay, disabled, and an open confirmation
+            // too, as long as the roster does not come back as another one.
+            let confirming = self
+                .confirm_remove
+                .as_ref()
+                .is_some_and(|(team, was, member)| {
+                    *team == tid && member == m && scope.is_none_or(|now| now == *was)
+                });
             let last_owner = m.role == Role::Owner && owners < 2;
-            let can_remove = confirmation.is_some()
-                && !last_owner
+            let can_remove = !last_owner
                 && (self_row || (admin && m.role != Role::Owner) || role == Role::Owner);
             rows = rows.child(
                 Self::person_row(
@@ -1948,13 +1954,15 @@ impl TeamsView {
                             ("teams-remove", i),
                             if self_row { "Leave" } else { "Remove" },
                             ButtonKind::Ghost,
-                            true,
+                            confirmation.is_some(),
                         )
                         .on_click({
                             let confirmation = confirmation.clone();
                             cx.listener(move |this, _, _, cx| {
-                                this.confirm_remove = confirmation.clone();
-                                cx.notify();
+                                if confirmation.is_some() {
+                                    this.confirm_remove = confirmation.clone();
+                                    cx.notify();
+                                }
                             })
                         }),
                     )
@@ -1972,11 +1980,11 @@ impl TeamsView {
                             ("teams-remove-yes", i),
                             if self_row { "Leave the team" } else { "Remove" },
                             ButtonKind::Danger,
-                            true,
+                            confirmation.is_some(),
                         )
                         .on_click(cx.listener(move |this, _, _, cx| {
-                            this.confirm_remove = None;
                             if let Some((team, scope, member)) = &confirmation {
+                                this.confirm_remove = None;
                                 this.hub
                                     .update(cx, |h, cx| h.remove(team, *scope, member, cx));
                             }

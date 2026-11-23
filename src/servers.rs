@@ -41,6 +41,11 @@ pub struct Saved {
     /// What the server lets this app in with. Empty through the account.
     #[serde(default)]
     pub token: String,
+    /// The server's user removed this app from its devices: it is not dialed
+    /// again until it is forgotten here and connected anew, or the server
+    /// would take the app back.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub removed: bool,
 }
 
 impl Saved {
@@ -96,6 +101,18 @@ pub fn adopt(saved: &mut [Saved], labels: &[String], base: &str) -> bool {
         changed = true;
     }
     changed
+}
+
+/// Notes that the server `id` removed this app from its devices. Whether
+/// that is new, so the file is to be written.
+pub fn mark_removed(saved: &mut [Saved], id: &str) -> bool {
+    match saved.iter_mut().find(|s| s.id == id && !s.removed) {
+        Some(s) => {
+            s.removed = true;
+            true
+        }
+        None => false,
+    }
 }
 
 /// Whether a server reached through the account can be dialed with the sign-in
@@ -348,6 +365,7 @@ mod tests {
                 },
                 device: String::new(),
                 token: String::new(),
+                removed: false,
             },
             Saved {
                 id: "b2".into(),
@@ -356,6 +374,7 @@ mod tests {
                 way: Way::Direct,
                 device: "d2".into(),
                 token: "k2".into(),
+                removed: false,
             },
         ];
         let json = serde_json::to_string(&servers).unwrap();
@@ -402,6 +421,22 @@ mod tests {
         assert!(!direct().needs_sign_in());
     }
 
+    #[test]
+    fn a_server_that_removed_this_app_is_marked_in_the_file() {
+        let mut saved = vec![direct(), old_relay_entry()];
+        assert!(!saved[1].removed);
+        // Not written while it is not so: a file from before reads the same.
+        assert!(!serde_json::to_string(&saved).unwrap().contains("removed"));
+        assert!(mark_removed(&mut saved, "r1"));
+        assert!(saved[1].removed && !saved[0].removed);
+        // Told again, or of a server not kept: nothing to write.
+        assert!(!mark_removed(&mut saved, "r1"));
+        assert!(!mark_removed(&mut saved, "gone"));
+        let back: Vec<Saved> =
+            serde_json::from_str(&serde_json::to_string(&saved).unwrap()).unwrap();
+        assert_eq!(back, saved);
+    }
+
     fn direct() -> Saved {
         Saved {
             id: "b2".into(),
@@ -410,6 +445,7 @@ mod tests {
             way: Way::Direct,
             device: "d2".into(),
             token: "k2".into(),
+            removed: false,
         }
     }
 

@@ -37,8 +37,13 @@ const RETRY_MAX: Duration = Duration::from_secs(60);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 /// A server's status when its sign-in through the relay ended.
 pub const SIGNED_OUT: &str = "Your sign-in is no longer valid. Sign in again to reach this server.";
-/// A server's status while it waits for the account to list it again.
+/// A server's status while nobody is signed in here.
 pub const SIGN_IN_TO_RECONNECT: &str = "Sign in to reconnect.";
+/// A server's status while the account could not be asked for its machines.
+pub const ACCOUNT_UNREACHABLE: &str = "Could not reach your account. Trying again.";
+/// A server's status once the account answered without it.
+pub const NOT_LISTED: &str =
+    "Your account no longer lists this server. Sign in on the server again, or forget it here.";
 /// The longest operator's text a refusal passes on.
 const MAX_MESSAGE: usize = 300;
 
@@ -132,11 +137,11 @@ impl Client {
         )
     }
 
-    /// A server that is not to be dialed now, and why: it says so as refused.
-    pub fn held(saved: &Saved, why: String, events: Events) -> Client {
+    /// A server that is not to be dialed now: it says `status` and no more.
+    pub fn held(saved: &Saved, status: Status, events: Events) -> Client {
         Self::start(
             saved.id.clone(),
-            Who::Held(why),
+            Who::Held(status),
             String::new(),
             events,
             TIMING,
@@ -250,13 +255,13 @@ enum Who {
     Invite(Invite),
     Saved(Saved),
     Account(Saved, Account),
-    /// Not dialed, for the reason given.
-    Held(String),
+    /// Not dialed: it only says how it stands.
+    Held(Status),
 }
 
 /// What reaching a server through the account takes. No `Debug`: the
 /// session opens the account, so it must never end up in a log.
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub struct Account {
     /// The service that issued the sign-in, the only place it goes. Not the
     /// server's saved origin: `servers.json` must not decide where it goes.
@@ -314,6 +319,13 @@ struct Link {
 
 impl Link {
     fn run(mut self) {
+        if let Who::Held(status) = &self.who {
+            // No "Connecting" first: nothing is dialed.
+            let status = status.clone();
+            self.set_status(status);
+            self.close();
+            return;
+        }
         let mut wait = RETRY_MIN;
         loop {
             if self.stop.load(Ordering::Relaxed) {
@@ -540,9 +552,6 @@ impl Link {
     // ---- through the relay ------------------------------------------------
 
     fn relay(&mut self, wait: &mut Duration) -> Ended {
-        if let Who::Held(why) = &self.who {
-            return Ended::Refused(why.clone());
-        }
         let Who::Account(saved, account) = &self.who else {
             // Paired through the old relay: its ticket is never sent again.
             return Ended::Refused(SIGN_IN_TO_RECONNECT.into());
@@ -969,6 +978,7 @@ fn pair_direct(invite: &Invite, name: &str, id: &str) -> Result<Saved, Ended> {
             way: Way::Direct,
             device: text("id"),
             token: text("token"),
+            removed: false,
         }),
         403 => Err(Ended::Refused(
             "The link has run out or was used already; ask the server for a new one.".into(),
@@ -1215,6 +1225,7 @@ mod tests {
             way: Way::Direct,
             device: "d".into(),
             token: "t".into(),
+            removed: false,
         };
         let (tx, mut rx) = mpsc::unbounded();
         let client = Client::start("srv".into(), Who::Saved(saved), String::new(), tx, QUICK);
@@ -1363,6 +1374,7 @@ mod tests {
             way: Way::Direct,
             device: "d".into(),
             token: "t".into(),
+            removed: false,
         }
     }
 
@@ -1607,6 +1619,7 @@ mod tests {
             },
             device: String::new(),
             token: String::new(),
+            removed: false,
         };
         let account = Account {
             base: saved.origin.clone(),
@@ -1808,6 +1821,66 @@ mod tests {
     }
 
     #[test]
+    fn a_held_server_says_how_it_stands_and_dials_nothing() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let (saved, _) = through_account(&listener, &Identity::generate());
+        let (tx, mut rx) = mpsc::unbounded();
+        let waiting = Status::Waiting {
+            why: ACCOUNT_UNREACHABLE.into(),
+            retry_in: Duration::ZERO,
+        };
+        let client = Client::held(&saved, waiting.clone(), tx);
+        // No "Connecting" before it: the row shows the sentence only.
+        assert_eq!(status(&mut rx), waiting);
+        listener.set_nonblocking(true).unwrap();
+        assert!(listener.accept().is_err());
+        // What is said to it is told back: nothing will carry it.
+        client.send(&json!({ "type": "hello" }));
+        assert!(matches!(next(&mut rx), Event::Undelivered(_)));
+    }
+
+    #[test]
+    fn a_relay_that_fails_at_the_door_is_tried_again() {
+        use std::io::{Read as _, Write as _};
+        // The relay answers 500 to the upgrade while its database is down.
+        let answers = |status: &'static str| {
+            let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+            let port = listener.local_addr().unwrap().port();
+            std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut seen = Vec::new();
+                let mut buf = [0u8; 1024];
+                while !seen.windows(4).any(|w| w == b"\r\n\r\n") {
+                    match stream.read(&mut buf) {
+                        Ok(n) if n > 0 => seen.extend_from_slice(&buf[..n]),
+                        _ => break,
+                    }
+                }
+                let _ = stream.write_all(
+                    format!("HTTP/1.1 {status}\r\ncontent-length: 0\r\n\r\n").as_bytes(),
+                );
+            });
+            connect(
+                &format!("ws://127.0.0.1:{port}/machines/abcdefghij234567/ws?page=0a1b2c3d"),
+                Some("tok"),
+            )
+            .err()
+            .unwrap()
+        };
+        for status in ["500 Internal Server Error", "503 Service Unavailable"] {
+            assert!(
+                matches!(answers(status), Ended::Retry(why) if why.contains(&status[..3])),
+                "{status}"
+            );
+        }
+        // Only a 401 says the sign-in is dead.
+        assert!(matches!(
+            answers("401 Unauthorized"),
+            Ended::Refused(why) if why == SIGNED_OUT
+        ));
+    }
+
+    #[test]
     fn a_server_paired_through_the_old_relay_waits_for_a_sign_in() {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let origin = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
@@ -1821,6 +1894,7 @@ mod tests {
             },
             device: "dev1".into(),
             token: "tok".into(),
+            removed: false,
         };
         let (tx, mut rx) = mpsc::unbounded();
         let _client = Client::connect(saved, tx);

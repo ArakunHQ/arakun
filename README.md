@@ -1498,7 +1498,11 @@ The link is good for two minutes and pairs one device. There are two ways to use
   or, for one reached through the account, only its label on the relay (the sign-in
   stays in the system keyring). A server paired through the relay before accounts
   stays in the file as it was and shows "Sign in to reconnect." until your account
-  lists it, then it is kept as one of the account's; its old ticket is never sent again. What each server listed last is
+  lists it, then it is kept as one of the account's; its old ticket is never sent again.
+  While the app cannot reach your account, a server of the account says "Could not reach
+  your account. Trying again." and connects once the account answers. A server whose
+  user removed the app from its devices is marked in the file and is not connected
+  again until you forget it and connect it anew from **Your servers**. What each server listed last is
   kept in `servers-inbox.json` beside it, so its environments show at start before it
   answers, or while it cannot be reached. A server reached over plain http shows them
   only once the Servers tab connects it. "Forget" on a server removes it

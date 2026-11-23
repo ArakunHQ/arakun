@@ -9,9 +9,12 @@
 
 use super::*;
 use crate::cloud;
-use crate::servers::client::Account;
+use crate::servers::client::{
+    ACCOUNT_UNREACHABLE, Account, NOT_LISTED, SIGN_IN_TO_RECONNECT, UNPAIRED_BY_SERVER,
+};
 use crate::servers::{Way, account_label, adopt};
 use crate::servers_view::{MachineRow, YourServers};
+use std::time::Duration;
 
 /// The account's machines, as last asked.
 #[derive(Default)]
@@ -23,13 +26,18 @@ pub(in crate::shell) struct Machines {
     list: Option<Vec<cloud::Machine>>,
     error: Option<String>,
     _task: Option<Task<()>>,
-    /// The sign-in the connections through the account were started with.
-    /// Apart from `asked`, which a new list overwrites: a sign-out stops
-    /// those connections whichever is told first.
-    started: Option<(String, String)>,
+    /// The list is asked again after a failure, while a server waits on it.
+    _retry: Option<Task<()>>,
+    /// How long the next retry waits; zero stands for the first wait.
+    retry_after: Duration,
     /// This computer's label on the relay, read once: never listed.
     own_label: Option<String>,
 }
+
+/// The first wait before the list is asked again after a failure; each
+/// failure doubles it up to `LAST_RETRY`.
+const FIRST_RETRY: Duration = Duration::from_secs(2);
+const LAST_RETRY: Duration = Duration::from_secs(60);
 
 impl Machines {
     /// The list is asked again with `session`.
@@ -37,14 +45,106 @@ impl Machines {
         self.asked = session;
     }
 
-    /// Whether the connections through the account were started with another
-    /// sign-in than `now`, and must stop. They count as stopped after.
-    fn stop_if_changed(&mut self, now: &Option<(String, String)>) -> bool {
-        if self.started.is_some() && self.started != *now {
-            self.started = None;
-            return true;
+    /// How long to wait before asking again after a failure. Each call
+    /// doubles the next wait, up to a minute.
+    fn next_retry(&mut self) -> Duration {
+        let wait = self.retry_after.max(FIRST_RETRY);
+        self.retry_after = (wait * 2).min(LAST_RETRY);
+        wait
+    }
+
+    /// The list answered, or is asked for another reason than a retry.
+    fn stop_retrying(&mut self) {
+        self._retry = None;
+        self.retry_after = Duration::ZERO;
+    }
+}
+
+/// Whether a failed list is worth asking again by itself: only while a
+/// server here is reached through the relay, so waits on the list.
+fn waits_on_list(saved: &[Saved]) -> bool {
+    saved.iter().any(|s| s.label().is_some())
+}
+
+/// What the connection to a server of the account was started with.
+#[derive(Clone, PartialEq)]
+pub(in crate::shell) enum Start {
+    /// Dialed with this sign-in and the key the account listed.
+    Dialed(Account),
+    /// Not dialed: it only says this.
+    Held(LinkStatus),
+}
+
+impl Start {
+    /// How the connection stands as it starts, before its client says so:
+    /// a held one shows its sentence at once, not "Connecting" first.
+    pub(in crate::shell) fn reach(&self) -> Reach {
+        match self {
+            Start::Held(LinkStatus::Refused(why)) => Reach::Refused(why.clone()),
+            Start::Held(LinkStatus::Waiting { why, .. }) => Reach::Away(why.clone()),
+            _ => Reach::Connecting,
         }
-        false
+    }
+}
+
+/// What a server of the account is to be started with now: dialed when the
+/// signed-in account lists it, and otherwise held with the sentence that
+/// says what it waits for. `session` is the sign-in servers are dialed with.
+fn start_for(s: &Saved, session: Option<&(String, String)>, machines: &Machines) -> Start {
+    let refused = |why: &str| Start::Held(LinkStatus::Refused(why.to_string()));
+    // Its user removed this app there: dialing would have it take the app back.
+    if s.removed {
+        return refused(UNPAIRED_BY_SERVER);
+    }
+    let Some((base, token)) = session else {
+        return refused(SIGN_IN_TO_RECONNECT);
+    };
+    // The list of this sign-in is still on its way, or could not be had.
+    let list = match &machines.list {
+        Some(list) if machines.asked.as_ref() == session => list,
+        _ if machines.asked.as_ref() == session && machines.error.is_some() => {
+            return Start::Held(LinkStatus::Waiting {
+                why: ACCOUNT_UNREACHABLE.into(),
+                retry_in: Duration::ZERO,
+            });
+        }
+        _ => return Start::Held(LinkStatus::Connecting),
+    };
+    let label = match account_label(s, base) {
+        Ok(label) => label,
+        Err(why) => return refused(&why),
+    };
+    match list.iter().find(|m| m.label == label) {
+        Some(machine) => Start::Dialed(Account {
+            base: base.clone(),
+            session: token.clone(),
+            public: machine.public.clone(),
+        }),
+        None => refused(NOT_LISTED),
+    }
+}
+
+/// Whether a server of the account gets a new connection, given how the one
+/// it has stands (`None`: it has none) and what that one was started with.
+/// One that is connected or connecting with the same sign-in and key is left
+/// alone: hanging up would lose what it was asked and has not answered.
+fn starts_again(now: &Start, was: Option<&Start>, reach: Option<&Reach>) -> bool {
+    let Some(reach) = reach else {
+        return true;
+    };
+    if was != Some(now) {
+        return true;
+    }
+    // The same as before. A dialed one retries a drop by itself; one that
+    // was refused gave up, and a new list is the moment to try once more.
+    matches!((now, reach), (Start::Dialed(_), Reach::Refused(_)))
+}
+
+/// The client for a server of the account, as `start` says.
+fn account_client(s: &Saved, start: &Start, events: Events) -> Client {
+    match start {
+        Start::Dialed(account) => Client::connect_account(s.clone(), account.clone(), events),
+        Start::Held(status) => Client::held(s, status.clone(), events),
     }
 }
 
@@ -116,18 +216,6 @@ pub(in crate::shell) fn fixture_machines() -> Vec<cloud::Machine> {
     list
 }
 
-/// Whether a new list of the account's servers dials a server again, given
-/// how its connection stands (`None`: there is none yet). Not one whose user
-/// removed this app there, or the server would take this app back.
-fn dial_again(reach: Option<&Reach>) -> bool {
-    !reach.is_some_and(removed_by_server)
-}
-
-/// Whether the server turned this app away because its user removed it.
-fn removed_by_server(reach: &Reach) -> bool {
-    matches!(reach, Reach::Refused(why) if why == crate::servers::client::UNPAIRED_BY_SERVER)
-}
-
 /// This computer's label on the relay, when it has a key yet. Reads
 /// `phone.json`: asked when the list is, not on every view update.
 pub(super) fn own_label() -> Option<String> {
@@ -155,33 +243,17 @@ impl Shell {
         cx: &mut Context<Self>,
     ) {
         let session = self.teams.read(cx).session();
-        let fixture = crate::arakun_teams::fixture().is_some();
         let Some(link) = &mut self.servers else {
             return;
         };
-        // Their connections were made with the old sign-in: they stop, and
-        // wait for the new one's list.
-        if link
-            .machines
-            .stop_if_changed(&dial_session(session.clone(), fixture))
-        {
-            let theirs: Vec<Saved> = link
-                .saved
-                .iter()
-                .filter(|s| matches!(s.way, Way::Account { .. }))
-                .cloned()
-                .collect();
-            for s in theirs {
-                if let Some(conn) = link.conns.get_mut(&s.id) {
-                    conn.client = Client::connect(s, link.events.clone());
-                }
-            }
-        }
         if link.machines.asked != session {
             link.machines.list = None;
             link.machines.error = None;
             self.servers_list_machines(window, cx);
         }
+        // The connections made with the old sign-in stop, and wait for the
+        // new one's list. With the same sign-in, none is touched.
+        self.servers_reach_accounts(window, cx);
         self.sync_servers_view(cx);
     }
 
@@ -198,6 +270,14 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Asked for a reason of its own: a retry under way starts over.
+        if let Some(link) = &mut self.servers {
+            link.machines.stop_retrying();
+        }
+        self.servers_ask_machines(window, cx);
+    }
+
+    fn servers_ask_machines(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let session = self.teams.read(cx).session();
         let Some(link) = &mut self.servers else {
             return;
@@ -243,6 +323,7 @@ impl Shell {
         match listed {
             Ok(list) => {
                 link.machines.error = None;
+                link.machines.stop_retrying();
                 let labels: Vec<String> = list.iter().map(|m| m.label.clone()).collect();
                 if adopt(&mut link.saved, &labels, &asked.0) {
                     servers::save(&link.saved);
@@ -254,62 +335,61 @@ impl Shell {
             Err(cloud::Error::SignedOut) => {
                 self.teams.update(cx, |t, cx| t.session_ended(cx));
             }
-            Err(e) => link.machines.error = Some(e.to_string()),
+            Err(e) => {
+                link.machines.error = Some(e.to_string());
+                // Nothing else asks again: not the tab, which may never be
+                // opened, and not the servers' own connections, which wait
+                // for this list before they dial.
+                if waits_on_list(&link.saved) {
+                    let wait = link.machines.next_retry();
+                    link.machines._retry = Some(cx.spawn_in(window, async move |this, cx| {
+                        cx.background_executor().timer(wait).await;
+                        let _ = this.update_in(cx, |this, window, cx| {
+                            this.servers_ask_machines(window, cx)
+                        });
+                    }));
+                }
+                // The servers waiting on the list say why they still wait.
+                self.servers_reach_accounts(window, cx);
+            }
         }
         self.sync_servers_view(cx);
     }
 
-    /// Connects each server of the account in the list here that the
-    /// account lists, with the key it lists for it.
-    fn servers_reach_accounts(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let session = self.teams.read(cx).session();
-        let fixture = crate::arakun_teams::fixture().is_some();
+    /// Brings each server of the account in the list here to where it
+    /// should be now: dialed with the key the account lists, or held with
+    /// what it waits for. One already there is left alone.
+    pub(super) fn servers_reach_accounts(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let session = self.servers_dial_session(cx);
         let Some(link) = &mut self.servers else {
             return;
         };
-        // Only with the sign-in the list was asked with, and never the made-up one.
-        let Some((base, token)) = dial_session(session, fixture) else {
-            return;
-        };
-        if link.machines.asked.as_ref() != Some(&(base.clone(), token.clone())) {
-            return;
-        }
-        let Some(list) = &link.machines.list else {
-            return;
-        };
-        link.machines.started = Some((base.clone(), token.clone()));
         let mut late = Vec::new();
         for s in &link.saved {
             if !matches!(s.way, Way::Account { .. }) {
                 continue;
             }
+            let now = start_for(s, session.as_ref(), &link.machines);
             // Decided before any client exists: a client made and dropped
-            // would still start dialing, and its status would overwrite the
-            // refusal, so the next list would dial again.
-            if !dial_again(link.conns.get(&s.id).map(|c| &c.reach)) {
+            // would still start, and its status would overwrite this one's.
+            let conn = link.conns.get(&s.id);
+            if !starts_again(
+                &now,
+                conn.and_then(|c| c.start.as_ref()),
+                conn.map(|c| &c.reach),
+            ) {
                 continue;
             }
-            let client = match account_label(s, &base) {
-                Err(why) => Client::held(s, why, link.events.clone()),
-                Ok(label) => {
-                    let Some(machine) = list.iter().find(|m| m.label == label) else {
-                        continue;
-                    };
-                    let account = Account {
-                        base: base.clone(),
-                        session: token.clone(),
-                        public: machine.public.clone(),
-                    };
-                    Client::connect_account(s.clone(), account, link.events.clone())
-                }
-            };
+            let client = account_client(s, &now, link.events.clone());
             match link.conns.get_mut(&s.id) {
                 Some(conn) => {
                     conn.client = client;
-                    conn.reach = Reach::Connecting;
+                    conn.reach = now.reach();
+                    conn.start = Some(now);
                 }
                 None => {
-                    link.conns.insert(s.id.clone(), Conn::new(client));
+                    link.conns
+                        .insert(s.id.clone(), Conn::through_account(client, now));
                     late.extend(link.inboxes.get(&s.id).map(|i| (s.id.clone(), i.clone())));
                 }
             }
@@ -320,6 +400,29 @@ impl Shell {
         if !late.is_empty() {
             self.sync_remote_projects(window, cx);
         }
+    }
+
+    /// The sign-in servers are dialed with now.
+    pub(super) fn servers_dial_session(&self, cx: &App) -> Option<(String, String)> {
+        dial_session(
+            self.teams.read(cx).session(),
+            crate::arakun_teams::fixture().is_some(),
+        )
+    }
+
+    /// The connection a server of the account starts with, before its
+    /// account was asked: held until the list is here.
+    pub(super) fn servers_first_conn(
+        s: &Saved,
+        session: Option<&(String, String)>,
+        machines: &Machines,
+        events: Events,
+    ) -> Conn {
+        if !matches!(s.way, Way::Account { .. }) {
+            return Conn::new(Client::connect(s.clone(), events));
+        }
+        let start = start_for(s, session, machines);
+        Conn::through_account(account_client(s, &start, events), start)
     }
 
     /// Removes one of the account's servers from the account, then asks
@@ -386,6 +489,7 @@ impl Shell {
                 },
                 device: String::new(),
                 token: String::new(),
+                removed: false,
             });
             servers::save(&link.saved);
         }
@@ -412,45 +516,195 @@ mod tests {
         Some(("https://app.arakun.dev".into(), token.into()))
     }
 
+    const LABEL: &str = "cccccccccccccccc";
+
+    fn account_server() -> Saved {
+        Saved {
+            id: "s1".into(),
+            name: "c".into(),
+            origin: "https://app.arakun.dev".into(),
+            way: Way::Account {
+                label: LABEL.into(),
+            },
+            device: String::new(),
+            token: String::new(),
+            removed: false,
+        }
+    }
+
+    /// The account's list as asked with `token`, holding the server.
+    fn listed(token: &str) -> Machines {
+        Machines {
+            asked: signed(token),
+            list: Some(vec![machine(LABEL, "server")]),
+            ..Machines::default()
+        }
+    }
+
+    fn dialed(token: &str, public: &str) -> Start {
+        Start::Dialed(Account {
+            base: "https://app.arakun.dev".into(),
+            session: token.into(),
+            public: public.into(),
+        })
+    }
+
+    fn held_with(start: &Start) -> &str {
+        match start {
+            Start::Held(LinkStatus::Refused(why) | LinkStatus::Waiting { why, .. }) => why,
+            Start::Held(_) => "connecting",
+            Start::Dialed(_) => "dialed",
+        }
+    }
+
     #[test]
-    fn a_sign_out_stops_the_account_connections_whichever_comes_first() {
-        // The list is asked again (the tab opened) before the change is told.
-        let mut m = Machines {
-            started: signed("old"),
+    fn a_new_list_leaves_a_server_that_is_connected_or_connecting_alone() {
+        let now = dialed("tok", "key");
+        for reach in [
+            Reach::Connected,
+            Reach::Connecting,
+            Reach::Away("The connection dropped.".into()),
+        ] {
+            assert!(!starts_again(&now, Some(&now), Some(&reach)));
+        }
+        // One the list is still awaited for, or that is held: nothing to redo.
+        let held = Start::Held(LinkStatus::Refused(NOT_LISTED.into()));
+        assert!(!starts_again(
+            &held,
+            Some(&held),
+            Some(&Reach::Refused(NOT_LISTED.into()))
+        ));
+    }
+
+    #[test]
+    fn a_new_list_dials_a_server_that_is_new_or_changed_or_gave_up() {
+        let now = dialed("tok", "key");
+        // No connection yet.
+        assert!(starts_again(&now, None, None));
+        // Held until the list came.
+        let waiting = Start::Held(LinkStatus::Connecting);
+        assert!(starts_again(&now, Some(&waiting), Some(&Reach::Connecting)));
+        // Another sign-in, another service, another key.
+        for was in [dialed("old", "key"), dialed("tok", "other")] {
+            assert!(starts_again(&now, Some(&was), Some(&Reach::Connected)));
+        }
+        let mut elsewhere = Account {
+            base: "https://other.example".into(),
+            session: "tok".into(),
+            public: "key".into(),
+        };
+        assert!(starts_again(
+            &now,
+            Some(&Start::Dialed(elsewhere.clone())),
+            Some(&Reach::Connected)
+        ));
+        elsewhere.base = "https://app.arakun.dev".into();
+        assert!(!starts_again(
+            &now,
+            Some(&Start::Dialed(elsewhere)),
+            Some(&Reach::Connected)
+        ));
+        // Refused with the same sign-in and key: it gave up, so once more.
+        assert!(starts_again(
+            &now,
+            Some(&now),
+            Some(&Reach::Refused(
+                "This server was removed from your account.".into()
+            ))
+        ));
+        // A connection from before its start was kept.
+        assert!(starts_again(&now, None, Some(&Reach::Connected)));
+    }
+
+    #[test]
+    fn a_sign_out_stops_the_account_connections() {
+        let s = account_server();
+        let was = start_for(&s, signed("tok").as_ref(), &listed("tok"));
+        assert!(matches!(was, Start::Dialed(_)));
+        // Signed out: whether the list was dropped yet or not.
+        for machines in [listed("tok"), Machines::default()] {
+            let now = start_for(&s, None, &machines);
+            assert_eq!(held_with(&now), SIGN_IN_TO_RECONNECT);
+            assert!(starts_again(&now, Some(&was), Some(&Reach::Connected)));
+        }
+        // Another account: held until its own list is here, never dialed
+        // with the list of the one before.
+        let now = start_for(&s, signed("new").as_ref(), &listed("tok"));
+        assert!(matches!(now, Start::Held(LinkStatus::Connecting)));
+        assert!(starts_again(&now, Some(&was), Some(&Reach::Connected)));
+    }
+
+    #[test]
+    fn a_server_waiting_on_the_list_says_what_it_waits_for() {
+        let s = account_server();
+        let session = signed("tok");
+        // Asked, no answer yet.
+        let mut machines = Machines {
+            asked: signed("tok"),
             ..Machines::default()
         };
-        m.ask(None);
-        assert!(m.stop_if_changed(&None));
-        assert!(m.started.is_none());
-        // The change is told first.
-        let mut m = Machines {
-            started: signed("old"),
-            ..Machines::default()
-        };
-        assert!(m.stop_if_changed(&None));
-        m.ask(None);
-        assert!(m.started.is_none());
-        // Another account: they stop too. The same sign-in again: they stay.
-        let mut m = Machines {
-            started: signed("old"),
-            ..Machines::default()
-        };
-        assert!(!m.stop_if_changed(&signed("old")));
-        assert!(m.stop_if_changed(&signed("new")));
-        assert!(!m.stop_if_changed(&None), "nothing left to stop");
+        let now = start_for(&s, session.as_ref(), &machines);
+        assert!(matches!(now, Start::Held(LinkStatus::Connecting)));
+        // The account could not be reached: never the signed-out sentence.
+        machines.error = Some("offline".into());
+        let now = start_for(&s, session.as_ref(), &machines);
+        assert_eq!(held_with(&now), ACCOUNT_UNREACHABLE);
+        assert!(matches!(now.reach(), Reach::Away(_)));
+        // It answered without this server.
+        machines.error = None;
+        machines.list = Some(vec![machine("aaaaaaaaaaaaaaaa", "server")]);
+        let now = start_for(&s, session.as_ref(), &machines);
+        assert_eq!(held_with(&now), NOT_LISTED);
+        // Asking again failed: the list from before still stands.
+        let mut machines = listed("tok");
+        machines.error = Some("offline".into());
+        let now = start_for(&s, session.as_ref(), &machines);
+        assert!(matches!(now, Start::Dialed(_)));
+        // Added under another service: the sign-in does not go there.
+        let mut other = account_server();
+        other.origin = "https://other.example".into();
+        let now = start_for(&other, session.as_ref(), &listed("tok"));
+        assert!(held_with(&now).contains("another account server"));
     }
 
     #[test]
     fn a_server_that_removed_this_app_is_not_dialed_again() {
-        let removed = Reach::Refused(crate::servers::client::UNPAIRED_BY_SERVER.into());
-        assert!(removed_by_server(&removed));
-        assert!(!removed_by_server(&Reach::Refused("signed out".into())));
-        assert!(!removed_by_server(&Reach::Connected));
-        // Decided from the connection alone, before a client is made.
-        assert!(!dial_again(Some(&removed)));
-        assert!(dial_again(Some(&Reach::Refused("signed out".into()))));
-        assert!(dial_again(Some(&Reach::Connecting)));
-        assert!(dial_again(None));
+        let mut s = account_server();
+        let was = start_for(&s, signed("tok").as_ref(), &listed("tok"));
+        s.removed = true;
+        // Whatever the account lists, and after a restart too: the mark is
+        // the file's.
+        let now = start_for(&s, signed("tok").as_ref(), &listed("tok"));
+        assert_eq!(held_with(&now), UNPAIRED_BY_SERVER);
+        assert!(starts_again(
+            &now,
+            Some(&was),
+            Some(&Reach::Refused(UNPAIRED_BY_SERVER.into()))
+        ));
+        assert!(!starts_again(
+            &now,
+            Some(&now),
+            Some(&Reach::Refused(UNPAIRED_BY_SERVER.into()))
+        ));
+        assert_eq!(
+            held_with(&start_for(&s, None, &Machines::default())),
+            UNPAIRED_BY_SERVER
+        );
+    }
+
+    #[test]
+    fn a_failed_list_is_asked_again_with_a_bounded_wait() {
+        let mut m = Machines::default();
+        let waits: Vec<u64> = (0..8).map(|_| m.next_retry().as_secs()).collect();
+        assert_eq!(waits, [2, 4, 8, 16, 32, 60, 60, 60]);
+        m.stop_retrying();
+        assert_eq!(m.next_retry(), FIRST_RETRY);
+        // Only while a server here waits on the list.
+        assert!(!waits_on_list(&[]));
+        let mut direct = account_server();
+        direct.way = Way::Direct;
+        assert!(!waits_on_list(&[direct]));
+        assert!(waits_on_list(&[account_server()]));
     }
 
     #[test]
@@ -487,6 +741,7 @@ mod tests {
             },
             device: String::new(),
             token: String::new(),
+            removed: false,
         }];
         let YourServers::Listed(rows) = your_servers(&machines, &saved, Some("dddddddddddddddd"))
         else {

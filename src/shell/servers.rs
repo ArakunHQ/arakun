@@ -53,6 +53,10 @@ struct Conn {
     watches_several: bool,
     /// It is from before it sent images: none are asked of it.
     no_images: bool,
+    /// For a server of the account, what `client` was started with, so a
+    /// new list of the account's machines leaves it alone when nothing
+    /// changed. `None` for the others.
+    start: Option<account::Start>,
 }
 
 impl Conn {
@@ -64,6 +68,16 @@ impl Conn {
             places: Vec::new(),
             watches_several: false,
             no_images: false,
+            start: None,
+        }
+    }
+
+    /// The connection to a server of the account, started with `start`.
+    fn through_account(client: Client, start: account::Start) -> Conn {
+        Conn {
+            reach: start.reach(),
+            start: Some(start),
+            ..Conn::new(client)
         }
     }
 }
@@ -937,13 +951,19 @@ impl Shell {
 
     /// With `startup`, only the servers whose link is encrypted.
     fn servers_connect_with(&mut self, startup: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let session = self.servers_dial_session(cx);
         if let Some(link) = &mut self.servers {
             let mut late = Vec::new();
             if !startup {
                 for s in &link.saved {
                     if !link.conns.contains_key(&s.id) {
-                        let client = Client::connect(s.clone(), link.events.clone());
-                        link.conns.insert(s.id.clone(), Conn::new(client));
+                        let conn = Self::servers_first_conn(
+                            s,
+                            session.as_ref(),
+                            &link.machines,
+                            link.events.clone(),
+                        );
+                        link.conns.insert(s.id.clone(), conn);
                         late.extend(link.inboxes.get(&s.id).map(|i| (s.id.clone(), i.clone())));
                     }
                 }
@@ -979,10 +999,15 @@ impl Shell {
             .iter()
             .filter(|s| connects_now(s, startup))
             .map(|s| {
-                (
-                    s.id.clone(),
-                    Conn::new(Client::connect(s.clone(), events.clone())),
-                )
+                // No list was asked yet: a server of the account is held
+                // until it is.
+                let conn = Self::servers_first_conn(
+                    s,
+                    session.as_ref(),
+                    &Default::default(),
+                    events.clone(),
+                );
+                (s.id.clone(), conn)
             })
             .collect();
         self.servers = Some(ServersLink {
@@ -2693,7 +2718,16 @@ impl Shell {
                         self.sync_servers_view(cx);
                         return;
                     }
-                    LinkStatus::Refused(why) => Reach::Refused(why),
+                    LinkStatus::Refused(why) => {
+                        // Kept in the file: after a restart nothing else
+                        // would remember that the server removed this app.
+                        if why == servers::client::UNPAIRED_BY_SERVER
+                            && servers::mark_removed(&mut link.saved, id)
+                        {
+                            servers::save(&link.saved);
+                        }
+                        Reach::Refused(why)
+                    }
                 };
                 let back = reach == Reach::Connected;
                 // Git's answers would have come on the connection that dropped.
@@ -4103,6 +4137,7 @@ mod tests {
             way,
             device: "d".into(),
             token: "t".into(),
+            removed: false,
         };
         assert!(in_the_clear(&saved(
             "http://10.0.0.2:7474",
@@ -4128,6 +4163,7 @@ mod tests {
             way: servers::Way::Direct,
             device: "d".into(),
             token: "t".into(),
+            removed: false,
         };
         let servers = [
             saved("clear", "http://10.0.0.2:7474"),

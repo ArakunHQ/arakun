@@ -272,6 +272,15 @@ tools/bench/releases.sh v0.10.0 v0.11.1       # the same on your own Linux machi
   hand-written values.
 - The `-demo` mode is behind `#if DEBUG` and must not reach a release build.
 
+### The Android app
+
+- `android/kit` is the phone page's protocol in Kotlin (`E2E.kt`, `RelayLink.kt`,
+  `Models.kt`): a change to its encryption, framing or messages must match
+  `core/src/phone` and `phone/`, and its tests read `phone/test/vectors`.
+- Check that a peer's point is on the curve before ECDH, and never reuse a handshake.
+- Pairing credentials stay sealed by the Android Keystore (`CredentialStore.kt`). Never
+  log keys, tokens or message contents.
+
 ### UI changes
 
 - **Use the design system.** Colors, grays, text sizes and fonts come from `theme` and

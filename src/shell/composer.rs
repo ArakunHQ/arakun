@@ -572,9 +572,8 @@ impl Shell {
                 _ => None,
             };
             let sandboxed = thread.as_ref().map(|t| t.read(cx).sandbox().is_some());
-            let none_reported = thread
-                .as_ref()
-                .is_none_or(|t| t.read(cx).commands().is_empty());
+            // An empty list the server sent still counts: it has none.
+            let none_reported = thread.as_ref().is_none_or(|t| !t.read(cx).commands_known());
             let on_server = self.env().remote.is_some() || self.project().is_remote();
             let claude_like = matches!(
                 self.composer_agent(),

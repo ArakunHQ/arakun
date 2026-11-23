@@ -168,9 +168,22 @@ impl Shell {
                         |this, _, _, cx| {
                             if this.clear_armed {
                                 this.clear_armed = false;
-                                let mut history = this.notices.borrow_mut();
-                                history.notices.clear();
-                                crate::notices::store(&mut history);
+                                {
+                                    let mut history = this.notices.borrow_mut();
+                                    history.notices.clear();
+                                    crate::notices::store(&mut history);
+                                }
+                                // Cleared is put away: an operator's notice
+                                // left unread would show again at the next
+                                // word from the account.
+                                let unread: Vec<String> = (this.teams.read(cx).notices().iter())
+                                    .map(|n| n.id.clone())
+                                    .collect();
+                                this.teams.update(cx, |t, cx| {
+                                    for id in &unread {
+                                        t.read_notice(id, cx);
+                                    }
+                                });
                             } else {
                                 this.clear_armed = true;
                             }

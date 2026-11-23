@@ -245,8 +245,22 @@ describe("a computer gone for ninety days", () => {
     expect(await stored(me.label, "pub")).toBeUndefined();
     expect(await stored(me.label, "account")).toBeUndefined();
 
+    // The machine is still the account's, so a device may wait for it again.
+    // Its channel number is all the object stores, and no reason to purge.
+    const waiting = await openPhone(me.label, (await device(owner)).session);
+    expect(await waiting.inbox.control()).toEqual({ type: "open", channel: 1 });
+    expect(await waiting.inbox.control()).toEqual({ type: "pc_offline", since: null });
+    const next = await runInDurableObject(stub, (_i, state) => state.storage.getAlarm());
+    expect((next as number) - Date.now()).toBeGreaterThan(1000);
+    await runInDurableObject(stub, (_i, state) => state.storage.setAlarm(Date.now()));
+    expect(await runDurableObjectAlarm(stub)).toBe(true);
+    expect(waiting.inbox.closed).toBeNull();
+    expect(await stored(me.label, "next_channel")).toBe(1);
+
     const back = await openPc(me.label, owner.session);
     expect(await claim(back, me)).toEqual({ type: "claimed" });
+    expect((await back.inbox.control())["type"]).toBe("open");
+    expect(await waiting.inbox.control()).toEqual({ type: "pc_online" });
     expect(await stored(me.label, "pub")).toBe(me.pubB64);
     expect(await stored(me.label, "account")).toBe(owner.github_id);
   });

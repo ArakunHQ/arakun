@@ -108,11 +108,7 @@ describe("a recheck that fails", () => {
     expect((at as number) - Date.now()).toBeLessThanOrEqual(30_000);
 
     // The retry closes the signed-out device.
-    await runInDurableObject(stub, (_i, state) => state.storage.setAlarm(Date.now()));
-    await runInDurableObject(stub, (instance) => {
-      (instance as unknown as { recheckRetryAt: number }).recheckRetryAt = 0;
-    });
-    expect(await runDurableObjectAlarm(stub)).toBe(true);
+    await recheckDue(me.label);
     expect(await phone.inbox.control()).toEqual({ type: "bye", reason: "signed_out" });
     expect(await pc.inbox.control()).toEqual({ type: "close", channel: 1, reason: "signed_out" });
   });
@@ -137,7 +133,6 @@ describe("a recheck that fails", () => {
     await runInDurableObject(stub, (instance) => {
       const env2 = (instance as unknown as { env: Env }).env;
       (instance as unknown as { env: Env }).env = Object.getPrototypeOf(env2) as Env;
-      (instance as unknown as { recheckRetryAt: number }).recheckRetryAt = 0;
     });
     await recheckDue(me.label);
     expect(await phone.inbox.control()).toEqual({ type: "bye", reason: "signed_out" });

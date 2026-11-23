@@ -1,7 +1,8 @@
-import { SELF } from "cloudflare:test";
+import { SELF, env, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { parsePhoneFrame, pcControl } from "../../src/relay/frames";
-import { as, call } from "../helpers";
+import { hex, sha256, type Env } from "../../src/util";
+import { as, call, type SignedIn } from "../helpers";
 import { HOST, Inbox, account, claim, computer, computerAndPhone, connectedComputer, device, openPc, openPhone, opened, stored } from "./helpers";
 
 interface Machine {
@@ -170,7 +171,6 @@ describe("a device", () => {
   it("is refused by the object when the object's account is another one", async () => {
     // The Worker checks D1 first; this is the object's own check behind it.
     const { me, pc, owner } = await connectedComputer();
-    const { env } = await import("cloudflare:test");
     const stranger = await account();
     const res = await env.RELAY.get(env.RELAY.idFromName(me.label)).fetch("https://relay/ws", {
       headers: {
@@ -193,6 +193,120 @@ describe("a device", () => {
     expect((await inbox.closedWith()).code).toBe(4403);
     await expect(pc.inbox.next(200)).rejects.toThrow();
     expect(await stored(me.label, "account")).toBe(owner.github_id);
+  });
+});
+
+/// A device's socket as machines.ts opens it on the label's object, once the
+/// Worker has checked the session: what the object gets when that check is
+/// already stale.
+async function pastTheDoor(label: string, dev: SignedIn): Promise<{ ws: WebSocket; inbox: Inbox }> {
+  const res = await env.RELAY.get(env.RELAY.idFromName(label)).fetch("https://relay/ws", { headers: doorHeaders(label, dev, await hashOf(dev)) });
+  expect(res.status).toBe(101);
+  const ws = res.webSocket!;
+  const inbox = new Inbox(ws, (b) => parsePhoneFrame(b) ?? { bad: true });
+  ws.accept();
+  ws.binaryType = "arraybuffer";
+  return { ws, inbox };
+}
+
+function doorHeaders(label: string, dev: SignedIn, hash: string): Record<string, string> {
+  return {
+    Upgrade: "websocket",
+    "x-arakun-label": label,
+    "x-arakun-account": String(dev.github_id),
+    "x-arakun-plan": "free",
+    "x-arakun-session": hash,
+    "x-arakun-device": dev.session_id,
+    "x-arakun-device-name": "Phone",
+    "x-arakun-device-kind": "phone",
+  };
+}
+
+async function hashOf(dev: SignedIn): Promise<string> {
+  return hex(await sha256(dev.session));
+}
+
+describe("a device the Worker let through just before", () => {
+  it("its session was signed out is told signed_out by the object, and gets no channel", async () => {
+    const { me, pc, owner } = await connectedComputer();
+    const dev = await device(owner);
+    // The sign-out and its recheck are over before the object hears of the device.
+    expect((await call("DELETE", `/sessions/${dev.session_id}`, as(owner.session))).status).toBe(204);
+    const phone = await pastTheDoor(me.label, dev);
+    expect(await phone.inbox.control()).toEqual({ type: "bye", reason: "signed_out" });
+    expect((await phone.inbox.closedWith()).code).toBe(4401);
+    await expect(pc.inbox.next(200)).rejects.toThrow();
+
+    // A device still signed in comes in by the same way.
+    const stays = await pastTheDoor(me.label, await device(owner));
+    expect(await stays.inbox.control()).toEqual({ type: "open", channel: 1 });
+  });
+
+  it("its session expired is told signed_out", async () => {
+    const { me, owner } = await connectedComputer();
+    const dev = await device(owner);
+    await env.DB.prepare("UPDATE sessions SET expires_at = 1 WHERE id = ?").bind(dev.session_id).run();
+    const phone = await pastTheDoor(me.label, dev);
+    expect(await phone.inbox.control()).toEqual({ type: "bye", reason: "signed_out" });
+  });
+
+  it("its account was blocked is told blocked", async () => {
+    const { me, owner } = await connectedComputer();
+    const dev = await device(owner);
+    await env.DB.prepare("UPDATE users SET blocked_at = 1 WHERE github_id = ?").bind(owner.github_id).run();
+    const phone = await pastTheDoor(me.label, dev);
+    expect(await phone.inbox.control()).toEqual({ type: "bye", reason: "blocked" });
+    expect((await phone.inbox.closedWith()).code).toBe(4403);
+  });
+
+  it("its machine was forgotten is told no_machine", async () => {
+    const { me, owner } = await connectedComputer();
+    const dev = await device(owner);
+    await env.DB.prepare("DELETE FROM machines WHERE label = ?").bind(me.label).run();
+    const phone = await pastTheDoor(me.label, dev);
+    expect(await phone.inbox.control()).toEqual({ type: "bye", reason: "no_machine" });
+    expect((await phone.inbox.closedWith()).code).toBe(4404);
+  });
+
+  it("is refused when the sign-out and its recheck land while the object reads D1", async () => {
+    const { me, pc, owner } = await connectedComputer();
+    const dev = await device(owner);
+    const hash = await hashOf(dev);
+    const stub = env.RELAY.get(env.RELAY.idFromName(me.label));
+    // The object's first read of the device's session answers as D1 stood
+    // before the sign-out, and only after the sign-out's recheck has run.
+    let reads = 0;
+    await runInDurableObject(stub, (instance) => {
+      const real = (instance as unknown as { env: Env }).env;
+      const db = {
+        batch: (statements: D1PreparedStatement[]) => real.DB.batch(statements),
+        prepare: (q: string) => {
+          const statement = real.DB.prepare(q);
+          if (!q.includes("AS owner") || reads++ > 0) return statement;
+          return {
+            bind: (...values: unknown[]) => ({
+              first: async () => {
+                const row = await statement.bind(...values).first();
+                await real.DB.prepare("DELETE FROM sessions WHERE token_hash = ?").bind(hash).run();
+                const res = await instance.fetch(new Request("https://relay/_recheck", { method: "POST", headers: { "x-arakun-label": me.label } }));
+                expect(res.status).toBe(204);
+                return row;
+              },
+            }),
+          };
+        },
+      };
+      (instance as unknown as { env: Env }).env = Object.create(real, { DB: { value: db } });
+    });
+    const res = await stub.fetch("https://relay/ws", { headers: doorHeaders(me.label, dev, hash) });
+    const ws = res.webSocket!;
+    const inbox = new Inbox(ws, (b) => parsePhoneFrame(b) ?? { bad: true });
+    ws.accept();
+    ws.binaryType = "arraybuffer";
+    expect(await inbox.control()).toEqual({ type: "bye", reason: "signed_out" });
+    expect((await inbox.closedWith()).code).toBe(4401);
+    expect(reads).toBe(2);
+    await expect(pc.inbox.next(200)).rejects.toThrow();
   });
 });
 

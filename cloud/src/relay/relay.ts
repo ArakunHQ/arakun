@@ -8,8 +8,11 @@
 // label derives from. Only then is it the computer, and only one computer is:
 // a later claim replaces the earlier socket. The claim registers the label to
 // the account in D1, unless another account has it. Nothing is stored before
-// the claim, and a socket that does not claim in time is closed by the alarm.
-// Devices connect at /ws. Each gets a channel number; the computer hears
+// the claim but the channel counter, and a socket that does not claim in time
+// is closed by the alarm.
+// Devices connect at /ws. The Worker's check may be stale by the time a device
+// arrives here, so its session and account are read from D1 once more before
+// it gets a channel. Each gets a channel number; the computer hears
 // `open` (with who the device is) and `close` for it, the device hears
 // whether the computer is there. Hello and data frames cross unread: a
 // device's go to the computer on its channel, the computer's go to the device
@@ -124,9 +127,10 @@ export class Relay extends DurableObject<Env> {
   private today: Today | null = null;
   /// PHONE_SILENT_MS; tests shorten it rather than wait.
   private silentMs = PHONE_SILENT_MS;
-  /// Not before this is a recheck tried again, after one failed. Lost on a
-  /// wake, which only means the retry comes sooner.
-  private recheckRetryAt: number | null = null;
+  /// How many rechecks have started. A device being admitted reads D1 while
+  /// other events run; a recheck among them means a sign-out or block may be
+  /// newer than what it read.
+  private rechecks = 0;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -296,13 +300,15 @@ export class Relay extends DurableObject<Env> {
   // ---- devices -------------------------------------------------------------
 
   /// A device's socket. The Worker checked its session against the machine's
-  /// account in D1; the account the claim stored is checked here too. A
-  /// device that cannot come in is told why and closed; a refused upgrade
-  /// would look like a dead network to the page.
+  /// account in D1, but a sign-out or a block may have landed since, and its
+  /// recheck found no socket here yet to close. So the session, the block and
+  /// the machine's account are read again here, and the account the claim
+  /// stored is checked too. A device that cannot come in is told why and
+  /// closed; a refused upgrade would look like a dead network to the page.
   private async acceptPhone(admitted: Admitted): Promise<Response> {
     const [client, server] = pair();
     const owner = await this.ctx.storage.get<number>("account");
-    const refused = owner !== undefined && owner !== admitted.account ? "not_yours" : null;
+    const refused = owner !== undefined && owner !== admitted.account ? "not_yours" : await this.standing(admitted);
     let full: "phones" | "daily" | null = null;
     if (!refused) {
       // The Worker read the plan from D1 just now: the freshest word on it.
@@ -314,7 +320,7 @@ export class Relay extends DurableObject<Env> {
       this.ctx.acceptWebSocket(server, ["phone"]);
       server.serializeAttachment({ role: "phone", channel: 0, ...admitted } satisfies Tag);
       if (full) this.limited(server, full);
-      else this.bye(server, refused!, CLOSE_FORBIDDEN);
+      else this.bye(server, refused!, closeCode(refused!));
       return new Response(null, { status: 101, webSocket: client });
     }
     const channel = ((await this.ctx.storage.get<number>("next_channel")) ?? 0) + 1;
@@ -328,6 +334,27 @@ export class Relay extends DurableObject<Env> {
     }
     await this.schedule();
     return new Response(null, { status: 101, webSocket: client });
+  }
+
+  /// Why a device may not come in, by what D1 says now, or null while it may:
+  /// one read of its session, its account's block and the machine's account.
+  /// D1 lets other events in while it answers. A recheck among them was asked
+  /// for by a sign-out or a block that this read may have missed, and it did
+  /// not see this socket, so the read is made again.
+  private async standing(admitted: Admitted): Promise<string | null> {
+    for (;;) {
+      const before = this.rechecks;
+      const row = await this.env.DB.prepare(
+        `SELECT s.token_hash, s.github_id, u.blocked_at IS NOT NULL AS blocked, u.plan,
+                (SELECT github_id FROM machines WHERE label = ?2) AS owner
+         FROM sessions s JOIN users u ON u.github_id = s.github_id
+         WHERE s.token_hash = ?1 AND s.expires_at > ?3`,
+      )
+        .bind(admitted.session, admitted.label, seconds(Date.now()))
+        .first<SessionRow & { owner: number | null }>();
+      if (this.rechecks !== before) continue;
+      return refusal({ role: "phone", channel: 1, ...admitted }, row ?? undefined, row?.owner ?? null);
+    }
   }
 
   /// When the device places are taken, one of them is given up if it is the
@@ -491,15 +518,21 @@ export class Relay extends DurableObject<Env> {
   /// The recheck, kept from taking the alarm down with it: an alarm that
   /// throws is retried a few times and then dropped, and with it the claim
   /// timeouts, the silent devices and every later recheck. A failure is
-  /// tried again soon instead.
+  /// tried again soon instead: every socket's last check is set so that the
+  /// next one is due then. That lives on the sockets, so it holds when
+  /// the object is evicted before the retry.
   private async tryRecheck(): Promise<boolean> {
     try {
       await this.recheck();
-      this.recheckRetryAt = null;
       return true;
     } catch (e) {
       console.error("relay recheck failed:", e);
-      this.recheckRetryAt = Date.now() + RECHECK_RETRY_MS;
+      const checked = Date.now() + RECHECK_RETRY_MS - RECHECK_MS;
+      for (const ws of this.ctx.getWebSockets()) {
+        const tag = ws.deserializeAttachment() as Tag | null;
+        if (!tag || ws.readyState !== WebSocket.READY_STATE_OPEN) continue;
+        ws.serializeAttachment({ ...tag, checked } satisfies Tag);
+      }
       return false;
     }
   }
@@ -510,6 +543,7 @@ export class Relay extends DurableObject<Env> {
   /// machine forgotten (`no_machine`) or now another account's. The plan
   /// name is taken from D1 too, so a change reaches open sockets.
   private async recheck(): Promise<void> {
+    this.rechecks++;
     const sockets = this.ctx
       .getWebSockets()
       .filter((ws) => ws.readyState === WebSocket.READY_STATE_OPEN)
@@ -543,7 +577,7 @@ export class Relay extends DurableObject<Env> {
       const why = refusal(tag, row, owner, !claimedMeanwhile);
       if (why) {
         if (ws === this.computer()) computerClosed = true;
-        this.bye(ws, why, why === "signed_out" ? CLOSE_UNAUTHORIZED : why === "no_machine" ? CLOSE_NOT_FOUND : CLOSE_FORBIDDEN);
+        this.bye(ws, why, closeCode(why));
       } else {
         ws.serializeAttachment({ ...tag, checked: now } satisfies Tag);
         plan = row!.plan;
@@ -568,19 +602,20 @@ export class Relay extends DurableObject<Env> {
       if (!tag || ws.readyState !== WebSocket.READY_STATE_OPEN || (tag.role === "phone" && !tag.channel)) continue;
       if (oldest === null || tag.checked < oldest) oldest = tag.checked;
     }
-    if (oldest === null) return null;
-    // After a failure, the retry is the next recheck, whether the alarm's or
-    // the Worker's recheck failed.
-    return this.recheckRetryAt ?? oldest + RECHECK_MS;
+    return oldest === null ? null : oldest + RECHECK_MS;
   }
 
   /// When the object empties itself, while no computer is connected: ninety
   /// days after it was last seen. State without a claim behind it (a label an
-  /// older relay stored for anyone who opened /pc) goes at once.
+  /// older relay stored for anyone who opened /pc) goes at once. The channel
+  /// counter alone is not such state: a device that waits for a computer the
+  /// purge forgot stores it, and must not be sent away for it.
   private async purgeAt(): Promise<number | null> {
     const seen = await this.ctx.storage.get<number>("last_seen");
     if (seen !== undefined) return seen + PURGE_AFTER_MS;
-    return (await this.ctx.storage.list({ limit: 1 })).size > 0 ? 0 : null;
+    const keys = await this.ctx.storage.list({ limit: 2 });
+    keys.delete("next_channel");
+    return keys.size > 0 ? 0 : null;
   }
 
   /// When a phone counts as gone if it pings no more; null until its first ping.
@@ -773,6 +808,11 @@ export interface SessionRow {
   github_id: number;
   blocked: number;
   plan: string;
+}
+
+/// The close code that goes with a refusal's reason.
+function closeCode(why: string): number {
+  return why === "signed_out" ? CLOSE_UNAUTHORIZED : why === "no_machine" ? CLOSE_NOT_FOUND : CLOSE_FORBIDDEN;
 }
 
 /// Why a socket may stay no longer, or null while it may. `owner` is the

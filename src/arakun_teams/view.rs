@@ -361,7 +361,10 @@ impl TeamsView {
         if name.is_empty() {
             return;
         }
-        self.channel_name.update(cx, |i, cx| i.set_text("", cx));
+        // A refusal (the team waits for a new key) keeps the name to send later.
+        if self.hub.read(cx).seal_blocked(&team).is_none() {
+            self.channel_name.update(cx, |i, cx| i.set_text("", cx));
+        }
         self.hub
             .update(cx, |h, cx| h.create_channel(&team, name, cx));
     }
@@ -870,6 +873,7 @@ impl TeamsView {
         let admin = t.role.is_admin();
         let inviting = hub.busy.contains(&format!("invite:{team_id}"));
         let making_channel = hub.busy.contains(&format!("channel:{team_id}"));
+        let can_seal = hub.seal_blocked(team_id).is_none();
         let notices: Vec<_> = hub
             .notices
             .iter()
@@ -1005,7 +1009,7 @@ impl TeamsView {
                                 "Add channel"
                             },
                             ButtonKind::Outline,
-                            !making_channel,
+                            !making_channel && can_seal,
                         )
                         .on_click(cx.listener(|this, _, _, cx| this.create_channel(cx))),
                     ),
@@ -1443,6 +1447,7 @@ impl TeamsView {
         let (hidden, locked) = c.map_or((0, 0), |c| (c.hidden, c.locked()));
         let keyless = t.keyless;
         let team_name = t.detail.name.clone();
+        let blocked = hub.seal_blocked(team_id);
         let notices: Vec<_> = hub
             .notices
             .iter()
@@ -1647,7 +1652,7 @@ impl TeamsView {
             .track_scroll(&self.scroll)
             .children(rows);
 
-        let can_send = !keyless;
+        let can_send = !keyless && blocked.is_none();
         let connected = status == socket::Status::Connected;
         let reply_bar = reply.map(|r| {
             div()
@@ -1719,10 +1724,15 @@ impl TeamsView {
                     ui::text(
                         Type::Caption,
                         theme::text_faint(),
-                        if keyless {
-                            "You can write here once this device holds the team key."
-                        } else {
-                            "Not connected right now. What you send goes out once it is back."
+                        match blocked {
+                            _ if keyless => {
+                                "You can write here once this device holds the team key.".into()
+                            }
+                            Some(why) => why,
+                            None => {
+                                "Not connected right now. What you send goes out once it is back."
+                                    .into()
+                            }
                         },
                     )
                     .pt(ui::sp(6.)),

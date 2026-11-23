@@ -1375,6 +1375,15 @@ impl Hub {
         (epoch == t.detail.epoch && !t.detail.rotation_pending).then_some((epoch, key))
     }
 
+    /// Why nothing can be sealed for this team now, or None when it can. The
+    /// view keeps Send and Add channel off on it, since a pending rotation
+    /// stops both while the device still holds keys.
+    pub fn seal_blocked(&self, team_id: &str) -> Option<String> {
+        self.sending_key(team_id)
+            .is_none()
+            .then(|| self.no_sending_key(team_id))
+    }
+
     /// Why [`Self::sending_key`] gave nothing.
     fn no_sending_key(&self, team_id: &str) -> String {
         self.team

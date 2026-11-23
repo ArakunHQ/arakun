@@ -12,7 +12,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.arakun.android"
+        applicationId = "com.arakun.app"
         minSdk = 26
         targetSdk = 36
         // android-release.yml sets both: the version is Arakun's, the code a

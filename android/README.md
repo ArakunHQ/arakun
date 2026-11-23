@@ -34,7 +34,7 @@ the inbox. `demoOpen s1` opens a session, `demoNew true` the New session sheet,
 side by side:
 
 ```sh
-adb shell am start -n com.arakun.android/.MainActivity --ez demo true --es demoOpen s1
+adb shell am start -n com.arakun.app/com.arakun.android.MainActivity --ez demo true --es demoOpen s1
 adb shell cmd uimode night yes   # or no: the app follows the system
 ```
 

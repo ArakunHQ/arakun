@@ -231,18 +231,23 @@ removed member's envelopes and closes their channel sockets (code `4403`).
 
 The next time an admin device connects it makes a new team key and uploads
 envelopes for every remaining device (`PUT /teams/<team_id>/envelopes`). The
-server accepts a message, or a channel name, only when its epoch is the newest one
-with envelopes: the previous epoch while the rotation is pending, the current one
-after it. So an older epoch is refused only after the new epoch's envelopes exist,
-and nothing is stored under an epoch whose key may never reach the members: two
-removals before a rotation skip an epoch, and nothing is ever sealed with it. The
-removed member holds the key of that newest epoch with envelopes, so an Arakun
-client that knows of the rotation (`rotation_pending`) seals nothing new with it:
-until the rotation ends it does not send, and shows that the rotation is pending.
-A device learns of it when it next reads the team, 20 seconds later at most in
-Arakun; until then it may still send with that key, and the server accepts it. A
-removed member keeps what they already read, and once the rotation ends, never
-what comes after.
+server accepts a message, or a channel name, only when its epoch is the current
+one and that epoch has envelopes. So while a rotation is pending it accepts none:
+the newest key with envelopes is one the removed member holds, and the current
+epoch's key may never reach the members (two removals before a rotation skip an
+epoch, and nothing is ever sealed with it). This holds from the moment the removal
+commits, also for a device that has not read the team since: its next send is
+refused with the code `rotation_pending` (see Realtime). An Arakun client that
+knows of the rotation (`rotation_pending`) does not try: it shows that the
+rotation is pending. A message refused this way was not stored; the client reads
+the team again and, once the new key has reached it, seals the message again with
+that key and sends it. A removed member keeps what they already read, and never
+what comes after the removal.
+
+Servers from before this rule accepted the newest epoch with envelopes during a
+rotation, so a device that had not read the team yet could still send with the
+old key. Arakun clients read the team at least every 20 seconds and stop sending
+when they see `rotation_pending`, so against such a server that window remains.
 
 ## Channels and messages
 
@@ -338,11 +343,21 @@ in `Authorization`, device in `X-Arakun-Device`). Frames are JSON text:
 - server → client:
   - `{ "type": "message", "seq": 42, "at": 1795000000, "message": <wire message> }`
     for every stored message, the sender's own included (that is its ack);
-  - `{ "type": "error", "id": "<message id>", "error": "..." }` when one is refused
-    (`id` is null when the frame had none). A refused message was not stored.
-    When the server could not run its checks (D1 or the rate limiter failed),
-    `error` ends in "send it again", and the client may send the same message
-    again, with the same `id`;
+  - `{ "type": "error", "id": "<message id>", "error": "...", "code": "..." }`
+    when one is refused (`id` is null when the frame had none). A refused message
+    was not stored. `error` is for people; clients match `code`, which only some
+    refusals carry, and ignore a code they don't know:
+    - `exists`: the channel already holds a message with this `id` (a resend of
+      one that was stored), so nothing is left to send;
+    - `rotation_pending`: a rotation is pending, so no epoch is accepted. Read
+      the team again and send once the new key has reached the device;
+    - `stale_epoch`: a newer epoch has envelopes. Read the team again, fetch the
+      new key, seal the message again with it and send it;
+    - `unknown_epoch`: the epoch is newer than the team's.
+    Every epoch refusal says "epoch" in `error`, and none says "exists", for
+    clients from before `code`. When the server could not run its checks (D1 or
+    the rate limiter failed), `error` ends in "send it again", and the client may
+    send the same message again, with the same `id`;
   - `{ "type": "presence", "here": [<github-id>, ...] }` to every socket on the
     channel when one opens or closes: the GitHub IDs with a socket open on this
     channel, sorted, each once. A new socket gets one right away. A socket whose
@@ -377,8 +392,8 @@ so the server closes such a socket with `4503`; the client then opens a new one 
 reads the history again in the same way.
 
 The server checks on `send`: the sender device belongs to the session's user, the
-user is a member, `epoch` is the newest one with envelopes (see Rotation) and not
-older than the channel's last stored message, sizes (`ct` at most 64 KiB), and that
+user is a member, `epoch` is the current one and has envelopes (see Rotation) and
+is not older than the channel's last stored message, sizes (`ct` at most 64 KiB), and that
 `id` is new in the channel. So a channel's epochs never go back as `seq` grows. It cannot check `sig` against content it
 cannot read, but it does check `sig` is a valid signature by that device, so a
 client cannot post as another device. Membership and epoch are read again on
@@ -414,8 +429,7 @@ Such a server can:
   different clients different lists.
 - Stall a rotation: a client does not seal a key to a user whose pinned first
   device changed, and the server refuses a rotation that leaves out a device. The
-  team then can't send: the Arakun client does not seal under the epoch a removed
-  member holds.
+  team then can't send: nothing is accepted while a rotation is pending.
 - Read the metadata above, as any server here can.
 
 It cannot:

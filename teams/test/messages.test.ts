@@ -63,7 +63,7 @@ describe("channel sockets", () => {
     a.send(good);
     await stored(a);
     a.send(good);
-    expect((await refused(a)).error).toMatch(/exists/);
+    expect(await refused(a)).toEqual({ type: "error", id: good.id, code: "exists", error: "a message with this id exists" });
     a.send({ ...good, nonce: "short" });
     expect((await refused(a)).id).toBe(good.id);
     a.ws.send("not json");
@@ -320,43 +320,58 @@ describe("channel sockets", () => {
 });
 
 describe("rotation", () => {
-  it("takes only the newest epoch with envelopes, so a stale one is refused once the new one has them", async () => {
+  it("takes only the current epoch once it has envelopes, so nothing is stored while a rotation is pending", async () => {
     const t = await team();
     const m = await join(t);
     const gone = await join(t);
     const a = await openChannel(t.owner.user, t.owner.device, t.teamId, t.channelId);
     await expectJson(api(t.owner.user, "DELETE", `/teams/${t.teamId}/members/${gone.user.id}`), 200);
 
-    // Rotation pending: the old key still works.
-    a.send(await message(t.teamId, t.channelId, t.owner.device, 1, t.keys.get(1)!, "old key"));
-    expect((await stored(a)).message).toMatchObject({ epoch: 1 });
+    // Rotation pending: the removed member holds the old key, so it is refused
+    // at once, with a code the client reads the team again on.
+    const old = await message(t.teamId, t.channelId, t.owner.device, 1, t.keys.get(1)!, "old key");
+    a.send(old);
+    expect(await refused(a)).toEqual({
+      type: "error",
+      id: old.id,
+      code: "rotation_pending",
+      error: "a key rotation is pending: epoch 1 is retired, so wait for the new team key and send again",
+    });
     a.send(await message(t.teamId, t.channelId, t.owner.device, 3, newKey(), "future"));
-    expect((await refused(a)).error).toBe("unknown epoch");
+    expect(await refused(a)).toMatchObject({ code: "unknown_epoch", error: "unknown epoch" });
     // Epoch 2 has no envelopes yet, and a second removal could skip it for good.
     const key2 = newKey();
     a.send(await message(t.teamId, t.channelId, t.owner.device, 2, key2, "current epoch, before its envelopes"));
-    expect((await refused(a)).error).toMatch(/epoch 2 has no envelopes yet/);
+    expect(await refused(a)).toMatchObject({ code: "rotation_pending" });
+    expect(await storedCount(t)).toBe(0);
 
     const envelopes = [await envelope(t.teamId, 2, key2, t.owner.device, t.owner.device), await envelope(t.teamId, 2, key2, m.device, t.owner.device)];
     await expectJson(api(t.owner.user, "PUT", `/teams/${t.teamId}/envelopes`, { device: t.owner.device, body: { envelopes } }), 200);
 
     a.send(await message(t.teamId, t.channelId, t.owner.device, 1, t.keys.get(1)!, "old key again"));
-    expect((await refused(a)).error).toMatch(/stale epoch/);
+    expect(await refused(a)).toMatchObject({ code: "stale_epoch", error: "stale epoch: fetch the new team key" });
     a.send(await message(t.teamId, t.channelId, t.owner.device, 2, key2, "new key"));
     expect((await stored(a)).message).toMatchObject({ epoch: 2 });
     a.ws.close();
   });
 
-  it("refuses an old-epoch send that a new-epoch send overtook while it was checked", async () => {
+  it("names the epoch in every refusal of one, so a client from before the code reads the team again", async () => {
     const t = await team();
-    const m = await join(t);
     const gone = await join(t);
     const a = await openChannel(t.owner.user, t.owner.device, t.teamId, t.channelId);
-    const b = await openChannel(m.user, m.device, t.teamId, t.channelId);
     await expectJson(api(t.owner.user, "DELETE", `/teams/${t.teamId}/members/${gone.user.id}`), 200);
+    a.send(await message(t.teamId, t.channelId, t.owner.device, 1, t.keys.get(1)!, "old key"));
+    const got = await refused(a);
+    expect(got.error).toMatch(/epoch/);
+    // Such a client treats a refusal that says "exists" as already stored.
+    expect(got.error).not.toMatch(/exists/);
+    a.ws.close();
+  });
+
+  /// Holds the owner's next send in its membership read, until `release`.
+  async function holdOwnerSend(t: TeamSetup): Promise<DurableObjectStub> {
     const owner = (await env.DB.prepare("SELECT token_hash FROM sessions WHERE github_id = ?").bind(t.owner.user.id).first<{ token_hash: string }>())!.token_hash;
     const stub = env.CHANNEL.get(env.CHANNEL.idFromName(`${t.teamId}/${t.channelId}`)) as DurableObjectStub;
-    // Holds the owner's epoch-1 send after it read the team as pending.
     await runInDurableObject<Channel, void>(stub, (instance) => {
       const ch = instance as any;
       const allowed = ch.allowed.bind(ch);
@@ -371,10 +386,40 @@ describe("rotation", () => {
         return got;
       };
     });
+    return stub;
+  }
+
+  async function untilHeld(stub: DurableObjectStub): Promise<void> {
+    while (!(await runInDurableObject<Channel, boolean>(stub, (ch) => (ch as any).held))) await new Promise((r) => setTimeout(r, 1));
+  }
+
+  it("refuses a send that a removal overtook while it was checked", async () => {
+    const t = await team();
+    const gone = await join(t);
+    const a = await openChannel(t.owner.user, t.owner.device, t.teamId, t.channelId);
+    const stub = await holdOwnerSend(t);
+    const old = await message(t.teamId, t.channelId, t.owner.device, 1, t.keys.get(1)!, "sent before the removal");
+    a.send(old);
+    await untilHeld(stub);
+    await expectJson(api(t.owner.user, "DELETE", `/teams/${t.teamId}/members/${gone.user.id}`), 200);
+    await runInDurableObject<Channel, void>(stub, (ch) => (ch as any).release());
+    expect(await refused(a)).toMatchObject({ id: old.id, code: "rotation_pending" });
+    expect(await storedCount(t)).toBe(0);
+    a.ws.close();
+  });
+
+  it("refuses an old-epoch send that a rotation and a new-epoch send overtook while it was checked", async () => {
+    const t = await team();
+    const m = await join(t);
+    const gone = await join(t);
+    const a = await openChannel(t.owner.user, t.owner.device, t.teamId, t.channelId);
+    const b = await openChannel(m.user, m.device, t.teamId, t.channelId);
+    const stub = await holdOwnerSend(t);
     const old = await message(t.teamId, t.channelId, t.owner.device, 1, t.keys.get(1)!, "sent before the rotation");
     a.send(old);
-    while (!(await runInDurableObject<Channel, boolean>(stub, (ch) => (ch as any).held))) await new Promise((r) => setTimeout(r, 1));
-    // The rotation ends and the member sends with the new key meanwhile.
+    await untilHeld(stub);
+    // A removal, the rotation that ends it, and the member sends with the new key meanwhile.
+    await expectJson(api(t.owner.user, "DELETE", `/teams/${t.teamId}/members/${gone.user.id}`), 200);
     const key2 = newKey();
     const envelopes = [await envelope(t.teamId, 2, key2, t.owner.device, t.owner.device), await envelope(t.teamId, 2, key2, m.device, t.owner.device)];
     await expectJson(api(t.owner.user, "PUT", `/teams/${t.teamId}/envelopes`, { device: t.owner.device, body: { envelopes } }), 200);
@@ -382,7 +427,7 @@ describe("rotation", () => {
     expect((await stored(b)).message).toMatchObject({ epoch: 2 });
     await runInDurableObject<Channel, void>(stub, (ch) => (ch as any).release());
     expect((await stored(a)).message).toMatchObject({ epoch: 2 });
-    expect(await refused(a)).toEqual({ type: "error", id: old.id, error: "stale epoch: fetch the new team key" });
+    expect(await refused(a)).toEqual({ type: "error", id: old.id, code: "stale_epoch", error: "stale epoch: fetch the new team key" });
     expect(await storedCount(t)).toBe(1);
     a.ws.close();
     b.ws.close();
@@ -407,9 +452,9 @@ describe("rotation", () => {
     expect(await expectJson(api(leaver.user, "DELETE", `/teams/${t.teamId}/members/${leaver.user.id}`), 200)).toEqual({ epoch: 3, rotation_pending: true });
     expect((await c.inbox.closedWith()).code).toBe(4403);
 
-    // The others stay connected.
+    // The others stay connected, and hear that the rotation is pending.
     a.send(await message(t.teamId, t.channelId, t.owner.device, 1, t.keys.get(1)!, "still here"));
-    await stored(a);
+    expect(await refused(a)).toMatchObject({ code: "rotation_pending" });
     expect(a.inbox.closed).toBeNull();
     a.ws.close();
   });

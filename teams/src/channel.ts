@@ -6,7 +6,7 @@
 // headers below, which it builds itself. Sockets hibernate between frames, so
 // who is on a socket lives in its attachment.
 //
-// On every `send` this reads the team's epoch, and whether each socket's
+// On every `send` this reads the team's epochs, and whether each socket's
 // session is still live, its user still a member and still flagged, from D1
 // rather than trusting what the Worker saw at upgrade: a socket stays open for
 // hours, and a removal, a logout, a lost flag or a rotation must apply to the
@@ -67,18 +67,31 @@ const RECHECKS = 3;
 const CHECK_FAILED = "the server could not check the message: send it again";
 
 /// Whether a message or channel name sealed with this epoch may be stored:
-/// only the newest epoch with envelopes. While a rotation is pending that is
-/// the previous key, since the current epoch's may never be uploaded: a second
-/// removal skips it, and what was sealed with it could not be read.
-export function epochAllowed(epoch: number, keyed: number): boolean {
-  return keyed >= 1 && epoch === keyed;
+/// only the current epoch, and only once it has envelopes. While a rotation
+/// is pending nothing is: the newest key with envelopes is one a removed
+/// member holds, and the current epoch's may never be uploaded (a second
+/// removal skips it, and what was sealed with it could not be read). A
+/// device that has not read the team since the removal hears so on its next
+/// send, not up to a refresh later.
+export function epochAllowed(epoch: number, current: number, keyed: number): boolean {
+  return keyed >= 1 && keyed === current && epoch === current;
 }
 
-/// Why an epoch was refused, for the sender.
-export function epochRefused(epoch: number, current: number, keyed: number): string {
-  if (epoch < keyed) return "stale epoch: fetch the new team key";
-  if (epoch <= current) return `epoch ${epoch} has no envelopes yet: keep using epoch ${keyed} until the rotation ends`;
-  return "unknown epoch";
+/// A refusal of an epoch: `code` is for clients, `error` for people.
+export interface EpochRefusal {
+  code: "stale_epoch" | "rotation_pending" | "unknown_epoch";
+  error: string;
+}
+
+/// Why an epoch was refused, for the sender. Each `error` names the epoch,
+/// so a client from before `code` that reads the team again on "epoch"
+/// still does so.
+export function epochRefused(epoch: number, current: number, keyed: number): EpochRefusal {
+  if (epoch < keyed) return { code: "stale_epoch", error: "stale epoch: fetch the new team key" };
+  if (keyed < current && epoch <= current) {
+    return { code: "rotation_pending", error: `a key rotation is pending: epoch ${epoch} is retired, so wait for the new team key and send again` };
+  }
+  return { code: "unknown_epoch", error: "unknown epoch" };
 }
 
 /// Whether `allowed` says this session may still hear a message, checked
@@ -249,7 +262,7 @@ export class Channel extends DurableObject<Env> {
       return this.refuse(ws, msg.id, CHECK_FAILED);
     }
     if (!team || !live(allowed, who.session)) return this.forbidSend(ws, msg.id);
-    if (!epochAllowed(msg.epoch, team.keyed_epoch)) return this.refuse(ws, msg.id, epochRefused(msg.epoch, team.epoch, team.keyed_epoch));
+    if (!epochAllowed(msg.epoch, team.epoch, team.keyed_epoch)) return this.refuseEpoch(ws, msg.id, epochRefused(msg.epoch, team.epoch, team.keyed_epoch));
     // A socket admitted while that read ran had its own check, but D1 does not
     // order two separate reads, so a logout between its check and ours could
     // reach neither. Check those sessions too, until no new one came in.
@@ -272,34 +285,35 @@ export class Channel extends DurableObject<Env> {
       return this.refuse(ws, msg.id, CHECK_FAILED);
     }
 
-    // The epoch was read before the awaits above: a rotation that ended in
-    // between would let this send store a message under the retired key, on a
-    // channel with no newer message for the `last` check below to see. Read
-    // it once more, at the insertion boundary.
-    let keyedNow: { keyed_epoch: number } | null;
+    // The epochs were read before the awaits above: a removal in between
+    // starts a rotation, and one that ended would let this send store a
+    // message under the retired key, on a channel with no newer message for
+    // the `last` check below to see. Read them once more, at the insertion
+    // boundary.
+    let teamNow: { epoch: number; keyed_epoch: number } | null;
     try {
-      keyedNow = await this.env.DB.prepare("SELECT keyed_epoch FROM teams WHERE team_id = ?").bind(who.teamId).first<{ keyed_epoch: number }>();
+      teamNow = await this.env.DB.prepare("SELECT epoch, keyed_epoch FROM teams WHERE team_id = ?").bind(who.teamId).first<{ epoch: number; keyed_epoch: number }>();
     } catch (e) {
       console.error("send epoch check failed:", e);
       return this.refuse(ws, msg.id, CHECK_FAILED);
     }
     // A full recheck can withdraw the sender's access, and the session may
     // have expired during the last read. Nothing awaits after this check.
-    if (!live(allowed, who.session)) return this.forbidSend(ws, msg.id);
-    if (!keyedNow || keyedNow.keyed_epoch !== team.keyed_epoch)
-      return this.refuse(ws, msg.id, epochRefused(msg.epoch, team.epoch, keyedNow?.keyed_epoch ?? team.keyed_epoch));
+    if (!live(allowed, who.session) || !teamNow) return this.forbidSend(ws, msg.id);
+    if (!epochAllowed(msg.epoch, teamNow.epoch, teamNow.keyed_epoch))
+      return this.refuseEpoch(ws, msg.id, epochRefused(msg.epoch, teamNow.epoch, teamNow.keyed_epoch));
 
     // From here to the send nothing awaits, so no other frame runs in between:
     // the checks below and the insert are one step.
     if (this.sql.exec("SELECT 1 FROM messages WHERE id = ?1 UNION ALL SELECT 1 FROM retired_ids WHERE id = ?1 LIMIT 1", msg.id).toArray().length > 0) {
-      return this.refuse(ws, msg.id, "a message with this id exists");
+      return this.refuse(ws, msg.id, "a message with this id exists", "exists");
     }
     // The epoch read above may be old by now: a rotation can end, and a send
     // with the new key be stored, while this one awaited its checks. Never
     // store an older epoch after a newer one. Each insert keeps that true, so
     // the last message holds the newest epoch.
     const last = this.sql.exec<{ epoch: number }>("SELECT json_extract(message, '$.epoch') AS epoch FROM messages ORDER BY seq DESC LIMIT 1").toArray()[0];
-    if (last && msg.epoch < last.epoch) return this.refuse(ws, msg.id, epochRefused(msg.epoch, last.epoch, last.epoch));
+    if (last && msg.epoch < last.epoch) return this.refuseEpoch(ws, msg.id, epochRefused(msg.epoch, last.epoch, last.epoch));
     const at = now();
     let seq: number;
     try {
@@ -436,9 +450,15 @@ export class Channel extends DurableObject<Env> {
     this.close(ws, CLOSE_FORBIDDEN, reason);
   }
 
-  private refuse(ws: WebSocket, id: string | null, message: string): void {
+  private refuseEpoch(ws: WebSocket, id: string, why: EpochRefusal): void {
+    this.refuse(ws, id, why.error, why.code);
+  }
+
+  /// `code`, when given, is what a client matches on; older clients only
+  /// read `error`.
+  private refuse(ws: WebSocket, id: string | null, message: string, code?: string): void {
     try {
-      ws.send(JSON.stringify({ type: "error", id, error: message }));
+      ws.send(JSON.stringify(code === undefined ? { type: "error", id, error: message } : { type: "error", id, error: message, code }));
     } catch {
       // closing
     }

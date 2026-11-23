@@ -903,16 +903,17 @@ async function createChannel(c: Ctx, teamId: string): Promise<Response> {
   if (typeof channelId !== "string" || !ULID.test(channelId)) return error(400, "channel_id is a ULID");
   const name = parseSealedName(body["name_ct"]);
   if (typeof name === "string") return error(400, name);
-  if (!epochAllowed(name.epoch, team.keyed_epoch)) return error(400, `name_ct: ${epochRefused(name.epoch, team.epoch, team.keyed_epoch)}`);
+  if (!epochAllowed(name.epoch, team.epoch, team.keyed_epoch)) return error(400, `name_ct: ${epochRefused(name.epoch, team.epoch, team.keyed_epoch).error}`);
   const db = c.env.DB;
   // The name's epoch is checked in the insert too, as in renameChannel: a
-  // rotation that ends between the read above and this write would store a
-  // name sealed with the retired key.
+  // removal or a rotation that ends between the read above and this write
+  // would store a name sealed with a retired key.
   const result = await db
     .prepare(
       `INSERT INTO channels (team_id, channel_id, name_ct, created_by, created_at)
        SELECT ?1, ?2, ?3, ?4, ?5 WHERE (SELECT COUNT(*) FROM channels WHERE team_id = ?1) < ${MAX_CHANNELS}
          AND (SELECT keyed_epoch FROM teams WHERE team_id = ?1) = ?6
+         AND (SELECT epoch FROM teams WHERE team_id = ?1) = ?6
        ON CONFLICT DO NOTHING`,
     )
     .bind(teamId, channelId, JSON.stringify(name), c.me.githubId, now(), name.epoch)
@@ -920,8 +921,8 @@ async function createChannel(c: Ctx, teamId: string): Promise<Response> {
   if (result.meta.changes === 1) return Response.json({ channel_id: channelId }, { status: 201 });
   const exists = await db.prepare("SELECT 1 FROM channels WHERE team_id = ? AND channel_id = ?").bind(teamId, channelId).first();
   if (exists) return error(409, "a channel with this ID exists");
-  const still = await db.prepare("SELECT keyed_epoch FROM teams WHERE team_id = ?").bind(teamId).first<{ keyed_epoch: number }>();
-  return error(409, still?.keyed_epoch !== name.epoch ? "the team's key changed: fetch it and seal the name again" : `at most ${MAX_CHANNELS} channels per team`);
+  const still = await db.prepare("SELECT epoch, keyed_epoch FROM teams WHERE team_id = ?").bind(teamId).first<{ epoch: number; keyed_epoch: number }>();
+  return error(409, still?.keyed_epoch !== name.epoch || still.epoch !== name.epoch ? "the team's key changed: fetch it and seal the name again" : `at most ${MAX_CHANNELS} channels per team`);
 }
 
 /// Seals a channel's name again: after a rotation, so members approved
@@ -934,14 +935,15 @@ async function renameChannel(c: Ctx, teamId: string, channelId: string): Promise
   const body = await jsonBody(c.request, 8192);
   const name = parseSealedName(isObject(body) ? body["name_ct"] : null);
   if (typeof name === "string") return error(400, name);
-  if (!epochAllowed(name.epoch, team.keyed_epoch)) return error(400, `name_ct: ${epochRefused(name.epoch, team.epoch, team.keyed_epoch)}`);
+  if (!epochAllowed(name.epoch, team.epoch, team.keyed_epoch)) return error(400, `name_ct: ${epochRefused(name.epoch, team.epoch, team.keyed_epoch).error}`);
   const db = c.env.DB;
-  // Only while that epoch is still the newest with envelopes, and never back
-  // to an older epoch than the stored name's.
+  // Only while that epoch is still the current one with envelopes, and never
+  // back to an older epoch than the stored name's.
   const result = await db
     .prepare(
       `UPDATE channels SET name_ct = ?3 WHERE team_id = ?1 AND channel_id = ?2
-         AND json_extract(name_ct, '$.epoch') <= ?4 AND (SELECT keyed_epoch FROM teams WHERE team_id = ?1) = ?4`,
+         AND json_extract(name_ct, '$.epoch') <= ?4 AND (SELECT keyed_epoch FROM teams WHERE team_id = ?1) = ?4
+         AND (SELECT epoch FROM teams WHERE team_id = ?1) = ?4`,
     )
     .bind(teamId, channelId, JSON.stringify(name), name.epoch)
     .run();

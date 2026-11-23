@@ -74,7 +74,7 @@ function fakeLink(t) {
   globalThis.location = { protocol: "https:", host: "relay.test" };
   globalThis.WebSocket = FakeSocket;
   const ended = [];
-  RELAY.open("label", { creds: { id: "d", ticket: "t", token: "k" } }, { onclose: (e) => ended.push(e), onstatus() {}, onopen() {}, onmessage() {} });
+  RELAY.open({ label: "aaaaaaaaaaaaaaaa", pub: "AAAA" }, { onclose: (e) => ended.push(e), onstatus() {}, onopen() {}, onmessage() {} });
   return { ws: FakeSocket.last, ended };
 }
 

@@ -13,13 +13,12 @@ const PAIR_CODE = (() => {
   return q || "";
 })();
 
-// Through the relay the link carries two things in the fragment, which never
-// leaves the phone: the code the relay admits it with, and the secret it shows
-// the computer inside the encrypted channel.
-const RELAY_PAIR = (() => {
-  const m = location.hash.match(/^#p=([^&]+)&s=([^&]+)$/);
-  if (m) history.replaceState(null, "", location.pathname);
-  return m ? { code: decodeURIComponent(m[1]), secret: decodeURIComponent(m[2]) } : null;
+// On the account host, GitHub's sign-in comes back to `/?sign_in=failed` when
+// it did not work. The address bar keeps only the page.
+const SIGN_IN_FAILED = (() => {
+  const q = new URLSearchParams(location.search).get("sign_in");
+  if (q) history.replaceState(null, "", location.pathname + location.hash);
+  return q === "failed";
 })();
 
 const TOKEN_KEY = "arakun.token";
@@ -45,7 +44,7 @@ const state = {
   host: "",
   inbox: [],
   places: [], // where a session can start: [{ path, project, env, agent }]
-  screen: "inbox", // inbox | sessions | session | usage | phone | pair | new
+  screen: "inbox", // inbox | sessions | session | usage | phone | pair | new | signin | machines
   start: null, // the New session form: { path, agent, text, sent }
   session: null, // { id, title, agent, status, count, from, entries, permission, usage, elapsed_ms, place }
   query: "", // what Sessions is searching for
@@ -63,13 +62,16 @@ const state = {
   ask: null, // what is picked and typed for the pending question: { id, picked: [[i…]…], typed: [""…] }
   sheet: null, // over the session: { kind: "changes", turns } or { kind: "diff", entry, index, name, diff }
   pcOffline: null, // through the relay: since when (unix) the computer has been away, while it is
-  fatal: "", // why this address cannot be used at all; nothing is tried again
+  fatal: "", // why this address cannot be used right now; only the start tries again (an account host that failed)
 };
 
 // How this page reaches the computer: a socket of the computer's own, or a
 // link through the relay (`relay` names it). Either way `link` sends and
 // fetches; `api` is what would be an HTTP request to the computer.
-let relay = null; // { label } when this host is a relay
+let relay = null; // on the account host, the computer picked: { label, pub, name, kind, online, last_seen_at }
+// On the account host: who is signed in, their computers, and a sentence for
+// the list (why the last connection ended). Null on the computer's own server.
+let account = null; // { me, machines, said, loaded, blocked }
 let link = null;
 let retry = 500;
 let retryTimer = 0; // the next attempt while the computer is not there
@@ -134,9 +136,10 @@ function api(path, init = {}) {
   return fetch(path, { ...init, headers });
 }
 
-// Whether this phone holds something the computer gave it when it paired.
+// Whether this phone holds something the computer gave it when it paired, or
+// on the account host, whether a computer is picked.
 function paired() {
-  return relay ? !!RELAY.creds() : !!token;
+  return account ? !!relay : !!token;
 }
 
 // What the computer will call this phone.
@@ -201,7 +204,7 @@ function tookMe(me) {
 async function connect() {
   clearTimeout(retryTimer);
   retryTimer = 0;
-  if (relay) return connectRelay();
+  if (account) return relay ? connectRelay() : render();
   if (!token) {
     state.screen = "pair";
     render();
@@ -261,7 +264,7 @@ function linked() {
   if (openAtStart && !state.session) {
     const id = openAtStart;
     openAtStart = "";
-    openSession(id);
+    openFromNotice(id);
     return;
   }
   render();
@@ -295,32 +298,15 @@ function retryNow() {
 window.addEventListener("online", reconnectNow);
 window.addEventListener("pageshow", reconnectNow);
 
-// Through the relay the credentials go on the socket itself and the computer
-// answers inside the encrypted channel; `/me` follows once it has.
+// Through the relay the session cookie lets the socket in, and the channel is
+// the computer's client once the handshake is done; `/me` follows.
 function connectRelay() {
-  const creds = RELAY.creds();
-  if (!creds) {
-    state.screen = "pair";
-    render();
-    return;
-  }
-  link = RELAY.open(relay.label, { creds }, relayHandlers());
-}
-
-// Pairing through the relay is a connection too: the phone comes in with the
-// code, shows the secret, and the same channel carries on once it is paired.
-function pairRelay(pairing) {
-  state.pairing = true;
-  state.pairError = "";
-  render();
-  link = RELAY.open(relay.label, { pairing: { ...pairing, name: deviceName() } }, relayHandlers());
+  link = RELAY.open(relay, relayHandlers());
 }
 
 function relayHandlers() {
   return {
-    onopen: async (who) => {
-      state.pairing = false;
-      state.host = who.host || state.host;
+    onopen: async () => {
       try {
         const res = await link.fetch("/me");
         if (res.ok) tookMe(await res.json());
@@ -339,33 +325,349 @@ function relayHandlers() {
     onclose: ({ kind, detail }) => {
       link = null;
       state.connected = false;
-      state.pairing = false;
       state.pcOffline = null;
-      if (kind === "paired") {
-        RELAY.keep(null);
-        state.me = null;
-        state.pairError = "This phone is no longer paired. Pair it again from Arakun.";
-        state.screen = "pair";
-        return render();
-      }
-      if (kind === "pairing") {
-        state.pairError = "That link is wrong or has expired. Make a new one in Arakun.";
-        state.screen = "pair";
-        return render();
-      }
-      if (kind === "untrusted") {
-        state.fatal = "This address does not answer with the key Arakun showed. Check the address in its Phone tab before trying again.";
-        return render();
-      }
+      if (kind === "signed_out") return signedOut();
+      if (kind === "refused") return leaveMachine(detail);
+      if (kind === "untrusted") return leaveMachine(`${relay ? relay.name : "The computer"} did not answer with the key your account has for it. Sign in again in Arakun on that computer.`);
       if (kind === "limit") toast(`The relay is busy (${detail}). Trying again in a moment.`);
-      // A pairing socket that ended without pairing: nothing to come back with.
-      if (!RELAY.creds()) {
-        state.screen = "pair";
-        return render();
-      }
       lost();
     },
   };
+}
+
+// ---- the account host: sign in, then pick a computer --------------------------
+
+// The computer opened last, by label: a tap on a notification opens it again.
+const LAST_MACHINE = "arakun.machine";
+
+// What the account host says first: sign in, no computers yet, the one there
+// is, or the list. A host that does not answer leaves the list with Retry.
+async function startAccount() {
+  // One at a time: the list asks again by itself while a start has failed.
+  if (starting) return;
+  starting = true;
+  account = { me: null, machines: [], said: SIGN_IN_FAILED ? "Sign-in with GitHub did not work. Try again." : "", loaded: false, blocked: false };
+  let first;
+  try {
+    first = await RELAY.boot();
+  } catch (e) {
+    account.said = RELAY.unreachable();
+    state.screen = "machines";
+    return render();
+  } finally {
+    starting = false;
+  }
+  if (first.screen === "signin") return signedOut(account.said);
+  account.loaded = true;
+  if (first.screen === "blocked") {
+    account.me = first.me;
+    account.blocked = true;
+    account.said = blockedSentence(first.reason);
+    state.screen = "machines";
+    return render();
+  }
+  account.me = first.me;
+  account.machines = first.machines;
+  if (first.machine) return pick(first.machine);
+  // A tap on a notification names a session of the computer opened last.
+  const last = openAtStart && account.machines.find((m) => m.label === localStorage.getItem(LAST_MACHINE));
+  if (last) return pick(last);
+  if (openAtStart && account.machines.length) {
+    // No computer to take the tap to: the person picks, and the session opens there.
+    account.said = RELAY.tapSentence();
+    // The address must not keep naming a session that is not on screen (sw.js).
+    history.replaceState(null, "", location.pathname);
+  }
+  state.screen = "machines";
+  render();
+}
+let starting = false;
+
+// The list again: its online states, or the whole start when that failed
+// (nobody is known yet, so there is no "Signed in as" and no Sign out).
+function refreshAccount() {
+  if (account.me) refreshMachines();
+  else startAccount();
+}
+
+function blockedSentence(reason) {
+  return RELAY.sentence("blocked") + (reason ? ` ${reason}` : "");
+}
+
+// Connects to one of the account's computers, offline ones too: the relay
+// says when it comes back.
+function pick(machine) {
+  relay = machine;
+  account.said = "";
+  localStorage.setItem(LAST_MACHINE, machine.label);
+  state.host = machine.name;
+  state.screen = "inbox";
+  retry = 500;
+  render();
+  connect();
+}
+
+// Back to the list of computers, with a sentence when the relay sent us there.
+function leaveMachine(said = "") {
+  dropMachine();
+  account.said = said;
+  state.screen = "machines";
+  render();
+  refreshMachines();
+}
+
+// Lets go of the computer picked, and of all the page knew about it.
+function dropMachine() {
+  clearTimeout(retryTimer);
+  retryTimer = 0;
+  if (link) link.close();
+  link = null;
+  relay = null;
+  state.connected = false;
+  state.pcOffline = null;
+  // The address and the history step named the session (openSession); left
+  // there, sw.js would take this window for one looking at it and drop its
+  // notifications, and a reload would open the computer again.
+  if (state.session || location.hash.startsWith("#s=")) history.replaceState(null, "", location.pathname);
+  state.session = null;
+  // Pictures are kept by the computer's own paths: another computer's are not these.
+  for (const url of pics.values()) URL.revokeObjectURL(url);
+  pics.clear();
+  state.pending = [];
+  state.inbox = [];
+  state.places = [];
+  state.usage = null;
+  state.me = null;
+  state.pushKey = "";
+  state.host = "";
+  state.draft = "";
+  state.shots = [];
+  state.sheet = null;
+  state.ask = null;
+  state.start = null;
+  state.query = "";
+  state.project = "";
+  noticeOpen = "";
+}
+
+// The account host said the session is gone (signed out here or elsewhere, or
+// expired): only sign-in is left, and nothing of the account stays on this
+// phone, however the sign-out came. The computer drops this phone from its
+// push list itself when it hears of the sign-out.
+function signedOut(said = "") {
+  dropMachine();
+  dropPush();
+  RELAY.forgetAccountState(localStorage);
+  openAtStart = "";
+  account.me = null;
+  account.machines = [];
+  account.said = said;
+  account.loaded = false;
+  account.blocked = false;
+  account.sessions = undefined;
+  state.screen = "signin";
+  render();
+}
+
+// The list again, for its online states.
+async function refreshMachines() {
+  if (!account) return;
+  let got;
+  try {
+    got = await RELAY.machines();
+  } catch (e) {
+    return;
+  }
+  if (got.signedOut) return signedOut();
+  const wasBlocked = account.blocked;
+  account.blocked = !!got.blocked;
+  if (got.blocked) account.said = blockedSentence(got.reason);
+  else {
+    account.machines = got.list;
+    // Unblocked: the sentence that said so is over.
+    if (wasBlocked) account.said = "";
+  }
+  account.loaded = true;
+  if (state.screen === "machines") render();
+}
+
+// Removes one of the account's computers, once the person says so, then asks
+// for the list again.
+async function removeMachine(m) {
+  if (!confirm(RELAY.removeQuestion(m.name))) return;
+  let done;
+  try {
+    done = await RELAY.forgetMachine(m.label);
+  } catch (e) {
+    done = { ok: false };
+  }
+  if (done.signedOut) return signedOut();
+  if (!done.ok) toast(`Could not remove ${m.name}`);
+  else if (localStorage.getItem(LAST_MACHINE) === m.label) localStorage.removeItem(LAST_MACHINE);
+  refreshMachines();
+}
+
+// The account's signed-in devices, for the Phone tab: asked once each time
+// the tab opens. `null` while asking, a string when it failed.
+async function loadSessions() {
+  if (!account) return;
+  account.sessions = null;
+  let got;
+  try {
+    got = await RELAY.sessions();
+  } catch (e) {
+    account.sessions = "Could not ask your account.";
+    if (state.screen === "phone") render();
+    return;
+  }
+  if (got.signedOut) return signedOut();
+  account.sessions = got.list;
+  if (state.screen === "phone") render();
+}
+
+// Signs another of the account's devices out, then asks for the list again.
+async function signOutDevice(id, name) {
+  if (!confirm(`Sign out ${name}? It needs to sign in again to reach your computers.`)) return;
+  let done;
+  try {
+    done = await RELAY.signOutSession(id);
+  } catch (e) {
+    done = { ok: false };
+  }
+  if (done.signedOut) return signedOut();
+  if (!done.ok) toast(`Could not sign out ${name}`);
+  loadSessions();
+}
+
+// The list keeps its online states fresh while it is on screen.
+setInterval(() => {
+  if (account && state.screen === "machines" && document.visibilityState === "visible") refreshAccount();
+}, 15_000);
+
+// Signs this phone out of the account. The session cookie is HttpOnly, so only
+// the account host can end it: the page shows sign-in once the host said the
+// session is gone, and not before. Otherwise a reload would be signed in
+// again behind a screen that said it was not.
+async function signOut() {
+  if (signingOut) return;
+  if (!confirm(`Sign out of ${account.me ? account.me.login : "GitHub"} on this phone?`)) return;
+  signingOut = true;
+  let status = 0;
+  try {
+    status = (await fetch("/auth/logout", { method: "POST", cache: "no-store", credentials: "same-origin" })).status;
+  } catch (e) {
+    // No answer: nothing ended.
+  } finally {
+    signingOut = false;
+  }
+  // Still signed in: the computer, the drafts and the notifications stay as they are.
+  if (!RELAY.loggedOut(status)) return alert(RELAY.signOutFailed());
+  // The relay may have closed the link for the sign-out already (relayHandlers).
+  if (state.screen !== "signin") signedOut();
+}
+let signingOut = false;
+
+// Drops the browser's push subscription, made with a key of one of the
+// account's computers. `getRegistration` and not `ready`: where the service
+// worker could not be registered, `ready` never settles.
+function dropPush() {
+  if (!("serviceWorker" in navigator) || !isSecureContext) return;
+  navigator.serviceWorker
+    .getRegistration()
+    .then((reg) => reg && reg.pushManager && reg.pushManager.getSubscription())
+    .then((sub) => sub && sub.unsubscribe())
+    .catch(() => {});
+}
+
+// The operator's notices for this account, until dismissed.
+function noticeBanners() {
+  const list = (account && account.me && account.me.notices) || [];
+  return list
+    .map(
+      (n) => `<div class="setup" data-notice-id="${esc(n.id)}">
+      <span class="sicon">${ICONS.bell}</span>
+      <span class="body"><div class="t">${esc(n.text)}</div>${RELAY.noticeLink(n.url) ? `<div class="s"><a href="${esc(n.url)}" target="_blank" rel="noopener">${esc(n.url)}</a></div>` : ""}</span>
+      <button class="x" data-dismiss="${esc(n.id)}" aria-label="Dismiss">${ICONS.close}</button>
+    </div>`
+    )
+    .join("");
+}
+
+function wireNotices() {
+  app.querySelectorAll("[data-dismiss]").forEach((b) =>
+    b.addEventListener("click", () => {
+      const id = b.dataset.dismiss;
+      account.me.notices = account.me.notices.filter((n) => String(n.id) !== id);
+      render();
+      fetch(`/notices/${encodeURIComponent(id)}/read`, { method: "POST", credentials: "same-origin" }).catch(() => {});
+    })
+  );
+}
+
+function renderSignin() {
+  app.innerHTML = `<div class="screen">
+    <div class="pair">
+      <div class="big">🦝</div>
+      <h1>Sign in to reach your computers</h1>
+      <p>Sign in with the GitHub account you use in Arakun on your computer.</p>
+      <a class="btn" href="/auth/github/start">Sign in with GitHub</a>
+      <div class="err">${esc(account.said)}</div>
+      <div class="hint">${esc(location.host)} · end-to-end encrypted</div>
+    </div></div>`;
+}
+
+function renderMachines() {
+  const list = account.machines;
+  const seen = (m) => (m.online ? "online" : m.last_seen_at ? `last seen ${ago(m.last_seen_at)}${ago(m.last_seen_at) === "now" ? "" : " ago"}` : "offline");
+  // The pick and Remove sit side by side in the row: a button cannot hold another.
+  const rows = list.map(
+    (m) => `<div class="prow mrow"><button class="mpick" data-machine="${esc(m.label)}"><span class="ricon">${ICONS.monitor}</span>
+      <span class="rbody"><span class="rt">${esc(m.name)}</span><span class="rs">${m.kind === "server" ? "Server" : "Arakun app"}</span></span>
+      <span class="badge${m.online ? " idle" : ""}"><span class="dot"></span>${esc(seen(m))}</span></button>
+      <button class="btn ghost small" data-remove="${esc(m.label)}" aria-label="Remove ${esc(m.name)}">Remove</button></div>`
+  );
+  const body = account.blocked
+    ? ""
+    : !account.loaded
+    ? `<div class="empty"><div class="big">🦝</div><div>${esc(account.said)}</div><button class="btn outline" id="again">Try again</button></div>`
+    : list.length
+      ? `<section class="group"><div class="glabel">Computers</div><div class="gbox">${rows.join("")}</div></section>`
+      : `<div class="empty"><div class="big">🦝</div><div>No computers yet. Sign in on a computer running Arakun.</div></div>`;
+  // The bar is empty here: it only keeps the header clear of the notch.
+  app.innerHTML = `<div class="screen"><div class="statusbar"></div>
+    <div class="hdr"><div class="grow"><h1>Computers</h1>${account.me ? `<div class="sub">Signed in as ${esc(account.me.login)}</div>` : ""}</div>
+      ${account.me ? '<button class="btn ghost" id="signout">Sign out</button>' : ""}</div>
+    <div class="settings">${noticeBanners()}${account.loaded && account.said ? `<div class="err">${esc(account.said)}</div>` : ""}${body}</div></div>`;
+  app.querySelectorAll("[data-machine]").forEach((b) =>
+    b.addEventListener("click", () => {
+      const m = account.machines.find((x) => x.label === b.dataset.machine);
+      if (m) pick(m);
+    })
+  );
+  app.querySelectorAll("[data-remove]").forEach((b) =>
+    b.addEventListener("click", () => {
+      const m = account.machines.find((x) => x.label === b.dataset.remove);
+      if (m) removeMachine(m);
+    })
+  );
+  const again = document.getElementById("again");
+  if (again) again.addEventListener("click", () => location.reload());
+  const out = document.getElementById("signout");
+  if (out) out.addEventListener("click", signOut);
+  wireNotices();
+}
+
+// An old relay host, `<label>.<base>`, from before sign-in.
+function renderUpdate() {
+  const host = RELAY.accountHost();
+  app.innerHTML = `<div class="screen">
+    <div class="pair">
+      <div class="big">🦝</div>
+      <h1>This address has moved</h1>
+      <p>${esc(RELAY.sentence("update"))}</p>
+      <a class="btn" href="https://${esc(host)}/">Open ${esc(host)}</a>
+      <div class="hint">${esc(location.hostname)}</div>
+    </div></div>`;
 }
 
 function send(msg) {
@@ -376,7 +678,9 @@ function send(msg) {
 // the screen, or it would skip the push for the session shown here.
 document.addEventListener("visibilitychange", () => {
   send({ type: "visible", visible: document.visibilityState === "visible" });
-  if (document.visibilityState === "visible") reconnectNow();
+  if (document.visibilityState !== "visible") return;
+  reconnectNow();
+  if (account && state.screen === "machines") refreshAccount();
 });
 
 // iOS keeps the page its full height under the keyboard and slides it up, so the
@@ -427,6 +731,21 @@ if (window.visualViewport) {
 }
 
 function handle(msg) {
+  const tapped = RELAY.noticeOutcome(noticeOpen, msg);
+  if (tapped !== "unrelated") {
+    const id = noticeOpen;
+    noticeOpen = "";
+    if (tapped === "elsewhere" && state.session && state.session.id === id) {
+      // This computer does not have the session: the notification came from another.
+      state.session = null;
+      state.screen = "inbox";
+      // The address stops naming it too, as in closeSession.
+      history.replaceState(null, "", location.pathname);
+      render();
+      toast(RELAY.noticeElsewhere());
+      return;
+    }
+  }
   switch (msg.type) {
     case "pong":
       // Only says the computer is there (openLocal).
@@ -1313,6 +1632,9 @@ const app = document.getElementById("app");
 
 function render() {
   if (state.fatal) renderFatal();
+  else if (state.screen === "update") renderUpdate();
+  else if (state.screen === "signin") renderSignin();
+  else if (state.screen === "machines") renderMachines();
   else if (state.screen === "pair") renderPair();
   else if (state.screen === "inbox") renderInbox();
   else if (state.screen === "sessions") renderSessions();
@@ -1349,6 +1671,7 @@ function showTab(id) {
   if (state.screen === id) return;
   state.screen = id;
   if (id === "usage") send({ type: "usage" });
+  if (id === "phone" && account) loadSessions();
   render();
 }
 
@@ -1388,32 +1711,6 @@ function renderOffline() {
 }
 
 function renderPair() {
-  if (relay) {
-    const status = state.pairing
-      ? state.pcOffline
-        ? "Waiting for the computer. Pairing finishes when Arakun is back on it."
-        : "Pairing…"
-      : "";
-    app.innerHTML = `<div class="screen">
-      <div class="pair">
-        <div class="big">🦝</div>
-        <h1>Pair this phone</h1>
-        <p>In Arakun, open <b>Phone</b> and press <b>Pair a phone</b>. Scan the code it shows with this phone's camera, or open the link it offers.</p>
-        <div class="err">${esc(state.pairError)}</div>
-        ${status ? `<div class="hint wait"><span class="spin"></span>${esc(status)}</div><button class="btn outline" id="cancel">Cancel</button>` : `<div class="hint">${esc(location.hostname)} · end-to-end encrypted</div>`}
-      </div></div>`;
-    // A pairing that hangs on a computer that is away can be dropped, to scan a fresh code.
-    const cancel = document.getElementById("cancel");
-    if (cancel)
-      cancel.addEventListener("click", () => {
-        if (link) link.close();
-        link = null;
-        state.pairing = false;
-        state.pcOffline = null;
-        render();
-      });
-    return;
-  }
   const typed = document.getElementById("code") ? document.getElementById("code").value : "";
   app.innerHTML = `<div class="screen">
     <div class="pair">
@@ -1451,10 +1748,10 @@ function statusbar() {
 // What an empty screen says while the computer is not there.
 function connecting() {
   if (state.pcOffline) return `Arakun on ${state.host || "the computer"} has been away since ${clock(state.pcOffline)}`;
-  return relay ? "Reaching the computer through the relay" : "Connecting to " + location.hostname;
+  return relay ? `Reaching ${relay.name} through the relay` : "Connecting to " + location.hostname;
 }
 function connectingHint() {
-  if (relay) return "Arakun must be running on the computer, with Relay chosen in its Phone tab.";
+  if (relay) return "Arakun must be running on the computer, signed in to the same GitHub account.";
   if (location.protocol === "https:") return "Make sure Tailscale is on, on the phone and on the computer, and Arakun is running.";
   return "Make sure the phone is on the same network and Arakun is running.";
 }
@@ -1499,6 +1796,11 @@ async function subscribePush() {
   try {
     const reg = await navigator.serviceWorker.ready;
     const key = Uint8Array.from(atob(state.pushKey.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0));
+    // The account host is one origin for every computer, so one subscription,
+    // made with one computer's key. Another computer's key replaces it: the
+    // browser refuses a second key, and notices follow the computer opened last.
+    const old = await reg.pushManager.getSubscription();
+    if (old && !sameBytes(new Uint8Array(old.options.applicationServerKey || []), key)) await old.unsubscribe();
     const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key });
     const res = await api("/push", {
       method: "POST",
@@ -1511,12 +1813,44 @@ async function subscribePush() {
   }
 }
 
+// The session a notification tap opened, until the computer answers for it.
+// With several computers the notification may be another computer's.
+let noticeOpen = "";
+
+function openFromNotice(id) {
+  openSession(id);
+  noticeOpen = account && account.machines.length > 1 ? id : "";
+}
+
+function sameBytes(a, b) {
+  return a.length === b.length && a.every((x, i) => x === b[i]);
+}
+
 // A tap on a notification brings the page to its session: through the worker
 // when the page is open, through the address when it had to be opened.
 if ("serviceWorker" in navigator) {
   navigator.serviceWorker.addEventListener("message", (ev) => {
-    if (ev.data && ev.data.open) openSession(ev.data.open);
+    if (ev.data && ev.data.open) tappedNotice(ev.data.open);
   });
+}
+
+// A tap while the page is open. On the account host the page can rest with no
+// computer picked (the list, sign-in) and there is no session to show there.
+function tappedNotice(id) {
+  // Not known yet which way in this is: the start takes the tap, as from the address.
+  if (!started) {
+    openAtStart = id;
+    return;
+  }
+  const to = RELAY.tapRoute(state.fatal ? "fatal" : state.screen, account, !!relay, localStorage.getItem(LAST_MACHINE));
+  if (to.go === "open") return openFromNotice(id);
+  if (to.go === "stay") return;
+  // Once a computer is picked and answers, `linked` opens the session.
+  openAtStart = id;
+  if (to.go === "pick") return pick(to.machine);
+  account.said = RELAY.tapSentence();
+  state.screen = "machines";
+  render();
 }
 let openAtStart = (() => {
   const m = location.hash.match(/^#s=(.+)$/);
@@ -1614,7 +1948,7 @@ function renderInbox() {
       </div>`
     : "";
   const more = older > 0 ? `<button class="more" data-tab="sessions">${older} older in Sessions</button>` : "";
-  const body = `${setupCards()}${tiles}${rows}${more}${empty}`;
+  const body = `${noticeBanners()}${setupCards()}${tiles}${rows}${more}${empty}`;
   const hdr = `<div class="ihead"><img class="mark" src="apple-touch-icon.png" alt=""><span class="host">${esc(state.host || "Arakun")}</span>
       <span class="pill ${state.connected ? "on" : "off"}"><span class="dot"></span>${state.connected ? "online" : "away"}</span></div>`;
   // Already on screen: the list is refilled in place, so its scroll stays put and
@@ -1644,6 +1978,7 @@ function renderInbox() {
   app.querySelectorAll(".srow").forEach((b) => b.addEventListener("click", () => openSession(b.dataset.id)));
   app.querySelectorAll(".inbox .more").forEach((b) => b.addEventListener("click", () => showTab("sessions")));
   wireSetup();
+  wireNotices();
   syncBadge();
 }
 
@@ -1845,6 +2180,7 @@ function pairedOn(unix) {
 }
 
 function renderPhone() {
+  if (account && account.sessions === undefined) loadSessions();
   const me = state.me || {};
   const notices = me.notices || { done: true, input: true, error: true };
   const row = (icon, title, sub, right = "", cls = "") =>
@@ -1872,15 +2208,32 @@ function renderPhone() {
     notify = [row(ICONS.bell, "Notifications", "They need the HTTPS address (Tailscale). The local network cannot deliver them.")];
   }
 
+  // One origin keeps one push subscription: say which computer it is for.
+  const note = account && ns !== "off" && ns !== "denied" ? RELAY.pushNote(account.machines, state.host) : "";
+  if (note) notify.unshift(row(ICONS.monitor, "From one computer", esc(note)));
   app.innerHTML = `<div class="screen">${statusbar()}
     <div class="hdr"><div class="grow"><h1>Phone</h1></div></div>
     <div class="settings">
-      ${group("Desktop", [row(ICONS.monitor, esc(state.host || location.hostname), state.connected ? wayIn() : state.pcOffline ? `Away since ${clock(state.pcOffline)}` : "Reconnecting…")])}
-      ${group("Notifications", notify)}
-      ${group("This phone", [
-        row(ICONS.phone, esc(me.name || deviceName()), me.paired_at ? `Paired ${pairedOn(me.paired_at)} · last seen now` : ""),
-        `<button class="prow danger" id="unpair"><span class="ricon">${ICONS.unlink}</span><span class="rbody"><span class="rt">Unpair this phone</span></span></button>`,
+      ${group("Desktop", [
+        row(ICONS.monitor, esc(state.host || location.hostname), state.connected ? wayIn() : state.pcOffline ? `Away since ${clock(state.pcOffline)}` : "Reconnecting…"),
+        ...(account && account.machines.length > 1
+          ? [`<button class="prow" id="switch"><span class="ricon">${ICONS.layers}</span><span class="rbody"><span class="rt">All computers</span></span></button>`]
+          : []),
       ])}
+      ${group("Notifications", notify)}
+      ${account ? group("Signed-in devices", signedInList()) : ""}
+      ${group(
+        "This phone",
+        account
+          ? [
+              row(ICONS.phone, esc(me.name || deviceName()), account.me ? `Signed in as ${esc(account.me.login)}` : ""),
+              `<button class="prow danger" id="signout"><span class="ricon">${ICONS.unlink}</span><span class="rbody"><span class="rt">Sign out</span></span></button>`,
+            ]
+          : [
+              row(ICONS.phone, esc(me.name || deviceName()), me.paired_at ? `Paired ${pairedOn(me.paired_at)} · last seen now` : ""),
+              `<button class="prow danger" id="unpair"><span class="ricon">${ICONS.unlink}</span><span class="rbody"><span class="rt">Unpair this phone</span></span></button>`,
+            ]
+      )}
     </div>${tabbar()}</div>`;
 
   // The whole row is the switch's target, not only the knob.
@@ -1900,8 +2253,27 @@ function renderPhone() {
       render();
     });
   }
-  document.getElementById("unpair").addEventListener("click", unpair);
+  const unpairBtn = document.getElementById("unpair");
+  if (unpairBtn) unpairBtn.addEventListener("click", unpair);
+  const out = document.getElementById("signout");
+  if (out) out.addEventListener("click", signOut);
+  const sw = document.getElementById("switch");
+  if (sw) sw.addEventListener("click", () => leaveMachine());
+  app.querySelectorAll("[data-signout]").forEach((b) =>
+    b.addEventListener("click", () => {
+      const s = Array.isArray(account.sessions) && account.sessions.find((x) => x.id === b.dataset.signout);
+      if (s) signOutDevice(s.id, s.name);
+    })
+  );
   wireTabs();
+}
+
+// The rows of the account's signed-in devices, this phone marked.
+function signedInList() {
+  const said = (text) => `<div class="prow"><span class="rbody"><span class="rs">${esc(text)}</span></span></div>`;
+  if (account.sessions === undefined || account.sessions === null) return [said("Asking your account…")];
+  if (typeof account.sessions === "string") return [said(account.sessions)];
+  return RELAY.signedInRows(account.sessions, esc, ago);
 }
 
 // One kind of notice on or off; the computer keeps the choice.
@@ -1926,7 +2298,8 @@ async function setNotice(key, on) {
   }
 }
 
-// This phone lets go of the computer: its token dies there, and here.
+// This phone lets go of the computer it paired with on the network: its token
+// dies there, and here. On the account host the phone signs out instead.
 async function unpair() {
   const host = state.host || location.hostname;
   if (!confirm(`Unpair this phone from ${host}?\n\nYou will need a new code from Arakun to pair it again.`)) return;
@@ -1946,8 +2319,7 @@ async function unpair() {
   }
   if (link) link.close();
   link = null;
-  if (relay) RELAY.keep(null);
-  else forgetToken();
+  forgetToken();
   state.me = null;
   state.connected = false;
   state.pairError = "";
@@ -1956,6 +2328,8 @@ async function unpair() {
 }
 
 function openSession(id) {
+  // A session opened by hand is not the one a notification tap waits on.
+  noticeOpen = "";
   const row = state.inbox.find((s) => s.id === id);
   state.session = {
     id,
@@ -1972,7 +2346,7 @@ function openSession(id) {
   state.ask = null;
   state.sheet = null;
   state.screen = "session";
-  state.draft = localStorage.getItem(DRAFT_KEY + id) || "";
+  state.draft = localStorage.getItem(kept(DRAFT_KEY) + id) || "";
   state.pending = [];
   // The address names the session, so the service worker knows what is on screen.
   // It is a step in the history too: the phone's back gesture comes back here.
@@ -1985,6 +2359,7 @@ function openSession(id) {
 }
 
 function closeSession() {
+  noticeOpen = "";
   send({ type: "close" });
   state.session = null;
   state.sheet = null;
@@ -2030,7 +2405,7 @@ function wirePlus(btn) {
 }
 
 function lastPlace() {
-  const last = localStorage.getItem("arakun.place");
+  const last = localStorage.getItem(kept(PLACE_KEY));
   return state.places.find((p) => p.path === last) || state.places[0];
 }
 
@@ -2058,7 +2433,7 @@ function projectList() {
 // The place a project starts in: the branch used last there, else its checkout.
 function placeFor(project) {
   const places = state.places.filter((p) => p.project === project);
-  const last = localStorage.getItem("arakun.place");
+  const last = localStorage.getItem(kept(PLACE_KEY));
   return places.find((p) => p.path === last) || places.find((p) => p.env === p.project) || places[0];
 }
 
@@ -2261,7 +2636,7 @@ function renderQuick() {
     ev.preventDefault();
     if (f.sent || !f.text.trim() || !stillLinked()) return;
     f.sent = true;
-    localStorage.setItem("arakun.place", f.path);
+    if (!nowhereToKeep()) localStorage.setItem(kept(PLACE_KEY), f.path);
     const settings = ["modelId", "reasoningEffort"].filter((k) => f.picked[k]).map((k) => [k, f.picked[k]]);
     send({ type: "start", env: f.path, agent: f.agent, text: f.text, settings });
     text.blur();
@@ -2353,7 +2728,7 @@ function renderNew() {
   go.addEventListener("click", () => {
     if (f.sent || !f.text.trim()) return;
     f.sent = true;
-    localStorage.setItem("arakun.place", f.path);
+    if (!nowhereToKeep()) localStorage.setItem(kept(PLACE_KEY), f.path);
     // The model goes first: the reasoning on offer depends on it.
     const settings = ["modelId", "reasoningEffort"].filter((k) => f.picked[k]).map((k) => [k, f.picked[k]]);
     send({ type: "start", env: f.path, agent: f.agent, text: f.text, settings });
@@ -2496,10 +2871,24 @@ function refreshSession() {
 // What is being written survives a switch of session, a reload, or the phone
 // closing the app; each session keeps its own.
 const DRAFT_KEY = "arakun.draft:";
+// Where the last session started, offered first for the next.
+const PLACE_KEY = "arakun.place";
+
+// A key of what the page keeps, per computer on the account host: drafts,
+// places and shortcuts of one computer mean nothing on another. Served by the
+// computer itself the key stays as it was.
+function kept(key) {
+  return RELAY.scoped(key, relay ? relay.label : null);
+}
+// Between computers on the account host there is no key to keep anything under.
+function nowhereToKeep() {
+  return !!account && !relay;
+}
 function keepDraft(id, text) {
+  if (nowhereToKeep()) return;
   try {
-    if (text) localStorage.setItem(DRAFT_KEY + id, text);
-    else localStorage.removeItem(DRAFT_KEY + id);
+    if (text) localStorage.setItem(kept(DRAFT_KEY) + id, text);
+    else localStorage.removeItem(kept(DRAFT_KEY) + id);
   } catch (e) {
     // Storage full or off: the draft lives only in memory.
   }
@@ -3210,7 +3599,7 @@ const CUT_SHORT = 24;
 
 function loadCuts() {
   try {
-    const v = JSON.parse(localStorage.getItem(CUTS_KEY) || "[]");
+    const v = JSON.parse(localStorage.getItem(kept(CUTS_KEY)) || "[]");
     return Array.isArray(v) ? v.filter((c) => c && c.id && typeof c.text === "string" && c.text) : [];
   } catch (e) {
     return [];
@@ -3218,8 +3607,9 @@ function loadCuts() {
 }
 
 function storeCuts(cuts) {
+  if (nowhereToKeep()) return false;
   try {
-    localStorage.setItem(CUTS_KEY, JSON.stringify(cuts));
+    localStorage.setItem(kept(CUTS_KEY), JSON.stringify(cuts));
     return true;
   } catch (e) {
     toast("Could not save the shortcut");
@@ -3520,23 +3910,38 @@ setInterval(() => {
 }, 60000);
 
 render();
-// Which way in this is: the host says whether it is a relay.
-RELAY.detect().then((found) => {
-  if (found) {
-    relay = { label: found.label };
-    if (found.closed) {
-      state.fatal = found.closed;
+// Which way in this is: the account host, an old relay host, or the computer itself.
+RELAY.forgetOldPairing();
+let started = false;
+let startWait = 2000;
+function start() {
+  RELAY.detect().then((found) => {
+    if (found === "unreachable") {
+      // The account host, failing: never the pairing screen, which has
+      // nothing to pair with here. Asked again by itself, a little later each time.
+      state.fatal = RELAY.unreachable();
+      render();
+      setTimeout(start, startWait);
+      startWait = Math.min(startWait * 2, 30_000);
+      return;
+    }
+    state.fatal = "";
+    started = true;
+    if (found === "account") return startAccount();
+    if (found === "update") {
+      // A subscription made on this address would only bring taps here.
+      dropPush();
+      state.screen = "update";
       return render();
     }
-    if (RELAY_PAIR) return pairRelay(RELAY_PAIR);
-    return connect();
-  }
-  if (PAIR_CODE) {
-    pair(PAIR_CODE).then((ok) => {
-      if (!ok) state.screen = "pair";
+    if (PAIR_CODE) {
+      pair(PAIR_CODE).then((ok) => {
+        if (!ok) state.screen = "pair";
+        connect();
+      });
+    } else {
       connect();
-    });
-  } else {
-    connect();
-  }
-});
+    }
+  });
+}
+start();

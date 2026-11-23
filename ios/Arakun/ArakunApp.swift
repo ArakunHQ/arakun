@@ -1,12 +1,13 @@
 import ArakunKit
 import SwiftUI
+import UIKit
 
 @main
 struct ArakunApp: App {
     @State private var model = AppModel()
     @Environment(\.scenePhase) private var phase
-    /// A pairing link another app opened, until the user says yes or no.
-    @State private var opened: PairingLink?
+    /// A computer's page a link asks to open, until the person says yes or no.
+    @State private var opened: URL?
 
     init() {
         Appearance.apply()
@@ -18,55 +19,30 @@ struct ArakunApp: App {
         WindowGroup {
             RootView()
                 .environment(model)
-                // Any web page or message can open a link, so it never pairs
-                // on its own: that would let a stranger's computer take over
-                // the phone, or replace the one it is paired with.
-                .onOpenURL { url in
-                    let text = Self.pairingText(url)
-                    guard let link = PairingLink(text) else { return model.pair(text) }
-                    guard link.secure else {
-                        model.pairError = "That link does not use a secure connection. Scan the code in Arakun instead."
-                        return
-                    }
-                    opened = link
-                }
+                // Any web page or message can open a link, so it never acts on
+                // its own: an old relay link gets its sentence, and a link to a
+                // computer's own page opens in the browser only after a yes.
+                .onOpenURL { url in opened = model.opened(Self.pairingText(url)) }
                 .alert(
-                    model.credentials == nil ? "Pair with this computer?" : "Replace your paired computer?",
+                    "Open this computer's page?",
                     isPresented: Binding(get: { opened != nil }, set: { if !$0 { opened = nil } }),
                     presenting: opened
-                ) { link in
-                    Button(model.credentials == nil ? "Pair" : "Replace") { model.pair(Self.text(of: link)) }
+                ) { page in
+                    Button("Open") { UIApplication.shared.open(page) }
                     Button("Cancel", role: .cancel) {}
-                } message: { link in
-                    Text(model.credentials == nil
-                        ? "A link asks to pair this phone with \(link.host). Only go on if you opened it from Arakun on your own computer."
-                        : "A link asks to pair this phone with \(link.host) instead of the computer it is paired with now. Only go on if you opened it from Arakun on your own computer.")
+                } message: { page in
+                    Text("A link asks to open the page of \(page.host ?? "a computer") in the browser, to pair the browser with it. Only go on if you opened it from Arakun on your own computer.")
                 }
                 .onChange(of: phase) { _, now in model.visible(now == .active) }
         }
     }
 
-    /// The QR code holds an https link to the relay; `arakun://pair?link=<it>`
-    /// carries the same, for a link opened from elsewhere.
+    /// `arakun://pair?link=<link>` carries a pairing link opened from elsewhere.
     static func pairingText(_ url: URL) -> String {
         guard url.scheme == "arakun",
               let link = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "link" })?.value
         else { return url.absoluteString }
         return link
-    }
-
-    /// The link back as text, for `AppModel.pair`.
-    static func text(of link: PairingLink) -> String {
-        var c = URLComponents()
-        c.scheme = link.secure ? "https" : "http"
-        c.host = link.host.split(separator: ":").first.map(String.init)
-        if let port = link.host.split(separator: ":").dropFirst().first { c.port = Int(port) }
-        c.percentEncodedFragment = "p=\(Self.encode(link.code))&s=\(Self.encode(link.secret))"
-        return c.string ?? ""
-    }
-
-    private static func encode(_ s: String) -> String {
-        s.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? s
     }
 }
 
@@ -81,29 +57,35 @@ struct RootView: View {
             #if DEBUG
             if AppModel.isDemo, UserDefaults.standard.bool(forKey: "demoMoods") {
                 MoodGallery()
-            } else if model.credentials == nil {
-                PairView()
             } else {
-                InboxView()
+                screen
             }
             #else
-            if model.credentials == nil {
-                PairView()
-            } else {
-                InboxView()
-            }
+            screen
             #endif
         }
         .font(.body16)
         .foregroundStyle(Color.text)
         .tint(.amberInk)
         .background(Color.ground.ignoresSafeArea())
-        .animation(still ? nil : .smooth, value: model.credentials == nil)
+        .animation(still ? nil : .smooth, value: model.signedIn == nil)
+        .animation(still ? nil : .smooth, value: model.machine?.label)
         .alert("Send crash reports?", isPresented: $askCrashReports) {
             Button("Send crash reports") { Telemetry.set(true) }
             Button("Don't send", role: .cancel) { Telemetry.set(false) }
         } message: {
-            Text("When Arakun crashes, it can send where in its code it happened, so we can fix it. Never your sessions, messages or code. Change it any time in the More menu.")
+            Text("When Arakun crashes, it can send where in its code it happened, so we can fix it. Never your sessions, messages or code. Change it any time in Settings.")
+        }
+    }
+
+    /// Signed out: sign in. Signed in: the computers, then the one picked.
+    @ViewBuilder private var screen: some View {
+        if model.signedIn == nil {
+            SignInView()
+        } else if model.machine == nil {
+            MachinesView()
+        } else {
+            InboxView()
         }
     }
 }

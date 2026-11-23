@@ -1,58 +1,34 @@
 import Foundation
 
-/// The link Arakun's Phone tab shows (as a QR code) to pair a phone through the
-/// relay: `https://<label>.<relay>/#p=<code>&s=<secret>`. The label is the
-/// host's first part; the fragment holds the code the relay admits the phone
-/// with and the secret it shows the computer inside the encrypted channel.
-public struct PairingLink: Equatable, Sendable {
-    public let host: String
-    public let label: String
-    public let code: String
-    public let secret: String
-    /// `ws` for a relay run by hand (`wrangler dev`), `wss` otherwise.
-    public let secure: Bool
+/// Text the person scanned or pasted to pair: what it is, before anything is
+/// sent. Through the relay the app signs in instead, so a pairing link from
+/// before sign-in (`https://<label>.<relay>/#p=<code>&s=<secret>`) is refused
+/// with a sentence. A link to the computer's own page (`http://<address>/?p=<code>`,
+/// on this network or Tailscale) still pairs, in the browser.
+public enum PairingText: Equatable, Sendable {
+    case relayLink
+    case direct(URL)
+    case unknown
 
-    public init?(_ text: String) {
+    public static let relayLinkSentence =
+        "Relay links are no longer used. Sign in to reach your computers."
+
+    public init(_ text: String) {
         guard let url = URL(string: text.trimmingCharacters(in: .whitespacesAndNewlines)),
               let scheme = url.scheme?.lowercased(), scheme == "https" || scheme == "http",
-              let host = url.host?.lowercased(), let fragment = url.fragment
-        else { return nil }
-        var fields: [String: String] = [:]
-        for pair in fragment.split(separator: "&") {
-            let kv = pair.split(separator: "=", maxSplits: 1).map(String.init)
-            guard kv.count == 2 else { return nil }
-            fields[kv[0]] = kv[1].removingPercentEncoding ?? kv[1]
+              let host = url.host, !host.isEmpty
+        else {
+            self = .unknown
+            return
         }
-        guard let code = fields["p"], !code.isEmpty, let secret = fields["s"], !secret.isEmpty,
-              let label = host.split(separator: ".").first.map(String.init), !label.isEmpty
-        else { return nil }
-        self.host = url.port.map { "\(host):\($0)" } ?? host
-        self.label = label
-        self.code = code
-        self.secret = secret
-        secure = scheme == "https"
-    }
-}
-
-/// What the computer gave this phone when it paired, and where to find it.
-public struct Credentials: Codable, Equatable, Sendable {
-    public var host: String
-    public var label: String
-    public var secure: Bool
-    public var id: String
-    public var ticket: String
-    public var token: String
-    /// The computer's name, as it last said it.
-    public var name: String
-
-    public init(host: String, label: String, secure: Bool, id: String, ticket: String, token: String, name: String) {
-        self.host = host
-        self.label = label
-        self.secure = secure
-        self.id = id
-        self.ticket = ticket
-        self.token = token
-        self.name = name
+        let fragment = url.fragment ?? ""
+        let fields = Set(fragment.split(separator: "&").compactMap { pair in pair.split(separator: "=", maxSplits: 1).first.map { String($0) } })
+        if fields.contains("p") && fields.contains("s") {
+            self = .relayLink
+            return
+        }
+        let code = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "p" })?.value ?? ""
+        self = code.isEmpty ? .unknown : .direct(url)
     }
 }
 
@@ -88,26 +64,80 @@ public struct Joiner {
 
 /// Why a channel ended, from what the relay or the computer said.
 public enum EndKind: Equatable, Sendable {
-    /// The credentials are no longer good: pair again.
-    case unpaired
-    /// The pairing link did not work.
-    case pairing
-    /// The computer behind the address is not the one expected.
+    /// The session is gone: sign in again.
+    case signedOut
+    /// The relay will not let this device in: `reason` as it said it, and
+    /// `sentence` as the person reads it.
+    case refused(reason: String, sentence: String)
+    /// The computer behind the label is not the one the account lists.
     case untrusted
     /// The relay has had enough for now.
     case limit
     /// Anything else: try again.
     case gone
 
-    public static func of(reason: String, code: Int) -> EndKind {
-        if code == 4401 || ["unauthorized", "revoked", "bad_ticket", "unpaired"].contains(reason) {
-            return .unpaired
+    /// `message` is the operator's text, for `disabled`; `accountHost` is
+    /// where to sign in, for `update`.
+    public static func of(reason: String, code: Int, message: String? = nil,
+                          accountHost: String = AccountHost.base.host ?? "app.arakun.dev") -> EndKind {
+        if reason == "signed_out" || (code == 4401 && reason.isEmpty) { return .signedOut }
+        if Refusal.reasons.contains(reason) {
+            return .refused(reason: reason, sentence: Refusal.sentence(reason, message: message, accountHost: accountHost))
         }
-        // The computer sends `wrong_secret` only to a phone pairing with a link,
-        // so it says the link failed, not that the phone's credentials did.
-        if ["no_pairing", "bad_code", "no_credentials", "wrong_secret"].contains(reason) { return .pairing }
         if reason == "untrusted" || reason == "bad_hello" { return .untrusted }
         if code == 4429 || reason.hasPrefix("limit:") { return .limit }
         return .gone
+    }
+}
+
+/// How long to stay away after the relay said a limit was reached. It answers
+/// the same until the limit lifts, so dialing again at once only repeats it.
+public enum LimitWait {
+    static let first: TimeInterval = 120
+    static let longest: TimeInterval = 1800
+    static let day: TimeInterval = 86_400
+
+    /// Which limit, from what the link said: `daily` from the relay's own
+    /// message, `limit:daily` from the reason it closed with.
+    public static func which(_ detail: String) -> String {
+        detail.hasPrefix("limit:") ? String(detail.dropFirst("limit:".count)) : detail
+    }
+
+    /// Seconds until the next try, after `tries` refusals in a row before
+    /// this one. The day's count starts over at midnight UTC, so nothing is
+    /// tried before then, and a minute more for a clock that runs ahead. Any
+    /// other limit: two minutes, doubling to half an hour.
+    public static func seconds(which: String, tries: Int, now: Date = Date()) -> TimeInterval {
+        if which == "daily" {
+            let t = now.timeIntervalSince1970
+            return (t / day).rounded(.down) * day + day - t + 60
+        }
+        var wait = first
+        for _ in 0..<max(0, min(tries, 8)) { wait = min(wait * 2, longest) }
+        return wait
+    }
+}
+
+/// What the relay's refusals say, in the phone page's words (phone/relay.js).
+public enum Refusal {
+    /// `unpaired`: the computer's user removed this device there, so it is
+    /// not dialed again.
+    static let reasons: Set<String> = ["blocked", "not_yours", "no_machine", "update", "disabled", "unpaired"]
+
+    public static func sentence(_ reason: String, message: String? = nil, accountHost: String) -> String {
+        switch reason {
+        case "blocked": blocked("")
+        case "not_yours": "That computer is signed in to another GitHub account."
+        case "no_machine": "That computer is no longer on your account. Sign in again in Arakun on it."
+        case "unpaired": "That computer removed this phone. Pick it again to connect."
+        case "update": "Update Arakun on the computer and sign in at \(accountHost)."
+        case "disabled": (message ?? "").isEmpty ? "The relay is closed right now." : message ?? ""
+        default: "The relay closed the connection."
+        }
+    }
+
+    /// A blocked account, with the operator's reason when there is one.
+    public static func blocked(_ reason: String) -> String {
+        "This GitHub account is blocked from the relay." + (reason.isEmpty ? "" : " \(reason)")
     }
 }

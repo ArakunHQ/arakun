@@ -655,7 +655,8 @@ after a week).
   which makes one with a `general` channel. A channel shows the team's channels
   (**+** adds one) and people on the left, and the chat with a composer at the bottom.
   A channel's row counts the messages from others you have not read there, up to
-  "99+"; a message counts as read once its channel is on screen. Under **Here now**
+  "99+"; a message counts as read once its channel is on screen. On a new device the
+  count starts at the newest message of each channel. Under **Here now**
   the people who have this channel open come first, with a green dot.
   Click the team's name for your other teams, **Start a team** and **Your devices**;
   "N invites" at the top opens invites to other teams; click the people at the top

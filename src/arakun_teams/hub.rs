@@ -372,6 +372,9 @@ pub struct Hub {
     unread_read: HashMap<String, usize>,
     /// When those were last read.
     unread_at: Option<Instant>,
+    /// The newest `seq` of each of those channels when it was counted: one
+    /// that has not moved since is not read again.
+    unread_newest: HashMap<String, u64>,
     /// The team the last "Start a team" made, once the server named it, even
     /// when setting it up failed after: the Team tab opens that one.
     pub created: Option<String>,
@@ -471,6 +474,7 @@ impl Hub {
             viewing: None,
             unread_read: HashMap::new(),
             unread_at: None,
+            unread_newest: HashMap::new(),
             events: tx,
             generation: 0,
             messages_rev: 0,
@@ -566,6 +570,7 @@ impl Hub {
         self.viewing = None;
         self.unread_read.clear();
         self.unread_at = None;
+        self.unread_newest.clear();
         self.created = None;
         self._poll = None;
         self._tick = None;
@@ -2265,6 +2270,8 @@ impl Hub {
             return;
         };
         if self.kept.mark_read(key, c.history.shown()) {
+            // Counted from the old mark, so the next poll counts again.
+            self.unread_newest.remove(key);
             self.save(cx);
         }
     }
@@ -2279,7 +2286,9 @@ impl Hub {
         }
         let me = self.github_id();
         match self.channels.get(&key) {
-            Some(c) if !c.loading => {
+            // A channel this device never read waits for the poll to set
+            // where it starts, rather than counting its whole history.
+            Some(c) if !c.loading && self.kept.last_read(&key).is_some() => {
                 let after = self.kept.last_read(&key).unwrap_or(0);
                 let held = c
                     .messages
@@ -2297,9 +2306,10 @@ impl Hub {
         }
     }
 
-    /// Reads the unread counts of channels with no socket here, from one
-    /// history page each: on focus (`soon`), else at most every
-    /// [`UNREAD_AGAIN`].
+    /// Reads the unread counts of channels with no socket here: on focus
+    /// (`soon`), else at most every [`UNREAD_AGAIN`]. Each asks for its newest
+    /// `seq` first and reads its history only when that moved. A channel this
+    /// device never read starts from its newest message instead.
     pub fn refresh_unread(&mut self, soon: bool, cx: &mut Context<Self>) {
         let wait = if soon { UNREAD_FOCUS } else { UNREAD_AGAIN };
         if self.unread_at.is_some_and(|at| at.elapsed() < wait) || self.team.is_empty() {
@@ -2309,30 +2319,31 @@ impl Hub {
         let me = self.github_id();
         let mut asks = Vec::new();
         for (team_id, t) in &self.team {
-            let mine: HashSet<String> = t
-                .devices
-                .get(&me)
-                .into_iter()
-                .flatten()
-                .map(|d| d.device_id.clone())
-                .collect();
-            let keys: HashMap<u64, TeamKey> = self.kept.keys(team_id).into_iter().collect();
+            let mut channels = Vec::new();
             for ch in &t.channels {
                 let key = channel_key(team_id, &ch.id);
+                let after = self.kept.last_read(&key);
                 // A channel whose socket was closed hears nothing new either.
-                if self.channels.get(&key).is_some_and(|c| c.link.is_some()) {
+                // One with a socket that was never read still needs its start.
+                if after.is_some() && self.channels.get(&key).is_some_and(|c| c.link.is_some()) {
                     continue;
                 }
-                let after = self.kept.last_read(&key).unwrap_or(0);
-                asks.push((
-                    key,
-                    team_id.clone(),
-                    ch.id.clone(),
-                    after,
-                    mine.clone(),
-                    keys.clone(),
-                ));
+                let known = self.unread_newest.get(&key).copied();
+                channels.push((key, ch.id.clone(), after, known));
             }
+            if channels.is_empty() {
+                continue;
+            }
+            // Only what another member's device signed counts, as on a socket.
+            let senders: HashMap<String, Vec<u8>> = t
+                .devices
+                .iter()
+                .filter(|(gid, _)| **gid != me)
+                .flat_map(|(_, ds)| ds)
+                .filter_map(|d| Some((d.device_id.clone(), crypto::unb64(&d.sig_pub)?)))
+                .collect();
+            let keys: HashMap<u64, TeamKey> = self.kept.keys(team_id).into_iter().collect();
+            asks.push((team_id.clone(), senders, keys, channels));
         }
         if asks.is_empty() {
             return;
@@ -2341,33 +2352,66 @@ impl Hub {
             cx,
             move |net| {
                 let mut out = Vec::new();
-                for (key, team_id, channel_id, after, mine, keys) in asks {
-                    // One channel failing (an old server, a removed channel)
-                    // leaves its count as it was.
-                    let Ok(page) = net.call().history(&team_id, &channel_id, after) else {
-                        continue;
-                    };
-                    let n = page
-                        .iter()
-                        .filter(|s| !mine.contains(&s.message.device_id))
-                        .filter(|s| {
-                            keys.get(&s.message.epoch)
+                for (team_id, senders, keys, channels) in asks {
+                    let counts = |channel_id: &str, s: &Stored| {
+                        let Some(sig_pub) = senders.get(&s.message.device_id) else {
+                            return false;
+                        };
+                        // A message this device has no key for does not
+                        // show when the channel opens, so it is not unread.
+                        crypto::verify_message(&team_id, channel_id, &s.message, sig_pub)
+                            && keys
+                                .get(&s.message.epoch)
                                 .and_then(|k| {
-                                    crypto::open_message(&team_id, &channel_id, &s.message, k).ok()
+                                    crypto::open_message(&team_id, channel_id, &s.message, k).ok()
                                 })
-                                .is_none_or(|b| counts_as_unread(&b.kind))
-                        })
-                        .count();
-                    out.push((key, n));
+                                .is_some_and(|b| counts_as_unread(&b.kind))
+                    };
+                    for (key, channel_id, after, known) in channels {
+                        // One channel failing (an old server, a removed
+                        // channel) leaves its count as it was.
+                        let Ok(newest) = net.call().newest(&team_id, &channel_id) else {
+                            continue;
+                        };
+                        let polled = match unread_poll(after, newest, known) {
+                            Next::Done(p) => p,
+                            Next::Read(after) => {
+                                let Ok(page) = net.call().history(&team_id, &channel_id, after)
+                                else {
+                                    continue;
+                                };
+                                let n = page.iter().filter(|s| counts(&channel_id, s)).count();
+                                Polled::Count(n, newest)
+                            }
+                            Next::Keep => continue,
+                        };
+                        out.push((key, polled));
+                    }
                 }
                 Ok(out)
             },
-            |hub, result, _| {
-                if let Ok(counts) = result {
-                    for (key, n) in counts {
-                        hub.unread_read.insert(key, n);
+            |hub, result, cx| {
+                let Ok(polls) = result else {
+                    return;
+                };
+                let mut moved = false;
+                for (key, polled) in polls {
+                    match polled {
+                        Polled::Start(newest) => {
+                            moved |= hub.kept.mark_read(&key, newest);
+                            hub.unread_read.insert(key.clone(), 0);
+                            hub.unread_newest.insert(key, newest);
+                        }
+                        Polled::Count(n, newest) => {
+                            hub.unread_read.insert(key.clone(), n);
+                            hub.unread_newest.insert(key, newest);
+                        }
                     }
                 }
+                if moved {
+                    hub.save(cx);
+                }
+                cx.notify();
             },
         );
     }
@@ -2521,6 +2565,38 @@ fn stored_already(
         .any(|m| m.id == id && m.body.kind == "text" && m.body.mentions.iter().any(|m| m == "bot"));
     if asks && !waiting.iter().any(|w| w == id) {
         waiting.push(id.to_string());
+    }
+}
+
+/// What the unread poll learned of one channel.
+#[derive(Debug, PartialEq, Eq)]
+enum Polled {
+    /// Never read on this device: it starts at its newest message.
+    Start(u64),
+    /// How many unread, and the newest `seq` they were counted up to.
+    Count(usize, u64),
+}
+
+/// What one channel's poll does next.
+#[derive(Debug, PartialEq, Eq)]
+enum Next {
+    /// Known without reading history.
+    Done(Polled),
+    /// Read the history after this read mark and count it.
+    Read(u64),
+    /// Nothing came since the last count: it stands.
+    Keep,
+}
+
+/// What one channel's poll does once it knows the channel's `newest` seq,
+/// `after` being this device's read mark and `known` the newest seen at the
+/// last count.
+fn unread_poll(after: Option<u64>, newest: u64, known: Option<u64>) -> Next {
+    match after {
+        None => Next::Done(Polled::Start(newest)),
+        Some(after) if newest <= after => Next::Done(Polled::Count(0, newest)),
+        Some(_) if known == Some(newest) => Next::Keep,
+        Some(after) => Next::Read(after),
     }
 }
 
@@ -3257,6 +3333,19 @@ mod tests {
         assert!(refuse(&mut one, "e1", "refused"));
         assert_eq!(one[0].body.text, "first");
         assert!(one[0].edited.is_none());
+    }
+
+    #[test]
+    fn the_unread_poll_reads_history_only_when_something_came() {
+        // Never read here: it starts at the newest, so nothing is unread.
+        assert_eq!(unread_poll(None, 40, None), Next::Done(Polled::Start(40)));
+        assert_eq!(
+            unread_poll(Some(40), 40, None),
+            Next::Done(Polled::Count(0, 40))
+        );
+        assert_eq!(unread_poll(Some(30), 40, None), Next::Read(30));
+        assert_eq!(unread_poll(Some(30), 40, Some(40)), Next::Keep);
+        assert_eq!(unread_poll(Some(30), 41, Some(40)), Next::Read(30));
     }
 
     #[test]

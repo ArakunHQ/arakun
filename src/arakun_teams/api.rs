@@ -689,6 +689,15 @@ impl Call<'_> {
         let (status, body) = self.send("GET", &path, None, HISTORY_LIMIT)?;
         json(status, &body)
     }
+
+    /// The `seq` of a channel's newest message, 0 when it has none: one
+    /// small read that tells whether anything came since.
+    pub fn newest(&self, team_id: &str, channel_id: &str) -> Result<u64, ApiError> {
+        let path = format!("/teams/{team_id}/channels/{channel_id}/messages?before=latest&limit=1");
+        let (status, body) = self.send("GET", &path, None, HISTORY_LIMIT)?;
+        let page: Vec<Stored> = json(status, &body)?;
+        Ok(page.last().map_or(0, |s| s.seq))
+    }
 }
 
 /// The header that says which of the user's devices makes a call.

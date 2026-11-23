@@ -422,7 +422,7 @@ impl TeamsView {
         index: usize,
         m: &Msg,
         bot: &BotState,
-        index_of: &HashMap<&str, usize>,
+        index_of: &super::RowIndex,
         team_channel: (&str, &str),
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -572,7 +572,7 @@ impl TeamsView {
         a: &Answer,
         mine: bool,
         bot: &BotState,
-        index_of: &HashMap<&str, usize>,
+        index_of: &super::RowIndex,
         team_channel: (&str, &str),
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -629,7 +629,7 @@ impl TeamsView {
                 targets.push(
                     meta.cites
                         .get(&n.to_string())
-                        .and_then(|id| Some((*index_of.get(id.as_str())?, id.clone()))),
+                        .and_then(|id| Some((index_of.get(id.as_str())?, id.clone()))),
                 );
             }
             let chip = gpui::HighlightStyle {
@@ -775,11 +775,11 @@ impl TeamsView {
         index: usize,
         st: &Stale,
         ask_id: &str,
-        index_of: &HashMap<&str, usize>,
+        index_of: &super::RowIndex,
         team_channel: (&str, &str),
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let target = index_of.get(st.id.as_str()).copied();
+        let target = index_of.get(st.id.as_str());
         let id = st.id.clone();
         let (t, c, ask) = (
             team_channel.0.to_string(),

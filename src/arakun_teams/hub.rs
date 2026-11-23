@@ -123,18 +123,6 @@ pub struct Former {
 }
 
 impl TeamState {
-    /// Who a device belongs to, with that device: a member, or else someone
-    /// who has left.
-    fn sender(&self, device_id: &str) -> Option<(u64, &DeviceRow)> {
-        let members = self.devices.iter();
-        let former = self.former.iter().map(|(gid, f)| (gid, &f.devices));
-        members.chain(former).find_map(|(gid, ds)| {
-            ds.iter()
-                .find(|d| d.device_id == device_id)
-                .map(|d| (*gid, d))
-        })
-    }
-
     pub fn login(&self, github_id: u64) -> String {
         self.detail
             .members
@@ -248,6 +236,120 @@ pub fn apply_edits(messages: &mut [Msg]) {
             original,
         });
     }
+}
+
+/// What checking and opening a channel's stored messages needs, copied off
+/// the hub: a long history is checked and opened on a background thread,
+/// and the window stays responsive meanwhile.
+#[derive(Clone)]
+pub(super) struct Opener {
+    team_id: String,
+    channel_id: String,
+    /// Each known device's member and signing key (base64), by device ID.
+    senders: HashMap<String, (u64, String)>,
+    /// The team keys this device holds, by epoch.
+    keys: HashMap<u64, TeamKey>,
+}
+
+/// What became of one stored message.
+#[derive(Debug, PartialEq)]
+pub(super) enum Opened {
+    /// From a device not known (yet).
+    Unknown,
+    /// Its signature, its sender or its sealing did not check out.
+    Hidden,
+    /// Sealed with a key this device does not hold.
+    Locked,
+    Open {
+        github_id: u64,
+        body: Box<Body>,
+    },
+}
+
+impl Opener {
+    fn new(team_id: &str, channel_id: &str, t: &TeamState, kept: &Kept) -> Self {
+        Opener {
+            team_id: team_id.to_string(),
+            channel_id: channel_id.to_string(),
+            // Former members too: their messages still show.
+            senders: t
+                .devices
+                .iter()
+                .chain(t.former.iter().map(|(gid, f)| (gid, &f.devices)))
+                .flat_map(|(gid, ds)| {
+                    ds.iter()
+                        .map(|d| (d.device_id.clone(), (*gid, d.sig_pub.clone())))
+                })
+                .collect(),
+            keys: kept.keys(team_id).into_iter().collect(),
+        }
+    }
+
+    /// Checks one message's signature against its sender's device, then opens it.
+    fn open(&self, s: &Stored) -> Opened {
+        let Some((gid, sig_pub)) = self.senders.get(&s.message.device_id) else {
+            return Opened::Unknown;
+        };
+        let Some(sig_pub) = crypto::unb64(sig_pub) else {
+            return Opened::Hidden;
+        };
+        if !crypto::verify_message(&self.team_id, &self.channel_id, &s.message, &sig_pub) {
+            return Opened::Hidden;
+        }
+        let Some(key) = self.keys.get(&s.message.epoch) else {
+            return Opened::Locked;
+        };
+        match crypto::open_message(&self.team_id, &self.channel_id, &s.message, key) {
+            Ok(body) => Opened::Open {
+                github_id: *gid,
+                body: Box::new(body),
+            },
+            Err(_) => Opened::Hidden,
+        }
+    }
+
+    /// Whether `other` would open `s` as this one does: the same sender
+    /// device and the same key for its epoch.
+    fn agrees(&self, other: &Opener, s: &Stored) -> bool {
+        let m = &s.message;
+        self.team_id == other.team_id
+            && self.channel_id == other.channel_id
+            && self.senders.get(&m.device_id) == other.senders.get(&m.device_id)
+            && self.keys.get(&m.epoch) == other.keys.get(&m.epoch)
+    }
+}
+
+/// Checks and opens a batch of stored messages. A long history makes this
+/// costly, so it runs off the UI thread. With no opener (the team is not
+/// read yet) every message stays unknown.
+pub(super) fn open_batch(opener: Option<&Opener>, stored: Vec<Stored>) -> Vec<(Stored, Opened)> {
+    stored
+        .into_iter()
+        .map(|s| {
+            let opened = opener.map_or(Opened::Unknown, |o| o.open(&s));
+            (s, opened)
+        })
+        .collect()
+}
+
+/// A batch opened with `opened_with`, as `now` opens it. A device list read
+/// again or a key that arrived while the batch was opened changes what some
+/// messages come to; only those are opened again.
+fn reopen(
+    opened_with: Option<&Opener>,
+    now: &Opener,
+    batch: Vec<(Stored, Opened)>,
+) -> Vec<(Stored, Opened)> {
+    batch
+        .into_iter()
+        .map(|(s, opened)| match opened_with {
+            Some(o) if o.agrees(now, &s) => (s, opened),
+            _ => {
+                let opened = now.open(&s);
+                (s, opened)
+            }
+        })
+        .collect()
 }
 
 impl ChannelState {
@@ -712,6 +814,7 @@ impl Hub {
         self.invites.clear();
         self.team.clear();
         self.channels.clear();
+        self.messages_rev += 1;
         self.notices.clear();
         self.my_devices.clear();
         self.error = None;
@@ -1115,6 +1218,7 @@ impl Hub {
                         hub.setup.remove(&t);
                         hub.notices.retain(|n| n.team_id != t);
                         hub.channels.retain(|_, c| c.team_id != t);
+                        hub.messages_rev += 1;
                         changed |= hub.kept.forget_team(&t);
                     }
                     changed |= hub.kept.retain_teams(&ids);
@@ -1291,6 +1395,7 @@ impl Hub {
             if !devices.is_empty() && !pin_directory(&mut self.kept, gid, devices) {
                 self.team.remove(team_id);
                 self.channels.retain(|_, c| c.team_id != team_id);
+                self.messages_rev += 1;
                 self.error = Some(format!(
                     "The trusted device for account {gid} changed. Key delivery is paused."
                 ));
@@ -1408,11 +1513,7 @@ impl Hub {
             .map(|(k, _)| k.clone())
             .collect();
         for key in keys {
-            if let Some(c) = self.channels.get_mut(&key) {
-                let mut waiting = std::mem::take(&mut c.unknown);
-                waiting.append(&mut c.locked);
-                self.ingest(&key, waiting, Some(&read.looked_up), cx);
-            }
+            self.reopen_waiting(&key, read.looked_up.clone(), cx);
         }
         self.resend_rekeyed(team_id, cx);
         if self.setup.contains_key(team_id) {
@@ -2462,10 +2563,18 @@ impl Hub {
         let (link_id, round) = (c.link_id, c.history_round);
         let (team_id, channel_id, after) =
             (c.team_id.clone(), c.channel_id.clone(), c.history.through);
+        let opener = self.opener(key);
         let key = key.to_string();
         self.run(
             cx,
-            move |net| history_since(after, |seq| net.call().history(&team_id, &channel_id, seq)),
+            // Checked and opened on this thread too: a long history would
+            // stall the window on the UI thread.
+            move |net| {
+                let stored =
+                    history_since(after, |seq| net.call().history(&team_id, &channel_id, seq))?;
+                let batch = open_batch(opener.as_ref(), stored);
+                Ok((opener, batch))
+            },
             move |hub, result, cx| {
                 let Some(c) = hub.channels.get_mut(&key) else {
                     return;
@@ -2476,11 +2585,11 @@ impl Hub {
                 c.reading = false;
                 c.loading = false;
                 match result {
-                    Ok(stored) => {
+                    Ok((opener, stored)) => {
                         if after != 0
                             && stored
                                 .first()
-                                .is_some_and(|s| s.seq > after.saturating_add(1))
+                                .is_some_and(|(s, _)| s.seq > after.saturating_add(1))
                         {
                             hub.info = Some(
                                 "Some older messages are no longer in this channel's history."
@@ -2488,11 +2597,11 @@ impl Hub {
                             );
                         }
                         let progress = !stored.is_empty();
-                        if let Some(last) = stored.last() {
+                        if let Some((last, _)) = stored.last() {
                             c.history.page(last.seq);
                         }
                         c.needs_history = c.history.gap();
-                        hub.ingest(&key, stored, None, cx);
+                        hub.ingest_opened(&key, opener.as_ref(), stored, None, cx);
                         let c = hub.channels.get_mut(&key).expect("looked up above");
                         if !c.needs_history
                             && let Some(link) = &c.link
@@ -2516,10 +2625,16 @@ impl Hub {
         );
     }
 
-    /// Checks and opens stored messages, and files them by `seq`. Ones from
-    /// a device not known yet wait for the team's device lists to be read
-    /// again; once a read just looked for that device (`looked_up`) and did
-    /// not find it, those are dropped.
+    /// What opening this channel's messages needs now; `None` while its
+    /// team is not read.
+    fn opener(&self, key: &str) -> Option<Opener> {
+        let c = self.channels.get(key)?;
+        let t = self.team.get(&c.team_id)?;
+        Some(Opener::new(&c.team_id, &c.channel_id, t, &self.kept))
+    }
+
+    /// Checks, opens and files stored messages here and now: for one that
+    /// arrived live, where a trip to a background thread would only delay it.
     fn ingest(
         &mut self,
         key: &str,
@@ -2527,46 +2642,124 @@ impl Hub {
         looked_up: Option<&HashSet<String>>,
         cx: &mut Context<Self>,
     ) {
+        let opener = self.opener(key);
+        let batch = open_batch(opener.as_ref(), stored);
+        self.ingest_opened(key, opener.as_ref(), batch, looked_up, cx);
+    }
+
+    /// Opens the messages that wait for a device list or a key again, off the
+    /// UI thread, now that the team was just read: a channel can hold
+    /// thousands sealed with a key this device never got. `looked_up`: the
+    /// sender devices that read looked for, as for [`Self::ingest_opened`].
+    fn reopen_waiting(&mut self, key: &str, looked_up: HashSet<String>, cx: &mut Context<Self>) {
+        let Some(c) = self.channels.get(key) else {
+            return;
+        };
+        if c.unknown.is_empty() && c.locked.is_empty() {
+            return;
+        }
+        // They stay where they wait until the result lands, so the counts
+        // of locked messages do not flicker meanwhile.
+        let waiting: Vec<Stored> = c.unknown.iter().chain(&c.locked).cloned().collect();
+        let opener = self.opener(key);
+        let generation = self.generation;
+        let key = key.to_string();
+        cx.spawn(async move |this, cx| {
+            let (opener, batch) = cx
+                .background_spawn(async move {
+                    let batch = open_batch(opener.as_ref(), waiting);
+                    (opener, batch)
+                })
+                .await;
+            let _ = this.update(cx, |hub, cx| {
+                if hub.generation != generation {
+                    return;
+                }
+                let Some(c) = hub.channels.get_mut(&key) else {
+                    return;
+                };
+                // Only what still waits: another look that landed first may
+                // have opened or dropped some, and must not count them twice.
+                let still: HashSet<String> = c
+                    .unknown
+                    .iter()
+                    .chain(&c.locked)
+                    .map(|s| s.message.id.clone())
+                    .collect();
+                let batch: Vec<_> = batch
+                    .into_iter()
+                    .filter(|(s, _)| still.contains(&s.message.id))
+                    .collect();
+                let taken: HashSet<String> =
+                    batch.iter().map(|(s, _)| s.message.id.clone()).collect();
+                c.unknown.retain(|s| !taken.contains(&s.message.id));
+                c.locked.retain(|s| !taken.contains(&s.message.id));
+                hub.ingest_opened(&key, opener.as_ref(), batch, Some(&looked_up), cx);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Files checked and opened messages by `seq`. `opened_with` is what
+    /// opened them; a message whose sender or key changed since is opened
+    /// again here. Ones from a device not known yet wait for the team's
+    /// device lists to be read again; once a read just looked for that
+    /// device (`looked_up`) and did not find it, those are dropped.
+    fn ingest_opened(
+        &mut self,
+        key: &str,
+        opened_with: Option<&Opener>,
+        batch: Vec<(Stored, Opened)>,
+        looked_up: Option<&HashSet<String>>,
+        cx: &mut Context<Self>,
+    ) {
+        let now = self.opener(key);
         let Some(c) = self.channels.get_mut(key) else {
             return;
         };
-        let Some(t) = self.team.get(&c.team_id) else {
-            c.unknown.extend(stored);
+        let (Some(now), Some(t)) = (now, self.team.get(&c.team_id)) else {
+            c.unknown.extend(batch.into_iter().map(|(s, _)| s));
             return;
         };
+        let batch = reopen(opened_with, &now, batch);
         let mut unknown_seen = false;
         // This device's @bot questions the server just stored: the bot runs now.
         let mut asked = Vec::new();
         let mut peer_mail = Vec::new();
-        for s in stored {
+        // What this device sent that the server has not echoed yet: a stored
+        // message replaces its copy. The rest were filed through here and
+        // are in `seen_ids`, so a long channel is not scanned per message.
+        let unechoed: HashMap<String, usize> = c
+            .messages
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| !c.seen_ids.contains(&m.id))
+            .map(|(i, m)| (m.id.clone(), i))
+            .collect();
+        for (s, opened) in batch {
             if c.seen_ids.contains(&s.message.id) {
                 continue;
             }
-            let Some((gid, device)) = t.sender(&s.message.device_id) else {
-                if looked_up.is_some_and(|l| l.contains(&s.message.device_id)) {
-                    c.hidden += 1;
-                } else {
-                    unknown_seen = true;
-                    c.unknown.push(s);
+            let (gid, body) = match opened {
+                Opened::Unknown => {
+                    if looked_up.is_some_and(|l| l.contains(&s.message.device_id)) {
+                        c.hidden += 1;
+                    } else {
+                        unknown_seen = true;
+                        c.unknown.push(s);
+                    }
+                    continue;
                 }
-                continue;
-            };
-            let Some(sig_pub) = crypto::unb64(&device.sig_pub) else {
-                c.hidden += 1;
-                continue;
-            };
-            if !crypto::verify_message(&c.team_id, &c.channel_id, &s.message, &sig_pub) {
-                c.hidden += 1;
-                continue;
-            }
-            let Some(team_key) = self.kept.key(&c.team_id, s.message.epoch) else {
-                c.locked.push(s);
-                continue;
-            };
-            let Ok(body) = crypto::open_message(&c.team_id, &c.channel_id, &s.message, &team_key)
-            else {
-                c.hidden += 1;
-                continue;
+                Opened::Hidden => {
+                    c.hidden += 1;
+                    continue;
+                }
+                Opened::Locked => {
+                    c.locked.push(s);
+                    continue;
+                }
+                Opened::Open { github_id, body } => (github_id, *body),
             };
             if c.outbox.remove(&s.message.id).is_some()
                 && body.kind == "text"
@@ -2595,8 +2788,8 @@ impl Hub {
                 delivery: Delivery::Sent,
                 edited: None,
             };
-            match c.messages.iter().position(|m| m.id == msg.id) {
-                Some(i) => c.messages[i] = msg,
+            match unechoed.get(&msg.id) {
+                Some(&i) => c.messages[i] = msg,
                 None => c.messages.push(msg),
             }
         }
@@ -4123,6 +4316,95 @@ mod tests {
         }
     }
 
+    /// A message `from` sent in channel C of team T, sealed with `key`.
+    fn stored(seq: u64, from: &Device, epoch: u64, key: &TeamKey, text: &str) -> Stored {
+        Stored {
+            seq,
+            at: seq,
+            message: crypto::seal_message(
+                "T",
+                "C",
+                &crypto::ulid(),
+                epoch,
+                key,
+                from,
+                &Body::text(text, None),
+            ),
+        }
+    }
+
+    #[test]
+    fn a_batch_opens_off_the_hub_as_it_would_on_it() {
+        let (a, stranger) = (Device::generate(), Device::generate());
+        let t = delivery_team(vec![row(&a, 1, None)], 1);
+        let mut kept = Kept::default();
+        kept.put_key("T", 1, &[1; 32]);
+        let opener = Opener::new("T", "C", &t, &kept);
+        let mut forged = stored(4, &a, 1, &[1; 32], "forged");
+        forged.message.ct.push('A');
+        let batch = vec![
+            stored(1, &a, 1, &[1; 32], "hello"),
+            stored(2, &stranger, 1, &[1; 32], "who"),
+            stored(3, &a, 2, &[2; 32], "later key"),
+            forged,
+        ];
+        let opened: Vec<Opened> = open_batch(Some(&opener), batch.clone())
+            .into_iter()
+            .map(|(_, o)| o)
+            .collect();
+        assert_eq!(
+            opened,
+            vec![
+                Opened::Open {
+                    github_id: 21,
+                    body: Box::new(Body::text("hello", None))
+                },
+                Opened::Unknown,
+                Opened::Locked,
+                Opened::Hidden,
+            ]
+        );
+        // Before the team is read, nothing is known.
+        assert!(
+            open_batch(None, batch)
+                .iter()
+                .all(|(_, o)| *o == Opened::Unknown)
+        );
+    }
+
+    #[test]
+    fn what_changed_while_a_batch_was_opened_is_opened_again() {
+        let (a, b) = (Device::generate(), Device::generate());
+        let t = delivery_team(vec![row(&a, 1, None)], 1);
+        let mut kept = Kept::default();
+        kept.put_key("T", 1, &[1; 32]);
+        let before = Opener::new("T", "C", &t, &kept);
+        let batch = open_batch(
+            Some(&before),
+            vec![
+                stored(1, &a, 1, &[1; 32], "kept"),
+                stored(2, &b, 1, &[1; 32], "new device"),
+                stored(3, &a, 2, &[2; 32], "new key"),
+            ],
+        );
+        // Meanwhile B's device was read and the key of epoch 2 arrived.
+        let t = delivery_team(vec![row(&a, 1, None), row(&b, 2, None)], 2);
+        kept.put_key("T", 2, &[2; 32]);
+        let now = Opener::new("T", "C", &t, &kept);
+        let texts: Vec<String> = reopen(Some(&before), &now, batch)
+            .into_iter()
+            .map(|(_, o)| match o {
+                Opened::Open { body, .. } => body.text,
+                other => panic!("not opened: {other:?}"),
+            })
+            .collect();
+        assert_eq!(texts, ["kept", "new device", "new key"]);
+        // One that agrees keeps what it came to, unopened again.
+        let s = stored(4, &a, 1, &[1; 32], "x");
+        let kept_as = vec![(s, Opened::Hidden)];
+        assert_eq!(reopen(Some(&now), &now, kept_as)[0].1, Opened::Hidden);
+    }
+
     #[test]
     fn finds_a_former_member_by_the_device_they_wrote_with() {
         let [member, root, laptop, forged, stranger, flaky] =
@@ -4225,7 +4507,15 @@ mod tests {
     fn a_former_members_messages_have_a_sender_and_a_name() {
         let [member, gone] = std::array::from_fn(|_| Device::generate());
         let mut t = delivery_team(vec![row(&member, 1, None)], 1);
-        assert!(t.sender(gone.id()).is_none());
+        let mut kept = Kept::default();
+        kept.put_key("T", 1, &[1; 32]);
+        let sender = |t: &TeamState, from: &Device| match Opener::new("T", "C", t, &kept)
+            .open(&stored(1, from, 1, &[1; 32], "hi"))
+        {
+            Opened::Open { github_id, .. } => Some(github_id),
+            _ => None,
+        };
+        assert_eq!(sender(&t, &gone), None);
         assert_eq!(t.login(30), "someone");
         t.former.insert(
             30,
@@ -4234,8 +4524,8 @@ mod tests {
                 devices: vec![row(&gone, 1, None)],
             },
         );
-        assert_eq!(t.sender(gone.id()).map(|(gid, _)| gid), Some(30));
-        assert_eq!(t.sender(member.id()).map(|(gid, _)| gid), Some(21));
+        assert_eq!(sender(&t, &gone), Some(30));
+        assert_eq!(sender(&t, &member), Some(21));
         assert_eq!(t.login(30), "gone");
         assert!(t.is_former(30));
         assert!(!t.is_former(21));

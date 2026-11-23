@@ -3635,11 +3635,9 @@ impl TeamsView {
                 Pane::Team(t) => (Some(t.clone()), None, self.render_team(&t, faces, cx)),
                 Pane::Invite(t) => (Some(t.clone()), None, self.render_invite(&t, faces, cx)),
                 Pane::Pending(t) => (Some(t.clone()), None, self.render_pending(&t, faces, cx)),
-                Pane::Decisions(t) => (
-                    Some(t.clone()),
-                    Some("decisions".into()),
-                    self.render_decisions(&t, faces, cx),
-                ),
+                // Not a channel: no channel name, no Encryption panel to
+                // open, and the Chat button leads back.
+                Pane::Decisions(t) => (Some(t.clone()), None, self.render_decisions(&t, faces, cx)),
                 Pane::Devices => (back_team(), None, self.render_devices(cx)),
                 // The header's menu is the way back to the team.
                 Pane::NewTeam => (back_team(), None, self.render_new_team(cx)),

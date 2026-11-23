@@ -356,14 +356,15 @@ impl TeamsView {
             Some((_, invite)) if !hub.busy.contains(&format!("accept:{invite}")) => Some(None),
             _ => None,
         };
-        // An admin let this user in while they looked at the wait.
+        // An admin let this user in while they looked at the wait. Not before
+        // the team has loaded: until then it has no channel to open.
         let let_in = match &self.pane {
-            Pane::Asked(t) if hub.teams.iter().any(|r| r.team_id == *t) => Some(t.clone()),
+            Pane::Asked(t) if hub.team.contains_key(t) => Some(t.clone()),
             _ => None,
         };
         // A team still loading is not gone yet.
         let loading = match &self.pane {
-            Pane::Channel(t, _) => {
+            Pane::Channel(t, _) | Pane::Asked(t) => {
                 hub.teams.iter().any(|r| r.team_id == *t) && !hub.team.contains_key(t)
             }
             _ => false,

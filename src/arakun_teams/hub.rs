@@ -763,6 +763,11 @@ impl Hub {
                     // when this changed something, not on every refresh.
                     let mut changed = false;
                     for t in &asked {
+                        // The chat says so too, but only to someone who
+                        // opens it; this reaches a user on another team.
+                        if let Some(name) = hub.kept.asked().get(t) {
+                            hub.info = Some(format!("You're in {name} now."));
+                        }
                         hub.joined.insert(t.clone());
                         changed |= hub.kept.forget_ask(t);
                     }

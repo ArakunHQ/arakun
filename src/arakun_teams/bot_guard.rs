@@ -35,13 +35,17 @@ const FILES: usize = 50_000;
 const SECRET_DIRS: &[&str] = &[".ssh", ".gnupg", ".aws"];
 /// File names that hold credentials.
 const SECRET_NAMES: &[&str] = &[".netrc", ".npmrc", ".pypirc", ".git-credentials"];
+/// SSH key files, as `ssh-keygen` names them. A name that goes on from one
+/// with `_` or `.` (`id_rsa_github`, `id_ed25519.old`) is a key as well.
+const SSH_KEYS: &[&str] = &["id_rsa", "id_dsa", "id_ecdsa", "id_ed25519"];
 /// Endings of key and certificate store files.
 const SECRET_EXTENSIONS: &[&str] = &["pem", "key", "p12", "pfx", "jks", "keystore"];
 
-/// Whether a path in the project looks like it holds secrets: `.env*`,
-/// `*.pem`, `*.key` and other key stores, `id_*` (SSH keys), credential
-/// files, and anything under `.ssh/`, `.gnupg/` or `.aws/`. Case doesn't
-/// matter.
+/// Whether a path in the project looks like it holds secrets: `.env`,
+/// `.env.*`, `.env-*`, `.env_*`, `.envrc*` and `.envs/`, `*.pem`, `*.key`
+/// and other key stores, SSH keys (`id_rsa`, `id_rsa_github`,
+/// `id_ed25519.pub`), credential files, and anything under `.ssh/`,
+/// `.gnupg/` or `.aws/`. Case doesn't matter.
 pub fn is_secret_path(rel: &Path) -> bool {
     let parts: Vec<String> = rel
         .components()
@@ -53,14 +57,29 @@ pub fn is_secret_path(rel: &Path) -> bool {
     let Some((name, dirs)) = parts.split_last() else {
         return false;
     };
+    // Only the names these tools use, and what goes on from them:
+    // `id_token.rs` or `.environment/` is code, and leaving it out would
+    // make @bot say it does not exist.
+    let env = |n: &str| {
+        n == ".env"
+            || n == ".envs"
+            || n.starts_with(".envrc")
+            || [".env.", ".env-", ".env_"].iter().any(|p| n.starts_with(p))
+    };
+    let ssh = |n: &str| {
+        SSH_KEYS.iter().any(|k| {
+            n.strip_prefix(k)
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with(['_', '.']))
+        })
+    };
     if dirs
         .iter()
-        .any(|d| SECRET_DIRS.contains(&d.as_str()) || d.starts_with(".env"))
+        .any(|d| SECRET_DIRS.contains(&d.as_str()) || env(d))
     {
         return true;
     }
-    name.starts_with(".env")
-        || name.starts_with("id_")
+    env(name)
+        || ssh(name)
         || SECRET_NAMES.contains(&name.as_str())
         || Path::new(name)
             .extension()
@@ -334,6 +353,15 @@ mod tests {
             "keys/store.p12",
             "id_rsa",
             "deploy/id_ed25519.pub",
+            "keys/id_ecdsa",
+            "id_rsa_github",
+            "id_rsa.bak",
+            "id_ed25519.old",
+            "id_ed25519_sk",
+            ".env-production",
+            ".env_local",
+            ".envrc.local",
+            ".envs/.production/.django",
             ".ssh/config",
             "home/.ssh/known_hosts",
             ".aws/credentials",
@@ -352,6 +380,11 @@ mod tests {
             "src/env.rs",
             "lib/identity.ts",
             "ssh/notes.md",
+            "src/id_token.rs",
+            "id_generator.py",
+            "id_map.go",
+            ".environment/setup.md",
+            "src/.envoy.yaml",
         ] {
             assert!(!is_secret_path(Path::new(p)), "{p} should stay");
         }

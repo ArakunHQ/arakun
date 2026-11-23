@@ -1,15 +1,15 @@
-// The way to the computer through the relay (cloud/src/relay/ and core/src/phone/relay.rs).
-// The page asks the host whether it is a relay (`/_relay`); if so, everything
-// goes through one WebSocket to it, sealed with E2E (e2e.js) so the relay only
-// passes bytes along. Inside the channel the phone speaks the same JSON it
-// would on a socket of its own, plus `{req}` for what it would ask over HTTP;
-// the computer answers `{res}` in pieces, and sends any other message too big
-// for one relay frame as `{part}` pieces. Loaded before app.js, which uses
-// `RELAY.detect()` and the link it gives back.
+// The way to the computer through the relay (cloud/src/machines.ts,
+// cloud/src/relay/ and core/src/phone/relay.rs). On the account host the
+// person signs in with GitHub and picks one of their computers; everything
+// then goes through one WebSocket to the relay, sealed with E2E (e2e.js) so
+// the relay only passes bytes along. Inside the channel the phone speaks the
+// same JSON it would on a socket of its own, plus `{req}` for what it would
+// ask over HTTP; the computer answers `{res}` in pieces, and sends any other
+// message too big for one relay frame as `{part}` pieces. Loaded before
+// app.js, which uses `RELAY.detect()`, `RELAY.boot()` and the link `open` gives.
 "use strict";
 
 const RELAY = (() => {
-  const CREDS_KEY = "arakun.relay";
   /// This page's own name to the relay. It stays the same across reconnects,
   /// so a socket left behind by a network switch can be replaced, and differs
   /// between tabs, even duplicated ones, so live tabs never replace each other.
@@ -24,68 +24,188 @@ const RELAY = (() => {
   /// How long the computer may take to answer a hello. The relay can't tell
   /// that the computer's socket died, and keeps passing the hello into it.
   const HELLO_MS = 15_000;
+  /// An old relay host is `<label>.<base>`: a label is 16 base32 letters.
+  const OLD_HOST = /^[a-z2-7]{16}\.(.+)$/;
 
-  /// What the computer gave this phone when it paired, kept on the phone: in
-  /// localStorage and in a cookie, since an iOS home-screen app gets storage of
-  /// its own but inherits Safari's cookies (as the token does off the relay).
-  function creds() {
-    const ok = (c) => (c && c.id && c.ticket && c.token ? c : null);
-    const parse = (s) => {
+  /// Before sign-in, a phone paired through the relay kept a ticket and a
+  /// token here and in a cookie. The account's session replaces them both.
+  function forgetOldPairing() {
+    localStorage.removeItem("arakun.relay");
+    if (location.protocol === "https:") document.cookie = "arakun.relay=; Path=/; Max-Age=0; Secure; SameSite=Strict";
+  }
+
+  /// Which way in this host is: `account` for the account host (it answers
+  /// `/auth/config`), `update` for an old relay host (its `/_relay` says 410),
+  /// null for a server of the computer's own, which answers neither.
+  async function detect() {
+    const answers = async (path) => {
       try {
-        return ok(JSON.parse(s || "null"));
+        return await fetch(path, { cache: "no-store" });
       } catch {
         return null;
       }
     };
-    const m = document.cookie.match(/(?:^|; )arakun\.relay=([^;]*)/);
-    const cookie = m ? parse(decodeURIComponent(m[1])) : null;
-    const stored = parse(localStorage.getItem(CREDS_KEY));
-    // Paired before the cookie existed, or in a home-screen app: fill the other in.
-    if (stored && !cookie) keep(stored);
-    if (!stored && cookie) localStorage.setItem(CREDS_KEY, JSON.stringify(cookie));
-    return stored || cookie;
+    const config = await answers("/auth/config");
+    if (config && config.ok) {
+      try {
+        const body = await config.json();
+        if (body && "github_client_id" in body) return "account";
+      } catch {
+        // Not the account host's JSON.
+      }
+    }
+    const old = await answers("/_relay");
+    if (old && old.status === 410) return "update";
+    return null;
   }
 
-  function keep(c) {
-    if (c) localStorage.setItem(CREDS_KEY, JSON.stringify(c));
-    else localStorage.removeItem(CREDS_KEY);
-    if (location.protocol !== "https:") return;
-    const age = c ? 400 * 24 * 3600 : 0;
-    document.cookie = `arakun.relay=${encodeURIComponent(c ? JSON.stringify(c) : "")}; Path=/; Max-Age=${age}; Secure; SameSite=Strict`;
+  /// Where the account host is: on an old relay host, `app.` and its base.
+  function accountHost() {
+    const m = OLD_HOST.exec(location.hostname);
+    return m ? `app.${m[1]}` : location.host;
   }
 
-  /// Whether this host is a relay: its label, or null for a server of the
-  /// computer's own. A relay that is closed or has blocked this address says so.
-  async function detect() {
-    let res;
+  /// A JSON answer from the account host. The session cookie rides along.
+  async function ask(path) {
+    const res = await fetch(path, { cache: "no-store", credentials: "same-origin" });
+    let body = null;
     try {
-      res = await fetch("/_relay", { cache: "no-store" });
+      body = await res.json();
     } catch {
-      return null;
+      // No body, or not JSON.
     }
-    if (res.status === 404) return null;
-    let info = null;
-    try {
-      info = await res.json();
-    } catch {
-      return null;
-    }
-    if (!info || typeof info.label !== "string") return null;
-    const closed = res.status === 503 ? info.disabled || "The relay is closed right now." : res.status === 403 ? "The relay has blocked this address." : null;
-    return { label: info.label, closed };
+    return { status: res.status, body };
+  }
+
+  /// The account's computers, or `{ signedOut }` or `{ blocked }` when the
+  /// account host will not list them. Throws when the host does not answer.
+  async function machines() {
+    const r = await ask("/machines");
+    if (r.status === 401) return { signedOut: true };
+    if (r.status === 403 && r.body && r.body.error === "blocked") return { blocked: true, reason: r.body.reason || null };
+    if (r.status !== 200 || !Array.isArray(r.body)) throw new Error(`the account host answered ${r.status}`);
+    return { list: r.body };
+  }
+
+  /// Asks the account host to change something: `{ ok }`, or `{ signedOut }`.
+  /// The browser sends Origin with it, which the cookie session needs.
+  async function act(method, path) {
+    const res = await fetch(path, { method, cache: "no-store", credentials: "same-origin" });
+    if (res.status === 401) return { signedOut: true };
+    // Gone already counts as done.
+    return { ok: res.ok || res.status === 404, status: res.status };
+  }
+
+  /// The path that removes one of the account's computers. A label is 16
+  /// base32 letters; anything else could reach another route.
+  function machinePath(label) {
+    if (!/^[a-z2-7]{16}$/.test(String(label))) throw new Error("not a label");
+    return `/machines/${label}`;
+  }
+
+  /// Removes one of the account's computers.
+  function forgetMachine(label) {
+    return act("DELETE", machinePath(label));
+  }
+
+  /// What Remove asks first, naming the computer. One still signed in comes
+  /// back when it next connects, so that is said too.
+  function removeQuestion(name) {
+    return `Remove ${name} from your account?\n\nIf it is still signed in, it comes back the next time it connects.`;
+  }
+
+  /// The account's signed-in devices, or `{ signedOut }`. Throws when the
+  /// account host does not answer with a list.
+  async function sessions() {
+    const r = await ask("/sessions");
+    if (r.status === 401) return { signedOut: true };
+    if (r.status !== 200 || !Array.isArray(r.body)) throw new Error(`the account host answered ${r.status}`);
+    return { list: r.body };
+  }
+
+  /// Signs one of the account's devices out. An id is 32 hex digits.
+  function signOutSession(id) {
+    if (!/^[0-9a-f]{32}$/.test(String(id))) throw new Error("not a session id");
+    return act("DELETE", `/sessions/${id}`);
+  }
+
+  /// What a signed-in device is, in a word or two.
+  function kindText(kind) {
+    return { app: "Arakun app", server: "Server", phone: "Phone page", ios: "iPhone app", android: "Android app" }[kind] || "Device";
+  }
+
+  /// The rows of the signed-in devices list. Every value from the account
+  /// host goes through `esc`; ids only as data attributes, after a check.
+  /// `ago` says how long ago a Unix time was.
+  function signedInRows(list, esc, ago) {
+    return list.map((s) => {
+      const used = s.last_used_at ? ago(s.last_used_at) : "";
+      const when = used === "now" ? "used now" : used ? `used ${used} ago` : "";
+      const sub = [kindText(s.kind), when].filter(Boolean).join(" · ");
+      const action = s.current
+        ? '<span class="badge idle">This phone</span>'
+        : /^[0-9a-f]{32}$/.test(String(s.id))
+          ? `<button class="btn ghost small" data-signout="${esc(s.id)}">Sign out</button>`
+          : "";
+      return `<div class="prow"><span class="rbody"><span class="rt">${esc(s.name)}</span><span class="rs">${esc(sub)}</span></span>${action}</div>`;
+    });
+  }
+
+  /// What the page shows first on the account host: `signin`, `blocked`,
+  /// `none` (no computers yet), `connect` (the only one) or `list`.
+  async function boot() {
+    const r = await ask("/me");
+    if (r.status === 401) return { screen: "signin" };
+    if (r.status !== 200 || !r.body) throw new Error(`the account host answered ${r.status}`);
+    const me = r.body;
+    const m = await machines();
+    if (m.signedOut) return { screen: "signin" };
+    if (m.blocked) return { screen: "blocked", reason: m.reason, me };
+    const list = m.list;
+    const screen = list.length === 0 ? "none" : list.length === 1 ? "connect" : "list";
+    return { screen, me, machines: list, machine: list.length === 1 ? list[0] : null };
+  }
+
+  /// A computer's socket on the relay, as this page.
+  function socketUrl(label) {
+    // Plain `ws` only ever reaches a relay run by hand (`wrangler dev`).
+    const proto = location.protocol === "https:" ? "wss" : "ws";
+    return `${proto}://${location.host}/machines/${encodeURIComponent(label)}/ws?page=${PAGE}`;
   }
 
   /// Why a channel ended, in the page's terms, from what the relay or the
-  /// computer said: `paired` when the credentials are no longer good,
-  /// `untrusted` when the computer behind the address is not the one expected,
-  /// `pairing` when the link to pair with did not work, `limit` when the relay
-  /// has had enough for now, `gone` otherwise (try again).
+  /// computer said: `signed_out` when the session is gone, `refused` when the
+  /// relay will not let this page in (`sentence` says why), `untrusted` when
+  /// the computer behind the address is not the one expected, `limit` when the
+  /// relay has had enough for now, `gone` otherwise (try again).
   function kindOf(reason, code) {
-    if (code === 4401 || ["unauthorized", "revoked", "bad_ticket", "unpaired", "wrong_secret"].includes(reason)) return "paired";
-    if (reason === "no_pairing" || reason === "bad_code" || reason === "no_credentials") return "pairing";
+    if (reason === "signed_out" || (code === 4401 && !reason)) return "signed_out";
+    // `unpaired`: the computer's user removed this device there. Dialing
+    // again would undo that, so it is a refusal, not a drop.
+    if (["blocked", "not_yours", "no_machine", "update", "disabled", "unpaired"].includes(reason)) return "refused";
     if (reason === "untrusted" || reason === "bad_hello") return "untrusted";
     if (code === 4429 || /^limit:/.test(reason)) return "limit";
     return "gone";
+  }
+
+  /// A refusal as the page says it. `message` is the operator's text, for `disabled`.
+  function sentence(reason, message) {
+    switch (reason) {
+      case "blocked":
+        return "This GitHub account is blocked from the relay.";
+      case "not_yours":
+        return "That computer is signed in to another GitHub account.";
+      case "no_machine":
+        return "That computer is no longer on your account. Sign in again in Arakun on it.";
+      case "unpaired":
+        return "That computer removed this phone. Pick it again to connect.";
+      case "update":
+        return `Update Arakun on the computer and sign in at ${accountHost()}`;
+      case "disabled":
+        return message || "The relay is closed right now.";
+      default:
+        return "The relay closed the connection.";
+    }
   }
 
   /// Joins the `{part: {body, more}}` pieces of a message too big for one
@@ -112,21 +232,15 @@ const RELAY = (() => {
     return whole;
   }
 
-  /// One connection to the computer through the relay. `with` is either
-  /// `{ creds }` or `{ pairing: { code, secret, name } }`; the handlers hear
-  /// how it goes. The link sends messages, asks `req`s and closes.
-  function open(label, with_, handlers) {
-    const query = with_.creds
-      ? `d=${encodeURIComponent(with_.creds.id)}&t=${encodeURIComponent(with_.creds.ticket)}&s=${PAGE}`
-      : `p=${encodeURIComponent(with_.pairing.code)}`;
-    // Plain `ws` only ever reaches a relay run by hand (`wrangler dev`).
-    const proto = location.protocol === "https:" ? "wss" : "ws";
-    const ws = new WebSocket(`${proto}://${location.host}/ws?${query}`);
+  /// One connection through the relay to `machine`, one of the account's
+  /// computers as `/machines` lists it: `{ label, pub }`. The session cookie
+  /// lets the socket in; the handlers hear how it goes. The link sends
+  /// messages, asks `req`s and closes.
+  function open(machine, handlers) {
+    const { label } = machine;
+    const ws = new WebSocket(socketUrl(label));
     ws.binaryType = "arraybuffer";
     let channel = 0;
-    // What the next hello proves: the pairing secret works once, so after it
-    // pays off the credentials it gave take over for every later hello.
-    let creds = with_.creds || null;
     let handshake = null;
     let session = null;
     let ready = false;
@@ -169,6 +283,12 @@ const RELAY = (() => {
       handlers.onclose({ kind, detail });
     };
 
+    /// Ends with what the relay said: a refusal as its sentence, else the reason.
+    const refused = (reason, code, message) => {
+      const kind = kindOf(reason, code);
+      end(kind, kind === "refused" ? sentence(reason, message) : reason || `closed (${code})`);
+    };
+
     const say = (obj) => {
       writing = writing
         .then(async () => {
@@ -209,7 +329,7 @@ const RELAY = (() => {
           await greet();
           break;
         case "bye":
-          end(kindOf(String(msg.reason || ""), 0), msg.reason);
+          refused(String(msg.reason || ""), 0, msg.message);
           break;
         case "limit":
           end("limit", msg.which);
@@ -227,17 +347,7 @@ const RELAY = (() => {
         return end("untrusted", e.message);
       }
       if (!msg) return; // more pieces to come
-      if (msg.paired) {
-        creds = { id: msg.paired.id, ticket: msg.paired.ticket, token: msg.paired.token };
-        keep(creds);
-        ready = true;
-        clearTimeout(waiting);
-        handlers.onopen({ id: msg.paired.id, name: msg.paired.name, host: msg.paired.host, paired: true });
-      } else if (msg.ok) {
-        ready = true;
-        clearTimeout(waiting);
-        handlers.onopen({ id: msg.ok.id, name: msg.ok.name, host: msg.ok.host, paired: false });
-      } else if (msg.res) {
+      if (msg.res) {
         const r = msg.res;
         const p = pending.get(r.id);
         if (!p) return;
@@ -268,12 +378,19 @@ const RELAY = (() => {
       if (f.type === HELLO) {
         if (!handshake) return;
         try {
+          // The key the account has for this computer, and the label it
+          // derives, which the hello's signature covers.
+          if (!sameKey(f.payload, machine.pub)) throw new Error("bad hello: not the account's key");
           session = await handshake.finish(f.payload, label, channel);
         } catch (e) {
           return end("untrusted", e.message);
         }
         handshake = null;
-        say(creds ? { auth: { token: creds.token } } : { pair: { secret: with_.pairing.secret, name: with_.pairing.name } });
+        // The relay let only this account in, so the channel is ready now:
+        // nothing more to prove inside it.
+        ready = true;
+        clearTimeout(waiting);
+        handlers.onopen({});
         return;
       }
       return sealed(f.payload);
@@ -297,7 +414,7 @@ const RELAY = (() => {
       if (typeof ev.data === "string") return;
       reading = reading.then(() => frame(new Uint8Array(ev.data))).catch((e) => end("gone", e.message));
     };
-    ws.onclose = (ev) => end(kindOf(ev.reason || "", ev.code), ev.reason || `closed (${ev.code})`);
+    ws.onclose = (ev) => refused(ev.reason || "", ev.code);
     ws.onerror = () => ws.close();
 
     return {
@@ -319,6 +436,8 @@ const RELAY = (() => {
         if (ended) return;
         ended = true;
         quiet();
+        // Whoever waits on an answer hears there will be none.
+        for (const p of pending.values()) p.reject(new Error("link closed"));
         pending.clear();
         try {
           ws.close();
@@ -332,7 +451,90 @@ const RELAY = (() => {
     };
   }
 
-  return { detect, open, creds, keep, joiner };
+  /// A notice's link, only when it is https; anything else stays text.
+  function noticeLink(url) {
+    return typeof url === "string" && /^https:\/\/[^/]/.test(url) ? url : null;
+  }
+
+  /// The sentence the Notifications row adds when the account has several
+  /// computers. The page has one origin, so the browser keeps one push
+  /// subscription, made with the key of the computer opened last.
+  function pushNote(machines, current) {
+    return machines.length > 1 && current ? `Notifications come only from the computer opened last, ${current}.` : "";
+  }
+
+  /// A notification tap names a session the computer opened now does not have.
+  function noticeElsewhere() {
+    return "That notification is from another computer. Open it from All computers in the Phone tab.";
+  }
+
+  /// A localStorage key kept per computer on the account host: `label` is the
+  /// computer's, or null on the computer's own server, where keys stay as they
+  /// were. A key that ends in `:` takes an id after it.
+  function scoped(key, label) {
+    if (!label) return key;
+    return key.endsWith(":") ? `${key.slice(0, -1)}@${label}:` : `${key}@${label}`;
+  }
+
+  /// What a message from the computer says about the session a notification
+  /// tap asked for (`pending`, "" when none): `elsewhere` when the computer
+  /// refused it (its answer to an open is an error with no id), `opened` when
+  /// the session came, `unrelated` otherwise. Once it has opened, the page
+  /// stops waiting, so a later error is unrelated.
+  function noticeOutcome(pending, msg) {
+    if (!pending || !msg) return "unrelated";
+    if (msg.type === "error") return "elsewhere";
+    if ((msg.type === "session" || msg.type === "entries") && msg.id === pending) return "opened";
+    return "unrelated";
+  }
+
+  /// What signing out drops: the computer opened last, and the drafts,
+  /// places and shortcuts kept per computer.
+  function forgetAccountState(storage) {
+    const doomed = [];
+    for (let i = 0; i < storage.length; i++) {
+      const k = storage.key(i);
+      if (k === "arakun.machine" || /^arakun\.(draft|place|shortcuts)@[a-z2-7]{16}(:|$)/.test(k)) doomed.push(k);
+    }
+    for (const k of doomed) storage.removeItem(k);
+  }
+
+  /// Whether a computer's hello names the public key `pub` (base64url).
+  function sameKey(hello, pub) {
+    let theirs;
+    try {
+      theirs = E2E.fromB64url(JSON.parse(text(hello)).pub);
+    } catch {
+      return false;
+    }
+    const ours = E2E.fromB64url(pub || "");
+    return !!theirs && !!ours && theirs.length === ours.length && theirs.every((b, i) => b === ours[i]);
+  }
+
+  return {
+    detect,
+    boot,
+    machines,
+    forgetMachine,
+    machinePath,
+    removeQuestion,
+    sessions,
+    signOutSession,
+    signedInRows,
+    accountHost,
+    socketUrl,
+    kindOf,
+    sentence,
+    forgetOldPairing,
+    noticeLink,
+    pushNote,
+    noticeElsewhere,
+    noticeOutcome,
+    scoped,
+    forgetAccountState,
+    open,
+    joiner,
+  };
 })();
 
 globalThis.RELAY = RELAY;

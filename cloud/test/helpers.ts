@@ -16,7 +16,18 @@ export const github = {
   outage: null as "throw" | number | null,
   /// The same, for revoking a token only.
   revokeOutage: null as "throw" | number | null,
+  /// What GET /user/emails answers; "throw" or a status makes it fail.
+  emails: null as { email: string; primary: boolean; verified: boolean }[] | "throw" | number | null,
+  /// Code → the access token GitHub's web flow would give for it. A code is
+  /// good once.
+  codes: new Map<string, string>(),
+  /// "throw", a status, or "error" (a 200 with `{ error }`, as GitHub refuses a code).
+  codeOutage: null as "throw" | "error" | number | null,
+  /// The bodies the code exchange was sent.
+  exchanges: [] as string[],
   calls: [] as Request[],
+  /// The requests to GET /user/emails, apart from `calls`.
+  emailCalls: [] as Request[],
   /// The body of each call, read once by the fake.
   bodies: [] as string[],
 };
@@ -26,12 +37,24 @@ export function fakeGitHub(): void {
   github.accounts.clear();
   github.outage = null;
   github.revokeOutage = null;
+  github.emails = null;
+  github.codes.clear();
+  github.codeOutage = null;
+  github.exchanges = [];
   github.calls = [];
+  github.emailCalls = [];
   github.bodies = [];
   vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     const req = new Request(input, init);
     const lookup = /^https:\/\/api\.github\.com\/users\/([^/]+)$/.exec(req.url);
     if (lookup && req.method === "GET") return lookupUser(req, decodeURIComponent(lookup[1]!));
+    if (req.url === "https://api.github.com/user/emails" && req.method === "GET") {
+      github.emailCalls.push(req);
+      if (github.emails === "throw") throw new TypeError("Network connection lost.");
+      if (typeof github.emails === "number") return new Response("unavailable", { status: github.emails });
+      return Response.json(github.emails ?? []);
+    }
+    if (req.url === "https://github.com/login/oauth/access_token" && req.method === "POST") return exchangeCode(req);
     if (req.url !== "https://api.github.com/applications/Iv-test/token" || (req.method !== "POST" && req.method !== "DELETE"))
       throw new Error(`unexpected fetch: ${req.method} ${req.url}`);
     const body = await req.text();
@@ -54,6 +77,20 @@ export function fakeGitHub(): void {
     // Real answers carry much more; the Worker must keep none of it.
     return Response.json({ id: 1, token: null, user: { ...user, email: "someone@example.com", name: "Some One" } });
   });
+}
+
+/// POST /login/oauth/access_token: GitHub answers 200 even for a bad code.
+async function exchangeCode(req: Request): Promise<Response> {
+  const body = await req.text();
+  github.exchanges.push(body);
+  if (github.codeOutage === "throw") throw new TypeError("Network connection lost.");
+  if (typeof github.codeOutage === "number") return new Response("unavailable", { status: github.codeOutage });
+  const sent = JSON.parse(body) as { client_id?: string; client_secret?: string; code?: string };
+  const token = sent.code ? github.codes.get(sent.code) : undefined;
+  if (github.codeOutage === "error" || sent.client_id !== "Iv-test" || sent.client_secret !== "client-secret" || !token)
+    return Response.json({ error: "bad_verification_code", error_description: "The code passed is incorrect or expired." });
+  github.codes.delete(sent.code!);
+  return Response.json({ access_token: token, token_type: "bearer", scope: "user:email" });
 }
 
 /// GET /users/<login>: public data, asked with the app's credentials.
@@ -82,16 +119,18 @@ export function freshIp(): string {
   return `10.${(n >> 16) & 255}.${(n >> 8) & 255}.${n & 255}`;
 }
 
-export function signInRequest(accessToken: unknown, ip = freshIp()): Promise<Response> {
+export function signInRequest(accessToken: unknown, ip = freshIp(), extra: object = {}): Promise<Response> {
   return SELF.fetch("https://teams.test/auth/github", {
     method: "POST",
     headers: { "Content-Type": "application/json", "CF-Connecting-IP": ip },
-    body: JSON.stringify({ access_token: accessToken }),
+    body: JSON.stringify({ access_token: accessToken, ...extra }),
   });
 }
 
 export interface SignedIn {
   session: string;
+  session_id: string;
+  plan: string;
   expires_at: number;
   github_id: number;
   login: string;
@@ -99,16 +138,21 @@ export interface SignedIn {
 }
 
 /// Signs in as a user GitHub knows, and returns the Worker's answer.
-export async function signIn(id: number, login: string, accessToken = `gho_${id}_${login}`): Promise<SignedIn> {
+export async function signIn(
+  id: number,
+  login: string,
+  accessToken = `gho_${id}_${login}`,
+  extra: { name?: string; kind?: string } = {},
+): Promise<SignedIn> {
   github.users.set(accessToken, { id, login });
   onGitHub(id, login);
-  const res = await signInRequest(accessToken);
+  const res = await signInRequest(accessToken, freshIp(), extra);
   if (res.status !== 200) throw new Error(`sign-in failed: ${res.status} ${await res.text()}`);
   return res.json();
 }
 
-export function call(method: string, path: string, headers: Record<string, string> = {}): Promise<Response> {
-  return SELF.fetch(`https://teams.test${path}`, { method, headers });
+export function call(method: string, path: string, headers: Record<string, string> = {}, body?: string): Promise<Response> {
+  return SELF.fetch(`https://teams.test${path}`, { method, headers, body });
 }
 
 export function as(session: string): Record<string, string> {

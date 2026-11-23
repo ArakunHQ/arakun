@@ -1,6 +1,9 @@
-import { SELF, env } from "cloudflare:test";
+import { env, SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
+import worker from "../../src/index";
+import { parsePcFrame, parsePhoneFrame } from "../../src/relay/frames";
 import { labelFrom } from "../../src/relay/router";
+import { Inbox, computer, stored } from "./helpers";
 import { base32, fromHex, isLabel, labelOf } from "../../src/relay/label";
 import vector from "../../../phone/test/vectors/label.json";
 
@@ -27,18 +30,20 @@ describe("labels", () => {
     expect(base32(new TextEncoder().encode("foobar"))).toBe("mzxw6ytboi");
   });
 
-  it("come from the first level of the host, or from the override", () => {
-    expect(labelFrom(`${LABEL}.arakun.dev`, {})).toBe(LABEL);
-    expect(labelFrom(`${LABEL}.someone.workers.dev`, {})).toBe(LABEL);
-    expect(labelFrom("www.arakun.dev", {})).toBeNull();
-    expect(labelFrom("arakun.dev", {})).toBeNull();
-    expect(labelFrom("localhost", { LABEL_OVERRIDE: LABEL })).toBe(LABEL);
-    expect(labelFrom(`${LABEL}.arakun.dev`, { LABEL_OVERRIDE: "nope" })).toBeNull();
+  it("come from the first level of a host under the base domain", () => {
+    const env = { BASE_DOMAIN: "arakun.dev" };
+    expect(labelFrom(`${LABEL}.arakun.dev`, env)).toBe(LABEL);
+    expect(labelFrom(`${LABEL}.someone.workers.dev`, env)).toBeNull();
+    expect(labelFrom(`${LABEL}.arakun.dev.evil.example`, env)).toBeNull();
+    expect(labelFrom(`x.${LABEL}.arakun.dev`, env)).toBeNull();
+    expect(labelFrom("www.arakun.dev", env)).toBeNull();
+    expect(labelFrom("app.arakun.dev", env)).toBeNull();
+    expect(labelFrom("arakun.dev", env)).toBeNull();
   });
 });
 
-describe("the Worker", () => {
-  it("serves the phone page under a label", async () => {
+describe("an old host under a label", () => {
+  it("still serves the page, so an old page can say what to do", async () => {
     const res = await SELF.fetch(`https://${LABEL}.arakun.dev/`);
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("text/html");
@@ -47,22 +52,66 @@ describe("the Worker", () => {
     expect(js.status).toBe(200);
   });
 
-  it("tells the page which label it is under", async () => {
-    const res = await SELF.fetch(`https://${LABEL}.arakun.dev/_relay`);
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ label: LABEL });
-  });
-
-  it("knows nothing about hosts without a label", async () => {
-    for (const host of ["www.arakun.dev", "arakun.dev", "docs.arakun.dev"]) {
-      const res = await SELF.fetch(`https://${host}/`);
-      expect(res.status, host).toBe(404);
+  it("serves the page under the account host's policy, for its own host", async () => {
+    for (const path of ["/", "/app.js"]) {
+      const res = await SELF.fetch(`https://${LABEL}.arakun.dev${path}`);
+      const csp = res.headers.get("Content-Security-Policy") ?? "";
+      expect(csp, path).toContain("script-src 'self'");
+      expect(csp, path).toContain(`connect-src 'self' wss://${LABEL}.arakun.dev`);
+      expect(res.headers.get("X-Content-Type-Options"), path).toBe("nosniff");
+      expect(res.headers.get("Referrer-Policy"), path).toBe("no-referrer");
     }
   });
 
-  it("hands the sockets to the label's object, which wants a websocket", async () => {
-    const res = await SELF.fetch(`https://${LABEL}.arakun.dev/pc`);
-    expect(res.status).toBe(426);
-    expect(env.RELAY).toBeDefined();
+  it("answers /_relay with 410 and update", async () => {
+    const res = await SELF.fetch(`https://${LABEL}.arakun.dev/_relay`);
+    expect(res.status).toBe(410);
+    expect(await res.json()).toEqual({ update: true });
+  });
+
+  it("names the account host in that answer when one is set", async () => {
+    const res = await worker.fetch(new Request(`https://${LABEL}.arakun.dev/_relay`), { ...env, ACCOUNT_HOST: "Account.Example.com" });
+    expect(res.status).toBe(410);
+    expect(await res.json()).toEqual({ update: true, account_host: "account.example.com" });
+  });
+
+  it("closes the computer's and the phone's sockets with update", async () => {
+    const pc = await SELF.fetch(`https://${LABEL}.arakun.dev/pc`, { headers: { Upgrade: "websocket" } });
+    const pcSocket = pc.webSocket!;
+    const pcInbox = new Inbox(pcSocket, (b) => parsePcFrame(b) ?? { bad: true });
+    pcSocket.accept();
+    pcSocket.binaryType = "arraybuffer";
+    expect(await pcInbox.control()).toEqual({ type: "bye", reason: "update" });
+    expect((await pcInbox.closedWith()).code).toBe(4410);
+
+    const ws = await SELF.fetch(`https://${LABEL}.arakun.dev/ws?d=dev-1&t=ticket`, { headers: { Upgrade: "websocket" } });
+    const wsSocket = ws.webSocket!;
+    const wsInbox = new Inbox(wsSocket, (b) => parsePhoneFrame(b) ?? { bad: true });
+    wsSocket.accept();
+    wsSocket.binaryType = "arraybuffer";
+    expect(await wsInbox.control()).toEqual({ type: "bye", reason: "update" });
+    expect((await wsInbox.closedWith()).code).toBe(4410);
+  });
+
+  it("does not reach the label's object", async () => {
+    const me = await computer();
+    const pc = await SELF.fetch(`https://${me.label}.arakun.dev/pc`, { headers: { Upgrade: "websocket" } });
+    pc.webSocket!.accept();
+    expect(await stored(me.label, "label")).toBeUndefined();
+    expect((await SELF.fetch(`https://${LABEL}.arakun.dev/pc`)).status).toBe(426);
+  });
+
+  it("has no operator door and no account routes", async () => {
+    expect((await SELF.fetch(`https://${LABEL}.arakun.dev/machines`)).status).toBe(404);
+    expect((await SELF.fetch(`https://${LABEL}.arakun.dev/_admin/labels`, { headers: { Authorization: "Bearer test-secret" } })).status).toBe(404);
+  });
+});
+
+describe("a host that is not a label", () => {
+  it("is the account host, with nothing of the old relay", async () => {
+    for (const host of ["www.arakun.dev", "arakun.dev", "app.arakun.dev"]) {
+      expect((await SELF.fetch(`https://${host}/_relay`)).status, host).toBe(404);
+      expect((await SELF.fetch(`https://${host}/pc`, { headers: { Upgrade: "websocket" } })).status, host).toBe(404);
+    }
   });
 });

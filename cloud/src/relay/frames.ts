@@ -4,6 +4,10 @@
 // channel number after the type; a phone's frames have none. Channel 0 is the
 // relay talking to the computer.
 
+/// The id a page gives itself (`?page=`), so its own old socket can make
+/// room for it after a network change.
+export const PAGE_ID = /^[0-9a-f]{8,64}$/;
+
 export const HELLO = 0x01;
 export const DATA = 0x02;
 export const CONTROL = 0x03;

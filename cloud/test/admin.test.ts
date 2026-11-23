@@ -48,12 +48,12 @@ describe("flags", () => {
     expect(await grant.json()).toEqual({ github_id: 1001, flags: ["teams"] });
     // Granting twice changes nothing.
     expect(await (await call("PUT", "/admin/users/1001/flags/teams", ADMIN)).json()).toEqual({ github_id: 1001, flags: ["teams"] });
-    expect(await (await call("GET", "/me", as(got.session))).json()).toEqual({ github_id: 1001, login: "octocat", flags: ["teams"] });
+    expect(await (await call("GET", "/me", as(got.session))).json()).toEqual({ github_id: 1001, login: "octocat", flags: ["teams"], plan: "free", notices: [] });
 
     const revoke = await call("DELETE", "/admin/users/1001/flags/teams", ADMIN);
     expect(revoke.status).toBe(200);
     expect(await revoke.json()).toEqual({ github_id: 1001, flags: [] });
-    expect(await (await call("GET", "/me", as(got.session))).json()).toEqual({ github_id: 1001, login: "octocat", flags: [] });
+    expect(await (await call("GET", "/me", as(got.session))).json()).toEqual({ github_id: 1001, login: "octocat", flags: [], plan: "free", notices: [] });
     // Revoking one the user does not have is fine too.
     expect((await call("DELETE", "/admin/users/1001/flags/teams", ADMIN)).status).toBe(200);
   });
@@ -91,7 +91,7 @@ describe("flags", () => {
     }>();
     expect(user?.login).toBe("newcomer");
     expect(user?.last_seen_at).toBeGreaterThan(0);
-    expect(await (await call("GET", "/me", as(got.session))).json()).toEqual({ github_id: 2002, login: "newcomer", flags: ["teams"] });
+    expect(await (await call("GET", "/me", as(got.session))).json()).toEqual({ github_id: 2002, login: "newcomer", flags: ["teams"], plan: "free", notices: [] });
   });
 
   it("belong to one user only", async () => {
@@ -100,7 +100,7 @@ describe("flags", () => {
     expect(await grant.json()).toEqual({ github_id: 1001, flags: ["teams"] });
     const other = await signIn(3003, "someone-else");
     expect(other.flags).toEqual([]);
-    expect(await (await call("GET", "/me", as(other.session))).json()).toEqual({ github_id: 3003, login: "someone-else", flags: [] });
+    expect(await (await call("GET", "/me", as(other.session))).json()).toEqual({ github_id: 3003, login: "someone-else", flags: [], plan: "free", notices: [] });
   });
 });
 

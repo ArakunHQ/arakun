@@ -18,8 +18,11 @@ describe("sign-in with GitHub", () => {
 
     const user = await env.DB.prepare("SELECT * FROM users WHERE github_id = 1001").first();
     expect(user).toMatchObject({ github_id: 1001, login: "octocat" });
-    // Nothing else GitHub said is kept.
-    expect(Object.keys(user!).sort()).toEqual(["created_at", "github_id", "last_seen_at", "login"]);
+    // Nothing else GitHub said is kept, but the primary verified address.
+    expect(Object.keys(user!).sort()).toEqual(
+      ["blocked_at", "blocked_reason", "created_at", "email", "github_id", "last_seen_at", "login", "plan"],
+    );
+    expect(user).toMatchObject({ plan: "free", blocked_at: null, email: null });
     const sessions = await env.DB.prepare("SELECT COUNT(*) AS n FROM sessions WHERE github_id = 1001").first<{ n: number }>();
     expect(sessions?.n).toBe(1);
   });
@@ -65,7 +68,7 @@ describe("sign-in with GitHub", () => {
     const second = await signIn(1001, "octo-renamed");
     expect(second.session).not.toBe(first.session);
     const me = await (await call("GET", "/me", as(first.session))).json();
-    expect(me).toEqual({ github_id: 1001, login: "octo-renamed", flags: [] });
+    expect(me).toEqual({ github_id: 1001, login: "octo-renamed", flags: [], plan: "free", notices: [] });
   });
 
   it("answers 401 when GitHub rejects the token", async () => {
@@ -245,7 +248,7 @@ describe("sessions", () => {
     await call("PUT", "/admin/users/1001/flags/beta_chat", ADMIN);
     const res = await call("GET", "/me", as(got.session));
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ github_id: 1001, login: "octocat", flags: ["beta_chat", "teams"] });
+    expect(await res.json()).toEqual({ github_id: 1001, login: "octocat", flags: ["beta_chat", "teams"], plan: "free", notices: [] });
   });
 
   it("answers 401 without a valid session", async () => {
@@ -341,7 +344,8 @@ describe("routes", () => {
 
   it("answers 404 in JSON for anything else, without CORS", async () => {
     for (const [method, path] of [
-      ["GET", "/"],
+      // GET / is the phone page (router.test.ts).
+      ["POST", "/"],
       ["GET", "/auth/github"],
       ["POST", "/me"],
       ["GET", "/auth/logout"],
@@ -353,5 +357,242 @@ describe("routes", () => {
       expect(await res.json()).toEqual({ error: "not found" });
       expect(res.headers.get("Access-Control-Allow-Origin")).toBeNull();
     }
+  });
+});
+
+const ORIGIN = "https://teams.test";
+const cookieOf = (session: string, extra: Record<string, string> = {}) => ({ Cookie: `__Host-arakun_session=${session}`, ...extra });
+
+describe("named sessions", () => {
+  it("lists a session by its name and kind, marked as the current one", async () => {
+    const got = await signIn(1001, "octocat", undefined, { name: "Rik's Mac", kind: "app" });
+    expect(got.session_id).toMatch(/^[0-9a-f]{32}$/);
+    expect(got.plan).toBe("free");
+    const res = await call("GET", "/sessions", as(got.session));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual([
+      { id: got.session_id, name: "Rik's Mac", kind: "app", created_at: expect.any(Number), last_used_at: expect.any(Number), current: true },
+    ]);
+    const other = await signIn(1001, "octocat", "gho_other", { kind: "phone" });
+    const seen = (await (await call("GET", "/sessions", as(other.session))).json()) as { id: string; name: string; current: boolean }[];
+    expect(seen.map((r) => [r.id === other.session_id, r.name, r.current]).sort()).toEqual([
+      [false, "Rik's Mac", false],
+      [true, "octocat", true],
+    ]);
+  });
+
+  it("answers 400 for an unknown kind or a bad name", async () => {
+    for (const extra of [{ kind: "toaster" }, { kind: 3 }, { name: "" }, { name: "  " }, { name: "x".repeat(101) }, { name: 5 }]) {
+      github.users.set("gho_bad", { id: 1001, login: "octocat" });
+      const res = await signInRequest("gho_bad", undefined, extra);
+      expect(res.status, JSON.stringify(extra)).toBe(400);
+    }
+    // Nothing was spent: the token still works.
+    expect(github.users.has("gho_bad")).toBe(true);
+  });
+
+  it("signs another session out, and its token answers 401", async () => {
+    const one = await signIn(1001, "octocat");
+    const two = await signIn(1001, "octocat", "gho_two");
+    expect((await call("DELETE", `/sessions/${two.session_id}`, as(one.session))).status).toBe(204);
+    expect((await call("GET", "/me", as(two.session))).status).toBe(401);
+    expect((await call("GET", "/me", as(one.session))).status).toBe(200);
+    expect((await call("DELETE", `/sessions/${two.session_id}`, as(one.session))).status).toBe(404);
+  });
+
+  it("answers 404 for another account's session id", async () => {
+    const mine = await signIn(1001, "octocat");
+    const theirs = await signIn(2002, "other");
+    expect((await call("DELETE", `/sessions/${theirs.session_id}`, as(mine.session))).status).toBe(404);
+    expect((await call("GET", "/me", as(theirs.session))).status).toBe(200);
+    expect((await call("DELETE", "/sessions/not-an-id", as(mine.session))).status).toBe(404);
+    expect((await call("GET", "/sessions")).status).toBe(401);
+    expect((await call("DELETE", `/sessions/${theirs.session_id}`)).status).toBe(401);
+  });
+
+  /// A session as a Worker from before sessions had ids made it.
+  async function oldSession(token: string, githubId: number): Promise<void> {
+    const hash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token)))].map((b) => b.toString(16).padStart(2, "0")).join("");
+    const t = nowSeconds();
+    await env.DB.prepare("INSERT INTO sessions (token_hash, github_id, created_at, expires_at, last_used_at) VALUES (?, ?, ?, ?, ?)")
+      .bind(hash, githubId, t, t + 90 * DAY, t)
+      .run();
+  }
+
+  it("the migration gives old sessions without an id one and their login for a name, and ids stay unique", async () => {
+    const kept = await signIn(1001, "octocat");
+    await oldSession("a".repeat(43), 1001);
+    await oldSession("b".repeat(43), 1001);
+    // The migration's own statements, run again over rows as it found them.
+    await env.DB.prepare("UPDATE sessions SET name = '' WHERE id IS NULL").run();
+    const migration = env.TEST_MIGRATIONS.find((m) => m.name.startsWith("0008"))!;
+    const updates = migration.queries.filter((q) => q.includes("UPDATE sessions"));
+    expect(updates).toHaveLength(2);
+    for (const q of updates) await env.DB.prepare(q).run();
+    const rows = await env.DB.prepare("SELECT id, name FROM sessions").all<{ id: string | null; name: string }>();
+    expect(rows.results).toHaveLength(3);
+    for (const r of rows.results) {
+      expect(r.id).toMatch(/^[0-9a-f]{32}$/);
+      expect(r.name).toBe("octocat");
+    }
+    expect(new Set(rows.results.map((r) => r.id)).size).toBe(3);
+    expect(rows.results.map((r) => r.id)).toContain(kept.session_id);
+    await expect(env.DB.prepare("UPDATE sessions SET id = (SELECT MIN(id) FROM sessions)").run()).rejects.toThrow();
+  });
+
+  it("gives a session made after the migration by the Worker of before an id on its first use", async () => {
+    await signIn(1001, "octocat");
+    const token = "c".repeat(43);
+    await oldSession(token, 1001);
+    const list = (await (await call("GET", "/sessions", as(token))).json()) as { id: string; name: string; current: boolean }[];
+    expect(list).toHaveLength(2);
+    const mine = list.filter((s) => s.current);
+    expect(mine).toHaveLength(1);
+    expect(mine[0]!.id).toMatch(/^[0-9a-f]{32}$/);
+    expect(mine[0]!.name).toBe("octocat");
+    // The same id from then on, and it signs the session out.
+    const again = (await (await call("GET", "/sessions", as(token))).json()) as { id: string; current: boolean }[];
+    expect(again.find((s) => s.current)!.id).toBe(mine[0]!.id);
+    expect((await call("DELETE", `/sessions/${mine[0]!.id}`, as(token))).status).toBe(204);
+    expect((await call("GET", "/me", as(token))).status).toBe(401);
+  });
+
+  it("keeps at most 100 sessions of an account: the one used longest ago makes room", async () => {
+    const first = await signIn(1001, "octocat", "gho_0");
+    for (let i = 1; i < 100; i++) await signIn(1001, "octocat", `gho_${i}`);
+    const other = await signIn(2002, "other");
+    await env.DB.prepare("UPDATE sessions SET last_used_at = last_used_at - 60 WHERE id = ?").bind(first.session_id).run();
+    const newest = await signIn(1001, "octocat", "gho_100");
+    const list = (await (await call("GET", "/sessions", as(newest.session))).json()) as { id: string }[];
+    expect(list).toHaveLength(100);
+    expect(list.map((s) => s.id)).not.toContain(first.session_id);
+    expect((await call("GET", "/me", as(first.session))).status).toBe(401);
+    expect((await call("GET", "/me", as(other.session))).status).toBe(200);
+  });
+});
+
+describe("the session cookie", () => {
+  it("is a __Host- cookie, and two of the name are no sign-in at all", async () => {
+    const got = await signIn(1001, "octocat");
+    expect((await call("GET", "/me", cookieOf(got.session))).status).toBe(200);
+    // The name without the prefix is not ours.
+    expect((await call("GET", "/me", { Cookie: `arakun_session=${got.session}` })).status).toBe(401);
+    // A second cookie of the name, planted or not: neither is taken.
+    const planted = { Cookie: `__Host-arakun_session=${got.session}; __Host-arakun_session=${"x".repeat(43)}` };
+    expect((await call("GET", "/me", planted)).status).toBe(401);
+    const reversed = { Cookie: `__Host-arakun_session=${"x".repeat(43)}; __Host-arakun_session=${got.session}` };
+    expect((await call("GET", "/me", reversed)).status).toBe(401);
+  });
+
+  it("lets a cookie session read /me and /sessions", async () => {
+    const got = await signIn(1001, "octocat");
+    const res = await call("GET", "/me", cookieOf(got.session));
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { login: string }).login).toBe("octocat");
+    expect((await call("GET", "/sessions", cookieOf(got.session))).status).toBe(200);
+  });
+
+  it("refuses a cookie session that changes something without our Origin", async () => {
+    const one = await signIn(1001, "octocat");
+    const two = await signIn(1001, "octocat", "gho_two");
+    const path = `/sessions/${two.session_id}`;
+    expect((await call("DELETE", path, cookieOf(one.session))).status).toBe(403);
+    expect((await call("DELETE", path, cookieOf(one.session, { Origin: "https://evil.example" }))).status).toBe(403);
+    expect((await call("GET", "/me", as(two.session))).status).toBe(200);
+    expect((await call("DELETE", path, cookieOf(one.session, { Origin: ORIGIN }))).status).toBe(204);
+  });
+
+  it("does not ask a bearer session for an Origin", async () => {
+    const one = await signIn(1001, "octocat");
+    const two = await signIn(1001, "octocat", "gho_two");
+    expect((await call("DELETE", `/sessions/${two.session_id}`, as(one.session))).status).toBe(204);
+  });
+
+  it("clears the cookie on logout only when the request came with it", async () => {
+    const one = await signIn(1001, "octocat");
+    const withCookie = await call("POST", "/auth/logout", cookieOf(one.session, { Origin: ORIGIN }));
+    expect(withCookie.status).toBe(204);
+    expect(withCookie.headers.get("Set-Cookie")).toMatch(/^__Host-arakun_session=;.*HttpOnly.*Secure.*SameSite=Lax.*Path=\/.*Max-Age=0/);
+    expect((await call("GET", "/me", as(one.session))).status).toBe(401);
+    const two = await signIn(1001, "octocat", "gho_two");
+    const bearerOut = await call("POST", "/auth/logout", as(two.session));
+    expect(bearerOut.status).toBe(204);
+    expect(bearerOut.headers.get("Set-Cookie")).toBeNull();
+  });
+
+  it("clears a dead cookie when logout answers 401 to it", async () => {
+    const one = await signIn(1001, "octocat");
+    await call("POST", "/auth/logout", cookieOf(one.session, { Origin: ORIGIN }));
+    const again = await call("POST", "/auth/logout", cookieOf(one.session, { Origin: ORIGIN }));
+    expect(again.status).toBe(401);
+    expect(again.headers.get("Set-Cookie")).toMatch(/^__Host-arakun_session=;.*Max-Age=0/);
+    const noCookie = await call("POST", "/auth/logout", { Origin: ORIGIN });
+    expect(noCookie.status).toBe(401);
+    expect(noCookie.headers.get("Set-Cookie")).toBeNull();
+    const dead = await call("POST", "/auth/logout", as(one.session));
+    expect(dead.status).toBe(401);
+    expect(dead.headers.get("Set-Cookie")).toBeNull();
+  });
+
+  it("clears the cookie when a cookie session deletes itself, and not for another session", async () => {
+    const one = await signIn(1001, "octocat");
+    const two = await signIn(1001, "octocat", "gho_two");
+    const other = await call("DELETE", `/sessions/${two.session_id}`, cookieOf(one.session, { Origin: ORIGIN }));
+    expect(other.status).toBe(204);
+    expect(other.headers.get("Set-Cookie")).toBeNull();
+    const own = await call("DELETE", `/sessions/${one.session_id}`, cookieOf(one.session, { Origin: ORIGIN }));
+    expect(own.status).toBe(204);
+    expect(own.headers.get("Set-Cookie")).toMatch(/^__Host-arakun_session=;.*Max-Age=0/);
+    const three = await signIn(1001, "octocat", "gho_three");
+    const byBearer = await call("DELETE", `/sessions/${three.session_id}`, as(three.session));
+    expect(byBearer.status).toBe(204);
+    expect(byBearer.headers.get("Set-Cookie")).toBeNull();
+  });
+});
+
+describe("email and config", () => {
+  it("stores the primary verified email", async () => {
+    github.emails = [
+      { email: "old@example.com", primary: false, verified: true },
+      { email: "unverified@example.com", primary: true, verified: false },
+    ];
+    await signIn(1001, "octocat");
+    expect((await env.DB.prepare("SELECT email FROM users").first<{ email: string | null }>())?.email).toBeNull();
+    github.emails = [
+      { email: "old@example.com", primary: false, verified: true },
+      { email: "rik@example.com", primary: true, verified: true },
+    ];
+    await signIn(1001, "octocat", "gho_two");
+    expect((await env.DB.prepare("SELECT email FROM users").first<{ email: string | null }>())?.email).toBe("rik@example.com");
+    expect(github.emailCalls[0]!.headers.get("Authorization")).toBe("Bearer gho_1001_octocat");
+  });
+
+  it("still signs in when the emails call fails", async () => {
+    for (const outage of ["throw", 403, 500] as const) {
+      github.emails = outage;
+      const got = await signIn(1001, "octocat", `gho_${outage}`);
+      expect(got.session).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    }
+    expect((await env.DB.prepare("SELECT email FROM users").first<{ email: string | null }>())?.email).toBeNull();
+  });
+
+  it("keeps the stored email when the emails call fails, and clears it when there is no primary verified one", async () => {
+    const email = async () => (await env.DB.prepare("SELECT email FROM users").first<{ email: string | null }>())?.email;
+    github.emails = [{ email: "rik@example.com", primary: true, verified: true }];
+    await signIn(1001, "octocat", "gho_one");
+    for (const outage of ["throw", 403, 500] as const) {
+      github.emails = outage;
+      await signIn(1001, "octocat", `gho_${outage}`);
+      expect(await email(), String(outage)).toBe("rik@example.com");
+    }
+    github.emails = [{ email: "x@example.com", primary: true, verified: false }];
+    await signIn(1001, "octocat", "gho_none");
+    expect(await email()).toBeNull();
+  });
+
+  it("answers the client ID on /auth/config", async () => {
+    const res = await call("GET", "/auth/config");
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ github_client_id: "Iv-test" });
   });
 });

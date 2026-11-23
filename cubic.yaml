@@ -195,6 +195,11 @@ reviews:
         The native iOS app in ios/ speaks the same protocol: `ios/ArakunKit` (E2E.swift, RelayLink.swift, Models.swift) is `phone/e2e.js` and `phone/relay.js` in Swift, and its tests read `phone/test/vectors`. Flag a format change on either side that ios/ArakunKit does not follow, or one ios/ArakunKit makes alone. Review its crypto as above. Pairing credentials stay in the Keychain (`ios/Arakun/Keychain.swift`), never in UserDefaults or logs. Views take colors, fonts and corners from `ios/Arakun/Theme.swift`, never hand-written values. Code behind `#if DEBUG` (the `-demo` mode) must not reach a release build.
     - name: Credentials and sign-ins
       include:
+        - "core/src/cloud.rs"
+        - "core/src/server/login.rs"
+        - "phone/*.js"
+        - "ios/**/*.swift"
+        - "android/**/*.kt"
         - "core/src/account.rs"
         - "core/src/fetch.rs"
         - "src/account.rs"
@@ -207,11 +212,13 @@ reviews:
       description: |
         account.rs, fetch.rs and voice.rs read and use API keys. Keys come from the desktop keyring or an environment variable and must never be logged, shown in full, or written to a file other than the keyring.
         src/cloudflare, src/posthog and src/github use the user's sign-ins (the `cf` profile, PostHog API keys in a 0600 file, the `gh` CLI). Check that tokens are never logged or shown, that files holding them are created 0600, and that network calls run off the UI thread with a timeout.
+        An Arakun account session token opens every machine of the account, like an SSH key. It is only ever sent to the origin of the server that issued it: check that a new call compares origins first (`cloud::same_origin`, `relay::takes_session_from`, the origin checks in `ios/ArakunKit` and `android/kit`). It is never logged and never stored in `localStorage`, `sessionStorage`, `UserDefaults` or plain `SharedPreferences`: only the Keychain, Android's encrypted storage, a 0600 file (`account.json`) or, on the phone page, the HttpOnly cookie the page's script cannot read.
     - name: Cloud Worker (relay and teams)
       include:
         - "cloud/**"
       description: |
         The relay (`cloud/src/relay`) is part of the one Cloudflare Worker in `cloud/`. It forwards encrypted frames between the desktop and the phone. It must never see plaintext or keys. Check limits and input validation on every frame, authentication on admin routes, and Durable Object state that can grow without a bound. A new route or limit needs a test in `cloud/test/relay`.
+        A session can come as a cookie (`__Host-arakun_session`): `session()` must check `Origin` against the request's own origin on every request other than GET and HEAD and on every socket upgrade, and a new route that takes a session must go through it. The relay object (`Relay`) trusts only the `x-arakun-*` headers the Worker builds itself in `toObject` (`cloud/src/machines.ts`) after it checked the session; flag any change that passes a client's request, headers or session token on to an object.
         The teams API (the rest of `cloud/src`) signs users in with GitHub and keeps per-user feature flags in D1. It must never store or log the GitHub token or a session token; the database holds only SHA-256 hashes of sessions. Users are keyed by numeric GitHub ID, never by login. Every endpoint that needs a user goes through `session()`, and every team feature checks its flag on the server. Admin routes compare `ADMIN_SECRET` in constant time. No GitHub IDs of real users belong in the repository. A schema change is a new file in `cloud/migrations`, never an edit to an applied one. A new route or check needs a test in `cloud/test`.
     - name: Control socket and formats stored on disk
       include:

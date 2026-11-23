@@ -1,20 +1,24 @@
-// One computer's relay: its socket, its phones' sockets, and what it told us
-// about who may come in. Sockets hibernate between messages, so everything a
-// socket is lives in its attachment, and everything the computer told us in
-// storage.
+// One computer's relay: its socket and its devices' sockets. Sockets hibernate
+// between messages, so everything a socket is lives in its attachment, and
+// what the claim established in storage.
 //
-// The computer connects at /pc and is challenged: it signs the nonce and its
-// label with the key its label derives from. Only then is it the computer, and
-// only one computer is: a later claim replaces the earlier socket. Anyone can
-// open /pc, so nothing is stored before the claim, and a socket that does not
-// claim in time is closed by the alarm. Phones
-// connect at /ws with a ticket the computer issued (we keep the hashes it sent)
-// or, while pairing, with the one-use code the computer opened. Each admitted
-// phone gets a channel number; the computer hears `open` and `close` for it,
-// the phone hears whether the computer is there. Hello and data frames cross
-// unread: a phone's go to the computer on its channel, the computer's go to
-// the phone the channel names. How many phones, how many frames and how big
-// is the label's plan, read from KV.
+// The Worker lets a socket in only with a session of the right account, and
+// tells us who it is in headers (see machines.ts). The computer connects at
+// /pc and is challenged: it signs the nonce and its label with the key its
+// label derives from. Only then is it the computer, and only one computer is:
+// a later claim replaces the earlier socket. The claim registers the label to
+// the account in D1, unless another account has it. Nothing is stored before
+// the claim but the channel counter, and a socket that does not claim in time
+// is closed by the alarm.
+// Devices connect at /ws. The Worker's check may be stale by the time a device
+// arrives here, so its session and account are read from D1 once more before
+// it gets a channel. Each gets a channel number; the computer hears
+// `open` (with who the device is) and `close` for it, the device hears
+// whether the computer is there. Hello and data frames cross unread: a
+// device's go to the computer on its channel, the computer's go to the device
+// the channel names. How many devices, how many frames and how big is the
+// account's plan, read from KV. Every few minutes, and when the Worker asks,
+// each socket's session and account are checked again in D1.
 
 import { DurableObject } from "cloudflare:workers";
 import {
@@ -27,47 +31,65 @@ import {
   parsePhoneFrame,
   pcControl,
   pcFrame,
+  PAGE_ID,
   phoneControl,
   phoneFrame,
-  sha256,
   utf8,
 } from "./frames";
-import type { LabelCard } from "./admin";
 import type { Env } from "../util";
-import { hex, labelOf } from "./label";
+import { labelOf } from "./label";
 import { planFor, type Plan } from "./limits";
 
-/// What a socket is, kept on it across hibernation.
-type Tag =
-  | { role: "pc"; nonce: string; claimed: boolean; label: string; until: number }
-  | { role: "phone"; channel: number; device: string | null; ticketHash: string | null; page: string | null; since?: number };
-
-/// Who a phone is, once admitted.
-type Admitted = { device: string | null; ticketHash: string | null; page: string | null };
-
-/// A phone that may come in: who it is, and the hash of the pairing code it
-/// brought, spent only once it is actually let in.
-type Admit = Admitted & { code: string | null };
-
-/// What the computer opened for the next phone to pair with.
-interface Pairing {
-  hash: string;
-  until: number;
+/// Whose a socket is, as the Worker said when it opened, and when that was
+/// last checked against D1.
+interface Owner {
+  label: string;
+  /// The account's GitHub ID.
+  account: number;
+  /// The SHA-256 of the session token, as `sessions.token_hash`.
+  session: string;
+  /// The name of the account's plan when the socket opened.
+  plan: string;
+  checked: number;
 }
 
+/// What a socket is, kept on it across hibernation.
+export type Tag =
+  | ({ role: "pc"; nonce: string; claimed: boolean; until: number; name: string; kind: string } & Owner)
+  | ({
+      role: "phone";
+      channel: number;
+      device: string;
+      name: string;
+      kind: string;
+      page: string | null;
+      since?: number;
+      /// The computer heard this channel close already: we closed it.
+      told?: boolean;
+    } & Owner);
+
+/// Who a device is, once admitted.
+type Admitted = Omit<Tag & { role: "phone" }, "role" | "channel" | "since" | "told">;
+
 /// Close codes, in the 4000s so they never collide with the protocol's own.
-const CLOSE_BAD_FRAME = 4400;
-const CLOSE_UNAUTHORIZED = 4401;
-const CLOSE_FORBIDDEN = 4403;
-const CLOSE_REPLACED = 4409;
-const CLOSE_GONE = 4410;
-const CLOSE_LIMIT = 4429;
+export const CLOSE_BAD_FRAME = 4400;
+export const CLOSE_UNAUTHORIZED = 4401;
+export const CLOSE_FORBIDDEN = 4403;
+export const CLOSE_NOT_FOUND = 4404;
+export const CLOSE_REPLACED = 4409;
+export const CLOSE_GONE = 4410;
+export const CLOSE_LIMIT = 4429;
+export const CLOSE_UNAVAILABLE = 4503;
 
 /// How long the computer has to answer the challenge.
 const CLAIM_TIMEOUT_MS = 30_000;
 
-/// The longest a pairing code may stay open, whatever the computer asks.
-const PAIR_TTL_MAX_S = 300;
+/// How often each socket's session and account are checked again. A sign-out
+/// or a block also asks at once; this catches what that call missed.
+const RECHECK_MS = 5 * 60_000;
+
+/// How soon a recheck that failed (D1 did not answer) is tried again.
+const RECHECK_RETRY_MS = 30_000;
 
 /// How long the plan read from KV is trusted before asking again. A stale
 /// plan still answers while the new one is read, so no frame waits for KV.
@@ -85,7 +107,7 @@ const COUNT_FLUSH_EVERY = 50;
 const PHONE_SILENT_MS = 90_000;
 
 /// A computer not seen for this long has moved on: its object empties itself.
-/// Nothing is lost, the computer sends its key and tickets again on connecting.
+/// Nothing is lost, the computer claims again on connecting.
 const PURGE_AFTER_MS = 90 * 24 * 3_600_000;
 
 /// How many frames crossed today; the day is UTC, as days since the epoch.
@@ -95,40 +117,69 @@ interface Today {
 }
 
 export class Relay extends DurableObject<Env> {
+  /// The name of the account's plan, as the last socket or recheck said.
+  /// Null after a wake until storage is read.
+  private planName: string | null = null;
   private plan: { value: Plan; at: number } | null = null;
   /// The KV read under way, so a burst of frames asks only once.
   private planRead: Promise<Plan> | null = null;
   private burst = { second: 0, n: 0 };
   private today: Today | null = null;
-  /// Claims that started writing storage, so a purge can tell one came in while it waited.
-  private claims = 0;
   /// PHONE_SILENT_MS; tests shorten it rather than wait.
   private silentMs = PHONE_SILENT_MS;
+  /// How many rechecks have started. A device being admitted reads D1 while
+  /// other events run; a recheck among them means a sign-out or block may be
+  /// newer than what it read.
+  private rechecks = 0;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"));
   }
 
+  /// Only the Worker reaches this: machines.ts for the sockets, and for
+  /// `/_recheck` and `/_state`.
   override async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
-    const label = request.headers.get("x-arakun-label") ?? "";
+    const h = request.headers;
+    const label = h.get("x-arakun-label") ?? "";
     if (!label) return new Response("no label", { status: 400 });
-    if (url.pathname === "/_block" && request.method === "POST") return this.blocked();
-    if (request.headers.get("Upgrade") !== "websocket") return new Response("expected a websocket", { status: 426 });
-    if (url.pathname === "/pc") return this.acceptPc(label);
-    if (url.pathname === "/ws") return this.acceptPhone(url.searchParams);
+    if (url.pathname === "/_recheck" && request.method === "POST") {
+      const ok = await this.tryRecheck();
+      if (!ok) await this.schedule();
+      return new Response(null, { status: ok ? 204 : 503 });
+    }
+    if (url.pathname === "/_state" && request.method === "GET") return Response.json({ online: this.computer() !== null });
+    if (h.get("Upgrade") !== "websocket") return new Response("expected a websocket", { status: 426 });
+    const account = Number(h.get("x-arakun-account"));
+    const session = h.get("x-arakun-session") ?? "";
+    const plan = h.get("x-arakun-plan") ?? "";
+    if (!Number.isSafeInteger(account) || account <= 0 || !session || !plan) return new Response("no account", { status: 400 });
+    const owner: Owner = { label, account, session, plan, checked: Date.now() };
+    if (url.pathname === "/pc") {
+      return this.acceptPc(owner, decoded(h.get("x-arakun-machine-name")), h.get("x-arakun-machine-kind") ?? "app");
+    }
+    if (url.pathname === "/ws") {
+      const page = url.searchParams.get("page");
+      return this.acceptPhone({
+        ...owner,
+        device: h.get("x-arakun-device") ?? "",
+        name: decoded(h.get("x-arakun-device-name")),
+        kind: h.get("x-arakun-device-kind") ?? "",
+        page: page && PAGE_ID.test(page) ? page : null,
+      });
+    }
     return new Response("not found", { status: 404 });
   }
 
   // ---- the computer --------------------------------------------------------
 
   /// The computer's socket: challenged at once, trusted only after it answers.
-  private async acceptPc(label: string): Promise<Response> {
+  private async acceptPc(owner: Owner, name: string, kind: string): Promise<Response> {
     const [client, server] = pair();
     const nonce = b64url(crypto.getRandomValues(new Uint8Array(16)));
     this.ctx.acceptWebSocket(server, ["pc"]);
-    server.serializeAttachment({ role: "pc", nonce, claimed: false, label, until: Date.now() + CLAIM_TIMEOUT_MS } satisfies Tag);
+    server.serializeAttachment({ role: "pc", nonce, claimed: false, until: Date.now() + CLAIM_TIMEOUT_MS, name, kind, ...owner } satisfies Tag);
     server.send(pcControl({ type: "challenge", nonce }));
     await this.schedule();
     return new Response(null, { status: 101, webSocket: client });
@@ -142,7 +193,9 @@ export class Relay extends DurableObject<Env> {
       if (!control || control["type"] !== "claim") return this.bye(ws, "claim first", CLOSE_UNAUTHORIZED);
       return this.claim(ws, tag, control);
     }
-    if (control) return this.pcSaid(ws, control);
+    // `tickets`, `pair_open` and `pair_close` are gone with pairing through
+    // the relay; an older computer is told so.
+    if (control) return this.bye(ws, "unknown control", CLOSE_BAD_FRAME);
     if (frame.channel === 0) return this.bye(ws, "bad frame", CLOSE_BAD_FRAME);
     const phone = this.phone(frame.channel);
     if (!phone) return void ws.send(pcControl({ type: "close", channel: frame.channel, reason: "gone" }));
@@ -169,123 +222,146 @@ export class Relay extends DurableObject<Env> {
     const known = await this.ctx.storage.get<string>("pub");
     const pubB64 = msg["pub"] as string;
     if (known && known !== pubB64) return this.bye(ws, "key_mismatch", CLOSE_FORBIDDEN);
+    // D1 says whose the label is, not our storage: a machine the account
+    // forgot may have been registered by another account since.
+    const refused = await this.register(tag, pubB64);
+    if (refused) {
+      const code = refused === "machines_full" ? CLOSE_LIMIT : refused === "signed_out" ? CLOSE_UNAUTHORIZED : CLOSE_FORBIDDEN;
+      return this.bye(ws, refused, code);
+    }
+    // D1 lets other events in: a recheck may have closed the socket meanwhile.
+    if (ws.readyState !== WebSocket.READY_STATE_OPEN) return;
     const now = Date.now();
-    this.claims++;
+    this.setPlan(tag.plan);
     if (!known) await this.ctx.storage.put({ pub: pubB64, claimed_at: now });
-    await this.ctx.storage.put({ label, last_seen: now });
+    await this.ctx.storage.put({ label, last_seen: now, account: tag.account, plan: tag.plan });
     for (const other of this.ctx.getWebSockets("pc")) {
       if (other !== ws) this.bye(other, "replaced", CLOSE_REPLACED);
     }
     ws.serializeAttachment({ ...tag, claimed: true } satisfies Tag);
     await this.schedule();
     ws.send(pcControl({ type: "claimed" }));
-    // The computer knows nothing of the phones already waiting: introduce them.
+    // The computer knows nothing of the devices already waiting: introduce
+    // them. One of another account (the label changed hands) goes instead.
     for (const phone of this.phones()) {
       const t = phone.deserializeAttachment() as Tag & { role: "phone" };
-      ws.send(pcControl({ type: "open", channel: t.channel, device: t.device }));
+      if (t.account !== tag.account) {
+        this.bye(phone, "not_yours", CLOSE_FORBIDDEN);
+        continue;
+      }
+      ws.send(pcControl(openMessage(t)));
       this.tell(phone, { type: "pc_online" });
     }
-    await this.leaveCard(label, now);
   }
 
-  /// Objects cannot be listed, so each leaves a card in KV for the operator,
-  /// refreshed at most once a day: KV writes are the scarce thing.
-  private async leaveCard(label: string, now: number): Promise<void> {
-    const last = (await this.ctx.storage.get<number>("carded_at")) ?? 0;
-    if (now - last < 86_400_000) return;
-    const card: LabelCard = {
-      claimed_at: (await this.ctx.storage.get<number>("claimed_at")) ?? now,
-      last_seen: now,
-      phones: this.phones().length,
-      today: (await this.todayCount(now)).n,
-    };
-    try {
-      await this.env.CONFIG.put(`labels/${label}`, "", { metadata: card });
-      await this.ctx.storage.put("carded_at", now);
-    } catch {
-      // KV down or over quota: the card can wait for the next claim.
-    }
+  /// Registers the label to the claiming account in D1, or says why not: the
+  /// session was signed out or the account blocked since the socket opened,
+  /// the label is another account's, or the account has as many machines as
+  /// its plan allows (a label it has already does not count again). One
+  /// statement, so two claims at once cannot both get the last place, and a
+  /// sign-out or block cannot slip in between the check and the write.
+  private async register(
+    tag: Tag & { role: "pc" },
+    pub: string,
+  ): Promise<"signed_out" | "blocked" | "label_taken" | "machines_full" | null> {
+    const db = this.env.DB;
+    const plan = await planFor(this.env.CONFIG, tag.plan);
+    const now = seconds(Date.now());
+    const result = await db
+      .prepare(
+        `INSERT INTO machines (label, github_id, pub, name, kind, created_at, last_seen_at)
+         SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?6
+         WHERE (EXISTS (SELECT 1 FROM machines WHERE label = ?1 AND github_id = ?2)
+                OR (SELECT COUNT(*) FROM machines WHERE github_id = ?2) < ?7)
+           AND EXISTS (SELECT 1 FROM sessions s JOIN users u ON u.github_id = s.github_id
+                       WHERE s.token_hash = ?8 AND s.github_id = ?2 AND s.expires_at > ?6 AND u.blocked_at IS NULL)
+         ON CONFLICT (label) DO UPDATE SET name = excluded.name, kind = excluded.kind, last_seen_at = excluded.last_seen_at
+         WHERE machines.github_id = excluded.github_id`,
+      )
+      .bind(tag.label, tag.account, pub, tag.name, tag.kind, now, plan.machines, tag.session)
+      .run();
+    if (result.meta.changes > 0) return null;
+    const [session, machine] = await db.batch([
+      db
+        .prepare(
+          `SELECT u.blocked_at IS NOT NULL AS blocked FROM sessions s JOIN users u ON u.github_id = s.github_id
+           WHERE s.token_hash = ? AND s.github_id = ? AND s.expires_at > ?`,
+        )
+        .bind(tag.session, tag.account, now),
+      db.prepare("SELECT github_id FROM machines WHERE label = ?").bind(tag.label),
+    ]);
+    const row = session!.results[0] as { blocked: number } | undefined;
+    if (!row) return "signed_out";
+    if (row.blocked) return "blocked";
+    const owner = (machine!.results[0] as { github_id: number } | undefined)?.github_id ?? null;
+    return owner !== null && owner !== tag.account ? "label_taken" : "machines_full";
   }
 
-  /// The operator blocked this label: everyone connected under it is sent away.
-  /// New connections are stopped by the Worker before they get here.
-  private blocked(): Response {
-    // The computer first, so the one thing it hears is why.
-    for (const ws of this.ctx.getWebSockets("pc")) this.bye(ws, "blocked", CLOSE_FORBIDDEN);
-    for (const ws of this.ctx.getWebSockets("phone")) this.bye(ws, "blocked", CLOSE_FORBIDDEN);
-    return new Response("blocked");
-  }
+  // ---- devices -------------------------------------------------------------
 
-  /// What a claimed computer tells the relay on channel 0.
-  private async pcSaid(ws: WebSocket, msg: Record<string, unknown>): Promise<void> {
-    switch (msg["type"]) {
-      case "tickets": {
-        // The whole list each time: what is not in it is out, sockets included.
-        const hashes = Array.isArray(msg["hashes"]) ? msg["hashes"].filter((h): h is string => typeof h === "string") : [];
-        await this.ctx.storage.put("tickets", hashes);
-        for (const phone of this.phones()) {
-          const t = phone.deserializeAttachment() as Tag & { role: "phone" };
-          if (t.ticketHash && !hashes.includes(t.ticketHash)) this.bye(phone, "revoked", CLOSE_UNAUTHORIZED);
-        }
-        return;
-      }
-      case "pair_open": {
-        const hash = typeof msg["hash"] === "string" ? msg["hash"] : "";
-        const ttl = typeof msg["ttl"] === "number" ? Math.min(Math.max(msg["ttl"], 1), PAIR_TTL_MAX_S) : 0;
-        if (!/^[0-9a-f]{64}$/.test(hash) || !ttl) return this.bye(ws, "bad pair_open", CLOSE_BAD_FRAME);
-        await this.ctx.storage.put("pair", { hash, until: Date.now() + ttl * 1000 } satisfies Pairing);
-        return;
-      }
-      case "pair_close":
-        await this.ctx.storage.delete("pair");
-        return;
-      default:
-        return this.bye(ws, "unknown control", CLOSE_BAD_FRAME);
-    }
-  }
-
-  // ---- phones --------------------------------------------------------------
-
-  /// A phone's socket: in with a ticket the computer issued, or with the
-  /// pairing code while one is open. Anything else is told why and closed; a
-  /// refused upgrade would look like a dead network to the page.
-  private async acceptPhone(query: URLSearchParams): Promise<Response> {
+  /// A device's socket. The Worker checked its session against the machine's
+  /// account in D1, but a sign-out or a block may have landed since, and its
+  /// recheck found no socket here yet to close. So the session, the block and
+  /// the machine's account are read again here, and the account the claim
+  /// stored is checked too. A device that cannot come in is told why and
+  /// closed; a refused upgrade would look like a dead network to the page.
+  private async acceptPhone(admitted: Admitted): Promise<Response> {
     const [client, server] = pair();
-    const admit = await this.admit(query);
-    let refused: string | null = typeof admit === "string" ? admit : null;
+    const owner = await this.ctx.storage.get<number>("account");
+    const refused = owner !== undefined && owner !== admitted.account ? "not_yours" : await this.standing(admitted);
     let full: "phones" | "daily" | null = null;
-    if (typeof admit !== "string") {
-      if ((await this.full()) === "phones") this.makeRoom(admit);
+    if (!refused) {
+      // The Worker read the plan from D1 just now: the freshest word on it.
+      this.setPlan(admitted.plan);
+      if ((await this.full()) === "phones") this.makeRoom(admitted);
       full = await this.full();
-      // Spent only now, so a phone sent away by a limit can try the same link
-      // again. Checked again because full() may have let another phone in.
-      if (!full && admit.code) refused = await this.spendCode(admit.code);
     }
-    if (typeof admit === "string" || refused || full) {
+    if (refused || full) {
       this.ctx.acceptWebSocket(server, ["phone"]);
-      server.serializeAttachment({ role: "phone", channel: 0, device: null, ticketHash: null, page: null } satisfies Tag);
+      server.serializeAttachment({ role: "phone", channel: 0, ...admitted } satisfies Tag);
       if (full) this.limited(server, full);
-      else this.bye(server, refused ?? "refused", CLOSE_UNAUTHORIZED);
+      else this.bye(server, refused!, closeCode(refused!));
       return new Response(null, { status: 101, webSocket: client });
     }
-    const admitted: Admitted = { device: admit.device, ticketHash: admit.ticketHash, page: admit.page };
     const channel = ((await this.ctx.storage.get<number>("next_channel")) ?? 0) + 1;
     await this.ctx.storage.put("next_channel", channel);
     this.ctx.acceptWebSocket(server, ["phone", `ch:${channel}`]);
-    server.serializeAttachment({ role: "phone", channel, ...admitted, since: Date.now() } satisfies Tag);
+    const tag = { role: "phone", channel, ...admitted, since: Date.now() } satisfies Tag;
+    server.serializeAttachment(tag);
     server.send(phoneControl({ type: "open", channel }));
-    if (!this.introduce(channel, admitted.device)) {
+    if (!this.introduce(tag)) {
       server.send(phoneControl({ type: "pc_offline", since: (await this.ctx.storage.get<number>("last_seen")) ?? null }));
     }
     await this.schedule();
     return new Response(null, { status: 101, webSocket: client });
   }
 
-  /// When the phone places are taken, one of them is given up if it is the
+  /// Why a device may not come in, by what D1 says now, or null while it may:
+  /// one read of its session, its account's block and the machine's account.
+  /// D1 lets other events in while it answers. A recheck among them was asked
+  /// for by a sign-out or a block that this read may have missed, and it did
+  /// not see this socket, so the read is made again.
+  private async standing(admitted: Admitted): Promise<string | null> {
+    for (;;) {
+      const before = this.rechecks;
+      const row = await this.env.DB.prepare(
+        `SELECT s.token_hash, s.github_id, u.blocked_at IS NOT NULL AS blocked, u.plan,
+                (SELECT github_id FROM machines WHERE label = ?2) AS owner
+         FROM sessions s JOIN users u ON u.github_id = s.github_id
+         WHERE s.token_hash = ?1 AND s.expires_at > ?3`,
+      )
+        .bind(admitted.session, admitted.label, seconds(Date.now()))
+        .first<SessionRow & { owner: number | null }>();
+      if (this.rechecks !== before) continue;
+      return refusal({ role: "phone", channel: 1, ...admitted }, row ?? undefined, row?.owner ?? null);
+    }
+  }
+
+  /// When the device places are taken, one of them is given up if it is the
   /// newcomer's own old socket, or else a socket that never pinged and has
   /// been open longer than a pinging one may stay silent. A socket like that
-  /// is left behind (a pairing page closed early) or a client from before
-  /// pings, which comes back on its own; while there is room, it stays.
+  /// is left behind or a client from before pings, which comes back on its
+  /// own; while there is room, it stays.
   private makeRoom(admitted: Admitted): void {
     if (this.replaceStale(admitted)) return;
     const now = Date.now();
@@ -298,62 +374,27 @@ export class Relay extends DurableObject<Env> {
     if (dead[0]) this.bye(dead[0].ws, "silent", CLOSE_GONE);
   }
 
-  /// A phone that moves between networks reconnects before the relay sees its
-  /// old socket die. When that would leave it out, the oldest socket of the
-  /// same page (device, ticket and the page's own name) makes room. Another
-  /// tab is another page, so live tabs never replace each other.
+  /// A device that moves between networks reconnects before the relay sees
+  /// its old socket die. When that would leave it out, the oldest socket of
+  /// the same page (the same session and the page's own id) makes room.
+  /// Another tab is another page, so live tabs never replace each other.
   private replaceStale(admitted: Admitted): boolean {
-    if (!admitted.device || !admitted.ticketHash || !admitted.page) return false;
+    if (!admitted.page) return false;
     const same = this.phones()
       .map((ws) => ({ ws, tag: ws.deserializeAttachment() as Tag & { role: "phone" } }))
-      .filter(({ tag }) => tag.device === admitted.device && tag.ticketHash === admitted.ticketHash && tag.page === admitted.page)
+      .filter(({ tag }) => tag.device === admitted.device && tag.session === admitted.session && tag.page === admitted.page)
       .sort((a, b) => a.tag.channel - b.tag.channel);
     if (!same[0]) return false;
     this.bye(same[0].ws, "replaced", CLOSE_REPLACED);
     return true;
   }
 
-  /// Why one more phone cannot come in right now, if it cannot.
+  /// Why one more device cannot come in right now, if it cannot.
   private async full(): Promise<"phones" | "daily" | null> {
     const plan = await this.planNow();
     if (this.phones().length >= plan.phones) return "phones";
     if ((await this.todayCount(Date.now())).n >= plan.daily) return "daily";
     return null;
-  }
-
-  /// Who the phone is, or why it is not coming in. A pairing code is only
-  /// checked here; `spendCode` spends it once the phone is let in.
-  private async admit(query: URLSearchParams): Promise<Admit | string> {
-    const ticket = query.get("t");
-    const device = query.get("d");
-    const code = query.get("p");
-    // Older pages send none; they are never replaced.
-    const page = /^[0-9a-f]{8,64}$/.test(query.get("s") ?? "") ? query.get("s") : null;
-    if (ticket && device) {
-      const h = hex(await sha256(utf8(ticket)));
-      const tickets = (await this.ctx.storage.get<string[]>("tickets")) ?? [];
-      return tickets.includes(h) ? { device, ticketHash: h, page, code: null } : "bad_ticket";
-    }
-    if (code) {
-      const h = hex(await sha256(utf8(code)));
-      return (await this.pairingRefusal(h)) ?? { device: null, ticketHash: null, page: null, code: h };
-    }
-    return "no_credentials";
-  }
-
-  /// Why a code with this hash does not pair right now, or null if it does.
-  private async pairingRefusal(hash: string): Promise<string | null> {
-    const open = await this.ctx.storage.get<Pairing>("pair");
-    if (!open || open.until < Date.now()) return "no_pairing";
-    return hash === open.hash ? null : "bad_code";
-  }
-
-  /// Spends the pairing code: one use. Read and delete are storage calls
-  /// only, so no other phone comes in between them.
-  private async spendCode(hash: string): Promise<string | null> {
-    const refused = await this.pairingRefusal(hash);
-    if (!refused) await this.ctx.storage.delete("pair");
-    return refused;
   }
 
   /// A phone's frames go to the computer on the phone's channel. Control is
@@ -369,16 +410,26 @@ export class Relay extends DurableObject<Env> {
 
   // ---- limits --------------------------------------------------------------
 
-  /// The plan this label is on, asked of KV once a minute. Only the first
-  /// frame after a wake waits for the answer; later reads happen behind the
+  /// The account's plan, asked of KV once a minute. Only the first frame
+  /// after a wake waits for the answer; later reads happen behind the
   /// frames, which go by the plan read before.
   private async planNow(): Promise<Plan> {
     if (this.plan && Date.now() - this.plan.at <= PLAN_CACHE_MS) return this.plan.value;
-    this.planRead ??= planFor(this.env.CONFIG).then((value) => {
-      this.plan = { value, at: Date.now() };
-      this.planRead = null;
-      return value;
-    });
+    if (this.planName === null) {
+      const stored = await this.ctx.storage.get<string>("plan");
+      // A socket may have named the plan while storage was read.
+      this.planName ??= stored ?? "free";
+    }
+    if (!this.planRead) {
+      // A read for a name that changed meanwhile must not stand for the new one.
+      const name = this.planName;
+      const read: Promise<Plan> = planFor(this.env.CONFIG, name).then((value) => {
+        if (this.planName === name) this.plan = { value, at: Date.now() };
+        if (this.planRead === read) this.planRead = null;
+        return value;
+      });
+      this.planRead = read;
+    }
     if (this.plan) {
       this.ctx.waitUntil(this.planRead);
       return this.plan.value;
@@ -407,6 +458,15 @@ export class Relay extends DurableObject<Env> {
     return null;
   }
 
+  /// The plan the Worker or D1 names now. A new name is read from KV at the
+  /// next frame rather than after the minute.
+  private setPlan(name: string): void {
+    if (name === this.planName) return;
+    this.planName = name;
+    this.plan = null;
+    this.planRead = null;
+  }
+
   private async todayCount(now: number): Promise<Today> {
     const day = Math.floor(now / 86_400_000);
     if (!this.today) this.today = (await this.ctx.storage.get<Today>("today")) ?? { day, n: 0 };
@@ -432,6 +492,8 @@ export class Relay extends DurableObject<Env> {
       const silentAt = this.silentAt(phone);
       if (silentAt !== null && silentAt <= now) this.bye(phone, "silent", CLOSE_GONE);
     }
+    const recheckAt = this.recheckAt();
+    if (recheckAt !== null && recheckAt <= now) await this.tryRecheck();
     if (!this.computer()) {
       const due = await this.purgeAt();
       if (due !== null && due <= now) await this.purge();
@@ -439,28 +501,121 @@ export class Relay extends DurableObject<Env> {
     await this.schedule();
   }
 
-  /// Ninety days without the computer: forget everything about it. Phones
+  /// Ninety days without the computer: forget everything about it. Devices
   /// still waiting are sent away; the computer rebuilds the state on its next
   /// claim.
   private async purge(): Promise<void> {
-    // The KV call lets other events in: a claim that starts writing meanwhile
-    // keeps what it wrote.
-    const claims = this.claims;
-    const label = await this.ctx.storage.get<string>("label");
-    if (label) await this.env.CONFIG.delete(`labels/${label}`).catch(() => undefined);
-    if (this.claims !== claims || this.computer()) return;
+    if (this.computer()) return;
     for (const phone of this.phones()) this.bye(phone, "gone", CLOSE_GONE);
-    await this.ctx.storage.deleteAll();
     this.today = null;
+    this.planName = null;
+    this.plan = null;
+    await this.ctx.storage.deleteAll();
+  }
+
+  // ---- the recheck ---------------------------------------------------------
+
+  /// The recheck, kept from taking the alarm down with it: an alarm that
+  /// throws is retried a few times and then dropped, and with it the claim
+  /// timeouts, the silent devices and every later recheck. A failure is
+  /// tried again soon instead: every socket's last check is set so that the
+  /// next one is due then. That lives on the sockets, so it holds when
+  /// the object is evicted before the retry.
+  private async tryRecheck(): Promise<boolean> {
+    try {
+      await this.recheck();
+      return true;
+    } catch (e) {
+      console.error("relay recheck failed:", e);
+      const checked = Date.now() + RECHECK_RETRY_MS - RECHECK_MS;
+      for (const ws of this.ctx.getWebSockets()) {
+        const tag = ws.deserializeAttachment() as Tag | null;
+        if (!tag || ws.readyState !== WebSocket.READY_STATE_OPEN) continue;
+        ws.serializeAttachment({ ...tag, checked } satisfies Tag);
+      }
+      return false;
+    }
+  }
+
+  /// Checks every open socket's session and account in D1, in one round
+  /// trip for all of them, and closes the ones that no longer hold: a session
+  /// signed out or expired (`signed_out`), a blocked account (`blocked`), a
+  /// machine forgotten (`no_machine`) or now another account's. The plan
+  /// name is taken from D1 too, so a change reaches open sockets.
+  private async recheck(): Promise<void> {
+    this.rechecks++;
+    const sockets = this.ctx
+      .getWebSockets()
+      .filter((ws) => ws.readyState === WebSocket.READY_STATE_OPEN)
+      .map((ws) => ({ ws, tag: ws.deserializeAttachment() as Tag | null }))
+      .filter((s): s is { ws: WebSocket; tag: Tag } => s.tag !== null && (s.tag.role === "pc" || s.tag.channel > 0));
+    if (sockets.length === 0) return;
+    const db = this.env.DB;
+    const [sessions, machine] = await db.batch([
+      db
+        .prepare(
+          `SELECT s.token_hash, s.github_id, u.blocked_at IS NOT NULL AS blocked, u.plan
+           FROM sessions s JOIN users u ON u.github_id = s.github_id
+           WHERE s.token_hash IN (SELECT value FROM json_each(?1)) AND s.expires_at > ?2`,
+        )
+        .bind(JSON.stringify([...new Set(sockets.map((s) => s.tag.session))]), seconds(Date.now())),
+      db.prepare("SELECT github_id FROM machines WHERE label = ?").bind(sockets[0]!.tag.label),
+    ]);
+    const rows = new Map((sessions!.results as SessionRow[]).map((r) => [r.token_hash, r]));
+    const owner = (machine!.results[0] as { github_id: number } | undefined)?.github_id ?? null;
+    const now = Date.now();
+    // The computer first, so the one thing it hears is why, not its devices leaving.
+    sockets.sort((a, b) => (a.tag.role === "pc" ? 0 : 1) - (b.tag.role === "pc" ? 0 : 1));
+    let computerClosed = false;
+    let plan: string | null = null;
+    for (const { ws, tag: before } of sockets) {
+      // Read again: a claim may have landed while D1 answered. Its insert may
+      // be newer than the owner read, so only its session is judged now.
+      const tag = ws.deserializeAttachment() as Tag;
+      const row = rows.get(tag.session);
+      const claimedMeanwhile = before.role === "pc" && !before.claimed && tag.role === "pc" && tag.claimed;
+      const why = refusal(tag, row, owner, !claimedMeanwhile);
+      if (why) {
+        if (ws === this.computer()) computerClosed = true;
+        this.bye(ws, why, closeCode(why));
+      } else {
+        ws.serializeAttachment({ ...tag, checked: now } satisfies Tag);
+        plan = row!.plan;
+      }
+    }
+    if (plan !== null && plan !== this.planName) {
+      this.setPlan(plan);
+      // Kept for after a wake, but only by a claimed object: one without a
+      // claim stores nothing.
+      if (this.computer()) await this.ctx.storage.put("plan", plan);
+    }
+    // A close we start never reaches webSocketClose: the devices are told here.
+    if (computerClosed && !this.computer()) await this.computerLeft(now);
+  }
+
+  /// When the sockets are next due for their recheck: the oldest check, plus
+  /// the period. Null while there are none.
+  private recheckAt(): number | null {
+    let oldest: number | null = null;
+    for (const ws of this.ctx.getWebSockets()) {
+      const tag = ws.deserializeAttachment() as Tag | null;
+      if (!tag || ws.readyState !== WebSocket.READY_STATE_OPEN || (tag.role === "phone" && !tag.channel)) continue;
+      if (oldest === null || tag.checked < oldest) oldest = tag.checked;
+    }
+    return oldest === null ? null : oldest + RECHECK_MS;
   }
 
   /// When the object empties itself, while no computer is connected: ninety
   /// days after it was last seen. State without a claim behind it (a label an
-  /// older relay stored for anyone who opened /pc) goes at once.
+  /// older relay stored for anyone who opened /pc) goes at once. The channel
+  /// counter alone is not such state: a device that waits for a computer the
+  /// purge forgot stores it, and must not be sent away for it.
   private async purgeAt(): Promise<number | null> {
     const seen = await this.ctx.storage.get<number>("last_seen");
     if (seen !== undefined) return seen + PURGE_AFTER_MS;
-    return (await this.ctx.storage.list({ limit: 1 })).size > 0 ? 0 : null;
+    const keys = await this.ctx.storage.list({ limit: 2 });
+    keys.delete("next_channel");
+    return keys.size > 0 ? 0 : null;
   }
 
   /// When a phone counts as gone if it pings no more; null until its first ping.
@@ -470,10 +625,12 @@ export class Relay extends DurableObject<Env> {
   }
 
   /// Sets the alarm for the next thing it has to do, so every object that
-  /// keeps a socket or state wakes again: a claim running out, a phone gone
-  /// quiet, or the purge.
+  /// keeps a socket or state wakes again: a claim running out, a device gone
+  /// quiet, a recheck, or the purge.
   private async schedule(): Promise<void> {
     const times = this.unclaimed().map((ws) => (ws.deserializeAttachment() as Tag & { role: "pc" }).until);
+    const recheckAt = this.recheckAt();
+    if (recheckAt !== null) times.push(recheckAt);
     // A phone that has not pinged yet (a page from before pings) is looked at again later.
     for (const phone of this.phones()) times.push(this.silentAt(phone) ?? Date.now() + this.silentMs);
     if (!this.computer()) {
@@ -504,7 +661,7 @@ export class Relay extends DurableObject<Env> {
     const tag = ws.deserializeAttachment() as Tag | null;
     if (!tag) return;
     if (tag.role === "pc") return this.pcGone(tag, reason);
-    if (tag.channel) this.channelClosed(tag.channel, reason);
+    if (tag.channel && !tag.told) this.channelClosed(tag.channel, reason);
   }
 
   override async webSocketError(ws: WebSocket, _error: unknown): Promise<void> {
@@ -514,7 +671,17 @@ export class Relay extends DurableObject<Env> {
       // already gone
     }
     const tag = ws.deserializeAttachment() as Tag | null;
-    if (tag?.role === "pc") await this.pcGone(tag, "error");
+    if (tag?.role === "pc") return this.pcGone(tag, "error");
+    // A device's socket that fails may never see a close event: the computer
+    // is told here, once, as it would be on a close.
+    if (tag?.role === "phone" && tag.channel && !tag.told) {
+      try {
+        ws.serializeAttachment({ ...tag, told: true } satisfies Tag);
+      } catch {
+        // already gone: no close event will follow
+      }
+      this.channelClosed(tag.channel, "error");
+    }
   }
 
   /// A computer socket closed. When it was the computer, the phones hear it
@@ -522,12 +689,23 @@ export class Relay extends DurableObject<Env> {
   private async pcGone(tag: Tag & { role: "pc" }, reason: string): Promise<void> {
     // Replaced means another socket of the computer is already there; a late
     // error on a replaced socket says so by the replacement still being open.
-    if (tag.claimed && reason !== "replaced" && !this.computer()) {
-      const now = Date.now();
-      await this.ctx.storage.put("last_seen", now);
-      for (const phone of this.phones()) this.tell(phone, { type: "pc_offline", since: now });
-    }
+    if (tag.claimed && reason !== "replaced" && !this.computer()) await this.computerLeft(Date.now());
     await this.schedule();
+  }
+
+  /// The computer is gone: the devices hear it, and D1 keeps when it was
+  /// last seen for the account's list of machines.
+  private async computerLeft(now: number): Promise<void> {
+    await this.ctx.storage.put("last_seen", now);
+    for (const phone of this.phones()) this.tell(phone, { type: "pc_offline", since: now });
+    const [label, account] = await Promise.all([this.ctx.storage.get<string>("label"), this.ctx.storage.get<number>("account")]);
+    if (!label || account === undefined) return;
+    try {
+      await this.env.DB.prepare("UPDATE machines SET last_seen_at = ? WHERE label = ? AND github_id = ?").bind(seconds(now), label, account).run();
+    } catch (e) {
+      // The list shows an older time until the next claim; nothing else depends on it.
+      console.error(`last_seen_at of ${label}:`, e);
+    }
   }
 
   /// The computer's socket, once it has claimed. A socket we closed as replaced
@@ -548,13 +726,13 @@ export class Relay extends DurableObject<Env> {
     });
   }
 
-  /// Tells the computer a phone's channel is open; false when no computer is
+  /// Tells the computer a device's channel is open; false when no computer is
   /// there to hear it, a socket going away included.
-  private introduce(channel: number, device: string | null): boolean {
+  private introduce(tag: Tag & { role: "phone" }): boolean {
     const pc = this.computer();
     if (!pc) return false;
     try {
-      pc.send(pcControl({ type: "open", channel, device }));
+      pc.send(pcControl(openMessage(tag)));
       return true;
     } catch {
       return false;
@@ -584,17 +762,24 @@ export class Relay extends DurableObject<Env> {
   }
 
   /// Says why, then closes. Sending on a socket that is closing throws; that is fine.
-  /// A close we start never reaches webSocketClose, so the computer is told here
-  /// when the phone had a channel.
+  /// The computer is told here when the device had a channel, and the socket
+  /// is marked so the device's answering close does not tell it again.
   private bye(ws: WebSocket, reason: string, code: number, msg: object = { type: "bye", reason }): void {
     const tag = ws.deserializeAttachment() as Tag | null;
+    if (tag?.role === "phone" && tag.channel && !tag.told) {
+      try {
+        ws.serializeAttachment({ ...tag, told: true } satisfies Tag);
+      } catch {
+        // already gone: no close event will follow
+      }
+    }
     try {
       ws.send(tag?.role === "phone" ? phoneControl(msg) : pcControl(msg));
       ws.close(code, reason);
     } catch {
       // already gone
     }
-    if (tag?.role === "phone" && tag.channel) this.channelClosed(tag.channel, reason);
+    if (tag?.role === "phone" && tag.channel && !tag.told) this.channelClosed(tag.channel, reason);
   }
 
   private channelClosed(channel: number, reason: string): void {
@@ -615,6 +800,51 @@ export function replyClose(ws: Pick<WebSocket, "close">, code: number, reason: s
   } catch {
     // already closed
   }
+}
+
+/// A socket's session as the recheck reads it; only valid, unexpired ones.
+export interface SessionRow {
+  token_hash: string;
+  github_id: number;
+  blocked: number;
+  plan: string;
+}
+
+/// The close code that goes with a refusal's reason.
+function closeCode(why: string): number {
+  return why === "signed_out" ? CLOSE_UNAUTHORIZED : why === "no_machine" ? CLOSE_NOT_FOUND : CLOSE_FORBIDDEN;
+}
+
+/// Why a socket may stay no longer, or null while it may. `owner` is the
+/// account D1 has the label under, null when it has none; `checkOwner` is
+/// false when that read may predate the socket's own registration.
+export function refusal(tag: Tag, row: SessionRow | undefined, owner: number | null, checkOwner = true): string | null {
+  if (!row || row.github_id !== tag.account) return "signed_out";
+  if (row.blocked) return "blocked";
+  // A computer that has not claimed yet has registered nothing.
+  if (!checkOwner || (tag.role === "pc" && !tag.claimed)) return null;
+  if (owner === null) return "no_machine";
+  if (owner !== tag.account) return tag.role === "pc" ? "label_taken" : "not_yours";
+  return null;
+}
+
+/// What the computer hears when a device's channel opens: who the device is.
+function openMessage(tag: Tag & { role: "phone" }): object {
+  return { type: "open", channel: tag.channel, device: tag.device, name: tag.name, kind: tag.kind, account: tag.account };
+}
+
+/// A name the Worker URI-encoded for its header.
+function decoded(header: string | null): string {
+  try {
+    return decodeURIComponent(header ?? "");
+  } catch {
+    return "";
+  }
+}
+
+/// Unix seconds, the unit of every time in D1.
+function seconds(ms: number): number {
+  return Math.floor(ms / 1000);
 }
 
 function pair(): [WebSocket, WebSocket] {

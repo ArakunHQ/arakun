@@ -1258,7 +1258,7 @@ impl TeamsView {
                             .ty(Type::Caption)
                             .text_color(theme::text_faint())
                             .hover(|d| d.text_color(theme::text()))
-                            .child(snippet(&q.body.text)),
+                            .child(snippet(&crate::redact::text(&q.body.text))),
                     )
                     .on_click(cx.listener(move |this, _, _, cx| this.jump_to(qi, qid.clone(), cx)))
                     .into_any_element()
@@ -1353,7 +1353,7 @@ impl TeamsView {
                 div()
                     .ty(Type::Body)
                     .text_color(text_color)
-                    .child(m.body.text.clone()),
+                    .child(crate::redact::text(&m.body.text).into_owned()),
             )
             .children(delivery);
         div()
@@ -1680,7 +1680,7 @@ impl TeamsView {
                         .truncate()
                         .ty(Type::Caption)
                         .text_color(theme::text_faint())
-                        .child(snippet(&r.body.text)),
+                        .child(snippet(&crate::redact::text(&r.body.text))),
                 )
                 .child(
                     ui::icon_button("teams-reply-cancel", "cancel01", 12., "Cancel reply (Esc)")
@@ -1815,7 +1815,7 @@ impl TeamsView {
                                 .font_family(theme::FONT_MONO)
                                 .text_size(px(ui::TEXT_SM))
                                 .text_color(theme::text_muted())
-                                .child(code.to_string()),
+                                .child(crate::redact::value(code)),
                         )
                         .child(
                             ui::button_with("teams-copy-code", Some(if copied { "tick02" } else { "copy01" }), if copied { "Copied" } else { "Copy" }, ButtonKind::Outline, true)

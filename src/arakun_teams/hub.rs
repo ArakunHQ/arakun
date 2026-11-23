@@ -814,6 +814,7 @@ impl Hub {
         self.invites.clear();
         self.team.clear();
         self.channels.clear();
+        self.messages_rev += 1;
         self.notices.clear();
         self.my_devices.clear();
         self.error = None;
@@ -1217,6 +1218,7 @@ impl Hub {
                         hub.setup.remove(&t);
                         hub.notices.retain(|n| n.team_id != t);
                         hub.channels.retain(|_, c| c.team_id != t);
+                        hub.messages_rev += 1;
                         changed |= hub.kept.forget_team(&t);
                     }
                     changed |= hub.kept.retain_teams(&ids);
@@ -1393,6 +1395,7 @@ impl Hub {
             if !devices.is_empty() && !pin_directory(&mut self.kept, gid, devices) {
                 self.team.remove(team_id);
                 self.channels.retain(|_, c| c.team_id != team_id);
+                self.messages_rev += 1;
                 self.error = Some(format!(
                     "The trusted device for account {gid} changed. Key delivery is paused."
                 ));

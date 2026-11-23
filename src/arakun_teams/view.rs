@@ -6,15 +6,18 @@
 //! comes from the [`Hub`]; this view only draws it and keeps what is typed.
 
 use std::collections::{HashMap, HashSet};
+use std::hash::{Hash as _, Hasher as _};
+use std::ops::Range;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::time::Duration;
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, AppContext as _, ClipboardItem, Context, Entity, EventEmitter, FocusHandle,
-    Focusable as _, FontWeight, InteractiveElement as _, IntoElement, MouseButton,
-    ParentElement as _, Render, ScrollHandle, SharedString, StatefulInteractiveElement as _,
-    Styled as _, Subscription, Task, Window, div, px,
+    Focusable as _, FontWeight, InteractiveElement as _, IntoElement, ListAlignment, ListOffset,
+    ListState, MouseButton, ParentElement as _, Render, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window, div, px,
 };
 
 use super::api::{DeviceRow, InviteRow, MemberRow, Role};
@@ -103,6 +106,7 @@ const SNIPPET: usize = 90;
 const CARD_INSET: f32 = 4.;
 
 /// GitHub pictures on disk, by lower-case login: a copy taken for one render.
+#[derive(Clone)]
 struct Faces {
     pictures: HashMap<String, PathBuf>,
     hidden: bool,
@@ -125,6 +129,94 @@ impl Faces {
             .filter(|_| !self.hidden);
         ui::avatar_image(login, picture.map(|p| p.as_path()), size)
     }
+}
+
+/// The list's first row is the note over the messages (how many are
+/// hidden or locked); the channel's lines follow it.
+const LEAD: usize = 1;
+
+/// The open channel's messages, copied from the hub once per change.
+struct Held {
+    key: String,
+    rev: u64,
+    messages: Rc<[Msg]>,
+    /// Each message's place in `messages`, by ID.
+    by_id: Rc<HashMap<String, usize>>,
+}
+
+/// Each message's row in the channel's list, by message ID.
+pub(super) struct RowIndex {
+    by_id: Rc<HashMap<String, usize>>,
+    /// By the message's place among the messages; `None` for one that shows
+    /// as a line under another (an edit, an acceptance).
+    rows: Vec<Option<usize>>,
+}
+
+impl RowIndex {
+    pub(super) fn get(&self, id: &str) -> Option<usize> {
+        *self.rows.get(*self.by_id.get(id)?)?
+    }
+
+    fn message<'a>(&self, messages: &'a [Msg], id: &str) -> Option<&'a Msg> {
+        messages.get(*self.by_id.get(id)?)
+    }
+}
+
+/// What the channel's list draws its rows from, as the last render built it.
+struct ChannelRows {
+    team_id: String,
+    channel_id: String,
+    messages: Rc<[Msg]>,
+    lines: Vec<Line>,
+    index_of: RowIndex,
+    bot: bot_view::BotState,
+    faces: Faces,
+    /// Messages hidden or locked, said over the first one.
+    note: Vec<String>,
+    /// What [`Line::Joined`] says.
+    joined_text: String,
+    /// Senders who left the team: their rows say so.
+    former: HashSet<u64>,
+}
+
+/// Each row's identity, the note first: what it shows, not how it looks.
+/// A row whose content changes in place keeps its identity; the list lays
+/// out the rows on screen afresh each frame anyway.
+fn row_ids(lines: &[Line], messages: &[Msg], runs: &[super::bot::Run]) -> Vec<u64> {
+    let id = |kind: u8, s: &str, n: usize| {
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        (kind, s, n).hash(&mut h);
+        h.finish()
+    };
+    std::iter::once(id(0, "", 0))
+        .chain(lines.iter().map(|l| match l {
+            Line::Day(label) => id(1, label, 0),
+            Line::Joined => id(2, "", 0),
+            Line::Notice(n) => id(3, &n.device_id, 0),
+            Line::Message(i) => id(4, &messages[*i].id, 0),
+            Line::Decided(i) => id(5, &messages[*i].id, 0),
+            Line::Run(r) => id(6, &runs[*r].ask_id, *r),
+        }))
+        .collect()
+}
+
+/// The rows that changed between two renders, as the list splices them:
+/// the old rows replaced, and how many new ones take their place. Rows
+/// arrive at the end and, now and then, in between (a "Decided" line).
+fn changed_rows(old: &[u64], new: &[u64]) -> Option<(Range<usize>, usize)> {
+    let head = old.iter().zip(new).take_while(|(a, b)| a == b).count();
+    if head == old.len() && head == new.len() {
+        return None;
+    }
+    let room = old.len().min(new.len()) - head;
+    let tail = old
+        .iter()
+        .rev()
+        .zip(new.iter().rev())
+        .take(room)
+        .take_while(|(a, b)| a == b)
+        .count();
+    Some((head..old.len() - tail, new.len() - head - tail))
 }
 
 /// A row of a channel's list, in order.
@@ -211,10 +303,16 @@ pub struct TeamsView {
     /// The composer's text and reply from before the edit, put back when
     /// it ends so an unsent message is not lost.
     before_edit: Option<(String, Option<String>)>,
-    scroll: ScrollHandle,
-    /// Rows in the open channel at the last render (twice the messages,
-    /// plus @bot's runs): new ones keep the list at its bottom.
-    seen_count: usize,
+    /// The open channel's list. It lays out only the rows on screen, and
+    /// stays at its bottom as rows arrive while it is there.
+    message_list: ListState,
+    /// The channel the list's rows are for, and each row's identity, as the
+    /// last render left them: the list is told only what changed.
+    list_rows: Option<(String, Vec<u64>)>,
+    /// What the list draws its rows from, built by the last render.
+    channel_rows: Option<Rc<ChannelRows>>,
+    /// The open channel's messages, copied only when they change.
+    held: Option<Held>,
     /// A message just jumped to, lit for a moment.
     flash: Option<String>,
     _flash: Option<Task<()>>,
@@ -379,8 +477,10 @@ impl TeamsView {
             reply_to: None,
             editing: None,
             before_edit: None,
-            scroll: ScrollHandle::new(),
-            seen_count: 0,
+            message_list: ListState::new(0, ListAlignment::Bottom, px(400.)),
+            list_rows: None,
+            channel_rows: None,
+            held: None,
             flash: None,
             _flash: None,
             confirm_remove: None,
@@ -468,8 +568,9 @@ impl TeamsView {
         self.flash = None;
         self._flash = None;
         self.copied = false;
-        self.seen_count = 0;
-        self.scroll = ScrollHandle::new();
+        self.list_rows = None;
+        self.channel_rows = None;
+        self.held = None;
         // What the last account searched for and had open in Decisions.
         self.decisions_opened.clear();
         self.decision = None;
@@ -685,17 +786,14 @@ impl TeamsView {
         self.reply_to = None;
         self.editing = None;
         self.before_edit = None;
-        self.seen_count = 0;
+        // The list starts again at its bottom; a jump to a message (from
+        // Decisions) scrolls once the list holds the message.
+        self.list_rows = None;
         self.flash = None;
         self.hub
             .update(cx, |h, cx| h.open_channel(&team, &channel, cx));
         self.pane = Pane::Channel(team, channel);
         self.sync_viewing(cx);
-        // A jump to a message (from Decisions) scrolls once the list is laid
-        // out; until then the list scrolls to the bottom itself.
-        if self.pending_jump.is_none() {
-            self.scroll.scroll_to_bottom();
-        }
         cx.notify();
     }
 
@@ -987,7 +1085,12 @@ impl TeamsView {
         });
         if sent {
             self.composer.update(cx, |i, cx| i.set_text("", cx));
-            self.scroll.scroll_to_bottom();
+            // Past the last row: the list settles at its bottom, there to
+            // stay as the new message's row arrives.
+            self.message_list.scroll_to(ListOffset {
+                item_ix: usize::MAX,
+                offset_in_item: px(0.),
+            });
         } else {
             self.reply_to = reply_to;
         }
@@ -996,7 +1099,12 @@ impl TeamsView {
 
     /// Scrolls to a message and lights it for a moment.
     fn jump_to(&mut self, index: usize, id: String, cx: &mut Context<Self>) {
-        self.scroll.scroll_to_item(index);
+        // At the top: the rows past it may not be measured yet, so a scroll
+        // that only brings it into view could fall short.
+        self.message_list.scroll_to(ListOffset {
+            item_ix: index,
+            offset_in_item: px(0.),
+        });
         self.flash = Some(id);
         self._flash = Some(cx.spawn(async move |this, cx| {
             cx.background_executor()
@@ -3277,6 +3385,138 @@ impl TeamsView {
             .text_color(theme::text_muted())
     }
 
+    /// The channel's messages as the hub holds them, copied only when they
+    /// changed since the last render: a long channel is not copied per frame.
+    fn held_messages(
+        &mut self,
+        key: &str,
+        cx: &Context<Self>,
+    ) -> (Rc<[Msg]>, Rc<HashMap<String, usize>>) {
+        let hub = self.hub.read(cx);
+        if let Some(h) = &self.held
+            && h.key == key
+            && h.rev == hub.messages_rev
+        {
+            return (h.messages.clone(), h.by_id.clone());
+        }
+        let messages: Rc<[Msg]> = hub
+            .channels
+            .get(key)
+            .map_or_else(|| Rc::from(Vec::new()), |c| c.messages.as_slice().into());
+        let by_id: Rc<HashMap<String, usize>> = Rc::new(
+            messages
+                .iter()
+                .enumerate()
+                .map(|(i, m)| (m.id.clone(), i))
+                .collect(),
+        );
+        self.held = Some(Held {
+            key: key.to_string(),
+            rev: hub.messages_rev,
+            messages: messages.clone(),
+            by_id: by_id.clone(),
+        });
+        (messages, by_id)
+    }
+
+    /// The list's place while it has no rows: what it says sits at the bottom.
+    fn list_end(what: AnyElement) -> AnyElement {
+        div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_h_0()
+            .pb(ui::sp(12.))
+            .child(div().flex_1())
+            .child(what)
+            .into_any_element()
+    }
+
+    /// One row of the channel's list, laid out only while it is on screen.
+    fn render_row(&mut self, ix: usize, _: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let Some(r) = self.channel_rows.clone() else {
+            return div().into_any_element();
+        };
+        if ix < LEAD {
+            return div()
+                .flex()
+                .flex_col()
+                .gap(ui::sp(4.))
+                .px(ui::sp(16.))
+                .children(
+                    r.note
+                        .iter()
+                        .map(|n| ui::text(Type::Caption, theme::attention().into(), n.clone())),
+                )
+                .into_any_element();
+        }
+        let li = ix - LEAD;
+        let Some(line) = r.lines.get(li) else {
+            return div().into_any_element();
+        };
+        let (team_id, channel_id) = (r.team_id.as_str(), r.channel_id.as_str());
+        let messages = &r.messages[..];
+        let bot = &r.bot;
+        match line {
+            Line::Day(label) => ui::text(Type::Overline, theme::text_faint(), label.to_uppercase())
+                .px(ui::sp(16.))
+                .pt(ui::sp(12.))
+                .pb(ui::sp(4.))
+                .into_any_element(),
+            Line::Notice(n) => self.render_notice(li, n, cx),
+            Line::Joined => div()
+                .flex()
+                .items_center()
+                .gap(ui::sp(6.))
+                .px(ui::sp(16.))
+                .py(ui::sp(8.))
+                .ty(Type::Label)
+                .font_weight(FontWeight::NORMAL)
+                .text_color(theme::text_subtle())
+                .child(icon("tick02", 12.).text_color(theme::success()))
+                .child(r.joined_text.clone())
+                .into_any_element(),
+            Line::Message(i) => {
+                let m = &messages[*i];
+                let compact = match r.lines.get(li.wrapping_sub(1)) {
+                    Some(Line::Message(p)) => {
+                        let p = &messages[*p];
+                        p.github_id == m.github_id
+                            && m.at.saturating_sub(p.at) < GROUP_SECS
+                            && p.body.kind == m.body.kind
+                    }
+                    _ => false,
+                };
+                let quoted = m
+                    .body
+                    .reply_to
+                    .as_deref()
+                    .and_then(|q| Some((r.index_of.get(q)?, r.index_of.message(messages, q)?)));
+                if m.body.kind == "bot" {
+                    self.render_bot_message(ix, m, bot, &r.index_of, (team_id, channel_id), cx)
+                } else {
+                    let mark = Mark {
+                        in_range: bot.draft.contains(m.id.as_str()),
+                        number: bot.numbers.get(m.id.as_str()).copied(),
+                    };
+                    self.render_message(
+                        ix,
+                        m,
+                        compact,
+                        quoted,
+                        mark,
+                        r.former.contains(&m.github_id),
+                        (team_id, channel_id),
+                        &r.faces,
+                        cx,
+                    )
+                }
+            }
+            Line::Decided(i) => self.render_decided(li, &messages[*i], bot, team_id, cx),
+            Line::Run(run) => self.render_run(li, &bot.runs[*run], bot, cx),
+        }
+    }
+
     fn render_channel(
         &mut self,
         team_id: &str,
@@ -3284,11 +3524,12 @@ impl TeamsView {
         faces: &Faces,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let key = hub::channel_key(team_id, channel_id);
+        let (messages, by_id) = self.held_messages(&key, cx);
         let hub = self.hub.read(cx);
         let Some(t): Option<&TeamState> = hub.team.get(team_id) else {
             return ui::loading("Reading the team…").into_any_element();
         };
-        let key = hub::channel_key(team_id, channel_id);
         let c: Option<&ChannelState> = hub.channels.get(&key);
         let name = t
             .channels
@@ -3297,7 +3538,6 @@ impl TeamsView {
             .and_then(|ch| ch.name.clone())
             .unwrap_or_else(|| "locked channel".into());
         let status = c.map_or(socket::Status::Connecting, |c| c.status.clone());
-        let messages: Vec<Msg> = c.map(|c| c.messages.clone()).unwrap_or_default();
         // Senders who left the team: their rows say so.
         let former: HashSet<u64> = messages
             .iter()
@@ -3392,38 +3632,13 @@ impl TeamsView {
             }
         }
 
-        // One room-filling spacer and one note go first.
-        const LEAD: usize = 2;
-        let index_of: HashMap<&str, usize> = lines
-            .iter()
-            .enumerate()
-            .filter_map(|(row, l)| match l {
-                Line::Message(i) => Some((messages[*i].id.as_str(), row + LEAD)),
-                _ => None,
-            })
-            .collect();
-        let jump = self
-            .pending_jump
-            .clone()
-            .and_then(|id| Some((*index_of.get(id.as_str())?, id)));
-
-        // Keep the newest in view when it arrives and the list was at its
-        // bottom. A run of @bot counts, and so does its answer replacing it,
-        // and a notice of a new device. Not when this frame jumps to a message: the scroll to the bottom
-        // is applied after the one to the message, and would win.
-        let seen = messages.len() * 2 + bot.runs.len() + notices.len();
-        if seen != self.seen_count {
-            let max = self.scroll.max_offset().y;
-            let at_bottom = -self.scroll.offset().y >= max - px(48.);
-            if (self.seen_count == 0 || at_bottom) && jump.is_none() {
-                self.scroll.scroll_to_bottom();
+        let mut rows = vec![None; messages.len()];
+        for (row, l) in lines.iter().enumerate() {
+            if let Line::Message(i) = l {
+                rows[*i] = Some(row + LEAD);
             }
-            self.seen_count = seen;
         }
-        if let Some((row, id)) = jump {
-            self.pending_jump = None;
-            self.jump_to(row, id, cx);
-        }
+        let index_of = RowIndex { by_id, rows };
 
         let mut note = Vec::new();
         if hidden > 0 {
@@ -3440,114 +3655,70 @@ impl TeamsView {
                 if locked == 1 { "is" } else { "are" }
             ));
         }
-        let first = if loading && messages.is_empty() {
-            ui::loading("Reading the channel…").into_any_element()
+        let joined_text = format!(
+            "{} approved {}. You can read {team_name} from here on, and the earlier messages this device got keys for.",
+            approved_by.as_deref().unwrap_or("An admin"),
+            crate::redact::text(&hub::device_name())
+        );
+        let hint = bot.hint.take();
+        let list = if loading && messages.is_empty() {
+            Self::list_end(ui::loading("Reading the channel…").into_any_element())
         } else if messages.is_empty() && hidden + locked == 0 && !joined {
-            ui::empty_state(
-                "comment01",
-                &format!("This is the start of {name}"),
-                "Say hello. Only this team's devices can read what is said here.",
-                None,
+            Self::list_end(
+                ui::empty_state(
+                    "comment01",
+                    &format!("This is the start of {name}"),
+                    "Say hello. Only this team's devices can read what is said here.",
+                    None,
+                )
+                .into_any_element(),
             )
-            .into_any_element()
         } else {
+            // Only the rows on screen are laid out, so a long channel costs
+            // what a short one does.
+            let ids = row_ids(&lines, &messages, &bot.runs);
+            match self.list_rows.take() {
+                Some((was, old)) if was == key => {
+                    if let Some((range, count)) = changed_rows(&old, &ids) {
+                        self.message_list.splice(range, count);
+                    }
+                }
+                // Another channel, or this one opened again: from its bottom.
+                _ => self.message_list.reset(ids.len()),
+            }
+            self.list_rows = Some((key.clone(), ids));
+            let jump = self
+                .pending_jump
+                .clone()
+                .and_then(|id| Some((index_of.get(&id)?, id)));
+            if let Some((row, id)) = jump {
+                self.pending_jump = None;
+                self.jump_to(row, id, cx);
+            }
+            self.channel_rows = Some(Rc::new(ChannelRows {
+                team_id: team_id.to_string(),
+                channel_id: channel_id.to_string(),
+                messages: messages.clone(),
+                lines,
+                index_of,
+                bot,
+                faces: faces.clone(),
+                note,
+                joined_text,
+                former,
+            }));
             div()
                 .flex()
                 .flex_col()
-                .gap(ui::sp(4.))
-                .px(ui::sp(16.))
-                .children(
-                    note.into_iter()
-                        .map(|n| ui::text(Type::Caption, theme::attention().into(), n)),
+                .flex_1()
+                .min_h_0()
+                .child(
+                    gpui::list(self.message_list.clone(), cx.processor(Self::render_row))
+                        .size_full()
+                        .pb(ui::sp(12.)),
                 )
                 .into_any_element()
         };
-        let mut rows: Vec<AnyElement> = vec![div().flex_1().into_any_element(), first];
-        for (li, line) in lines.iter().enumerate() {
-            let el = match line {
-                Line::Day(label) => {
-                    ui::text(Type::Overline, theme::text_faint(), label.to_uppercase())
-                        .px(ui::sp(16.))
-                        .pt(ui::sp(12.))
-                        .pb(ui::sp(4.))
-                        .into_any_element()
-                }
-                Line::Notice(n) => self.render_notice(li, n, cx),
-                Line::Joined => div()
-                    .flex()
-                    .items_center()
-                    .gap(ui::sp(6.))
-                    .px(ui::sp(16.))
-                    .py(ui::sp(8.))
-                    .ty(Type::Label)
-                    .font_weight(FontWeight::NORMAL)
-                    .text_color(theme::text_subtle())
-                    .child(icon("tick02", 12.).text_color(theme::success()))
-                    .child(format!(
-                        "{} approved {}. You can read {team_name} from here on, and the earlier messages this device got keys for.",
-                        approved_by.as_deref().unwrap_or("An admin"),
-                        crate::redact::text(&hub::device_name())
-                    ))
-                    .into_any_element(),
-                Line::Message(i) => {
-                    let i = *i;
-                    let m = &messages[i];
-                    let compact = match lines.get(li.wrapping_sub(1)) {
-                        Some(Line::Message(p)) => {
-                            let p = &messages[*p];
-                            p.github_id == m.github_id
-                                && m.at.saturating_sub(p.at) < GROUP_SECS
-                                && p.body.kind == m.body.kind
-                        }
-                        _ => false,
-                    };
-                    let quoted = m.body.reply_to.as_deref().and_then(|r| {
-                        Some((*index_of.get(r)?, messages.iter().find(|q| q.id == r)?))
-                    });
-                    if m.body.kind == "bot" {
-                        self.render_bot_message(
-                            li + LEAD,
-                            m,
-                            &bot,
-                            &index_of,
-                            (team_id, channel_id),
-                            cx,
-                        )
-                    } else {
-                        let mark = Mark {
-                            in_range: bot.draft.contains(m.id.as_str()),
-                            number: bot.numbers.get(m.id.as_str()).copied(),
-                        };
-                        self.render_message(
-                            li + LEAD,
-                            m,
-                            compact,
-                            quoted,
-                            mark,
-                            former.contains(&m.github_id),
-                            (team_id, channel_id),
-                            faces,
-                            cx,
-                        )
-                    }
-                }
-                Line::Decided(i) => self.render_decided(li, &messages[*i], &bot, team_id, cx),
-                Line::Run(r) => self.render_run(li, &bot.runs[*r], &bot, cx),
-            };
-            rows.push(el);
-        }
-        let list = div()
-            .id(SharedString::from(format!(
-                "teams-messages-{team_id}-{channel_id}"
-            )))
-            .flex()
-            .flex_col()
-            .flex_1()
-            .min_h_0()
-            .pb(ui::sp(12.))
-            .overflow_y_scroll()
-            .track_scroll(&self.scroll)
-            .children(rows);
 
         // A refused socket does not retry, so nothing queued would go out.
         let refused = matches!(status, socket::Status::Refused(_));
@@ -3586,14 +3757,7 @@ impl TeamsView {
                     .pb(ui::sp(8.))
                     .child(ui::text(Type::Caption, theme::text_subtle(), peer_hint)),
             )
-            .child(self.render_composer(
-                can_send,
-                keyless,
-                blocked,
-                connected,
-                bot.hint.take(),
-                cx,
-            ));
+            .child(self.render_composer(can_send, keyless, blocked, connected, hint, cx));
 
         let column = self.render_column(team_id, channel_id, faces, cx);
         let side = self
@@ -4790,6 +4954,56 @@ fn when(at: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_list_is_told_only_the_rows_that_changed() {
+        assert_eq!(changed_rows(&[1, 2, 3], &[1, 2, 3]), None);
+        // A new message at the end.
+        assert_eq!(changed_rows(&[1, 2, 3], &[1, 2, 3, 4]), Some((3..3, 1)));
+        // A "Decided" line under an answer, in between.
+        assert_eq!(changed_rows(&[1, 2, 3], &[1, 2, 9, 3]), Some((2..2, 1)));
+        // A message taken back.
+        assert_eq!(changed_rows(&[1, 2, 3], &[1, 3]), Some((1..2, 0)));
+        // Repeats are not counted twice from both ends.
+        assert_eq!(changed_rows(&[1, 1], &[1, 1, 1]), Some((2..2, 1)));
+        assert_eq!(changed_rows(&[], &[1, 2]), Some((0..0, 2)));
+    }
+
+    #[test]
+    fn a_rows_identity_is_what_it_shows() {
+        let msg = |id: &str| Msg {
+            id: id.into(),
+            seq: Some(1),
+            at: 0,
+            github_id: 21,
+            login: "a".into(),
+            body: super::super::crypto::Body::text("hi", None),
+            delivery: Delivery::Sent,
+            edited: None,
+        };
+        let messages = vec![msg("a"), msg("b")];
+        let lines = [Line::Message(0), Line::Decided(0), Line::Message(1)];
+        let ids = row_ids(&lines, &messages, &[]);
+        assert_eq!(ids.len(), lines.len() + LEAD);
+        let unique: HashSet<u64> = ids.iter().copied().collect();
+        assert_eq!(unique.len(), ids.len());
+        // An edit changes the text, not the row.
+        let mut edited = messages.clone();
+        edited[0].body.text = "changed".into();
+        assert_eq!(row_ids(&lines, &edited, &[]), ids);
+    }
+
+    #[test]
+    fn a_quote_finds_its_row_only_when_the_message_has_one() {
+        let by_id = Rc::new(HashMap::from([("a".to_string(), 0), ("e".to_string(), 1)]));
+        let index = RowIndex {
+            by_id,
+            rows: vec![Some(3), None],
+        };
+        assert_eq!(index.get("a"), Some(3));
+        assert_eq!(index.get("e"), None);
+        assert_eq!(index.get("gone"), None);
+    }
 
     #[test]
     fn an_acceptance_hides_only_under_an_answer_shown_here() {

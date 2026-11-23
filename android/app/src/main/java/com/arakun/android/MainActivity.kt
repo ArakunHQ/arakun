@@ -23,13 +23,7 @@ class MainActivity : ComponentActivity() {
         )
         super.onCreate(savedInstanceState)
         model.begin(Demo.from(intent))
-        if (savedInstanceState == null) {
-            opened(intent)
-        } else {
-            // After process death the model is new: ask again about the link
-            // that was waiting, from the launch intent or a later one.
-            savedInstanceState.getString(OPENED)?.let(model::openLink)
-        }
+        if (savedInstanceState == null) opened(intent)
         lifecycle.addObserver(object : DefaultLifecycleObserver {
             override fun onStart(owner: LifecycleOwner) = model.visible(true)
             override fun onStop(owner: LifecycleOwner) = model.visible(false)
@@ -37,11 +31,6 @@ class MainActivity : ComponentActivity() {
         setContent {
             ArakunTheme { Root(model) }
         }
-    }
-
-    override fun onSaveInstanceState(outState: Bundle) {
-        super.onSaveInstanceState(outState)
-        model.openedText?.let { outState.putString(OPENED, it) }
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -56,11 +45,10 @@ class MainActivity : ComponentActivity() {
     }
 
     companion object {
-        private const val OPENED = "opened"
-
         /**
-         * The QR code holds an https link to the relay; `arakun://pair?link=<it>`
-         * carries the same, for a link opened from elsewhere.
+         * `arakun://pair?link=<link>` carries a link Arakun showed. The app
+         * reaches computers by account now: a link to a computer's own page
+         * opens in the browser once the person says yes; any other gets a sentence.
          */
         fun pairingText(uri: Uri): String =
             // An opaque `arakun:x` has no query; asking it for one throws.

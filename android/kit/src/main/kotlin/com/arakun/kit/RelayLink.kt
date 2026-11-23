@@ -1,26 +1,24 @@
-// One connection to the computer through the relay, as phone/relay.js makes
-// it: a WebSocket to `/ws`, a handshake sealed end to end so the relay only
-// passes bytes along, then the same JSON the phone page speaks. Inside the
-// channel `{req}` asks what the page would ask over HTTP, the computer answers
-// `{res}` in pieces, and any message too big for a relay frame comes as `{part}`.
+// One connection to one of the account's computers through the relay, as
+// phone/relay.js makes it: a WebSocket to `/machines/<label>/ws` with the
+// account's session, a handshake sealed end to end so the relay only passes
+// bytes along, then the same JSON the phone page speaks. Inside the channel
+// `{req}` asks what the page would ask over HTTP, the computer answers `{res}`
+// in pieces, and any message too big for a relay frame comes as `{part}`.
 package com.arakun.kit
 
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
-import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -38,45 +36,41 @@ import kotlin.coroutines.resumeWithException
  * main thread in the app): the socket's callbacks hop onto it in order.
  */
 class RelayLink(
-    private val mode: Mode,
+    /** The account host, as `https://app.arakun.dev`. */
+    private val base: String,
+    /** The account's session: it lets the socket in. */
+    private val session: String,
+    /** The computer, as `GET /machines` listed it: its key is checked against its label first. */
+    private val machine: Machine,
     private val scope: CoroutineScope,
     /** The HTTP client the socket goes through; tests swap it. */
     private val client: OkHttpClient = defaultClient,
     private val onEvent: (Event) -> Unit,
 ) {
-    /**
-     * Who answered: the device id the computer knows this phone by, the
-     * phone's name as the computer keeps it, and the computer's name (`host`).
-     */
-    data class Who(val id: String, val name: String, val host: String)
-
     sealed interface Event {
-        /** The channel is up. `credentials` are new ones when this was a pairing. */
-        data class Open(val who: Who, val credentials: Credentials?) : Event
+        /** The channel is up: the relay let only this account in, so it is the computer's client now. */
+        data object Open : Event
 
         /** A message from the computer, whole, as JSON. */
         class Message(val bytes: ByteArray) : Event
 
         /** The computer went away from the relay (`since` it was last seen, ms), or came back. */
         data class Computer(val online: Boolean, val since: Long?) : Event
-        data class Closed(val kind: EndKind, val detail: String) : Event
-    }
 
-    sealed interface Mode {
-        data class WithCredentials(val credentials: Credentials) : Mode
-        data class Pairing(val link: PairingLink, val deviceName: String) : Mode
+        /**
+         * For [EndKind.REFUSED], `detail` is the sentence to show. `reason`
+         * is the relay's own word for it, when it said one.
+         */
+        data class Closed(val kind: EndKind, val detail: String, val reason: String = "") : Event
     }
 
     class ClosedException : Exception("closed")
 
-    private var label: String
-    private val host: String
-    private val secure: Boolean
-    private var credentials: Credentials? = null
+    private val label = machine.label
     private var socket: WebSocket? = null
     private var channel = 0
     private var handshake: E2E.Handshake? = null
-    private var session: E2E.Session? = null
+    private var sealer: E2E.Session? = null
     private var joiner = Joiner()
     private var ready = false
     private var ended = false
@@ -92,92 +86,42 @@ class RelayLink(
         var body = java.io.ByteArrayOutputStream()
     }
 
-    init {
-        when (mode) {
-            is Mode.WithCredentials -> {
-                label = mode.credentials.label
-                host = mode.credentials.host
-                secure = mode.credentials.secure
-                credentials = mode.credentials
-            }
-            is Mode.Pairing -> {
-                label = mode.link.label
-                host = mode.link.host
-                secure = mode.link.secure
-            }
-        }
-    }
-
     val isReady: Boolean get() = ready && !ended
 
     fun start() {
-        if (mode is Mode.Pairing && !isLabel(label)) {
-            // A relay run by hand (`wrangler dev`) has no label in its address
-            // and says its own, as the phone page asks it. Only then: a label
-            // in the address is what the computer's key is checked against.
-            scope.launch {
-                val said = withContext(Dispatchers.IO) { relayLabel() }
-                if (ended) return@launch
-                said.fold(
-                    onSuccess = {
-                        label = it
-                        open()
-                    },
-                    onFailure = { end(EndKind.GONE, it.message ?: "the relay did not say its label") },
-                )
-            }
+        // The account host names the key; the label it derives is what the
+        // handshake's signature covers, and what goes in the socket's path.
+        // Said on the scope, as every other end is, not inside the caller's start().
+        if (!Account.keyMatches(machine)) {
+            scope.launch { end(EndKind.UNTRUSTED, "the account's key for this computer does not match its label") }
             return
         }
-        open()
+        val req = request()
+        if (req == null) {
+            scope.launch { end(EndKind.GONE, "the account host must use https") }
+            return
+        }
+        open(req)
     }
 
-    /**
-     * The relay's address. OkHttp reads the host and port, so an IPv6 one in
-     * brackets (`[::1]:8787`) keeps its colons.
-     */
-    private fun base(): HttpUrl.Builder =
-        "${if (secure) "https" else "http"}://$host/".toHttpUrlOrNull()?.newBuilder()
-            ?: throw IllegalArgumentException("bad address")
-
-    /** The label the relay at `host` goes by, from its `/_relay`. */
-    private fun relayLabel(): Result<String> = try {
-        val b = base().addPathSegment("_relay")
-        // The socket's client never times out a read; this asks once and gives up.
-        val probe = client.newBuilder().callTimeout(PROBE_WITHIN, TimeUnit.MILLISECONDS).build()
-        probe.newCall(Request.Builder().url(b.build()).build()).execute().use { res ->
-            // Any host can be in a pairing link: read a few kilobytes at most,
-            // so a huge answer cannot run the app out of memory.
-            val source = res.body.source()
-            val small = source.request(PROBE_MAX + 1L).not()
-            val bytes = if (small) source.readByteArray() else ByteArray(0)
-            parseJson(bytes)?.get("label")?.str?.takeIf(::isLabel)
-                ?.let { Result.success(it) }
-                ?: Result.failure(IllegalStateException("the relay did not say its label"))
-        }
-    } catch (e: java.net.UnknownServiceException) {
-        // Android lets only a debug build speak plain http (network_security_config.xml).
-        Result.failure(IllegalStateException("plain http is for debug builds", e))
-    } catch (e: Exception) {
-        Result.failure(IllegalStateException("could not ask the relay its label", e))
+    /** The computer's socket on the relay, as this app. */
+    internal fun request(): Request? {
+        // The session goes in a header, so only over TLS or to this machine.
+        if (!Account.safeBase(base)) return null
+        val url = base.trimEnd('/').toHttpUrlOrNull()?.newBuilder()
+            ?.addPathSegment("machines")
+            ?.addPathSegment(label)
+            ?.addPathSegment("ws")
+            ?.addQueryParameter("page", PAGE)
+            ?.build() ?: return null
+        return Request.Builder().url(url).header("Authorization", "Bearer $session").build()
     }
 
-    private fun open() {
-        val url = try {
-            val b = base().addPathSegment("ws")
-            when (mode) {
-                is Mode.WithCredentials -> b.addQueryParameter("d", mode.credentials.id)
-                    .addQueryParameter("t", mode.credentials.ticket)
-                    .addQueryParameter("s", PAGE)
-                is Mode.Pairing -> b.addQueryParameter("p", mode.link.code)
-            }
-            b.build()
-        } catch (_: IllegalArgumentException) {
-            return end(EndKind.GONE, "bad address")
-        }
+    private fun open(req: Request) {
         val now = System.currentTimeMillis()
         heard = now
         helloDeadline = now + HELLO_WITHIN
-        socket = client.newWebSocket(Request.Builder().url(url).build(), Listener())
+        socket = client.newWebSocket(req, Listener())
         timer = scope.launch {
             while (isActive) {
                 tick()
@@ -206,14 +150,18 @@ class RelayLink(
             webSocket.close(1000, null)
             scope.launch {
                 if (socket !== webSocket) return@launch
-                end(EndKind.of(reason, code), reason.ifEmpty { "closed ($code)" })
+                refused(reason, code, null)
             }
         }
 
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+            // An upgrade answered with plain HTTP. A 401 is about the session,
+            // which the app then asks the account about. Anything else (a 500
+            // while the relay's database is down) is tried again.
+            val code = response?.code
             scope.launch {
                 if (socket !== webSocket) return@launch
-                end(EndKind.GONE, t.message ?: "the connection failed")
+                if (code == 401) end(EndKind.SIGNED_OUT, "signed_out") else end(EndKind.GONE, t.message ?: "the connection failed")
             }
         }
     }
@@ -236,30 +184,31 @@ class RelayLink(
             Frame.Kind.CONTROL -> parseJson(f.payload)?.let { if (it.isObject) control(it) }
             Frame.Kind.HELLO -> {
                 val h = handshake ?: return
-                session = try {
+                sealer = try {
+                    if (!sameKey(f.payload)) throw E2E.Failure.BadHello("not the account's key")
                     h.finish(f.payload, label, channel)
                 } catch (e: Exception) {
                     return end(EndKind.UNTRUSTED, e.message ?: "untrusted")
                 }
                 handshake = null
-                val c = credentials
-                if (c != null) {
-                    say(buildJsonObject { put("auth", buildJsonObject { put("token", c.token) }) })
-                } else if (mode is Mode.Pairing) {
-                    say(buildJsonObject {
-                        put("pair", buildJsonObject {
-                            put("secret", mode.link.secret)
-                            put("name", mode.deviceName)
-                        })
-                    })
-                }
+                // The relay let only this account in: nothing more to prove inside the channel.
+                ready = true
+                helloDeadline = null
+                onEvent(Event.Open)
             }
             Frame.Kind.DATA -> sealed(f.payload)
         }
     }
 
+    /** Whether the computer's hello names the key the account has for it. */
+    private fun sameKey(hello: ByteArray): Boolean {
+        val theirs = parseJson(hello)?.get("pub")?.string?.let(Base64Url::decode) ?: return false
+        val ours = Base64Url.decode(machine.pub) ?: return false
+        return theirs.contentEquals(ours)
+    }
+
     private fun greet() {
-        session = null
+        sealer = null
         ready = false
         // Pieces from before belong to a message that will not be finished.
         joiner = Joiner()
@@ -278,7 +227,7 @@ class RelayLink(
             "pc_offline" -> {
                 // Nobody to answer until `pc_online`: no deadline meanwhile.
                 helloDeadline = null
-                session = null
+                sealer = null
                 ready = false
                 failPending()
                 onEvent(Event.Computer(online = false, since = msg["since"].double?.toLong()))
@@ -287,18 +236,22 @@ class RelayLink(
                 onEvent(Event.Computer(online = true, since = null))
                 greet()
             }
-            "bye" -> {
-                val reason = msg["reason"].str
-                end(EndKind.of(reason, 0), reason)
-            }
+            "bye" -> refused(msg["reason"].str, 0, msg["message"].string)
             "limit" -> end(EndKind.LIMIT, msg["which"].string ?: "limit")
         }
     }
 
+    /** Ends with what the relay said: a refusal as its sentence, else the reason. */
+    private fun refused(reason: String, code: Int, message: String?) {
+        val kind = EndKind.of(reason, code)
+        val host = base.substringAfter("://").substringBefore('/')
+        end(kind, if (kind == EndKind.REFUSED) EndKind.sentence(reason, message, host) else reason.ifEmpty { "closed ($code)" }, reason)
+    }
+
     private fun sealed(payload: ByteArray) {
-        val session = session ?: return
+        val sealer = sealer ?: return
         var plain = try {
-            session.open(payload)
+            sealer.open(payload)
         } catch (e: Exception) {
             return end(EndKind.UNTRUSTED, e.message ?: "untrusted")
         }
@@ -308,20 +261,8 @@ class RelayLink(
             plain = joiner.add(part) ?: return
             msg = parseJson(plain)?.takeIf { it.isObject } ?: return
         }
-        val paired = msg["paired"]
-        val ok = msg["ok"]
         val res = msg["res"]
         when {
-            paired.isObject -> {
-                val who = Who(paired["id"].str, paired["name"].str, paired["host"].str)
-                val c = Credentials(
-                    host = host, label = label, secure = secure, id = who.id,
-                    ticket = paired["ticket"].str, token = paired["token"].str, name = who.host,
-                )
-                credentials = c
-                opened(who, c)
-            }
-            ok.isObject -> opened(Who(ok["id"].str, ok["name"].str, ok["host"].str), null)
             res.isObject -> {
                 val id = res["id"].int ?: return
                 val p = pending[id] ?: return
@@ -336,17 +277,11 @@ class RelayLink(
         }
     }
 
-    private fun opened(who: Who, new: Credentials?) {
-        ready = true
-        helloDeadline = null
-        onEvent(Event.Open(who, new))
-    }
-
     private fun say(obj: JsonObject) {
-        val session = session
+        val sealer = sealer
         val socket = socket
-        if (ended || session == null || socket == null) return
-        val payload = session.seal(obj.toString().encodeToByteArray())
+        if (ended || sealer == null || socket == null) return
+        val payload = sealer.seal(obj.toString().encodeToByteArray())
         if (!socket.send(Frame(Frame.Kind.DATA, payload).encoded.toByteString())) {
             scope.launch { end(EndKind.GONE, "could not send") }
         }
@@ -381,10 +316,10 @@ class RelayLink(
         for (p in all) if (p.done.isActive) p.done.resumeWithException(ClosedException())
     }
 
-    private fun end(kind: EndKind, detail: String) {
+    private fun end(kind: EndKind, detail: String, reason: String = "") {
         if (ended) return
         hangUp()
-        onEvent(Event.Closed(kind, detail))
+        onEvent(Event.Closed(kind, detail, reason))
     }
 
     /** Hangs up without a word; no event follows. */
@@ -413,12 +348,6 @@ class RelayLink(
         /** How long the computer may take to answer a hello. */
         const val HELLO_WITHIN = 15_000L
 
-        /** How long a relay run by hand may take to say its label. */
-        const val PROBE_WITHIN = 10_000L
-
-        /** The most a relay's label answer may hold; it is a few dozen bytes. */
-        const val PROBE_MAX = 4096
-
         /**
          * This app's own name to the relay. It stays the same across reconnects,
          * so a socket left behind by a network switch is replaced.
@@ -429,6 +358,9 @@ class RelayLink(
             OkHttpClient.Builder()
                 // The link pings and watches for silence itself.
                 .readTimeout(0, TimeUnit.MILLISECONDS)
+                // The request carries the session: it goes nowhere but where it was sent.
+                .followRedirects(false)
+                .followSslRedirects(false)
                 .build()
         }
     }

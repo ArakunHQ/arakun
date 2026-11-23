@@ -1,17 +1,19 @@
 # Arakun for Android
 
-A native Jetpack Compose app for your sessions on the go: it pairs with Arakun the way
-the phone page (`../phone/`) does and speaks the same protocol through the relay, end
-to end encrypted. The computer and the relay need nothing new. It does what the iOS app
-does, screen for screen.
+A native Jetpack Compose app for your sessions on the go: you sign in with GitHub, pick
+one of your account's computers, and it speaks the phone page's (`../phone/`) protocol
+through the relay, end to end encrypted. It does what the iOS app does, screen for
+screen.
 
 ```
 android/
   kit/               the protocol, plain Kotlin, testable on any JVM
+    Account.kt       GitHub's device flow, /me, /machines, /sessions (core/src/cloud.rs)
     E2E.kt           P-256 handshake, HKDF keys, AES-GCM frames (phone/e2e.js)
     RelayLink.kt     the WebSocket to the relay, pings, {req}/{res}, {part} (phone/relay.js)
+    Pairing.kt       why a channel ended, and what an opened link gets told
     Models.kt        inbox, session, entries, state (core/src/phone/wire.rs)
-  app/               the app: pairing, inbox, a live session, new session
+  app/               the app: sign-in, computers, inbox, a live session, new session
   tools/vectors.py   the brand's SVG icons and the raccoon as vector drawables
 ```
 
@@ -23,15 +25,16 @@ or Android Studio. Point Gradle at the SDK with `ANDROID_HOME` or `local.propert
 
 ```sh
 cd android
-./gradlew :kit:test            # the protocol against phone/test/vectors, and a played relay
+./gradlew :kit:test            # the protocol against phone/test/vectors, a played relay and account host
 ./gradlew :app:assembleDebug   # app/build/outputs/apk/debug/app-debug.apk
 ./gradlew :app:lintDebug
 ```
 
-Without a computer to pair with, start a debug build with `demo`: sample sessions fill
-the inbox. `demoOpen s1` opens a session, `demoNew true` the New session sheet,
-`demoUnpaired true` the pairing screen and `demoMoods true` every mood of the raccoon
-side by side:
+Without an account or a computer, start a debug build with `demo`: it is signed in to a
+sample account with two computers, and sample sessions fill the inbox. `demoOpen s1`
+opens a session, `demoNew true` the New session sheet, `demoMachines true` the list of
+computers, `demoSignIn true` the sign-in screen and `demoMoods true` every mood of the
+raccoon side by side:
 
 ```sh
 adb shell am start -n com.arakun.app/com.arakun.android.MainActivity --ez demo true --es demoOpen s1
@@ -57,7 +60,7 @@ The raccoon is alive, as on the desktop and on iOS: `ui/Mascot.kt` is a smaller 
 watches: thinking dots, reading while the agent works, a hopping question mark when a
 session needs you, a tick when a turn ends, a shake and an exclamation mark on an
 error, and sleep when the computer is offline or nothing happens for two minutes. A tap
-makes it hop. One raccoon per screen: the pairing screen, the inbox header (the mood of
+makes it hop. One raccoon per screen: the sign-in screen, the inbox header (the mood of
 all sessions) and the composer of a session (that session's mood). With "Remove
 animations" on, it holds still.
 
@@ -103,18 +106,48 @@ profiles. Debug builds send nothing; `-PposthogKey=` builds a release that never
 Release builds are shrunk but not obfuscated, so stack traces read without a mapping
 file.
 
-## Pairing
+## Signing in
 
-Open the Phone tab in Arakun, choose the relay, and scan its code from the app (or
-paste the link, or open an `arakun://pair?link=<link>` link; an opened link asks before
-it pairs, and before it replaces the computer the phone is paired with). The credentials are
-sealed with a key the Android Keystore keeps on this device; the app's data is left out
-of backups and device transfers.
+Tap "Sign in with GitHub". The app shows a code: copy it, open GitHub, and enter it
+there (GitHub's device flow, as `arakun-server login` does). Sign in with the account
+you use in Arakun on your computer. The app then lists the account's computers; with
+only one it opens it straight away, and it opens the one you picked last on the next
+launch. "All computers" in the inbox's menu goes back to the list, which is also where
+a computer signed in since shows up.
 
-A relay run by hand (`npx wrangler dev`, see cloud/README.md) speaks plain http and has
-no label in its address; the app asks it for its label at `/_relay`. Only a debug build
-may use plain http (`src/debug/res/xml/network_security_config.xml`); a release build
-talks to relays over TLS only.
+The sign-in is a session on `app.arakun.dev`, named after this phone's model. The
+inbox's menu has Account: the GitHub login, the operator's notices, the account's
+signed-in devices (sign out any of them) and Sign out. Every signed-in device can reach
+all the account's computers, so sign out any you do not know.
+
+The session and the computer picked last are sealed with a key the Android Keystore
+keeps on this device (`CredentialStore.kt`), never in plain preferences or logs; the
+app's data is left out of backups and device transfers. The socket to the relay sends
+the session in its `Authorization` header, and the app checks the computer's handshake
+against the key the account has for it, after checking that key matches the computer's
+label. Every build speaks TLS only (`res/xml/network_security_config.xml`), and no
+request that carries the session or GitHub's token follows a redirect.
+
+Only the account host ends a session. When the relay turns the session down at its
+socket (`signed_out`, or a 401 to the upgrade), the app asks `GET /me`: a 401 there
+signs out; if the account still accepts the session, the app keeps it, goes back to
+the list and says the computer could not be reached with this sign-in, without
+trying again by itself. A failed upgrade of any other kind (a 500 from the relay) is
+tried again with the usual backoff.
+
+When the relay says a limit is reached, the banner says so once and the app waits:
+until midnight UTC for the day's limit, otherwise two minutes, doubling to half an
+hour. **Try again** asks at once.
+
+This app reaches your computers only by signing in. On Same Wi-Fi or over Tailscale, with
+no account, the computer's own page does the pairing in the browser: scan the code in
+Arakun's Phone tab with the camera, or open an `arakun://pair?link=` link to that page.
+The app asks first ("Open <host> in the browser?"), since any app or web page can open
+such a link, then hands it to the browser.
+
+The relay's old pairing links and the ticket they gave are gone: the first launch after
+the update deletes the stored ones, and an `arakun://pair?link=` link to the relay only
+says "Relay links are no longer used. Sign in to reach your computers."
 
 ## What it does
 
@@ -125,5 +158,6 @@ talks to relays over TLS only.
   questions, load older entries.
 - Start a session in any place the computer offers.
 
-Not yet: photos, diffs, session settings, plan limits and push notifications (the
-phone page's push is Web Push; native push needs FCM support on the computer).
+Not yet: photos, diffs, session settings, plan limits, pairing on Same Wi-Fi or
+Tailscale inside the app, and push notifications (the phone page's push is Web Push;
+native push needs FCM support on the computer).

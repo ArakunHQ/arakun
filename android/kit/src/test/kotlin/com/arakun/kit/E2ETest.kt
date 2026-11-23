@@ -232,25 +232,39 @@ class BytesTest {
 
 class PairingTest {
     @Test
-    fun readsTheRelayLink() {
-        val l = PairingLink.parse("https://lmx5lt63vsxoyes4.arakun.dev/#p=abc123&s=s%2Fecret")!!
-        assertEquals("lmx5lt63vsxoyes4", l.label)
-        assertEquals("lmx5lt63vsxoyes4.arakun.dev", l.host)
-        assertEquals("abc123", l.code)
-        assertEquals("s/ecret", l.secret)
-        assertEquals(true, l.secure)
-        assertEquals("lab.localhost:8787", PairingLink.parse("http://lab.localhost:8787/#p=a&s=b")?.host)
-        assertNull(PairingLink.parse("https://x.arakun.dev/"))
-        assertNull(PairingLink.parse("https://x.arakun.dev/#p=a"))
-        assertNull(PairingLink.parse("not a link"))
+    fun anOldRelayLinkIsRefusedWithTheSentence() {
+        val relay = "Relay links are no longer used. Sign in to reach your computers."
+        assertEquals(LinkKind.RELAY, LinkKind.of("https://lmx5lt63vsxoyes4.arakun.dev/#p=abc123&s=s%2Fecret"))
+        assertEquals(relay, LinkKind.of("https://lmx5lt63vsxoyes4.arakun.dev/#p=abc123&s=secret").sentence)
+        // A relay run by hand had no label in its host.
+        assertEquals(LinkKind.RELAY, LinkKind.of("http://127.0.0.1:8787/#p=a&s=b"))
+        // The computer's own page on the network or tailnet.
+        assertEquals(LinkKind.DIRECT, LinkKind.of("http://192.168.1.20:8484/?p=123456"))
+        assertEquals(LinkKind.DIRECT, LinkKind.of("https://studio.tail1234.ts.net/?p=123456"))
+        assertEquals(LinkKind.OTHER, LinkKind.of("https://x.arakun.dev/#p=a"))
+        assertEquals(LinkKind.OTHER, LinkKind.of("https://x.arakun.dev/"))
+        assertEquals(LinkKind.OTHER, LinkKind.of("not a link"))
+        assertEquals(LinkKind.OTHER, LinkKind.of("javascript:alert(1)#p=a&s=b"))
     }
 
     @Test
     fun endKinds() {
-        assertEquals(EndKind.UNPAIRED, EndKind.of("", 4401))
-        assertEquals(EndKind.PAIRING, EndKind.of("bad_code", 1000))
+        assertEquals(EndKind.SIGNED_OUT, EndKind.of("signed_out", 1000))
+        assertEquals(EndKind.SIGNED_OUT, EndKind.of("", 4401))
+        for (r in listOf("blocked", "not_yours", "no_machine", "update", "disabled", "unpaired")) assertEquals(EndKind.REFUSED, EndKind.of(r, 0))
         assertEquals(EndKind.UNTRUSTED, EndKind.of("bad_hello", 1000))
         assertEquals(EndKind.LIMIT, EndKind.of("limit:daily", 1000))
         assertEquals(EndKind.GONE, EndKind.of("", 1006))
+        // The old pairing's reasons mean nothing now.
+        assertEquals(EndKind.GONE, EndKind.of("bad_code", 1000))
+    }
+
+    @Test
+    fun refusalsAreSaidAsOnThePhonePage() {
+        assertEquals("This GitHub account is blocked from the relay.", EndKind.sentence("blocked", null, "app.arakun.dev"))
+        assertEquals("Update Arakun on the computer and sign in at app.arakun.dev", EndKind.sentence("update", null, "app.arakun.dev"))
+        assertEquals("That computer removed this phone. Pick it again to connect.", EndKind.sentence("unpaired", null, "app.arakun.dev"))
+        assertEquals("Back at noon.", EndKind.sentence("disabled", "Back at noon.", "app.arakun.dev"))
+        assertEquals("The relay is closed right now.", EndKind.sentence("disabled", "", "app.arakun.dev"))
     }
 }

@@ -14,14 +14,12 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import mockwebserver3.MockResponse
 import mockwebserver3.MockWebServer
-import okhttp3.Dns
 import okhttp3.OkHttpClient
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import okio.ByteString
 import okio.ByteString.Companion.toByteString
-import java.net.InetAddress
 import java.security.KeyPair
 import java.security.Signature
 import java.security.interfaces.ECPublicKey
@@ -32,12 +30,14 @@ import javax.crypto.KeyAgreement
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
 
 /**
  * The relay and the computer played by a local WebSocket server, as
- * cloud/src/relay/relay.ts and core/src/phone/e2e.rs do it: the whole pairing, a
- * message in parts, a request and a revoked phone, through a real socket.
+ * cloud/src/relay/relay.ts and core/src/phone/e2e.rs do it: the socket with the
+ * account's session, a message in parts, a request and a signed-out phone,
+ * through a real socket.
  */
 class RelayLinkTest {
     private val server = MockWebServer().apply { start() }
@@ -47,12 +47,13 @@ class RelayLinkTest {
     private val scope = CoroutineScope(SupervisorJob() + thread)
     private val events = Channel<RelayLink.Event>(Channel.UNLIMITED)
 
-    /** Every name is this machine, so `<label>.localhost` reaches the server. */
-    private val client = OkHttpClient.Builder()
-        .dns(object : Dns {
-            override fun lookup(hostname: String) = listOf(InetAddress.getLoopbackAddress())
-        })
-        .build()
+    private val client = OkHttpClient()
+    private val base = "http://localhost:${server.port}"
+    private val pub = Base64Url.encode(P256.x963(identity.public as ECPublicKey))
+    private val machine = Machine(label, pub, "studio", "app", true, 0)
+
+    private fun link(m: Machine = machine) =
+        RelayLink(base, "tok-secret", m, scope, client) { events.trySend(it) }.also { it.start() }
 
     @AfterTest
     fun done() {
@@ -97,7 +98,12 @@ class RelayLinkTest {
             webSocket.close(1000, null)
         }
 
+        /** The key this computer answers with; a stand-in to play one the account does not name. */
+        var answerAs: KeyPair = identity
+
         private fun answerHello(hello: JsonElement) {
+            val identity = answerAs
+            val label = E2E.label(P256.x963(identity.public as ECPublicKey))
             val ePhone = Base64Url.decode(hello["e"].str)!!
             val noncePhone = Base64Url.decode(hello["nonce"].str)!!
             val eph = P256.generate()
@@ -130,31 +136,15 @@ class RelayLinkTest {
     private suspend fun next(): RelayLink.Event = withTimeout(10_000) { events.receive() }
 
     @Test
-    fun pairsFetchesJoinsPartsAndHearsARevoke() = runBlocking {
+    fun theSocketCarriesTheSessionInAHeaderAndNeedsNothingMoreInside() = runBlocking {
         val computer = Computer(channel = 7)
         server.enqueue(MockResponse.Builder().webSocketUpgrade(computer).build())
-        val link = PairingLink.parse("http://$label.localhost:${server.port}/#p=code1&s=secret1")!!
-        val relay = withContext(thread) {
-            RelayLink(RelayLink.Mode.Pairing(link, "Pixel"), scope, client) { events.trySend(it) }.also { it.start() }
-        }
-
-        // The phone shows the secret, sealed, and the computer answers with credentials.
-        val pair = computer.heard.poll(10, TimeUnit.SECONDS)!!
-        assertEquals("secret1", pair["pair"]["secret"].str)
-        assertEquals("Pixel", pair["pair"]["name"].str)
-        assertEquals("/ws?p=code1", server.takeRequest().target)
-        computer.say(buildJsonObject {
-            put("paired", buildJsonObject {
-                put("id", "d1")
-                put("name", "Pixel")
-                put("host", "studio")
-                put("ticket", "t1")
-                put("token", "k1")
-            })
-        })
-        val open = assertIs<RelayLink.Event.Open>(next())
-        assertEquals("studio", open.who.host)
-        assertEquals(Credentials("$label.localhost:${server.port}", label, false, "d1", "t1", "k1", "studio"), open.credentials)
+        val relay = withContext(thread) { link() }
+        assertEquals(RelayLink.Event.Open, next())
+        val req = server.takeRequest()
+        assertEquals("/machines/$label/ws?page=${RelayLink.PAGE}", req.target)
+        assertEquals("Bearer tok-secret", req.headers["Authorization"])
+        assertFalse("tok-secret" in req.target)
 
         // A message too big for one frame comes in pieces and leaves whole.
         val whole = """{"type":"inbox","host":"studio","sessions":[]}""".encodeToByteArray()
@@ -168,14 +158,16 @@ class RelayLinkTest {
         }
         assertEquals(whole.decodeToString(), assertIs<RelayLink.Event.Message>(next()).bytes.decodeToString())
 
-        // What the page asks over HTTP, answered in two pieces.
-        val fetched = async(thread) { relay.fetch("/unpair", method = "POST") }
-        val req = computer.heard.poll(10, TimeUnit.SECONDS)!!["req"]
-        assertEquals("/unpair", req["path"].str)
-        assertEquals("POST", req["method"].str)
+        // What the page asks over HTTP, answered in two pieces. It is the
+        // first thing the computer hears: no {pair} or {auth} came before it.
+        val fetched = async(thread) { relay.fetch("/me") }
+        val req2 = computer.heard.poll(10, TimeUnit.SECONDS)!!
+        assertEquals(setOf("req"), (req2 as? JsonObject)?.keys)
+        assertEquals("/me", req2["req"]["path"].str)
+        assertEquals("GET", req2["req"]["method"].str)
         computer.say(buildJsonObject {
             put("res", buildJsonObject {
-                put("id", req["id"].int)
+                put("id", req2["req"]["id"].int)
                 put("status", 200)
                 put("body", Base64Url.encode("o".encodeToByteArray()))
                 put("more", true)
@@ -183,7 +175,7 @@ class RelayLinkTest {
         })
         computer.say(buildJsonObject {
             put("res", buildJsonObject {
-                put("id", req["id"].int)
+                put("id", req2["req"]["id"].int)
                 put("body", Base64Url.encode("k".encodeToByteArray()))
             })
         })
@@ -191,71 +183,92 @@ class RelayLinkTest {
         assertEquals(200, status)
         assertEquals("ok", body.decodeToString())
 
-        // The relay closes a revoked phone's socket: pair again.
-        computer.socket.close(4401, "revoked")
-        val closed = assertIs<RelayLink.Event.Closed>(next())
-        assertEquals(EndKind.UNPAIRED, closed.kind)
+        // The relay rechecks the session; one signed out elsewhere is closed.
+        computer.control(buildJsonObject { put("type", "bye"); put("reason", "signed_out") })
+        assertEquals(EndKind.SIGNED_OUT, assertIs<RelayLink.Event.Closed>(next()).kind)
         assertEquals(false, relay.isReady)
     }
 
     @Test
-    fun aComputerWithTheWrongKeyIsNotTrusted() = runBlocking {
+    fun aComputerWithAnotherKeyThanTheAccountsIsNotTrusted() = runBlocking {
         val computer = Computer(channel = 1)
+        // A key the account does not name, though it signs for its own label.
+        computer.answerAs = P256.generate()
         server.enqueue(MockResponse.Builder().webSocketUpgrade(computer).build())
-        // The address names another key than the one that answers.
-        val link = PairingLink.parse("http://aaaaaaaaaaaaaaaa.localhost:${server.port}/#p=c&s=s")!!
-        withContext(thread) {
-            RelayLink(RelayLink.Mode.Pairing(link, "Pixel"), scope, client) { events.trySend(it) }.start()
-        }
+        withContext(thread) { link() }
         val closed = assertIs<RelayLink.Event.Closed>(next())
         assertEquals(EndKind.UNTRUSTED, closed.kind)
+        assertEquals(true, "account's key" in closed.detail)
     }
 
     @Test
-    fun aRelayRunByHandSaysItsLabel() = runBlocking {
-        val computer = Computer(channel = 3)
-        // `wrangler dev` has no subdomains, so the link carries no label.
-        server.enqueue(MockResponse.Builder().body("""{"label":"$label"}""").build())
+    fun aKeyThatDoesNotNameItsLabelIsRefusedBeforeAnySocket() = runBlocking {
+        withContext(thread) { link(machine.copy(label = "aaaaaaaaaaaaaaaa")) }
+        assertEquals(EndKind.UNTRUSTED, assertIs<RelayLink.Event.Closed>(next()).kind)
+        assertEquals(0, server.requestCount)
+    }
+
+    @Test
+    fun theSessionNeverGoesOverPlainHttpToAnotherMachine() = runBlocking {
+        withContext(thread) {
+            RelayLink("http://192.168.1.5:8787", "tok-secret", machine, scope, client) { events.trySend(it) }.start()
+        }
+        assertEquals(EndKind.GONE, assertIs<RelayLink.Event.Closed>(next()).kind)
+        assertEquals(0, server.requestCount)
+    }
+
+    @Test
+    fun aSessionRefusedAtTheUpgradeIsSignedOut() = runBlocking {
+        server.enqueue(MockResponse.Builder().code(401).body("""{"error":"signed out"}""").build())
+        withContext(thread) { link() }
+        assertEquals(EndKind.SIGNED_OUT, assertIs<RelayLink.Event.Closed>(next()).kind)
+    }
+
+    /** The relay's database is down: a failure to try again, never a refusal or a sign-out. */
+    @Test
+    fun aRelayThatFailsAtTheUpgradeIsTriedAgain() = runBlocking {
+        for (status in listOf(500, 503)) {
+            server.enqueue(MockResponse.Builder().code(status).build())
+            withContext(thread) { link() }
+            assertEquals(EndKind.GONE, assertIs<RelayLink.Event.Closed>(next()).kind, "$status")
+        }
+    }
+
+    /** The relay refuses a device as its socket opens, before any channel. */
+    @Test
+    fun aRefusalAtAdmissionIsHeardAsTheSocketOpens() = runBlocking {
+        val admitted = mapOf("signed_out" to EndKind.SIGNED_OUT, "blocked" to EndKind.REFUSED, "no_machine" to EndKind.REFUSED, "not_yours" to EndKind.REFUSED)
+        for ((reason, kind) in admitted) {
+            server.enqueue(MockResponse.Builder().webSocketUpgrade(object : WebSocketListener() {
+                override fun onOpen(webSocket: WebSocket, response: Response) {
+                    val bye = buildJsonObject { put("type", "bye"); put("reason", reason) }
+                    webSocket.send(Frame(Frame.Kind.CONTROL, bye.toString().encodeToByteArray()).encoded.toByteString())
+                    webSocket.close(4403, reason)
+                }
+            }).build())
+            withContext(thread) { link() }
+            val closed = assertIs<RelayLink.Event.Closed>(next())
+            assertEquals(kind, closed.kind, reason)
+            assertEquals(reason, closed.reason)
+        }
+    }
+
+    @Test
+    fun aRefusalIsSaidInPlainWords() = runBlocking {
+        val computer = Computer(channel = 5)
         server.enqueue(MockResponse.Builder().webSocketUpgrade(computer).build())
-        val link = PairingLink.parse("http://127.0.0.1:${server.port}/#p=c&s=s")!!
-        withContext(thread) {
-            RelayLink(RelayLink.Mode.Pairing(link, "Pixel"), scope, client) { events.trySend(it) }.start()
-        }
-        assertEquals("s", computer.heard.poll(10, TimeUnit.SECONDS)!!["pair"]["secret"].str)
-        assertEquals("/_relay", server.takeRequest().target)
-        assertEquals("/ws?p=c", server.takeRequest().target)
-    }
-
-    @Test
-    fun aHugeLabelAnswerIsRefused() = runBlocking {
-        // Padding first, so the label is there but past the limit.
-        val body = """{"pad":"${"x".repeat(RelayLink.PROBE_MAX)}","label":"$label"}"""
-        server.enqueue(MockResponse.Builder().body(body).build())
-        server.enqueue(MockResponse.Builder().webSocketUpgrade(Computer(channel = 4)).build())
-        val link = PairingLink.parse("http://127.0.0.1:${server.port}/#p=c&s=s")!!
-        withContext(thread) {
-            RelayLink(RelayLink.Mode.Pairing(link, "Pixel"), scope, client) { events.trySend(it) }.start()
-        }
-        val closed = assertIs<RelayLink.Event.Closed>(next())
-        assertEquals(EndKind.GONE, closed.kind)
-        assertEquals("/_relay", server.takeRequest().target)
-        // It never got as far as the socket.
-        assertEquals(1, server.requestCount)
+        withContext(thread) { link() }
+        assertEquals(RelayLink.Event.Open, next())
+        computer.control(buildJsonObject { put("type", "bye"); put("reason", "disabled"); put("message", "Back at noon.") })
+        assertEquals(RelayLink.Event.Closed(EndKind.REFUSED, "Back at noon.", "disabled"), next())
     }
 
     @Test
     fun theComputerGoingAwayAndBackIsAnEvent() = runBlocking {
         val computer = Computer(channel = 2)
         server.enqueue(MockResponse.Builder().webSocketUpgrade(computer).build())
-        val creds = Credentials("$label.localhost:${server.port}", label, false, "d1", "t1", "k1", "studio")
-        withContext(thread) {
-            RelayLink(RelayLink.Mode.WithCredentials(creds), scope, client) { events.trySend(it) }.start()
-        }
-        val auth = computer.heard.poll(10, TimeUnit.SECONDS)!!
-        assertEquals("k1", auth["auth"]["token"].str)
-        assertEquals("/ws?d=d1&t=t1&s=${RelayLink.PAGE}", server.takeRequest().target)
-        computer.say(buildJsonObject { put("ok", buildJsonObject { put("host", "studio") }) })
-        assertIs<RelayLink.Event.Open>(next())
+        withContext(thread) { link() }
+        assertEquals(RelayLink.Event.Open, next())
         computer.control(buildJsonObject {
             put("type", "pc_offline")
             put("since", 1_700_000_000_000)

@@ -790,9 +790,13 @@ impl TeamsView {
         if login.is_empty() {
             return;
         }
-        self.invite.update(cx, |i, cx| i.set_text("", cx));
-        self.lookup = None;
-        self._lookup = None;
+        // While the team reloads the invite is refused, so keep the login
+        // to send again rather than make the admin type it twice.
+        if self.hub.read(cx).roster(&team).is_some() {
+            self.invite.update(cx, |i, cx| i.set_text("", cx));
+            self.lookup = None;
+            self._lookup = None;
+        }
         self.hub.update(cx, |h, cx| h.invite(&team, login, cx));
     }
 
@@ -2147,7 +2151,7 @@ impl TeamsView {
                         "teams-invite",
                         if inviting { "Inviting…" } else { "Invite" },
                         ButtonKind::Primary,
-                        !inviting && !typed.is_empty(),
+                        scope.is_some() && !inviting && !typed.is_empty(),
                     )
                     .on_click(cx.listener(|this, _, _, cx| this.send_invite(cx))),
                 ),

@@ -1590,9 +1590,11 @@ impl Hub {
     }
 
     pub fn invite(&mut self, team_id: &str, login: String, cx: &mut Context<Self>) {
-        // The field is cleared already, so say why nothing went out.
+        // Say why nothing went out; the view keeps the login typed.
         if self.roster(team_id).is_none() {
-            self.error = Some(format!("The team is still loading. Invite @{login} again."));
+            self.error = Some(format!(
+                "The team is still loading. Invite @{login} again in a moment."
+            ));
             cx.notify();
             return;
         }

@@ -4,23 +4,29 @@
 //! this app any more. The shell hears how it goes as [`Event`]s.
 //!
 //! The app is the phone here. To a server with a socket of its own it pairs
-//! over HTTP and then talks JSON on a WebSocket, as the page does. Through the
-//! relay it does what `phone/relay.js` does: one WebSocket to the relay, a
-//! handshake that proves the other end holds the key the address names
-//! (`phone::e2e`), and every message sealed from then on.
+//! over HTTP and then talks JSON on a WebSocket, as the page does. To a server
+//! of the same account it goes through the relay as `phone/relay.js` does:
+//! one WebSocket to the relay with the app's sign-in, a handshake that proves
+//! the other end holds the key the account lists for it (`phone::e2e`), and
+//! every message sealed from then on.
 
 use std::net::{TcpStream, ToSocketAddrs as _};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc as std_mpsc};
 use std::time::{Duration, Instant};
 
+use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
 use futures::channel::mpsc;
 use serde_json::{Value, json};
+use tungstenite::client::IntoClientRequest as _;
+use tungstenite::handshake::client::Request;
+use tungstenite::http::HeaderValue;
 use tungstenite::{Message, WebSocket, stream::MaybeTlsStream};
 
 use super::{Invite, Saved, Way, socket_origin};
 use crate::phone::e2e::{Handshake, Session};
-use crate::phone::identity::is_label;
+use crate::phone::identity::label_of;
 use crate::phone::relay::{CONTROL, DATA, HELLO, Joiner};
 use crate::phone::wire;
 
@@ -29,6 +35,18 @@ const RETRY_MIN: Duration = Duration::from_secs(1);
 const RETRY_MAX: Duration = Duration::from_secs(60);
 /// How long dialing and the handshakes may take together.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+/// A server's status when its sign-in through the relay ended.
+pub const SIGNED_OUT: &str = "Your sign-in is no longer valid. Sign in again to reach this server.";
+/// A server's status while nobody is signed in here.
+pub const SIGN_IN_TO_RECONNECT: &str = "Sign in to reconnect.";
+/// A server's status while the account could not be asked for its machines.
+pub const ACCOUNT_UNREACHABLE: &str = "Could not reach your account. Trying again.";
+/// A server's status once the account answered without it.
+pub const NOT_LISTED: &str =
+    "Your account no longer lists this server. Sign in on the server again, or forget it here.";
+/// The longest operator's text a refusal passes on.
+const MAX_MESSAGE: usize = 300;
+
 /// How long a read waits before the loop looks at what there is to send.
 const READ_TICK: Duration = Duration::from_millis(20);
 /// How often the stop flag is looked at between dials.
@@ -105,6 +123,29 @@ impl Client {
     /// one its [`Saved`] will carry.
     pub fn pair(id: String, invite: Invite, name: String, events: Events) -> Client {
         Self::start(id, Who::Invite(invite), name, events, TIMING)
+    }
+
+    /// Connects to a server of the account through the relay, with the
+    /// app's sign-in, checking it holds the key the account lists.
+    pub fn connect_account(saved: Saved, account: Account, events: Events) -> Client {
+        Self::start(
+            saved.id.clone(),
+            Who::Account(saved, account),
+            String::new(),
+            events,
+            TIMING,
+        )
+    }
+
+    /// A server that is not to be dialed now: it says `status` and no more.
+    pub fn held(saved: &Saved, status: Status, events: Events) -> Client {
+        Self::start(
+            saved.id.clone(),
+            Who::Held(status),
+            String::new(),
+            events,
+            TIMING,
+        )
     }
 
     /// Connects to a server paired earlier.
@@ -208,10 +249,27 @@ impl Drop for Client {
     }
 }
 
-/// Who the link is, to the server: a stranger with a link, or a paired device.
+/// Who the link is, to the server: a stranger with a link, a paired device,
+/// or a device of the server's account.
 enum Who {
     Invite(Invite),
     Saved(Saved),
+    Account(Saved, Account),
+    /// Not dialed: it only says how it stands.
+    Held(Status),
+}
+
+/// What reaching a server through the account takes. No `Debug`: the
+/// session opens the account, so it must never end up in a log.
+#[derive(Clone, PartialEq)]
+pub struct Account {
+    /// The service that issued the sign-in, the only place it goes. Not the
+    /// server's saved origin: `servers.json` must not decide where it goes.
+    pub base: String,
+    /// The app's sign-in, the bearer at the relay's door.
+    pub session: String,
+    /// The server's public key as the account lists it (`pub`).
+    pub public: String,
 }
 
 /// Why one connection ended, and whether another should follow.
@@ -261,6 +319,13 @@ struct Link {
 
 impl Link {
     fn run(mut self) {
+        if let Who::Held(status) = &self.who {
+            // No "Connecting" first: nothing is dialed.
+            let status = status.clone();
+            self.set_status(status);
+            self.close();
+            return;
+        }
         let mut wait = RETRY_MIN;
         loop {
             if self.stop.load(Ordering::Relaxed) {
@@ -268,8 +333,9 @@ impl Link {
             }
             self.set_status(Status::Connecting);
             let through_relay = match &self.who {
-                Who::Invite(invite) => invite.secret.is_some(),
-                Who::Saved(saved) => matches!(saved.way, Way::Relay { .. }),
+                Who::Invite(_) => false,
+                Who::Saved(saved) => saved.way != Way::Direct,
+                Who::Account(..) | Who::Held(_) => true,
             };
             let ended = if through_relay {
                 self.relay(&mut wait)
@@ -421,7 +487,7 @@ impl Link {
         };
         let url = format!("{}/ws?t={}", socket_origin(&saved.origin), saved.token);
         let unpair = (format!("{}/unpair", saved.origin), saved.token.clone());
-        let (mut ws, acks) = match connect(&url) {
+        let (mut ws, acks) = match connect(&url, None) {
             Ok(ws) => ws,
             Err(ended) => return ended,
         };
@@ -486,47 +552,43 @@ impl Link {
     // ---- through the relay ------------------------------------------------
 
     fn relay(&mut self, wait: &mut Duration) -> Ended {
-        let (origin, label, query) = match &self.who {
-            Who::Invite(invite) => match relay_label(&invite.origin) {
-                Ok(label) => (
-                    invite.origin.clone(),
-                    label,
-                    format!("p={}", percent(&invite.code)),
-                ),
-                Err(ended) => return ended,
-            },
-            Who::Saved(saved) => {
-                let Way::Relay { label, ticket } = &saved.way else {
-                    return Ended::Refused("This server is not reached through a relay.".into());
-                };
-                (
-                    saved.origin.clone(),
-                    label.clone(),
-                    format!(
-                        "d={}&t={}&s={}",
-                        percent(&saved.device),
-                        percent(ticket),
-                        percent(&self.page)
-                    ),
-                )
-            }
+        let Who::Account(saved, account) = &self.who else {
+            // Paired through the old relay: its ticket is never sent again.
+            return Ended::Refused(SIGN_IN_TO_RECONNECT.into());
         };
-        let url = format!("{}/ws?{query}", socket_origin(&origin));
-        let (mut ws, _) = match connect(&url) {
+        let Way::Account { label } = &saved.way else {
+            return Ended::Refused(SIGN_IN_TO_RECONNECT.into());
+        };
+        // The label is the key's own name: a key that does not give it is not
+        // this server's, whoever lists it.
+        let Some(public) = B64
+            .decode(account.public.trim())
+            .ok()
+            .filter(|p| label_of(p) == *label)
+        else {
+            return Ended::Refused(
+                "The key your account lists for this server does not match its address.".into(),
+            );
+        };
+        let label = label.clone();
+        let url = account_url(&account.base, &label, &self.page);
+        let (mut ws, _) = match connect(&url, Some(&account.session)) {
             Ok(ws) => ws,
             Err(ended) => return ended,
         };
-        let ended = self.talk_relay(&mut ws, &origin, &label, wait);
+        let ended = self.talk_relay(&mut ws, &label, &public, wait);
         self.hang_up(&mut ws);
         self.lost_unacked();
         ended
     }
 
+    /// `public` is the key the account lists for the server, which `label`
+    /// is the name of.
     fn talk_relay(
         &mut self,
         ws: &mut Socket,
-        origin: &str,
         label: &str,
+        public: &[u8],
         wait: &mut Duration,
     ) -> Ended {
         // The relay reaps a phone that stops pinging, but it counts only its
@@ -537,7 +599,7 @@ impl Link {
         // A hello sent and not yet answered; then the keys it agreed on.
         let mut handshake: Option<Handshake> = None;
         let mut session: Option<Session> = None;
-        // The server knows who this is: messages may go.
+        // The keys are agreed: messages may go.
         let mut ready = false;
         // A message too big for one relay frame comes as `{part}` pieces.
         let mut pieces = Joiner::default();
@@ -581,7 +643,11 @@ impl Link {
                                     self.set_status(Status::ServerAway);
                                 }
                                 "bye" => {
-                                    return hung_up(msg["reason"].as_str().unwrap_or(""), None);
+                                    return relay_hung_up(
+                                        msg["reason"].as_str().unwrap_or(""),
+                                        msg["message"].as_str(),
+                                        None,
+                                    );
                                 }
                                 "limit" => {
                                     return held_back(msg["which"].as_str().unwrap_or(""));
@@ -592,31 +658,28 @@ impl Link {
                         HELLO => {
                             let Some(hs) = handshake.take() else { continue };
                             match hs.finish(payload, label, channel) {
-                                Ok(agreed) => {
+                                // The relay let in only a device of the
+                                // server's account: no more to say who this
+                                // is. The computer acknowledges what it reads.
+                                Ok(agreed) if hello_key(payload).as_deref() == Some(public) => {
                                     session = Some(agreed);
                                     // Pieces from before belong to no message now.
                                     pieces = Joiner::default();
+                                    self.acks = true;
+                                    ready = true;
+                                    self.connected(wait);
                                 }
-                                // Whoever answered does not hold the key the address names.
+                                // Whoever answered does not hold the key the account lists.
+                                Ok(_) => {
+                                    return Ended::Refused(
+                                        "The machine at this address is not the server your account lists.".into(),
+                                    );
+                                }
                                 Err(e) => {
                                     return Ended::Refused(format!(
-                                        "The machine at this address is not the server that was paired ({e})."
+                                        "The machine at this address is not the server your account lists ({e})."
                                     ));
                                 }
-                            }
-                            let who = match &self.who {
-                                Who::Saved(saved) => json!({ "auth": { "token": saved.token } }),
-                                Who::Invite(invite) => json!({ "pair": {
-                                    "secret": invite.secret.clone().unwrap_or_default(),
-                                    "name": self.name,
-                                } }),
-                            };
-                            let sealed = session
-                                .as_mut()
-                                .map(|s| s.seal(who.to_string().as_bytes()))
-                                .unwrap_or_default();
-                            if let Err(ended) = send_frame(ws, DATA, &sealed) {
-                                return ended;
                             }
                         }
                         DATA => {
@@ -641,27 +704,7 @@ impl Link {
                                 Ok(None) => continue,
                                 Err(why) => return Ended::Retry(why.into()),
                             };
-                            if let Some(p) = msg.get("paired") {
-                                let text = |key: &str| p[key].as_str().unwrap_or("").to_string();
-                                self.paired(Saved {
-                                    id: self.id.clone(),
-                                    name: text("host"),
-                                    origin: origin.to_string(),
-                                    way: Way::Relay {
-                                        label: label.to_string(),
-                                        ticket: text("ticket"),
-                                    },
-                                    device: text("id"),
-                                    token: text("token"),
-                                });
-                                self.acks = p["acks"] == true;
-                                ready = true;
-                                self.connected(wait);
-                            } else if let Some(ok) = msg.get("ok") {
-                                self.acks = ok["acks"] == true;
-                                ready = true;
-                                self.connected(wait);
-                            } else if msg.get("res").is_none() {
+                            if msg.get("res").is_none() {
                                 // `res` answers a `req`, and the app asks none.
                                 self.heard(msg);
                             }
@@ -675,7 +718,7 @@ impl Link {
                         .as_ref()
                         .map(|f| f.reason.to_string())
                         .unwrap_or_default();
-                    return hung_up(&reason, frame.map(|f| u16::from(f.code)));
+                    return relay_hung_up(&reason, None, frame.map(|f| u16::from(f.code)));
                 }
                 Ok(_) => pulse.heard(),
                 Err(e) if would_block(&e) => {}
@@ -800,10 +843,14 @@ fn write_alone<S: std::io::Read + std::io::Write>(
     ws.send(msg)
 }
 
+/// What a server reached through the account says when its user removed
+/// this app there.
+pub const UNPAIRED_BY_SERVER: &str = "The server removed this app from its devices. It does not connect again by itself: forget it here, then connect it again from Your servers.";
+
 /// What the relay or the server said as it hung up, in the app's terms.
 fn hung_up(reason: &str, code: Option<u16>) -> Ended {
     match reason {
-        "unauthorized" | "revoked" | "bad_ticket" | "unpaired" | "wrong_secret" => {
+        "unauthorized" | "revoked" | "unpaired" => {
             Ended::Refused("This app is no longer paired with the server.".into())
         }
         "no_pairing" | "bad_code" | "no_credentials" => Ended::Refused(
@@ -823,6 +870,70 @@ fn hung_up(reason: &str, code: Option<u16>) -> Ended {
     }
 }
 
+/// What the relay said as it turned this app away from a server of the
+/// account, or let it go, with the operator's text when it came with one.
+/// The rest is as from any server.
+fn relay_hung_up(reason: &str, message: Option<&str>, code: Option<u16>) -> Ended {
+    let message = message
+        .map(|m| m.trim().chars().take(MAX_MESSAGE).collect::<String>())
+        .filter(|m| !m.is_empty());
+    let with = |text: &str| match &message {
+        Some(m) => format!("{text}: {m}"),
+        None => format!("{text}."),
+    };
+    match reason {
+        "signed_out" => Ended::Refused(SIGNED_OUT.into()),
+        "blocked" => Ended::Refused(with("The relay operator blocked this account")),
+        "not_yours" => Ended::Refused("This server belongs to another account.".into()),
+        "no_machine" => Ended::Refused(
+            "This server was removed from your account. Sign in on it again with `arakun-server login`.".into(),
+        ),
+        "update" => Ended::Refused("This relay needs a newer Arakun. Update Arakun.".into()),
+        // Through the account, the server's own user removed this app there:
+        // dialing again would undo that.
+        "unpaired" => Ended::Refused(UNPAIRED_BY_SERVER.into()),
+        "disabled" => Ended::Retry(with("The relay is closed for now")),
+        _ => hung_up(reason, code),
+    }
+}
+
+/// The key a server's hello names, as raw bytes.
+fn hello_key(reply: &[u8]) -> Option<Vec<u8>> {
+    let v: Value = serde_json::from_slice(reply).ok()?;
+    B64.decode(v["pub"].as_str()?).ok()
+}
+
+/// The door of the server `label` on the relay at `origin`, for a device of
+/// its account. `page` stays the same across reconnects, so the relay lets a
+/// new socket take the place of one a sleep left behind.
+fn account_url(origin: &str, label: &str, page: &str) -> String {
+    format!(
+        "{}/machines/{label}/ws?page={page}",
+        socket_origin(origin.trim().trim_end_matches('/'))
+    )
+}
+
+/// The request that opens `url`, with the sign-in as the bearer when there
+/// is one. A bearer goes in the clear only to this computer.
+fn request(url: &str, bearer: Option<&str>) -> Result<Request, Ended> {
+    let bad = || Ended::Refused(format!("Bad address: {url}"));
+    let mut req = url.into_client_request().map_err(|_| bad())?;
+    if let Some(bearer) = bearer {
+        let http = format!("http{}", url.strip_prefix("ws").unwrap_or(url));
+        if url.starts_with("ws://") && !crate::cloud::local_http(&http) {
+            return Err(Ended::Refused(
+                "The relay address must start with https:// (http:// only for this computer)."
+                    .into(),
+            ));
+        }
+        let mut value = HeaderValue::from_str(&format!("Bearer {bearer}"))
+            .map_err(|_| Ended::Refused(SIGNED_OUT.into()))?;
+        value.set_sensitive(true);
+        req.headers_mut().insert("authorization", value);
+    }
+    Ok(req)
+}
+
 /// The relay closed the connection at one of its limits, named by `which`.
 fn held_back(which: &str) -> Ended {
     Ended::Retry(
@@ -835,20 +946,6 @@ fn held_back(which: &str) -> Ended {
         }
         .into(),
     )
-}
-
-/// `value` as it goes in a query: what is not plainly safe is escaped.
-fn percent(value: &str) -> String {
-    let mut out = String::with_capacity(value.len());
-    for b in value.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char)
-            }
-            _ => out.push_str(&format!("%{b:02X}")),
-        }
-    }
-    out
 }
 
 /// A small JSON answer to a request, with its status. `bearer` is the token
@@ -881,6 +978,7 @@ fn pair_direct(invite: &Invite, name: &str, id: &str) -> Result<Saved, Ended> {
             way: Way::Direct,
             device: text("id"),
             token: text("token"),
+            removed: false,
         }),
         403 => Err(Ended::Refused(
             "The link has run out or was used already; ask the server for a new one.".into(),
@@ -892,100 +990,11 @@ fn pair_direct(invite: &Invite, name: &str, id: &str) -> Result<Saved, Ended> {
     }
 }
 
-/// What a relay address says about whose it is.
-#[derive(Debug, PartialEq)]
-enum Named {
-    /// `<label>.<relay>`: the address itself names the server's key.
-    Label(String),
-    /// Localhost or an address on a private network: a relay run by hand,
-    /// which has no names to give.
-    Local,
-    /// A name that starts with no label.
-    Nothing,
-}
-
-fn named(origin: &str) -> Named {
-    let host = origin.split_once("://").map_or(origin, |(_, rest)| rest);
-    let host = host.split(['/', '?', '#']).next().unwrap_or("");
-    let name = match host.rsplit_once(':') {
-        Some((name, port)) if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) => name,
-        _ => host,
-    };
-    let name = name.trim_matches(['[', ']']);
-    if name == "localhost" {
-        return Named::Local;
-    }
-    if let Ok(ip) = name.parse::<std::net::IpAddr>() {
-        // Across the internet whoever sits on the way could answer for the
-        // relay and name a key of their own. A public address needs a name.
-        return if near(ip) {
-            Named::Local
-        } else {
-            Named::Nothing
-        };
-    }
-    match name.split('.').next() {
-        Some(first) if is_label(first) => Named::Label(first.to_string()),
-        _ => Named::Nothing,
-    }
-}
-
-/// An address on this machine or a network of one's own: loopback, the
-/// private ranges, link-local, and the range Tailscale gives out.
-fn near(ip: std::net::IpAddr) -> bool {
-    match ip {
-        std::net::IpAddr::V4(ip) => {
-            let [a, b, ..] = ip.octets();
-            ip.is_loopback()
-                || ip.is_private()
-                || ip.is_link_local()
-                || (a == 100 && (64..128).contains(&b))
-        }
-        std::net::IpAddr::V6(ip) => {
-            let first = ip.segments()[0];
-            ip.is_loopback() || first & 0xfe00 == 0xfc00 || first & 0xffc0 == 0xfe80
-        }
-    }
-}
-
-/// The label of the server a relay address stands for: the key every hello
-/// from that address is checked against.
-///
-/// It is read off the address, which came in the link from the server's own
-/// terminal. The relay is not asked. A relay that could say which key to
-/// trust could name one of its own, answer the pairing in the server's place,
-/// and read the secret that is there to keep it out. Only a relay run by hand
-/// on localhost or at an address of a private network says which label it
-/// serves: it has no names, and whoever runs it is the one pairing.
-fn relay_label(origin: &str) -> Result<String, Ended> {
-    match named(origin) {
-        Named::Label(label) => return Ok(label),
-        Named::Nothing => {
-            return Err(Ended::Refused(
-                "That address names no server: a relay link starts with the server's label. A relay at a public address needs a name.".into(),
-            ));
-        }
-        Named::Local => {}
-    }
-    let (status, answer) = fetch("GET", &format!("{origin}/_relay"), None, None)
-        .map_err(|e| Ended::Refused(format!("Could not reach {origin}: {e}")))?;
-    let label = answer["label"].as_str().unwrap_or("");
-    match status {
-        200 if is_label(label) => Ok(label.to_string()),
-        403 => Err(Ended::Refused("The relay has blocked this address.".into())),
-        503 => Err(Ended::Refused(
-            answer["disabled"]
-                .as_str()
-                .unwrap_or("The relay is closed right now.")
-                .to_string(),
-        )),
-        _ => Err(Ended::Refused(format!("{origin} is not a relay."))),
-    }
-}
-
-/// TCP, TLS when the address asks for it, and the WebSocket handshake.
-/// The socket, and whether the server acknowledges what it reads.
-fn connect(url: &str) -> Result<(Socket, bool), Ended> {
+/// TCP, TLS when the address asks for it, and the WebSocket handshake, with
+/// the sign-in as the bearer when there is one. The socket, and whether the
+/// server acknowledges what it reads.
+fn connect(url: &str, bearer: Option<&str>) -> Result<(Socket, bool), Ended> {
+    let req = request(url, bearer)?;
     let (host, port) =
         host_port(url).ok_or_else(|| Ended::Refused(format!("Bad address: {url}")))?;
     let addrs = (host.as_str(), port)
@@ -1003,12 +1012,20 @@ fn connect(url: &str) -> Result<(Socket, bool), Ended> {
     let _ = stream.set_read_timeout(Some(CONNECT_TIMEOUT));
     let _ = stream.set_write_timeout(Some(CONNECT_TIMEOUT));
     // A `ws://` address comes back as a plain stream in the same wrapper.
-    let (ws, res) = tungstenite::client_tls(url, stream).map_err(|e| match e {
+    let (ws, res) = tungstenite::client_tls(req, stream).map_err(|e| match e {
         tungstenite::HandshakeError::Failure(tungstenite::Error::Http(res)) => {
-            match res.status().as_u16() {
-                // The door itself said no: the token or the ticket is no longer good.
-                401 | 403 => Ended::Refused("This app is no longer paired with the server.".into()),
-                status => Ended::Retry(format!("{host} answered {status}.")),
+            match (res.status().as_u16(), bearer.is_some()) {
+                // No such door, or a page where it would be: a relay from
+                // before accounts.
+                (200..=399 | 404, true) => {
+                    Ended::Refused("This relay does not support account sign-in.".into())
+                }
+                (401, true) => Ended::Refused(SIGNED_OUT.into()),
+                // The door itself said no: the token is no longer good.
+                (401 | 403, false) => {
+                    Ended::Refused("This app is no longer paired with the server.".into())
+                }
+                (status, _) => Ended::Retry(format!("{host} answered {status}.")),
             }
         }
         tungstenite::HandshakeError::Failure(e) => Ended::Retry(format!("Could not connect: {e}")),
@@ -1051,7 +1068,6 @@ mod tests {
     use crate::phone::identity::Identity;
     use crate::phone::{Access, ClientMsg, Incoming, Server};
     use futures::StreamExt as _;
-    use std::io::{Read as _, Write as _};
     use std::net::{Ipv4Addr, TcpListener};
 
     const QUICK: Timing = Timing {
@@ -1116,7 +1132,6 @@ mod tests {
         let invite = Invite {
             origin: origin.clone(),
             code,
-            secret: None,
         };
         let client = Client::start(
             "srv".into(),
@@ -1210,6 +1225,7 @@ mod tests {
             way: Way::Direct,
             device: "d".into(),
             token: "t".into(),
+            removed: false,
         };
         let (tx, mut rx) = mpsc::unbounded();
         let client = Client::start("srv".into(), Who::Saved(saved), String::new(), tx, QUICK);
@@ -1235,7 +1251,6 @@ mod tests {
         let invite = Invite {
             origin: format!("http://127.0.0.1:{}", server.port()),
             code: "not-a-code".into(),
-            secret: None,
         };
         let (tx, mut rx) = mpsc::unbounded();
         let client = Client::start("srv".into(), Who::Invite(invite), "x".into(), tx, QUICK);
@@ -1359,6 +1374,7 @@ mod tests {
             way: Way::Direct,
             device: "d".into(),
             token: "t".into(),
+            removed: false,
         }
     }
 
@@ -1449,7 +1465,6 @@ mod tests {
         let invite = Invite {
             origin: format!("http://127.0.0.1:{}", server.port()),
             code: access.lock().unwrap().begin_pairing(),
-            secret: None,
         };
         let (tx, mut rx) = mpsc::unbounded();
         let client = Client::start("srv".into(), Who::Invite(invite), "x".into(), tx, QUICK);
@@ -1482,7 +1497,6 @@ mod tests {
             let invite = Invite {
                 origin: format!("http://127.0.0.1:{}", server.port()),
                 code: access.lock().unwrap().begin_pairing(),
-                secret: None,
             };
             let (tx, mut rx) = mpsc::unbounded();
             let client = Client::start("srv".into(), Who::Invite(invite), "x".into(), tx, QUICK);
@@ -1503,21 +1517,6 @@ mod tests {
         }
     }
 
-    /// One HTTP request answered by hand: what `/_relay` says.
-    fn answer_relay_info(listener: &TcpListener, label: &str) {
-        let (mut stream, _) = listener.accept().unwrap();
-        let mut head = [0u8; 2048];
-        let n = stream.read(&mut head).unwrap();
-        assert!(String::from_utf8_lossy(&head[..n]).starts_with("GET /_relay "));
-        let body = json!({ "label": label }).to_string();
-        write!(
-            stream,
-            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-            body.len()
-        )
-        .unwrap();
-    }
-
     fn phone_frame(kind: u8, payload: &[u8]) -> Message {
         let mut frame = vec![kind];
         frame.extend_from_slice(payload);
@@ -1535,39 +1534,60 @@ mod tests {
         }
     }
 
+    /// What the app asked the relay's door for.
+    struct Door {
+        /// The path with its query.
+        target: String,
+        authorization: Option<String>,
+    }
+
     /// The relay and the server behind it, for one connection: lets the app
     /// in on `channel`, shakes hands as the server and returns the sealed
-    /// session along with the query the app came with.
+    /// session along with what the app asked the door for.
     // The callback's error type is tungstenite's to choose.
     #[allow(clippy::result_large_err)]
     fn accept_through_relay(
         listener: &TcpListener,
         identity: &Identity,
         channel: u32,
-    ) -> (WebSocket<TcpStream>, Session, String) {
+    ) -> (WebSocket<TcpStream>, Session, Door) {
         let (stream, _) = listener.accept().unwrap();
         stream
             .set_read_timeout(Some(Duration::from_secs(10)))
             .unwrap();
-        let mut query = String::new();
+        let mut door = Door {
+            target: String::new(),
+            authorization: None,
+        };
         let mut ws = tungstenite::accept_hdr(
             stream,
             |req: &tungstenite::handshake::server::Request, res| {
-                query = req.uri().query().unwrap_or("").to_string();
+                door.target = req.uri().to_string();
+                door.authorization = req
+                    .headers()
+                    .get("authorization")
+                    .and_then(|v| v.to_str().ok())
+                    .map(str::to_string);
                 Ok(res)
             },
         )
         .unwrap();
         let open = json!({ "type": "open", "channel": channel }).to_string();
         ws.send(phone_frame(CONTROL, open.as_bytes())).unwrap();
-        let (kind, hello) = next_frame(&mut ws);
+        let session = answer_hello(&mut ws, identity, channel);
+        (ws, session, door)
+    }
+
+    /// The server's side of the handshake, for the hello the app sends next.
+    fn answer_hello(ws: &mut WebSocket<TcpStream>, identity: &Identity, channel: u32) -> Session {
+        let (kind, hello) = next_frame(ws);
         assert_eq!(kind, HELLO);
         let hello = PhoneHello::parse(&hello).unwrap();
         let (reply, session) = Handshake::begin()
             .answer(&hello, identity, channel, "test")
             .unwrap();
         ws.send(phone_frame(HELLO, &reply)).unwrap();
-        (ws, session, query)
+        session
     }
 
     fn sealed(ws: &mut WebSocket<TcpStream>, session: &mut Session) -> Value {
@@ -1581,113 +1601,123 @@ mod tests {
             .unwrap();
     }
 
-    #[test]
-    fn it_pairs_through_the_relay_and_comes_back_with_its_ticket() {
-        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+    fn control(ws: &mut WebSocket<TcpStream>, msg: Value) {
+        ws.send(phone_frame(CONTROL, msg.to_string().as_bytes()))
+            .unwrap();
+    }
+
+    /// A server of the account, as `servers.json` keeps it, and what the
+    /// account says of it: its key, and the app's sign-in.
+    fn through_account(listener: &TcpListener, identity: &Identity) -> (Saved, Account) {
         let origin = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let saved = Saved {
+            id: "srv".into(),
+            name: "build-box".into(),
+            origin,
+            way: Way::Account {
+                label: identity.label(),
+            },
+            device: String::new(),
+            token: String::new(),
+            removed: false,
+        };
+        let account = Account {
+            base: saved.origin.clone(),
+            session: "tok".into(),
+            public: B64.encode(identity.public_raw()),
+        };
+        (saved, account)
+    }
+
+    fn start_account(saved: Saved, account: Account, tx: Events) -> Client {
+        Client::start(
+            "srv".into(),
+            Who::Account(saved, account),
+            String::new(),
+            tx,
+            QUICK,
+        )
+    }
+
+    #[test]
+    fn the_door_of_a_server_of_the_account_is_on_the_relay_host() {
+        assert_eq!(
+            account_url("https://app.arakun.dev", "abcdefghij234567", "0a1b2c3d4e5f"),
+            "wss://app.arakun.dev/machines/abcdefghij234567/ws?page=0a1b2c3d4e5f"
+        );
+        assert_eq!(
+            account_url("http://localhost:8787/", "abcdefghij234567", "0a1b2c3d"),
+            "ws://localhost:8787/machines/abcdefghij234567/ws?page=0a1b2c3d"
+        );
+        let req = request(
+            "wss://app.arakun.dev/machines/abcdefghij234567/ws?page=0a1b2c3d",
+            Some("tok"),
+        )
+        .unwrap();
+        let bearer = &req.headers()["authorization"];
+        assert_eq!(bearer.to_str().unwrap(), "Bearer tok");
+        assert!(bearer.is_sensitive());
+        // The sign-in never crosses a network in the clear.
+        assert!(matches!(
+            request(
+                "ws://10.0.0.2:8787/machines/x/ws?page=0a1b2c3d",
+                Some("tok")
+            ),
+            Err(Ended::Refused(_))
+        ));
+        assert!(
+            request(
+                "ws://127.0.0.1:8787/machines/x/ws?page=0a1b2c3d",
+                Some("tok")
+            )
+            .is_ok()
+        );
+        assert!(
+            request("ws://10.0.0.2:7474/ws?t=k", None)
+                .unwrap()
+                .headers()
+                .get("authorization")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn it_reaches_a_server_of_the_account_through_the_relay() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let identity = Identity::generate();
         let label = identity.label();
-
+        let (saved, account) = through_account(&listener, &identity);
         let (tx, mut rx) = mpsc::unbounded();
-        let invite = Invite {
-            origin: origin.clone(),
-            code: "c0de".into(),
-            secret: Some("s3cr3t".into()),
-        };
-        let client = Client::start(
-            "srv".into(),
-            Who::Invite(invite),
-            "Arakun".into(),
-            tx.clone(),
-            QUICK,
-        );
+        let client = start_account(saved, account, tx);
         assert_eq!(status(&mut rx), Status::Connecting);
-        answer_relay_info(&listener, &label);
-        let (mut ws, mut session, query) = accept_through_relay(&listener, &identity, 7);
-        assert_eq!(query, "p=c0de");
-        // Inside the channel the app shows the secret, which the relay never saw.
-        let said = sealed(&mut ws, &mut session);
-        assert_eq!(
-            said,
-            json!({ "pair": { "secret": "s3cr3t", "name": "Arakun" } })
-        );
-        seal(
-            &mut ws,
-            &mut session,
-            json!({ "paired": { "id": "dev1", "name": "Arakun", "token": "tok", "ticket": "tick et", "host": "build-box" } }),
-        );
-        let Event::Paired(saved) = next(&mut rx) else {
-            panic!("not paired");
-        };
-        assert_eq!(
-            saved,
-            Saved {
-                id: "srv".into(),
-                name: "build-box".into(),
-                origin: origin.clone(),
-                way: Way::Relay {
-                    label: label.clone(),
-                    ticket: "tick et".into(),
-                },
-                device: "dev1".into(),
-                token: "tok".into(),
-            }
-        );
+        let (mut ws, mut session, door) = accept_through_relay(&listener, &identity, 7);
+        let page = door
+            .target
+            .strip_prefix(&format!("/machines/{label}/ws?page="))
+            .unwrap()
+            .to_string();
+        assert!(page.len() >= 8 && page.bytes().all(|b| b.is_ascii_hexdigit()));
+        assert_eq!(door.authorization.as_deref(), Some("Bearer tok"));
+        // The handshake is all it takes: the relay already said who this is.
         assert_eq!(status(&mut rx), Status::Connected);
 
-        // Sealed both ways from here.
+        // Sealed both ways, numbered, as the computer acknowledges each.
         seal(&mut ws, &mut session, json!({ "type": "inbox" }));
         assert!(matches!(next(&mut rx), Event::Message(m) if m["type"] == "inbox"));
-
-        // A message too big for one relay frame comes in pieces, as the
-        // server's relay client sends it, and reaches the shell joined.
         let text = "é".repeat(300 * 1024);
         let big = json!({ "type": "entries", "text": text }).to_string();
-        let sent = crate::phone::relay::parts(&big, 160 * 1024);
-        assert!(sent.len() > 1);
-        for piece in sent {
+        for piece in crate::phone::relay::parts(&big, 160 * 1024) {
             seal(&mut ws, &mut session, serde_json::from_str(&piece).unwrap());
         }
         assert!(
             matches!(next(&mut rx), Event::Message(m) if m["type"] == "entries" && m["text"] == text)
         );
-        seal(&mut ws, &mut session, json!({ "type": "usage" }));
-        assert!(matches!(next(&mut rx), Event::Message(m) if m["type"] == "usage"));
-        client.send(&json!({ "type": "cancel", "session": "s1" }));
-        assert_eq!(
-            sealed(&mut ws, &mut session),
-            json!({ "type": "cancel", "session": "s1" })
-        );
-
-        // The server goes away and comes back: a new hello, and who this is again.
-        let away = json!({ "type": "pc_offline" }).to_string();
-        ws.send(phone_frame(CONTROL, away.as_bytes())).unwrap();
-        assert_eq!(status(&mut rx), Status::ServerAway);
-        let back = json!({ "type": "pc_online" }).to_string();
-        ws.send(phone_frame(CONTROL, back.as_bytes())).unwrap();
-        let (kind, hello) = next_frame(&mut ws);
-        assert_eq!(kind, HELLO);
-        let (reply, mut session) = Handshake::begin()
-            .answer(&PhoneHello::parse(&hello).unwrap(), &identity, 7, "test")
-            .unwrap();
-        ws.send(phone_frame(HELLO, &reply)).unwrap();
-        assert_eq!(
-            sealed(&mut ws, &mut session),
-            json!({ "auth": { "token": "tok" } })
-        );
-        // This one acknowledges: what it read and did not say so for is
-        // told back when it goes, before the app hears it went.
-        seal(
-            &mut ws,
-            &mut session,
-            json!({ "ok": { "id": "dev1", "acks": true } }),
-        );
-        assert_eq!(status(&mut rx), Status::Connected);
         let got = json!({ "type": "cancel", "session": "s1" });
         let lost = json!({ "type": "skip_question", "session": "s1" });
         client.send(&got);
         let said = sealed(&mut ws, &mut session);
         assert_eq!(said["type"], "cancel");
+        assert!(said["seq"].is_u64());
         seal(
             &mut ws,
             &mut session,
@@ -1696,108 +1726,241 @@ mod tests {
         client.send(&lost);
         assert_eq!(sealed(&mut ws, &mut session)["type"], "skip_question");
 
-        // Another server process takes its place at the relay, which says
-        // only that one is online: this one is gone, then back.
-        ws.send(phone_frame(CONTROL, back.as_bytes())).unwrap();
+        // The server goes away and comes back: a new hello, and in again.
+        control(&mut ws, json!({ "type": "pc_offline" }));
         assert!(matches!(next(&mut rx), Event::Undelivered(m) if m == lost));
         assert_eq!(status(&mut rx), Status::ServerAway);
-        let (kind, hello) = next_frame(&mut ws);
-        assert_eq!(kind, HELLO);
-        let (reply, mut session) = Handshake::begin()
-            .answer(&PhoneHello::parse(&hello).unwrap(), &identity, 7, "test")
-            .unwrap();
-        ws.send(phone_frame(HELLO, &reply)).unwrap();
-        assert_eq!(
-            sealed(&mut ws, &mut session),
-            json!({ "auth": { "token": "tok" } })
-        );
-        seal(&mut ws, &mut session, json!({ "ok": { "id": "dev1" } }));
+        control(&mut ws, json!({ "type": "pc_online" }));
+        let mut session = answer_hello(&mut ws, &identity, 7);
         assert_eq!(status(&mut rx), Status::Connected);
+        client.send(&got);
+        assert_eq!(sealed(&mut ws, &mut session)["type"], "cancel");
 
-        // A new connection brings the ticket to the relay, escaped for a query.
-        drop(client);
-        let _client = Client::start("srv".into(), Who::Saved(saved), String::new(), tx, QUICK);
-        assert_eq!(status(&mut rx), Status::Connecting);
-        let (mut ws, mut session, query) = accept_through_relay(&listener, &identity, 9);
-        let page = query.strip_prefix("d=dev1&t=tick%20et&s=").unwrap();
-        assert!(page.len() >= 8 && page.bytes().all(|b| b.is_ascii_hexdigit()));
-        assert_eq!(
-            sealed(&mut ws, &mut session),
-            json!({ "auth": { "token": "tok" } })
+        // The relay reaps a device by its text ping only.
+        let ping = loop {
+            match ws.read().unwrap() {
+                Message::Text(t) => break t,
+                Message::Pong(_) | Message::Ping(_) => continue,
+                other => panic!("unexpected {other:?}"),
+            }
+        };
+        assert_eq!(ping.as_str(), "ping");
+
+        // The connection drops without a word: what was not acknowledged is
+        // told back, and the next one is the same page, so the relay can let
+        // it take the old one's place.
+        drop(ws);
+        assert!(matches!(next(&mut rx), Event::Undelivered(m) if m == got));
+        let (mut ws, _session, again) = accept_through_relay(&listener, &identity, 8);
+        assert_eq!(again.target, door.target);
+        assert_eq!(again.authorization.as_deref(), Some("Bearer tok"));
+
+        // The relay's recheck finds the sign-in gone: nothing to come back for.
+        control(&mut ws, json!({ "type": "bye", "reason": "signed_out" }));
+        loop {
+            match status(&mut rx) {
+                Status::Refused(why) => {
+                    assert_eq!(why, SIGNED_OUT);
+                    break;
+                }
+                Status::Connected | Status::Connecting | Status::Waiting { .. } => {}
+                other => panic!("{other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn the_sign_in_goes_to_the_service_that_issued_it_whatever_the_file_says() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let identity = Identity::generate();
+        let (mut saved, account) = through_account(&listener, &identity);
+        // Someone wrote another address in `servers.json`.
+        let elsewhere = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        saved.origin = format!(
+            "http://127.0.0.1:{}",
+            elsewhere.local_addr().unwrap().port()
         );
-        // The relay says the ticket was revoked: nothing to come back for.
-        let bye = json!({ "type": "bye", "reason": "revoked" }).to_string();
-        ws.send(phone_frame(CONTROL, bye.as_bytes())).unwrap();
+        let (tx, mut rx) = mpsc::unbounded();
+        let _client = start_account(saved, account, tx);
+        assert_eq!(status(&mut rx), Status::Connecting);
+        let (_ws, _session, door) = accept_through_relay(&listener, &identity, 3);
+        assert_eq!(door.authorization.as_deref(), Some("Bearer tok"));
+        elsewhere.set_nonblocking(true).unwrap();
         assert!(
-            matches!(status(&mut rx), Status::Refused(why) if why.contains("no longer paired"))
+            elsewhere.accept().is_err(),
+            "nothing went to the file's address"
         );
     }
 
     #[test]
-    fn a_server_that_holds_another_key_is_refused() {
+    fn a_key_the_account_names_must_be_the_one_the_label_stands_for() {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
-        let origin = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
-        let paired_with = Identity::generate();
-        let impostor = Identity::generate();
-        let saved = Saved {
-            id: "srv".into(),
-            name: "build-box".into(),
-            origin,
-            way: Way::Relay {
-                label: paired_with.label(),
-                ticket: "t".into(),
-            },
-            device: "dev1".into(),
-            token: "tok".into(),
-        };
+        let identity = Identity::generate();
+        let (saved, mut account) = through_account(&listener, &identity);
+        account.public = B64.encode(Identity::generate().public_raw());
         let (tx, mut rx) = mpsc::unbounded();
-        let _client = Client::start("srv".into(), Who::Saved(saved), String::new(), tx, QUICK);
+        let _client = start_account(saved, account, tx);
         assert_eq!(status(&mut rx), Status::Connecting);
-        // The token never leaves: the hello is checked before anything is said.
+        assert!(matches!(status(&mut rx), Status::Refused(why) if why.contains("does not match")));
+        // Nothing was dialed, so the sign-in went nowhere.
+        listener.set_nonblocking(true).unwrap();
+        assert!(listener.accept().is_err());
+    }
+
+    #[test]
+    fn a_server_with_another_key_is_refused() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let listed = Identity::generate();
+        let impostor = Identity::generate();
+        let (saved, account) = through_account(&listener, &listed);
+        let (tx, mut rx) = mpsc::unbounded();
+        let _client = start_account(saved, account, tx);
+        assert_eq!(status(&mut rx), Status::Connecting);
         let (_ws, _session, _) = accept_through_relay(&listener, &impostor, 3);
         assert!(matches!(status(&mut rx), Status::Refused(why) if why.contains("not the server")));
     }
 
     #[test]
-    fn it_comes_back_to_the_relay_as_the_same_page_and_pings_in_text() {
+    fn a_held_server_says_how_it_stands_and_dials_nothing() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let (saved, _) = through_account(&listener, &Identity::generate());
+        let (tx, mut rx) = mpsc::unbounded();
+        let waiting = Status::Waiting {
+            why: ACCOUNT_UNREACHABLE.into(),
+            retry_in: Duration::ZERO,
+        };
+        let client = Client::held(&saved, waiting.clone(), tx);
+        // No "Connecting" before it: the row shows the sentence only.
+        assert_eq!(status(&mut rx), waiting);
+        listener.set_nonblocking(true).unwrap();
+        assert!(listener.accept().is_err());
+        // What is said to it is told back: nothing will carry it.
+        client.send(&json!({ "type": "hello" }));
+        assert!(matches!(next(&mut rx), Event::Undelivered(_)));
+    }
+
+    #[test]
+    fn a_relay_that_fails_at_the_door_is_tried_again() {
+        use std::io::{Read as _, Write as _};
+        // The relay answers 500 to the upgrade while its database is down.
+        let answers = |status: &'static str| {
+            let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+            let port = listener.local_addr().unwrap().port();
+            std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut seen = Vec::new();
+                let mut buf = [0u8; 1024];
+                while !seen.windows(4).any(|w| w == b"\r\n\r\n") {
+                    match stream.read(&mut buf) {
+                        Ok(n) if n > 0 => seen.extend_from_slice(&buf[..n]),
+                        _ => break,
+                    }
+                }
+                let _ = stream.write_all(
+                    format!("HTTP/1.1 {status}\r\ncontent-length: 0\r\n\r\n").as_bytes(),
+                );
+            });
+            connect(
+                &format!("ws://127.0.0.1:{port}/machines/abcdefghij234567/ws?page=0a1b2c3d"),
+                Some("tok"),
+            )
+            .err()
+            .unwrap()
+        };
+        for status in ["500 Internal Server Error", "503 Service Unavailable"] {
+            assert!(
+                matches!(answers(status), Ended::Retry(why) if why.contains(&status[..3])),
+                "{status}"
+            );
+        }
+        // Only a 401 says the sign-in is dead.
+        assert!(matches!(
+            answers("401 Unauthorized"),
+            Ended::Refused(why) if why == SIGNED_OUT
+        ));
+    }
+
+    #[test]
+    fn a_server_paired_through_the_old_relay_waits_for_a_sign_in() {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let origin = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
-        let identity = Identity::generate();
         let saved = Saved {
             id: "srv".into(),
             name: "build-box".into(),
             origin,
             way: Way::Relay {
-                label: identity.label(),
+                label: Identity::generate().label(),
                 ticket: "t".into(),
             },
             device: "dev1".into(),
             token: "tok".into(),
+            removed: false,
         };
         let (tx, mut rx) = mpsc::unbounded();
-        let _client = Client::start("srv".into(), Who::Saved(saved), String::new(), tx, QUICK);
-        let (mut ws, mut session, first) = accept_through_relay(&listener, &identity, 3);
+        let _client = Client::connect(saved, tx);
+        assert_eq!(status(&mut rx), Status::Connecting);
         assert_eq!(
-            sealed(&mut ws, &mut session),
-            json!({ "auth": { "token": "tok" } })
+            status(&mut rx),
+            Status::Refused(SIGN_IN_TO_RECONNECT.into())
         );
-        seal(&mut ws, &mut session, json!({ "ok": { "id": "dev1" } }));
-        // The relay reaps a phone by its text ping only.
-        let ping = loop {
-            match ws.read().unwrap() {
-                Message::Text(t) => break t,
-                Message::Pong(_) => continue,
-                other => panic!("unexpected {other:?}"),
-            }
-        };
-        assert_eq!(ping.as_str(), "ping");
-        // The connection drops without a word: the next one is the same page,
-        // so the relay can let it take the old one's place.
-        drop(ws);
-        let (_ws, _session, again) = accept_through_relay(&listener, &identity, 4);
-        assert_eq!(again, first);
-        assert!(first.contains("&s="));
-        let _ = status(&mut rx);
+        // Its ticket and token go nowhere.
+        listener.set_nonblocking(true).unwrap();
+        assert!(listener.accept().is_err());
+    }
+
+    #[test]
+    fn each_refusal_of_the_relay_says_what_to_do() {
+        let refused =
+            |reason: &str, message: Option<&str>| match relay_hung_up(reason, message, None) {
+                Ended::Refused(why) => why,
+                other => panic!("{reason}: {other:?}"),
+            };
+        assert_eq!(refused("signed_out", None), SIGNED_OUT);
+        assert_eq!(
+            refused("blocked", Some(" Too many frames. ")),
+            "The relay operator blocked this account: Too many frames."
+        );
+        assert_eq!(
+            refused("blocked", None),
+            "The relay operator blocked this account."
+        );
+        assert_eq!(
+            refused("not_yours", None),
+            "This server belongs to another account."
+        );
+        assert_eq!(
+            refused("no_machine", None),
+            "This server was removed from your account. Sign in on it again with `arakun-server login`."
+        );
+        assert_eq!(
+            refused("update", None),
+            "This relay needs a newer Arakun. Update Arakun."
+        );
+        // The server's user removed this app: no "paired" words, no retry.
+        assert_eq!(refused("unpaired", None), UNPAIRED_BY_SERVER);
+        // A server reached directly still says the pairing is gone.
+        assert!(matches!(
+            hung_up("unpaired", None),
+            Ended::Refused(why) if why.contains("no longer paired")
+        ));
+        // Words of the pairing through the relay that no longer exists.
+        for gone in ["bad_ticket", "wrong_secret"] {
+            assert!(matches!(hung_up(gone, None), Ended::Retry(_)), "{gone}");
+        }
+        assert!(matches!(
+            relay_hung_up("disabled", Some("Back at noon."), Some(4503)),
+            Ended::Retry(why) if why == "The relay is closed for now: Back at noon."
+        ));
+        // A close with the reason and no `bye` reads the same.
+        assert!(matches!(
+            relay_hung_up("not_yours", None, Some(4403)),
+            Ended::Refused(why) if why.contains("another account")
+        ));
+        assert!(matches!(
+            relay_hung_up("limit:phones", None, Some(4429)),
+            Ended::Retry(why) if why.contains("devices")
+        ));
+        assert!(matches!(relay_hung_up("", None, None), Ended::Retry(_)));
     }
 
     #[test]
@@ -1820,46 +1983,5 @@ mod tests {
             Some(("127.0.0.1".into(), 8787))
         );
         assert_eq!(host_port("https://a.arakun.dev"), None);
-    }
-
-    #[test]
-    fn the_key_to_trust_is_read_off_the_address_not_asked_of_the_relay() {
-        assert_eq!(
-            named("https://abcdefghij234567.arakun.dev"),
-            Named::Label("abcdefghij234567".into())
-        );
-        assert_eq!(
-            named("https://abcdefghij234567.me.workers.dev/"),
-            Named::Label("abcdefghij234567".into())
-        );
-        // A name with no label in front is no server's: nothing is asked of it.
-        assert_eq!(named("https://arakun.dev"), Named::Nothing);
-        assert_eq!(named("https://relay.example.com"), Named::Nothing);
-        assert!(matches!(
-            relay_label("https://relay.example.com"),
-            Err(Ended::Refused(why)) if why.contains("names no server")
-        ));
-        // A relay run by hand has no names; it alone says which label it serves.
-        for local in [
-            "http://127.0.0.1:8787",
-            "http://localhost:8787",
-            "http://[::1]:8787",
-            "http://10.0.0.5",
-            "http://192.168.1.20:8787",
-            "http://100.101.102.103:8787",
-            "http://[fd7a:115c:a1e0::1]:8787",
-        ] {
-            assert_eq!(named(local), Named::Local, "{local}");
-        }
-        // At a public address the answer would cross the internet in the
-        // clear, and whoever is on the way could give a key of their own.
-        for public in [
-            "http://203.0.113.9:8787",
-            "http://[2001:db8::1]:8787",
-            "http://100.200.0.1",
-        ] {
-            assert_eq!(named(public), Named::Nothing, "{public}");
-        }
-        assert_eq!(percent("a-b_c.d~e f/+="), "a-b_c.d~e%20f%2F%2B%3D");
     }
 }

@@ -9,6 +9,7 @@ pub mod assets;
 pub mod browser;
 pub mod caret;
 pub mod clone_source;
+pub mod cloud;
 pub mod durable;
 pub mod explorer;
 pub mod fetch;

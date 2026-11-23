@@ -452,7 +452,22 @@ pub fn run(opts: Options) -> i32 {
         }
         Reach::Relay => {
             let identity = settings.identity();
-            let (client, rx) = RelayClient::start(&settings.relay_base, identity, access.clone());
+            // No session is kept for the server yet, so it starts signed out.
+            let machine = relay::Machine {
+                name: phone::host_name(),
+                kind: relay::MachineKind::Server,
+            };
+            let account = relay::Account {
+                github_id: 0,
+                session: None,
+            };
+            let (client, rx) = RelayClient::start(
+                &settings.relay_base,
+                identity,
+                access.clone(),
+                machine,
+                account,
+            );
             (
                 Transport::Relay(client),
                 rx,
@@ -558,6 +573,9 @@ fn relay_address(status: relay::Status, page: &str) -> Address {
             relay::wait_text(retry_in)
         )),
         relay::Status::Rejected(why) => Address::Problem(why),
+        relay::Status::SignedOut => {
+            Address::Problem("the relay only lets in a server signed in to an account".into())
+        }
     }
 }
 
@@ -1822,7 +1840,6 @@ impl Daemon {
     fn save_devices(&mut self) {
         self.settings.devices = self.access.lock().unwrap().devices.clone();
         self.settings.save();
-        self.transport.sync_tickets(&self.access);
     }
 
     /// Reads every place's [`PlaceMeta`] to the side, and sends the inbox
@@ -2117,7 +2134,11 @@ impl Daemon {
                 }
             }
             // The device's sockets close on their own; `Disconnected` tidies the rest.
-            Incoming::Paired | Incoming::Subscribed | Incoming::Unpaired => self.save_devices(),
+            Incoming::Paired
+            | Incoming::NewDevice { .. }
+            | Incoming::Renamed
+            | Incoming::Subscribed
+            | Incoming::Unpaired => self.save_devices(),
             Incoming::Relay(status) => {
                 if let Transport::Relay(client) = &self.transport {
                     let page = client.page_url().to_string();
@@ -2133,6 +2154,9 @@ impl Daemon {
                         )),
                         relay::Status::Rejected(why) => {
                             Some(format!("the relay turned this server away: {why}"))
+                        }
+                        relay::Status::SignedOut => {
+                            Some("the relay only lets in a server signed in to an account".into())
                         }
                     };
                     self.set_address(relay_address(status, &page), news);
@@ -3534,28 +3558,21 @@ impl Daemon {
     /// Opens a pairing: the link a device opens (and its code, on the network),
     /// as JSON for the command to print.
     fn pair(&mut self) -> Result<String, String> {
-        let base = match (&self.address, &self.transport) {
-            (Address::Ready(url), _) => url.clone(),
-            (_, Transport::Relay(client)) => client.page_url().to_string(),
-            (Address::Pending(what) | Address::Problem(what), _) => {
+        // The relay lets in the account's devices: there is nothing to pair.
+        if self.reach == Reach::Relay {
+            return Err(
+                "through the relay, a device comes in by signing in to this server's account"
+                    .into(),
+            );
+        }
+        let base = match &self.address {
+            Address::Ready(url) => url.clone(),
+            Address::Pending(what) | Address::Problem(what) => {
                 return Err(format!("devices can't reach the server yet: {what}"));
             }
         };
-        let (url, code) = {
-            let mut access = self.access.lock().unwrap();
-            match self.reach {
-                // Through the relay the link carries everything; there is no code to read out.
-                Reach::Relay => {
-                    let (code, secret) = access.begin_pairing_relay();
-                    (phone::relay_link(&base, &code, &secret), String::new())
-                }
-                Reach::Lan | Reach::Tailscale => {
-                    let code = access.begin_pairing();
-                    (phone::link(&base, &code), code)
-                }
-            }
-        };
-        self.transport.sync_pairing(&self.access);
+        let code = self.access.lock().unwrap().begin_pairing();
+        let url = phone::link(&base, &code);
         let waiting = match &self.address {
             Address::Ready(_) => String::new(),
             other => other.line(),

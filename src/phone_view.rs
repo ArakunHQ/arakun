@@ -1,7 +1,11 @@
 //! The Phone tab: turns the phone page on and off, picks how phones reach this
-//! computer (the local network, Tailscale or the relay), pairs phones with a
-//! short code (shown as text and as a QR code) and lists the ones paired so far,
-//! each with a way to unpair it. The shell runs the server (`shell::phone`).
+//! computer (the local network, Tailscale or the relay). On the network and
+//! over Tailscale it pairs phones with a short code (shown as text and as a QR
+//! code) and lists the ones paired so far, each with a way to unpair it.
+//! Through the relay a phone signs in to the same account instead: the tab
+//! signs in, and lists the account's signed-in devices, each with a way to
+//! sign it out, and its computers, each with a way to remove it. The shell
+//! runs the server (`shell::phone`).
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
@@ -30,14 +34,96 @@ pub enum PhoneEvent {
     /// Open a link in a browser tab here: the pairing page, to try it without a
     /// phone, or a page that helps set things up.
     OpenHere(String),
+    /// Sign in, so the relay lets in the account's devices.
+    SignIn,
+    /// Sign out one of the account's signed-in devices, by its id.
+    SignOutDevice(String),
+    /// Remove one of the account's computers, by its label.
+    RemoveComputer(String),
 }
 
 /// This computer as the relay knows it.
 #[derive(Clone, PartialEq, Eq)]
 pub struct RelayInfo {
-    /// Where phones find it: `https://<label>.<relay host>/`, the label being
-    /// derived from the computer's public key.
+    /// Where phones find it: the relay's own page, which lists the account's
+    /// computers, such as `https://app.arakun.dev`.
     pub url: String,
+    pub account: RelayAccount,
+}
+
+/// The account the relay lets devices in by.
+#[derive(Clone, PartialEq, Eq)]
+pub enum RelayAccount {
+    /// The sign-in is being read, or the service has not said whose it is yet.
+    Checking,
+    SignedOut,
+    SignedIn {
+        login: String,
+        devices: SignedInList,
+        computers: ComputerList,
+    },
+}
+
+/// The account's computers running the app, as far as the service has said.
+#[derive(Clone, PartialEq, Eq)]
+pub enum ComputerList {
+    Loading,
+    Listed(Vec<AccountComputer>),
+    Failed(String),
+}
+
+/// A computer of the account that runs the app.
+#[derive(Clone, PartialEq, Eq)]
+pub struct AccountComputer {
+    pub label: String,
+    pub name: String,
+    pub online: bool,
+    /// Unix seconds.
+    pub last_seen_at: u64,
+    /// This computer: listed, but not removed from here.
+    pub this: bool,
+}
+
+/// What a Remove asks first, naming the machine: a computer still signed in
+/// comes back when it next connects, so that is said too.
+pub fn remove_question(name: &str) -> String {
+    format!(
+        "Remove {} from your account? If it is still signed in, it comes back the next time it connects.",
+        crate::redact::value(name)
+    )
+}
+
+/// The account's signed-in devices, as far as the service has said.
+#[derive(Clone, PartialEq, Eq)]
+pub enum SignedInList {
+    Loading,
+    Listed(Vec<SignedInDevice>),
+    Failed(String),
+}
+
+/// A device signed in to the account.
+#[derive(Clone, PartialEq, Eq)]
+pub struct SignedInDevice {
+    pub id: String,
+    pub name: String,
+    /// `app`, `server`, `phone`, `ios` or `android`.
+    pub kind: String,
+    /// Unix seconds.
+    pub last_used_at: u64,
+    /// This computer's own sign-in.
+    pub current: bool,
+}
+
+/// What a signed-in device is, in a word or two.
+fn kind_text(kind: &str) -> &str {
+    match kind {
+        "app" => "Arakun app",
+        "server" => "server",
+        "phone" => "phone page",
+        "ios" => "iPhone app",
+        "android" => "Android app",
+        other => other,
+    }
 }
 
 /// Where phones find this computer, as far as the shell knows right now.
@@ -108,6 +194,8 @@ pub struct PhoneView {
     copied: Option<String>,
     /// "New identity" was pressed once; the next press is the one that counts.
     confirm_identity: bool,
+    /// Remove was pressed once on this computer, by label; the next press counts.
+    confirm_remove: Option<String>,
     focus: FocusHandle,
 }
 
@@ -126,6 +214,7 @@ impl PhoneView {
             error: None,
             copied: None,
             confirm_identity: false,
+            confirm_remove: None,
             focus: cx.focus_handle(),
         }
     }
@@ -264,7 +353,7 @@ impl PhoneView {
                 "Phones in your tailnet reach this computer from anywhere over HTTPS, at its Tailscale name. Needs Tailscale on both, and HTTPS certificates turned on in the tailnet. Push notifications need this."
             }
             Reach::Relay => {
-                "Phones reach this computer from anywhere through Arakun's relay, with nothing to install or set up. The relay only passes bytes along: everything is encrypted end to end between the phone and this computer, with a key the relay never sees."
+                "Phones signed in to your GitHub account reach this computer from anywhere through Arakun's relay, with nothing to install or set up. The relay only passes bytes along: everything is encrypted end to end between the phone and this computer, with a key the relay never sees."
             }
         };
         div()
@@ -343,11 +432,339 @@ impl PhoneView {
             })
     }
 
-    /// This computer's address on the relay, and the way to change it.
+    /// The account the relay lets devices in by: the sign-in, the page to
+    /// open on the phone, and the account's signed-in devices.
     fn render_relay(&self, relay: &RelayInfo, cx: &mut Context<Self>) -> gpui::AnyElement {
-        let url = relay.url.clone();
-        let copied = self.copied.as_deref() == Some(relay.url.as_str());
-        let identity = if self.confirm_identity {
+        let section = div()
+            .flex()
+            .flex_col()
+            .gap(crate::ui::sp(10.))
+            .child(Self::section_title("Your account"));
+        match &relay.account {
+            RelayAccount::Checking => section
+                .child(
+                    div()
+                        .text_size(px(ui::TEXT_SM))
+                        .text_color(theme::text_faint())
+                        .child("Checking your sign-in…"),
+                )
+                .into_any_element(),
+            RelayAccount::SignedOut => section
+                .child(
+                    div()
+                        .text_size(px(ui::TEXT_SM))
+                        .text_color(theme::text_muted())
+                        .child("Sign in to reach this computer from anywhere"),
+                )
+                .child(
+                    div().flex().child(
+                        ui::button_with(
+                            "phone-sign-in",
+                            Some("github"),
+                            "Sign in with GitHub",
+                            ButtonKind::Primary,
+                            true,
+                        )
+                        .on_click(cx.listener(|_, _, _, cx| cx.emit(PhoneEvent::SignIn))),
+                    ),
+                )
+                .into_any_element(),
+            RelayAccount::SignedIn {
+                login,
+                devices,
+                computers,
+            } => section
+                .child(
+                    div()
+                        .text_size(px(ui::TEXT_SM))
+                        .text_color(theme::text_muted())
+                        .child(format!("Signed in as @{}", crate::redact::value(login))),
+                )
+                .child(self.render_page(&relay.url, cx))
+                .child(Self::render_signed_in(devices, cx))
+                .child(self.render_computers(computers, cx))
+                .child(self.render_identity(cx))
+                .into_any_element(),
+        }
+    }
+
+    /// The page to open on the phone, as text and as a QR code.
+    fn render_page(&self, url: &str, cx: &mut Context<Self>) -> impl IntoElement {
+        let copied = self.copied.as_deref() == Some(url);
+        let copy = url.to_string();
+        // The relay's page is public, and opens nothing without a sign-in:
+        // unlike a pairing code, it shows in redacted mode too, text and code.
+        div()
+            .flex()
+            .gap(crate::ui::sp(24.))
+            .items_start()
+            .child(Self::render_qr(url))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(crate::ui::sp(10.))
+                    .min_w_0()
+                    .child(
+                        div()
+                            .text_size(px(ui::TEXT_SM))
+                            .text_color(theme::text_muted())
+                            .child("On your phone, open this page and sign in with the same GitHub account:"),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .flex_wrap()
+                            .gap(crate::ui::sp(8.))
+                            .child(
+                                div()
+                                    .font_family(theme::FONT_MONO)
+                                    .text_size(px(ui::TEXT_SM))
+                                    .px(crate::ui::sp(8.))
+                                    .py(crate::ui::sp(3.))
+                                    .rounded(crate::ui::rad(ui::RADIUS))
+                                    .bg(theme::fill_raised())
+                                    .text_color(theme::content())
+                                    .child(url.to_string()),
+                            )
+                            .child(
+                                ui::button(
+                                    "phone-relay-copy",
+                                    if copied { "Copied" } else { "Copy" },
+                                    ButtonKind::Outline,
+                                    true,
+                                )
+                                .on_click(cx.listener(move |this, _, _, cx| this.copy(&copy, cx))),
+                            ),
+                    ),
+            )
+    }
+
+    /// The account's signed-in devices, each but this computer with a way to
+    /// sign it out.
+    fn render_signed_in(devices: &SignedInList, cx: &mut Context<Self>) -> impl IntoElement {
+        let faint = |text: String| {
+            div()
+                .text_size(px(ui::TEXT_SM))
+                .text_color(theme::text_faint())
+                .child(text)
+        };
+        let list = match devices {
+            SignedInList::Loading => faint("Asking your account…".into()).into_any_element(),
+            SignedInList::Failed(why) => div()
+                .text_size(px(ui::TEXT_SM))
+                .text_color(theme::attention())
+                .child(crate::redact::text(why).into_owned())
+                .into_any_element(),
+            SignedInList::Listed(list) => {
+                let now = crate::model::unix_now();
+                let mut rows = div().flex().flex_col().gap(crate::ui::sp(6.));
+                for d in list {
+                    rows = rows.child(Self::render_signed_in_device(d, now, cx));
+                }
+                rows.into_any_element()
+            }
+        };
+        div()
+            .flex()
+            .flex_col()
+            .gap(crate::ui::sp(10.))
+            .child(Self::section_title("Signed-in devices"))
+            .child(list)
+    }
+
+    fn render_signed_in_device(
+        d: &SignedInDevice,
+        now: u64,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let id = d.id.clone();
+        div()
+            .flex()
+            .items_center()
+            .gap(crate::ui::sp(12.))
+            .px(crate::ui::sp(12.))
+            .py(crate::ui::sp(8.))
+            .rounded(crate::ui::rad(ui::RADIUS))
+            .bg(theme::fill_raised())
+            .border_1()
+            .border_color(theme::border())
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_w_0()
+                    .child(
+                        div()
+                            .text_size(px(ui::TEXT_SM))
+                            .child(crate::redact::value(&d.name)),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(ui::TEXT_XS))
+                            .text_color(theme::text_faint())
+                            .child(format!(
+                                "{} · last used {}",
+                                kind_text(&d.kind),
+                                crate::memory::ago(d.last_used_at, now)
+                            )),
+                    ),
+            )
+            .child(if d.current {
+                ui::badge("This computer", ui::Tone::Neutral).into_any_element()
+            } else {
+                ui::button(
+                    SharedString::from(format!("phone-sign-out-{}", d.id)),
+                    "Sign out",
+                    ButtonKind::Ghost,
+                    true,
+                )
+                .on_click(
+                    cx.listener(move |_, _, _, cx| cx.emit(PhoneEvent::SignOutDevice(id.clone()))),
+                )
+                .into_any_element()
+            })
+    }
+
+    /// The account's computers running the app, each but this one with a way
+    /// to remove it from the account.
+    fn render_computers(
+        &self,
+        computers: &ComputerList,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let list = match computers {
+            ComputerList::Loading => div()
+                .text_size(px(ui::TEXT_SM))
+                .text_color(theme::text_faint())
+                .child("Asking your account…")
+                .into_any_element(),
+            ComputerList::Failed(why) => div()
+                .text_size(px(ui::TEXT_SM))
+                .text_color(theme::attention())
+                .child(crate::redact::text(why).into_owned())
+                .into_any_element(),
+            ComputerList::Listed(list) => {
+                let now = crate::model::unix_now();
+                let mut rows = div().flex().flex_col().gap(crate::ui::sp(6.));
+                for c in list {
+                    rows = rows.child(self.render_computer(c, now, cx));
+                }
+                rows.into_any_element()
+            }
+        };
+        div()
+            .flex()
+            .flex_col()
+            .gap(crate::ui::sp(10.))
+            .child(Self::section_title("Your computers"))
+            .child(list)
+    }
+
+    fn render_computer(
+        &self,
+        c: &AccountComputer,
+        now: u64,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let label = c.label.clone();
+        let seen = if c.online {
+            "online".to_string()
+        } else {
+            format!("last seen {}", crate::memory::ago(c.last_seen_at, now))
+        };
+        let row = div()
+            .flex()
+            .items_center()
+            .gap(crate::ui::sp(12.))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_w_0()
+                    .child(
+                        div()
+                            .text_size(px(ui::TEXT_SM))
+                            .child(crate::redact::value(&c.name)),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(ui::TEXT_XS))
+                            .text_color(theme::text_faint())
+                            .child(format!("Arakun app · {seen}")),
+                    ),
+            )
+            .child(if c.this {
+                ui::badge("This computer", ui::Tone::Neutral).into_any_element()
+            } else {
+                ui::button(
+                    SharedString::from(format!("phone-remove-{}", c.label)),
+                    "Remove",
+                    ButtonKind::Ghost,
+                    true,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.confirm_remove = Some(label.clone());
+                    cx.notify();
+                }))
+                .into_any_element()
+            });
+        let confirm =
+            (!c.this && self.confirm_remove.as_deref() == Some(c.label.as_str())).then(|| {
+                let label = c.label.clone();
+                div()
+                    .flex()
+                    .items_center()
+                    .flex_wrap()
+                    .gap(crate::ui::sp(8.))
+                    .text_size(px(ui::TEXT_SM))
+                    .text_color(theme::attention())
+                    .child(remove_question(&c.name))
+                    .child(
+                        ui::button(
+                            SharedString::from(format!("phone-remove-yes-{}", c.label)),
+                            "Remove",
+                            ButtonKind::Danger,
+                            true,
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.confirm_remove = None;
+                            cx.emit(PhoneEvent::RemoveComputer(label.clone()));
+                        })),
+                    )
+                    .child(
+                        ui::button(
+                            SharedString::from(format!("phone-remove-no-{}", c.label)),
+                            "Keep it",
+                            ButtonKind::Ghost,
+                            true,
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.confirm_remove = None;
+                            cx.notify();
+                        })),
+                    )
+            });
+        div()
+            .flex()
+            .flex_col()
+            .gap(crate::ui::sp(8.))
+            .px(crate::ui::sp(12.))
+            .py(crate::ui::sp(8.))
+            .rounded(crate::ui::rad(ui::RADIUS))
+            .bg(theme::fill_raised())
+            .border_1()
+            .border_color(theme::border())
+            .child(row)
+            .children(confirm)
+    }
+
+    /// The key the relay knows this computer by, and the way to change it.
+    fn render_identity(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        if self.confirm_identity {
             div()
                 .flex()
                 .items_center()
@@ -355,7 +772,7 @@ impl PhoneView {
                 .gap(crate::ui::sp(8.))
                 .text_size(px(ui::TEXT_SM))
                 .text_color(theme::attention())
-                .child("A new key means a new address: every paired phone has to pair again.")
+                .child("A new key makes this a new computer in your account, and forgets the phones paired here.")
                 .child(
                     ui::button(
                         "phone-identity-confirm",
@@ -382,7 +799,7 @@ impl PhoneView {
                 .gap(crate::ui::sp(8.))
                 .text_size(px(ui::TEXT_XS))
                 .text_color(theme::text_faint())
-                .child("The address comes from a key only this computer has; the relay cannot hand it to anyone else.")
+                .child("The relay knows this computer by a key only it has; phones check every connection against it.")
                 .child(ui::button("phone-identity-new", "New identity", ButtonKind::Ghost, true).on_click(cx.listener(
                     |this, _, _, cx| {
                         this.confirm_identity = true;
@@ -390,41 +807,7 @@ impl PhoneView {
                     },
                 )))
                 .into_any_element()
-        };
-        div()
-            .flex()
-            .flex_col()
-            .gap(crate::ui::sp(10.))
-            .child(Self::section_title("This computer on the relay"))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .flex_wrap()
-                    .gap(crate::ui::sp(8.))
-                    .child(
-                        div()
-                            .font_family(theme::FONT_MONO)
-                            .text_size(px(ui::TEXT_SM))
-                            .px(crate::ui::sp(8.))
-                            .py(crate::ui::sp(3.))
-                            .rounded(crate::ui::rad(ui::RADIUS))
-                            .bg(theme::fill_raised())
-                            .text_color(theme::content())
-                            .child(crate::redact::value(&relay.url)),
-                    )
-                    .child(
-                        ui::button(
-                            "phone-relay-copy",
-                            if copied { "Copied" } else { "Copy" },
-                            ButtonKind::Outline,
-                            true,
-                        )
-                        .on_click(cx.listener(move |this, _, _, cx| this.copy(&url, cx))),
-                    ),
-            )
-            .child(identity)
-            .into_any_element()
+        }
     }
 
     /// Where phones find this computer, or what is in the way. Through the relay
@@ -719,6 +1102,13 @@ impl Render for PhoneView {
                 ..
             } => {
                 let ready = matches!(address, Address::Ready(_));
+                // Through the relay, devices come in by signing in: no code,
+                // and the account says whether to sign in at all.
+                let relay_reach = reach == Reach::Relay;
+                let signed_out = matches!(
+                    self.state.relay().map(|r| &r.account),
+                    Some(RelayAccount::SignedOut)
+                );
                 let now = crate::model::unix_now();
                 let mut list = div().flex().flex_col().gap(crate::ui::sp(6.));
                 if devices.is_empty() {
@@ -738,36 +1128,40 @@ impl Render for PhoneView {
                     .child(intro)
                     .child(Self::render_reach(reach, cx))
                     .children(relay)
-                    .child(Self::render_address(&address, reach, cx))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap(crate::ui::sp(10.))
-                            .child(Self::section_title("Paired phones"))
-                            .child(list)
-                            .child(match &pairing {
-                                Some(p) => self.render_pairing(p, cx).into_any_element(),
-                                None => div()
-                                    .flex()
-                                    .child(
-                                        ui::button(
-                                            "phone-pair",
-                                            "Pair a phone",
-                                            ButtonKind::Primary,
-                                            ready,
-                                        )
-                                        .when(ready, |b| {
-                                            b.on_click(
-                                                cx.listener(|_, _, _, cx| {
-                                                    cx.emit(PhoneEvent::Pair)
+                    .when(!(relay_reach && signed_out), |d| {
+                        d.child(Self::render_address(&address, reach, cx))
+                    })
+                    .when(!relay_reach, |d| {
+                        d.child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap(crate::ui::sp(10.))
+                                .child(Self::section_title("Paired phones"))
+                                .child(list)
+                                .child(match &pairing {
+                                    Some(p) => self.render_pairing(p, cx).into_any_element(),
+                                    None => {
+                                        div()
+                                            .flex()
+                                            .child(
+                                                ui::button(
+                                                    "phone-pair",
+                                                    "Pair a phone",
+                                                    ButtonKind::Primary,
+                                                    ready,
+                                                )
+                                                .when(ready, |b| {
+                                                    b.on_click(cx.listener(|_, _, _, cx| {
+                                                        cx.emit(PhoneEvent::Pair)
+                                                    }))
                                                 }),
                                             )
-                                        }),
-                                    )
-                                    .into_any_element(),
-                            }),
-                    )
+                                            .into_any_element()
+                                    }
+                                }),
+                        )
+                    })
                     .children(firewall)
                     .child(
                         div().flex().child(
@@ -805,5 +1199,20 @@ impl Render for PhoneView {
                             .child(body),
                     ),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn removing_a_computer_asks_by_its_name() {
+        let q = remove_question("Rik's MacBook");
+        assert!(
+            q.starts_with("Remove Rik's MacBook from your account?"),
+            "{q}"
+        );
+        assert!(q.contains("comes back"), "{q}");
     }
 }

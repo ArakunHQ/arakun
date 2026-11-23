@@ -1,12 +1,16 @@
-//! The servers this app is paired with: `arakun server` running on other
-//! machines (`crate::server`). To a server the app is one more paired device,
-//! like a phone: it pairs with the link `arakun server pair` prints, and then
-//! speaks the phone's messages (`crate::phone`) over the phone's ways in, a
-//! socket of the server's own or the relay. [`client`] is that connection;
-//! the Servers tab (`servers_view`, `shell::servers`) is what it is for.
+//! The servers this app reaches: `arakun server` running on other machines
+//! (`crate::server`). To a server the app is one more device, like a phone,
+//! and speaks the phone's messages (`crate::phone`) over the phone's ways in.
+//! A server reached directly (its network, or Tailscale) is paired with the
+//! link `arakun server pair` prints. A server signed in to the same account
+//! is reached through the relay with the app's own sign-in, and needs no
+//! link. [`client`] is that connection; the Servers tab (`servers_view`,
+//! `shell::servers`) is what it is for.
 //!
 //! What pairing gave is kept in `servers.json` next to the state, readable by
 //! this user only: with the token in it, anyone could start agents on the server.
+//! A server reached through the account has no token there: the sign-in is
+//! the keyring's.
 //! What each server last listed is kept in `servers-inbox.json`, so its
 //! environments are back at start before the server answers, or when it can't.
 
@@ -31,10 +35,33 @@ pub struct Saved {
     pub origin: String,
     #[serde(flatten)]
     pub way: Way,
-    /// This app as the server knows it.
+    /// This app as the server knows it. Empty through the account.
+    #[serde(default)]
     pub device: String,
-    /// What the server lets this app in with.
+    /// What the server lets this app in with. Empty through the account.
+    #[serde(default)]
     pub token: String,
+    /// The server's user removed this app from its devices: it is not dialed
+    /// again until it is forgotten here and connected anew, or the server
+    /// would take the app back.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub removed: bool,
+}
+
+impl Saved {
+    /// Paired through the relay before accounts: it is reached again once
+    /// the account lists it, which takes a sign-in here and on the server.
+    pub fn needs_sign_in(&self) -> bool {
+        matches!(self.way, Way::Relay { .. })
+    }
+
+    /// The server's label on the relay, when it is reached through it.
+    pub fn label(&self) -> Option<&str> {
+        match &self.way {
+            Way::Direct => None,
+            Way::Relay { label, .. } | Way::Account { label } => Some(label),
+        }
+    }
 }
 
 /// How the app gets to a server.
@@ -43,26 +70,84 @@ pub struct Saved {
 pub enum Way {
     /// A socket of the server's own: its network, or Tailscale.
     Direct,
-    /// Through the relay, end to end encrypted. `label` names the server's
-    /// key, which every connection is checked against; `ticket` is what the
-    /// relay lets this app through with.
+    /// Through the relay with a pairing ticket, from before accounts. Kept in
+    /// the file as it is until the account lists the label; the ticket is
+    /// never sent again.
     Relay { label: String, ticket: String },
+    /// Through the relay with this app's sign-in, end to end encrypted.
+    /// `label` names the server's key, which every connection is checked
+    /// against.
+    Account { label: String },
 }
+
+/// Rewrites the servers paired through the old relay whose label the
+/// account lists (`labels`) as reached through the account at `base`. The
+/// id stays, so their environments stay. Whether any was.
+pub fn adopt(saved: &mut [Saved], labels: &[String], base: &str) -> bool {
+    let mut changed = false;
+    for s in saved.iter_mut() {
+        let Way::Relay { label, .. } = &s.way else {
+            continue;
+        };
+        if !labels.contains(label) {
+            continue;
+        }
+        s.way = Way::Account {
+            label: label.clone(),
+        };
+        s.origin = base.to_string();
+        s.device.clear();
+        s.token.clear();
+        changed = true;
+    }
+    changed
+}
+
+/// Notes that the server `id` removed this app from its devices. Whether
+/// that is new, so the file is to be written.
+pub fn mark_removed(saved: &mut [Saved], id: &str) -> bool {
+    match saved.iter_mut().find(|s| s.id == id && !s.removed) {
+        Some(s) => {
+            s.removed = true;
+            true
+        }
+        None => false,
+    }
+}
+
+/// Whether a server reached through the account can be dialed with the sign-in
+/// `base` issued: its label, or why not. One added under another service (its
+/// saved origin is another one) stays in the list, but is not dialed: the
+/// sign-in only ever goes to the service that issued it.
+pub fn account_label<'a>(saved: &'a Saved, base: &str) -> Result<&'a str, String> {
+    let Way::Account { label } = &saved.way else {
+        return Err("This server is not reached through your account.".into());
+    };
+    if !crate::cloud::same_origin(&saved.origin, base) {
+        return Err(format!(
+            "This server belongs to another account server ({}), not {}.",
+            saved.origin.trim_end_matches('/'),
+            base.trim_end_matches('/')
+        ));
+    }
+    Ok(label)
+}
+
+/// What pasting a link of the old relay gets.
+pub const RELAY_LINK: &str =
+    "Relay links are no longer used. Sign in on the server with `arakun-server login`.";
 
 /// What a pairing link says.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Invite {
     pub origin: String,
-    /// What the door takes: the server itself, or the relay in front of it.
+    /// What the server's door takes.
     pub code: String,
-    /// Through the relay, what the server is then shown inside the encrypted
-    /// channel, so the relay cannot pair in the app's place.
-    pub secret: Option<String>,
 }
 
-/// Reads the link `arakun server pair` prints: `https://host/?p=<code>` for a
-/// server reached directly, `https://<label>.<relay>/#p=<code>&s=<secret>`
-/// through the relay.
+/// Reads the link `arakun server pair` prints for a server reached directly:
+/// `https://host/?p=<code>`. One of the old relay,
+/// `https://<label>.<relay>/#p=<code>&s=<secret>`, says what to do instead.
 pub fn parse_link(link: &str) -> Result<Invite, String> {
     const HELP: &str = "That is not a pairing link. `arakun-server pair` prints one.";
     let link = link.trim();
@@ -85,20 +170,11 @@ pub fn parse_link(link: &str) -> Result<Invite, String> {
             .filter(|v| !v.is_empty())
     };
     let origin = format!("{scheme}://{host}");
-    // Through the relay both travel in the fragment, which no request carries.
-    if let (Some(code), Some(secret)) = (value(fragment, "p"), value(fragment, "s")) {
-        return Ok(Invite {
-            origin,
-            code,
-            secret: Some(secret),
-        });
+    if value(fragment, "p").is_some() && value(fragment, "s").is_some() {
+        return Err(RELAY_LINK.into());
     }
     match value(query, "p") {
-        Some(code) => Ok(Invite {
-            origin,
-            code,
-            secret: None,
-        }),
+        Some(code) => Ok(Invite { origin, code }),
         None => Err("That link carries no pairing code. Ask the server for a new one.".into()),
     }
 }
@@ -243,20 +319,11 @@ mod tests {
             Ok(Invite {
                 origin: "http://10.0.0.2:7474".into(),
                 code: "123456".into(),
-                secret: None,
-            })
-        );
-        assert_eq!(
-            parse_link("https://abcdefghij234567.arakun.dev/#p=c0de-_A&s=s3cr3t"),
-            Ok(Invite {
-                origin: "https://abcdefghij234567.arakun.dev".into(),
-                code: "c0de-_A".into(),
-                secret: Some("s3cr3t".into()),
             })
         );
         // The page's address alone pairs nothing.
         assert!(
-            parse_link("https://abc.arakun.dev/")
+            parse_link("https://box.example/")
                 .unwrap_err()
                 .contains("no pairing code")
         );
@@ -269,24 +336,36 @@ mod tests {
     }
 
     #[test]
+    fn a_relay_link_says_to_sign_in_on_the_server() {
+        assert_eq!(
+            parse_link("https://abcdefghij234567.arakun.dev/#p=c0de-_A&s=s3cr3t"),
+            Err(RELAY_LINK.into())
+        );
+        assert_eq!(
+            RELAY_LINK,
+            "Relay links are no longer used. Sign in on the server with `arakun-server login`."
+        );
+    }
+
+    #[test]
     fn the_socket_is_at_the_same_host() {
         assert_eq!(socket_origin("https://a.arakun.dev"), "wss://a.arakun.dev");
         assert_eq!(socket_origin("http://10.0.0.2:7474"), "ws://10.0.0.2:7474");
     }
 
     #[test]
-    fn a_saved_server_reads_back_either_way() {
+    fn a_saved_server_reads_back_every_way() {
         let servers = vec![
             Saved {
                 id: "a1".into(),
                 name: "build-box".into(),
-                origin: "https://abc.arakun.dev".into(),
-                way: Way::Relay {
-                    label: "abc".into(),
-                    ticket: "t".into(),
+                origin: "https://app.arakun.dev".into(),
+                way: Way::Account {
+                    label: "abcdefghij234567".into(),
                 },
-                device: "d1".into(),
-                token: "k1".into(),
+                device: String::new(),
+                token: String::new(),
+                removed: false,
             },
             Saved {
                 id: "b2".into(),
@@ -295,12 +374,131 @@ mod tests {
                 way: Way::Direct,
                 device: "d2".into(),
                 token: "k2".into(),
+                removed: false,
             },
         ];
         let json = serde_json::to_string(&servers).unwrap();
-        assert!(json.contains(r#""via":"relay""#) && json.contains(r#""via":"direct""#));
+        assert!(json.contains(r#""via":"account","label":"abcdefghij234567""#));
+        assert!(json.contains(r#""via":"direct""#));
         assert_eq!(serde_json::from_str::<Vec<Saved>>(&json).unwrap(), servers);
+        // One through the account was written with no device or token.
+        let bare = r#"[{"id":"a1","name":"build-box","origin":"https://app.arakun.dev","via":"account","label":"abcdefghij234567"}]"#;
+        assert_eq!(
+            serde_json::from_str::<Vec<Saved>>(bare).unwrap(),
+            servers[..1]
+        );
         assert_ne!(new_id(), new_id());
+    }
+
+    /// A server paired through the relay before accounts, as `servers.json` kept it.
+    fn old_relay_entry() -> Saved {
+        let json = r#"{"id":"r1","name":"build-box","origin":"https://abcdefghij234567.arakun.dev","via":"relay","label":"abcdefghij234567","ticket":"t1","device":"d1","token":"k1"}"#;
+        serde_json::from_str(json).unwrap()
+    }
+
+    #[test]
+    fn a_server_paired_through_the_old_relay_needs_a_sign_in() {
+        let old = old_relay_entry();
+        assert_eq!(
+            old.way,
+            Way::Relay {
+                label: "abcdefghij234567".into(),
+                ticket: "t1".into(),
+            }
+        );
+        assert!(old.needs_sign_in());
+        assert_eq!(old.label(), Some("abcdefghij234567"));
+        // Kept as it is, ticket and all, until the account lists it.
+        let json = serde_json::to_string(&old).unwrap();
+        assert!(json.contains(r#""via":"relay""#) && json.contains(r#""ticket":"t1""#));
+        let account = Saved {
+            way: Way::Account {
+                label: "abcdefghij234567".into(),
+            },
+            ..old.clone()
+        };
+        assert!(!account.needs_sign_in());
+        assert!(!direct().needs_sign_in());
+    }
+
+    #[test]
+    fn a_server_that_removed_this_app_is_marked_in_the_file() {
+        let mut saved = vec![direct(), old_relay_entry()];
+        assert!(!saved[1].removed);
+        // Not written while it is not so: a file from before reads the same.
+        assert!(!serde_json::to_string(&saved).unwrap().contains("removed"));
+        assert!(mark_removed(&mut saved, "r1"));
+        assert!(saved[1].removed && !saved[0].removed);
+        // Told again, or of a server not kept: nothing to write.
+        assert!(!mark_removed(&mut saved, "r1"));
+        assert!(!mark_removed(&mut saved, "gone"));
+        let back: Vec<Saved> =
+            serde_json::from_str(&serde_json::to_string(&saved).unwrap()).unwrap();
+        assert_eq!(back, saved);
+    }
+
+    fn direct() -> Saved {
+        Saved {
+            id: "b2".into(),
+            name: "desk".into(),
+            origin: "http://10.0.0.2:7474".into(),
+            way: Way::Direct,
+            device: "d2".into(),
+            token: "k2".into(),
+            removed: false,
+        }
+    }
+
+    #[test]
+    fn a_server_of_another_account_server_is_not_dialed() {
+        let mut s = old_relay_entry();
+        s.way = Way::Account {
+            label: "abcdefghij234567".into(),
+        };
+        s.origin = "https://App.Arakun.dev/".into();
+        assert_eq!(
+            account_label(&s, "https://app.arakun.dev"),
+            Ok("abcdefghij234567")
+        );
+        s.origin = "https://relay.example".into();
+        let why = account_label(&s, "https://app.arakun.dev").unwrap_err();
+        assert!(why.contains("another account server"), "{why}");
+        assert!(account_label(&direct(), "https://app.arakun.dev").is_err());
+    }
+
+    #[test]
+    fn an_old_relay_server_comes_through_the_account_once_listed() {
+        let mut saved = vec![old_relay_entry(), direct()];
+        assert!(!adopt(
+            &mut saved,
+            &["zzzzzzzzzzzzzzzz".into()],
+            "https://app.arakun.dev"
+        ));
+        assert!(saved[0].needs_sign_in());
+
+        assert!(adopt(
+            &mut saved,
+            &["abcdefghij234567".into()],
+            "https://app.arakun.dev"
+        ));
+        let now = &saved[0];
+        assert_eq!(now.id, "r1", "its environments stay where they are");
+        assert_eq!(now.name, "build-box");
+        assert_eq!(now.origin, "https://app.arakun.dev");
+        assert_eq!(
+            now.way,
+            Way::Account {
+                label: "abcdefghij234567".into()
+            }
+        );
+        // The ticket and the old token are of no use any more: gone.
+        assert!(now.token.is_empty() && now.device.is_empty());
+        assert_eq!(saved[1], direct());
+        assert!(!adopt(
+            &mut saved,
+            &["abcdefghij234567".into()],
+            "https://app.arakun.dev"
+        ));
     }
 
     #[test]

@@ -36,6 +36,8 @@ use crate::servers::client::{Client, Event, Events, Status as LinkStatus};
 use crate::servers::{self, Saved};
 use crate::servers_view::{PlaceRow, Reach, ServerRow, ServersEvent, ServersState, SessionRow};
 
+mod account;
+pub(super) use account::fixture_machines;
 mod files;
 mod mirror;
 mod terms;
@@ -51,6 +53,10 @@ struct Conn {
     watches_several: bool,
     /// It is from before it sent images: none are asked of it.
     no_images: bool,
+    /// For a server of the account, what `client` was started with, so a
+    /// new list of the account's machines leaves it alone when nothing
+    /// changed. `None` for the others.
+    start: Option<account::Start>,
 }
 
 impl Conn {
@@ -62,6 +68,16 @@ impl Conn {
             places: Vec::new(),
             watches_several: false,
             no_images: false,
+            start: None,
+        }
+    }
+
+    /// The connection to a server of the account, started with `start`.
+    fn through_account(client: Client, start: account::Start) -> Conn {
+        Conn {
+            reach: start.reach(),
+            start: Some(start),
+            ..Conn::new(client)
         }
     }
 }
@@ -238,6 +254,8 @@ pub(super) struct ServersLink {
     balance: Balance,
     /// Git asked of servers for their environments' Changes panels.
     git_asks: servers::git::Asks,
+    /// The account's machines, for its servers.
+    machines: account::Machines,
     _listen: Task<()>,
 }
 
@@ -909,6 +927,8 @@ impl Shell {
             self.show_alone(Some(super::home::Alone::Servers), cx);
         }
         self.servers_connect(window, cx);
+        // A server signed in since shows up.
+        self.servers_list_machines(window, cx);
         self.sync_servers_view(cx);
         self.servers_view.update(cx, |v, cx| v.focus(window, cx));
         cx.notify();
@@ -931,13 +951,19 @@ impl Shell {
 
     /// With `startup`, only the servers whose link is encrypted.
     fn servers_connect_with(&mut self, startup: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let session = self.servers_dial_session(cx);
         if let Some(link) = &mut self.servers {
             let mut late = Vec::new();
             if !startup {
                 for s in &link.saved {
                     if !link.conns.contains_key(&s.id) {
-                        let client = Client::connect(s.clone(), link.events.clone());
-                        link.conns.insert(s.id.clone(), Conn::new(client));
+                        let conn = Self::servers_first_conn(
+                            s,
+                            session.as_ref(),
+                            &link.machines,
+                            link.events.clone(),
+                        );
+                        link.conns.insert(s.id.clone(), conn);
                         late.extend(link.inboxes.get(&s.id).map(|i| (s.id.clone(), i.clone())));
                     }
                 }
@@ -973,10 +999,15 @@ impl Shell {
             .iter()
             .filter(|s| connects_now(s, startup))
             .map(|s| {
-                (
-                    s.id.clone(),
-                    Conn::new(Client::connect(s.clone(), events.clone())),
-                )
+                // No list was asked yet: a server of the account is held
+                // until it is.
+                let conn = Self::servers_first_conn(
+                    s,
+                    session.as_ref(),
+                    &Default::default(),
+                    events.clone(),
+                );
+                (s.id.clone(), conn)
             })
             .collect();
         self.servers = Some(ServersLink {
@@ -1006,8 +1037,10 @@ impl Shell {
             terms: terms::Terms::new(window, cx),
             balance: balance::load(),
             git_asks: Default::default(),
+            machines: Default::default(),
             _listen: listen,
         });
+        self.servers_list_machines(window, cx);
         for (id, inbox) in &seeded {
             self.servers_inbox(id, inbox);
         }
@@ -1049,8 +1082,13 @@ impl Shell {
                 })
             })
             .collect();
+        let yours = self.servers_yours();
+        let Some(link) = &self.servers else {
+            return;
+        };
         let state = ServersState {
             servers,
+            yours,
             pairing: link.pairing.is_some(),
             adding: link.adding.clone(),
             error: link.error.clone(),
@@ -1113,6 +1151,15 @@ impl Shell {
         cx: &mut Context<Self>,
     ) {
         self.servers_connect(window, cx);
+        if let ServersEvent::Connect(label) = ev {
+            self.servers_add_machine(label, window, cx);
+            self.sync_servers_view(cx);
+            return;
+        }
+        if let ServersEvent::Remove(label) = ev {
+            self.servers_remove_machine(label.clone(), window, cx);
+            return;
+        }
         let Some(link) = &mut self.servers else {
             return;
         };
@@ -1194,6 +1241,7 @@ impl Shell {
                     link.adding.insert(server.clone());
                 }
             }
+            ServersEvent::Connect(_) | ServersEvent::Remove(_) => {}
             ServersEvent::Open { server, session } => {
                 let (server, session) = (server.clone(), session.clone());
                 self.servers_open_session(&server, &session, window, cx);
@@ -2670,7 +2718,16 @@ impl Shell {
                         self.sync_servers_view(cx);
                         return;
                     }
-                    LinkStatus::Refused(why) => Reach::Refused(why),
+                    LinkStatus::Refused(why) => {
+                        // Kept in the file: after a restart nothing else
+                        // would remember that the server removed this app.
+                        if why == servers::client::UNPAIRED_BY_SERVER
+                            && servers::mark_removed(&mut link.saved, id)
+                        {
+                            servers::save(&link.saved);
+                        }
+                        Reach::Refused(why)
+                    }
                 };
                 let back = reach == Reach::Connected;
                 // Git's answers would have come on the connection that dropped.
@@ -4080,6 +4137,7 @@ mod tests {
             way,
             device: "d".into(),
             token: "t".into(),
+            removed: false,
         };
         assert!(in_the_clear(&saved(
             "http://10.0.0.2:7474",
@@ -4105,6 +4163,7 @@ mod tests {
             way: servers::Way::Direct,
             device: "d".into(),
             token: "t".into(),
+            removed: false,
         };
         let servers = [
             saved("clear", "http://10.0.0.2:7474"),

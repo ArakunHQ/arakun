@@ -511,6 +511,10 @@ pub struct Shell {
     _branches_view: Subscription,
     /// The phone's server and what each phone watches, while the phone is on.
     phone: Option<phone::PhoneLink>,
+    /// The account's signed-in devices, for the Phone tab's relay section.
+    signed_in: phone::SignedIn,
+    /// The account `relay_owner_changed` last settled the relay's devices for.
+    relay_owner_seen: Option<crate::phone::AccountNow>,
     phone_view: Entity<crate::phone_view::PhoneView>,
     _phone_view: Subscription,
     /// The connections to the machines running `arakun server`, once the
@@ -768,7 +772,10 @@ impl Shell {
         let teams = cx.new(crate::arakun_teams::Teams::new);
         let teams_view = cx.new(|cx| crate::arakun_teams::view::TeamsView::new(teams.clone(), cx));
         let teams_subs = [
-            cx.observe(&teams, |this, _, cx| this.teams_changed(cx)),
+            cx.observe_in(&teams, window, |this, _, window, cx| {
+                this.teams_changed(cx);
+                this.account_changed(window, cx);
+            }),
             cx.subscribe_in(
                 &teams_view,
                 window,
@@ -1112,6 +1119,8 @@ impl Shell {
             extensions_view,
             _extensions_view: extensions_sub,
             phone: None,
+            signed_in: Default::default(),
+            relay_owner_seen: None,
             phone_view,
             _phone_view: phone_sub,
             servers: None,
@@ -2419,11 +2428,21 @@ impl Shell {
     /// The sign-in dialog: GitHub's code, then whether it worked. It starts
     /// the sign-in when none is under way.
     pub(super) fn open_teams_sign_in(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_sign_in(false, window, cx);
+    }
+
+    /// The sign-in dialog for what needs the account rather than Teams (the
+    /// relay): it closes by itself once signed in, so it never offers Team.
+    pub(super) fn open_account_sign_in(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_sign_in(true, window, cx);
+    }
+
+    fn open_sign_in(&mut self, close_when_in: bool, window: &mut Window, cx: &mut Context<Self>) {
         use crate::arakun_teams::sign_in::{SignInDialog, SignInEvent};
         self.menu = None;
         self.env_menu_open = false;
         let teams = self.teams.clone();
-        let dialog = cx.new(|cx| SignInDialog::new(teams, window, cx));
+        let dialog = cx.new(|cx| SignInDialog::new(teams, close_when_in, window, cx));
         let sub = cx.subscribe_in(
             &dialog,
             window,

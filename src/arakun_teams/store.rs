@@ -20,6 +20,9 @@ use super::api::{DEFAULT_URL, DeviceRow, TeamDetail};
 use super::crypto::{self, Device, Envelope, TeamKey, b64, unb64};
 
 const DEVICE_ACCOUNT: &str = "teams-device";
+/// The default server's address before it moved to `DEFAULT_URL`. Its scope
+/// still holds the device of everyone who used the default server then.
+const FORMER_DEFAULT_URL: &str = "https://teams.arakun.dev";
 
 /// The keyring account for `name`. A test Arakun with a state file of its own
 /// (`ARAKUN_STATE`, as `arakun dev` sets) keeps its own Teams session and
@@ -63,23 +66,37 @@ struct Scope {
     entry: String,
     file: PathBuf,
     legacy: Option<String>,
+    /// The entry and file this account had at [`FORMER_DEFAULT_URL`], for the
+    /// default server only.
+    former: Option<(String, PathBuf)>,
 }
 
 impl Scope {
     fn new(base: &str, github_id: u64, state: Option<&str>, dir: &Path) -> Self {
-        let profile = state.unwrap_or_default();
-        let hash = sha2::Sha256::digest(format!("{base}\0{profile}"));
-        // Windows filenames and credential names are case-insensitive.
-        let hash: String = hash.iter().map(|b| format!("{b:02x}")).collect();
-        let scope = format!("{github_id}-{hash}");
+        let (entry, file) = scope_names(base, github_id, state, dir);
+        let default = base == DEFAULT_URL;
         Self {
-            entry: format!("{DEVICE_ACCOUNT}-{scope}"),
-            file: dir.join(format!("teams-{scope}.keys")),
+            entry,
+            file,
             // An override could echo a production device's public keys. The
             // old entry did not record an origin; don't entrust it to one.
-            legacy: (base == DEFAULT_URL).then(|| account_for(DEVICE_ACCOUNT, state)),
+            legacy: default.then(|| account_for(DEVICE_ACCOUNT, state)),
+            former: default.then(|| scope_names(FORMER_DEFAULT_URL, github_id, state, dir)),
         }
     }
+}
+
+/// The keyring entry and key file of an account at `base`.
+fn scope_names(base: &str, github_id: u64, state: Option<&str>, dir: &Path) -> (String, PathBuf) {
+    let profile = state.unwrap_or_default();
+    let hash = sha2::Sha256::digest(format!("{base}\0{profile}"));
+    // Windows filenames and credential names are case-insensitive.
+    let hash: String = hash.iter().map(|b| format!("{b:02x}")).collect();
+    let scope = format!("{github_id}-{hash}");
+    (
+        format!("{DEVICE_ACCOUNT}-{scope}"),
+        dir.join(format!("teams-{scope}.keys")),
+    )
 }
 
 /// This device, and the key its file is sealed with.
@@ -132,6 +149,21 @@ fn load_in(
         return Local::from_entry(&text, &scope.file);
     }
     let cached = scope.file.try_exists().map_err(|e| e.to_string())?;
+    // The same account at the former default address: its own entry, so no
+    // proof of ownership is needed. Copied like the legacy entry below.
+    if let Some((entry, file)) = &scope.former
+        && let Some(text) = read(entry)?
+    {
+        let local = Local::from_entry(&text, &scope.file)?;
+        if cached {
+            local.read()?;
+        } else if let Some(bytes) = read_file(file)? {
+            local.open(&bytes)?;
+            crate::durable::write_private(&scope.file, &bytes).map_err(|e| e.to_string())?;
+        }
+        write(&scope.entry, &text)?;
+        return Ok(local);
+    }
     let legacy_file = scope.file.with_file_name("teams.keys");
     let legacy = match &scope.legacy {
         Some(name) => match read(name)? {
@@ -1089,6 +1121,84 @@ mod tests {
         assert_ne!(b.device.id(), old.device.id());
         assert!(f.ring.borrow().contains_key(&bob.entry));
         assert_eq!(std::fs::read(&old.path).unwrap(), bytes);
+    }
+
+    /// A device kept under the scope of the old default address.
+    fn former(f: &Fixture, id: u64) -> Local {
+        let (entry, file) = scope_names(FORMER_DEFAULT_URL, id, None, &f.dir);
+        let device = Device::generate();
+        let file_key = crypto::new_team_key();
+        f.ring.borrow_mut().insert(
+            entry,
+            serde_json::to_string(&Entry {
+                device: device.to_secret(),
+                file: b64(file_key),
+            })
+            .unwrap(),
+        );
+        let local = Local {
+            device,
+            file_key,
+            path: file,
+        };
+        let mut kept = local.read().unwrap();
+        kept.put_key("shared", 3, &[42; 32]);
+        local.sealer().write(&kept).unwrap();
+        local
+    }
+
+    #[test]
+    fn the_former_default_address_keeps_its_device_once() {
+        let f = Fixture::new();
+        let old = former(&f, 7);
+        let scope = f.scope(7);
+        let moved = f.load(&scope, no_lookup).unwrap();
+        assert_eq!(moved.device.id(), old.device.id());
+        assert_eq!(moved.file_key, old.file_key);
+        assert_eq!(moved.read().unwrap(), old.read().unwrap());
+        assert!(scope.file.exists());
+        assert_eq!(
+            f.ring.borrow()[&scope.entry],
+            f.ring.borrow()[&scope.former.as_ref().unwrap().0]
+        );
+        // Found under the new scope from now on: the old one is not read again.
+        let former_entry = scope.former.clone().unwrap().0;
+        let again = load_in(
+            &scope,
+            |name| {
+                assert_ne!(name, former_entry, "the old scope was read again");
+                Ok(f.ring.borrow().get(name).cloned())
+            },
+            |_, _| panic!("nothing is written the second time"),
+            no_lookup,
+        )
+        .unwrap();
+        assert_eq!(again.device.id(), old.device.id());
+    }
+
+    #[test]
+    fn the_new_scope_wins_over_the_former_default_address() {
+        let f = Fixture::new();
+        let scope = f.scope(7);
+        let new = f.load(&scope, no_lookup).unwrap();
+        let old = former(&f, 7);
+        let loaded = f.load(&scope, no_lookup).unwrap();
+        assert_eq!(loaded.device.id(), new.device.id());
+        assert_ne!(loaded.device.id(), old.device.id());
+    }
+
+    #[test]
+    fn another_server_never_looks_at_the_former_default_address() {
+        let f = Fixture::new();
+        let old = former(&f, 7);
+        let staging = Scope::new("https://staging.example", 7, None, &f.dir);
+        assert!(staging.former.is_none());
+        let other = f.load(&staging, no_lookup).unwrap();
+        assert_ne!(other.device.id(), old.device.id());
+        // A test Arakun's own state is its own scope at the new address only.
+        let state = Scope::new(DEFAULT_URL, 7, Some("/tmp/dev/state-2.json"), &f.dir);
+        let (entry, _) = state.former.unwrap();
+        assert!(!f.ring.borrow().contains_key(&entry));
     }
 
     #[test]

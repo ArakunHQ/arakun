@@ -23,8 +23,9 @@ use std::time::{Duration, Instant};
 
 use gpui::{AppContext as _, AsyncApp, Context, SharedString, Task, WeakEntity};
 
+use crate::cloud::{self, Poll};
 use crate::platform::keyring;
-use api::{ApiError, Me, Poll};
+use api::{ApiError, Me};
 
 /// The keyring entry of the session. A server other than the default keeps
 /// its own: a `wrangler dev` server answers 401 to the real session, and that
@@ -47,6 +48,18 @@ fn keyring_account_for(url: Option<&str>) -> String {
 /// The session's keyring account (see `store::account`).
 fn session_account() -> String {
     store::account(&keyring_account())
+}
+
+/// The account as the rest of the app reaches the Arakun service with it:
+/// the relay, the account's servers and its signed-in devices. No `Debug`:
+/// the session opens the account, so it must never end up in a log.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Account {
+    /// The service's address.
+    pub base: String,
+    pub session: String,
+    pub github_id: u64,
+    pub login: String,
 }
 
 /// Where the sign-in stands.
@@ -219,6 +232,52 @@ impl Teams {
         Some((self.base.clone().ok()?, self.session.clone()?, me))
     }
 
+    /// The signed-in account, once the server has said who it is.
+    pub fn account(&self) -> Option<Account> {
+        let me = self.me.as_ref()?;
+        Some(Account {
+            base: self.base.clone().ok()?,
+            session: self.session.clone()?,
+            github_id: me.github_id,
+            login: me.login.clone(),
+        })
+    }
+
+    /// The service and the session to call it with, as soon as there is a
+    /// session, before the server has said who it is.
+    pub fn session(&self) -> Option<(String, String)> {
+        Some((self.base.clone().ok()?, self.session.clone()?))
+    }
+
+    /// The operator's messages to this account not read yet.
+    pub fn notices(&self) -> &[cloud::Notice] {
+        self.me.as_ref().map_or(&[], |m| m.notices.as_slice())
+    }
+
+    /// Marks the operator's message `id` read, here and on the server, so
+    /// `/me` stops listing it.
+    pub fn read_notice(&mut self, id: &str, cx: &mut Context<Self>) {
+        if let Some(me) = &mut self.me {
+            me.notices.retain(|n| n.id != id);
+        }
+        let Some((base, session)) = self.session() else {
+            return;
+        };
+        if fixture().is_some() {
+            return;
+        }
+        let id = id.to_string();
+        cx.spawn(async move |this, cx| {
+            let read = cx
+                .background_spawn(async move { cloud::read_notice(&base, &session, &id) })
+                .await;
+            if read == Err(cloud::Error::SignedOut) {
+                let _ = this.update(cx, |this, cx| this.session_ended(cx));
+            }
+        })
+        .detach();
+    }
+
     /// The Teams server's host, as the encryption panel names it.
     pub fn server_host(&self) -> Option<String> {
         let base = self.base.as_ref().ok()?;
@@ -273,6 +332,16 @@ impl Teams {
             return;
         }
         if already_asking(self.asking, self.retry.is_some()) {
+            return;
+        }
+        self.ask_me(cx);
+    }
+
+    /// Asks the server again who is signed in, because something else said
+    /// the session ended (the relay turned it down). A 401 forgets it; any
+    /// other answer leaves things as they are.
+    pub fn recheck(&mut self, cx: &mut Context<Self>) {
+        if self.session.is_none() || !self.phase.at_rest() || fixture().is_some() || self.asking {
             return;
         }
         self.ask_me(cx);
@@ -596,11 +665,19 @@ async fn device_flow(
     base: String,
     cx: &mut AsyncApp,
 ) -> Result<(api::SignedIn, Result<(), String>), Ended> {
+    // A server of one's own checks tokens against an OAuth App of its own.
+    // Arakun's own for the default server, which is not asked.
+    let asked = base.clone();
+    let client_id: String = cx
+        .background_spawn(async move { cloud::github_client_id(&asked) })
+        .await
+        .map_err(|e| Ended::Failed(format!("Sign-in: {e}")))?;
+    let id = client_id.clone();
     let code = cx
-        .background_spawn(async move { api::device_code() })
+        .background_spawn(async move { cloud::start_device_flow(&id) })
         .await
         .map_err(|e| Ended::Failed(format!("GitHub: {e}")))?;
-    let deadline = Instant::now() + Duration::from_secs(code.expires_in);
+    let deadline = Instant::now() + code.expires_in;
     let uri = code.verification_uri.clone();
     this.update(cx, |this, cx| {
         this.phase = Phase::Waiting {
@@ -613,18 +690,17 @@ async fn device_flow(
     })
     .map_err(|e| Ended::Failed(e.to_string()))?;
 
-    let mut interval = code.interval.max(1);
+    let mut interval = code.interval;
     let mut dropped = 0;
     let token = loop {
-        cx.background_executor()
-            .timer(Duration::from_secs(interval))
-            .await;
+        cx.background_executor().timer(interval).await;
         if Instant::now() >= deadline {
             return Err(Ended::Expired);
         }
         let device = code.device_code.clone();
+        let id = client_id.clone();
         let answer = match cx
-            .background_spawn(async move { api::poll_token(&device) })
+            .background_spawn(async move { cloud::poll_once(&id, &device, interval) })
             .await
         {
             Ok(answer) => {
@@ -632,16 +708,13 @@ async fn device_flow(
                 answer
             }
             Err(e) if poll_again(&e, dropped) => {
-                // Only a poll without an answer counts toward the limit.
-                if matches!(e, ApiError::Network(_)) {
-                    dropped += 1;
-                }
+                dropped += 1;
                 continue;
             }
             Err(e) => return Err(Ended::Failed(format!("GitHub: {e}"))),
         };
-        match api::next_poll(&answer, interval) {
-            Poll::Wait(secs) => interval = secs,
+        match answer {
+            Poll::Wait(pace) => interval = pace,
             Poll::Token(token) => break token,
             Poll::Expired => return Err(Ended::Expired),
             Poll::Denied => return Err(Ended::Denied),
@@ -679,14 +752,10 @@ const POLL_DROPS: u32 = 3;
 
 /// The user may be halfway through approving on GitHub, so a poll that got no
 /// answer is tried again at the next interval, a few times in a row at most.
-/// A 5xx is GitHub's own trouble and leaves the code valid, so it is tried
-/// again until the code expires.
-fn poll_again(e: &ApiError, dropped: u32) -> bool {
-    match e {
-        ApiError::Network(_) => dropped < POLL_DROPS,
-        ApiError::Status(status, _) => *status >= 500,
-        _ => false,
-    }
+/// A 5xx from GitHub is not an error here: `cloud::poll_once` waits through it
+/// until the code expires.
+fn poll_again(e: &cloud::Error, dropped: u32) -> bool {
+    matches!(e, cloud::Error::Unreachable(_)) && dropped < POLL_DROPS
 }
 
 /// The server's sessions are 32 random bytes in base64url.
@@ -781,12 +850,12 @@ mod tests {
 
     #[test]
     fn a_poll_without_an_answer_is_tried_again_a_few_times() {
-        let offline = ApiError::Network("timed out".into());
+        let offline = cloud::Error::Unreachable("timed out".into());
         assert!(poll_again(&offline, 0));
         assert!(poll_again(&offline, POLL_DROPS - 1));
         assert!(!poll_again(&offline, POLL_DROPS));
-        assert!(!poll_again(&ApiError::Unreadable, 0));
-        assert!(!poll_again(&ApiError::Status(400, "bad".into()), 0));
+        assert!(!poll_again(&cloud::Error::Refused("bad".into()), 0));
+        assert!(!poll_again(&cloud::Error::SignedOut, 0));
     }
 
     #[test]
@@ -794,21 +863,13 @@ mod tests {
         assert_eq!(keyring_account_for(None), "teams-session");
         assert_eq!(keyring_account_for(Some(" ")), "teams-session");
         assert_eq!(
-            keyring_account_for(Some("https://teams.arakun.dev/")),
+            keyring_account_for(Some("https://app.arakun.dev/")),
             "teams-session"
         );
         assert_eq!(
             keyring_account_for(Some("http://localhost:8787/")),
             "teams-session@http://localhost:8787"
         );
-    }
-
-    #[test]
-    fn a_poll_github_answered_with_a_5xx_is_tried_again_until_expiry() {
-        let down = ApiError::Status(502, "Bad Gateway".into());
-        assert!(poll_again(&down, 0));
-        assert!(poll_again(&down, POLL_DROPS + 10));
-        assert!(poll_again(&ApiError::Status(503, String::new()), 0));
     }
 
     #[test]

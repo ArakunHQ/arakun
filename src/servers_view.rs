@@ -1,6 +1,6 @@
-//! The Servers tab: the machines running `arakun server` this app is paired
-//! with, and their sessions. It pairs with the link the server prints and
-//! forgets a server. A server's folders and sessions live in the projects,
+//! The Servers tab: the machines running `arakun server` this app reaches,
+//! and their sessions. It lists the servers signed in to the same account,
+//! pairs with the link a server reached directly prints, and forgets a server. A server's folders and sessions live in the projects,
 //! as the app's own (`shell::servers`): a session picked here opens there.
 
 use std::collections::HashSet;
@@ -21,6 +21,10 @@ use crate::ui::{self, ButtonKind, Tone, Type, Typography as _, icon};
 pub enum ServersEvent {
     /// Pair with the server this link is for.
     Pair(String),
+    /// Add the account's server with this label, and connect to it.
+    Connect(String),
+    /// Remove the account's server with this label from the account.
+    Remove(String),
     /// Give up the pairing under way.
     CancelPairing,
     /// Forget a server; it is told to forget this app too.
@@ -101,9 +105,32 @@ pub struct ServerRow {
     pub places: Vec<PlaceRow>,
 }
 
+/// A server signed in to the same account, as the account lists it.
+#[derive(Clone, PartialEq)]
+pub struct MachineRow {
+    pub label: String,
+    pub name: String,
+    pub online: bool,
+    /// In the list here already.
+    pub added: bool,
+}
+
+/// The account's servers, as far as the account has said.
+#[derive(Clone, PartialEq, Default)]
+pub enum YourServers {
+    #[default]
+    SignedOut,
+    Loading,
+    Listed(Vec<MachineRow>),
+    /// The account could not be asked, and why.
+    Failed(String),
+}
+
 #[derive(Clone, PartialEq, Default)]
 pub struct ServersState {
     pub servers: Vec<ServerRow>,
+    /// The servers of the account this app is signed in to.
+    pub yours: YourServers,
     /// A pairing is under way.
     pub pairing: bool,
     /// Servers a folder is being added to or cloned on, until they are done.
@@ -139,6 +166,8 @@ pub struct ServersView {
     draft_for: Option<String>,
     /// "Forget" was pressed once on this server; the next press counts.
     confirm_forget: Option<String>,
+    /// Remove was pressed once on the account's server with this label.
+    confirm_remove: Option<String>,
     focus: FocusHandle,
     _inputs: Vec<Subscription>,
 }
@@ -182,6 +211,7 @@ impl ServersView {
             folder,
             draft_for: None,
             confirm_forget: None,
+            confirm_remove: None,
             focus: cx.focus_handle(),
             _inputs: inputs,
         }
@@ -621,7 +651,7 @@ impl ServersView {
             .p(ui::sp(ui::PAGE_PAD))
             .max_w(px(620.))
             .child(ui::page_title(
-                "Pair with a server",
+                "Add a server",
                 Some(
                     "Run sessions on another machine, and follow them from here."
                         .into_any_element(),
@@ -632,7 +662,7 @@ impl ServersView {
                     .flex()
                     .flex_col()
                     .gap(ui::sp(8.))
-                    .child(Self::label("On that machine, start the server and ask it for a link:"))
+                    .child(Self::label("For a server reached directly, start it on that machine and ask it for a link:"))
                     .child(
                         div()
                             .flex()
@@ -688,12 +718,141 @@ impl ServersView {
             .children(self.state.error.clone().map(|e| {
                 ui::text(Type::Label, theme::attention().into(), crate::redact::text(&e).into_owned())
             }))
+            .child(self.render_yours(cx))
             .child(ui::text(
                 Type::Caption,
                 theme::text_faint(),
                 "Through the relay, everything between this app and the server is encrypted end to end. A link that starts with http:// is not encrypted: use one only on a network you trust. Agents there use that machine's logins and run in its folders.",
             ))
             .into_any_element()
+    }
+
+    /// The servers signed in to the same account, each to connect with no link.
+    fn render_yours(&self, cx: &mut Context<Self>) -> AnyElement {
+        let section = div()
+            .flex()
+            .flex_col()
+            .gap(ui::sp(8.))
+            .child(Self::label("Your servers"));
+        let line = |text: String| ui::text(Type::Caption, theme::text_faint(), text);
+        match &self.state.yours {
+            YourServers::SignedOut => section
+                .child(line("Sign in to see your servers".into()))
+                .into_any_element(),
+            YourServers::Loading => section
+                .child(line("Asking your account…".into()))
+                .into_any_element(),
+            YourServers::Failed(why) => section
+                .child(ui::text(
+                    Type::Caption,
+                    theme::attention().into(),
+                    crate::redact::text(why).into_owned(),
+                ))
+                .into_any_element(),
+            YourServers::Listed(rows) if rows.is_empty() => section
+                .child(line(
+                    "No server is signed in to your account yet. On the server, run `arakun-server login`.".into(),
+                ))
+                .into_any_element(),
+            YourServers::Listed(rows) => section
+                .children(rows.iter().enumerate().map(|(ix, m)| {
+                    let label = m.label.clone();
+                    let remove = m.label.clone();
+                    let confirm = (self.confirm_remove.as_deref() == Some(m.label.as_str())).then(|| {
+                        let label = m.label.clone();
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(ui::sp(6.))
+                            .pb(ui::sp(6.))
+                            .child(ui::text(
+                                Type::Caption,
+                                theme::attention().into(),
+                                crate::phone_view::remove_question(&m.name),
+                            ))
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(ui::sp(6.))
+                                    .child(
+                                        ui::button(("servers-remove-yes", ix), "Remove", ButtonKind::Danger, true)
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                this.confirm_remove = None;
+                                                cx.emit(ServersEvent::Remove(label.clone()));
+                                            })),
+                                    )
+                                    .child(
+                                        ui::button(("servers-remove-no", ix), "Keep", ButtonKind::Ghost, true)
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.confirm_remove = None;
+                                                cx.notify();
+                                            })),
+                                    ),
+                            )
+                    });
+                    let row = div()
+                        .flex()
+                        .items_center()
+                        .gap(ui::sp(8.))
+                        .min_h(px(ui::MENU_ROW_H))
+                        .child(
+                            div()
+                                .flex_none()
+                                .size(px(7.))
+                                .rounded_full()
+                                .bg(if m.online {
+                                    Tone::Success.color()
+                                } else {
+                                    Tone::Neutral.color()
+                                }),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .ty(Type::Body)
+                                .text_color(theme::text())
+                                .child(crate::redact::text(&m.name).into_owned()),
+                        )
+                        .child(
+                            ui::text(
+                                Type::Caption,
+                                theme::text_faint(),
+                                if m.online { "online" } else { "offline" },
+                            )
+                            .flex_none(),
+                        )
+                        .child(
+                            ui::button(
+                                ("servers-connect", ix),
+                                if m.added { "Added" } else { "Connect" },
+                                ButtonKind::Outline,
+                                !m.added,
+                            )
+                            .when(!m.added, |b| {
+                                b.on_click(cx.listener(move |_, _, _, cx| {
+                                    cx.emit(ServersEvent::Connect(label.clone()))
+                                }))
+                            }),
+                        )
+                        .child(
+                            ui::icon_button(
+                                ("servers-remove", ix),
+                                "delete02",
+                                13.,
+                                "Remove from your account",
+                            )
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.confirm_remove = Some(remove.clone());
+                                cx.notify();
+                            })),
+                        );
+                    div().flex().flex_col().child(row).children(confirm)
+                }))
+                .into_any_element(),
+        }
     }
 }
 
@@ -728,7 +887,7 @@ impl Render for ServersView {
                     ui::button_with(
                         "servers-add",
                         Some("add01"),
-                        "Pair with a server",
+                        "Add a server",
                         ButtonKind::Ghost,
                         true,
                     )

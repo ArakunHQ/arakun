@@ -91,6 +91,12 @@ pub(super) enum Open {
     /// The Team tab: where a request from an admin waits for an answer.
     #[cfg(feature = "team")]
     Team,
+    /// A message from the Arakun service's operator to the account, by its
+    /// id, with the link it came with: opening or putting it away reads it.
+    Notice {
+        id: String,
+        url: Option<String>,
+    },
 }
 
 impl Open {
@@ -133,6 +139,10 @@ impl Open {
             Open::Url(url) => format!("open:url:{url}").into(),
             #[cfg(feature = "team")]
             Open::Team => "open:team".into(),
+            // The id holds no ":"; the link goes last, whatever it holds.
+            Open::Notice { id, url } => {
+                format!("open:notice:{id}:{}", url.as_deref().unwrap_or("")).into()
+            }
         }
     }
 
@@ -180,6 +190,13 @@ impl Open {
             }
             #[cfg(feature = "team")]
             ("team", "") => Some(Open::Team),
+            ("notice", rest) => {
+                let (id, url) = rest.split_once(':')?;
+                notice_id_ok(id).then(|| Open::Notice {
+                    id: id.to_string(),
+                    url: (!url.is_empty()).then(|| url.to_string()),
+                })
+            }
             #[cfg(feature = "team")]
             ("url", url) if url.starts_with("https://") || url.starts_with("http://") => {
                 Some(Open::Url(url.to_string()))
@@ -187,6 +204,32 @@ impl Open {
             _ => None,
         }
     }
+}
+
+/// What an operator's notice id may hold: letters, digits, `-` and `_`. Its
+/// key splits at the first `:` after it, so one with any other character
+/// could name another notice; such a notice is not shown.
+fn notice_id_ok(id: &str) -> bool {
+    !id.is_empty()
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+/// The operator's notices that may show, each with what its "View" opens
+/// and its text. One whose id fails `notice_id_ok` is left out.
+fn notice_opens(notices: &[crate::cloud::Notice]) -> Vec<(Open, String)> {
+    notices
+        .iter()
+        .filter(|n| notice_id_ok(&n.id))
+        .map(|n| {
+            let open = Open::Notice {
+                id: n.id.clone(),
+                url: n.url.clone(),
+            };
+            (open, n.text.clone())
+        })
+        .collect()
 }
 
 /// Sends `alert` when the island is connected; while it isn't, the link
@@ -261,7 +304,12 @@ impl Shell {
                         FromIsland::Ver { key } | FromIsland::Row { key } => {
                             this.open_from_island(key, window, cx)
                         }
-                        FromIsland::Luego { .. } => {}
+                        // "Later" puts a message of the operator away for good.
+                        FromIsland::Luego { key } => {
+                            if let Some(Open::Notice { id, .. }) = Open::parse(&key) {
+                                this.teams.update(cx, |t, cx| t.read_notice(&id, cx));
+                            }
+                        }
                     });
                     if handled.is_err() {
                         break;
@@ -362,7 +410,32 @@ impl Shell {
             Some(Open::Url(url)) => cx.open_url(&url),
             #[cfg(feature = "team")]
             Some(Open::Team) => self.open_team_tab(window, cx),
+            Some(Open::Notice { id, url }) => {
+                if let Some(url) = url.filter(|u| u.starts_with("https://")) {
+                    cx.open_url(&url);
+                }
+                self.teams.update(cx, |t, cx| t.read_notice(&id, cx));
+            }
             None => {}
+        }
+    }
+
+    /// The operator's messages to the account that `/me` listed, each shown
+    /// once as a notice. One already in the Inbox is not shown again: it is
+    /// read there, or put away on the island.
+    pub(super) fn account_notices(&mut self, cx: &mut Context<Self>) {
+        let notices = notice_opens(self.teams.read(cx).notices());
+        for (open, text) in notices {
+            let key = open.key();
+            let shown = self
+                .notices
+                .borrow()
+                .notices
+                .iter()
+                .any(|kept| kept.key == key.as_ref());
+            if !shown {
+                self.notify(AlertKind::Info, "Arakun", &text, Some(open), cx);
+            }
         }
     }
 
@@ -887,6 +960,14 @@ mod tests {
             Open::Url("https://example.com/x/y?v=2".into()),
             #[cfg(feature = "team")]
             Open::Team,
+            Open::Notice {
+                id: "n1".into(),
+                url: Some("https://arakun.dev/news?a=1#b:c".into()),
+            },
+            Open::Notice {
+                id: "n2".into(),
+                url: None,
+            },
         ];
         for open in all {
             let key = open.key();
@@ -914,9 +995,39 @@ mod tests {
             "open:task:",
             "open:usage:more",
             "open:pilot:",
+            "open:notice:",
+            "open:notice:n1",
+            "open:notice::https://x",
+            "open:notice:a b:",
         ] {
             assert_eq!(Open::parse(key), None, "{key}");
         }
+    }
+
+    #[test]
+    fn a_notice_id_with_a_colon_is_never_taken_for_another() {
+        assert!(notice_id_ok("n_1-A"));
+        for bad in ["", "a:b", "a b", "a/b", "é"] {
+            assert!(!notice_id_ok(bad), "{bad}");
+        }
+        // Were "a:b" let through, its key would read back as notice "a":
+        // the account's notices leave it out, and keep one with a good id.
+        let notice = |id: &str| crate::cloud::Notice {
+            id: id.into(),
+            text: format!("about {id}"),
+            url: Some("https://x".into()),
+        };
+        let shown = notice_opens(&[notice("a:b"), notice("n1")]);
+        assert_eq!(
+            shown,
+            [(
+                Open::Notice {
+                    id: "n1".into(),
+                    url: Some("https://x".into())
+                },
+                "about n1".to_string()
+            )]
+        );
     }
 
     #[test]

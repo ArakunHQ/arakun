@@ -486,8 +486,32 @@ after a week).
   end-to-end encrypted relay. On the local network and over Tailscale the page comes
   from the computer itself, so it only opens while the computer is on and awake; the
   relay works from anywhere and says when the computer is offline (the Phone tab says so and offers Use Relay). The relay defaults
-  to the hosted one at `arakun.dev`; you can run your own from [`cloud/`](cloud)
-  (a Cloudflare Worker) and point `relay_base` in `phone.json` at it.
+  to the hosted one at `app.arakun.dev`, and lets a device in only when it is signed in
+  to the same account as the computer. With Relay chosen, the Phone tab says "Sign in
+  to reach this computer from anywhere" until you press **Sign in with GitHub** (the
+  same sign-in as the User row; no Teams needed). Signed in, it shows your login, the
+  address to open on the phone with its QR code, and **Signed-in devices**: every
+  device signed in to the account, with its kind and when it was last used, and
+  **Sign out** for each but this computer. Under it, **Your computers** lists the
+  computers of the account that run the app, each online or when it was last seen, with
+  **Remove** for each but this one; a removed computer is listed again when it next
+  connects signed in. There is no code to pair through the relay.
+  The first time a device connects, a notice says "<name> connected for the first
+  time"; `phone.json` keeps it by its signed-in device's id and name, with no token,
+  and the account that let those devices in (`relay_account`, its GitHub id): signed
+  out, or under another account, they are dropped. **Paired phones** lists only the
+  phones paired here with a code. A new key for this computer makes it a new computer
+  in your account and removes the old entry from it.
+  On the phone, open `https://app.arakun.dev`,
+  sign in with GitHub and pick the computer (with one, the page opens it straight away).
+  Anyone who signs in to your GitHub account, or holds one of its sessions, can reach
+  every computer of the account: sign out what you do not know. A message from the
+  service's operator to your account shows as a notice with its link; opening it or
+  putting it away on the island marks it read.
+  You can run your own from [`cloud/`](cloud)
+  (a Cloudflare Worker): point both `relay_base` in `phone.json` and
+  `ARAKUN_TEAMS_URL` at it, since the session comes from the same server. A
+  `relay_base` of `https://arakun.dev`, the old default, reads as the new one.
   The page keeps shortcuts, phrases you send often, as a row of buttons over the box.
   One that sends right away shows while the agent waits for you; the others show while
   you write and fill the box. `{number}` in a shortcut is a blank you type each time,
@@ -640,9 +664,12 @@ after a week).
   or Settings › Account) opens a dialog with a code and opens GitHub's device page:
   enter the code there and approve. The dialog counts down the code's 15 minutes and
   says when it ran out or GitHub turned it down, with a way to get a new one. Arakun
-  asks GitHub for no scopes and hands the token once to the Teams server. The server does not keep
-  that token: it stores your GitHub user name and ID, and a hash of the session it
-  answers with. Arakun drops the GitHub token and keeps the
+  asks GitHub only to read your email addresses (`user:email`) and hands the token once
+  to the server. The server does not keep that token: it stores your GitHub user name
+  and ID, your primary verified email address (so the operator can reach you about your
+  account; nothing sends mail), and a hash of each session with the name and kind of
+  the device it is on. A server other than the default (`ARAKUN_TEAMS_URL`) names its
+  own GitHub app, which Arakun asks it for. Arakun drops the GitHub token and keeps the
   session the server answers with in the system keyring: the Keychain on macOS, the
   Credential Manager on Windows, and the Secret Service through `secret-tool` on Linux
   (without it, the session lasts until Arakun quits). Signed in, the User row shows
@@ -654,10 +681,10 @@ after a week).
   reached, the session there stays valid until it expires (90 days without renewal,
   180 days after sign-in at most). `ARAKUN_TEAMS_URL` points Arakun at another Teams
   server, such as one run with `wrangler dev` (see
-  [cloud/README.md](cloud/README.md)); the default is `https://teams.arakun.dev`, and
+  [cloud/README.md](cloud/README.md)); the default is `https://app.arakun.dev`, and
   plain `http://` works only for `localhost`, `127.0.0.1` and `[::1]`. Each server
   keeps its own session in the keyring, so signing in to a local server leaves the one
-  for `teams.arakun.dev` alone.
+  for `app.arakun.dev` alone.
 
   The Team tab is an end-to-end encrypted team chat. Each account on this
   profile has its own device key pairs in the system keyring. Messages and
@@ -1396,7 +1423,12 @@ out first.
 
 ## Server
 
-To run sessions on another machine, start a server there and pair a device with it.
+To run sessions on another machine, start a server there and reach it from a device.
+A server signed in to your account (`arakun-server login`) is listed in the app's
+Servers tab under **Your servers**, each with **Connect**: no link is needed, and the
+connection goes through the relay, end to end encrypted, checked against the key your
+account lists for that server. Signed out, the tab says "Sign in to see your servers".
+A server reached directly (`--reach lan` or `--reach tailscale`) is paired with a link:
 Where the app is installed, `arakun server` is the command; `arakun-server` is the
 same command for a machine with no display (see
 [The server alone](#the-server-alone-no-display)).
@@ -1408,7 +1440,8 @@ arakun-server pair           # in another terminal: a link and its QR code
 
 The link is good for two minutes and pairs one device. There are two ways to use it:
 
-- **In the app.** Open the Servers tab and paste the link. From then on the app
+- **In the app.** Open the Servers tab and paste the link (a link of the old relay
+  says to sign in on the server with `arakun-server login` instead). From then on the app
   connects to the server when it starts, and works there as if you were at that
   machine: each folder the server offers is an environment in the sidebar, marked with
   the machine's name. A folder whose repository you also have here (the same `origin`)
@@ -1468,7 +1501,15 @@ The link is good for two minutes and pairs one device. There are two ways to use
   clone goes into `~/code`. Clone takes https and ssh addresses, not plain http, and
   gives up after 20 minutes. Add offers a folder the server already has, as
   `arakun-server add` does. The app keeps what pairing gave it in `servers.json`
-  next to its state, which only your user can read. What each server listed last is
+  next to its state, which only your user can read: a server's address and token,
+  or, for one reached through the account, only its label on the relay (the sign-in
+  stays in the system keyring). A server paired through the relay before accounts
+  stays in the file as it was and shows "Sign in to reconnect." until your account
+  lists it, then it is kept as one of the account's; its old ticket is never sent again.
+  While the app cannot reach your account, a server of the account says "Could not reach
+  your account. Trying again." and connects once the account answers. A server whose
+  user removed the app from its devices is marked in the file and is not connected
+  again until you forget it and connect it anew from **Your servers**. What each server listed last is
   kept in `servers-inbox.json` beside it, so its environments show at start before it
   answers, or while it cannot be reached. A server reached over plain http shows them
   only once the Servers tab connects it. "Forget" on a server removes it
@@ -1515,7 +1556,8 @@ arakun-server service install   # keep it running; see Keep it running
   network you trust, and Tailscale or the relay across networks. What `serve` is started
   with is kept for the next run.
 - **What it keeps.** `~/.local/share/arakun/server/`, which only your user can read:
-  `phone.json` (how it is reached, its relay identity, the paired devices),
+  `phone.json` (how it is reached, its relay identity, the paired devices, and the
+  devices that came in through the relay, with no token),
   `state.json` (folders and sessions), `sessions/` (transcripts, saved as the agents
   work), `linked/` (the conversation of a session handed to another agent, as
   markdown that the new agent reads) and `uploads/` (photos sent with prompts). `ARAKUN_SERVER_DIR` names another

@@ -653,6 +653,32 @@ after a week).
   `127.0.0.1` and `[::1]`. Each server keeps its own session in the keyring, so
   signing in to a local server leaves the one for `teams.arakun.dev` alone.
 
+  The Teams tab is an end-to-end encrypted team chat. Each account on this
+  profile has its own device key pairs in the system keyring. Messages and
+  channel names are sealed on the device, and the server never sees them or the
+  team keys. It does see team names, who is in which team and with which role,
+  device names, invites, and who sent a message when and how large it was (see
+  [teams/PROTOCOL.md](teams/PROTOCOL.md)). The **+** beside Teams creates a team with
+  a `#general` channel; the team page invites people by GitHub user name, adds
+  channels and approves the people who accepted. Approving hands the team key to
+  their verified devices from yours. The server still supplies the membership and
+  roles; it is not an independent proof of who belongs to the team. Removing
+  someone rotates the key for the remaining members, not messages already seen.
+  Hover a message and press the reply arrow to answer it: the quote shows above
+  your message, and clicking it
+  scrolls to the original. **Esc** drops the reply. Messages whose signature does not
+  check out are hidden and counted. When a member adds a device, the others see
+  "@them added a new device".
+
+  A second device of yours shows "Approve this device from your other device" and a
+  code: on a device that already has Teams, open **Your devices** and paste it. The
+  team keys and trusted device roots are kept in `teams-<account>-<scope>.keys`
+  next to the state, sealed with a key from the keyring. The scope identifies
+  the server and profile. A lost cache can recover only the key envelopes the server
+  still has for this device, not its local trust records. Signing out discards
+  unsent drafts. A test Arakun with its own `ARAKUN_STATE` (such as
+  `arakun dev`) keeps its own Teams session, device and keys.
+
 ### Make it yours
 
 How the app looks is changed in the **Customize** panel, at the right of the window where
@@ -1065,8 +1091,11 @@ the program the command runs (`bash cargo`, `bash git`), so you can see which to
 commands cost the tokens.
 
 Optional tools: `git` (Changes, worktrees, branches), `gh` (CI, GitHub tab), `bwrap`
-(headless agents on Linux), `secret-tool` from libsecret (stored logins on Linux), `tailscale`
-(phone over Tailscale), `cf` (Cloudflare tab).
+(headless agents on Linux), `secret-tool` from libsecret (stored logins on Linux), `gdbus`
+from GLib (`libglib2.0-bin` on Debian), `tailscale` (phone over Tailscale), `cf`
+(Cloudflare tab). Teams on Linux does not work without `secret-tool`, which keeps the
+session and the device keys, and on its first run it needs `gdbus` too, to tell a locked
+keyring from one with no device yet.
 
 ## Build from source
 

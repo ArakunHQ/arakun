@@ -62,7 +62,7 @@ pub(super) fn edited_by_id(messages: &[Msg]) -> HashMap<&str, &Msg> {
         .collect()
 }
 
-/// The first message of a bot answer's range edited after the answer.
+/// The first message of a bot answer's range edited after the ask.
 /// `edited` is [`edited_by_id`] of `messages`.
 pub(super) fn stale_of(
     messages: &[Msg],
@@ -74,7 +74,13 @@ pub(super) fn stale_of(
         return None;
     }
     let meta = bot::meta(answer)?;
-    let after = answer.seq?;
+    // @bot read the texts after the ask was stored, not when it answered: an
+    // edit stored while it ran may not be in what it read.
+    let after = messages
+        .iter()
+        .find(|m| m.id == meta.range[1])
+        .and_then(|m| m.seq)
+        .or(answer.seq)?;
     let range = bot::select_range(messages, &meta.range[1]).ok()?;
     range.lines.iter().find_map(|l| {
         let m = edited.get(l.id.as_str())?;
@@ -1245,6 +1251,20 @@ mod tests {
         all.push(answer.clone());
         assert!(edited_by_id(&all).is_empty());
         assert_eq!(stale_of(&all, &edited_by_id(&all), &answer), None);
+
+        // An edit stored while @bot ran, before its answer, counts too.
+        let mut during = all.clone();
+        let mut edit = Body::text("a fixed idea", Some("a".into()));
+        edit.kind = "edit".into();
+        during.insert(2, m("e0", 3, 1, edit));
+        during[3].seq = Some(4);
+        apply_edits(&mut during);
+        let late = during[3].clone();
+        assert_eq!(
+            stale_of(&during, &edited_by_id(&during), &late).map(|s| s.id),
+            Some("a".into())
+        );
+
         let mut edit = Body::text("a better idea", Some("a".into()));
         edit.kind = "edit".into();
         all.push(m("e", 4, 1, edit));
